@@ -18,6 +18,7 @@ import {
 import { MAX_LEGACY_BATCH_JSON_BYTES } from "./persistence-policy";
 
 const SOURCE = "recipe-indexeddb-v1";
+const DEVICE_IMPORT_OWNER_KEY = "user-assets:recipe-indexeddb-v1:owner";
 const LEGACY_PAGE_SIZE = 100;
 const utf8Encoder = new TextEncoder();
 
@@ -137,6 +138,20 @@ function rejectedItems(
   return results.filter((item) => item.outcome === "rejected");
 }
 
+function claimLegacyBrowserData(owner: string): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    const claimedOwner = window.localStorage.getItem(DEVICE_IMPORT_OWNER_KEY);
+    if (claimedOwner && claimedOwner !== owner) return false;
+    if (!claimedOwner) {
+      window.localStorage.setItem(DEVICE_IMPORT_OWNER_KEY, owner);
+    }
+    return window.localStorage.getItem(DEVICE_IMPORT_OWNER_KEY) === owner;
+  } catch {
+    throw new Error("Could not confirm ownership of browser-saved recipes.");
+  }
+}
+
 function throwIfAborted(signal: AbortSignal): void {
   if (!signal.aborted) return;
   if (signal.reason instanceof Error) throw signal.reason;
@@ -253,6 +268,11 @@ async function importExecutionPages(
         const retryRejected = rejectedItems(retryResult.executions);
         reportRejectedItems("executions", retryRejected);
         rejectedCount += retryRejected.length;
+        const remainingMissingParents = retryResult.executions.filter(
+          (item) => item.outcome === "missing_parent",
+        );
+        reportRejectedItems("executions", remainingMissingParents);
+        rejectedCount += remainingMissingParents.length;
         onProgress?.();
       }
     }
@@ -283,6 +303,7 @@ export async function importLegacyUserAssetsFromIndexedDb({
   if (requestSubjectKey === "anonymous") {
     requestSubjectKey = getAuthSubjectKey();
   }
+  if (!claimLegacyBrowserData(bootstrap.subject)) return;
   const rejectedRecipes = await importRecipePages(
     bootstrap,
     readRecipes,

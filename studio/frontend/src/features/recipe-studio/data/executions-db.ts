@@ -375,7 +375,11 @@ function reconcileIncoming(
     if (!useIncomingState && incoming.status !== current.status) return null;
     return mergeTerminalSnapshots(incoming, current, useIncomingState);
   }
-  return incomingTerminal || incomingEvent > currentEvent ? incoming : null;
+  if (incomingEvent < currentEvent) return null;
+  if (incomingEvent === currentEvent && incoming.status !== current.status) {
+    return null;
+  }
+  return mergeTerminalSnapshots(incoming, current, true);
 }
 
 async function persistOnce(
@@ -386,7 +390,7 @@ async function persistOnce(
   assertOwnerCurrent(owner, record);
   let metadata = serializeExecutionMetadata(record);
   const knownCurrent = persistedExecutions.get(key);
-  if (knownCurrent && TERMINAL.has(knownCurrent.status)) {
+  if (knownCurrent) {
     const reconciled = reconcileIncoming(metadata, knownCurrent);
     if (!reconciled) return;
     metadata = reconciled;

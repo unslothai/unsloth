@@ -817,6 +817,10 @@ def import_legacy_assets(
                     continue
                 clean_item, paths = redact_secret_fields(item)
                 projected = project_execution_metadata(clean_item)
+                # Legacy IndexedDB metadata is client-controlled. Artifact paths are
+                # assigned by the server for new executions, so never retain one
+                # supplied by a browser migration.
+                projected.pop("artifact_path", None)
                 created_at = validate_timestamp(projected.get("createdAt"), "createdAt")
                 finished_at = projected.get("finishedAt")
                 if finished_at is not None:

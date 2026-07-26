@@ -167,6 +167,22 @@ def test_legacy_recipe_updated_at_is_validated_preserved_and_ordered():
     ]
 
 
+def test_legacy_execution_import_discards_client_supplied_artifact_path():
+    user_assets_db.create_recipe("owner", recipe())
+
+    imported = user_assets_db.import_legacy_assets(
+        "owner",
+        "recipe-indexeddb-v1",
+        [],
+        [execution(artifact_path = "recipes/recipe_other-account")],
+    )
+
+    assert imported["executions"][0]["outcome"] == "imported"
+    saved = user_assets_db.get_recipe_execution("owner", "r1", "e1")
+    assert saved is not None
+    assert "artifact_path" not in saved
+
+
 def test_legacy_timestamp_overflow_rejects_only_the_invalid_item():
     imported = user_assets_db.import_legacy_assets(
         "owner",

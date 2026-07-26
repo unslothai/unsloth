@@ -1287,6 +1287,7 @@ export function useRecipeExecutions({
           typeof response.total === "number"
             ? response.total
             : execution.datasetTotal;
+        if (!isExecutionOwnerActive(owner)) return;
         upsertExecution({
           ...execution,
           dataset,
