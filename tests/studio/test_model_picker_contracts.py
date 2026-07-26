@@ -478,7 +478,7 @@ def test_llama_extra_args_formatter_quotes_quote_chars():
     {enable_thinking:false} on the next blur, silently corrupting the flag.
     """
     src = _read("features/model-picker/model-config/llama-extra-args.ts")
-    assert '/[\\s"\']/.test(token)' in src
+    assert "/[\\s\"']/.test(token)" in src
 
 
 def test_llama_extra_args_parser_keeps_non_escape_backslashes():
