@@ -722,6 +722,8 @@ export const en = {
       copyAccessToken: "Copy access token",
       copyNow: "Copy now - this won't be shown again.",
       usageExamples: "Usage examples",
+      usageNoModel:
+        "Load or download a model to see runnable examples. This server has no model to name yet.",
       usageTools: "Tools",
       exampleCurlTools: "curl + tools",
       examplePythonTools: "Python + tools",

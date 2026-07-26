@@ -547,7 +547,12 @@ export function ApiMonitorConsole(): ReactElement {
         )}
       </div>
 
-      {ordered.length > PAGE_SIZE ? (
+      {/* Also whenever a snapshot is frozen: the backend's 50-entry retention
+          window evicts frozen ids as new traffic arrives, so the frozen list can
+          shrink below one page (and eventually to nothing). Hiding the pager then
+          strands the console on a stale -- finally empty -- snapshot with no way
+          back to the live list short of closing the panel. */}
+      {ordered.length > PAGE_SIZE || frozenIds !== null ? (
         <div className="flex items-center justify-between gap-2 border-t border-border/60 px-4 py-2 text-xs text-muted-foreground">
           <span>
             Page {pageIndex + 1} of {pageCount}
@@ -559,7 +564,7 @@ export function ApiMonitorConsole(): ReactElement {
               size="sm"
               className="h-7 px-2 text-xs"
               onClick={() => goToPage(pageIndex - 1)}
-              disabled={pageIndex === 0}
+              disabled={pageIndex === 0 && frozenIds === null}
             >
               Newer
             </Button>

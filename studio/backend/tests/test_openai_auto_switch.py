@@ -294,9 +294,9 @@ def test_openai_compat_routes_bound_to_handlers_with_auth():
     for key, handler in expected.items():
         assert key in seen, f"route {key} is not registered"
         route = seen[key]
-        assert (
-            route.endpoint.__name__ == handler
-        ), f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        assert route.endpoint.__name__ == handler, (
+            f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        )
         deps = [d.call.__name__ for d in route.dependant.dependencies]
         assert "get_current_subject" in deps, f"{key} lost its auth dependency"
 
@@ -2949,10 +2949,12 @@ def test_require_vision_ignores_reload_stash(monkeypatch):
         inference_route, "_target_is_vision", lambda _p: False
     )  # would reject if used
     # 404 because the restored A is not the requested B; the restore still ran.
+    # B carries a quant so it reads as a reference to this server, not a foreign
+    # provider label.
     with pytest.raises(HTTPException):
         asyncio.run(
             inference_route._maybe_auto_switch_model(
-                "org/B-GGUF", object(), "t", require_vision = True
+                "org/B-GGUF:UD-Q6_K_XL", object(), "t", require_vision = True
             )
         )
     assert len(rec.calls) == 1
@@ -3501,6 +3503,49 @@ def test_chat_undownloaded_model_uses_the_openai_envelope(monkeypatch):
     assert err["type"] == "not_found_error"
     assert err["code"] == "model_not_found"
     assert err["param"] == "model"
+
+
+def test_gguf_only_paths_keep_the_generic_error_for_the_resident_non_gguf_model(monkeypatch):
+    # A Transformers model is resident and the caller names that exact model on a
+    # GGUF-only path. It is not a GGUF, so resolve_local_gguf misses -- but the
+    # catalog GET /v1/models serves lists this very id as available, so "not
+    # downloaded on this server. Available models: <that same id>" is both false
+    # and self-contradictory. The generic "no GGUF loaded" diagnosis is correct.
+    resident = "unsloth/Qwen3.5-4B-GGUF"  # the id _run_responses_stream_no_model asks for
+
+    async def _catalog():
+        return [{"id": resident}]
+
+    monkeypatch.setattr(inference_route, "_openai_catalog_objects", _catalog)
+    status, detail = _run_responses_stream_no_model(
+        monkeypatch, enabled = True, active_model_name = resident
+    )
+    assert status == 400
+    assert "requires a GGUF model" in detail
+    assert "not downloaded" not in detail
+
+
+def test_completions_keeps_the_generic_error_for_the_resident_non_gguf_model(monkeypatch):
+    # Same contradiction on the raw-body surface, which reaches the diagnosis
+    # through _auto_switch_from_request_body rather than a typed payload.
+    from fastapi import HTTPException
+
+    resident = "unsloth/Llama-3.2-1B-Instruct"
+    _wire_unloaded_chat(monkeypatch, enabled = True, catalog = (resident,))
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("_B", (), {"active_model_name": resident, "models": {}})(),
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.openai_completions(
+                _json_body_request({"model": resident, "prompt": "hi"}), "tester"
+            )
+        )
+    assert exc.value.status_code == 503
+    assert exc.value.detail.startswith("No GGUF model loaded.")
+    assert "not downloaded" not in exc.value.detail
 
 
 def test_responses_stream_keeps_generic_error_when_target_is_local(monkeypatch):

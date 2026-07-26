@@ -304,7 +304,9 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None or entry.finished_at is not None:
                 return
-        self.fail(entry_id, error)
+            # Same lock as the check: a finish() landing in between would
+            # otherwise stamp this error onto a row that in fact succeeded.
+            self._fail_locked(entry, error)
 
     def fail(self, entry_id: Optional[str], error: str) -> None:
         if not entry_id:
@@ -318,15 +320,18 @@ class ApiMonitor:
                 if error:
                     entry.error = _trim(error, 1000)
                 return
-            now = time.time()
-            entry.status = "error"
-            entry.error = _trim(error, 1000)
-            entry.updated_at = now
-            entry.finished_at = now
-            entry.finished_monotonic = time.monotonic()
-            self._entries.remove(entry)
-            self._entries.appendleft(entry)
-            self._trim_terminal_locked()
+            self._fail_locked(entry, error)
+
+    def _fail_locked(self, entry: ApiMonitorEntry, error: str) -> None:
+        now = time.time()
+        entry.status = "error"
+        entry.error = _trim(error, 1000)
+        entry.updated_at = now
+        entry.finished_at = now
+        entry.finished_monotonic = time.monotonic()
+        self._entries.remove(entry)
+        self._entries.appendleft(entry)
+        self._trim_terminal_locked()
 
     def snapshot(
         self,

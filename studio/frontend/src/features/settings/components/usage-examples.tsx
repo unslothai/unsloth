@@ -329,8 +329,10 @@ function buildSnippets(
 }
 
 const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
-const MODEL_FALLBACK = "unsloth/gemma-4-E4B-it-GGUF:UD-Q5_K_XL";
 const USE_TUNNEL_KEY = "unsloth_api_use_tunnel";
+// Slow retry while /v1 has nothing to name: a download or a load can finish
+// while this panel is open, and neither moves the checkpoint below.
+const CATALOG_RETRY_MS = 15000;
 
 function readUseTunnelPref(): boolean {
   if (typeof window === "undefined") return true;
@@ -364,34 +366,48 @@ function looksLikePath(id: string): boolean {
   );
 }
 
-// The model the examples name. With nothing loaded this used to print
-// MODEL_FALLBACK, a repo id the user likely never downloaded, so the copied
-// snippet 404d. Prefer a real id from the catalog /v1 resolves against; the
-// constant is only the floor for a server with no models, so it is never blank.
-function useExampleModelName(): string {
+// The model the examples name. With nothing loaded this used to print a
+// hardcoded repo id the user likely never downloaded, so the copied snippet
+// 404d. Only ever name an id /v1 resolves against; null means this server has
+// nothing to serve yet and the panel says so instead of printing a dead id.
+function useExampleModelName(): string | null {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  const [catalog, setCatalog] = useState<OpenAIModel[]>([]);
+  // null until /v1/models answers: "not asked yet" must not read as "this
+  // server holds nothing", or the first render already picks a name.
+  const [catalog, setCatalog] = useState<OpenAIModel[] | null>(null);
   const usableCheckpoint =
     !!checkpoint && !checkpoint.startsWith("external::") && !looksLikePath(checkpoint);
   const needsCatalog = !usableCheckpoint;
 
   // Only when the checkpoint can't answer it: /v1/models scans the model dirs and
-  // HF caches. Re-runs when a model is loaded or unloaded.
+  // HF caches. Re-runs when a model is loaded or unloaded, and retries until the
+  // server reports something servable, since a download moves no store state.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a load or unload must refetch the servable ids
   useEffect(() => {
     if (!needsCatalog) return;
     let cancelled = false;
-    void listOpenAIModels()
-      .then((models) => {
-        if (!cancelled) setCatalog(models);
-      })
-      .catch(() => {
-        // Best-effort: fall through to the placeholder.
-      });
+    let timeoutId: number | null = null;
+
+    const update = () => {
+      void listOpenAIModels()
+        .then((models) => {
+          if (!cancelled) setCatalog(models);
+          return models.length > 0;
+        })
+        .catch(() => false)
+        .then((resolved) => {
+          if (cancelled || resolved) return;
+          timeoutId = window.setTimeout(update, CATALOG_RETRY_MS);
+        });
+    };
+
+    update();
     return () => {
       cancelled = true;
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
     };
-  }, [needsCatalog]);
+  }, [needsCatalog, checkpoint, ggufVariant]);
 
   return useMemo(() => {
     if (usableCheckpoint && checkpoint) {
@@ -403,9 +419,9 @@ function useExampleModelName(): string {
     // No usable checkpoint (none, an external provider, or a raw load path):
     // name something this server actually holds, quant included so the request
     // pins the file on disk instead of letting the server pick a quant.
-    const pick = catalog.find((m) => m.loaded) ?? catalog[0];
+    const pick = catalog?.find((m) => m.loaded) ?? catalog?.[0];
     if (!pick) {
-      return MODEL_FALLBACK;
+      return null;
     }
     return pick.quant && !pick.id.includes(":")
       ? `${pick.id}:${pick.quant}`
@@ -560,8 +576,9 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   const model = useExampleModelName();
   const key = apiKey || KEY_PLACEHOLDER;
 
+  // Null model: nothing is servable, so there is no snippet worth copying.
   const snippets = useMemo(
-    () => buildSnippets(base, key, model, os),
+    () => (model ? buildSnippets(base, key, model, os) : null),
     [base, key, model, os],
   );
   // Agent command must target the server the panel shows, not the :8888 default.
@@ -580,6 +597,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
       : "python";
 
   const handleCopy = async () => {
+    if (!snippets) return;
     if (await copyToClipboard(snippets[lang])) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
@@ -723,25 +741,33 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
             </button>
           </div>
         ) : null}
-        <div className="relative min-w-0">
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-1 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            aria-label={t("settings.apiKeys.copySnippet")}
-          >
-            <HugeiconsIcon
-              icon={copied ? Tick02Icon : Copy01Icon}
-              className={cn("size-3.5", copied && "text-emerald-600")}
+        {snippets ? (
+          <div className="relative min-w-0">
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-1 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              aria-label={t("settings.apiKeys.copySnippet")}
+            >
+              <HugeiconsIcon
+                icon={copied ? Tick02Icon : Copy01Icon}
+                className={cn("size-3.5", copied && "text-emerald-600")}
+              />
+              {copied
+                ? t("settings.apiKeys.copied")
+                : t("settings.apiKeys.copy")}
+            </button>
+            <HighlightedCode
+              key={snippets[lang]}
+              code={snippets[lang]}
+              language={shikiLang}
             />
-            {copied ? t("settings.apiKeys.copied") : t("settings.apiKeys.copy")}
-          </button>
-          <HighlightedCode
-            key={snippets[lang]}
-            code={snippets[lang]}
-            language={shikiLang}
-          />
-        </div>
+          </div>
+        ) : (
+          <div className="min-w-0 px-3 py-2.5 text-ui-11 leading-snug text-muted-foreground">
+            {t("settings.apiKeys.usageNoModel")}
+          </div>
+        )}
         <div className="flex min-w-0 flex-col gap-1.5 border-t border-border px-3 py-2.5">
           <span className="text-ui-11 font-semibold text-foreground">
             {t("settings.apiKeys.codingAgents")}

@@ -4,6 +4,7 @@
 """Static contract for which model the API usage examples name, and for the
 model-auto-switch control living in exactly one place on the API keys tab."""
 
+import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -24,13 +25,49 @@ def test_examples_name_a_model_the_server_can_serve():
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "listOpenAIModels()" in hook
     # Precedence: live checkpoint, then a loaded catalog entry, then any entry,
-    # and only then the placeholder.
-    assert "catalog.find((m) => m.loaded) ?? catalog[0]" in hook
+    # and only then no model at all.
+    assert "catalog?.find((m) => m.loaded) ?? catalog?.[0]" in hook
     # The snippet pins the quant so the request names the file on disk.
     assert "`${pick.id}:${pick.quant}`" in hook
 
     api = OPENAI_MODELS_TS.read_text(encoding = "utf-8")
     assert 'authFetch("/v1/models")' in api
+
+
+def test_examples_never_print_a_hardcoded_model_id():
+    # The bug this contract exists for. The catalog started as `[]`, so the very
+    # first render, and every render after a slow or failed /v1/models fetch,
+    # printed a copyable snippet naming a repo id the server cannot serve. The
+    # catalog is tri-state now (null until /v1 answers) and the panel says to
+    # load or download a model rather than naming one that does not exist.
+    src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
+    assert "MODEL_FALLBACK" not in src
+    # No repo-shaped literal anywhere: a snippet may only name what /v1 returns.
+    assert re.search(r'"unsloth/[^"]+"', src) is None
+    assert "function useExampleModelName(): string | null" in src
+    assert "useState<OpenAIModel[] | null>(null)" in src
+    # Nothing servable means nothing is built, so there is nothing to copy.
+    assert "(model ? buildSnippets(base, key, model, os) : null)" in src
+    assert "if (!snippets) return;" in src
+    assert "{snippets ? (" in src
+    assert 't("settings.apiKeys.usageNoModel")' in src
+
+    en = EN_TS.read_text(encoding = "utf-8")
+    assert "usageNoModel:" in en
+
+
+def test_catalog_refresh_follows_the_loaded_model():
+    # `[needsCatalog]` alone never re-ran: it stays true the whole time there is
+    # no local checkpoint, so a model finishing its load left the snippet naming
+    # whatever the first fetch happened to see.
+    src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
+    hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
+    assert "}, [needsCatalog, checkpoint, ggufVariant]);" in hook
+    # A finishing download moves no store state at all, so the fetch also
+    # retries itself until /v1 has something, on a timer the effect clears.
+    assert "window.setTimeout(update, CATALOG_RETRY_MS)" in hook
+    assert "window.clearTimeout(timeoutId)" in hook
+    assert "const CATALOG_RETRY_MS = 15000;" in src
 
 
 def test_usage_examples_has_no_duplicate_auto_switch_control():

@@ -13,8 +13,10 @@ serving throughout, and the retry that lands after the download is served by the
 new model through the ordinary auto-switch path.
 
 Admission is deliberately narrow, since a request only needs an API key:
-- ``namespace/name`` only. A bare name like ``gpt-4`` falls through to the
-  resident model exactly as before, so drop-in clients are unaffected.
+- ``namespace/name`` only, and only when the Hub confirms it is a GGUF repo.
+  ``gpt-4`` and ``anthropic/claude-3.5-sonnet`` alike fall through to the
+  resident model as before: a namespace is not evidence of intent, since LiteLLM
+  and OpenRouter address every provider that way.
 - GGUF repos only, decided from the remote file list, not the repo name. GGUF
   runs under llama.cpp, which never imports repo Python.
 - Anything declaring ``auto_map`` is refused, so ``trust_remote_code`` can only
@@ -71,6 +73,14 @@ class _Active:
 _lock = threading.Lock()
 _active: Optional[_Active] = None
 
+# Repos the Hub says this server cannot serve. A LiteLLM or OpenRouter client
+# names every provider "vendor/model", so without this each such request pays
+# another Hub probe on the way to being answered by the resident model.
+_NOT_SERVABLE_TTL_S = 10 * 60
+_NOT_SERVABLE_MAX = 256
+_cache_lock = threading.Lock()
+_not_servable: dict[str, float] = {}
+
 
 def _public_label(repo_id: str, variant: Optional[str]) -> str:
     return f"{repo_id}:{variant}" if variant else repo_id
@@ -107,12 +117,73 @@ def is_downloadable_ref(requested: str) -> bool:
     return True
 
 
-def _gguf_variants(siblings) -> dict[str, int]:
-    """Quant label -> total bytes, from a model_info sibling list.
+def looks_like_quant(variant: Optional[str]) -> bool:
+    """Whether a ``:suffix`` names a GGUF quant rather than a foreign tag.
 
-    Mirrors list_gguf_variants: companions (mmproj/MTP) and big-endian builds
-    are not selectable quants, and sharded quants sum across their shards.
+    ``vendor/model`` is how LiteLLM and OpenRouter address every provider, and
+    ``name:latest`` is how Ollama tags one, so neither a namespace nor a colon
+    proves a request was meant for this server. A real quant label does.
     """
+    from utils.models.model_config import _GGUF_KNOWN_QUANT_RE
+
+    if not variant:
+        return False
+    return _GGUF_KNOWN_QUANT_RE.fullmatch(variant.strip()) is not None
+
+
+def _mark_not_servable(repo_id: str) -> None:
+    with _cache_lock:
+        if len(_not_servable) >= _NOT_SERVABLE_MAX:
+            _not_servable.clear()
+        _not_servable[repo_id.lower()] = time.monotonic() + _NOT_SERVABLE_TTL_S
+
+
+def _is_not_servable(repo_id: str) -> bool:
+    key = repo_id.lower()
+    with _cache_lock:
+        expires = _not_servable.get(key)
+        if expires is None:
+            return False
+        if expires <= time.monotonic():
+            del _not_servable[key]
+            return False
+        return True
+
+
+def _gated_refusal(repo_id: str) -> AutoDownloadRefusal:
+    return AutoDownloadRefusal(
+        status = 403,
+        code = "model_access_denied",
+        message = (
+            f"'{repo_id}' is gated on Hugging Face. Accept its licence and add an "
+            "access token in Unsloth Studio, then retry."
+        ),
+    )
+
+
+def _auth_denied(repo_id: str, hf_token: Optional[str]) -> bool:
+    """Whether this token lacks file access to a gated repo. False when the
+    check is inconclusive: the download's own auth is the real gate."""
+    from hub.utils.hf_errors import hf_error_status
+
+    try:
+        from huggingface_hub import auth_check
+        auth_check(repo_id, token = hf_token)
+    except Exception as exc:
+        return hf_error_status(exc) in (401, 403)
+    return False
+
+
+def _gguf_variants(siblings) -> dict[str, int]:
+    """Quant label -> bytes the download will actually fetch.
+
+    Mirrors list_gguf_variants for the selectable labels: companions (mmproj/MTP)
+    and big-endian builds are not quants of their own, and sharded quants sum
+    across their shards. The byte total comes from the download plan, which folds
+    the companions back into every quant, so the disk reserve is measured against
+    what the worker fetches rather than the main files alone.
+    """
+    from hub.utils.gguf_plan import build_gguf_variant_plans
     from utils.models.model_config import (
         _extract_quant_label,
         _is_big_endian_gguf_path,
@@ -120,15 +191,21 @@ def _gguf_variants(siblings) -> dict[str, int]:
         _is_mtp_drafter,
     )
 
+    siblings = list(siblings or [])
+    plans = build_gguf_variant_plans(siblings)
     sizes: dict[str, int] = {}
-    for sibling in siblings or []:
+    for sibling in siblings:
         name = getattr(sibling, "rfilename", "") or ""
         if not name.lower().endswith(".gguf"):
             continue
         quant = _extract_quant_label(name)
         if _is_mmproj(name) or _is_mtp_drafter(name) or _is_big_endian_gguf_path(name, quant):
             continue
-        sizes[quant] = sizes.get(quant, 0) + int(getattr(sibling, "size", 0) or 0)
+        plan = plans.get(quant.lower())
+        if plan is not None:
+            sizes[quant] = plan.download_size_bytes
+        else:
+            sizes[quant] = sizes.get(quant, 0) + int(getattr(sibling, "size", 0) or 0)
     return sizes
 
 
@@ -157,8 +234,10 @@ async def _job_state(repo_id: str, variant: Optional[str]) -> tuple[str, Optiona
         status = await downloads.get_download_status_response(repo_id, variant or "")
         return status.state, status.error
     except Exception as exc:
+        # "unknown", not "idle": a probe that failed says nothing about the
+        # worker, and idle is read as "the job vanished" and ends the watch.
         logger.debug("auto-download: status probe failed for %r: %s", repo_id, exc)
-        return "idle", None
+        return "unknown", None
 
 
 async def _progress_percent(
@@ -178,10 +257,20 @@ async def _progress_percent(
         return None
 
 
-def _release(repo_id: str) -> None:
+def _release(active: Optional[_Active]) -> None:
+    """Free the single-flight slot, but only while *active* still owns it.
+
+    Keying the release on ``repo_id`` alone let a stale operation clear a newer
+    one for the same repo: variant A errors, an adopting request frees the slot,
+    a retry starts variant B, and A's watcher then matches on the repo and clears
+    B on its way out -- admitting a second repository download alongside B.
+    Identity ties every release to the operation that actually took the slot.
+    """
     global _active
+    if active is None:
+        return
     with _lock:
-        if _active is not None and _active.repo_id == repo_id:
+        if _active is active:
             _active = None
 
 
@@ -197,13 +286,16 @@ async def _watch(active: _Active, hf_token: Optional[str]) -> None:
         while time.monotonic() < deadline:
             await asyncio.sleep(_WATCH_POLL_S)
             state, error = await _job_state(active.repo_id, active.variant)
-            if state == "running":
-                api_monitor.set_progress(
-                    active.monitor_id,
-                    await _progress_percent(
-                        active.repo_id, active.variant, active.expected_bytes, hf_token
-                    ),
-                )
+            if state in ("running", "cancelling", "unknown"):
+                # Only "running" has progress to report; the other two are still
+                # in flight, so keep the slot rather than failing the row.
+                if state == "running":
+                    api_monitor.set_progress(
+                        active.monitor_id,
+                        await _progress_percent(
+                            active.repo_id, active.variant, active.expected_bytes, hf_token
+                        ),
+                    )
                 continue
             if state == "complete":
                 # Drop the 5s resolver cache so the next retry resolves the new
@@ -223,7 +315,7 @@ async def _watch(active: _Active, hf_token: Optional[str]) -> None:
         logger.warning("auto-download: watcher failed for %r: %s", active.repo_id, exc)
         api_monitor.fail_open(active.monitor_id, "Download tracking failed")
     finally:
-        _release(active.repo_id)
+        _release(active)
 
 
 def _downloading_refusal(label: str, percent: Optional[float]) -> AutoDownloadRefusal:
@@ -249,6 +341,8 @@ async def maybe_auto_download(
     repo_id, wanted_variant = split_model_ref(requested_model)
     if not is_downloadable_ref(requested_model):
         return None
+    if _is_not_servable(repo_id) and not looks_like_quant(wanted_variant):
+        return None
 
     # Adopt or reject against the single in-flight slot before touching the
     # network, so retries during a long download stay free.
@@ -268,11 +362,12 @@ async def maybe_auto_download(
             )
         else:
             adopted = None
-            _active = _Active(repo_id = repo_id, started_at = time.time())
+            provisional = _Active(repo_id = repo_id, started_at = time.time())
+            _active = provisional
 
     if adopted is not None:
         state, error = await _job_state(adopted.repo_id, adopted.variant)
-        if state in ("running", "cancelling"):
+        if state in ("running", "cancelling", "unknown"):
             return _downloading_refusal(
                 _public_label(adopted.repo_id, adopted.variant),
                 await _progress_percent(
@@ -281,7 +376,7 @@ async def maybe_auto_download(
             )
         if state == "error":
             # Surface once, then free the slot so a retry can start over.
-            _release(adopted.repo_id)
+            _release(adopted)
             return AutoDownloadRefusal(
                 status = 502,
                 code = "model_download_failed",
@@ -290,18 +385,33 @@ async def maybe_auto_download(
         if adopted.variant is None:
             # Another request is still probing this same repo.
             return _downloading_refusal(adopted.repo_id, None)
-        # complete/idle: the watcher is about to release; ask for one more retry.
-        return _downloading_refusal(_public_label(adopted.repo_id, adopted.variant), 100.0)
+        # complete/idle/cancelled: the watcher is about to release the slot, so
+        # ask for one more retry. Only "complete" actually got there.
+        return _downloading_refusal(
+            _public_label(adopted.repo_id, adopted.variant),
+            100.0 if state == "complete" else None,
+        )
 
     try:
-        return await _admit_and_start(repo_id, wanted_variant, requested_model, hf_token)
-    except Exception:
-        _release(repo_id)
+        return await _admit_and_start(
+            repo_id, wanted_variant, requested_model, hf_token, provisional
+        )
+    except BaseException:
+        # BaseException, not Exception: asyncio.CancelledError has not been an
+        # Exception since 3.8, so a request cancelled mid-probe would otherwise
+        # leave the provisional slot installed with variant None -- every other
+        # repo permanently model_download_busy and this one permanently
+        # "downloading", until the process restarts.
+        _release(provisional)
         raise
 
 
 async def _admit_and_start(
-    repo_id: str, wanted_variant: Optional[str], requested_model: str, hf_token: Optional[str]
+    repo_id: str,
+    wanted_variant: Optional[str],
+    requested_model: str,
+    hf_token: Optional[str],
+    active: _Active,
 ) -> Optional[AutoDownloadRefusal]:
     from hub.utils.hf_errors import hf_error_status
 
@@ -314,18 +424,18 @@ async def _admit_and_start(
     try:
         info = await asyncio.to_thread(_probe)
     except Exception as exc:
-        _release(repo_id)
+        _release(active)
         status = hf_error_status(exc)
         if status == 403:
-            return AutoDownloadRefusal(
-                status = 403,
-                code = "model_access_denied",
-                message = (
-                    f"'{repo_id}' is gated on Hugging Face. Accept its licence and add an "
-                    "access token in Unsloth Studio, then retry."
-                ),
-            )
+            return _gated_refusal(repo_id)
         if status == 404:
+            _mark_not_servable(repo_id)
+            # An id the Hub does not know is a foreign label, not a miss: pass it
+            # to the resident model as before rather than 404 every LiteLLM and
+            # OpenRouter "vendor/model". An explicit quant is a deliberate GGUF
+            # reference, so that one is answered.
+            if not looks_like_quant(wanted_variant):
+                return None
             # A private repo reads as absent without a token; don't confirm either way.
             return AutoDownloadRefusal(
                 status = 404,
@@ -340,9 +450,19 @@ async def _admit_and_start(
             retry_after = _RETRY_AFTER_S,
         )
 
+    if getattr(info, "gated", False) and await asyncio.to_thread(_auth_denied, repo_id, hf_token):
+        # The Hub serves metadata for a gated repo without granting its files, so
+        # a probe that returned is not proof of access. Left unchecked the config
+        # read below fails instead and reports the unrelated custom-code refusal.
+        _release(active)
+        return _gated_refusal(repo_id)
+
     variants = _gguf_variants(getattr(info, "siblings", None))
     if not variants:
-        _release(repo_id)
+        _release(active)
+        _mark_not_servable(repo_id)
+        if not looks_like_quant(wanted_variant):
+            return None
         return AutoDownloadRefusal(
             status = 400,
             code = "model_not_supported",
@@ -359,7 +479,7 @@ async def _admit_and_start(
 
     has_auto_map = await asyncio.to_thread(_config_has_auto_map, repo_id, hf_token)
     if has_auto_map is not False:
-        _release(repo_id)
+        _release(active)
         unknown = has_auto_map is None
         return AutoDownloadRefusal(
             status = 403,
@@ -377,7 +497,7 @@ async def _admit_and_start(
 
     variant = _match_variant(wanted_variant, variants)
     if variant is None:
-        _release(repo_id)
+        _release(active)
         listed = sorted(variants)
         shown = ", ".join(listed[:_MAX_LISTED_VARIANTS])
         extra = len(listed) - _MAX_LISTED_VARIANTS
@@ -393,7 +513,7 @@ async def _admit_and_start(
     expected_bytes = variants[variant]
     fits, free = _enough_disk(expected_bytes)
     if not fits:
-        _release(repo_id)
+        _release(active)
         return AutoDownloadRefusal(
             status = 507,
             code = "insufficient_disk_space",
@@ -403,7 +523,7 @@ async def _admit_and_start(
             ),
         )
 
-    return await _dispatch(repo_id, variant, expected_bytes, requested_model, hf_token)
+    return await _dispatch(repo_id, variant, expected_bytes, requested_model, hf_token, active)
 
 
 def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[str]:
@@ -425,7 +545,12 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
 
 
 async def _dispatch(
-    repo_id: str, variant: str, expected_bytes: int, requested_model: str, hf_token: Optional[str]
+    repo_id: str,
+    variant: str,
+    expected_bytes: int,
+    requested_model: str,
+    hf_token: Optional[str],
+    active: _Active,
 ) -> AutoDownloadRefusal:
     global _active
 
@@ -434,21 +559,22 @@ async def _dispatch(
     from hub.services.models import downloads
 
     label = _public_label(repo_id, variant)
+    busy = AutoDownloadRefusal(
+        status = 503,
+        code = "model_download_busy",
+        message = f"'{repo_id}' is already being downloaded or loaded. Retry shortly.",
+        retry_after = _RETRY_AFTER_S,
+    )
     try:
-        await downloads.download_model_response(
+        dispatched = await downloads.download_model_response(
             DownloadModelRequest(repo_id = repo_id, gguf_variant = variant), hf_token
         )
     except Exception as exc:
-        _release(repo_id)
+        _release(active)
         status = getattr(exc, "status_code", None)
         if status == 409:
             # A manual load or hub download already owns this repo.
-            return AutoDownloadRefusal(
-                status = 503,
-                code = "model_download_busy",
-                message = f"'{repo_id}' is already being downloaded or loaded. Retry shortly.",
-                retry_after = _RETRY_AFTER_S,
-            )
+            return busy
         logger.warning("auto-download: could not start %r: %s", label, exc)
         return AutoDownloadRefusal(
             status = 502,
@@ -456,18 +582,31 @@ async def _dispatch(
             message = f"Could not start downloading '{requested_model}'.",
         )
 
+    # A same-repo whole-repo/cross-transport download or an in-progress delete
+    # makes the service refuse *without* raising: it returns accepted=False and
+    # launches no worker. Taking the slot then would promise a download that does
+    # not exist, and the watcher would fail its own monitor row two seconds later
+    # on a key that is idle by construction. Report the conflict instead.
+    if isinstance(dispatched, dict) and not dispatched.get("accepted", True):
+        _release(active)
+        logger.info("auto-download: dispatch refused for %s (%s)", label, dispatched.get("state"))
+        return busy
+
     monitor_id = api_monitor.record_lifecycle(
         event = "download", model = label, reason = "api", running = True
     )
     with _lock:
-        if _active is not None and _active.repo_id == repo_id:
-            _active.variant = variant
-            _active.expected_bytes = expected_bytes
-            _active.monitor_id = monitor_id
-            tracked = _active
-        else:  # released underneath us; still track the job we just started
+        if _active is active:
+            active.variant = variant
+            active.expected_bytes = expected_bytes
+            active.monitor_id = monitor_id
+            tracked = active
+        else:
+            # Released underneath us: still track the job we just started so its
+            # monitor row resolves, but never stomp a newer owner of the slot.
             tracked = _Active(repo_id, variant, expected_bytes, monitor_id, time.time())
-            _active = tracked
+            if _active is None:
+                _active = tracked
 
     asyncio.create_task(_watch(tracked, hf_token))
     logger.info("auto-download: started %s (%s)", label, _gb(expected_bytes))
@@ -486,3 +625,5 @@ def reset_for_tests() -> None:
     global _active
     with _lock:
         _active = None
+    with _cache_lock:
+        _not_servable.clear()

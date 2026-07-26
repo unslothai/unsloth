@@ -3671,6 +3671,12 @@ async def _no_model_loaded_error(
     if named is None or not get_openai_auto_switch_enabled():
         return status, _no_model_loaded_detail(base)
     try:
+        if _loaded_satisfies(named):
+            # The named model IS resident, just not on a backend this endpoint can
+            # use (a Transformers model on a GGUF-only surface). "Not downloaded"
+            # would be false, and the catalog GET /v1/models serves lists this very
+            # id as available, so keep the generic diagnosis, which is accurate.
+            return status, _no_model_loaded_detail(base)
         if await asyncio.to_thread(resolve_local_gguf, named) is not None:
             # Resolvable but unloaded: the switch failed (load error, race), which
             # the generic text describes correctly.
@@ -3694,20 +3700,22 @@ async def _no_model_loaded_error(
 
 
 def _auto_download_hf_token(fastapi_request: Optional[Request]) -> Optional[str]:
-    """The token to fetch with: the Hub header if the caller sent one, else the
-    server's own. The OpenAI bearer key is never used as an HF token."""
+    """The token to fetch with: only one the caller sent themselves.
+
+    Never the server's ambient token. The repo here is named by whoever holds an
+    API key, so borrowing the owner's Hub identity would let that key pull the
+    owner's private repos and publish them in /v1/models for every other key.
+    The OpenAI bearer key is never used as an HF token either.
+    """
     from hub.dependencies import HUB_HF_TOKEN_HEADER, HUB_HF_TOKEN_MAX_LENGTH
 
     headers = getattr(fastapi_request, "headers", None)
-    if headers is not None:
-        supplied = (headers.get(HUB_HF_TOKEN_HEADER) or "").strip()
-        if supplied and len(supplied) <= HUB_HF_TOKEN_MAX_LENGTH:
-            return supplied
-    try:
-        from routes.settings import _ambient_hf_token
-        return _ambient_hf_token()
-    except Exception:
+    if headers is None:
         return None
+    supplied = (headers.get(HUB_HF_TOKEN_HEADER) or "").strip()
+    if supplied and len(supplied) <= HUB_HF_TOKEN_MAX_LENGTH:
+        return supplied
+    return None
 
 
 async def _maybe_auto_download_model(
@@ -3762,7 +3770,7 @@ def _loaded_satisfies(requested: str) -> bool:
     A bare ``org/model`` is satisfied by any loaded quant of that repo; an
     explicit ``:QUANT`` must match the loaded one.
     """
-    from core.inference.openai_auto_download import split_model_ref
+    from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
     base, variant = split_model_ref(requested)
     base = base.lower()
@@ -3785,22 +3793,28 @@ def _loaded_satisfies(requested: str) -> bool:
     active = getattr(get_inference_backend(), "active_model_name", None)
     if not active:
         return False
+    # Only llama.cpp carries a quant identity, so this backend cannot show that
+    # an explicit quant is what is loaded. A non-quant tag is not a claim about
+    # the weights, so it still matches on the repo alone.
+    if looks_like_quant(variant):
+        return False
     return base in {active.lower(), (public_model_id(active) or "").lower()}
 
 
 async def _reject_unservable_model(
     requested_model: Optional[str], fastapi_request: Optional[Request]
 ) -> None:
-    """404 rather than answer a named model with a different one.
+    """Refuse rather than answer a named model with a different one.
 
-    ``org/model`` (optionally ``:QUANT``) is a concrete reference: serving it
-    from whatever happens to be resident returns a confident answer from the
-    wrong weights. Ids without a namespace (``gpt-4``) are foreign labels, so
-    they still fall through and drop-in clients are unaffected. Only runs while
-    something is serving; with nothing loaded the caller's own
-    :func:`_no_model_loaded_error` already says the right thing.
+    Only for a reference this server can tell was meant for it: an explicit GGUF
+    quant, or a repo that is actually here. A bare ``vendor/model`` is not enough
+    on its own, because that is how LiteLLM and OpenRouter name every provider,
+    so ``anthropic/claude-3.5-sonnet`` keeps falling through to the resident
+    model exactly like ``gpt-4``. Only runs while something is serving; with
+    nothing loaded the caller's own :func:`_no_model_loaded_error` already says
+    the right thing.
     """
-    from core.inference.openai_auto_download import split_model_ref
+    from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
     if (
         not isinstance(requested_model, str)
@@ -3808,9 +3822,13 @@ async def _reject_unservable_model(
         or requested_model == _RELOAD_ONLY_MODEL
     ):
         return
-    base, _variant = split_model_ref(requested_model)
+    base, variant = split_model_ref(requested_model)
     if "/" not in base:
         return
+    quantified = looks_like_quant(variant)
+    from core.inference.local_model_resolver import resolve_local_gguf
+    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+
     try:
         if _loaded_satisfies(requested_model):
             return
@@ -3819,33 +3837,53 @@ async def _reject_unservable_model(
             or getattr(get_inference_backend(), "active_model_name", None)
         ):
             return
-        from core.inference.local_model_resolver import resolve_local_gguf
-        from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
-
         downloaded = await asyncio.to_thread(resolve_local_gguf, requested_model) is not None
-        if downloaded and get_openai_auto_switch_enabled():
-            # On disk and switching is allowed, so the swap failed (load error,
-            # race). Serving the resident model is the sane fallback.
+        # The exact ref may miss on the quant alone, so ask about the repo too.
+        here = downloaded or (
+            variant is not None and await asyncio.to_thread(resolve_local_gguf, base) is not None
+        )
+        switchable = downloaded and get_openai_auto_switch_enabled()
+    except Exception as exc:
+        # Can't verify. An explicit quant is still proof the caller meant this
+        # server, so refuse; anything else may be a foreign label, so let it by.
+        logger.debug("unservable-model check failed for %r: %s", requested_model, exc)
+        if not quantified:
             return
+        downloaded = here = switchable = False
+    if not (quantified or here):
+        return
+    if switchable:
+        # On disk and switching is allowed, so the swap itself failed. Answering
+        # as the resident model would be the wrong weights under the right name.
+        status_code, code = 503, "model_switch_failed"
+        message = (
+            f"The model '{requested_model}' is downloaded, but this server could not "
+            "switch to it. Retry shortly, or load it in Unsloth Studio."
+        )
+    elif downloaded:
+        status_code, code = 404, "model_not_found"
         message = (
             f"The model '{requested_model}' is downloaded but not loaded, and "
             "'Switch model by request' is off, so this server can only serve the "
             "loaded model. Turn it on in Unsloth Studio under Settings > API."
-            if downloaded
-            else await _unavailable_model_message(requested_model)
         )
-    except Exception as exc:
-        # A diagnosis failure must never break a request the server can answer.
-        logger.debug("unservable-model check failed for %r: %s", requested_model, exc)
-        return
+    else:
+        status_code, code = 404, "model_not_found"
+        try:
+            message = await _unavailable_model_message(requested_model)
+        except Exception as exc:
+            # Only the wording is uncertain; the mismatch is already established.
+            logger.debug("unavailable-model diagnosis failed for %r: %s", requested_model, exc)
+            message = f"The model '{requested_model}' is not the model this server is serving."
     path = getattr(getattr(fastapi_request, "url", None), "path", None)
     raise HTTPException(
-        status_code = 404,
+        status_code = status_code,
         detail = (
-            error_body_for_path(path, message, status = 404, code = "model_not_found", param = "model")
+            error_body_for_path(path, message, status = status_code, code = code, param = "model")
             if isinstance(path, str)
             else message
         ),
+        headers = {"Retry-After": "5"} if status_code == 503 else None,
     )
 
 
