@@ -20,9 +20,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 from utils.paths.storage_roots import cache_root  # noqa: E402
 
 BASE = os.environ.get("E2E_BACKEND_URL", "http://127.0.0.1:8888")
-MODEL_PATH = os.environ.get(
-    "E2E_GGUF_PATH", str(cache_root() / "stories260K.gguf")
-)
+MODEL_PATH = os.environ.get("E2E_GGUF_PATH", str(cache_root() / "stories260K.gguf"))
 
 
 def _request(
