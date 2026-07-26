@@ -1433,6 +1433,17 @@ function autoLoadCandidateKey(
   return `${kind}:${normalizeLoadTargetKey(id)}:${(ggufVariant ?? "").toLowerCase()}`;
 }
 
+// Skip keys use the backend load target, not the display id: a cached repo
+// and an indexed local row aliasing the same files share the key, so a file
+// that failed through one row is not retried through the other.
+function autoLoadSkipKey(candidate: AutoLoadCandidate): string {
+  return autoLoadCandidateKey(
+    candidate.kind,
+    candidate.loadId ?? candidate.id,
+    candidate.ggufVariant,
+  );
+}
+
 function findCachedRepo<T extends { repo_id: string }>(
   repos: T[],
   id: string,
@@ -1546,27 +1557,11 @@ function normalizeLoadTargetKey(value: string): string {
 // indexed folders can saturate the connection pool and disk.
 const AUTO_LOAD_VARIANT_SCAN_CONCURRENCY = 4;
 
-/** Map with at most `limit` requests in flight, preserving order. */
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let nextIndex = 0;
-  const workers = Array.from(
-    { length: Math.max(1, Math.min(limit, items.length)) },
-    async () => {
-      while (nextIndex < items.length) {
-        const index = nextIndex;
-        nextIndex += 1;
-        results[index] = await fn(items[index]);
-      }
-    },
-  );
-  await Promise.all(workers);
-  return results;
-}
+// Settle window before the fallback starts consuming resolved candidates:
+// when scans finish quickly (the common case) the pool is complete first and
+// keeps the exact smallest-first order; slow scans stop blocking the send
+// path after this window and join the pool in size order as they resolve.
+const AUTO_LOAD_RESOLVE_GRACE_MS = 2500;
 
 type ResolvedLocalCandidate = {
   candidate: AutoLoadCandidate;
@@ -1834,9 +1829,7 @@ export async function autoLoadOnDeviceModel(): Promise<{
           : {}),
       }))
     ) {
-      skippedAutoLoadCandidates.add(
-        autoLoadCandidateKey(candidate.kind, candidate.id, candidate.ggufVariant),
-      );
+      skippedAutoLoadCandidates.add(autoLoadSkipKey(candidate));
       return false;
     }
     loadAttempts += 1;
@@ -2073,19 +2066,22 @@ export async function autoLoadOnDeviceModel(): Promise<{
           } catch {
             hadNonTrustFailure = true;
             skippedAutoLoadCandidates.add(
-              autoLoadCandidateKey(
-                rememberedCandidate?.kind ??
-                  (row.model_format === "gguf" ? "gguf" : "model"),
-                row.id,
-                rememberedCandidate?.ggufVariant ?? lastLoaded.ggufVariant,
-              ),
+              rememberedCandidate
+                ? autoLoadSkipKey(rememberedCandidate)
+                : autoLoadCandidateKey(
+                    row.model_format === "gguf" ? "gguf" : "model",
+                    localRowLoadTarget(row),
+                    lastLoaded.ggufVariant,
+                  ),
             );
           }
         }
       } else if (lastLoaded.kind === "gguf") {
         const repo = findCachedRepo(ggufRepos, lastLoaded.id);
         if (repo && lastLoaded.ggufVariant) {
-          markSeen("gguf", repo.load_id || repo.repo_id, repo.cache_path);
+          // Not marked seen: if this exact quant fails, the fallback pool
+          // may still pick another complete quant from this repo (only the
+          // failed candidate key below is excluded).
           try {
             const variants = await listGgufVariants(repo.repo_id, undefined, {
               preferLocalCache: true,
@@ -2123,14 +2119,17 @@ export async function autoLoadOnDeviceModel(): Promise<{
           } catch {
             hadNonTrustFailure = true;
             skippedAutoLoadCandidates.add(
-              autoLoadCandidateKey("gguf", repo.repo_id, lastLoaded.ggufVariant),
+              autoLoadCandidateKey(
+                "gguf",
+                repo.load_id || repo.repo_id,
+                lastLoaded.ggufVariant,
+              ),
             );
           }
         }
       } else {
         const repo = findCachedRepo(modelRepos, lastLoaded.id);
         if (repo) {
-          markSeen("model", repo.load_id || repo.repo_id, repo.cache_path);
           try {
             toast("Loading last used model…", {
               id: toastId,
@@ -2154,7 +2153,7 @@ export async function autoLoadOnDeviceModel(): Promise<{
           } catch {
             hadNonTrustFailure = true;
             skippedAutoLoadCandidates.add(
-              autoLoadCandidateKey("model", repo.repo_id),
+              autoLoadCandidateKey("model", repo.load_id || repo.repo_id),
             );
           }
         }
@@ -2166,11 +2165,21 @@ export async function autoLoadOnDeviceModel(): Promise<{
       });
     }
 
-    // Deterministic on-device fallback: complete/loadable GGUF models first,
-    // then complete/loadable non-GGUF models, smallest first within each
-    // group, merging managed-cache repos with backend-indexed local rows.
+    // On-device fallback: complete/loadable GGUF models first, then
+    // complete/loadable non-GGUF models, smallest first within each group,
+    // merging managed-cache repos with backend-indexed local rows. Both
+    // cached repos and local rows order on the size of the quant that will
+    // actually load: a multi-quant repo's row size_bytes SUMS every quant,
+    // which would push a repo holding one small quant behind larger models.
     type FallbackCandidate =
-      | { type: "cached-gguf"; repo: CachedGgufRepo; sizeBytes: number }
+      | {
+          type: "cached-gguf";
+          repo: CachedGgufRepo;
+          variant: GgufVariantDetail;
+          sizeBytes: number;
+          /** Re-queued quant of an already-visited repo (skips the seen gate). */
+          retry?: boolean;
+        }
       | { type: "cached-model"; repo: CachedModelRepo; sizeBytes: number }
       | {
           type: "local";
@@ -2180,12 +2189,78 @@ export async function autoLoadOnDeviceModel(): Promise<{
           /** Re-queued quant of an already-visited row (skips the seen gate). */
           retry?: boolean;
         };
-    const bySizeAsc = (a: FallbackCandidate, b: FallbackCandidate): number =>
-      a.sizeBytes - b.sizeBytes;
+    const isModelKindEntry = (entry: FallbackCandidate): boolean =>
+      entry.type === "cached-model" ||
+      (entry.type === "local" && entry.candidate.kind === "model");
     const isSkippedAutoLoadCandidate = (c: AutoLoadCandidate): boolean =>
-      skippedAutoLoadCandidates.has(
-        autoLoadCandidateKey(c.kind, c.id, c.ggufVariant),
-      );
+      skippedAutoLoadCandidates.has(autoLoadSkipKey(c));
+    // Candidates are resolved through a bounded worker pool and consumed
+    // incrementally from a size-ordered pool: awaiting every folder scan
+    // before the first attempt let one slow folder stall the send path
+    // behind the transport timeout. Ordered insertion keeps GGUF entries
+    // ahead of safetensors entries and each group smallest-first, so
+    // late-resolving scans and requeued quants land in the same global
+    // order a full pre-sort would give.
+    const readyPool: FallbackCandidate[] = [];
+    const insertReady = (entry: FallbackCandidate): void => {
+      let at = 0;
+      if (isModelKindEntry(entry)) {
+        while (at < readyPool.length && !isModelKindEntry(readyPool[at])) {
+          at += 1;
+        }
+      }
+      while (
+        at < readyPool.length &&
+        isModelKindEntry(readyPool[at]) === isModelKindEntry(entry) &&
+        readyPool[at].sizeBytes <= entry.sizeBytes
+      ) {
+        at += 1;
+      }
+      readyPool.splice(at, 0, entry);
+    };
+    // Non-GGUF cached repos need no scan: their snapshot loads whole.
+    for (const repo of modelRepos) {
+      insertReady({
+        type: "cached-model",
+        repo,
+        sizeBytes: sizeOrUnknownBytes(repo.size_bytes),
+      });
+    }
+    // Smallest complete, auto-loadable, not-yet-skipped quant of a managed
+    // cache repo; null when none remains.
+    const resolveCachedGgufEntry = async (
+      repo: CachedGgufRepo,
+    ): Promise<Extract<FallbackCandidate, { type: "cached-gguf" }> | null> => {
+      const variants = await listGgufVariants(repo.repo_id, undefined, {
+        preferLocalCache: true,
+        localPath: repo.cache_path,
+      });
+      const downloaded = variants.variants
+        .filter(
+          (v) => v.downloaded && !v.partial && isAutoLoadableGgufVariant(v),
+        )
+        .sort((a, b) => a.size_bytes - b.size_bytes);
+      for (const variant of downloaded) {
+        if (
+          skippedAutoLoadCandidates.has(
+            autoLoadCandidateKey(
+              "gguf",
+              repo.load_id || repo.repo_id,
+              variant.quant,
+            ),
+          )
+        ) {
+          continue;
+        }
+        return {
+          type: "cached-gguf",
+          repo,
+          variant,
+          sizeBytes: sizeOrUnknownBytes(variant.size_bytes),
+        };
+      }
+      return null;
+    };
     // Directory-based GGUF rows resolve a quant automatically; only non-GGUF
     // variant-requiring rows have no background resolution path.
     const cascadeLocalRows = localRows.filter(
@@ -2193,111 +2268,148 @@ export async function autoLoadOnDeviceModel(): Promise<{
         row.model_format === "gguf" ||
         row.capabilities?.requires_variant !== true,
     );
-    // Resolve local candidates BEFORE ordering: a multi-quant folder's row
-    // size_bytes sums every quant in it, so the cascade must order on the
-    // resolved quant's own size or a folder with a small quant would lose to
-    // a larger single-quant model.
-    const localEntries = (
-      await mapWithConcurrency(
-        cascadeLocalRows,
-        AUTO_LOAD_VARIANT_SCAN_CONCURRENCY,
-        async (row): Promise<FallbackCandidate | null> => {
-          try {
-            const resolved = await resolveLocalRowCandidate(
-              row,
-              null,
-              isSkippedAutoLoadCandidate,
-            );
-            if (!resolved) return null;
-            return {
-              type: "local" as const,
-              row,
-              candidate: resolved.candidate,
-              sizeBytes: resolved.sizeBytes,
-            };
-          } catch {
-            hadNonTrustFailure = true;
+    const resolutionJobs: Array<() => Promise<FallbackCandidate | null>> = [
+      ...ggufRepos.map((repo) => () => resolveCachedGgufEntry(repo)),
+      ...cascadeLocalRows.map(
+        (row) => async (): Promise<FallbackCandidate | null> => {
+          const resolved = await resolveLocalRowCandidate(
+            row,
+            null,
+            isSkippedAutoLoadCandidate,
+          );
+          if (!resolved) {
             return null;
           }
+          return {
+            type: "local",
+            row,
+            candidate: resolved.candidate,
+            sizeBytes: resolved.sizeBytes,
+          };
         },
-      )
-    ).filter((entry): entry is FallbackCandidate => entry !== null);
-    const ggufGroup: FallbackCandidate[] = [
-      ...ggufRepos.map((repo) => ({
-        type: "cached-gguf" as const,
-        repo,
-        sizeBytes: sizeOrUnknownBytes(repo.size_bytes),
-      })),
-      ...localEntries.filter(
-        (entry) => entry.type === "local" && entry.candidate.kind === "gguf",
       ),
-    ].sort(bySizeAsc);
-    const modelGroup: FallbackCandidate[] = [
-      ...modelRepos.map((repo) => ({
-        type: "cached-model" as const,
-        repo,
-        sizeBytes: sizeOrUnknownBytes(repo.size_bytes),
-      })),
-      ...localEntries.filter(
-        (entry) => entry.type === "local" && entry.candidate.kind === "model",
-      ),
-    ].sort(bySizeAsc);
-
-    const queue: FallbackCandidate[] = [...ggufGroup, ...modelGroup];
-    const isModelKindEntry = (entry: FallbackCandidate): boolean =>
-      entry.type === "cached-model" ||
-      (entry.type === "local" && entry.candidate.kind === "model");
-    for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
-      const candidate = queue[queueIndex];
-      if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
+    ];
+    let pendingJobs = resolutionJobs.length;
+    let progressWaiters: Array<() => void> = [];
+    const signalProgress = (): void => {
+      const waiters = progressWaiters;
+      progressWaiters = [];
+      for (const resolve of waiters) {
+        resolve();
+      }
+    };
+    const nextProgress = (): Promise<void> =>
+      new Promise((resolve) => progressWaiters.push(resolve));
+    const runResolutionJobs = async (): Promise<void> => {
+      let nextJob = 0;
+      await Promise.all(
+        Array.from(
+          {
+            length: Math.max(
+              1,
+              Math.min(AUTO_LOAD_VARIANT_SCAN_CONCURRENCY, resolutionJobs.length),
+            ),
+          },
+          async () => {
+            while (nextJob < resolutionJobs.length) {
+              const job = resolutionJobs[nextJob];
+              nextJob += 1;
+              let entry: FallbackCandidate | null = null;
+              try {
+                entry = await job();
+              } catch {
+                hadNonTrustFailure = true;
+              }
+              pendingJobs -= 1;
+              if (entry) {
+                insertReady(entry);
+              }
+              signalProgress();
+            }
+          },
+        ),
+      );
+    };
+    const resolutionDone = runResolutionJobs();
+    if (pendingJobs > 0) {
+      await new Promise<void>((resolve) => {
+        const graceTimer = setTimeout(resolve, AUTO_LOAD_RESOLVE_GRACE_MS);
+        resolutionDone.then(() => {
+          clearTimeout(graceTimer);
+          resolve();
+        });
+      });
+    }
+    while (loadAttempts < MAX_AUTO_LOAD_ATTEMPTS) {
+      const candidate = readyPool.shift();
+      if (!candidate) {
+        if (pendingJobs <= 0) {
+          break;
+        }
+        await nextProgress();
+        continue;
+      }
       if (candidate.type === "cached-gguf") {
         const repo = candidate.repo;
-        markSeen("gguf", repo.load_id || repo.repo_id, repo.cache_path);
+        if (!candidate.retry) {
+          // A shared load target may already have been visited through an
+          // indexed local row (e.g. a scan folder aliasing this cache).
+          if (isSeen("gguf", repo.load_id || repo.repo_id, repo.cache_path)) {
+            continue;
+          }
+          markSeen("gguf", repo.load_id || repo.repo_id, repo.cache_path);
+        }
+        const skipKey = autoLoadCandidateKey(
+          "gguf",
+          repo.load_id || repo.repo_id,
+          candidate.variant.quant,
+        );
+        if (skippedAutoLoadCandidates.has(skipKey)) {
+          continue;
+        }
         try {
-          const variants = await listGgufVariants(repo.repo_id, undefined, {
-            preferLocalCache: true,
-            localPath: repo.cache_path,
-          });
-          const downloaded = variants.variants
-            .filter(
-              (v) => v.downloaded && !v.partial && isAutoLoadableGgufVariant(v),
-            )
-            .sort((a, b) => a.size_bytes - b.size_bytes);
-          if (downloaded.length > 0) {
-            const variant = downloaded[0];
-            if (
-              skippedAutoLoadCandidates.has(
-                autoLoadCandidateKey("gguf", repo.repo_id, variant.quant),
-              )
-            ) {
-              continue;
-            }
-            if (
-              await loadAutoLoadCandidate({
-                id: repo.repo_id,
-                loadId: repo.load_id,
-                kind: "gguf",
-                ggufVariant: variant.quant,
-                maxSeqLength: 0,
-                successLabel: `Loaded ${repo.repo_id} (${variant.quant})`,
-                inventoryId: repo.inventory_id ?? null,
-                source: "hf_cache",
-              })
-            ) {
-              return { loaded: true, blockedByTrustRemoteCode: false };
-            }
+          if (
+            await loadAutoLoadCandidate({
+              id: repo.repo_id,
+              loadId: repo.load_id,
+              kind: "gguf",
+              ggufVariant: candidate.variant.quant,
+              maxSeqLength: 0,
+              successLabel: `Loaded ${repo.repo_id} (${candidate.variant.quant})`,
+              inventoryId: repo.inventory_id ?? null,
+              source: "hf_cache",
+            })
+          ) {
+            return { loaded: true, blockedByTrustRemoteCode: false };
           }
         } catch {
           hadNonTrustFailure = true;
+          skippedAutoLoadCandidates.add(skipKey);
+          // A quant that passed validation can still fail /load (corrupt
+          // file, llama.cpp startup error). Re-enter the repo's next
+          // complete quant into the global size order, so one repo of
+          // failing quants cannot starve a smaller model elsewhere.
+          // Validation blocks are model-scoped, so they get no requeue.
+          try {
+            const next = await resolveCachedGgufEntry(repo);
+            if (next) {
+              insertReady({ ...next, retry: true });
+            }
+          } catch {
+            hadNonTrustFailure = true;
+          }
         }
         continue;
       }
       if (candidate.type === "cached-model") {
         const repo = candidate.repo;
+        if (isSeen("model", repo.load_id || repo.repo_id, repo.cache_path)) {
+          continue;
+        }
         markSeen("model", repo.load_id || repo.repo_id, repo.cache_path);
         if (
           skippedAutoLoadCandidates.has(
-            autoLoadCandidateKey("model", repo.repo_id),
+            autoLoadCandidateKey("model", repo.load_id || repo.repo_id),
           )
         ) {
           continue;
@@ -2319,6 +2431,9 @@ export async function autoLoadOnDeviceModel(): Promise<{
           }
         } catch {
           hadNonTrustFailure = true;
+          skippedAutoLoadCandidates.add(
+            autoLoadCandidateKey("model", repo.load_id || repo.repo_id),
+          );
         }
         continue;
       }
@@ -2339,19 +2454,9 @@ export async function autoLoadOnDeviceModel(): Promise<{
         }
       } catch {
         hadNonTrustFailure = true;
-        skippedAutoLoadCandidates.add(
-          autoLoadCandidateKey(
-            localCandidate.kind,
-            localCandidate.id,
-            localCandidate.ggufVariant,
-          ),
-        );
-        // A quant that passed validation can still fail /load (corrupt
-        // file, llama.cpp startup error). Re-enter the folder's next
-        // complete quant into the GLOBAL size order (still ahead of the
-        // safetensors group) instead of retrying inline, so one folder of
-        // failing quants cannot starve a smaller model elsewhere.
-        // Validation blocks are model-scoped, so they get no requeue.
+        skippedAutoLoadCandidates.add(autoLoadSkipKey(localCandidate));
+        // Same requeue as the cached-gguf branch: the folder's next complete
+        // quant re-enters the global size order instead of retrying inline.
         try {
           const next = await resolveLocalRowCandidate(
             row,
@@ -2359,22 +2464,13 @@ export async function autoLoadOnDeviceModel(): Promise<{
             isSkippedAutoLoadCandidate,
           );
           if (next) {
-            const retryEntry: FallbackCandidate = {
+            insertReady({
               type: "local",
               row,
               candidate: next.candidate,
               sizeBytes: next.sizeBytes,
               retry: true,
-            };
-            let insertAt = queueIndex + 1;
-            while (
-              insertAt < queue.length &&
-              !isModelKindEntry(queue[insertAt]) &&
-              queue[insertAt].sizeBytes <= retryEntry.sizeBytes
-            ) {
-              insertAt += 1;
-            }
-            queue.splice(insertAt, 0, retryEntry);
+            });
           }
         } catch {
           hadNonTrustFailure = true;

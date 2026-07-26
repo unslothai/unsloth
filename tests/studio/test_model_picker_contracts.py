@@ -815,64 +815,100 @@ def test_directory_gguf_rows_resolve_variant_like_picker():
 
 
 def test_remembered_local_failure_does_not_block_folder_fallback():
-    """A failed remembered local quant must exclude only that exact candidate
-    key, not mark the whole row as seen; otherwise a folder with another
-    complete quant can never fall back and Send falsely reports no model."""
+    """A failed remembered model must exclude only that exact candidate key,
+    not mark the whole row or repo as seen; otherwise a folder or cache repo
+    with another complete quant can never fall back and Send falsely reports
+    no model. Applies to local rows and managed-cache repos alike."""
     src = _read("features/chat/api/chat-adapter.ts")
     auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
-    remembered_block = auto_load.split("isManagedCacheSource(lastLoaded.source)", 1)[1]
-    remembered_block = remembered_block.split('} else if (lastLoaded.kind === "gguf")', 1)[0]
+    remembered_block = auto_load.split("if (lastLoaded) {", 1)[1]
+    remembered_block = remembered_block.split("// On-device fallback", 1)[0]
     assert (
         "markSeen(" not in remembered_block
-    ), "remembered-local retry must not pre-mark the row as deduped"
-    assert "rememberedCandidate?.ggufVariant ?? lastLoaded.ggufVariant" in remembered_block
+    ), "remembered paths must not pre-mark their row/repo as deduped"
+    assert "autoLoadSkipKey(rememberedCandidate)" in remembered_block
 
 
-def test_local_fallback_orders_by_resolved_quant_size():
-    """A GGUF folder row's size_bytes sums every quant in the folder, so the
-    smallest-first cascade must order local candidates by the resolved
-    quant's own size; otherwise a folder with a small quant loses to a
-    larger single-quant model."""
+def test_fallback_orders_by_resolved_quant_size():
+    """A GGUF folder or cache repo row's size_bytes sums every quant in it, so
+    the smallest-first fallback must order both local rows and cached repos by
+    the resolved quant's own size; otherwise a repo holding one small quant
+    loses to a larger single-quant model."""
     src = _read("features/chat/api/chat-adapter.ts")
     resolve_fn = src.split("async function resolveLocalRowCandidate", 1)[1]
     resolve_fn = resolve_fn.split("\nfunction ", 1)[0]
     assert "sizeBytes: sizeOrUnknownBytes(entry.size_bytes)" in resolve_fn
     auto_load = _autoload_section()
-    # Local candidates are resolved BEFORE the groups are sorted.
-    assert "const localEntries = (" in auto_load
-    assert auto_load.index("const localEntries = (") < auto_load.index(
-        "const ggufGroup: FallbackCandidate[]"
-    )
+    # Local rows order on the resolved quant size.
     assert "sizeBytes: resolved.sizeBytes" in auto_load
+    # Cached GGUF repos order on the resolved quant size too.
+    assert "const resolveCachedGgufEntry" in auto_load
+    assert "sizeBytes: sizeOrUnknownBytes(variant.size_bytes)" in auto_load
+    # The all-variant row sum only orders non-GGUF cached repos, whose
+    # snapshot loads whole.
+    seed_block = auto_load.split("for (const repo of modelRepos)", 1)[1]
+    seed_block = seed_block.split("const resolveCachedGgufEntry", 1)[0]
+    assert "sizeOrUnknownBytes(repo.size_bytes)" in seed_block
+    assert auto_load.count("sizeOrUnknownBytes(repo.size_bytes)") == 1
 
 
 def test_cascade_retries_next_quant_after_load_failure():
     """A failed /api/inference/load (not just a blocked validation) must mark
-    that quant skipped and re-enter the folder's next complete quant into the
-    GLOBAL size order (still ahead of the safetensors group) instead of
-    retrying inline, so one folder of failing quants cannot starve a smaller
-    model elsewhere; single-candidate rows resolve to null once skipped, and
-    the attempt cap bounds total loads."""
+    that quant skipped and re-enter the folder's or repo's next complete quant
+    into the GLOBAL size order (still ahead of the safetensors group) instead
+    of retrying inline, so one folder of failing quants cannot starve a
+    smaller model elsewhere; single-candidate rows resolve to null once
+    skipped, and the attempt cap bounds total loads."""
     src = _read("features/chat/api/chat-adapter.ts")
     auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
-    # No inline retry loop: retries flow through the shared queue.
+    # No inline retry loop: retries re-enter the shared ordered pool.
     assert "while (localCandidate" not in auto_load
-    assert "const queue: FallbackCandidate[] = [...ggufGroup, ...modelGroup]" in auto_load
     assert "retry: true," in auto_load
-    assert "queue.splice(insertAt, 0, retryEntry)" in auto_load
-    # Reinsertion respects the GGUF-before-safetensors group boundary and the
-    # ascending size order among the remaining candidates.
-    assert "!isModelKindEntry(queue[insertAt])" in auto_load
-    assert "queue[insertAt].sizeBytes <= retryEntry.sizeBytes" in auto_load
+    assert "insertReady({ ...next, retry: true })" in auto_load
+    # Ordered insertion respects the GGUF-before-safetensors group boundary
+    # and the ascending size order among the remaining candidates.
+    assert "!isModelKindEntry(readyPool[at])" in auto_load
+    assert "readyPool[at].sizeBytes <= entry.sizeBytes" in auto_load
     # Requeued entries bypass the seen gate; fresh rows still dedupe.
     assert "if (!candidate.retry) {" in auto_load
     # The cascade catch records the failed quant before requeueing.
-    catch_block = auto_load.split("// A quant that passed validation can still fail /load", 1)[0]
-    assert "skippedAutoLoadCandidates.add(" in catch_block
+    assert "skippedAutoLoadCandidates.add(skipKey)" in auto_load
+    assert "skippedAutoLoadCandidates.add(autoLoadSkipKey(localCandidate))" in auto_load
     # Termination guard: a skipped single candidate resolves to null.
     resolve_fn = src.split("async function resolveLocalRowCandidate", 1)[1]
     resolve_fn = resolve_fn.split("\nfunction ", 1)[0]
     assert "if (isSkippedCandidate?.(candidate)) return null;" in resolve_fn
+
+
+def test_cached_rows_deduped_against_local_aliases():
+    """A cached repo and an indexed local row can alias the same files (e.g.
+    a scan folder pointing into an HF cache). The fallback must not spend a
+    second load attempt re-trying files already visited or failed through the
+    other row: cached branches apply the same seen gate local rows use, and
+    skip keys are scoped to the backend load target both rows share."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
+    assert 'if (isSeen("gguf", repo.load_id || repo.repo_id, repo.cache_path))' in auto_load
+    assert 'if (isSeen("model", repo.load_id || repo.repo_id, repo.cache_path))' in auto_load
+    key_fn = src.split("function autoLoadSkipKey", 1)[1]
+    key_fn = key_fn.split("\nfunction ", 1)[0]
+    assert "candidate.loadId ?? candidate.id" in key_fn
+
+
+def test_send_not_blocked_by_full_inventory_resolution():
+    """Pressing Send must not wait for every /gguf-variants folder scan before
+    the first load attempt: candidates resolve through a bounded worker pool
+    and are consumed incrementally after a short settle grace, so one slow
+    folder cannot stall the send path behind the transport timeout."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    assert "const AUTO_LOAD_RESOLVE_GRACE_MS" in src
+    auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
+    # The consumer never awaits full resolution; it waits for the grace
+    # window (cut short when resolution finishes) and then per-completion.
+    assert "await resolutionDone" not in auto_load
+    assert "clearTimeout(graceTimer)" in auto_load
+    assert "await nextProgress();" in auto_load
+    assert "if (pendingJobs <= 0) {" in auto_load
 
 
 def test_autoload_keys_preserve_posix_path_case():
@@ -906,8 +942,6 @@ def test_local_variant_scans_bounded_concurrency():
     at once."""
     src = _read("features/chat/api/chat-adapter.ts")
     assert "const AUTO_LOAD_VARIANT_SCAN_CONCURRENCY" in src
-    assert "async function mapWithConcurrency" in src
     auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
-    assert "await mapWithConcurrency(" in auto_load
-    assert "AUTO_LOAD_VARIANT_SCAN_CONCURRENCY," in auto_load
+    assert "Math.min(AUTO_LOAD_VARIANT_SCAN_CONCURRENCY, resolutionJobs.length)" in auto_load
     assert "await Promise.all(\n        cascadeLocalRows.map(" not in auto_load
