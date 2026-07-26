@@ -27,6 +27,8 @@ pub(crate) struct DesktopUpdatePolicy {
 pub(crate) struct ManualUpdateInfo {
     version: String,
     current_version: String,
+    // Backend release this desktop build pins; CHANGELOG.md is keyed by it.
+    pypi_version: Option<String>,
     body: Option<String>,
     date: Option<String>,
 }
@@ -36,6 +38,7 @@ struct ChannelMetadata {
     version: String,
     // latest.json publishes Tauri's `notes`/`pub_date`; aliases keep older
     // `body`/`date` metadata working.
+    pypi_version: Option<String>,
     #[serde(alias = "body")]
     notes: Option<String>,
     #[serde(alias = "date")]
@@ -103,6 +106,7 @@ pub(crate) async fn check_desktop_manual_update() -> Result<Option<ManualUpdateI
     Ok(Some(ManualUpdateInfo {
         version: latest_version,
         current_version: current_version.to_string(),
+        pypi_version: metadata.pypi_version,
         body: metadata.notes,
         date: metadata.pub_date,
     }))

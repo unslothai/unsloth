@@ -213,7 +213,9 @@ function TauriUpdateLayer({
   }
 
   return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex flex-col items-end gap-2">
+    // Capped like the browser stack: the download panel sits in here too, so
+    // the two together must still fit the window.
+    <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex max-h-[calc(100dvh_-_2rem)] flex-col items-end gap-2">
       <UpdateBanner
         status={update.status}
         info={update.info}

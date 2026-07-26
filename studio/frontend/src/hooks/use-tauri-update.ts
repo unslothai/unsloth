@@ -21,6 +21,9 @@ export type UpdateStatus =
 export interface UpdateInfo {
   version: string;
   currentVersion: string;
+  // Backend release this desktop build pins. The app version is SemVer, while
+  // CHANGELOG.md is keyed by the backend version, so notes look up this one.
+  pypiVersion?: string;
   body?: string;
   date?: string;
 }
@@ -42,8 +45,15 @@ interface DesktopUpdatePolicy {
 interface ManualUpdateInfo {
   version: string;
   currentVersion: string;
+  pypiVersion?: string | null;
   body?: string;
   date?: string;
+}
+
+/** `pypi_version` from latest.json, which the updater passes through raw. */
+function rawPypiVersion(raw: Record<string, unknown>): string | undefined {
+  const value = raw.pypi_version;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 export interface RetainedUpdateFailure {
@@ -162,6 +172,7 @@ export function useTauriUpdate(isExternalServer = false) {
       setInfo({
         version: manualUpdate.version,
         currentVersion: manualUpdate.currentVersion,
+        pypiVersion: manualUpdate.pypiVersion ?? undefined,
         body: manualUpdate.body,
         date: manualUpdate.date,
       });
@@ -197,6 +208,7 @@ export function useTauriUpdate(isExternalServer = false) {
           setInfo({
             version: update.version,
             currentVersion: update.currentVersion,
+            pypiVersion: rawPypiVersion(update.rawJson),
             body: update.body,
             date: update.date,
           });

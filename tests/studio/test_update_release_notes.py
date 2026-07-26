@@ -1062,3 +1062,36 @@ def test_the_overlay_stack_fits_the_viewport():
     # Both overlays scroll internally, so they can give up height.
     assert "flex min-h-0" in panel
     assert "flex min-h-0" in WEB_BANNER.read_text(encoding = "utf-8")
+
+
+def test_the_desktop_stack_is_capped_like_the_browser_one():
+    """The download panel shares the desktop stack, so the update card's own
+    cap is not enough there either."""
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
+    assert provider.count("max-h-[calc(100dvh_-_2rem)]") == 2, "both stacks are capped"
+    assert "flex min-h-0" in TAURI_BANNER.read_text(encoding = "utf-8")
+
+
+def test_desktop_notes_are_looked_up_by_the_backend_version():
+    """latest.json's `version` is the app SemVer while CHANGELOG.md is keyed by
+    the backend release, so the desktop popup used to find no section at all
+    and fall back to the updater's generic text."""
+    workflow = (REPO / ".github/workflows/release-desktop.yml").read_text(encoding = "utf-8")
+    assert "'pypi_version': os.environ['PYPI_VERSION']" in workflow
+    assert "PYPI_VERSION: ${{ needs.prepare-version.outputs.pypi_version }}" in workflow
+    rust = (REPO / "studio/src-tauri/src/desktop_update_policy.rs").read_text(encoding = "utf-8")
+    assert "pypi_version: Option<String>" in rust
+    hook = NOTES_HOOK.parent.joinpath("use-tauri-update.ts").read_text(encoding = "utf-8")
+    # Both desktop paths carry it: the plugin exposes the raw metadata.
+    assert "rawPypiVersion(update.rawJson)" in hook
+    assert "manualUpdate.pypiVersion" in hook
+    banner = TAURI_BANNER.read_text(encoding = "utf-8")
+    assert "info?.pypiVersion ?? info?.version" in banner
+
+
+def test_one_slow_read_cannot_outlast_the_fetch_budget(changelog_module):
+    """The socket timeout is per operation, so slow headers followed by a slow
+    body could hold a worker for twice the advertised deadline."""
+    source = (BACKEND / "utils/changelog.py").read_text(encoding = "utf-8")
+    assert "_limit_read(response, remaining)" in source
+    assert "sock.settimeout(max(remaining, _CHANGELOG_MIN_READ_SECONDS))" in source

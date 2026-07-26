@@ -34,6 +34,7 @@ CHANGELOG_PATH_ENV_VAR = "UNSLOTH_CHANGELOG_PATH"
 CHANGELOG_TIMEOUT_SECONDS = 3
 CHANGELOG_MAX_BYTES = 2 * 1024 * 1024
 _CHANGELOG_CHUNK_BYTES = 64 * 1024
+_CHANGELOG_MIN_READ_SECONDS = 0.05
 CHANGELOG_SUCCESS_TTL_SECONDS = 30 * 60
 CHANGELOG_FAILURE_TTL_SECONDS = 5 * 60
 RELEASE_NOTES_MAX_CHARS = 20_000
@@ -368,12 +369,16 @@ def _fetch_remote_changelog() -> ChangelogSource:
             chunks: list[bytes] = []
             received = 0
             while received <= CHANGELOG_MAX_BYTES:
-                if time.monotonic() >= deadline:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     return ChangelogSource(
                         text = None,
                         source = None,
                         error = "Release notes took too long to load.",
                     )
+                # One read must not outlast the deadline either: the socket
+                # timeout is per operation and would otherwise restart it.
+                _limit_read(response, remaining)
                 chunk = response.read1(_CHANGELOG_CHUNK_BYTES)
                 if not chunk:
                     break
@@ -387,6 +392,12 @@ def _fetch_remote_changelog() -> ChangelogSource:
                 error = "Release notes response was too large.",
             )
         return ChangelogSource(text = body.decode("utf-8", errors = "replace"), source = "remote")
+    except TimeoutError:
+        return ChangelogSource(
+            text = None,
+            source = None,
+            error = "Release notes took too long to load.",
+        )
     except OSError:
         return ChangelogSource(
             text = None,
@@ -395,6 +406,18 @@ def _fetch_remote_changelog() -> ChangelogSource:
         )
     except UnicodeError:
         return ChangelogSource(text = None, source = None, error = "Malformed changelog.")
+
+
+def _limit_read(response: Any, remaining: float) -> None:
+    """Cap the next socket read at the time left in the fetch budget."""
+    sock = getattr(getattr(response, "fp", None), "raw", None)
+    sock = getattr(sock, "_sock", None)
+    if sock is None:
+        return
+    try:
+        sock.settimeout(max(remaining, _CHANGELOG_MIN_READ_SECONDS))
+    except OSError:
+        pass
 
 
 def _read_local_changelog() -> ChangelogSource:
