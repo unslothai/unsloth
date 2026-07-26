@@ -424,6 +424,24 @@ def normalize_resume_output_dir(path_value: str) -> str:
     return str(path)
 
 
+def continuation_output_name(source_name: str, timestamp: str) -> str:
+    """Return a stable continuation name across repeated checkpoint imports."""
+    base_name = source_name
+    prefix = "continuation_"
+    # Generated directories end in YYYYMMDD_HHMMSS. Remove every generated
+    # wrapper so a continuation of a continuation keeps the original run name.
+    while base_name.startswith(prefix):
+        candidate = base_name[len(prefix):]
+        dated_stem, separator, time_part = candidate.rpartition("_")
+        stem, date_separator, date_part = dated_stem.rpartition("_")
+        if not (separator and date_separator and len(date_part) == 8 and len(time_part) == 6):
+            break
+        if not (date_part.isdigit() and time_part.isdigit()):
+            break
+        base_name = stem
+    return f"{prefix}{base_name}_{timestamp}"
+
+
 def _run_config(run: dict) -> dict:
     raw_config = run.get("config_json")
     if isinstance(raw_config, dict):

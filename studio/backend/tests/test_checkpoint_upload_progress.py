@@ -58,3 +58,15 @@ def test_completed_checkpoint_upload_does_not_stick_in_training_status():
     ).read_text()
     assert '_send_status(event_queue, "Training...")' in worker_source
     assert '0 < n < total and desc' in worker_source
+
+
+def test_disabled_checkpoint_upload_does_not_emit_skipped_event():
+    """Resuming locally must not surface a misleading upload notification."""
+    trainer_source = (
+        Path(__file__).resolve().parent.parent / "core" / "training" / "trainer.py"
+    ).read_text()
+    disabled_branch = trainer_source.split("if not push_to_hub:", 1)[1].split(
+        "if not repository_id:", 1
+    )[0]
+    assert "emit(" not in disabled_branch
+    assert "return" in disabled_branch

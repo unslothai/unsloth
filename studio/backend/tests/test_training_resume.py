@@ -28,6 +28,28 @@ def _load_resume_module():
 resume = _load_resume_module()
 
 
+@pytest.mark.parametrize(
+    ("source_name", "expected"),
+    [
+        ("my_run", "continuation_my_run_20260726_120000"),
+        (
+            "continuation_my_run_20260725_110000",
+            "continuation_my_run_20260726_120000",
+        ),
+        (
+            "continuation_continuation_my_run_20260724_100000_20260725_110000",
+            "continuation_my_run_20260726_120000",
+        ),
+        (
+            "continuation_user_named_run",
+            "continuation_continuation_user_named_run_20260726_120000",
+        ),
+    ],
+)
+def test_continuation_output_name_does_not_nest_generated_prefixes(source_name, expected):
+    assert resume.continuation_output_name(source_name, "20260726_120000") == expected
+
+
 def test_resume_request_accepts_sanitized_null_target_modules():
     from models.training import TrainingStartRequest
     request = TrainingStartRequest(
