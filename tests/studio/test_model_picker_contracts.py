@@ -622,3 +622,18 @@ def test_diffusion_pages_stage_downloads_through_the_manager():
         assert "isDownloaded !== false" in body, f"{rel}: cached picks would re-stage"
         # A missing plan must still load rather than dead-end.
         assert "catch" in body, f"{rel}: no fallback when the plan is unavailable"
+
+
+def test_staged_downloads_always_scope_their_files():
+    """Every staged entry must go out as a scoped job carrying its file list, GGUF
+    checkpoints included. A plain snapshot job drops *.gguf via the Hub's ignore list, so
+    it would finish instantly having fetched everything except the weights and leave the
+    repo on device unloadable."""
+    src = _read("features/hub/download-manager/use-staged-download.ts")
+    start = re.search(r"downloadManager\.requestStart\(\{.*?\}\);", src, re.S)
+    assert start, "requestStart call not found"
+    body = start.group(0)
+    # Unconditional: no branch may send a null scope or omit the files.
+    assert "scopeId," in body and "files: current.files," in body
+    assert "? null" not in body and "? undefined" not in body
+    assert "const activeVariant = current ? scopedVariant(scopeId) : null;" in src

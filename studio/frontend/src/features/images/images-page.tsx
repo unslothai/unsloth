@@ -2390,6 +2390,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               className="!h-[34px]"
               task={IMAGE_GEN_TASKS}
               catalog={IMAGE_CATALOG}
+              placeholder="Select image model"
               open={active && selectorOpen}
               onOpenChange={(o) => setSelectorOpen(active && o)}
             />

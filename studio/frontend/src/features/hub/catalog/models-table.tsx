@@ -576,7 +576,7 @@ function useResultRowModel(
   const taskLabel = isDataset
     ? null
     : formatPipelineTag(row.result.pipelineTag);
-  const unsupported = support?.status === "unsupported";
+  const unsupported = support?.status === "unsupported" && !support?.supportedIn;
   return {
     support,
     unsupported,

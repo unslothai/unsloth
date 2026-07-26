@@ -155,6 +155,9 @@ interface ModelSelectorProps {
    *  artifact repos into one row with a format second level and device-aware
    *  routing. Undefined (chat) changes nothing. */
   catalog?: CatalogGroup[];
+  /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name
+   *  what they pick so it reads as separate from the chat model. */
+  placeholder?: string;
 }
 
 function ModelSelectorTrigger({
@@ -166,6 +169,9 @@ function ModelSelectorTrigger({
   className,
   dataTour,
   onEject,
+  // Task pages name what they pick ("Select image model"), so it is clear the choice is
+  // separate from the chat model.
+  placeholder = "Select model",
 }: {
   currentModel?: ModelOption;
   isLoaded: boolean;
@@ -175,6 +181,7 @@ function ModelSelectorTrigger({
   className?: string;
   dataTour?: string;
   onEject?: () => void;
+  placeholder?: string;
 }) {
   return (
     <PopoverTrigger asChild={true}>
@@ -241,7 +248,7 @@ function ModelSelectorTrigger({
         ) : null}
         <span className="flex min-w-0 flex-1 items-baseline">
           <span className="min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white">
-            {currentModel?.name ?? "Select model"}
+            {currentModel?.name ?? placeholder}
             {showCloudIndicator ? (
               <HugeiconsIcon
                 icon={CloudIcon}
@@ -690,6 +697,7 @@ export function ModelSelector({
   showCloudIndicator = false,
   task,
   catalog,
+  placeholder,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -796,6 +804,7 @@ export function ModelSelector({
         className={className}
         dataTour={triggerDataTour}
         onEject={onEject ? handleEject : undefined}
+        placeholder={placeholder}
       />
       <ModelSelectorContent
         open={open}

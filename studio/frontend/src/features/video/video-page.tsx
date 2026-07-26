@@ -1462,6 +1462,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
             className="!h-[34px]"
             task={VIDEO_GEN_TASKS}
             catalog={VIDEO_CATALOG}
+            placeholder="Select video model"
             open={active && selectorOpen}
             onOpenChange={(o) => setSelectorOpen(active && o)}
           />

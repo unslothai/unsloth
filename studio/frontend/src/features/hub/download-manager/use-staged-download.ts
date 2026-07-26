@@ -15,10 +15,9 @@ export interface StagedDownloadEntry {
   repoId: string;
   files: string[];
   bytes: number;
-  /** Set when this entry is a single-file GGUF checkpoint rather than a scoped subset. */
+  /** Set when this entry is a single-file GGUF checkpoint. Informational: it is fetched
+   *  as a scoped job like every other entry. */
   ggufFilename?: string | null;
-  /** Quant label for a GGUF entry, so the job keys like any other variant download. */
-  variant?: string | null;
 }
 
 /**
@@ -42,10 +41,11 @@ export function useStagedDownload({
   const [queue, setQueue] = useState<StagedDownloadEntry[] | null>(null);
   const current = queue?.[0] ?? null;
 
-  // A GGUF entry is a normal variant download; a scoped entry keys itself under "@scope".
-  const activeVariant = current
-    ? (current.variant ?? (current.ggufFilename ? null : scopedVariant(scopeId)))
-    : null;
+  // Every entry is scoped, including a GGUF checkpoint. A plain snapshot job would be the
+  // wrong tool for it: the Hub's snapshot ignore list drops *.gguf, so the job would finish
+  // at once having fetched everything EXCEPT the weights, and the repo would land on device
+  // unloadable.
+  const activeVariant = current ? scopedVariant(scopeId) : null;
 
   const advance = useCallback(() => {
     setQueue((rest) => {
@@ -78,8 +78,8 @@ export function useStagedDownload({
         repoId: current.repoId,
         variant: activeVariant,
         expectedBytes: current.bytes,
-        scopeId: current.ggufFilename ? null : scopeId,
-        files: current.ggufFilename ? undefined : current.files,
+        scopeId,
+        files: current.files,
       });
       if (!active) return;
       if (outcome === "started") {
