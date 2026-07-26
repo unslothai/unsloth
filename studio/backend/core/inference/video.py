@@ -756,7 +756,11 @@ class VideoBackend:
         entries: dict[str, dict[str, Any]] = {}
         total = 0
 
-        def add(repo: str, files: list[tuple[str, int]], gguf: Optional[str] = None) -> int:
+        def add(
+            repo: str,
+            files: list[tuple[str, int]],
+            gguf: Optional[str] = None,
+        ) -> int:
             if not files:
                 return 0
             entry = entries.setdefault(

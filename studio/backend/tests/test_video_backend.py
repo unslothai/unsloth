@@ -1861,7 +1861,12 @@ _LTX23_REPO_SIBLINGS = [
 
 def _plan_api(monkeypatch, repos):
     class _Api:
-        def model_info(self, repo_id, files_metadata = False, token = None):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
             return _PlanInfo(repos[repo_id])
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
@@ -1894,9 +1899,7 @@ def test_download_plan_narrows_an_ltx23_pick_and_stages_its_extras(monkeypatch):
     assert ckpt["gguf_filename"] == "ltx-2.3-22b-distilled.gguf"
     assert "vae/ltx-2.3-22b-distilled_video_vae.safetensors" in ckpt["files"]
     assert "vae/ltx-2.3-22b-distilled_audio_vae.safetensors" in ckpt["files"]
-    assert (
-        "text_encoders/ltx-2.3-22b-distilled_embeddings_connectors.safetensors" in ckpt["files"]
-    )
+    assert "text_encoders/ltx-2.3-22b-distilled_embeddings_connectors.safetensors" in ckpt["files"]
     # The other variant's companions are not this checkpoint's.
     assert "vae/ltx-2.3-22b-dev_video_vae.safetensors" not in ckpt["files"]
 
