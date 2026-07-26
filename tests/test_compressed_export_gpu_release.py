@@ -519,7 +519,7 @@ def test_meta_tensors_never_form_tie_groups(_fake_accelerate):
 
     root.named_parameters = named
     ns = _load_helpers(_fake_torch(), _FakeLogger())
-    _hooks, places, _attrs, ties = ns["_snapshot_dispatch_state"](root)
+    _hooks, places, _attrs, ties, _grads = ns["_snapshot_dispatch_state"](root)
 
     assert ties == []  # nothing is tied here
     assert "b.weight" in places  # still tracked for placement
@@ -541,6 +541,44 @@ def test_accelerate_move_guards_survive_the_replay(_fake_accelerate):
     ns["_restore_dispatch_state"](root, snapshot)
     assert root.__dict__["to"] is guard
     assert root.__dict__["cuda"] is guard
+
+
+def test_gradients_survive_the_offload_round_trip():
+    """Re-adding a hook runs init_hook -> set_module_tensor_to_device, which builds a
+    fresh Parameter and drops .grad. Exporting mid-training must not lose gradients."""
+    import torch
+
+    root = _Child(device_map = {"": 0})
+    weight = torch.nn.Parameter(torch.zeros(4, 4))
+    weight.grad = torch.full((4, 4), 3.0)
+    root._parameters = {"weight": weight}
+    root.named_parameters = lambda remove_duplicate = True: iter([("weight", weight)])
+
+    ns = _load_helpers(_fake_torch(), _FakeLogger())
+    snapshot = ns["_snapshot_dispatch_state"](root)
+    assert torch.equal(snapshot[4]["weight"], torch.full((4, 4), 3.0))
+
+    # What init_hook does: same name, brand new Parameter, grad gone.
+    replacement = torch.nn.Parameter(torch.zeros(4, 4))
+    assert replacement.grad is None
+    root._parameters = {"weight": replacement}
+
+    ns["_restore_dispatch_state"](root, snapshot)
+    assert replacement.grad is not None, "the restore must put the gradient back"
+    assert torch.equal(replacement.grad, torch.full((4, 4), 3.0))
+
+
+def test_the_other_torchao_path_also_clears_the_failed_copy():
+    """Both torchao exports restore the original in a finally, so both have to drop the
+    quantized copy and the traceback that pins it first."""
+    src = _SAVE_PY.read_text(encoding = "utf-8")
+    body = src.split("\ndef _unsloth_save_torchao(", 1)[1].split("\ndef ", 1)[0]
+    finally_block = body.split("    finally:", 1)[1]
+    assert "del quantized_model" in finally_block
+    assert "traceback.clear_frames" in finally_block
+    restore_at = finally_block.index("_restore_model_after_quantize_subprocess")
+    assert finally_block.index("del quantized_model") < restore_at
+    assert finally_block.index("traceback.clear_frames") < restore_at
 
 
 def test_cpu_spill_rejection_is_retryable():

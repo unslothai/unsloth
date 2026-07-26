@@ -4720,7 +4720,16 @@ def _snapshot_dispatch_state(root):
         for name, mod in root.named_modules()
         if any(a in mod.__dict__ for a in attrs)
     }
-    return hooks, places, saved_attrs, ties
+    # Re-adding a hook runs init_hook -> set_module_tensor_to_device, which builds a
+    # fresh Parameter and so discards .grad (measured: the object id changes and grad
+    # goes to None). Exporting mid-training would silently drop the gradients, so keep
+    # them here and reattach after the hooks are back.
+    grads = {
+        name: getattr(tensor, "grad", None)
+        for name, tensor in root.named_parameters(remove_duplicate = False)
+        if getattr(tensor, "grad", None) is not None
+    }
+    return hooks, places, saved_attrs, ties, grads
 
 
 def _drop_accelerator_tied_param_cache(snapshot) -> None:
@@ -4783,7 +4792,7 @@ def _restore_dispatch_state(root, snapshot) -> None:
     """Replay ``_snapshot_dispatch_state``."""
     from accelerate.hooks import add_hook_to_module
 
-    hooks, places, saved_attrs, ties = snapshot
+    hooks, places, saved_attrs, ties, grads = snapshot
     for name, hook in hooks:
         add_hook_to_module(root.get_submodule(name) if name else root, hook)
 
@@ -4814,6 +4823,12 @@ def _restore_dispatch_state(root, snapshot) -> None:
                     mod.to(want)
                 else:
                     tensor.data = tensor.data.to(want)
+
+    # Reattach the gradients init_hook discarded, on the same device as their weight.
+    for name, grad in grads.items():
+        tensor = _lookup_tensor(root, name)
+        if tensor is not None and tensor.grad is None and tensor.shape == grad.shape:
+            tensor.grad = grad.to(tensor.device)
 
     # Re-tie last, once every tensor is back on its own device.
     for names in ties:
@@ -5441,6 +5456,19 @@ def _unsloth_save_torchao(
         )
         return result
     finally:
+        # A raise anywhere after the reload leaves the quantized copy resident, via the
+        # local and via the live traceback's frames, so the restore below can OOM.
+        quantized_model = None
+        del quantized_model
+        _exc = sys.exc_info()[1]
+        if _exc is not None:
+            traceback.clear_frames(_exc.__traceback__)
+        for _ in range(3):
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if hasattr(torch, "xpu") and torch.xpu.is_available():
+                torch.xpu.empty_cache()
         _restore_model_after_quantize_subprocess(model, model_restore)
         if work_tmp is not None:
             shutil.rmtree(work_tmp, ignore_errors = True)
