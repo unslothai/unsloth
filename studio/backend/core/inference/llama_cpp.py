@@ -1755,11 +1755,9 @@ def _extra_args_draft_offloaded_to_cpu(
 
 
 def _extra_args_draft_device(extra_args: Optional[Iterable[str]]) -> Optional[str]:
-    """Return the last explicit draft-device value, if any.
-
-    Long spellings are canonicalized: llama.cpp honors ``--spec_draft_device``,
-    so an underscore alias must not slip past the gpu_ids pin guard and place
-    the drafter on a GPU the training coexistence budget never reserved."""
+    """Last explicit draft-device value. llama.cpp honors underscore spellings
+    (``--spec_draft_device``), so they are canonicalized here: an alias slipping
+    past the gpu_ids pin guard would place the drafter on an unreserved GPU."""
     dev_flags = {"--spec-draft-device", "-devd", "--device-draft"}
     args = [str(a) for a in extra_args] if extra_args else []
     last_dev: Optional[str] = None
@@ -2608,12 +2606,10 @@ class LlamaCppBackend:
             )
 
     def _record_matching_memory_request(self, memory_mode: Optional[str]) -> None:
-        """Adopt the caller's raw host-memory intent after a full match.
-
-        Omission means "no opinion". Unlike gpu_ids, whose dedupe compares the
-        RAW pin, this dedupe compares the CANONICAL mode, so None reaches here
-        as a match for "auto"; overwriting would drop the explicit auto from
-        /status and from the _last_load_kwargs the crash respawn replays.
+        """Adopt the caller's raw host-memory intent after a full match; None means
+        "no opinion". Dedupe compares the CANONICAL mode, so None arrives as a match
+        for an explicit "auto" that must survive in /status and in the
+        _last_load_kwargs the crash respawn replays.
         """
         if memory_mode is None:
             return
@@ -3425,10 +3421,8 @@ class LlamaCppBackend:
 
     @staticmethod
     def _backend_lacks_gpu_lib(binary: Optional[str] = None) -> bool:
-        """Detect a split-library build proven to be CPU-only.
-
-        Unknown and static layouts return False to avoid rejecting custom GPU builds.
-        """
+        """Detect a split-library build proven to be CPU-only. Unknown and static
+        layouts return False to avoid rejecting custom GPU builds."""
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if not binary:
             return False
@@ -3626,8 +3620,7 @@ class LlamaCppBackend:
                 [sys.executable, str(probe_script), str(binary_dir)],
                 capture_output = True,
                 text = True,
-                # Device names are vendor strings: never lose every reading to
-                # one undecodable byte.
+                # Vendor name strings: don't lose every reading to one bad byte.
                 errors = "replace",
                 timeout = 15,
                 env = env,
@@ -3661,11 +3654,8 @@ class LlamaCppBackend:
 
     @staticmethod
     def _get_vulkan_gpu_info(binary: Optional[str] = None) -> list[dict]:
-        """Vulkan-ordinal device records suitable for ``/api/system``.
-
-        Unlike CUDA/HIP physical IDs, these indices are explicitly tagged
-        ``vulkan`` so the frontend can offer them only to the GGUF picker.
-        """
+        """Vulkan-ordinal device records for ``/api/system``, tagged ``vulkan`` (not
+        CUDA/HIP physical IDs) so the frontend offers them only to the GGUF picker."""
         devices = []
         for idx, free_bytes, is_igpu, total_bytes, name in LlamaCppBackend._probe_vulkan_devices(
             binary
@@ -3698,12 +3688,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _get_gpu_free_memory_vulkan(binary: Optional[str] = None) -> list[tuple[int, int, int]]:
-        """Query free (and total) VRAM via ggml's Vulkan ordinal space.
-
-        iGPUs leave host-RAM headroom and report total 0 to the fit planner,
-        because their reported heap is shared system memory. Discrete cards
-        retain their real total so the planner can reserve absolute headroom.
-        """
+        """Free (and total) VRAM in ggml's Vulkan ordinal space. iGPUs keep host-RAM
+        headroom and report total 0 (their heap is shared system memory); discrete
+        cards keep their real total so the fit planner can reserve headroom."""
         gpus: list[tuple[int, int, int]] = []
         for idx, free_bytes, is_igpu, total_bytes, _name in LlamaCppBackend._probe_vulkan_devices(
             binary
@@ -6318,12 +6305,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _canonical_long_flag(name: str) -> str:
-        """Return ``name`` with llama.cpp's long-option underscore normalization.
-
-        Thin alias for the shared ``canonical_long_flag`` so this module and the
-        boundary validator can never drift on which spellings count as the same
-        flag; pass only the flag name (no attached value).
-        """
+        """Flag name (no attached value) with llama.cpp's long-option underscore
+        normalization. Alias for the shared ``canonical_long_flag`` so this module
+        and the boundary validator cannot drift on which spellings match."""
         return canonical_long_flag(name)
 
     @staticmethod
@@ -6534,9 +6518,8 @@ class LlamaCppBackend:
             if supports_load_mode:
                 # Unified load modes cannot combine a RAM copy with mlock.
                 return ["--load-mode", "none"]
-            # --mlock FIRST: a build that folds the legacy flags into one
-            # last-wins load mode would otherwise resolve this to mmap+mlock,
-            # the opposite of a RAM copy. Independent on a genuinely old build.
+            # --mlock FIRST: a build folding these into one last-wins load mode
+            # would otherwise land on mmap+mlock, the opposite of a RAM copy.
             return ["--mlock", "--no-mmap"]
         return []
 
@@ -6687,15 +6670,13 @@ class LlamaCppBackend:
             binary = self._find_llama_server_binary()
             is_vulkan_backend = self._is_vulkan_backend(binary)
 
-            # Both remaining diffusion rejections are header-dependent, so classify
-            # the GGUF here and reject BEFORE Phase 1 replaces the live model:
-            #   - Vulkan + gpu_ids: the diffusion runner picks by CUDA physical
-            #     index, which has no mapping from ggml ordinals.
-            #   - an explicit host-memory mode: the diffusion runner has no
-            #     placement modes at all.
-            # Only these two need it -- an auto-memory-mode load has nothing to
-            # reject -- so a plain load keeps downloading after teardown as before.
-            # The Phase 2 call reuses _preflight_model_path, so nothing is fetched twice.
+            # Both remaining diffusion rejections are header-dependent, so classify the
+            # GGUF here and reject BEFORE Phase 1 replaces the live model:
+            #   - Vulkan + gpu_ids: the diffusion runner picks by CUDA physical index,
+            #     which has no mapping from ggml ordinals.
+            #   - an explicit host-memory mode: the runner has no placement modes.
+            # Only these two; an auto-memory-mode load has nothing to reject, so a plain
+            # load still downloads after teardown. Phase 2 reuses _preflight_model_path.
             _explicit_memory_mode = self._canonical_memory_mode(memory_mode) is not None
             _vulkan_gpu_ids_pin = bool(is_vulkan_backend and gpu_ids)
             _needs_diffusion_preflight = _vulkan_gpu_ids_pin or _explicit_memory_mode
@@ -6865,10 +6846,9 @@ class LlamaCppBackend:
                         gpu_ids = gpu_ids,
                     )
 
-            # The route validated these as CUDA physical IDs because it classified
-            # the model as diffusion (name hint on an uncached remote GGUF); the
-            # header disagrees, so the Vulkan pin below would silently reinterpret
-            # them as ggml ordinals and offload to a different card.
+            # The route validated these as CUDA physical IDs (it classified the model as
+            # diffusion from a name hint on an uncached remote GGUF); the header
+            # disagrees, so the Vulkan pin below would reinterpret them as ggml ordinals.
             if is_vulkan_backend and gpu_ids and gpu_ids_are_vulkan_ordinals is False:
                 raise ValueError(
                     f"Requested gpu_ids {sorted(int(x) for x in gpu_ids)} were validated "
@@ -7976,9 +7956,9 @@ class LlamaCppBackend:
                     ]
                     gpu_indices = sorted(discrete_ids or [idx for idx, _free in _detected_gpus])
 
-                # Status reports the explicit subset the launch actually uses,
-                # while reload dedupe compares requested_gpu_ids so repeating a
-                # wider request that fit narrowed does not restart the server.
+                # Status reports the subset the launch actually uses; reload dedupe
+                # compares requested_gpu_ids, so re-sending the wider (fit-narrowed)
+                # request does not restart the server.
                 if gpu_ids:
                     effective_pin = gpu_indices if gpu_indices is not None else gpu_ids
                     self._gpu_ids = sorted(int(idx) for idx in effective_pin)
@@ -8955,9 +8935,9 @@ class LlamaCppBackend:
                 # clears, list sets. Source records hf_variant for the route's
                 # same_source check.
                 if extra_args is not None:
-                    # Persist the same device-stripped extras the command used when gpu_ids
-                    # owns placement, so a later inheriting reload (after gpu_ids clears)
-                    # can't resurrect the dropped --device (#7188).
+                    # Persist the device-stripped extras the command used, so a later
+                    # inheriting reload (after gpu_ids clears) can't resurrect the
+                    # dropped --device (#7188).
                     self._extra_args = (
                         self._strip_device_extra_args(extra_args)
                         if gpu_ids is not None
@@ -8965,8 +8945,8 @@ class LlamaCppBackend:
                     )
                     self._extra_args_source = (model_identifier, hf_variant)
                 self._requested_n_ctx = int(n_ctx)
-                # Raw requested mode for the response echo, so an explicit "auto"
-                # round-trips instead of collapsing to null (#7188).
+                # Raw mode, so an explicit "auto" round-trips instead of
+                # collapsing to null in the response echo (#7188).
                 self._requested_memory_mode = (memory_mode or "").strip().lower() or None
                 self._launched_with_inherited_mem_env = _child_inherited_mem_env
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
@@ -9582,9 +9562,8 @@ class LlamaCppBackend:
         args = [str(arg) for arg in cmd]
         for index, raw in enumerate(args):
             flag, equals, inline = raw.partition("=")
-            # llama.cpp accepts the underscore spellings, so a pin written as
-            # --spec_draft_device must still count here: masking the GPUs away
-            # from a child that was pinned to one aborts the launch.
+            # Underscore spellings count too: masking away the GPUs a child was
+            # pinned to via --spec_draft_device aborts the launch.
             flag = canonical_long_flag(flag)
             if flag not in main_flags and flag not in draft_flags:
                 continue
@@ -10612,10 +10591,9 @@ class LlamaCppBackend:
         the full context. With ``--fit on``, ``--fit-ctx`` floors the fit step
         at an explicitly requested ctx so it offloads or fails instead of
         silently shrinking the window. The 8192 auto-floor applies only under
-        Manual + Auto (``auto_fit``), which omits ``-c``: on the legacy auto
-        path ``-c 0`` already pins the native window and ``--fit-ctx 8192``
-        would override it down to 8192. Keep llama.cpp's default fit target
-        instead of reducing its safety margin.
+        Manual + Auto (``auto_fit``), which omits ``-c``: the legacy auto path's
+        ``-c 0`` already pins the native window, so ``--fit-ctx 8192`` would
+        shrink it.
         """
         flags: list[str] = []
         if n_parallel > 1 and caps.get("supports_kv_unified"):

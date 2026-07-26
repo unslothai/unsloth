@@ -6054,12 +6054,9 @@ def validate_prebuilt_attempts(
 
 
 def force_vulkan_requested() -> bool:
-    """Whether the user selected the Vulkan llama.cpp backend.
-
-    ``UNSLOTH_LLAMA_CPP_BACKEND=vulkan`` is the public backend selector.
-    ``UNSLOTH_FORCE_VULKAN`` remains a compatible legacy alias. Both are scoped
-    to llama.cpp, so the torch/training stack still sees the detected GPU.
-    """
+    """Whether the user selected the Vulkan llama.cpp backend, via the public
+    ``UNSLOTH_LLAMA_CPP_BACKEND=vulkan`` or the legacy ``UNSLOTH_FORCE_VULKAN``
+    alias. Scoped to llama.cpp: torch/training still sees the detected GPU."""
     backend = os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND", "").strip().lower()
     legacy = os.environ.get("UNSLOTH_FORCE_VULKAN", "").strip().lower()
     return backend == "vulkan" or legacy in (
@@ -6116,8 +6113,7 @@ def _route_to_vulkan_prebuilt(
     The unsloth published repo ships only CUDA/ROCm/CPU assets, so Vulkan comes
     from UPSTREAM_REPO. Two triggers route here, both suppressed when a CPU flag
     (--cpu-fallback or --force-cpu, folded into force_cpu) wins:
-      * UNSLOTH_LLAMA_CPP_BACKEND=vulkan, or its legacy
-        UNSLOTH_FORCE_VULKAN alias, forces Vulkan over CUDA/ROCm;
+      * UNSLOTH_LLAMA_CPP_BACKEND=vulkan (or the legacy UNSLOTH_FORCE_VULKAN);
       * an auto-detected Intel GPU with NO physical NVIDIA/ROCm -- the purpose
         of the has_intel_gpu probe, since the fork manifest ships no Vulkan asset.
     Applied by BOTH the install path and the --resolve-prebuilt probe so the
@@ -6368,8 +6364,8 @@ def install_prebuilt(
                 published_release_tag,
             )
             if strict_vulkan:
-                # Upstream plans append CPU as a generic fallback. An explicit
-                # Vulkan selection must fail instead of silently installing it.
+                # Upstream plans append a generic CPU fallback; an explicit Vulkan
+                # selection must fail rather than silently install it.
                 release_plans = _vulkan_only_release_plans(release_plans)
             if release_plans and existing_install_matches_plan(install_dir, host, release_plans[0]):
                 current = release_plans[0]

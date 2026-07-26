@@ -4113,10 +4113,9 @@ def _guard_chat_load_against_training(
 
     diffusion_gpu = None
     if is_gguf and diffusion_kind is not False and not gpu_ids_are_vulkan_ordinals:
-        # Use the same token selection as the runner: an explicit pick wins,
-        # followed by DG_GPU, the first parent-visible token, then GPU 0. Suppressed
-        # for a Vulkan-ordinal pin so single-device CUDA budgeting can't override the
-        # Vulkan-ordinal path (single_device_gpu wins in can_load_chat_during_training).
+        # Same token selection as the runner: an explicit pick wins, then DG_GPU, the
+        # first parent-visible token, then GPU 0. Skipped for a Vulkan-ordinal pin,
+        # whose path single_device_gpu would override in can_load_chat_during_training.
         diffusion_gpu = LlamaCppBackend._diffusion_gpu_arg(
             requested_gpu_ids,
             cpu_only = LlamaCppBackend._effective_gpu_count() == 0,

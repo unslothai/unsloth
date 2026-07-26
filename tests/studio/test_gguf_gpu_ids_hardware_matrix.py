@@ -2,15 +2,12 @@
 # Copyright 2026-present the Unsloth AI Inc. team.
 """Studio GGUF gpu_ids routing under spoofed NVIDIA / AMD / CPU-only hardware.
 
-studio/backend/tests/test_gguf_placement_os_gpu_matrix.py mocks
-``utils.hardware.get_device`` directly. This file closes the loop: it drives the
-same decision through the REAL hardware layer with torch spoofed by
-tests/_zoo_aggressive_cuda_spoof.py (NVIDIA) and tests/_zoo_rocm_spoof.py (AMD),
-so the DeviceType each vendor produces is observed rather than assumed.
-
-Each case runs in its own subprocess (the spoofs mutate torch and
-``utils.hardware`` caches module globals), and the llama.cpp bundle layout is
-faked per OS so Windows / Linux / WSL / macOS are all covered on one host.
+Where test_gguf_placement_os_gpu_matrix.py mocks ``utils.hardware.get_device``,
+this drives the same decision through the REAL hardware layer with torch spoofed
+by tests/_zoo_aggressive_cuda_spoof.py (NVIDIA) and tests/_zoo_rocm_spoof.py
+(AMD), so each vendor's DeviceType is observed rather than assumed. Each case
+runs in its own subprocess (the spoofs mutate torch and ``utils.hardware`` caches
+globals), with the bundle layout faked per OS to cover all four on one host.
 """
 
 from __future__ import annotations

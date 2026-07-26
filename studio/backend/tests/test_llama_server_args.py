@@ -929,9 +929,8 @@ def test_strip_shadowing_flags_keeps_memory_mode_when_not_requested():
 
 
 def test_strip_shadowing_flags_default_keeps_memory_mode():
-    # Memory-mode stripping is opt-in (like offload/tensor_split/device): the default
-    # must PRESERVE inherited --mlock/--mmap/--no-mmap so an Apply that omits
-    # gguf_memory_mode doesn't silently drop a user's pass-through memory flag (#7188).
+    # Memory-mode stripping is opt-in: the default PRESERVES inherited --mlock/--mmap/
+    # --no-mmap, so an Apply omitting gguf_memory_mode keeps pass-through flags (#7188).
     assert strip_shadowing_flags(["--mlock", "--no-mmap", "--mmap"]) == [
         "--mlock",
         "--no-mmap",
@@ -971,12 +970,8 @@ def test_strip_memory_mode_kept_when_field_not_supplied():
 
 
 def test_canonical_long_flag_mirrors_llama_cpp_normalization():
-    """llama.cpp rewrites '_' to '-' for tokens starting with '--'.
-
-    common/arg.cpp runs std::replace(arg.begin(), arg.end(), '_', '-') before
-    the option lookup, and only for the '--' prefix, so short flags and values
-    must be left alone.
-    """
+    """llama.cpp rewrites '_' to '-' for tokens starting with '--' (common/arg.cpp,
+    before the option lookup), so short flags and values must be left alone."""
     assert _lsa.canonical_long_flag("--no_mmap") == "--no-mmap"
     assert _lsa.canonical_long_flag("--load_mode") == "--load-mode"
     assert _lsa.canonical_long_flag("--no-mmap") == "--no-mmap"
@@ -1001,9 +996,8 @@ def test_canonical_long_flag_mirrors_llama_cpp_normalization():
     ],
 )
 def test_denylist_covers_underscore_aliases(flag):
-    # llama.cpp accepts the underscore spelling, so accepting it here would let
-    # a pass-through arg last-wins-override a flag Unsloth owns (auth, model
-    # identity, the proxy hop, the parallel-slot count).
+    # llama.cpp accepts the underscore spelling, so accepting it here would let a
+    # pass-through arg last-wins-override a flag Unsloth owns.
     assert is_managed_flag(flag) is True
     with pytest.raises(ValueError, match = "managed by Unsloth Studio"):
         validate_extra_args([flag, "x"])

@@ -80,14 +80,12 @@ _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
 def canonical_long_flag(name: str) -> str:
     """Return ``name`` under llama.cpp's long-option underscore normalization.
 
-    ``common/arg.cpp`` runs ``std::replace(arg.begin(), arg.end(), '_', '-')``
-    on any argv token that starts with ``--`` before looking the option up, so
-    ``--no_mmap`` and ``--load_mode`` reach the child as ``--no-mmap`` and
-    ``--load-mode``. Match the same canonical name here, or an underscore
-    spelling slips past every managed/shadowing group and last-wins-overrides
-    the setting Unsloth owns. Short flags (``-lm``) are matched verbatim
-    upstream and never carry underscores, so they are returned unchanged.
-    Pass only the flag name: an attached ``=value`` must not be rewritten.
+    ``common/arg.cpp`` replaces ``_`` with ``-`` in any argv token starting with
+    ``--`` before lookup, so ``--no_mmap`` reaches the child as ``--no-mmap``.
+    Matching that here stops an underscore spelling slipping past the managed and
+    shadowing groups and last-wins-overriding a setting Unsloth owns. Short flags
+    (``-lm``) are matched verbatim upstream and never carry underscores. Pass only
+    the flag name: an attached ``=value`` must not be rewritten.
     """
     return name.replace("_", "-") if name.startswith("--") else name
 
@@ -194,8 +192,8 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
     }
 )
 # Shadow the GGUF memory_mode field: pass-through in explicit extras, stripped on
-# inherit when the mode changes. New llama.cpp builds unify these under
-# --load-mode; retain every deprecated spelling for older/custom binaries.
+# inherit when the mode changes. New builds unify these under --load-mode; the
+# deprecated spellings stay for older/custom binaries.
 _MEMORY_MODE_FLAGS: frozenset[str] = frozenset(
     {
         "-lm",
@@ -219,9 +217,9 @@ _MEMORY_MODE_FLAGS: frozenset[str] = frozenset(
 _SPLIT_MODE_FLAGS: frozenset[str] = frozenset({"-sm", "--split-mode"})
 _TENSOR_SPLIT_FLAGS: frozenset[str] = frozenset({"-ts", "--tensor-split"})
 _SPLIT_SHADOWING_FLAGS: frozenset[str] = _SPLIT_MODE_FLAGS | _TENSOR_SPLIT_FLAGS
-# llama.cpp offload device list (--device / -dev). Opt-in (users may pass it under
-# auto-select): stripped only when gpu_ids is set, so it can't override the pin and
-# offload to a GPU the training guard never budgeted (#7188).
+# llama.cpp offload device list. Opt-in (valid under auto-select): stripped only
+# when gpu_ids is set, so it can't override the pin and offload to a GPU the
+# training guard never budgeted (#7188).
 _DEVICE_FLAGS: frozenset[str] = frozenset({"--device", "-dev"})
 
 # GPU-offload flags. Stripped only when the GPU Memory mode owns offload
@@ -511,11 +509,9 @@ def strip_shadowing_flags(
     ``strip_tensor_split`` removes ``--tensor-split`` *alone*, so manual mode can
     replace an inherited per-GPU ratio while leaving the user's ``--split-mode``
     row/none/layer choice intact. ``strip_device`` and ``strip_memory_mode`` are
-    off by default (opt-in, like ``strip_offload`` / ``strip_tensor_split``): a user
-    may pass ``--device`` / ``--mlock`` / ``--no-mmap`` when Unsloth has no opinion,
-    so they're stripped only when the caller sets gpu_ids / gguf_memory_mode. Enabling
-    them by default would silently drop those inherited pass-through flags on an Apply
-    that omits the field.
+    opt-in: a user may pass ``--device`` / ``--mlock`` when Unsloth has no opinion, so
+    they're stripped only when the caller sets gpu_ids / gguf_memory_mode, otherwise an
+    Apply that omits the field would silently drop those inherited flags.
     """
     shadowing: set[str] = set()
     if strip_context:

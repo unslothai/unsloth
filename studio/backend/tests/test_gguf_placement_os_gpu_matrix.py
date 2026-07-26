@@ -215,10 +215,8 @@ def test_gpu_ids_decision_matrix(tmp_path, route, main_mod, os_name, gpu_name):
 @pytest.mark.parametrize("os_name", ["windows", "linux", "wsl"])
 @pytest.mark.parametrize("gpu_name", sorted(GPU_PROFILES))
 def test_vulkan_bundle_matrix(tmp_path, route, main_mod, os_name, gpu_name):
-    """A Vulkan bundle pins by ggml ordinal on every host it ships for.
-
-    macOS is excluded: there is no Vulkan prebuilt (Metal is used).
-    """
+    """A Vulkan bundle pins by ggml ordinal on every host it ships for (not macOS,
+    which has no Vulkan prebuilt and uses Metal)."""
     _backends, device, _pin = GPU_PROFILES[gpu_name]
     platform_name, _suffix = OS_PROFILES[os_name]
     binary = _make_bundle(tmp_path, os_name, ("cpu", "vulkan"))
@@ -271,10 +269,8 @@ def test_vulkan_probe_failure_keeps_devices_and_hides_picker(tmp_path, route, ma
 @pytest.mark.parametrize("gpu_name", sorted(GPU_PROFILES))
 @pytest.mark.parametrize("gpu_ids", [None, []])
 def test_request_without_gpu_ids_never_rejects(tmp_path, route, os_name, gpu_name, gpu_ids):
-    """A client that sends no pick (every pre-#7164 client) is untouched.
-
-    Not even a CPU-only build rejects: there is nothing to ignore.
-    """
+    """A client that sends no pick (every pre-#7164 client) is untouched; not even a
+    CPU-only build rejects, since there is nothing to ignore."""
     backends, device, _pin = GPU_PROFILES[gpu_name]
     platform_name, _suffix = OS_PROFILES[os_name]
     binary = _make_bundle(tmp_path, os_name, backends)
@@ -370,11 +366,10 @@ def test_load_and_status_schemas_accept_pre_feature_payloads():
 def test_diffusion_on_a_vulkan_bundle_resolves_physical_ids(tmp_path, route, main_mod):
     """A diffusion GGUF opts out of the Vulkan ordinal namespace at /load.
 
-    DiffusionGemma never runs through llama.cpp, so its gpu_ids stay CUDA
-    physical ids even when the installed bundle is Vulkan. /api/system has no
-    model context and still advertises the ggml Vulkan ordinals, so the two
-    namespaces collide on the same integers -- which is why the config page
-    hides the GPU picker for this combination (model-config-page.tsx).
+    DiffusionGemma never runs through llama.cpp, so its gpu_ids stay CUDA physical
+    ids even on a Vulkan bundle, while /api/system (no model context) still
+    advertises ggml ordinals: the namespaces collide on the same integers, which is
+    why model-config-page.tsx hides the picker for this combination.
     """
     binary = _make_bundle(tmp_path, "linux", ("cpu", "vulkan"))
     probed = [

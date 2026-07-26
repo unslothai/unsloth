@@ -643,10 +643,9 @@ class TestExtraArgsMtpDetection:
     @pytest.mark.parametrize(
         "args,expected",
         [
-            # llama.cpp normalises '_' to '-' for any '--' token before the
-            # option lookup, so these place the drafter on a GPU exactly like
-            # the hyphen spellings. Missing them lets a pass-through arg escape
-            # the gpu_ids pin the training-coexistence guard budgeted.
+            # llama.cpp normalises '_' to '-' for '--' tokens, so these place the
+            # drafter exactly like the hyphen spellings; missing them lets a
+            # pass-through arg escape the pin the coexistence guard budgeted.
             (["--spec_draft_device", "CUDA1"], "CUDA1"),
             (["--device_draft", "Vulkan2"], "Vulkan2"),
             (["--spec_draft_device=CUDA1"], "CUDA1"),

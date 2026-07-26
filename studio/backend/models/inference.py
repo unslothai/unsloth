@@ -202,9 +202,8 @@ class LoadRequest(BaseModel):
     @field_validator("gguf_memory_mode", mode = "before")
     @classmethod
     def normalize_blank_gguf_memory_mode(cls, value: Any) -> Any:
-        # Map a form's blank default to explicit "auto" (not None) so it counts as a
-        # choice: the scrub of inherited LLAMA_ARG_MLOCK/NO_MMAP/MMAP only runs when the
-        # value is not None, so blank -> None would let those env vars survive (#7164).
+        # A form's blank default maps to explicit "auto", not None: the inherited
+        # LLAMA_ARG_MLOCK/NO_MMAP/MMAP scrub only runs on a non-None value (#7164).
         if isinstance(value, str) and value.strip() == "":
             return "auto"
         return value
@@ -284,8 +283,7 @@ class ValidateModelRequest(BaseModel):
     @field_validator("gguf_memory_mode", mode = "before")
     @classmethod
     def normalize_blank_gguf_memory_mode(cls, value: Any) -> Any:
-        # Mirror LoadRequest: blank maps to explicit "auto" so validate and load agree
-        # and the inherited-env scrub isn't skipped (and it avoids a 422) (#7164).
+        # Mirror LoadRequest so validate and load agree and the scrub isn't skipped (#7164).
         if isinstance(value, str) and value.strip() == "":
             return "auto"
         return value

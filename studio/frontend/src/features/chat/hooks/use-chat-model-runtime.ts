@@ -689,9 +689,8 @@ export function useChatModelRuntime() {
           ) {
             await ensureGpuDeviceCache();
           }
-          // A staged pick carries the namespace it was saved in; pass it so the
-          // reconcile can drop a pick recorded under a different one (physical
-          // CUDA ids vs Vulkan ordinals) instead of pinning the wrong card.
+          // Pass the namespace the staged pick was saved in so the reconcile drops a
+          // pick recorded under another one (CUDA physical ids vs Vulkan ordinals).
           let loadSelectedGpuIds =
             pendingLoadConfig?.selectedGpuIds !== undefined
               ? reconcilePersistedGpuIds(

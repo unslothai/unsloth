@@ -1194,9 +1194,8 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             enriched_dev["vram_utilization_pct"] = util.get("vram_utilization_pct")
             enriched_devices.append(enriched_dev)
 
-        # Vulkan has its own compact ordinal space, independent of torch and
-        # CUDA_VISIBLE_DEVICES. Replace torch's view with the same ggml probe
-        # records that /load validates and pins as --device VulkanN.
+        # Vulkan ordinals are a compact space of their own, independent of torch and
+        # CUDA_VISIBLE_DEVICES: report the ggml probe records /load pins as --device VulkanN.
         try:
             from core.inference.llama_cpp import LlamaCppBackend
             from utils.hardware import DeviceType, get_device
@@ -1208,15 +1207,12 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
                 visibility_info = {**visibility_info, "available": True, "backend": "vulkan"}
                 gpu_ids_supported = True
             elif is_vulkan:
-                # Probe unreachable (no ICD, timeout). Keep torch's device list so
-                # the VRAM monitor and every fit badge still work; only hide the
-                # picker, whose ordinals can't be resolved.
+                # Probe unreachable (no ICD, timeout): keep torch's list for the VRAM
+                # monitor and fit badges, hide only the picker (unresolvable ordinals).
                 gpu_ids_supported = False
             else:
-                # XPU indices cannot yet be applied safely across Level Zero's
-                # FLAT and COMPOSITE hierarchy modes. A CPU-only llama.cpp build
-                # would ignore a pin, and /load rejects one, so hide the picker
-                # instead of offering IDs that fail the load.
+                # XPU indices aren't safe across Level Zero's FLAT/COMPOSITE hierarchy
+                # modes, and a CPU-only build ignores a pin /load rejects: hide the picker.
                 gpu_ids_supported = (
                     get_device() != DeviceType.XPU and not LlamaCppBackend._backend_lacks_gpu_lib()
                 )

@@ -306,11 +306,9 @@ console.log("RESULT " + JSON.stringify(out));
 
 
 def test_staged_load_config_forwards_the_saved_namespace():
-    """Run-settings Load stages a persisted config; it must carry the tag.
-
-    Without it a remembered physical CUDA pick is re-read as a ggml Vulkan
-    ordinal and llama-server is pinned to a different card (silently).
-    """
+    """Run-settings Load stages a persisted config; it must carry the tag, or a
+    remembered CUDA pick is re-read as a ggml Vulkan ordinal and llama-server is
+    silently pinned to a different card."""
     hook = _RUNTIME_HOOK.read_text()
     staged = re.findall(
         r"reconcilePersistedGpuIds\(\s*\n\s*pendingLoadConfig\.selectedGpuIds,"
@@ -332,13 +330,10 @@ def test_staged_load_config_forwards_the_saved_namespace():
 
 
 def test_cold_cache_resave_keeps_the_stored_gpu_namespace(tmp_path):
-    """Saving before /api/system resolves must not untag a Vulkan pick.
-
-    The settings snapshot reads the namespace from the shared device cache, so
-    a save taken while that cache is still cold carries none. Writing the pick
-    back untagged makes the next reconcile read it as a legacy physical pick and
-    discard it on the very Vulkan host it was saved from.
-    """
+    """Saving before /api/system resolves must not untag a Vulkan pick: the snapshot
+    reads the namespace from the cold device cache, and writing the pick back untagged
+    makes the next reconcile read it as legacy physical and discard it on the very
+    Vulkan host it was saved from."""
     snapshot = _extract_function(_APPLY_CONFIG.read_text(), "currentRuntimePerModelConfig")
     assert "cachedPinnableGpuIndexKind" in snapshot, "extracted the wrong function"
     reconcile = _extract_function(_RUNTIME_STORE.read_text(), "reconcilePersistedGpuIds")
@@ -443,10 +438,9 @@ console.log("RESULT " + JSON.stringify({
 def test_staged_diffusion_name_check_matches_the_backend(tmp_path):
     """The staged config page must classify DiffusionGemma like /validate does.
 
-    ``_classify_diffusion_gguf`` has no header to read before the download, so
-    it strips non-alphanumerics from the identity and looks for the family name.
-    The frontend gates the Host Memory control on the same rule; if the two
-    disagree the UI offers a mode the load then rejects with a 400.
+    ``_classify_diffusion_gguf`` has no header before the download, so it strips
+    non-alphanumerics and looks for the family name. The frontend gates the Host
+    Memory control on the same rule; disagreement offers a mode /load 400s.
     """
     identities = [
         "unsloth/DiffusionGemma-2B-GGUF",

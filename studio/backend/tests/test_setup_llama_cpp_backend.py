@@ -3,10 +3,9 @@
 
 """Backend selector coverage for setup.sh and setup.ps1.
 
-cpu maps to install_llama_prebuilt.py's persisted --force-cpu option. vulkan is
-accepted and passed through in the environment for the installer to consume.
-The match is case-insensitive and whitespace-trimmed, unknown values warn, and
-macOS warns for the CPU-only choice.
+cpu maps to install_llama_prebuilt.py's persisted --force-cpu; vulkan passes
+through in the environment for the installer. Matching is case-insensitive and
+trimmed, unknown values warn, and macOS warns for the CPU-only choice.
 """
 
 import os

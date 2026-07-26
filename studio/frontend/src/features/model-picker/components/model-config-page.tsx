@@ -283,9 +283,8 @@ function GpuMemorySettings({
       : null;
   const singleGpuInUse =
     (selectedGpuIds ?? gpuDevices.map((device) => device.index)).length <= 1;
-  // A diffusion GGUF never runs through the Vulkan build, so /load resolves its
-  // gpu_ids as CUDA physical ids (routes/inference.py). Offering ggml Vulkan
-  // ordinals here would pin a different card than the one that was clicked.
+  // A diffusion GGUF never runs through the Vulkan build: /load resolves its gpu_ids
+  // as CUDA physical ids, so ggml Vulkan ordinals here would pin a different card.
   const gpuIdsMeanOtherDevices = isDiffusion && gpuIndexKind === "vulkan";
   // Multi-GPU only, with one backend-declared index namespace. null = all.
   const showGpuPicker =
@@ -655,9 +654,8 @@ export function ModelConfigPage({
   const rememberId = useId();
   const isActiveModel = loadedConfig != null;
   const loadedIsDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
-  // Before the model is loaded there is no header flag, so fall back to the same
-  // name check the backend uses pre-download: the staged Load flow must hide the
-  // controls /validate and /load reject, not just the active-model sheet.
+  // No header flag before load, so fall back to the backend's pre-download name
+  // check: the staged Load flow must also hide controls /validate and /load reject.
   const isDiffusionModel =
     (isActiveModel && loadedIsDiffusion) || looksLikeDiffusionGemma(target.id);
   const hfToken = useChatRuntimeStore((s) => s.hfToken);

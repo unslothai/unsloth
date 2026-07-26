@@ -615,9 +615,8 @@ def test_diffusion_gates_cover_the_staged_load_flow():
     """Every control the diffusion runner rejects must be hidden before the load.
 
     ``_reject_diffusion_memory_mode`` 400s an explicit gguf_memory_mode for a
-    DiffusionGemma GGUF, and it classifies a not-yet-downloaded repo from its
-    name alone. Gating the Host Memory select on the LOADED model only left the
-    staged "Load model" flow offering a mode the load then rejects.
+    DiffusionGemma GGUF, classifying a not-yet-downloaded repo by name alone, so
+    gating Host Memory on the LOADED model alone left staged Load offering it.
     """
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert "looksLikeDiffusionGemma(target.id)" in page
@@ -632,20 +631,18 @@ def test_diffusion_gates_cover_the_staged_load_flow():
 
 
 def test_gpu_picker_hidden_when_its_ordinals_mean_other_devices():
-    """A diffusion GGUF resolves gpu_ids as CUDA physical ids even on a Vulkan
-    build (_resolve_gguf_gpu_ids_for_request sets ids_are_vulkan_ordinals to
-    False for it), while /api/system still advertises ggml Vulkan ordinals. The
-    picker must not offer indices that would pin a different card."""
+    """A diffusion GGUF resolves gpu_ids as CUDA physical ids even on a Vulkan build,
+    while /api/system still advertises ggml Vulkan ordinals, so the picker must not
+    offer indices that would pin a different card."""
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert 'const gpuIdsMeanOtherDevices = isDiffusion && gpuIndexKind === "vulkan"' in page
     assert "!gpuIdsMeanOtherDevices &&" in page
 
 
 def test_cold_device_cache_never_untags_a_saved_gpu_pick():
-    """The settings snapshot cannot know the namespace before /api/system
-    resolves, so the storage layer keeps the namespace already on record rather
-    than writing the pick back untagged (which re-reads as a legacy physical
-    pick and is discarded on a Vulkan host)."""
+    """The snapshot cannot know the namespace before /api/system resolves, so storage
+    keeps the one on record rather than writing the pick back untagged (which re-reads
+    as legacy physical and is discarded on a Vulkan host)."""
     config = _read("features/model-picker/model-config/per-model-config.ts")
     assert "function keepStoredGpuIndexKind(" in config
     assert "keepStoredGpuIndexKind(" in config.split("export function savePerModelConfig")[1]
