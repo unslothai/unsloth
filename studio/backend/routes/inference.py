@@ -11400,9 +11400,7 @@ class _ResponsesReasoningExtractor:
         self._quote_counts["'"] += _count_quote_delimiters(
             body, "'", prev = self._span_last_char, nxt = nxt, prev_escapes = escapes
         )
-        self._span_last_char_escaped = (
-            _trailing_backslash_run(chunk[:-1], escapes) % 2 == 1
-        )
+        self._span_last_char_escaped = _trailing_backslash_run(chunk[:-1], escapes) % 2 == 1
         self._trailing_backslashes = _trailing_backslash_run(chunk, escapes)
         # Carry the pending backticks so a fence straddling the chunk boundary is
         # counted exactly as ``str.count("```")`` over the full concatenation.
