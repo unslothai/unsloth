@@ -92,7 +92,7 @@ def test_base_precision_denies_fp8_for_corrupted_family():
     assert flux.base_precision == "fp8"
 
 
-def test_family_train_infos_drops_denied_fp8_for_qwen(monkeypatch):
+def test_family_train_infos_drops_denied_fp8_for_qwen(monkeypatch, dit_train_host):
     # /info advertises the machine's DiT modes per family, but a family whose DiT the mode corrupts
     # must not offer it, so the UI never surfaces a mode normalized() would reject.
     monkeypatch.setattr(
@@ -528,7 +528,7 @@ def test_train_precision_modes_gates_dense_on_bf16_support(monkeypatch):
 
 
 # ── family_train_infos precision fields ───────────────────────────────────────
-def test_family_train_infos_carries_precision_fields(monkeypatch):
+def test_family_train_infos_carries_precision_fields(monkeypatch, dit_train_host):
     # Pin the machine probe so the DiT families carry a deterministic mode list, while SDXL (no
     # precision selector) stays empty regardless.
     monkeypatch.setattr(common, "train_precision_modes", lambda: (["nf4", "bf16"], "auto"))

@@ -166,7 +166,7 @@ def test_krea2_family_wiring():
 # ── training wiring ──────────────────────────────────────────────────────────
 
 
-def test_krea2_training_registry():
+def test_krea2_training_registry(dit_train_host):
     from core.inference.diffusion_families import trainable_family_names
     from core.training.diffusion_train_common import (
         family_train_infos,

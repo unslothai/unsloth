@@ -194,7 +194,7 @@ def test_gated_access_requires_token():
     _assert_gated_access("black-forest-labs/FLUX.2-klein-4B", None)  # Klein is open
 
 
-def test_family_train_infos_lists_dit_families():
+def test_family_train_infos_lists_dit_families(dit_train_host):
     infos = {i["name"]: i for i in family_train_infos()}
     for fam in ("sdxl", "flux.1", "qwen-image", "z-image", "flux.2-klein", "flux.2-dev"):
         assert fam in infos, f"{fam} missing from family_train_infos"
@@ -213,7 +213,7 @@ def test_family_train_infos_lists_dit_families():
     assert "4bit" in infos["z-image"]["default_base"].lower()
 
 
-def test_family_train_infos_sdxl_supports_compile_without_precision_modes(monkeypatch):
+def test_family_train_infos_sdxl_supports_compile_without_precision_modes(monkeypatch, dit_train_host):
     # Regional compile now applies to every family (the SDXL trainer compiles its U-Net blocks too),
     # but base_precision stays DiT-only, so SDXL advertises no precision modes while z-image keeps
     # its own. Pin the precision list so the assertion holds regardless of the host GPU.

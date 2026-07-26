@@ -1568,7 +1568,7 @@ def test_info_lists_trainable_families(client):
     assert families["z-image"]["defaults"]["resolution"] == 768
 
 
-def test_start_gated_base_without_access_is_400_and_keeps_gpu(client, monkeypatch):
+def test_start_gated_base_without_access_is_400_and_keeps_gpu(client, monkeypatch, dit_train_host):
     # A gated FLUX base with no valid token must 400 from the HEAD preflight BEFORE the GPU residents
     # are freed, so a doomed start never evicts the user's loaded model.
     import urllib.error
