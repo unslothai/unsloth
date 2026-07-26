@@ -1014,8 +1014,7 @@ class TestExtractQuantLabelSubdir:
         assert _extract_quant_label("Foo-F16-Q8_0.gguf") == "Q8_0"
 
     def test_variant_suffix_must_close_the_stem(self):
-        # Only a suffix that directly follows the quant AND ends the stem is a
-        # flavor. Otherwise the picker lists a label the resolver cannot find.
+        # Only a suffix that directly follows the quant and closes the stem is a flavor.
         assert _extract_quant_label("m-Q6_K-MTP-v2.gguf") == "Q6_K"
         assert _extract_quant_label("m-Q6_K-graft-MTP.gguf") == "Q6_K"
         assert _extract_quant_label("m-Q6_K-MTPX.gguf") == "Q6_K"
@@ -1023,9 +1022,8 @@ class TestExtractQuantLabelSubdir:
         assert _extract_quant_label("m-IQ4_XS-3.53bpw-v2.gguf") == "IQ4_XS"
 
     def test_native_windows_path_matches_relative_path(self):
-        # llama_cpp derives hf_variant from the OS-native path it launched.
-        # Without separator handling a quant in a parent folder wins over the
-        # one in the file's own name.
+        # llama_cpp derives hf_variant from the OS-native path it launched, so a
+        # parent folder's quant must not win over the one in the file's own name.
         win = (
             "N:\\AI Models\\Qwen\\Qwen3.6-40B-NEO-CODE-HERE-2T-OT-Q6_K"
             "\\Qwen3.6-40B-NEO-CODE-Q6_K-MTP.gguf"
@@ -1039,8 +1037,7 @@ def test_pick_best_gguf_prefers_real_quant_over_precision_infix():
 
 
 def test_quant_label_matches_hub_extractor():
-    """The hub picker builds the variant list, model_config resolves the pick
-    back to a file. If the two labels drift, a listed variant is unloadable."""
+    """Label drift between the hub picker and model_config makes a listed variant unloadable."""
     from hub.utils.gguf import extract_quant_label as hub_extract_quant_label
 
     names = [

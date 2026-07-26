@@ -66,8 +66,7 @@ GGUF_QUANT_PREFERENCE = [
 ]
 
 _GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
-# Post-quant suffixes that distinguish separate main-weight files sharing a
-# base quant (e.g. Qwen MTP graft variants: ...-Q6_K-MTP vs ...-Q6_K-PT-MTP).
+# Suffixes that keep files sharing a base quant distinct (-Q6_K-MTP vs -Q6_K-PT-MTP).
 _POST_QUANT_VARIANT_SUFFIX_RE = re.compile(
     r"-(?:(?:PT-)?MTP|[0-9]+(?:\.[0-9]+)?bpw)$",
     re.IGNORECASE,

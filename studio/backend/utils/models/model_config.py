@@ -1577,9 +1577,7 @@ _GGUF_QUANT_PREFERENCE = [
     "F32",
 ]
 
-# Mirror of hub/utils/gguf.py ``_POST_QUANT_VARIANT_SUFFIX_RE``. Anchored at
-# both ends: the suffix must directly follow the quant token AND close the
-# stem, so ``-MTPX`` / ``-MTP-v2`` are not read as an MTP flavor.
+# Mirror of hub/utils/gguf.py. Anchored, so ``-MTPX`` / ``-MTP-v2`` are not MTP flavors.
 _POST_QUANT_VARIANT_SUFFIX_RE = re.compile(
     r"-(?:(?:PT-)?MTP|[0-9]+(?:\.[0-9]+)?bpw)$",
     re.IGNORECASE,
@@ -1648,10 +1646,8 @@ def _extract_quant_label(filename: str) -> str:
     """
     import re
 
-    # Callers pass both snapshot-relative posix paths and OS-native absolute
-    # paths (llama_cpp hands us the launched -m path). Without this, a Windows
-    # path has no "/" so the whole string acts as the basename and a quant in a
-    # parent folder outranks the one in the file's own name.
+    # Callers also pass OS-native paths (llama_cpp's launched -m path): without this a
+    # Windows path has no "/", so a parent folder's quant outranks the file's own name.
     normalized = filename.replace("\\", "/")
     basename = normalized.rsplit("/", 1)[-1]
     # Strip .gguf and any shard suffix (-00001-of-00010)
@@ -1681,9 +1677,8 @@ def _extract_quant_label(filename: str) -> str:
                 break
     if match:
         prefix = match.group(1) or ""
-        # Keep a trailing bits-per-weight or MTP-flavor suffix so files that
-        # share a base quant (byteshape's IQ4_XS at 3.53/3.97/4.19 bpw, Qwen
-        # MTP grafts) stay distinct variants instead of merging (#7460).
+        # Keep a trailing bpw / MTP-flavor suffix so files sharing a base quant
+        # (IQ4_XS at 3.53/3.97 bpw, Qwen MTP grafts) stay distinct variants (#7460).
         suffix_match = _POST_QUANT_VARIANT_SUFFIX_RE.match(matched_text[match.end() :])
         suffix = suffix_match.group(0) if suffix_match else ""
         return f"{prefix}{match.group(2)}{suffix}"
