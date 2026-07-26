@@ -1794,7 +1794,16 @@ router = APIRouter()
 studio_router = APIRouter()
 
 
-_ARTIFACT_PREVIEW_FRAME_ANCESTORS = "'self' tauri://localhost http://tauri.localhost"
+# Packaged desktop runs at tauri://localhost (macOS/Linux) or http://tauri.localhost
+# (Windows WebView2); the web build is same-origin ('self'). The `tauri dev` shell,
+# however, serves the frontend from the Vite dev origin (http://localhost:5173),
+# so the packaged allowlist alone leaves the preview blocked in dev with an
+# "ancestor violates frame-ancestors" error. This shell exposes no server resource
+# (it only renders postMessage'd HTML in a no-same-origin sandbox), so also allowing
+# any localhost/127.0.0.1 dev origin to frame it is safe and unblocks the dev shell.
+_ARTIFACT_PREVIEW_FRAME_ANCESTORS = (
+    "'self' tauri://localhost http://tauri.localhost http://localhost:* http://127.0.0.1:*"
+)
 _ARTIFACT_PREVIEW_FRAME_STRICT_CSP = (
     "default-src 'none'; "
     "script-src 'unsafe-inline'; "
@@ -13355,6 +13364,7 @@ async def anthropic_messages(
                 disable_parallel_tool_use = _disable_parallel,
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = getattr(payload, "permission_mode", None),
+                promote_reasoning_only = False,
             )
 
         if payload.stream:
@@ -13394,6 +13404,7 @@ async def anthropic_messages(
             max_tokens = payload.max_tokens,
             stop = stop,
             cancel_event = cancel_event,
+            promote_reasoning_only = False,
         )
 
     if payload.stream:
