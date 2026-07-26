@@ -212,9 +212,7 @@ _TRANSFORMERS_5_REMOTE_IMPORT_MARKERS: tuple[str, ...] = (
 # belong here: ``modeling_layers`` (4.52+) and ``use_kernel_forward_from_hub``
 # (4.51+) import fine on default, so matching them would push ordinary
 # custom-code models (EXAONE, MiniMax, Molmo2, ...) onto the sidecar.
-_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS: tuple[str, ...] = (
-    "transformers.utils.output_capturing",
-)
+_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS: tuple[str, ...] = ("transformers.utils.output_capturing",)
 
 # Caches keyed on (model_name, token-hash) so authed/unauthed reads stay separate (a
 # gated/private repo's unauthenticated miss must not poison a later authenticated lookup).
@@ -697,7 +695,6 @@ def _auto_map_config_files(model_name: str) -> tuple[str, ...]:
     add an uncached fetch each to every tier lookup. Tokenizer/processor auto_map is
     passed in by its own caller (see ``known_refs``)."""
     from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES
-
     return REMOTE_CODE_CONFIG_FILES if _safe_is_dir(Path(model_name)) else ("config.json",)
 
 
