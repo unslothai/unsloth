@@ -75,6 +75,16 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     assert 'className="min-w-0 flex-1"' in reasoning_src
 
 
+def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
+    src = REASONING_TSX.read_text()
+
+    assert "const [retainStreamingHeight, setRetainStreamingHeight]" in src
+    assert "setRetainStreamingHeight(false)" in src
+    assert "setRetainStreamingHeight(isReasoningStreaming)" in src
+    assert "isReasoningStreaming ? 0 : ANIMATION_DURATION" in src
+    assert "streaming={isReasoningStreaming || retainStreamingHeight}" in src
+
+
 def test_response_details_metadata_is_persisted_without_backend_schema_change():
     src = ADAPTER_TS.read_text()
     assert "interface ResponseDetailsMetadata" in src

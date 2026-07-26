@@ -783,6 +783,7 @@ export const ja = {
       trainWithLora: "LoRA でトレーニング",
       stableRank: "Stable Rank",
       memoryEfficient: "メモリ効率化",
+      weightDecomposed: "重み分解",
       optimization: "最適化",
       schedule: "スケジュール",
       memory: "メモリ",

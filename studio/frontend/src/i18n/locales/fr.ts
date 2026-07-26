@@ -777,6 +777,7 @@ export const fr = {
       trainWithLora: "Entraîner avec LoRA",
       stableRank: "Rang stable",
       memoryEfficient: "Économe en mémoire",
+      weightDecomposed: "Poids décomposés",
       optimization: "Optimisation",
       schedule: "Planification",
       memory: "Mémoire",
