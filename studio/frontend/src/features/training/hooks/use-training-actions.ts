@@ -13,6 +13,7 @@ import { buildTrainingStartPayload } from "../api/mappers";
 import { resetTraining, startTraining, stopTraining } from "../api/train-api";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
 import { getTrainingDatasetRepositoryIds } from "../lib/dataset-start-progress";
+import { withImportedResumeCheckpoint } from "../lib/resume-start-payload";
 import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
 import { validateTrainingConfig } from "../lib/validation";
 import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-store";
@@ -147,34 +148,56 @@ export function useTrainingActions() {
         return false;
       }
 
-      // Consent gate for the selected model's custom (auto_map) code.
-      if (config.selectedModel) {
-        const remoteCodeOk = await confirmRemoteCodeIfNeeded({
-          modelName: config.selectedModel,
-          hfToken: config.hfToken.trim() || null,
-          requiresTrustRemoteCode: config.trustRemoteCode,
-          onApprove: (fingerprint) =>
-            useTrainingConfigStore.setState({
-              trustRemoteCode: true,
-              approvedRemoteCodeFingerprint: fingerprint,
-            }),
-        });
-        if (!remoteCodeOk) {
-          runtimeStore.setStarting(false);
-          return false;
-        }
-      }
-
       // Re-read config after potential store updates from dataset check
       const freshPayload = buildTrainingStartPayload(useTrainingConfigStore.getState());
-      const payload: TrainingStartRequest = {
+      let payload: TrainingStartRequest = {
         ...freshPayload,
         ...options?.resumeConfig,
         // Credentials are never restored from a portable manifest.
         hf_token: freshPayload.hf_token,
         wandb_token: null,
       };
-      payload.imported_resume_checkpoint = options?.resumeCheckpointPath ?? null;
+      if (options?.resumeCheckpointPath) {
+        // A portable manifest describes the original run and older manifests
+        // may contain a resume source of their own. The API deliberately
+        // accepts exactly one source, so make the checkpoint just inspected by
+        // the user authoritative instead of intermittently submitting two.
+        payload = withImportedResumeCheckpoint(
+          payload,
+          options.resumeCheckpointPath,
+        );
+      }
+
+      // Use the finalized payload rather than the editable form. On checkpoint
+      // resume the saved model and trust settings come from resumeConfig and can
+      // differ from (or be absent in) the current form.
+      if (payload.model_name) {
+        let trustRemoteCode = Boolean(payload.trust_remote_code);
+        let approvedRemoteCodeFingerprint =
+          payload.approved_remote_code_fingerprint ?? null;
+        const remoteCodeOk = await confirmRemoteCodeIfNeeded({
+          modelName: payload.model_name,
+          hfToken: payload.hf_token ?? null,
+          requiresTrustRemoteCode: trustRemoteCode,
+          onApprove: (fingerprint) => {
+            trustRemoteCode = true;
+            approvedRemoteCodeFingerprint = fingerprint;
+            if (!isResume) {
+              useTrainingConfigStore.setState({
+                trustRemoteCode: true,
+                approvedRemoteCodeFingerprint: fingerprint,
+              });
+            }
+          },
+        });
+        if (!remoteCodeOk) {
+          runtimeStore.setStarting(false);
+          return false;
+        }
+        payload.trust_remote_code = trustRemoteCode;
+        payload.approved_remote_code_fingerprint = approvedRemoteCodeFingerprint;
+      }
+
       runtimeStore.setStartResources(
         payload.model_name,
         getTrainingDatasetRepositoryIds(payload),
