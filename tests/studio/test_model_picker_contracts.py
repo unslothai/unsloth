@@ -481,6 +481,34 @@ def test_llama_extra_args_formatter_quotes_quote_chars():
     assert "/[\\s\"']/.test(token)" in src
 
 
+def test_autoload_preflight_validates_the_args_it_loads():
+    """The cached-autoload /validate must send the extras its /load sends.
+
+    /validate sizes the training-guard VRAM estimate from the extras (a -c in
+    there raises the KV budget) and rejects managed flags. Omitting them makes
+    the preflight validate a different command than the load, so it can pass and
+    the load then fail.
+    """
+    src = _read("features/chat/api/chat-adapter.ts")
+    start = src.index("await canAutoLoad({")
+    payload = src[start : src.index("}))", start)]
+    assert "llama_extra_args: effectiveLlamaExtraArgs" in payload
+
+
+def test_status_hydration_reseeds_llama_extra_args():
+    """A page refresh must recover the running server's args.
+
+    Without the reseed the field reads empty while the server still runs them,
+    and Reload omits llama_extra_args -- which /load treats as "inherit", so the
+    invisible args survive.
+    """
+    src = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    assert "llamaExtraArgs: status.llama_extra_args" in src
+    assert "loadedLlamaExtraArgs: status.llama_extra_args" in src
+    types_src = _read("features/chat/types/api.ts")
+    assert "llama_extra_args?: string[] | null;" in types_src
+
+
 def test_llama_extra_args_parser_keeps_non_escape_backslashes():
     """A quoted Windows path must survive the field.
 

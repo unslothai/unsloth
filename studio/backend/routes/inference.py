@@ -5040,7 +5040,10 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
-        if config.is_gguf and request.llama_extra_args is not None:
+        # Unconditional, like /load: gating on is_gguf here would let a preflight
+        # pass extras that /load then 400s on, after it already unloaded the
+        # active model -- the exact case this preflight exists to prevent.
+        if request.llama_extra_args is not None:
             from core.inference.llama_server_args import validate_extra_args
             try:
                 validate_extra_args(request.llama_extra_args)
@@ -5906,6 +5909,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 n_layers = llama_backend.n_layers,
                 n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,
+                llama_extra_args = llama_backend.extra_args,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
                 llama_cpp_prebuilt_stale = _stale,

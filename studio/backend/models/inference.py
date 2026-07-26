@@ -658,6 +658,14 @@ class InferenceStatusResponse(BaseModel):
         None,
         description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
     )
+    llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Pass-through llama-server flags the active GGUF load was launched with. "
+            "Lets the UI re-seed (and so clear) the args field on hydration instead of "
+            "showing an empty box while the server still runs them. None for non-GGUF."
+        ),
+    )
     llama_cpp_supports_mtp: bool = Field(
         True,
         description = (

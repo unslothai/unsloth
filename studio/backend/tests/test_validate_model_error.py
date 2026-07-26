@@ -213,7 +213,12 @@ def test_validate_lora_clean_when_neither_needs_trc(monkeypatch):
     assert resp.requires_trust_remote_code is False
 
 
-def test_validate_rejects_denied_llama_extra_args_on_gguf(monkeypatch):
+@pytest.mark.parametrize("is_gguf", [True, False])
+def test_validate_rejects_denied_llama_extra_args(monkeypatch, is_gguf):
+    # /load validates extras unconditionally, before it resolves the model. If
+    # /validate skipped the check whenever it classified the target as non-GGUF,
+    # the preflight would pass and /load would 400 after unloading the active
+    # model -- the failure this preflight exists to prevent.
     from types import SimpleNamespace
 
     import utils.models.model_config as mc
@@ -226,7 +231,7 @@ def test_validate_rejects_denied_llama_extra_args_on_gguf(monkeypatch):
     config = SimpleNamespace(
         identifier = "org/gguf-repo",
         display_name = "org/gguf-repo",
-        is_gguf = True,
+        is_gguf = is_gguf,
         is_lora = False,
         is_vision = False,
         gguf_file = None,
@@ -327,3 +332,60 @@ def test_validate_guard_honours_an_explicit_empty_extra_args(monkeypatch):
         backend_extra_args = ["-c", "65536"],
     )
     assert seen == []
+
+
+def _loaded_llama_backend(extra_args):
+    """Minimal stand-in for a loaded llama-server, as /status reads it."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        is_loaded = True,
+        model_identifier = "org/gguf-repo",
+        is_vision = False,
+        is_diffusion = False,
+        hf_variant = "Q4_K_M",
+        chat_template_override = None,
+        supports_reasoning = False,
+        reasoning_style = "enable_thinking",
+        reasoning_effort_levels = [],
+        reasoning_always_on = False,
+        supports_preserve_thinking = False,
+        supports_tools = False,
+        chat_template = None,
+        context_length = 4096,
+        max_context_length = 4096,
+        native_context_length = 4096,
+        cache_type_kv = None,
+        requested_spec_mode = None,
+        spec_draft_n_max = None,
+        tensor_parallel = False,
+        gpu_memory_mode = "auto",
+        gpu_layers = -1,
+        n_cpu_moe = 0,
+        tensor_split = None,
+        requested_n_ctx = 0,
+        n_layers = None,
+        n_moe_layers = 0,
+        gpu_ids = None,
+        extra_args = extra_args,
+        spec_fallback_reason = None,
+    )
+
+
+@pytest.mark.parametrize("extra_args", [["--cpu-moe", "--no-mmap"], [], None])
+def test_status_exposes_the_active_llama_extra_args(monkeypatch, extra_args):
+    """/status must report the extras the running llama-server was launched with.
+
+    They are the same list ``_resolve_inherited_extra_args`` treats as
+    authoritative, so without them the UI shows an empty args field after a
+    refresh while the server still runs them -- and a Reload then omits the
+    field, which /load reads as "inherit", silently keeping args the user can
+    neither see nor clear.
+    """
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _loaded_llama_backend(extra_args))
+    monkeypatch.setattr(inf, "load_inference_config", lambda *_a, **_k: None)
+    monkeypatch.setattr(inf, "resolve_effective_chat_template_override", lambda **_k: None)
+
+    resp = asyncio.run(inf.get_status(current_subject = "tester"))
+    assert resp.is_gguf is True
+    assert resp.llama_extra_args == extra_args

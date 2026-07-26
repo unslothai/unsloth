@@ -56,9 +56,9 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # llama.cpp binaries match.
     frozenset({"--webui", "--no-webui"}),
     frozenset({"--ui", "--no-ui"}),
-    frozenset({"--ui-config"}),
-    frozenset({"--ui-config-file"}),
-    frozenset({"--ui-mcp-proxy", "--no-ui-mcp-proxy"}),
+    frozenset({"--ui-config", "--webui-config"}),
+    frozenset({"--ui-config-file", "--webui-config-file"}),
+    frozenset({"--ui-mcp-proxy", "--no-ui-mcp-proxy", "--webui-mcp-proxy", "--no-webui-mcp-proxy"}),
     frozenset({"--models-dir"}),
     frozenset({"--models-preset"}),
     frozenset({"--models-max"}),
@@ -70,6 +70,10 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # llama-server's own built-in tools flag would silently stack on top of
     # Unsloth's --enable-tools / --disable-tools policy resolver.
     frozenset({"--tools"}),
+    # --agent is a shorthand for both flags above: it sets server_tools={"all"}
+    # (exec_shell_command, write_file, ...) and ui_mcp_proxy=true, so denying only
+    # --tools / --ui-mcp-proxy leaves the same switch one alias away.
+    frozenset({"-ag", "--agent", "-no-ag", "--no-agent"}),
     # Slot-state dir: Studio owns it for KV persistence across idle unload.
     frozenset({"--slot-save-path"}),
 )

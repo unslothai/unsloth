@@ -170,6 +170,10 @@ def test_non_flag_token_passes_through():
         "--ui-config-file",
         "--ui-mcp-proxy",
         "--no-ui-mcp-proxy",
+        "--webui-config",
+        "--webui-config-file",
+        "--webui-mcp-proxy",
+        "--no-webui-mcp-proxy",
         "--models-dir",
         "--models-preset",
         "--models-max",
@@ -183,6 +187,11 @@ def test_non_flag_token_passes_through():
         "--reranking",
         # llama-server's own --tools clashes with Unsloth's tool policy.
         "--tools",
+        # --agent is shorthand for --tools all + --ui-mcp-proxy.
+        "-ag",
+        "--agent",
+        "-no-ag",
+        "--no-agent",
         # Slot-state dir: Studio owns it for KV persistence across idle unload.
         "--slot-save-path",
     ],
@@ -256,6 +265,29 @@ def test_denylist_rejects_np_with_digit_prefix_and_junk(attached):
     # expands, else HTTP /load could smuggle `-np8x` through.
     with pytest.raises(ValueError, match = "np"):
         validate_extra_args([attached])
+
+
+def test_agent_alias_is_managed_like_tools_and_mcp_proxy():
+    # common/arg.cpp: -ag/--agent sets server_tools={"all"} (exec_shell_command,
+    # write_file, edit_file, ...) and ui_mcp_proxy=true -- the exact two options
+    # --tools and --ui-mcp-proxy are denied for. Denying only those leaves the
+    # same switch one alias away.
+    for flag in ("-ag", "--agent", "-no-ag", "--no-agent", "--agent=1", "--no_agent"):
+        assert is_managed_flag(flag) is True
+        with pytest.raises(ValueError):
+            validate_extra_args([flag])
+
+
+def test_legacy_webui_aliases_are_managed():
+    # Upstream renamed --webui-* to --ui-* but kept both spellings on the same
+    # option (common/arg.cpp), so denying only the new names is a bypass.
+    for flag in (
+        "--webui-config",
+        "--webui-config-file",
+        "--webui-mcp-proxy",
+        "--no-webui-mcp-proxy",
+    ):
+        assert is_managed_flag(flag) is True
 
 
 def test_denylist_rejects_short_form_when_long_is_denied():

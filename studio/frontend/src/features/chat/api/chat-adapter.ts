@@ -1500,6 +1500,10 @@ async function autoLoadSmallestModel(): Promise<{
     // The safetensors fallback omits both fields and uses HF auto-placement.
     gpu_ids?: number[];
     gpu_memory_mode?: "auto" | "manual";
+    // Sent so the preflight validates (and sizes the KV budget against) the
+    // same extras the load below passes; omitting them makes validate inherit
+    // the previous load's instead.
+    llama_extra_args?: string[];
   }): Promise<boolean> {
     const validation = await validateModel({
       ...payload,
@@ -1594,6 +1598,7 @@ async function autoLoadSmallestModel(): Promise<{
           ? {
               gpu_ids: effectiveGpuIds ?? undefined,
               gpu_memory_mode: effectiveGpuMemoryMode,
+              llama_extra_args: effectiveLlamaExtraArgs,
             }
           : {}),
       }))

@@ -243,6 +243,9 @@ export interface InferenceStatusResponse {
    * Manual + Auto-layers context pin on hydration. Null for non-GGUF. */
   requested_context_length?: number | null;
   gpu_ids?: number[] | null;
+  /** Pass-through llama-server flags the active GGUF load ran with; re-seeds the
+   * args field on hydration so it can be read and cleared. Null for non-GGUF. */
+  llama_extra_args?: string[] | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;

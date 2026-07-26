@@ -320,6 +320,15 @@ export function applyActiveModelStatusToStore(
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
+    // Without this the args field reads empty after a refresh while the server
+    // still runs them, and a Reload omits the field -- which the backend reads
+    // as "inherit", silently keeping args the user can no longer see or clear.
+    ...(seedLoadParams &&
+      status.llama_extra_args !== undefined &&
+      (prevState.loadedLlamaExtraArgs === null || hydratingExistingModel) && {
+        llamaExtraArgs: status.llama_extra_args,
+        loadedLlamaExtraArgs: status.llama_extra_args,
+      }),
     // Re-seed on first hydration, model/variant changes, or a same-model backend
     // placement change. gpuStatusFields preserves dirty local edits in the last
     // case while advancing their loaded baselines.
