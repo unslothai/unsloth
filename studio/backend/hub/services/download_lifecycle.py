@@ -11,7 +11,7 @@ import sys
 import time
 import threading
 from pathlib import Path
-from typing import Callable, Mapping, Optional
+from typing import Callable, Mapping, Optional, Sequence
 
 from fastapi import HTTPException
 
@@ -49,6 +49,22 @@ def resolve_transport(use_xet: bool) -> str:
     if unavailable_reason is not None:
         raise HTTPException(status_code = 400, detail = unavailable_reason)
     return transport
+
+
+def write_files_manifest(files: Sequence[str]) -> str:
+    """Stage a scoped job's file list in a temp JSON file and return its path.
+
+    The worker deletes it after reading. A pipeline repo lists hundreds of files, well past
+    what is comfortable on a command line."""
+    import json
+    import tempfile
+
+    handle = tempfile.NamedTemporaryFile(
+        mode = "w", suffix = ".json", prefix = "unsloth-dl-files-", delete = False, encoding = "utf-8"
+    )
+    with handle:
+        json.dump(list(files), handle)
+    return handle.name
 
 
 def spawn_worker(
@@ -447,6 +463,10 @@ def _try_http_retry(
         args.append("--dataset")
     elif variant:
         args.extend(["--variant", variant])
+    # A scoped job must retry as the SAME scoped download; without its file list the
+    # HTTP worker would fall through to a full snapshot of the repo.
+    if original_metadata.scoped_files:
+        args.extend(["--files-json", write_files_manifest(original_metadata.scoped_files)])
 
     # Re-query at spawn time: sibling state may have changed since XET failed.
     peer_hashes = registry.peer_blob_hashes(key) if variant else frozenset()

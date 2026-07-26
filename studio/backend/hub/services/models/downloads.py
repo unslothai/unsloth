@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, Sequence, TYPE_CHECKING
 
 from fastapi import HTTPException
 from loggers import get_logger
@@ -21,6 +21,7 @@ from hub.utils import download_registry
 from hub.utils import download_manifest
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_cache_state import has_active_incomplete_blobs
+from hub.utils.snapshot_filters import blob_hashes_for_siblings
 from hub.utils.paths import (
     is_valid_gguf_variant as _is_valid_gguf_variant,
     is_valid_repo_id as _is_valid_repo_id,
@@ -41,6 +42,31 @@ _registry = download_registry.get_models_registry()
 def _download_job_key(repo_id: str, variant: Optional[str]) -> str:
     return download_registry.normalize_job_key(
         f"{download_registry.normalize_repo_key(repo_id)}::{variant or ''}"
+    )
+
+
+# A scope rides the variant slot as "@name". No GGUF quant label starts with "@", so a
+# scoped job never collides with a real variant or with the repo's full snapshot, and its
+# manifest/cancel marker stay in their own space.
+_SCOPE_PREFIX = "@"
+
+
+def _scope_variant(scope_id: Optional[str]) -> Optional[str]:
+    scope = (scope_id or "").strip()
+    return f"{_SCOPE_PREFIX}{scope}" if scope else None
+
+
+def scoped_file_blob_hashes(
+    repo_id: str, files: Sequence[str], hf_token: Optional[str]
+) -> frozenset[str]:
+    """Blob hashes for exactly ``files``, so a scoped job's progress, purge and peer
+    protection cover its own files and nothing else in the repo."""
+    from huggingface_hub import HfApi
+
+    wanted = set(files)
+    info = HfApi().model_info(repo_id, files_metadata = True, token = hf_token)
+    return blob_hashes_for_siblings(
+        [s for s in info.siblings if getattr(s, "rfilename", None) in wanted]
     )
 
 
@@ -91,10 +117,14 @@ def _spawn_download_worker(
     use_xet: bool = True,
     protected_blob_hashes: Optional[frozenset[str]] = None,
     cache_env: Optional[dict[str, str]] = None,
+    files: Optional[Sequence[str]] = None,
 ) -> subprocess.Popen:
     args = ["--repo-id", repo_id]
     if variant:
         args.extend(["--variant", variant])
+    if files:
+        # Via a temp file, not argv: a pipeline repo's list runs to hundreds of names.
+        args.extend(["--files-json", download_lifecycle.write_files_manifest(files)])
     return download_lifecycle.spawn_worker(
         args,
         hf_token,
@@ -124,6 +154,22 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
             status_code = 400,
             detail = f"Invalid gguf_variant: {variant!r}",
         )
+    # A scoped job fetches only `files` and keys itself apart from the repo's full snapshot.
+    scope_variant = _scope_variant(body.scope_id)
+    scoped_files = [f for f in (body.files or []) if f and f.strip()]
+    if scope_variant is not None:
+        if variant is not None:
+            raise HTTPException(
+                status_code = 400,
+                detail = "scope_id and gguf_variant are mutually exclusive.",
+            )
+        if not scoped_files:
+            raise HTTPException(
+                status_code = 400, detail = "scope_id requires a non-empty files list."
+            )
+        if not _is_valid_gguf_variant(scope_variant):
+            raise HTTPException(status_code = 400, detail = f"Invalid scope_id: {body.scope_id!r}")
+        variant = scope_variant
     key = _download_job_key(repo_id, variant)
     use_xet = download_lifecycle.resolve_effective_use_xet(body.use_xet)
     transport = download_lifecycle.resolve_transport(use_xet)
@@ -136,20 +182,27 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
     completed_baseline_bytes = 0
     if variant is not None:
         try:
-            variant_blob_hashes = await asyncio.to_thread(
-                gguf_variants.gguf_variant_blob_hashes,
-                repo_id,
-                variant,
-                hf_token,
-                include_companions = False,
-            )
-            variant_progress_blob_hashes = await asyncio.to_thread(
-                gguf_variants.gguf_variant_blob_hashes,
-                repo_id,
-                variant,
-                hf_token,
-                include_companions = True,
-            )
+            if scope_variant is not None:
+                # A scope owns exactly its own files: same set for purge and for progress.
+                variant_blob_hashes = await asyncio.to_thread(
+                    scoped_file_blob_hashes, repo_id, scoped_files, hf_token
+                )
+                variant_progress_blob_hashes = variant_blob_hashes
+            else:
+                variant_blob_hashes = await asyncio.to_thread(
+                    gguf_variants.gguf_variant_blob_hashes,
+                    repo_id,
+                    variant,
+                    hf_token,
+                    include_companions = False,
+                )
+                variant_progress_blob_hashes = await asyncio.to_thread(
+                    gguf_variants.gguf_variant_blob_hashes,
+                    repo_id,
+                    variant,
+                    hf_token,
+                    include_companions = True,
+                )
         except Exception as e:
             logger.warning(
                 "GGUF hash pre-resolution failed for %s [%s]; continuing without "
@@ -183,6 +236,7 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
         admission_check = lambda: not _load_in_flight(repo_id),
         hub_cache = str(cache_paths.hub_cache),
         xet_cache = str(cache_paths.xet_cache),
+        scoped_files = scoped_files if scope_variant is not None else None,
     )
     generation = _registry.current_generation(key)
     if not claimed:
@@ -218,6 +272,7 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
             use_xet = use_xet,
             protected_blob_hashes = protected_blob_hashes,
             cache_env = cache_env,
+            files = scoped_files if scope_variant is not None else None,
         ),
         hf_token = hf_token,
         label = label,
