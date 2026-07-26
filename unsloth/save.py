@@ -1123,10 +1123,8 @@ def unsloth_save_model(
         torch_dtype
     )
 
-    # Per-device VRAM budget: a merged tensor lives on the GPU of its source
-    # layer, so a model sharded across GPUs (device_map="balanced") must be
-    # budgeted against W's own device, not GPU0 -- otherwise GPU1+ can OOM as
-    # their merged weights accumulate while only GPU0's headroom is checked.
+    # A merged tensor lives on the GPU of its source layer, so budget against W's own
+    # device, not GPU0, else a sharded model OOMs GPU1+ while only GPU0 is checked.
     _max_vram_by_device = {}
 
     def _device_vram_budget(dev):
@@ -1158,10 +1156,10 @@ def unsloth_save_model(
                 _dev_budget is not None
                 and (torch.cuda.memory_allocated(W.device) + W.nbytes) < _dev_budget
             ):
-                # Fits on W's own GPU -> keep it there.
+                # Fits on W's own GPU
                 state_dict[name] = W
             elif W.device.type != "cuda":
-                # Already off-GPU (offloaded layer): keeping it costs no VRAM.
+                # Already off-GPU: keeping it costs no VRAM
                 state_dict[name] = W
             # [TODO] Saving to RAM seems to leak memory???
             # elif (max_ram - W.nbytes) > 0:
@@ -4546,8 +4544,8 @@ def _unsloth_save_torchao_with_given_config(
     else:
         kwargs = {"dtype": torch.bfloat16}
 
-    # Same guard as the sibling quantized-export paths: without it the original
-    # stays resident on every GPU while device_map="auto" loads a second copy.
+    # Else the original stays resident on every GPU while device_map="auto" below
+    # loads a second copy.
     model_restore = _offload_model_for_quantize_subprocess(model)
     for _ in range(3):
         gc.collect()
@@ -4556,9 +4554,8 @@ def _unsloth_save_torchao_with_given_config(
         if hasattr(torch, "xpu") and torch.xpu.is_available():
             torch.xpu.empty_cache()
 
-    # The original stays offloaded until the quantized copy has been saved AND
-    # released, otherwise both are resident at once and the model that only fit
-    # because of the offload OOMs on the way back.
+    # The original stays offloaded until the quantized copy is saved AND released,
+    # else both are resident at once and the restore OOMs.
     try:
         # Reload with quantization applied
         quantized_model = auto_model.from_pretrained(
@@ -4590,8 +4587,8 @@ def _unsloth_save_torchao_with_given_config(
         # would otherwise still be resident while the original is restored.
         quantized_model = None
         del quantized_model
-        # A failed save leaves a live traceback whose frames still reference the
-        # quantized copy, so dropping the local alone does not free its VRAM.
+        # A failed save leaves a live traceback whose frames still hold the copy, so
+        # dropping the local alone does not free its VRAM.
         _exc = sys.exc_info()[1]
         if _exc is not None:
             traceback.clear_frames(_exc.__traceback__)
@@ -4657,9 +4654,8 @@ _ACCELERATE_MOVE_GUARDS = _accelerate_move_guards()
 def _accelerate_dispatch_root(model):
     """The module that really owns the accelerate dispatch.
 
-    A PEFT wrapper proxies unknown attributes to the model it wraps, so
-    ``hasattr(wrapper, "_hf_hook")`` is True but ``delattr`` fails and
-    ``remove_hook_from_submodules`` raises before removing anything. ``hf_device_map``
+    A PEFT wrapper only proxies ``_hf_hook``, so ``delattr`` fails and
+    ``remove_hook_from_submodules`` raises before removing anything; ``hf_device_map``
     keys are relative to the inner root too. Walks real children, never ``__getattr__``.
     """
     node, seen = model, set()
@@ -4694,21 +4690,18 @@ def _snapshot_dispatch_state(root):
         for name, mod in root.named_modules()
         if "_hf_hook" in mod.__dict__
     ]
-    # remove_duplicate=False: the default hides one half of every tied pair, which is
-    # exactly the half that needs re-tying below.
+    # remove_duplicate=False: the default hides one half of every tied pair, exactly
+    # the half that needs re-tying below.
     named = list(root.named_parameters(remove_duplicate = False)) + list(
         root.named_buffers(remove_duplicate = False)
     )
     places = {name: tensor.device for name, tensor in named}
-    # Tied weights share one storage. The CPU round trip repoints every tensor and
-    # accelerate's tied_params_map is keyed on the old pointer, so replaying the
-    # hooks alone materialises independent copies: double VRAM, and later updates
-    # to one no longer reach the other.
-    # Skip meta tensors: accelerate parks every CPU/disk-offloaded parameter on
-    # meta, and they all report pointer 0, which would otherwise collapse into one
-    # enormous fake "tied" group of differently shaped tensors. Nothing is lost --
-    # offloading already replaced each side of a tie with its own meta placeholder,
-    # so there is no shared object or storage left to record.
+    # Tied weights share one storage, but the CPU round trip repoints every tensor and
+    # tied_params_map is keyed on the old pointer, so replaying the hooks alone gives
+    # independent copies: double VRAM, and updates to one no longer reach the other.
+    # Skip meta tensors: offloaded parameters all sit on meta with pointer 0, which
+    # would collapse into one fake "tied" group of differently shaped tensors, and
+    # each side of a tie is already its own meta placeholder so nothing is lost.
     groups = {}
     for name, tensor in named:
         if tensor.device.type == "meta":
@@ -4717,11 +4710,10 @@ def _snapshot_dispatch_state(root):
         if ptr:
             groups.setdefault(ptr, []).append(name)
     ties = [names for names in groups.values() if len(names) > 1]
-    # Removing a hook restores `forward = _old_forward`, captured before unsloth
-    # patched the module, so a remove/re-add drops every fused kernel installed
-    # after the dispatch (measured: apply_lora_mlp_swiglu on all 28 MLPs) for good.
-    # It also deletes the `to`/`cuda`/`xpu`/... wrappers dispatch_model installs to
-    # stop a caller moving an offloaded model, so those are recorded as well.
+    # Removing a hook restores `forward = _old_forward`, captured before unsloth patched
+    # the module, so a remove/re-add permanently drops every fused kernel installed after
+    # the dispatch (measured: apply_lora_mlp_swiglu on all 28 MLPs). It also deletes the
+    # `to`/`cuda`/... move guards, so record those too.
     attrs = ("forward", "_old_forward") + tuple(_ACCELERATE_MOVE_GUARDS)
     saved_attrs = {
         name: {a: mod.__dict__[a] for a in attrs if a in mod.__dict__}
@@ -4734,9 +4726,9 @@ def _snapshot_dispatch_state(root):
 def _drop_accelerator_tied_param_cache(snapshot) -> None:
     """Drop the GPU tensors accelerate caches in each hook's ``tied_params_map``.
 
-    Holding the hooks across the offload pins a GPU copy of the tied embedding
-    (0.31 GB of 1.24 GB here). The entries are keyed by the pre-move ``data_ptr``,
-    so they are stale anyway and re-attaching repopulates them.
+    Holding the hooks across the offload pins a GPU copy of the tied embedding (0.31 GB
+    of 1.24 GB here). The entries are keyed on the pre-move ``data_ptr`` so they are
+    stale anyway, and re-attaching repopulates them.
     """
     for _name, hook in snapshot[0]:
         cache = getattr(hook, "tied_params_map", None)
@@ -4796,15 +4788,15 @@ def _restore_dispatch_state(root, snapshot) -> None:
         add_hook_to_module(root.get_submodule(name) if name else root, hook)
 
     # Re-adding a hook rewraps whatever `_old_forward` now holds, so put the exact
-    # callables back. `_old_forward` first, then `forward`.
+    # callables back, `_old_forward` first.
     for name, values in saved_attrs.items():
         mod = root.get_submodule(name) if name else root
         for attr in ("_old_forward", "forward", *_ACCELERATE_MOVE_GUARDS):
             if attr in values:
                 mod.__dict__[attr] = values[attr]
 
-    # init_hook only re-places tensors the hooked module owns, so anything added to
-    # the tree after the dispatch (the LoRA adapters) is still on CPU.
+    # init_hook only re-places tensors the hooked module owns, so anything added after
+    # the dispatch (the LoRA adapters) is still on CPU.
     for mod_name, mod in root.named_modules():
         for attr in ("_parameters", "_buffers"):
             store = getattr(mod, attr, None)
@@ -4830,39 +4822,30 @@ def _restore_dispatch_state(root, snapshot) -> None:
             continue
         for follower in names[1:]:
             _share_tensor(root, follower, leader)
-    # init_hook refilled tied_params_map with the pre-retie tensors; those are now
-    # unreferenced by the model but still pinned by the map.
+    # init_hook refilled tied_params_map with the pre-retie tensors, now unreferenced
+    # by the model but still pinned by the map.
     if ties:
         _drop_accelerator_tied_param_cache(snapshot)
 
 
 def _offload_model_for_quantize_subprocess(model):
-    """Best-effort: move the merged model's weights off the GPU before the
-    llm-compressor subprocess loads its own copy from disk, so the GPUs need not
-    hold both at once. Returns an opaque restore token for
-    ``_restore_model_after_quantize_subprocess`` (None when nothing was moved).
+    """Best-effort: move the model's weights off the GPU before the quantized export
+    loads its own copy from disk, so the GPUs need not hold both at once. Returns an
+    opaque token for ``_restore_model_after_quantize_subprocess`` (None if nothing moved).
 
     Two shapes are handled:
-      * single-device CUDA model -> plain ``.to("cpu")``, restored with
-        ``.to(device)``;
-      * accelerate-dispatched model (a multi-GPU ``device_map`` shard, e.g. the
-        Studio multi-GPU export load) -> accelerate's hooks are removed and the
-        model moved to CPU, restored by re-dispatching over the recorded
-        ``hf_device_map``. A plain ``.to("cpu")`` is invalid on a dispatched
-        model, which is why the old single-device-only move skipped these and
-        left every GPU holding a full copy while the subprocess loaded another.
-        A map that spills to CPU is still released -- those weights are in host
-        RAM and the GPU-mapped modules are the ones worth reclaiming -- but a map
-        with disk/meta targets is left alone: accelerate keeps those parameters
-        off the model, so moving would try to materialize the whole checkpoint.
+      * single-device CUDA/XPU model -> ``.to("cpu")``, restored with ``.to(device)``;
+      * accelerate-dispatched model (a multi-GPU ``device_map`` shard, e.g. the Studio
+        multi-GPU export load) -> hooks removed and moved to CPU, restored by replaying
+        the dispatch. A plain ``.to("cpu")`` is invalid here, which is why the old
+        single-device-only move left every GPU holding a full copy. A map spilling to
+        CPU is still released, but disk/meta targets are left alone: accelerate keeps
+        those parameters off the model, so moving would materialize the whole checkpoint.
 
-    Quantized (bnb) models are attempted too rather than skipped outright: the
-    Studio export path loads 4-bit by DEFAULT, so skipping them left a quantized
-    shard on every GPU while the subprocess or the torchao reload allocated
-    another copy. transformers refuses ``.to()`` for some bitsandbytes builds, and
-    that refusal raises before anything moves, so the existing failure path simply
-    restores the model and returns None -- i.e. best-effort where the stack allows
-    it, and exactly the old behaviour where it does not.
+    Quantized (bnb) models are attempted too rather than skipped: Studio exports load
+    4-bit by DEFAULT, so skipping them left a shard on every GPU. transformers refuses
+    ``.to()`` for some bitsandbytes builds and that refusal raises before anything moves,
+    so the failure path restores the model and returns None, i.e. the old behaviour.
     """
     try:
         _has_xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
@@ -4871,10 +4854,9 @@ def _offload_model_for_quantize_subprocess(model):
         device_map = getattr(model, "hf_device_map", None)
         if device_map:
             targets = {str(v).lower() for v in device_map.values()}
-            # cpu spill is fine to move -- those weights are already in host RAM.
-            # disk/meta is NOT: accelerate keeps those parameters off the model
-            # entirely, so removing the hooks and calling .to("cpu") would try to
-            # materialize the whole checkpoint into RAM (or move meta tensors).
+            # A cpu spill is fine to move, it is already in host RAM. disk/meta is not:
+            # those parameters are off the model, so .to("cpu") would materialize the
+            # whole checkpoint into RAM.
             if not all(t.isdigit() or t.startswith(("cuda", "xpu")) or t == "cpu" for t in targets):
                 return None
             if not any(t.isdigit() or t.startswith(("cuda", "xpu")) for t in targets):
@@ -4895,9 +4877,8 @@ def _offload_model_for_quantize_subprocess(model):
             try:
                 model.to("cpu")
             except Exception:
-                # The move failed (e.g. host RAM can't hold the sharded model)
-                # AFTER the hooks were removed; re-dispatch so the model is left
-                # usable rather than hookless and half-moved across CPU/GPUs.
+                # The move failed after the hooks came off; re-dispatch so the model is
+                # left usable rather than hookless and half-moved across CPU/GPUs.
                 _restore_model_after_quantize_subprocess(model, ("dispatch", dict(device_map)))
                 return None
             snapshot = getattr(root, _DISPATCH_SNAPSHOT_ATTR, None)
@@ -4914,8 +4895,8 @@ def _offload_model_for_quantize_subprocess(model):
                 return None
             return ("device", device)
     except Exception as exc:
-        # A silent `return None` here is indistinguishable from "nothing to move",
-        # which hides a real bug behind a merely slower export.
+        # A silent `return None` is indistinguishable from "nothing to move", which
+        # hides a real bug behind a merely slower export.
         logger.warning_once(
             f"Unsloth: could not free the model's accelerator memory before the quantized "
             f"export ({type(exc).__name__}: {exc}); continuing with the model resident."
@@ -5175,8 +5156,7 @@ def _unsloth_save_compressed_tensors(
             cmd += ["--variant", variant]
 
         # Free the in-memory model's CUDA memory before the subprocess loads its own copy from
-        # disk, so the GPUs need not hold both at once. Best-effort and restored in finally;
-        # covers single-device CUDA models and accelerate-dispatched multi-GPU shards.
+        # disk, so the GPUs need not hold both at once. Best-effort, restored in finally.
         model_restore = _offload_model_for_quantize_subprocess(model)
         for _ in range(3):
             gc.collect()
@@ -5385,13 +5365,10 @@ def _unsloth_save_torchao(
             auto_model = AutoModelForCausalLM
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
 
-        # 3) Free the in-memory model's accelerator memory before reloading a fresh copy from disk.
-        #    Covers CUDA and XPU (torchao runs on Intel GPUs too), so the original doesn't sit
-        #    resident alongside the reloaded copy and OOM a device that fit the model once.
-        #    Uses the shared offload helper so a MULTI-GPU accelerate-dispatched shard (the
-        #    Studio multi-GPU export load) is released too: a plain .to("cpu") is invalid on a
-        #    dispatched model, so handling only single-device models left every GPU holding a
-        #    full copy while device_map="auto" below loaded another.
+        # 3) Free the in-memory model's accelerator memory before reloading a fresh copy from
+        #    disk, else it sits resident alongside the copy and OOMs a device that fit the
+        #    model once. Covers CUDA and XPU (torchao runs on Intel GPUs too) plus multi-GPU
+        #    dispatched shards, which a plain .to("cpu") cannot move.
         _has_xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
         model_restore = _offload_model_for_quantize_subprocess(model)
         for _ in range(3):

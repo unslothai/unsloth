@@ -1,12 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Export checkpoint loading must shard across every visible GPU on a multi-GPU
-host (#7053): unsloth's ``from_pretrained`` defaults to ``device_map="sequential"``,
-which stacks the whole model on GPU0 and OOMs while the other GPUs sit empty.
-The export loader now passes ``device_map="balanced"`` -- but only on a real
-multi-GPU CUDA/ROCm host, so single-GPU, CPU, and MLX loads keep the loader
-default untouched."""
+"""Export checkpoint loading must shard across every visible GPU (#7053): the
+``device_map="sequential"`` loader default stacks the whole model on GPU0 and OOMs
+while the other GPUs sit empty. The loader now passes ``device_map="balanced"``, but
+only on a real multi-GPU CUDA/ROCm host, so single-GPU, CPU and MLX are untouched."""
 
 from __future__ import annotations
 
@@ -22,8 +20,8 @@ _TESTS_DIR = Path(__file__).resolve().parent
 if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
 
-# Reuse the export-backend stub harness from the absolute-paths test so the two
-# stay in lockstep about how core/export/export.py is loaded without torch/unsloth.
+# Reuse the absolute-paths test's stub harness for loading core/export/export.py
+# without torch/unsloth.
 from test_export_absolute_paths import (  # noqa: E402
     _install_export_backend_stubs,
     _load_module,
@@ -67,9 +65,8 @@ def test_non_balanced_resolution_keeps_loader_default(monkeypatch):
 
 
 def test_uuid_mig_mask_falls_back_to_count_detection(monkeypatch):
-    # UUID/MIG CUDA_VISIBLE_DEVICES masks resolve to NO numeric ids ([]), but
-    # get_device_map(None) still detects >1 visible GPU; the empty list must
-    # route there instead of silently keeping the sequential loader default.
+    # UUID/MIG masks resolve to NO numeric ids ([]), but get_device_map(None) still
+    # detects >1 GPU, so the empty list must route there, not to the loader default.
     mod = _export_mod(monkeypatch)
     monkeypatch.setattr(mod, "_IS_MLX", False)
     hw = sys.modules["utils.hardware"]
@@ -95,8 +92,7 @@ def test_no_visible_gpus_keeps_loader_default(monkeypatch):
 
 def test_mlx_host_keeps_loader_default(monkeypatch):
     mod = _export_mod(monkeypatch)
-    # _install_export_backend_stubs sets _IS_MLX = True already; even a stubbed
-    # multi-GPU view must not produce a device_map on MLX.
+    # The stubs set _IS_MLX = True; even a multi-GPU view must yield no device_map.
     _stub_hardware(monkeypatch, [0, 1], "balanced")
     assert mod._multi_gpu_device_map_kwargs() == {}
 
@@ -202,8 +198,8 @@ def _run_spill_loader(monkeypatch, tmp_path, device_map_kwargs):
 
 
 def test_successful_load_that_offloads_to_cpu_retries_single_device(monkeypatch, tmp_path):
-    # Nothing raises, so only inspecting hf_device_map catches it; the parameters
-    # would otherwise stay on meta and kill the export inside safetensors.
+    # Nothing raises, so only hf_device_map catches it; the parameters would otherwise
+    # stay on meta and kill the export inside safetensors.
     ok, message, calls = _run_spill_loader(monkeypatch, tmp_path, {"device_map": "balanced"})
     assert ok, message
     assert len(calls) == 2
@@ -212,8 +208,7 @@ def test_successful_load_that_offloads_to_cpu_retries_single_device(monkeypatch,
 
 
 def test_single_gpu_offload_is_left_alone(monkeypatch, tmp_path):
-    # No multi-GPU map was requested, so there is nothing to retry on and the
-    # pre-#7053 behaviour must be preserved exactly.
+    # No multi-GPU map was requested, so there is nothing to retry on.
     ok, message, calls = _run_spill_loader(monkeypatch, tmp_path, {})
     assert ok, message
     assert len(calls) == 1

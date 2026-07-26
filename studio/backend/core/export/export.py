@@ -84,12 +84,11 @@ _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
 def _multi_gpu_device_map_kwargs() -> dict:
     """``device_map`` kwargs for sharding a checkpoint across every visible GPU.
 
-    unsloth's ``from_pretrained`` defaults to ``device_map="sequential"``, which
-    stacks the whole model on GPU0 and OOMs multi-GPU hosts whose other GPUs sit
-    empty (#7053). Return ``{"device_map": "balanced"}`` only when the CUDA/ROCm
-    host actually exposes more than one GPU (mirrors the inference loader's
-    ``get_device_map`` policy); empty otherwise -- single-GPU, CPU, and MLX
-    loads keep the loader default untouched."""
+    unsloth's ``from_pretrained`` defaults to ``device_map="sequential"``, which stacks
+    the whole model on GPU0 and OOMs multi-GPU hosts whose other GPUs sit empty (#7053).
+    Returns ``{"device_map": "balanced"}`` only on a real multi-GPU CUDA/ROCm host
+    (mirroring the inference loader's ``get_device_map``), else empty so single-GPU, CPU
+    and MLX loads keep the loader default."""
     if _IS_MLX:
         return {}
     try:
@@ -99,9 +98,8 @@ def _multi_gpu_device_map_kwargs() -> dict:
         if len(visible) > 1:
             device_map = get_device_map(visible)
         elif not visible:
-            # UUID/MIG CUDA_VISIBLE_DEVICES masks resolve to no numeric ids;
-            # get_device_map(None) handles exactly that by falling back to the
-            # visible-GPU count, so a multi-GPU UUID/MIG host still shards.
+            # UUID/MIG masks resolve to no numeric ids; get_device_map(None) falls back
+            # to the visible-GPU count, so a multi-GPU UUID/MIG host still shards.
             device_map = get_device_map(None)
         else:
             return {}
@@ -115,8 +113,8 @@ def _multi_gpu_device_map_kwargs() -> dict:
 def _is_oom_error(exc: BaseException) -> bool:
     """True for an accelerator OOM, however it is spelled.
 
-    accelerate and transformers re-raise it as a plain ``RuntimeError`` on several
-    paths and the ROCm/XPU backends use their own classes, so match the message too.
+    accelerate and transformers re-raise it as a plain ``RuntimeError`` on several paths
+    and ROCm/XPU use their own classes, so match the message too.
     """
     if torch is not None:
         oom_types = tuple(
@@ -136,10 +134,9 @@ def _is_oom_error(exc: BaseException) -> bool:
 def _is_cpu_spill_rejection(exc: BaseException) -> bool:
     """bitsandbytes refuses a map that spills to CPU/disk with a plain ``ValueError``.
 
-    Busy secondary GPUs can make ``balanced`` place modules on CPU even when GPU0
-    alone would have held the old sequential load, and that message carries no
-    "out of memory", so the retry has to match it explicitly. See transformers
-    ``quantizers/quantizer_bnb_4bit.py``.
+    Busy secondary GPUs can make ``balanced`` spill to CPU even where the old sequential
+    load fit on GPU0, and that message says nothing about memory, so the retry has to
+    match it explicitly. See transformers ``quantizers/quantizer_bnb_4bit.py``.
     """
     return "dispatched on the cpu or the disk" in str(exc).lower()
 
@@ -151,11 +148,10 @@ class _CpuSpillRetry(Exception):
 def _cpu_offloaded_modules(model) -> int:
     """Count the modules a load parked on CPU or disk.
 
-    Only bitsandbytes refuses such a map. A full-precision load accepts it, so the
-    parameters stay on meta and the export dies much later in safetensors with
-    "Cannot copy out of meta tensor". Nothing raises at load time, so the map has
-    to be inspected directly. PEFT re-dispatches after attaching an adapter and
-    clears the offload, so in practice this catches merged checkpoints.
+    Only bitsandbytes refuses such a map; a full-precision load accepts it, leaves the
+    parameters on meta and dies much later in safetensors with "Cannot copy out of meta
+    tensor". Nothing raises at load time, so inspect the map directly. PEFT re-dispatches
+    when attaching an adapter, so in practice this catches merged checkpoints.
     """
     device_map = getattr(model, "hf_device_map", None) or {}
     return sum(1 for target in device_map.values() if str(target) in ("cpu", "disk"))
@@ -384,9 +380,8 @@ class ExportBackend:
             # Skip the Hub when offline so a no-internet export uses the local cache.
             local_files_only = _hf_offline()
 
-            # Shard across every visible GPU on a multi-GPU host instead of
-            # stacking the checkpoint on GPU0 (#7053); {} on single-GPU/CPU/MLX.
-            # _device_map_override is the single-device retry below.
+            # Shard across every visible GPU instead of stacking on GPU0 (#7053); {} on
+            # single-GPU/CPU/MLX. _device_map_override is the single-device retry below.
             _device_map_kw = (
                 _multi_gpu_device_map_kwargs()
                 if _device_map_override is None
@@ -504,8 +499,8 @@ class ExportBackend:
                     **_device_map_kw,
                 )
 
-            # Only when we asked for the multi-GPU map: a single-GPU host has no
-            # second placement to retry on, so leave its behaviour untouched.
+            # Only when we asked for the multi-GPU map: a single-GPU host has no second
+            # placement to retry on, so leave its behaviour untouched.
             _offloaded = _cpu_offloaded_modules(model) if _device_map_kw else 0
             if _device_map_override is None and _offloaded:
                 del model
@@ -533,11 +528,10 @@ class ExportBackend:
             return True, f"Loaded {model_type} model{peft_info} successfully"
 
         except Exception as e:
-            # Sharding is an optimisation, never a requirement. "balanced" budgets from
-            # the free memory read BEFORE this process opens its own CUDA context on each
-            # GPU, so when a training or chat job already owns the others (which
-            # routes/export.py deliberately allows) the shard can OOM, or spill to CPU and
-            # be refused by bitsandbytes, where the pre-#7053 single-device load succeeded.
+            # Sharding is an optimisation, never a requirement. "balanced" budgets from the
+            # free memory read BEFORE this process opens a CUDA context on each GPU, so when
+            # a training or chat job already owns the others the shard can OOM, or spill to
+            # CPU and be refused by bitsandbytes, where the old single-device load succeeded.
             # Fall back once before giving up.
             if (
                 _device_map_override is None
@@ -546,8 +540,8 @@ class ExportBackend:
                 )
                 and _multi_gpu_device_map_kwargs()
             ):
-                # Retry outside this block: the live traceback pins the half-built
-                # model's frames, so an in-block retry inherits the exhausted device.
+                # Retry outside this block: the live traceback pins the half-built model's
+                # frames, so an in-block retry inherits the exhausted device.
                 retry_reason = str(e)
             else:
                 logger.error(f"Error loading checkpoint: {e}")
