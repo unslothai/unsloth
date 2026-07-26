@@ -199,9 +199,7 @@ def test_prompt_budget_never_empties_the_question_or_evidence(monkeypatch):
     # question to "" so the planner never saw the request. Reserve at most half the window.
     for ctx in (1024, 2048, 4096):
         monkeypatch.setattr(research_runs, "_loaded_context_length", lambda c = ctx: c)
-        total = research_runs._prompt_char_budget(
-            research_runs._SYNTHESIS_CONTEXT_RESERVE_TOKENS
-        )
+        total = research_runs._prompt_char_budget(research_runs._SYNTHESIS_CONTEXT_RESERVE_TOKENS)
         assert total is not None and total > 0
         assert total < int(ctx * research_runs._SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN)
 
