@@ -26,7 +26,8 @@ export interface TrainingStatusResponse {
     total_steps?: number;
     loss?: number;
     learning_rate?: number;
-    output_dir?: string;
+    // null = explicit clear (run stopped without saving); absent = unchanged.
+    output_dir?: string | null;
   } | null;
   metric_history?: {
     steps?: number[];

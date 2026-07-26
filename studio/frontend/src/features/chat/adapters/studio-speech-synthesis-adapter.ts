@@ -6,17 +6,19 @@ import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings
 import { toast } from "@/lib/toast";
 import type { SpeechSynthesisAdapter } from "@assistant-ui/react";
 
-/** Voice for a stored voiceURI; undefined lets the browser pick. */
+/** Voice for a stored voiceURI. "default" resolves to the voice the platform
+ * marks as its default, so the "System default" choice means what it says
+ * instead of falling back to a curated pick. Undefined lets the browser pick. */
 export function findTtsVoice(
   voiceURI: string,
 ): SpeechSynthesisVoice | undefined {
   if (typeof window === "undefined" || !window.speechSynthesis) {
     return undefined;
   }
-  if (!voiceURI || voiceURI === "default") return undefined;
-  return window.speechSynthesis
-    .getVoices()
-    .find((voice) => voice.voiceURI === voiceURI);
+  if (!voiceURI) return undefined;
+  const voices = window.speechSynthesis.getVoices();
+  if (voiceURI === "default") return voices.find((voice) => voice.default);
+  return voices.find((voice) => voice.voiceURI === voiceURI);
 }
 
 // macOS novelty and legacy Eloquence voices that sound robotic and flood the picker.
@@ -59,17 +61,52 @@ function voiceBaseName(voice: SpeechSynthesisVoice): string {
   return name;
 }
 
+// Well-known natural English voices, best first. Breaks ties when the name
+// carries no quality hint, so basic voices are not just alphabetical.
+const PREFERRED_VOICE_NAMES = [
+  "samantha",
+  "alex",
+  "ava",
+  "allison",
+  "susan",
+  "tom",
+  "daniel",
+  "serena",
+  "karen",
+  "moira",
+  "tessa",
+  "fiona",
+];
+
+// Quality tier from vendor hints in the voice name.
 function voiceQualityScore(voice: SpeechSynthesisVoice): number {
   const name = voice.name.toLowerCase();
   let score = 0;
-  if (name.includes("premium")) score += 8;
-  if (name.includes("enhanced")) score += 7;
-  if (name.includes("natural") || name.includes("neural")) score += 6;
-  if (name.includes("siri")) score += 6;
-  if (name.includes("google")) score += 5;
-  if (name.includes("microsoft")) score += 4;
-  if (voice.default) score += 3;
+  if (name.includes("premium")) score += 100;
+  if (name.includes("siri")) score += 90;
+  if (name.includes("enhanced")) score += 80;
+  if (name.includes("natural") || name.includes("neural")) score += 70;
+  if (name.includes("google")) score += 40;
+  if (name.includes("microsoft")) score += 30;
   return score;
+}
+
+// Higher for voices in the user's exact region, then the same language.
+function voiceLocaleScore(voice: SpeechSynthesisVoice): number {
+  const navLang =
+    typeof navigator !== "undefined" && navigator.language
+      ? navigator.language.toLowerCase()
+      : "en-us";
+  const lang = voice.lang.toLowerCase().replace("_", "-");
+  if (lang === navLang) return 2;
+  if (langBase(lang) === langBase(navLang)) return 1;
+  return 0;
+}
+
+// Rank in the preferred list, best first; 0 when the voice is not listed.
+function voicePreferredRank(voice: SpeechSynthesisVoice): number {
+  const index = PREFERRED_VOICE_NAMES.indexOf(voiceBaseName(voice));
+  return index === -1 ? 0 : PREFERRED_VOICE_NAMES.length - index;
 }
 
 function langBase(tag: string): string {
@@ -86,8 +123,8 @@ const MAX_CURATED_VOICES = 20;
 export function curateSystemVoices(
   voices: SpeechSynthesisVoice[],
   selectedVoiceURI?: string,
+  dictationLanguage = useVoiceSettingsStore.getState().dictationLanguage,
 ): SpeechSynthesisVoice[] {
-  const { dictationLanguage } = useVoiceSettingsStore.getState();
   const wantedLangs = new Set<string>(["en"]);
   if (typeof navigator !== "undefined" && navigator.language) {
     wantedLangs.add(langBase(navigator.language));
@@ -107,12 +144,33 @@ export function curateSystemVoices(
   });
 
   kept.sort((a, b) => {
-    const scoreDiff = voiceQualityScore(b) - voiceQualityScore(a);
-    if (scoreDiff !== 0) return scoreDiff;
+    const quality = voiceQualityScore(b) - voiceQualityScore(a);
+    if (quality !== 0) return quality;
+    const locale = voiceLocaleScore(b) - voiceLocaleScore(a);
+    if (locale !== 0) return locale;
+    const preferred = voicePreferredRank(b) - voicePreferredRank(a);
+    if (preferred !== 0) return preferred;
+    const byDefault = Number(b.default) - Number(a.default);
+    if (byDefault !== 0) return byDefault;
     return a.name.localeCompare(b.name);
   });
 
-  const curated = kept.slice(0, MAX_CURATED_VOICES);
+  // macOS reports some voices twice (compact + enhanced) under one name. Keep
+  // one per name and language, preferring the selected voice then the best
+  // ranked, so no duplicates show.
+  const keyOf = (voice: SpeechSynthesisVoice) =>
+    `${voiceBaseName(voice)}|${voice.lang.toLowerCase()}`;
+  const winners = new Map<string, string>();
+  for (const voice of kept) {
+    const key = keyOf(voice);
+    if (!winners.has(key)) winners.set(key, voice.voiceURI);
+    if (voice.voiceURI === selectedVoiceURI) winners.set(key, voice.voiceURI);
+  }
+  const deduped = kept.filter(
+    (voice) => winners.get(keyOf(voice)) === voice.voiceURI,
+  );
+
+  const curated = deduped.slice(0, MAX_CURATED_VOICES);
   if (
     selectedVoiceURI &&
     selectedVoiceURI !== "default" &&
@@ -126,6 +184,22 @@ export function curateSystemVoices(
   return curated;
 }
 
+/**
+ * Best voice when none is chosen. The browser default on macOS is often a
+ * robotic legacy voice, so fall back to the top curated voice instead.
+ */
+function defaultTtsVoice(): SpeechSynthesisVoice | undefined {
+  if (typeof window === "undefined" || !window.speechSynthesis) {
+    return undefined;
+  }
+  const voices = window.speechSynthesis.getVoices();
+  return (
+    curateSystemVoices(voices)[0] ??
+    voices.find((voice) => voice.default) ??
+    voices[0]
+  );
+}
+
 /** Build an utterance from the current Voice settings. */
 export function createConfiguredUtterance(
   text: string,
@@ -133,7 +207,7 @@ export function createConfiguredUtterance(
   const { ttsVoiceURI, ttsRate, ttsPitch, ttsVolume } =
     useVoiceSettingsStore.getState();
   const utterance = new SpeechSynthesisUtterance(text);
-  const voice = findTtsVoice(ttsVoiceURI);
+  const voice = findTtsVoice(ttsVoiceURI) ?? defaultTtsVoice();
   if (voice) {
     utterance.voice = voice;
     utterance.lang = voice.lang;
@@ -272,8 +346,14 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
       if (res.status.type === "ended") return;
       // Surface genuine read-aloud failures; a cancelled/interrupted utterance
       // is a normal stop, not an error, and must not toast.
-      if (reason === "error" && error !== "interrupted" && error !== "canceled") {
-        toast.error(error instanceof Error ? error.message : "Read aloud failed.");
+      if (
+        reason === "error" &&
+        error !== "interrupted" &&
+        error !== "canceled"
+      ) {
+        toast.error(
+          error instanceof Error ? error.message : "Read aloud failed.",
+        );
       }
       res.status = { type: "ended", reason, error };
       for (const handler of subscribers) handler();

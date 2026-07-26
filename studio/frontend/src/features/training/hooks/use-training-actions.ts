@@ -217,7 +217,7 @@ export function useTrainingActions() {
       const detail = await getTrainingRun(runId);
       const outputDir = detail.run.output_dir;
       if (!detail.run.can_resume || !outputDir) {
-        throw new Error("Only stopped runs with a saved checkpoint can be resumed.");
+        throw new Error("Only stopped or errored runs with a saved checkpoint can be resumed.");
       }
 
       primeNativeNotificationPermission().catch(() => undefined);

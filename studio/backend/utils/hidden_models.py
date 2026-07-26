@@ -9,6 +9,7 @@ which eagerly loads the model-config/checkpoint stack, and without importing
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Optional
@@ -31,6 +32,61 @@ _DEFAULT_EMBEDDING_REPO_IDS = {
 # fallback for Studio's static default embedder only; configured custom repos
 # remain exact-match-only.
 _DEFAULT_EMBEDDING_PATH_BASENAMES = {"bge-small-en-v1.5"}
+# Curated Whisper dictation checkpoints (STT, never chat), hidden from the chat
+# inventory and pickers: Transformers safetensors repos (unsloth/whisper-*) and
+# their GGUF companions (unslothai/whisper-*-GGUF). Custom checkpoints are caught
+# by config below, but the GGUF companions carry a raw .bin (no config.json), so
+# they must be listed here by id or they leak into chat pickers.
+_HIDDEN_STT_REPO_IDS = frozenset(
+    {
+        "unsloth/whisper-tiny",
+        "unsloth/whisper-base",
+        "unsloth/whisper-small",
+        "unsloth/whisper-large-v3-turbo",
+        "unsloth/whisper-large-v3",
+        "unslothai/whisper-tiny-GGUF",
+        "unslothai/whisper-base-GGUF",
+        "unslothai/whisper-small-GGUF",
+        "unslothai/whisper-large-v3-turbo-GGUF",
+        "unslothai/whisper-large-v3-GGUF",
+    }
+)
+
+
+def _config_is_whisper(path: Path) -> bool:
+    """True if a config.json declares a Whisper model."""
+    try:
+        with open(path, "r", encoding = "utf-8") as file:
+            config = json.load(file)
+    except Exception:
+        return False
+    if not isinstance(config, dict):
+        return False
+    model_type = config.get("model_type")
+    if isinstance(model_type, str) and model_type.strip().lower() == "whisper":
+        return True
+    architectures = config.get("architectures")
+    return isinstance(architectures, list) and any(
+        isinstance(name, str) and name == "WhisperForConditionalGeneration"
+        for name in architectures
+    )
+
+
+def _path_is_whisper_model(value: str) -> bool:
+    """Inspect an existing local model path's config; never hides name-only matches."""
+    if _HF_REPO_ID_RE.fullmatch(value.strip()):
+        return False
+    path = Path(value).expanduser()
+    try:
+        if path.is_file():
+            path = path.parent
+        candidates = [path / "config.json"]
+        snapshots = path / "snapshots"
+        if snapshots.is_dir():
+            candidates.extend(child / "config.json" for child in snapshots.iterdir())
+    except OSError:
+        return False
+    return any(_config_is_whisper(candidate) for candidate in candidates)
 
 
 def _safe_resolve(path: Path) -> Optional[str]:
@@ -79,11 +135,11 @@ def _path_basename_is_default_embedder(value: str) -> bool:
 
 def is_hidden_model(*values: str | None) -> bool:
     """True if any id/path is the RAG embedding model (the effective embedder
-    or its GGUF companion repo) or the llama.cpp install validation probe
-    (ggml-org/models / stories260K), so pickers hide them (GGUF and non-GGUF).
-    None are usable chat models; the probe can be cached as a side effect of
-    installing the prebuilt llama-server and otherwise sorts smallest, so it
-    would be auto-selected.
+    or its GGUF companion repo), the llama.cpp install validation probe
+    (ggml-org/models / stories260K), or a curated/custom Whisper dictation
+    model, so pickers hide them (GGUF and non-GGUF). None are usable chat
+    models; the probe can be cached as a side effect of installing the prebuilt
+    llama-server and otherwise sorts smallest, so it would be auto-selected.
 
     Hub repo ids are matched EXACTLY (case-insensitive full "owner/name"), so a
     custom embedder with a generic basename like "org/model" cannot substring
@@ -97,6 +153,7 @@ def is_hidden_model(*values: str | None) -> bool:
     hidden_repo_ids = {
         _PROBE_REPO_ID.lower(),
         *(repo_id.lower() for repo_id in _DEFAULT_EMBEDDING_REPO_IDS),
+        *(repo_id.lower() for repo_id in _HIDDEN_STT_REPO_IDS),
     }
     exact_paths: list[str] = []
     for model in {
@@ -134,6 +191,9 @@ def is_hidden_model(*values: str | None) -> bool:
         if _path_basename_is_default_embedder(v):
             return True
         if _path_contains_repo_id(v, hidden_repo_ids):
+            return True
+        # Custom Whisper checkpoints keep no curated repo id, so match by config.
+        if _path_is_whisper_model(v):
             return True
         if exact_paths:
             resolved = _safe_resolve(Path(v).expanduser())

@@ -99,6 +99,9 @@ export interface ValidateModelResponse {
   /** MoE expert-layer count from the GGUF header (manual --n-cpu-moe ceiling);
    *  0 for dense models, null until downloaded. */
   moe_layer_count?: number | null;
+  /** Embedded GGUF chat template, returned when include_chat_template is set
+   *  (native lease-backed picks); null for non-GGUF, over-cap, or not read. */
+  chat_template?: string | null;
   /** Architecture only shipped by a newer transformers; UI pauses on the upgrade dialog. */
   requires_transformers_upgrade?: boolean;
   /** Set only when requires_transformers_upgrade. */
@@ -185,7 +188,10 @@ export interface LoadModelResponse {
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
+  /** Effective GPU placement after fit-time narrowing. */
   gpu_ids?: number[] | null;
+  /** User-requested GPU placement pool before fit-time narrowing. */
+  requested_gpu_ids?: number[] | null;
 }
 
 export interface UnloadModelRequest {
@@ -237,7 +243,10 @@ export interface InferenceStatusResponse {
   /** n_ctx the active GGUF load was invoked with (0 = Auto); re-seeds a
    * Manual + Auto-layers context pin on hydration. Null for non-GGUF. */
   requested_context_length?: number | null;
+  /** Effective GPU placement after fit-time narrowing. */
   gpu_ids?: number[] | null;
+  /** User-requested GPU placement pool before fit-time narrowing. */
+  requested_gpu_ids?: number[] | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;

@@ -12,6 +12,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { MicIcon } from "@/lib/mic-icon";
 import {
+  BotIcon,
   Cancel01Icon,
   CloudIcon,
   CpuIcon,
@@ -40,6 +41,7 @@ import {
   useSettingsDialogStore,
 } from "./stores/settings-dialog-store";
 import { AboutTab } from "./tabs/about-tab";
+import { AgentsTab } from "./tabs/agents-tab";
 import { ApiKeysTab } from "./tabs/api-keys-tab";
 import { AppearanceTab } from "./tabs/appearance-tab";
 import { ChatTab } from "./tabs/chat-tab";
@@ -71,13 +73,11 @@ const TABS: TabDef[] = [
     id: "resources",
     labelKey: "settings.tabs.resources",
     icon: CpuIcon,
-    badgeKey: "common.new",
   },
   {
     id: "chat",
     labelKey: "settings.tabs.chat",
     icon: Message01Icon,
-    badgeKey: "common.new",
   },
   {
     id: "api-keys",
@@ -88,6 +88,12 @@ const TABS: TabDef[] = [
     id: "connections",
     labelKey: "settings.tabs.connections",
     icon: CloudIcon,
+  },
+  {
+    id: "agents",
+    labelKey: "settings.tabs.agents",
+    icon: BotIcon,
+    badgeKey: "common.new",
   },
   {
     id: "voice",
@@ -124,6 +130,8 @@ function renderTab(tab: SettingsTab) {
       return <DataTab />;
     case "api-keys":
       return <ApiKeysTab />;
+    case "agents":
+      return <AgentsTab />;
     case "about":
       return <AboutTab />;
   }
@@ -222,6 +230,7 @@ export function SettingsDialog() {
     connections: null,
     data: null,
     "api-keys": null,
+    agents: null,
     about: null,
   });
 
@@ -249,9 +258,10 @@ export function SettingsDialog() {
             }
           }}
           className={cn(
-            // Cap at 880px but shrink to the viewport so it doesn't clip on
-            // iPad-portrait widths where a fixed width overflows.
-            "settings-surface !max-w-[min(880px,calc(100vw-2rem))] h-[560px] w-[min(880px,calc(100vw-2rem))] p-0 overflow-hidden",
+            // Cap at 960px but shrink to the viewport so it doesn't clip on
+            // iPad-portrait widths where a fixed width overflows. Height caps
+            // the same way so short viewports don't get a clipped dialog.
+            "settings-surface !max-w-[min(960px,calc(100vw-2rem))] h-[min(680px,calc(100dvh-2rem))] w-[min(960px,calc(100vw-2rem))] p-0 overflow-hidden",
             // Soft shadow, no outline ring. Pin --radius to the light value so
             // corner rounding matches in dark mode.
             "shadow-border rounded-xl ring-0 [--radius:1.1rem]",
@@ -266,7 +276,9 @@ export function SettingsDialog() {
           </DialogDescription>
           {/* Keep tab content from expanding the dialog grid. */}
           <div className="flex h-full min-h-0 min-w-0 w-full max-sm:flex-col">
-            <aside className="font-heading flex w-[248px] shrink-0 flex-col border-r border-sidebar-border bg-muted/20 p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
+            {/* Match the app shell: tabs on the sidebar fill, content on the
+                page fill, so both track the active palette. */}
+            <aside className="font-heading flex w-[248px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
               <div className="relative mx-1 mt-3 mb-2 max-sm:hidden">
                 <HugeiconsIcon
                   icon={Search01Icon}
@@ -309,7 +321,7 @@ export function SettingsDialog() {
                         <button
                           type="button"
                           onClick={() => openResult(tab.id)}
-                          className="flex h-[30px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-[13.5px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                          className="flex h-[30px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-13p5 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                         >
                           {tab.iconComponent ? (
                             <tab.iconComponent className="size-icon shrink-0" />
@@ -327,7 +339,7 @@ export function SettingsDialog() {
                             key={entry}
                             type="button"
                             onClick={() => openResult(tab.id, entry)}
-                            className="flex h-[30px] items-center rounded-full pl-10 pr-2.5 text-left text-[14px] text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                            className="flex h-[30px] items-center rounded-full pl-10 pr-2.5 text-left text-ui-14 text-sidebar-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                           >
                             <span className="min-w-0 truncate">{entry}</span>
                           </button>
@@ -339,7 +351,7 @@ export function SettingsDialog() {
               ) : null}
               <p
                 className={cn(
-                  "pl-4 pt-3 pb-2.5 text-[13px] font-medium text-muted-foreground max-sm:hidden",
+                  "pl-4 pt-3 pb-2.5 text-ui-13 font-medium text-muted-foreground max-sm:hidden",
                   results !== null && "hidden",
                 )}
               >
@@ -362,7 +374,7 @@ export function SettingsDialog() {
                       type="button"
                       onClick={() => setActiveTab(tab.id)}
                       className={cn(
-                        "relative flex h-[32px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-[14.5px] leading-[19px] tracking-nav font-medium transition-colors",
+                        "relative flex h-[32px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-colors",
                         "max-sm:shrink-0",
                         "focus-visible:outline-none",
                         // The active pill already marks the current tab, so
@@ -401,7 +413,7 @@ export function SettingsDialog() {
                         {t(tab.labelKey)}
                       </span>
                       {tab.badgeKey ? (
-                        <span className="relative z-10 ml-auto rounded-full bg-control-accent/10 px-2 py-1 text-[10px] leading-none font-semibold text-control-accent">
+                        <span className="relative z-10 ml-auto rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
                           {t(tab.badgeKey)}
                         </span>
                       ) : null}
@@ -411,7 +423,7 @@ export function SettingsDialog() {
               </nav>
             </aside>
 
-            <main className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+            <main className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-background">
               <button
                 type="button"
                 onClick={closeDialog}

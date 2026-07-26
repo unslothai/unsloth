@@ -68,3 +68,10 @@ def test_studio_run_host_is_loopback():
         f"`unsloth studio run` --host default must be '127.0.0.1' (loopback) "
         f"but got '{host_default}'."
     )
+
+
+def test_dns_pinning_opt_out_is_registered_safe_by_default():
+    source = _STUDIO_CMD_PY.read_text()
+    for func_name in ("studio_default", "run"):
+        default = _find_typer_option_default(source, func_name, "--disable-dns-pinning")
+        assert default is False, f"{func_name} must keep DNS pinning enabled by default"

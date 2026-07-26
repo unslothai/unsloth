@@ -11,7 +11,7 @@ import sys
 import time
 import threading
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
 
 from fastapi import HTTPException
 
@@ -57,6 +57,7 @@ def spawn_worker(
     *,
     use_xet: bool,
     protected_blob_hashes: Optional[frozenset[str]] = None,
+    cache_env: Optional[Mapping[str, str]] = None,
 ) -> subprocess.Popen:
     """Spawn the download worker.
 
@@ -68,7 +69,11 @@ def spawn_worker(
     """
     cwd = backend_dir()
     mode = download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
-    env = os.environ.copy()
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    env = get_hf_cache_paths().child_env()
+    if cache_env is not None:
+        env.update(cache_env)
     if protected_blob_hashes:
         env["UNSLOTH_PROTECTED_BLOB_HASHES"] = ",".join(sorted(protected_blob_hashes))
     else:
@@ -230,6 +235,7 @@ def finalize_worker_exit(
         (stderr_data or b"").decode("utf-8", "replace").strip(),
         hf_token = hf_token,
     )
+    metadata = registry.get_job_metadata(key)
     state = classify_exit(rc, cancel_requested = cancel_requested)
     if state == "complete":
         registry.set_job(key, "complete")
@@ -252,13 +258,13 @@ def finalize_worker_exit(
                     repo_type,
                     repo_id,
                     download_registry.variant_from_key(key),
+                    hub_cache = metadata.hub_cache if metadata is not None else None,
                 )
             except Exception as exc:
                 logger.debug(f"clear_cancel_marker failed for {repo_id} (rc=0): {exc}")
     elif state == "cancelled":
         # Read metadata before the terminal set_job so a concurrent eviction
         # can't drop it; the job key is the fallback variant label.
-        metadata = registry.get_job_metadata(key)
         registry.set_job(key, "cancelled")
         logger.info(f"{log_prefix} cancelled: {label} (rc={rc})")
         download_registry.persist_cancel_marker(
@@ -268,6 +274,7 @@ def finalize_worker_exit(
             if metadata is not None and metadata.variant
             else download_registry.variant_from_key(key),
             cancel_marker_transport or transport,
+            hub_cache = metadata.hub_cache if metadata is not None else None,
             logger = logger,
         )
     else:
@@ -303,6 +310,7 @@ def _set_retry_failure_state(
             metadata.transport
             if metadata is not None and metadata.transport
             else fallback_transport,
+            hub_cache = metadata.hub_cache if metadata is not None else None,
             logger = logger,
         )
     return state
@@ -371,6 +379,7 @@ def _try_http_retry(
             repo_type,
             repo_id,
             progress_blob_hashes,
+            root = Path(original_metadata.hub_cache) if original_metadata.hub_cache else None,
         )
         if progress_blob_hashes
         else 0
@@ -403,6 +412,8 @@ def _try_http_retry(
             generation = generation,
             replace_active = True,
             cancel_marker_transport = original_metadata.transport,
+            hub_cache = original_metadata.hub_cache,
+            xet_cache = original_metadata.xet_cache,
         )
         if claimed:
             break
@@ -446,11 +457,24 @@ def _try_http_retry(
         label,
     )
     try:
+        cache_env = (
+            {
+                "HF_HUB_CACHE": original_metadata.hub_cache,
+                "HF_XET_CACHE": original_metadata.xet_cache,
+            }
+            if original_metadata.hub_cache and original_metadata.xet_cache
+            else None
+        )
+        spawn_kwargs = {
+            "use_xet": False,
+            "protected_blob_hashes": peer_hashes or None,
+        }
+        if cache_env is not None:
+            spawn_kwargs["cache_env"] = cache_env
         proc = spawn_worker(
             args,
             hf_token,
-            use_xet = False,
-            protected_blob_hashes = peer_hashes or None,
+            **spawn_kwargs,
         )
     except Exception as exc:
         scrubbed = download_registry.scrub_secrets(str(exc), hf_token = hf_token)
