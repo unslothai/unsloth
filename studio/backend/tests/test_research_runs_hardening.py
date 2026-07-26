@@ -143,7 +143,10 @@ def test_citation_title_strips_brackets_for_catalog_and_citation():
     # the model to copy the catalog title verbatim into the link label, where a bracket makes the
     # citation unmatchable. The catalog and the citation writer share this helper so they cannot
     # offer a label the validator then fails to match.
-    assert _citation_title({"title": "[PDF] Annual Report 2024"}, "https://x/a") == "PDF Annual Report 2024"
+    assert (
+        _citation_title({"title": "[PDF] Annual Report 2024"}, "https://x/a")
+        == "PDF Annual Report 2024"
+    )
     assert _citation_title({"title": "[]"}, "https://x/a") == "https://x/a"
     assert _citation_title({}, "https://x/a") == "https://x/a"
 
