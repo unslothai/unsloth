@@ -91,15 +91,14 @@ assert_contains "rejects tarball worry" "$_smart" "not a third-party tarball"
 
 # ── No-TTY sudo escalation (#7307 Problem 7) ────────────────────────
 # The old code assumed consent when /dev/tty was unreadable, then ran sudo with
-# stdin closed, so a password-requiring host died on a raw sudo error instead of
-# printing the actionable "install these first" message. Drive the real function
-# with /dev/tty rewritten to a fixture path, the same trick used for
-# /etc/os-release above, so both TTY states are reachable hermetically.
+# stdin closed, so a password-requiring host died on a raw sudo error. Drive the
+# real function with /dev/tty rewritten to a fixture, the same trick used for
+# /etc/os-release above, so every TTY state is reachable hermetically.
 echo "=== _smart_apt_install no-TTY escalation ==="
 
-# A unix socket is the closest portable stand-in for the /dev/tty found inside
-# containers and systemd units: the mode bits satisfy `test -r`, but open()
-# fails with ENXIO. Callers must verify the shape before relying on it.
+# Closest portable stand-in for the /dev/tty inside containers and systemd
+# units: the mode bits satisfy `test -r`, but open() fails with ENXIO. Callers
+# must verify the shape before relying on it.
 make_unopenable() {
     python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' \
         "$1" 2>/dev/null
@@ -112,8 +111,8 @@ run_smart() {
     _d=$(mktemp -d -p "$_TMP_ROOT")
     case "$_tty_mode" in
         tty)        printf 'y\n' > "$_d/tty" ;;
-        # Opens fine, but read gets EOF straight away: a drained or half-closed
-        # terminal. Being openable is not the same as being answerable.
+        # Opens fine but reads EOF straight away (drained/half-closed
+        # terminal): openable is not the same as answerable.
         eof)        : > "$_d/tty" ;;
         unopenable) make_unopenable "$_d/tty" ;;
     esac
@@ -134,10 +133,9 @@ run_smart() {
             fi
             builtin command "$@"
         }
-        # Models real sudo: -n refuses (exit 1, nothing runs) whenever the
-        # command would need a password; otherwise the command runs. -k makes
-        # it ignore any cached authentication timestamp for this invocation,
-        # per sudo(8), so only a real NOPASSWD rule still counts as passwordless.
+        # Models real sudo: -n refuses (exit 1, nothing runs) when a password
+        # would be needed. -k ignores any cached timestamp for this invocation
+        # (sudo(8)), so only a real NOPASSWD rule counts as passwordless.
         sudo() {
             _noninteractive=false
             _ignore_cache=false
@@ -154,9 +152,9 @@ run_smart() {
                     # A valid timestamp from an earlier, unrelated sudo. Without
                     # -k this looks passwordless; with -k it must not.
                     cached) [ "$_ignore_cache" = true ] && return 1 ;;
-                    # Authorized for everything, but only trivial commands are
-                    # NOPASSWD. `sudo -l` says yes here while execution needs a
-                    # password, so authorization is not the question to ask.
+                    # Authorized for everything, NOPASSWD only on trivial
+                    # commands: `sudo -l` says yes while execution still needs
+                    # a password. Authorization is not the question to ask.
                     aptneedspasswd)
                         case " $* " in
                             *" apt-get "*) return 1 ;;
@@ -205,8 +203,8 @@ assert_contains "tty present: accepts and installs" "$_out" "SUDO_RAN: apt-get i
 _out=$(run_smart notty absent)
 assert_contains "no sudo binary: unchanged message" "$_out" "sudo is not available on this system"
 
-# A /dev/tty that passes `test -r` but cannot be opened must count as no tty.
-# Only assert when this platform can actually produce that shape.
+# A /dev/tty that passes `test -r` but cannot be opened counts as no tty.
+# Only assert where the platform can actually produce that shape.
 _probe=$(mktemp -d -p "$_TMP_ROOT")
 if make_unopenable "$_probe/tty" && [ -r "$_probe/tty" ] && ! ( : <"$_probe/tty" ) 2>/dev/null; then
     _out=$(run_smart unopenable needspasswd)
@@ -219,9 +217,9 @@ else
     echo "  SKIP: this platform cannot fake a readable-but-unopenable /dev/tty"
 fi
 
-# A tty that opens but yields EOF must decline. Opening the device only proves
-# it exists; a failed read is nobody answering, and calling that "yes" escalates
-# through the branch that does have a terminal.
+# A tty that opens but yields EOF must decline: a failed read is nobody
+# answering, and calling that "yes" escalates through the branch that does
+# have a terminal.
 _out=$(run_smart eof needspasswd)
 assert_contains "eof tty: declines instead of escalating" \
     "$_out" "Please install these packages first"
@@ -230,10 +228,9 @@ case "$_out" in
     *) echo "  PASS: eof tty runs nothing as root"; PASS=$((PASS + 1)) ;;
 esac
 
-# A cached authentication timestamp from an earlier, unrelated sudo must not
-# count as passwordless: nobody answered the prompt in this run, and the
-# sudoers rule for apt-get still carries PASSWD. -k is what makes the probe
-# ignore the timestamp, so this asserts the -k is actually there and effective.
+# A cached timestamp from an earlier, unrelated sudo must not count as
+# passwordless: nobody answered this run's prompt and the apt-get rule still
+# carries PASSWD. Asserts the -k is present and effective.
 _out=$(run_smart notty cached)
 assert_contains "cached credentials: says it cannot run unattended" \
     "$_out" "cannot be done unattended"
@@ -242,14 +239,14 @@ case "$_out" in
     *) echo "  PASS: cached credentials run nothing as root"; PASS=$((PASS + 1)) ;;
 esac
 
-# The failure message must not claim a missing password when apt itself failed:
-# sudo returns the command's own exit status when the command does run.
+# The failure message must not blame a password when apt itself failed: sudo
+# passes the command's own exit status through when the command runs.
 assert_contains "failure message does not blame a password exclusively" \
     "$_out" "or apt-get itself"
 
-# Authorized for apt-get but not NOPASSWD on it: `sudo -n true` reads this as
-# unattended, and so does `sudo -n -l -- apt-get ...`, since list mode answers
-# authorization rather than authentication. Only running it with -n is truthful.
+# Authorized for apt-get but not NOPASSWD on it. Both `sudo -n true` and
+# `sudo -n -l -- apt-get ...` read this as unattended, since list mode answers
+# authorization, not authentication. Only running it with -n is truthful.
 _out=$(run_smart notty aptneedspasswd)
 assert_contains "apt-get needs a password: says it cannot run unattended" \
     "$_out" "cannot be done unattended"
