@@ -17,6 +17,7 @@ import {
   ComboboxList,
 } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
+import { InfoHint } from "@/components/ui/info-hint";
 import {
   Select,
   SelectContent,
@@ -289,9 +290,12 @@ export function ParamsSection(): ReactElement {
             </p>
           </div>
 
-          <div className="flex flex-col gap-2">
-            <span className="text-xs font-medium text-muted-foreground">
+          <div className="flex flex-col gap-2 rounded-lg border border-border/50 bg-muted/15 p-3">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               Portable resume data
+              <InfoHint>
+                Controls which dataset information travels with a checkpoint. This helps a future Colab or Kaggle session reproduce the original training data.
+              </InfoHint>
             </span>
             <Select
               value={store.portableResumeData}
@@ -304,15 +308,28 @@ export function ParamsSection(): ReactElement {
               <SelectTrigger aria-label="Portable resume data">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="metadata">Metadata only (smallest)</SelectItem>
-                <SelectItem value="pinned">Pin Hub revisions (small)</SelectItem>
-                <SelectItem value="snapshot">Snapshot processed training data (largest)</SelectItem>
+              <SelectContent className="max-w-[340px]">
+                <SelectItem value="metadata">
+                  <span className="flex flex-col py-0.5"><span>Metadata only</span><span className="text-xs font-normal text-muted-foreground">Smallest · redownload data when resuming</span></span>
+                </SelectItem>
+                <SelectItem value="pinned">
+                  <span className="flex flex-col py-0.5"><span>Pin Hub revisions</span><span className="text-xs font-normal text-muted-foreground">Small · reproduce the same Hub dataset version</span></span>
+                </SelectItem>
+                <SelectItem value="snapshot">
+                  <span className="flex flex-col py-0.5"><span>Save a processed data snapshot</span><span className="text-xs font-normal text-muted-foreground">Largest · best for offline or ephemeral sessions</span></span>
+                </SelectItem>
               </SelectContent>
             </Select>
-            <p className="text-ui-10 text-muted-foreground">
-              Streaming sources are not fully offline portable unless a bounded snapshot is created.
+            <p className="text-ui-10 leading-relaxed text-muted-foreground">
+              {store.portableResumeData === "metadata" && "Saves configuration only. The dataset must still be available when you resume."}
+              {store.portableResumeData === "pinned" && "Records exact Hugging Face revisions. Resume still needs network access and any required token."}
+              {store.portableResumeData === "snapshot" && "Copies the processed train and evaluation data into the run output. Uses the most storage."}
             </p>
+            {store.portableResumeData === "snapshot" && store.datasetStreaming && (
+              <p className="rounded-md bg-amber-500/10 px-2.5 py-2 text-ui-10 leading-relaxed text-amber-700 dark:text-amber-300">
+                Streaming data needs a bounded row range before Studio can create an offline snapshot.
+              </p>
+            )}
           </div>
 
           {/* Max Steps / Epochs */}
