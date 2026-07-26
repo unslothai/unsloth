@@ -243,6 +243,52 @@ def test_a_coincidentally_utf8_legacy_line_follows_the_file(tmp_path: Path) -> N
     assert [row["author"] for row in rows] == authors
 
 
+@pytest.mark.parametrize(
+    ("codepage", "word"), [("cp1251", "Привет"), ("cp932", "こんにちは"), ("cp1252", "Jürgen")]
+)
+def test_a_moved_shard_is_not_rewritten_by_guesswork(
+    tmp_path: Path, codepage: str, word: str
+) -> None:
+    """Off the writing machine there is no codepage to attribute the file to."""
+    path = tmp_path / "out.jsonl"
+    path.write_bytes(
+        json.dumps({"id": 1, "author": word}, ensure_ascii = False).encode(codepage) + b"\n"
+    )
+    before = path.read_bytes()
+
+    # A UTF-8 host: latin-1 would read cp1251 `Привет` back as `Ïðèâåò`.
+    writer = _load_state_store("utf-8").JsonlWriter(path)
+    try:
+        assert writer.has("id:1")  # ASCII keys still recover
+        assert writer.write({"id": 2, "author": "Grüße"}) is True
+    finally:
+        writer.close()
+
+    blob = path.read_bytes()
+    assert blob.startswith(before)  # never rewritten
+    assert blob[len(before) :].isascii()  # appended as \uXXXX, so no second encoding
+    rows = [json.loads(x) for x in blob.decode(codepage).splitlines() if x.strip()]
+    assert [row["author"] for row in rows] == [word, "Grüße"]
+
+
+def test_a_damaged_line_does_not_block_its_own_retry(tmp_path: Path) -> None:
+    """Its key comes from the codepage reading, which a UTF-8 shard did not pick."""
+    path = tmp_path / "out.jsonl"
+    path.write_bytes(
+        json.dumps({"id": 1, "author": "Jürgen"}, ensure_ascii = False).encode()
+        + b"\n"
+        + b'{"id": 99, "author": "bad \x96 byte"}\n'
+    )
+
+    writer = _load_state_store("cp1252").JsonlWriter(path)
+    try:
+        assert writer.has("id:1")
+        assert not writer.has("id:99")
+        assert writer.write({"id": 99, "author": "good byte"}) is True
+    finally:
+        writer.close()
+
+
 def test_one_damaged_byte_does_not_relabel_a_utf8_shard(tmp_path: Path) -> None:
     """A complete JSON line with a stray 0x96 parses as cp1252, but is only one vote."""
     path = tmp_path / "out.jsonl"
