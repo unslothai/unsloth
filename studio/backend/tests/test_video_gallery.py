@@ -326,7 +326,11 @@ def test_save_leaves_no_orphan_mp4_when_sidecar_publish_fails(monkeypatch):
     assert gallery.list_videos() == []
 
 
-def _real_mp4_bytes(frames: int = 8, size: int = 32, rate: int = 8) -> bytes:
+def _real_mp4_bytes(
+    frames: int = 8,
+    size: int = 32,
+    rate: int = 8,
+) -> bytes:
     # A real (tiny) MP4 for the transcode tests: flat-color frames encoded with mpeg4 (bundled in
     # every PyAV build, unlike libx264). The GIF cap tests ask for more/larger frames.
     av = pytest.importorskip("av")

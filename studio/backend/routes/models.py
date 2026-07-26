@@ -3579,7 +3579,6 @@ def _cached_repo_task(repo_info) -> Optional[str]:
     # refuses its repo id, so tagging it text-to-image put a row in the Images picker that 400s.
     try:
         from core.inference.diffusion import _is_trusted_diffusion_repo
-
         return "text-to-image" if _is_trusted_diffusion_repo(repo_id) else None
     except Exception:  # noqa: BLE001 -- an import failure must not hide a usable repo
         return "text-to-image"

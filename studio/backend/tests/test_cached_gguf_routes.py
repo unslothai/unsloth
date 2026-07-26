@@ -1488,7 +1488,9 @@ def test_cached_repo_task_gates_an_image_pipeline_on_the_load_path_trust_rule(tm
     assert models_route._cached_repo_task(_pipeline_repo("unsloth/Qwen-Image", tmp_path)) == (
         "text-to-image"
     )
-    assert models_route._cached_repo_task(_pipeline_repo("someone/their-sdxl-mix", tmp_path)) is None
+    assert (
+        models_route._cached_repo_task(_pipeline_repo("someone/their-sdxl-mix", tmp_path)) is None
+    )
 
 
 def test_cached_repo_task_hides_an_untrusted_video_repo_instead_of_listing_it_under_images(

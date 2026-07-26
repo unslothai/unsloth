@@ -1188,7 +1188,6 @@ def diffusion_dataset_interlock():
             TrainingActiveError,
             get_diffusion_training_service,
         )
-
         service = get_diffusion_training_service()
     except Exception:  # noqa: BLE001 -- unknowable state never blocks a mutation
         yield

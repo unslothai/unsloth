@@ -622,7 +622,10 @@ def test_a_routed_curated_pick_uses_the_same_load_spec_as_a_direct_one():
     repo that has no model_index.json. The catalog spec the page's own picker consults has to win."""
     helper = _read("lib/diffusion-route-pick.ts")
     assert re.search(r"spec\?:\s*\{\s*kind:", helper), "the helper takes no catalog spec"
-    assert "if (spec) return { repoId: model, opts: { kind: spec.kind, filename: spec.filename } };" in helper
+    assert (
+        "if (spec) return { repoId: model, opts: { kind: spec.kind, filename: spec.filename } };"
+        in helper
+    )
     for rel, catalog in (
         ("features/images/images-page.tsx", "IMAGE_CATALOG"),
         ("features/video/video-page.tsx", "VIDEO_CATALOG"),
