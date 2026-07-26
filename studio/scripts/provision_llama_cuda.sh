@@ -104,6 +104,27 @@ find_nvcc() {
 _DRV_CUDA_MAJOR="$("$NVSMI" 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9][0-9]*\)\..*/\1/p' | head -1)"
 case "$_DRV_CUDA_MAJOR" in *[!0-9]*) _DRV_CUDA_MAJOR="" ;; esac
 _nvcc_major_of() { "$1" --version 2>/dev/null | sed -n 's/.*release \([0-9][0-9]*\)\..*/\1/p' | head -1; }
+_nvcc_minor_of() { "$1" --version 2>/dev/null | sed -n 's/.*release [0-9][0-9]*\.\([0-9][0-9]*\).*/\1/p' | head -1; }
+
+# glibc >= 2.41 is the host side of the rsqrt header clash that CUDA 13.3 fixes,
+# so a 13.0-13.2 toolkit is as unusable here as a pre-13 one. getconf first
+# (no ldd on musl-ish images); unparseable stays 0 and keeps the major-only gate.
+_glibc_ge_241=0
+_glibc_ver="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $NF}')"
+[ -n "$_glibc_ver" ] || _glibc_ver="$(ldd --version 2>/dev/null | head -1 | awk '{print $NF}')"
+case "$_glibc_ver" in
+    [0-9]*.[0-9]*)
+        _glibc_major="${_glibc_ver%%.*}"
+        _glibc_minor="${_glibc_ver#*.}"; _glibc_minor="${_glibc_minor%%.*}"
+        case "$_glibc_major$_glibc_minor" in
+            *[!0-9]*) ;;
+            *) if [ "$_glibc_major" -gt 2 ] 2>/dev/null || \
+                  { [ "$_glibc_major" -eq 2 ] && [ "$_glibc_minor" -ge 41 ]; } 2>/dev/null; then
+                   _glibc_ge_241=1
+               fi ;;
+        esac
+        ;;
+esac
 
 NVCC="$(find_nvcc)"
 # A CUDA < 13 toolkit cannot build for the sm_121 Spark class (and CUDA < 13.3
@@ -116,9 +137,17 @@ NVCC="$(find_nvcc)"
 _nvcc_stale=0
 if [ -n "$NVCC" ]; then
     _nvcc_major="$(_nvcc_major_of "$NVCC")"
+    _nvcc_minor="$(_nvcc_minor_of "$NVCC")"
     if [ -n "$_nvcc_major" ] && [ "$_nvcc_major" -lt 13 ] 2>/dev/null \
             && [ -n "$_DRV_CUDA_MAJOR" ] && [ "$_DRV_CUDA_MAJOR" -ge 13 ]; then
         log "existing CUDA $_nvcc_major toolkit ($NVCC) predates this machine class; provisioning CUDA 13.3 alongside it"
+        _nvcc_stale=1
+    elif [ "$_glibc_ge_241" -eq 1 ] && [ -n "$_nvcc_major" ] && [ "$_nvcc_major" -eq 13 ] 2>/dev/null \
+            && [ -n "$_nvcc_minor" ] && [ "$_nvcc_minor" -lt 3 ] 2>/dev/null \
+            && [ -n "$_DRV_CUDA_MAJOR" ] && [ "$_DRV_CUDA_MAJOR" -ge 13 ]; then
+        # 13.0-13.2 compiles for sm_121 but hits the rsqrt clash on glibc >= 2.41,
+        # so the build fails and GGUF inference stays on the CPU server.
+        log "existing CUDA $_nvcc_major.$_nvcc_minor toolkit ($NVCC) hits the glibc $_glibc_ver rsqrt clash; provisioning CUDA 13.3 alongside it"
         _nvcc_stale=1
     fi
 fi
