@@ -3043,6 +3043,29 @@ def _repo_gguf_last_modified(repo_info) -> float:
     return latest
 
 
+def snapshot_variants_all_complete(snapshot: str) -> bool:
+    """True when every quant the variant lister would advertise from *snapshot* is
+    fully on disk.
+
+    One complete quant is not enough: the picker enumerates the whole directory, so a
+    half-downloaded split quant sitting beside a good one still gets offered and the
+    generated command asks llama-server for shards that are absent. Both sides derive
+    their labels from ``extract_quant_label`` over paths relative to the snapshot, so
+    the sets are directly comparable.
+    """
+    from hub.utils import inventory_scan
+    from hub.utils.gguf import list_local_gguf_variants
+
+    try:
+        variants, _ = list_local_gguf_variants(snapshot)
+        offered = {v.quant for v in variants if getattr(v, "quant", None)}
+        if not offered:
+            return False
+        return offered <= inventory_scan._completed_gguf_variants(Path(snapshot))
+    except Exception:
+        return False
+
+
 def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
     """Snapshot dir holding the newest primary GGUF, for a repo outside the active
     hub cache that does not resolve by id. ``None`` when the id works or no
@@ -3075,11 +3098,9 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
     candidates.sort(key = lambda c: c[0], reverse = True)
     # Newest first, but skip one holding only part of a split quant: an interrupted
     # download would otherwise beat an older snapshot that can still load. Scanning
-    # stops at the first complete snapshot, so the usual case walks one directory.
-    from hub.utils import inventory_scan
-
+    # stops at the first usable snapshot, so the usual case walks one directory.
     for _, snapshot in candidates:
-        if inventory_scan._completed_gguf_variants(Path(snapshot)):
+        if snapshot_variants_all_complete(snapshot):
             return snapshot
     # Nothing complete anywhere: publishing a half-downloaded snapshot would put that
     # path in the copied command and fail on load. Drop the id so the repo id is used,

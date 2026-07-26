@@ -236,14 +236,14 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             raw_id,
             getattr(info, "model_id", None),
             getattr(info, "display_name", None),
-            *_public_aliases(raw_id),
+            *_public_aliases(raw_id, entry.load_path),
         ):
             if key:
                 index.setdefault(key.strip().lower(), entry)
     return index
 
 
-def _public_aliases(raw_id: str) -> list[str]:
+def _public_aliases(raw_id: str, load_path: str) -> list[str]:
     """Public ids that must resolve back to *raw_id*'s entry.
 
     An inactive-cache repo carries its snapshot path as the id, and /v1/models
@@ -252,18 +252,33 @@ def _public_aliases(raw_id: str) -> list[str]:
     NEW snapshot dir on every update, so indexing only the scanned one would strand
     that pin and drop the request through to an unrelated model. Alias every
     revision of the same repo instead.
+
+    Sibling names are only revisions inside a real cache repo
+    (``<root>/models--org--name/snapshots/<rev>``). A scan folder that merely happens
+    to be called ``snapshots`` holds unrelated models, and aliasing those siblings
+    would silently serve one model in place of another.
     """
     from pathlib import Path
 
     alias = public_model_id(raw_id)
     aliases = [alias] if alias else []
     snapshots = Path(raw_id).parent
-    if snapshots.name != "snapshots":
+    if snapshots.name != "snapshots" or not snapshots.parent.name.startswith("models--"):
         return aliases
     try:
-        aliases.extend(p.name for p in snapshots.iterdir() if p.is_dir())
+        siblings = [p.name for p in snapshots.iterdir() if p.is_dir()]
     except OSError:
-        pass
+        return aliases
+    others = [name for name in siblings if name != Path(raw_id).name]
+    if not others:
+        return aliases
+    # The scan resolves this repo to its newest snapshot, which may be a half
+    # downloaded one. Redirecting a pin that names an older, complete revision onto
+    # it would break a request that works today, so alias nothing in that case.
+    from routes.models import snapshot_variants_all_complete
+
+    if snapshot_variants_all_complete(load_path):
+        aliases.extend(others)
     return aliases
 
 

@@ -1337,22 +1337,56 @@ def test_hf_cache_entry_loads_from_local_snapshot_path(tmp_path):
 # ── review round 5: concurrent-swap, repo-id identity, /v1/models id, gate, 503 ──
 
 
-def test_snapshot_aliases_survive_a_repo_update(tmp_path):
-    # /v1/models advertises only the snapshot dir name, so a durable pin holds one
-    # revision hash. A later snapshot must not strand it: every revision aliases here.
-    snaps = tmp_path / "models--org--Repo" / "snapshots"
+def _revision_pair(root, complete: bool):
+    """Two revisions of one cache repo; the newer one is optionally half-downloaded."""
+    snaps = root / "models--org--Repo" / "snapshots"
     old, new = snaps / "rev-old", snaps / "rev-new"
     for path in (old, new):
         path.mkdir(parents = True)
+    (old / "model-Q8_0.gguf").write_bytes(b"GGUF stub")
+    name = "model-Q4_K_M.gguf" if complete else "model-Q4_K_M-00001-of-00003.gguf"
+    (new / name).write_bytes(b"GGUF stub")
+    return old, new
 
-    aliases = resolver._public_aliases(str(new))
+
+def test_snapshot_aliases_survive_a_repo_update(tmp_path):
+    # /v1/models advertises only the snapshot dir name, so a durable pin holds one
+    # revision hash. A later snapshot must not strand it: every revision aliases here.
+    _old, new = _revision_pair(tmp_path, complete = True)
+
+    aliases = resolver._public_aliases(str(new), str(new))
 
     assert "rev-old" in aliases
     assert "rev-new" in aliases
 
 
+def test_snapshot_aliases_withheld_when_the_target_is_incomplete(tmp_path):
+    # The scan resolves the repo to its newest snapshot. When that one is a half
+    # downloaded split quant, redirecting a pin naming the older complete revision
+    # onto it would break a request that works today.
+    _old, new = _revision_pair(tmp_path, complete = False)
+
+    aliases = resolver._public_aliases(str(new), str(new))
+
+    assert "rev-old" not in aliases
+
+
+def test_public_aliases_ignore_a_scan_folder_named_snapshots(tmp_path):
+    # A user scan folder called "snapshots" holds unrelated models, not revisions of
+    # one repo; aliasing the siblings would silently serve model-a as model-b.
+    snaps = tmp_path / "snapshots"
+    for name in ("model-a", "model-b"):
+        (snaps / name).mkdir(parents = True)
+        (snaps / name / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
+
+    aliases = resolver._public_aliases(str(snaps / "model-a"), str(snaps / "model-a"))
+
+    assert "model-b" not in aliases
+    assert aliases == ["model-a"]
+
+
 def test_public_aliases_leaves_repo_ids_alone():
-    assert resolver._public_aliases("org/Repo-GGUF") == ["org/Repo-GGUF"]
+    assert resolver._public_aliases("org/Repo-GGUF", "org/Repo-GGUF") == ["org/Repo-GGUF"]
 
 
 def test_already_loaded_by_repo_id_is_not_reswapped(monkeypatch):

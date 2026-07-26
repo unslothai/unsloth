@@ -262,6 +262,49 @@ def test_list_cached_gguf_omits_load_id_when_no_snapshot_is_complete(monkeypatch
     assert "load_id" not in rows[0]
 
 
+def test_list_cached_gguf_skips_snapshot_with_one_incomplete_variant(monkeypatch, tmp_path):
+    """A good quant beside a half-downloaded one is still not a safe load target."""
+    import os
+
+    active = tmp_path / "active"
+    repo_dir = tmp_path / "legacy" / "models--Org--Mixed"
+    older, newer = repo_dir / "snapshots" / "rev-a", repo_dir / "snapshots" / "rev-b"
+    for path in (older, newer):
+        path.mkdir(parents = True)
+    (older / "Model-Q8_0.gguf").write_bytes(b"\0")
+    # rev-b has a complete Q8_0 AND a half-downloaded split Q4_K_M. The picker
+    # enumerates the whole directory, so it would offer the broken one.
+    (newer / "Model-Q8_0.gguf").write_bytes(b"\0")
+    (newer / "Model-Q4_K_M-00001-of-00003.gguf").write_bytes(b"\0")
+    os.utime(older, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    repo = _repo(
+        "Org/Mixed",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(files = [_file("Model-Q8_0.gguf", 5_000)], snapshot_path = older),
+            SimpleNamespace(
+                files = [
+                    _file("Model-Q8_0.gguf", 5_000),
+                    _file("Model-Q4_K_M-00001-of-00003.gguf", 6_000),
+                ],
+                snapshot_path = newer,
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+
+    assert rows[0]["load_id"] == str(older)
+
+
 def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(monkeypatch, tmp_path):
     repo = _repo(
         "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",
