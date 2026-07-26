@@ -82,15 +82,20 @@ export function useReleaseNotes({
   const [notes, setNotes] = useState<ReleaseNotes | null>(null);
   // Version the current state belongs to; a change invalidates it.
   const requestedVersionRef = useRef<string | null>(null);
+  // Identifies one request, so an earlier response cannot overwrite a later
+  // one when two are in flight for the same version.
+  const requestIdRef = useRef(0);
 
   const load = useCallback((target: string, refresh = false) => {
     requestedVersionRef.current = target;
+    requestIdRef.current += 1;
+    const requestId = requestIdRef.current;
     setState("loading");
     setNotes(null);
     fetchReleaseNotes(target, refresh)
       .then((next) => {
         // A newer request owns the state now.
-        if (requestedVersionRef.current !== target) {
+        if (requestIdRef.current !== requestId) {
           return;
         }
         setNotes(next);
@@ -99,7 +104,7 @@ export function useReleaseNotes({
         setState(failed ? "error" : "ready");
       })
       .catch(() => {
-        if (requestedVersionRef.current === target) {
+        if (requestIdRef.current === requestId) {
           setNotes(null);
           setState("error");
         }

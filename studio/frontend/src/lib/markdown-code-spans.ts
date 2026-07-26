@@ -25,6 +25,15 @@ function runLength(text: string, index: number): number {
   return end - index;
 }
 
+/** True when the character at `index` is escaped by an odd run of slashes. */
+function escaped(text: string, index: number): boolean {
+  let slashes = 0;
+  while (text[index - 1 - slashes] === "\\") {
+    slashes += 1;
+  }
+  return slashes % 2 === 1;
+}
+
 /**
  * CommonMark strips one leading and trailing space when the content has both
  * and is not all spaces, so `` ` a ` `` renders as "a".
@@ -47,7 +56,7 @@ export function codeSpans(text: string): CodeSpan[] {
   let index = 0;
 
   while (index < text.length) {
-    if (text[index] !== "`") {
+    if (text[index] !== "`" || escaped(text, index)) {
       index += 1;
       continue;
     }
@@ -57,7 +66,7 @@ export function codeSpans(text: string): CodeSpan[] {
     let cursor = contentStart;
     let closed = false;
     while (cursor < text.length) {
-      if (text[cursor] !== "`") {
+      if (text[cursor] !== "`" || escaped(text, cursor)) {
         cursor += 1;
         continue;
       }
@@ -100,7 +109,20 @@ export function parkCodeSpans(
   return out + text.slice(cursor);
 }
 
-/** True when `index` falls inside one of `spans`. */
+/** True when `index` falls inside one of `spans`, which are in order. */
 export function insideSpan(spans: CodeSpan[], index: number): boolean {
-  return spans.some((span) => index >= span.start && index < span.end);
+  let low = 0;
+  let high = spans.length - 1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    const span = spans[mid];
+    if (span === undefined || index < span.start) {
+      high = mid - 1;
+    } else if (index >= span.end) {
+      low = mid + 1;
+    } else {
+      return true;
+    }
+  }
+  return false;
 }

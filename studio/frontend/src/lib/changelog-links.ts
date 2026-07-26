@@ -9,20 +9,31 @@
  * first makes them behave the way GitHub renders the same file.
  */
 
-import { codeSpans, insideSpan } from "@/lib/markdown-code-spans";
+import {
+  type CodeSpan,
+  codeSpans,
+  insideSpan,
+} from "@/lib/markdown-code-spans";
 
 const LINK_BASE = "https://github.com/unslothai/unsloth/blob/main/";
 const IMAGE_BASE = "https://raw.githubusercontent.com/unslothai/unsloth/main/";
 
 // Inline `](dest)` plus the `[label]: dest` reference form. The destination is
 // either <bracketed> or runs to whitespace or the closing paren.
-const INLINE_TARGET =
-  /(!?)\[((?:[^[\]\\]|\\.)*)\]\(\s*(<[^<>\n]*>|(?:\\.|[^\s()])*)/g;
+const NESTED_LABEL = String.raw`((?:[^[\]\\]|\\.|\[(?:[^[\]\\]|\\.)*\])*)`;
+const INLINE_TARGET = new RegExp(
+  String.raw`(!?)\[${NESTED_LABEL}\]\(\s*(<[^<>\n]*>|(?:\\.|[^\s()])*)`,
+  "g",
+);
 const REFERENCE_TARGET = /^( {0,3}\[((?:[^[\]\\]|\\.)*)\]:\s*)(<[^<>\n]*>|\S+)/;
 // `![alt][label]`, `![label][]` and `![label]`: a definition they point at
 // has to resolve to the raw file, not to its page on GitHub.
-const IMAGE_REFERENCE = /!\[((?:[^[\]\\]|\\.)*)\](?:\[((?:[^[\]\\]|\\.)*)\])?/g;
+const IMAGE_REFERENCE =
+  /!\[((?:[^[\]\\]|\\.)*)\](?:\[((?:[^[\]\\]|\\.)*)\]|(?!\())/g;
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+// Four spaces starts an indented code block, unless a paragraph is open.
+const INDENTED_CODE = /^(?: {4}|\t)/;
+const LINE_ENDINGS = /\r\n?/g;
 // A scheme, a protocol-relative host, or a fragment: already absolute enough.
 // `//` needs a host after it, so `///docs` stays a repository path.
 const ABSOLUTE = /^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|\/\/[^/]|#)/;
@@ -76,8 +87,14 @@ function wrap(resolved: string, original: string): string {
 }
 
 /** Rewrites one line's link and image targets, leaving code spans alone. */
-function rewriteLine(line: string, imageLabels: Set<string>): string {
-  const reference = REFERENCE_TARGET.exec(line);
+function rewriteLine(
+  line: string,
+  imageLabels: Set<string>,
+  spans: CodeSpan[],
+  base: number,
+  isDefinition: boolean,
+): string {
+  const reference = isDefinition ? REFERENCE_TARGET.exec(line) : null;
   if (reference) {
     const target = reference[3] ?? "";
     const resolved = absolute(
@@ -88,25 +105,42 @@ function rewriteLine(line: string, imageLabels: Set<string>): string {
     return `${reference[1]}${wrap(resolved, target)}${rest}`;
   }
 
-  // Code spans are literal, so their contents keep whatever they say.
-  const spans = codeSpans(line);
-
   INLINE_TARGET.lastIndex = 0;
   return line.replace(INLINE_TARGET, (match, bang, text, target, offset) => {
-    if (insideSpan(spans, offset)) {
+    if (insideSpan(spans, base + offset)) {
       return match;
     }
     const resolved = absolute(unwrap(target), bang === "!");
-    return `${bang}[${text}](${wrap(resolved, target)}`;
+    // A badge nests an image inside a link, so the label is rewritten too.
+    const inner = text.includes("](")
+      ? rewriteLine(text, imageLabels, codeSpans(text), 0, false)
+      : text;
+    return `${bang}[${inner}](${wrap(resolved, target)}`;
   });
 }
 
-/** Runs `visit` over the lines outside fenced code blocks. */
-function outsideFences(
-  lines: string[],
-  visit: (line: string, index: number) => void,
-): void {
+interface Classified {
+  // Lines the renderer shows as Markdown, by index.
+  text: number[];
+  // Same lines, blanked where the renderer shows code, for span scanning.
+  masked: string;
+  // Lines where a `[label]: dest` definition can start.
+  definition: Set<number>;
+}
+
+/**
+ * Sorts lines into Markdown and code, and masks the code so a code span cannot
+ * be paired across it. Offsets are preserved, so a span found in the mask is at
+ * the same place in the document.
+ */
+function classify(lines: string[]): Classified {
+  const text: number[] = [];
+  const definition = new Set<number>();
+  const masked: string[] = [];
   let openFence: string | null = null;
+  let inCode = false;
+  let afterParagraph = false;
+
   lines.forEach((line, index) => {
     const fence = FENCE.exec(line);
     if (fence) {
@@ -121,36 +155,82 @@ function outsideFences(
       ) {
         openFence = null;
       }
+      masked.push(" ".repeat(line.length));
+      afterParagraph = false;
       return;
     }
-    if (openFence === null) {
-      visit(line, index);
+    if (openFence !== null) {
+      masked.push(" ".repeat(line.length));
+      return;
     }
+    const blank = !line.trim();
+    // Indented code starts only outside a paragraph and runs to a dedent.
+    if (inCode) {
+      inCode = blank || INDENTED_CODE.test(line);
+    } else {
+      inCode = !afterParagraph && !blank && INDENTED_CODE.test(line);
+    }
+    if (inCode) {
+      masked.push(" ".repeat(line.length));
+      afterParagraph = false;
+      return;
+    }
+    // A definition cannot interrupt a paragraph.
+    if (!afterParagraph) {
+      definition.add(index);
+    }
+    text.push(index);
+    masked.push(line);
+    afterParagraph = !blank;
   });
+
+  return { text, masked: masked.join("\n"), definition };
 }
 
 /** Absolute repository URLs for every relative link and image in `markdown`. */
 export function resolveChangelogLinks(markdown: string): string {
-  const lines = markdown.split("\n");
+  // The desktop updater body arrives with CRLF, which would hide fences.
+  const lines = markdown.replace(LINE_ENDINGS, "\n").split("\n");
+  const { text, masked, definition } = classify(lines);
+  // Scanned over the whole document, so a span may cross a line break.
+  const spans = codeSpans(masked);
+
+  // Offset of each line in the document, to place matches inside it.
+  const offsets: number[] = [];
+  let cursor = 0;
+  for (const line of lines) {
+    offsets.push(cursor);
+    cursor += line.length + 1;
+  }
 
   // Which definitions are used as images has to be known before rewriting
   // them, because only images resolve against the raw host.
   const imageLabels = new Set<string>();
-  outsideFences(lines, (line) => {
+  for (const index of text) {
+    const line = lines[index] ?? "";
     IMAGE_REFERENCE.lastIndex = 0;
     for (
       let match = IMAGE_REFERENCE.exec(line);
       match !== null;
       match = IMAGE_REFERENCE.exec(line)
     ) {
+      if (insideSpan(spans, (offsets[index] ?? 0) + match.index)) {
+        continue;
+      }
       const explicit = match[2] ?? "";
       imageLabels.add(label(explicit.trim() ? explicit : (match[1] ?? "")));
     }
-  });
+  }
 
   const rewritten = [...lines];
-  outsideFences(lines, (line, index) => {
-    rewritten[index] = rewriteLine(line, imageLabels);
-  });
+  for (const index of text) {
+    rewritten[index] = rewriteLine(
+      lines[index] ?? "",
+      imageLabels,
+      spans,
+      offsets[index] ?? 0,
+      definition.has(index),
+    );
+  }
   return rewritten.join("\n");
 }

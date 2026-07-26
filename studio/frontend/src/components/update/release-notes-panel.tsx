@@ -177,9 +177,10 @@ function ReleaseNotesSummary({
       className="space-y-1 py-2 pr-1"
       data-testid="update-release-notes-summary"
     >
-      {items.map((item) => (
+      {items.map((item, index) => (
         <li
-          key={item.lead + item.rest}
+          // Two releases can carry the same bullet text, so index is the key.
+          key={`${index}-${item.lead}`}
           className="flex gap-1.5 text-ui-11 leading-snug text-muted-foreground"
         >
           <span aria-hidden="true" className="text-muted-foreground/60">

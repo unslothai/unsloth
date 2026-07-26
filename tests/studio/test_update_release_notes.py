@@ -591,6 +591,8 @@ def test_preview_joins_an_indented_continuation_line():
     a wrapped continuation, so it must not be dropped from the preview."""
     src = PREVIEW.read_text(encoding = "utf-8")
     assert "!insideBlock && line.indent >= INDENTED_CODE_INDENT" in src
+    # A fence indented into a list item is a block, not a wrapped line.
+    assert "opensDeepFence" in src
 
 
 def test_every_packaging_path_snapshots_the_changelog():
@@ -837,3 +839,50 @@ def test_release_notes_request_refreshes_an_expired_token():
     src = NOTES_HOOK.read_text(encoding = "utf-8")
     assert "authFetch(" in src
     assert "getAuthToken" not in src
+
+
+def test_preview_handles_the_desktop_updater_line_endings():
+    """The updater body arrives with CRLF, which used to hide fences from the
+    extractor and promote a code sample to a headline."""
+    src = PREVIEW.read_text(encoding = "utf-8")
+    assert "LINE_ENDINGS" in src
+    assert "LINE_ENDINGS" in LINKS.read_text(encoding = "utf-8")
+
+
+def test_preview_renders_reference_links_as_text():
+    """`[text][label]` and `![alt][label]` render as a link and an image, so
+    the preview must not show their raw markup."""
+    src = PREVIEW.read_text(encoding = "utf-8")
+    assert "LINK_REFERENCE" in src and "IMAGE_REFERENCE" in src
+    # A definition line renders as nothing, so it is not a preview item.
+    assert "DEFINITION" in src
+
+
+def test_preview_treats_escaped_punctuation_as_literal():
+    """`\\*not italic\\*` keeps its stars and an escaped backtick does not open
+    a code span."""
+    assert "ESCAPE" in PREVIEW.read_text(encoding = "utf-8")
+    assert "escaped(" in CODE_SPANS.read_text(encoding = "utf-8")
+
+
+def test_link_resolver_skips_every_code_form():
+    """Indented code and code spans crossing a line render as code, so their
+    contents must not be rewritten."""
+    src = LINKS.read_text(encoding = "utf-8")
+    assert "INDENTED_CODE" in src
+    # Spans are scanned over the whole document, not line by line.
+    assert "codeSpans(masked)" in src
+    # A definition cannot interrupt a paragraph.
+    assert "definition.has(index)" in src
+
+
+def test_badge_links_resolve_both_targets():
+    """`[![alt](img)](link)` is the badge idiom: the outer link used to stay
+    relative because the label was not allowed to nest."""
+    assert "NESTED_LABEL" in LINKS.read_text(encoding = "utf-8")
+
+
+def test_in_flight_requests_are_identified_not_just_versioned():
+    """Two requests for the same version could resolve out of order and leave
+    the panel showing the older result."""
+    assert "requestIdRef" in NOTES_HOOK.read_text(encoding = "utf-8")

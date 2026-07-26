@@ -20,8 +20,22 @@ const BLOCKQUOTE = /^\s*>\s?/;
 // "- - -" and "***" are horizontal rules, not bullets and not notes.
 const THEMATIC_BREAK =
   /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
-const IMAGE = /!\[[^\]]*\]\([^)]*\)/g;
-const LINK = /\[([^\]]*)\]\([^)]*\)/g;
+// Destinations may escape or balance parentheses, and labels may nest one
+// level so `[![alt](img)](link)` still resolves.
+const DESTINATION = "\\((?:\\\\.|[^()\\\\]|\\([^()]*\\))*\\)";
+const LABEL = "((?:[^\\[\\]\\\\]|\\\\.|\\[(?:[^\\[\\]\\\\]|\\\\.)*\\])*)";
+const IMAGE = new RegExp(`!\\[${LABEL}\\]${DESTINATION}`, "g");
+const LINK = new RegExp(`\\[${LABEL}\\]${DESTINATION}`, "g");
+// Reference forms: `[text][label]`, `[text][]` and the shortcut `[text]`.
+const IMAGE_REFERENCE = new RegExp(`!\\[${LABEL}\\](?:\\[[^\\]]*\\])?`, "g");
+const LINK_REFERENCE = new RegExp(`\\[${LABEL}\\](?:\\[[^\\]]*\\])?`, "g");
+// A definition line renders as nothing at all.
+const DEFINITION = /^ {0,3}\[(?:[^\[\]\\]|\\.)+\]:/;
+// CommonMark: a backslash escapes ASCII punctuation.
+const ESCAPE = /\\([!-/:-@[-`{-~])/g;
+// Private-use sentinels park code spans, so document text cannot contain them.
+const SENTINELS = /[\uE000\uE001]/g;
+const LINE_ENDINGS = /\r\n?/g;
 // Real tags only: a name character must follow "<", so a version constraint
 // like "Support Python <3.15 and >3.9" keeps its operators.
 const HTML_TAG = /<\/?[a-zA-Z][^>]*>/g;
@@ -163,13 +177,23 @@ function toPlainText(markdown: string): string {
   // Park code spans first: their contents are literal, so tags, links and
   // emphasis inside them must survive every transformation below.
   const codes: string[] = [];
-  const parked = parkCodeSpans(markdown, (code) => {
-    codes.push(code);
+  const park = (text: string): string => {
+    codes.push(text);
     return `\uE000${codes.length - 1}\uE001`;
-  });
+  };
+  // Escaped punctuation is literal too, so `\*not italic\*` keeps its stars
+  // and `\`` stays a backtick instead of being stripped as a delimiter.
+  const parked = parkCodeSpans(markdown, park).replace(ESCAPE, (_match, char) =>
+    park(char),
+  );
 
   return stripHtmlTags(
-    parked.replace(AUTOLINK, "$1").replace(IMAGE, "").replace(LINK, "$1"),
+    parked
+      .replace(AUTOLINK, "$1")
+      .replace(IMAGE, "")
+      .replace(LINK, "$1")
+      .replace(IMAGE_REFERENCE, "")
+      .replace(LINK_REFERENCE, "$1"),
   )
     .replace(BOLD_STAR, "$1")
     .replace(BOLD_UNDERSCORE, "$1$2")
@@ -210,6 +234,7 @@ function stripCommentSpans(
   let visible = "";
   let index = 0;
   let inComment = startInComment;
+  const spans = codeSpans(line);
   while (index < line.length) {
     if (inComment) {
       const close = line.indexOf(COMMENT_CLOSE, index);
@@ -226,7 +251,7 @@ function stripCommentSpans(
       break;
     }
     // A delimiter inside inline code is literal, not a comment opener.
-    const span = codeSpans(line).find(
+    const span = spans.find(
       (candidate) => candidate.start <= open && candidate.end > open,
     );
     if (span) {
@@ -330,6 +355,29 @@ function visibleText(line: string, state: ScanState): string | null {
     return "";
   }
   return visible;
+}
+
+/** Marker of a fence the line scanner skipped because it is indented. */
+function opensDeepFence(line: ContentLine): string | null {
+  if (line.indent < INDENTED_CODE_INDENT) {
+    return null;
+  }
+  const fence = FENCE.exec(line.text);
+  return fence ? (fence[1] ?? null) : null;
+}
+
+/** True when `line` closes the deep fence opened with `marker`. */
+function closesDeepFence(marker: string, line: ContentLine): boolean {
+  const fence = FENCE.exec(line.text);
+  if (!fence) {
+    return false;
+  }
+  const closer = fence[1] ?? "";
+  return (
+    closer[0] === marker[0] &&
+    closer.length >= marker.length &&
+    !NON_SPACE.test(fence[2] ?? "")
+  );
 }
 
 /** Fence state after a ``` or ~~~ line. A closer carries nothing after it. */
@@ -473,9 +521,27 @@ function collectBullets(markdown: string): {
     paragraph: "",
   };
 
+  let deepFence: string | null = null;
   for (const line of contentLines(markdown)) {
     if (!line.text || HEADING.test(line.text)) {
       flush(collector);
+      continue;
+    }
+    // A link reference definition renders as nothing.
+    if (collector.current === null && DEFINITION.test(line.text)) {
+      continue;
+    }
+    // A fence indented past three spaces belongs to a list item, so the line
+    // scanner did not see it. Its contents are code either way.
+    if (deepFence !== null) {
+      if (closesDeepFence(deepFence, line)) {
+        deepFence = null;
+      }
+      continue;
+    }
+    const opener = opensDeepFence(line);
+    if (opener !== null) {
+      deepFence = opener;
       continue;
     }
     // An indented code block renders as code, so a "- cmd" line inside one is
@@ -510,7 +576,10 @@ export function releaseNotesPreview(
     return { items: [], remaining: 0 };
   }
 
-  const { bullets, prose } = collectBullets(markdown);
+  // The desktop updater body arrives with CRLF, and sentinels would collide
+  // with parked code spans.
+  const text = markdown.replace(LINE_ENDINGS, "\n").replace(SENTINELS, "");
+  const { bullets, prose } = collectBullets(text);
   // Shallowest bullet defines top level, so a uniformly indented list still
   // previews instead of being read as all-nested.
   const baseIndent = bullets.reduce(
