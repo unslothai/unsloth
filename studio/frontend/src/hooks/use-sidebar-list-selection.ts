@@ -267,9 +267,13 @@ export function useSidebarListSelection({
     const onPointerDown = (event: PointerEvent) => {
       const listRoot = listRootRef.current;
       if (!listRoot) return;
-      if (event.target instanceof Element && listRoot.contains(event.target)) {
-        return;
-      }
+      const target = event.target instanceof Element ? event.target : null;
+      if (target && listRoot.contains(target)) return;
+      // The delete confirmation is portaled to document.body, so its Cancel and
+      // Delete buttons read as "outside" the list. Clearing there would drop the
+      // very batch the dialog is confirming, and would discard the rows a
+      // partially failed delete keeps selected for a retry.
+      if (target?.closest('[role="dialog"], [role="alertdialog"]')) return;
       clearSelection();
     };
     window.addEventListener("pointerdown", onPointerDown);

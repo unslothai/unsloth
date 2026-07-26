@@ -583,8 +583,9 @@ export function AppSidebar() {
   useTrainingCompletionWatch();
 
   // Recompute bottom-fade on mount and whenever list height can change
-  // (items load, sections toggle, route switch) - onScroll never fires for
-  // short, non-scrolling lists. Guarded setState below can't loop.
+  // (items load, sections toggle, route switch, the bulk bar mounting or
+  // unmounting under the rows) - onScroll never fires for short, non-scrolling
+  // lists. Guarded setState below can't loop.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -599,6 +600,8 @@ export function AppSidebar() {
     runsOpen,
     pinnedOpen,
     isStudioRoute,
+    chatRecentsSelection.selectedCount,
+    runRecentsSelection.selectedCount,
   ]);
 
   const chatDisabled = trainingInProgress;
@@ -1037,6 +1040,15 @@ export function AppSidebar() {
           data-thread-type={item.type}
           data-thread-id={item.id}
           isActive={activeThreadId === item.id}
+          // While a selection is live the row acts as a toggle, so expose the
+          // state: the tint alone tells a screen-reader user nothing about what
+          // the bulk Delete is about to remove. Left undefined otherwise so a
+          // plain navigation row is not announced as an unpressed toggle.
+          aria-pressed={
+            isSelectableRecent && chatRecentsSelection.isSelectionActive
+              ? isSelected
+              : undefined
+          }
           className={cn(
             buttonClass,
             isSelected && "bg-primary/10 hover:bg-primary/15",
@@ -1828,6 +1840,11 @@ export function AppSidebar() {
                       >
                         <SidebarMenuButton
                           isActive={isActiveRun}
+                          aria-pressed={
+                            runRecentsSelection.isSelectionActive
+                              ? isSelected
+                              : undefined
+                          }
                           className={cn(
                             "sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-[14px] pl-3 pr-7 text-ui-14p5 tracking-nav font-medium",
                             isSelected && "bg-primary/10 hover:bg-primary/15",
