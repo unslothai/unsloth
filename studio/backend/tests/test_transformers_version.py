@@ -4351,7 +4351,9 @@ class TestProbeFalseSkipsConfigFallbackScan:
         cfg = json.dumps(
             {"model_type": "custom_remote", "auto_map": {"AutoModel": "modeling_custom.Model"}}
         ).encode()
-        tree = json.dumps([{"type": "file", "path": f"modeling_{i}.py"} for i in range(12)]).encode()
+        tree = json.dumps(
+            [{"type": "file", "path": f"modeling_{i}.py"} for i in range(12)]
+        ).encode()
 
         def _urlopen(req, timeout = 10):
             urls.append(req.full_url)
