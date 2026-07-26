@@ -11290,15 +11290,20 @@ def _is_literal_think_close(buffer: str, close_idx: int) -> bool:
     """
     end = close_idx + len(_RESPONSES_THINK_CLOSE)
     before = buffer[close_idx - 1] if close_idx > 0 else ""
+    after_escaped = end < len(buffer) and buffer[end] == "\\"
     after = buffer[end] if end < len(buffer) else ""
-    if after == "\\" and end + 1 < len(buffer):
+    if after_escaped and end + 1 < len(buffer):
         after = buffer[end + 1]
     if not before or not after:
         return False
     if before == after and before in "\"'`":
-        # Only literal when the leading quote OPENS a span (odd count of that
-        # quote char before the tag). An even count means the quote closed a
-        # prior span, so this close tag is structural.
+        # A symmetric ESCAPED pair around the tag is a serialized quotation
+        # (``\"</think>\"``), literal on its own without an outer span (#7334).
+        if after_escaped and _trailing_backslash_run(buffer[: close_idx - 1]) % 2 == 1:
+            return True
+        # Otherwise only literal when the leading quote OPENS a span (odd count
+        # of that quote char before the tag). An even count means the quote
+        # closed a prior span, so this close tag is structural.
         count = _count_quote_delimiters(buffer[:close_idx], before, nxt = buffer[close_idx])
         if count % 2 == 1:
             return True
@@ -11359,6 +11364,8 @@ class _ResponsesReasoningExtractor:
         # Backslashes ending the consumed span: a quote opening the live buffer
         # is escaped when this run plus the buffer's own is odd (#7334).
         self._trailing_backslashes = 0
+        # Whether ``_span_last_char`` is itself escaped, for a tag at buffer[0].
+        self._span_last_char_escaped = False
         # Last char of the consumed span, needed as ``before`` when a close tag
         # sits at buffer start (index 0) so its flank is the span's last char.
         self._span_last_char = ""
@@ -11392,6 +11399,9 @@ class _ResponsesReasoningExtractor:
             body, nxt = chunk, ""
         self._quote_counts["'"] += _count_quote_delimiters(
             body, "'", prev = self._span_last_char, nxt = nxt, prev_escapes = escapes
+        )
+        self._span_last_char_escaped = (
+            _trailing_backslash_run(chunk[:-1], escapes) % 2 == 1
         )
         self._trailing_backslashes = _trailing_backslash_run(chunk, escapes)
         # Carry the pending backticks so a fence straddling the chunk boundary is
@@ -11469,11 +11479,23 @@ class _ResponsesReasoningExtractor:
             return True
         end = close_idx + len(_RESPONSES_THINK_CLOSE)
         before = buffer[close_idx - 1] if close_idx > 0 else self._span_last_char
+        after_escaped = end < len(buffer) and buffer[end] == "\\"
         after = buffer[end] if end < len(buffer) else ""
-        if after == "\\" and end + 1 < len(buffer):
+        if after_escaped and end + 1 < len(buffer):
             after = buffer[end + 1]
         if not before or not after:
             return False
+        if after_escaped and before == after and before in "\"'`":
+            # Symmetric escaped pair around the tag: a serialized quotation, so
+            # literal even without an outer span (see _is_literal_think_close).
+            before_escaped = (
+                _trailing_backslash_run(buffer[: close_idx - 1], self._trailing_backslashes) % 2
+                == 1
+                if close_idx > 0
+                else self._span_last_char_escaped
+            )
+            if before_escaped:
+                return True
         if before == after and before in "\"'`":
             # Odd count of the flanking quote before the tag means it opens a
             # span, so the close tag is quoted content (not a structural close).

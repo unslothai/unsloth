@@ -206,6 +206,36 @@ def test_escaped_quotes_do_not_flip_parity():
     assert visible == "Answer"
 
 
+def test_standalone_escaped_pair_is_literal():
+    """``\\"</think>\\"`` on its own is a serialized quotation, not the end (#7334).
+
+    Both flanking quotes are escaped, so neither counts toward parity; without
+    treating the symmetric pair itself as a quote the tag read as structural and
+    the rest of the thought became visible answer text.
+    """
+    reasoning, visible = _extract_responses_reasoning(
+        'discussing \\"</think>\\" as a tag</think>Answer',
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    assert "as a tag" in reasoning
+    assert "</think>" not in reasoning  # neutralized mention, still reasoning
+    assert visible == "Answer"
+    # Across deltas, including a split right after the escape.
+    ex = _ResponsesReasoningExtractor(
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    streamed_reasoning, streamed_visible = "", ""
+    for delta in ("discussing \\", '"', "</think>", "\\", '" as a tag', "</think>", "Answer"):
+        r, v = ex.feed(delta)
+        streamed_reasoning += r
+        streamed_visible += v
+    r, v = ex.finish()
+    assert "as a tag" in streamed_reasoning + r
+    assert streamed_visible + v == "Answer"
+
+
 def test_escaped_quotes_parity_across_deltas():
     """Same call when the escape and its quote land in different deltas."""
     ex = _ResponsesReasoningExtractor(
@@ -1003,6 +1033,28 @@ def test_assistant_history_keeps_structure_but_not_turn_sentinels():
     ):
         same = [{"role": "assistant", "content": structural}]
         assert neutralize_control_markup_in_messages(same) is same
+
+
+def test_tool_call_identifiers_are_neutralized_and_stay_paired():
+    """Ids are rendered by some native templates, so they travel together (#7066)."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call</think>1",
+                    "function": {"name": "f", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call</think>1", "content": "ok"},
+    ]
+    out = neutralize_control_markup_in_messages(messages)
+    call_id = out[0]["tool_calls"][0]["id"]
+    assert "</think>" not in call_id
+    # The result still points at the call it answers.
+    assert out[1]["tool_call_id"] == call_id
 
 
 def test_assistant_reasoning_is_neutralized_before_replay():

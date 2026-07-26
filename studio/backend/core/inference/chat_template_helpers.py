@@ -299,12 +299,16 @@ def _neutralize_tool_arguments_json(args: str) -> str:
 
 
 def neutralize_tool_call_arguments(tool_calls):
-    """Neutralize control markers inside assistant tool-call argument strings.
+    """Neutralize control markers inside assistant tool calls.
 
     Assistant prose keeps its real ``<think>`` structure, but a replayed
     ``tool_calls[].function.arguments`` string is user/model-derived data that
     must not smuggle a literal ``</think>`` or ``<|im_start|>`` into the next
-    chat template (#7066). Returns the same list when nothing changed.
+    chat template (#7066). The call ``id`` gets the same treatment: several
+    native templates render it, and the rewrite is deterministic, so it still
+    matches the ``tool_call_id`` of its result message, which
+    :func:`neutralize_control_markup_in_messages` rewrites the same way.
+    Returns the same list when nothing changed.
     """
     if not isinstance(tool_calls, list) or not tool_calls:
         return tool_calls
@@ -312,6 +316,12 @@ def neutralize_tool_call_arguments(tool_calls):
     out = []
     for call in tool_calls:
         if isinstance(call, dict):
+            call_id = call.get("id")
+            if isinstance(call_id, str) and call_id:
+                new_id = neutralize_non_assistant_control_markup(call_id)
+                if new_id != call_id:
+                    call = {**call, "id": new_id}
+                    changed = True
             fn = call.get("function")
             if isinstance(fn, dict) and fn.get("arguments") is not None:
                 args = fn["arguments"]
@@ -394,21 +404,23 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
         # its own delimiters (gemma-4 renders it between <|channel>thought and
         # <channel|>), so a literal marker inside it would close that channel
         # early. Its `content` still keeps real structural tags (#7066).
-        reasoning_updates = {}
-        for field in _ASSISTANT_REASONING_FIELDS:
+        # ``tool_call_id`` travels with the same rewrite as the ``id`` of the
+        # call it answers, so the pair still matches after neutralization.
+        scalar_updates = {}
+        for field in (*_ASSISTANT_REASONING_FIELDS, "tool_call_id"):
             value = msg.get(field)
             if isinstance(value, str) and value:
                 new_value = neutralize_non_assistant_control_markup(value)
                 if new_value != value:
-                    reasoning_updates[field] = new_value
+                    scalar_updates[field] = new_value
         # Assistant tool-call arguments are user/model-derived data, not prose,
         # so neutralize their control markers even though assistant content is
         # preserved (#7066).
         tool_calls = msg.get("tool_calls")
         new_tool_calls = neutralize_tool_call_arguments(tool_calls)
         tool_calls_changed = new_tool_calls is not tool_calls and new_tool_calls != tool_calls
-        if content_changed or tool_calls_changed or reasoning_updates:
-            new_msg = {**msg, **reasoning_updates}
+        if content_changed or tool_calls_changed or scalar_updates:
+            new_msg = {**msg, **scalar_updates}
             if content_changed:
                 new_msg["content"] = new_content
             if tool_calls_changed:
