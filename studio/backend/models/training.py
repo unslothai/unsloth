@@ -781,6 +781,15 @@ class TrainingProgress(BaseModel):
     eval_loss: Optional[float] = Field(
         None, description = "Eval loss from the most recent evaluation step"
     )
+    current_dataset_index: Optional[int] = Field(
+        None, description = "One-based index of the dataset currently being loaded"
+    )
+    current_dataset_total: Optional[int] = Field(
+        None, description = "Total number of training datasets being loaded"
+    )
+    current_dataset_repository_id: Optional[str] = Field(
+        None, description = "Hugging Face repository ID of the dataset currently being loaded"
+    )
     checkpoint_upload: CheckpointUploadProgress = Field(
         default_factory = CheckpointUploadProgress,
         description = "Latest checkpoint upload state; errors do not fail local training",

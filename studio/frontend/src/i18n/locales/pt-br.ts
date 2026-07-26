@@ -1099,6 +1099,7 @@ export const ptBR = {
       resumingTraining: "Retomando treinamento...",
       startingTraining: "iniciando treinamento...",
       dataset: "Dataset",
+      datasetProgress: "Dataset {current}/{total}",
       datasetStreaming: "Dataset: streaming (sem download completo)",
       modelWeights: "Pesos do modelo",
     },

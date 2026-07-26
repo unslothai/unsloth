@@ -998,6 +998,7 @@ export const ru = {
       resumingTraining: "Продолжение обучения...",
       startingTraining: "начало обучения...",
       dataset: "Датасет",
+      datasetProgress: "Датасет {current}/{total}",
       datasetStreaming: "Датасет: потоковая передача (без полной загрузки)",
       modelWeights: "Веса модели",
     },

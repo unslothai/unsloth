@@ -1018,6 +1018,7 @@ export const ja = {
       resumingTraining: "トレーニングを再開しています...",
       startingTraining: "トレーニングを開始しています...",
       dataset: "データセット",
+      datasetProgress: "データセット {current}/{total}",
       datasetStreaming: "データセット: ストリーミング（完全なダウンロードなし）",
       modelWeights: "モデルの重み",
     },

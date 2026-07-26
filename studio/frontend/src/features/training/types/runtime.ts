@@ -82,6 +82,9 @@ export interface TrainingProgressPayload {
   grad_norm: number | null;
   num_tokens: number | null;
   eval_loss: number | null;
+  current_dataset_index?: number | null;
+  current_dataset_total?: number | null;
+  current_dataset_repository_id?: string | null;
 }
 
 export interface TrainingSeriesPoint {
@@ -101,7 +104,11 @@ export interface TrainingRuntimeState {
   isStarting: boolean;
   startError: string | null;
   startModelName: string | null;
-  startDatasetName: string | null;
+  /** Immutable HF repository-id snapshot captured from the request for this run. */
+  startDatasetNames: string[];
+  currentDatasetIndex: number | null;
+  currentDatasetTotal: number | null;
+  currentDatasetRepositoryId: string | null;
   startProjectName: string | null;
   startFromResume: boolean;
   sseConnected: boolean;
@@ -140,7 +147,7 @@ export interface TrainingRuntimeActions {
   setStartError: (value: string | null) => void;
   setStartResources: (
     modelName: string | null,
-    datasetName: string | null,
+    datasetNames: string[],
     fromResume?: boolean,
     projectName?: string | null,
   ) => void;

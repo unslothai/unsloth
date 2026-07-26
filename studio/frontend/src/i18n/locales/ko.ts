@@ -1001,6 +1001,7 @@ export const ko = {
       resumingTraining: "학습을 재개하는 중...",
       startingTraining: "학습을 시작하는 중...",
       dataset: "데이터셋",
+      datasetProgress: "데이터셋 {current}/{total}",
       datasetStreaming: "데이터셋: 스트리밍(전체 다운로드 없음)",
       modelWeights: "모델 가중치",
     },

@@ -1000,6 +1000,7 @@ export const ar = {
       resumingTraining: "جارٍ استئناف التدريب...",
       startingTraining: "جارٍ بدء التدريب...",
       dataset: "مجموعة البيانات",
+      datasetProgress: "مجموعة البيانات {current}/{total}",
       datasetStreaming: "مجموعة البيانات: بث مباشر (بدون تنزيل كامل)",
       modelWeights: "أوزان النموذج",
     },
