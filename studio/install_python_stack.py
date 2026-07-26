@@ -58,8 +58,8 @@ PLATFORM_LACKS_TORCHCODEC_WHEEL = (
 # Detected ROCm (major, minor) -> best PyTorch wheel tag, checked newest-first (>=).
 _ROCM_TORCH_INDEX: dict[tuple[int, int], str] = {
     (7, 2): "rocm7.2",  # torch 2.11.0
-    (7, 1): "rocm7.1",  # torch 2.10.0
-    (7, 0): "rocm7.0",
+    (7, 1): "rocm7.1",  # torch 2.11.0
+    (7, 0): "rocm7.0",  # torch 2.10.0
     (6, 4): "rocm6.4",
     (6, 3): "rocm6.3",
     (6, 2): "rocm6.2",
@@ -97,14 +97,26 @@ _ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset(
 # rocmX.Y indexes KNOWN to ship torch 2.11; never floor an unknown newer rocm speculatively.
 _ROCM_KNOWN_TORCH211_VERSIONS: frozenset[tuple[int, int]] = frozenset({(7, 2)})
 
-# Per-tag pip specs; rocm7.2 ships torch 2.11.0 (older tags cap at 2.10.x).
+# Per-tag pip specs for the repair/update path; must land on the same wheels a fresh
+# install.sh run would pick, otherwise `studio update` silently downgrades the venv.
 _ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
+    # Floored at 2.11 (the _grouped_mm bug), matching install.sh's rocm7.2|gfx* case.
     "rocm7.2": (
         "torch>=2.11.0,<2.12.0",
         "torchvision>=0.26.0,<0.27.0",
         "torchaudio>=2.11.0,<2.12.0",
     ),
-    # rocm7.1 and earlier: torch 2.x below 2.11
+    # rocm7.1 also serves a paired 2.11 trio (torch 2.11.0 / torchvision 0.26.0 /
+    # torchaudio 2.11.0), so it takes install.sh's widened DEFAULT range rather than
+    # the 2.11 floor: no _grouped_mm floor applies here, but capping at <2.11 would
+    # force-reinstall 2.10 over the 2.11 a fresh install just resolved.
+    "rocm7.1": (
+        "torch>=2.4,<2.12.0",
+        "torchvision>=0.19,<0.27.0",
+        "torchaudio>=2.4,<2.12.0",
+    ),
+    # rocm7.0 and earlier genuinely top out below 2.11 (rocm7.0: torch 2.10.0,
+    # rocm6.4/6.3: 2.9.1, rocm6.2: 2.5.1), so the old ceiling stays literal.
     "_default": (
         "torch>=2.4,<2.11.0",
         "torchvision>=0.19,<0.26.0",
