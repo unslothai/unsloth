@@ -276,6 +276,20 @@ function localGgufRepos(models: LocalModelInfo[]): string[] {
   return repos;
 }
 
+// First candidate the repo actually offers: an explicit pick, then the remembered
+// one, then the repo default.
+function pickVariant(
+  available: Set<string>,
+  candidates: (string | null | undefined)[],
+): string | null {
+  for (const candidate of candidates) {
+    if (candidate && available.has(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 function activeGgufSelection(
   status: InferenceStatusResponse | null,
 ): { model: string; variant: string | null; named: boolean } | null {
@@ -594,6 +608,8 @@ export function AgentsTab() {
   });
   const [selectedModel, setSelectedModel] = useState(EXAMPLE_MODEL_REPO);
   const modelSelectionChanged = useRef(false);
+  // A quant picked by hand: polling and refetches must not overwrite it.
+  const chosenVariant = useRef<string | null>(null);
   const [modelSearch, setModelSearch] = useState("");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [variants, setVariants] = useState<GgufVariantDetail[]>([]);
@@ -787,11 +803,22 @@ export function AgentsTab() {
       }
       if (!modelSelectionChanged.current) {
         setSelectedModel(active.model);
-        setSelectedVariant(active.variant);
+        if (!chosenVariant.current) {
+          setSelectedVariant(active.variant);
+        }
       }
     },
     [],
   );
+
+  // A native-grant label only stands for whatever was resident at the time, so once
+  // that model is replaced the label cannot name anything and has to go, even when
+  // it was picked by hand: leaving it selected would emit it as --model.
+  const retireAttachOnly = useCallback((label: string, replacement: string) => {
+    setModels((current) => current.filter((model) => model !== label));
+    setSelectedModel((current) => (current === label ? replacement : current));
+    setSelectedVariant((current) => (current === label ? null : current));
+  }, []);
 
   // The resident GGUF went away (unloaded, or replaced by a transformer model).
   // Following it means letting go too, or the command would name a stale model and
@@ -810,6 +837,24 @@ export function AgentsTab() {
     setSelectedVariant((current) => (attachOnly ? null : current));
   }, []);
 
+  const applyStatus = useCallback(
+    (status: InferenceStatusResponse) => {
+      const active = activeGgufSelection(status);
+      const wasAttachOnly = attachOnlyModel;
+      setActiveStatusModel(active?.model ?? null);
+      setAttachOnlyModel(active && !active.named ? active.model : null);
+      if (!active) {
+        dropActiveModel(wasAttachOnly);
+        return;
+      }
+      if (wasAttachOnly && wasAttachOnly !== active.model) {
+        retireAttachOnly(wasAttachOnly, active.model);
+      }
+      adoptActiveModel(active);
+    },
+    [adoptActiveModel, attachOnlyModel, dropActiveModel, retireAttachOnly],
+  );
+
   // Another client, or a load that finishes after this tab opens, can change what
   // is resident on a shared server. Keep tracking it rather than pinning the model
   // seen at mount, or the command would name a stale one and switch the server
@@ -822,15 +867,7 @@ export function AgentsTab() {
           if (cancelled) {
             return;
           }
-          const active = activeGgufSelection(status);
-          const wasAttachOnly = attachOnlyModel;
-          setActiveStatusModel(active?.model ?? null);
-          setAttachOnlyModel(active && !active.named ? active.model : null);
-          if (active) {
-            adoptActiveModel(active);
-          } else {
-            dropActiveModel(wasAttachOnly);
-          }
+          applyStatus(status);
         })
         .catch(() => {
           // A failed poll just leaves the last known selection in place.
@@ -841,7 +878,7 @@ export function AgentsTab() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [adoptActiveModel, attachOnlyModel, dropActiveModel]);
+  }, [applyStatus]);
 
   useEffect(() => {
     let cancelled = false;
@@ -862,6 +899,11 @@ export function AgentsTab() {
       };
     }
 
+    // A programmatic model change reaches here too, so clear the previous repo's
+    // quants up front rather than leaving them selectable until this resolves.
+    setVariants([]);
+    setDefaultVariant(null);
+    setVariantsLoading(true);
     // Offer the quants from the same place the command loads from, not remote-only ones.
     listGgufVariants(selectedModel, hfToken || undefined, {
       preferLocalCache: cachedLoadId != null,
@@ -884,12 +926,11 @@ export function AgentsTab() {
           uniqueVariants.map((variant) => variant.quant),
         );
         const nextVariant =
-          (preferredVariant && available.has(preferredVariant)
-            ? preferredVariant
-            : null) ??
-          (info.default_variant && available.has(info.default_variant)
-            ? info.default_variant
-            : null) ??
+          pickVariant(available, [
+            chosenVariant.current,
+            preferredVariant,
+            info.default_variant,
+          ]) ??
           uniqueVariants[0]?.quant ??
           null;
         setSelectedVariant(nextVariant);
@@ -1107,6 +1148,7 @@ export function AgentsTab() {
                         data-checked={model === selectedModel}
                         onSelect={() => {
                           modelSelectionChanged.current = true;
+                          chosenVariant.current = null;
                           setSelectedModel(model);
                           setSelectedVariant(knownVariants[model] ?? null);
                           setVariants([]);
@@ -1146,6 +1188,7 @@ export function AgentsTab() {
             <Select
               value={selectedVariant ?? undefined}
               onValueChange={(variant) => {
+                chosenVariant.current = variant;
                 setSelectedVariant(variant);
                 resetCopied();
               }}
