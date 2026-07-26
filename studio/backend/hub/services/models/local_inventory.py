@@ -721,7 +721,6 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
         # an untagged row is dropped from those lists. Imported lazily to keep the cycle out.
         try:
             from routes.models import _local_model_task
-
             models = [m.model_copy(update = {"task": _local_model_task(m)}) for m in models]
         except Exception as e:  # noqa: BLE001 -- classification never breaks the listing
             logger.warning("Could not classify local model tasks: %s", e)

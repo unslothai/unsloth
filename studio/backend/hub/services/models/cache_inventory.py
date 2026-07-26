@@ -322,7 +322,6 @@ def _cached_row_task(repo_info, *, gguf: bool) -> Optional[str]:
     """
     try:
         from routes.models import _cached_repo_task, _repo_gguf_task
-
         return _repo_gguf_task(repo_info) if gguf else _cached_repo_task(repo_info)
     except Exception:  # noqa: BLE001 -- a classification failure never hides a row
         return None
