@@ -22,8 +22,9 @@ Qwen-Image).
 Safety gates: the wrapper only caches calls whose arguments are all plain
 JSON-safe values (a tensor argument such as pre-supplied ``prompt_embeds``
 passes straight through), keys on everything that changes the embedding
-numerics (family, repo, dtype, text-encoder quant, diffusers version, and the
-full argument set minus device/generator), and bypasses entirely while LoRA
+numerics (family, checkpoint repo, the companion base repo that supplies the
+text encoders, dtype, text-encoder quant, diffusers version, and the full
+argument set minus device/generator), and bypasses entirely while LoRA
 adapters are attached (an adapter may target the text encoders). Best-effort
 throughout: any cache failure falls back to the real encode. torch is imported
 lazily so this stays importable in a no-torch runtime.
@@ -117,6 +118,7 @@ def install(
     family: str,
     repo_id: str,
     dtype: Any,
+    base_repo: Any = None,
     te_quant: Any = None,
     logger: Any = None,
 ) -> bool:
@@ -142,9 +144,14 @@ def install(
             logger.warning("diffusion.cond_cache: install failed: %s", exc)
         return False
 
-    # Everything beyond the call arguments that changes the embedding numerics.
+    # Everything beyond the call arguments that changes the embedding numerics. A GGUF /
+    # single-file checkpoint takes its TEXT ENCODERS from the companion base repo, so the
+    # base identity must key the cache too: the same checkpoint reloaded against a different
+    # base would otherwise hit entries encoded by the previous base's encoder. Defaults to
+    # the checkpoint itself (a full pipeline is its own base).
     load_fp = {
         "repo": str(repo_id),
+        "base": str(base_repo) if base_repo else str(repo_id),
         "dtype": str(dtype),
         "te_quant": str(te_quant) if te_quant is not None else "none",
         "diffusers": _diffusers_version(),

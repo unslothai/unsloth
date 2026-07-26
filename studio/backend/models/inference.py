@@ -2455,10 +2455,16 @@ class DiffusionGenerateRequest(BaseModel):
     )
     strength: Optional[float] = Field(
         None,
-        ge = 0.0,
+        # EXCLUSIVE lower bound: strength 0 does not "keep the source". Every diffusers
+        # img2img/inpaint pipeline derives its step count from it (t_start =
+        # num_inference_steps - int(num_inference_steps * strength)), so 0 leaves zero
+        # denoising steps: FLUX/Qwen/Z-Image raise "the number of pipeline steps is 0 which
+        # is < 1", and SDXL img2img has no such guard and crashes on empty latents (a 500).
+        # The UI slider already starts at 0.1; reject 0 as a 422 instead of a pipeline error.
+        gt = 0.0,
         le = 1.0,
-        description = "img2img/inpaint denoise strength: 0 keeps the source, 1 fully "
-        "redraws it. Ignored for txt2img.",
+        description = "img2img/inpaint denoise strength: low values stay close to the "
+        "source, 1 fully redraws it. Must be greater than 0. Ignored for txt2img.",
     )
     upscale: Optional[float] = Field(
         None,
@@ -2554,9 +2560,11 @@ class GalleryImage(BaseModel):
     batch_seed: Optional[int] = Field(
         None,
         description = (
-            "Base seed the batch was launched with. The native engine derives per-image seeds as "
-            "base + index, so restore must replay from this base, not from the derived per-image "
-            "seed; older records without it fall back to seed."
+            "Seed restore must replay this image from. For a batch_size batch that is the base "
+            "seed the batch launched with (the native engine derives per-image seeds as "
+            "base + index, so the derived seed alone would not reproduce it); for a "
+            "prompts/seeds list, where each image carries its own seed, it equals seed. "
+            "Older records without it fall back to seed."
         ),
     )
     batch_index: int = Field(0, description = "Position within its batch (0-based)")

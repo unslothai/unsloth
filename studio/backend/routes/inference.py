@@ -16136,6 +16136,12 @@ async def generate_diffusion_image(
     # base + index), returned in ``seeds`` so each image is individually reproducible.
     created_at = time.time()
     per_image_seeds = result.get("seeds")
+    # A prompts/seeds LIST drives the image count and each image's own seed, so
+    # ``batch_size`` is only a per-forward cap there and the base seed no longer replays
+    # image i (seeds=[5, 99] would restore 5 for the 99 image). Persist those outputs as
+    # single-image recipes keyed on their OWN seed instead, so the gallery's Restore
+    # reproduces every image and not just the first.
+    list_driven = bool(request.prompts or request.seeds)
 
     def _persist() -> list[dict]:
         records = []
@@ -16169,13 +16175,15 @@ async def generate_diffusion_image(
                         # Base seed the batch launched with. The native engine derives per-image
                         # seeds as base + index, so ``seed`` above is already advanced for index>0;
                         # restore replays from this base (diffusers shares one seed, so base == seed).
-                        "batch_seed": result["seed"],
+                        # A list-driven image carries its OWN seed instead (see ``list_driven``).
+                        "batch_seed": seed if list_driven else result["seed"],
                         # Position within the batch (shared timestamp), so the export filename
                         # stays unique.
                         "batch_index": index,
                         # The batch shares one seed, so reproducing a batch_index>0 image needs
-                        # the original batch_size: persist it so restore can replay.
-                        "batch_size": request.batch_size,
+                        # the original batch_size: persist it so restore can replay. A list-driven
+                        # image needs no replay -- it restores as a single image on its own seed.
+                        "batch_size": 1 if list_driven else request.batch_size,
                         "model": result.get("repo_id"),
                         "loras": (
                             [f"{l.id}:{l.weight:g}" for l in request.loras] if request.loras else []

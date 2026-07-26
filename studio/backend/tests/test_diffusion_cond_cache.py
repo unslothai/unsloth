@@ -122,6 +122,24 @@ def test_load_fingerprint_keys_apart(cache_env):
     assert (a.calls, b.calls, c.calls) == (1, 1, 1)
 
 
+def test_companion_base_keys_apart(cache_env):
+    # A GGUF / single-file checkpoint takes its TEXT ENCODERS from the companion base, so
+    # the SAME checkpoint reloaded against a different base must re-encode rather than reuse
+    # the previous base's embeddings (silently different conditioning otherwise).
+    first = _EncodePipe()
+    _install(first, repo_id = "org/model-GGUF", base_repo = "base/one")
+    first.encode_prompt("a sloth")
+    second = _EncodePipe()
+    _install(second, repo_id = "org/model-GGUF", base_repo = "base/two")
+    second.encode_prompt("a sloth")
+    assert (first.calls, second.calls) == (1, 1)
+    # The same base is still a warm hit (the whole point of the cache).
+    third = _EncodePipe()
+    _install(third, repo_id = "org/model-GGUF", base_repo = "base/one")
+    third.encode_prompt("a sloth")
+    assert third.calls == 0
+
+
 def test_lora_attached_bypasses_the_cache(cache_env):
     pipe = _EncodePipe()
     _install(pipe)

@@ -3724,3 +3724,85 @@ def test_generate_non_oom_error_is_not_retried(fake_runtime, tmp_path):
     with pytest.raises(RuntimeError, match = "shape mismatch"):
         backend.generate(prompt = "p", seeds = [1, 2, 3, 4])
     assert pipe.batch_attempts == [4]  # no backoff retries on a non-OOM error
+
+
+def test_generate_broadcasts_negative_prompt_across_a_mixed_prompt_batch(fake_runtime, tmp_path):
+    # A prompt LIST must carry a matching negative-prompt LIST: ZImagePipeline.encode_prompt
+    # asserts len(prompt) == len(negative_prompt), and the pipes that encode the negative
+    # separately (Qwen-Image / Krea 2 / FLUX true-CFG) would build batch-1 negative embeds
+    # against batch-N latents and fail in the transformer's txt/img concat.
+    backend = _load_zimage_backend(tmp_path)
+    backend.generate(prompt = "fallback", prompts = ["a", "b", "c"], negative_prompt = "blurry")
+    call = backend._state.pipe.last_kwargs
+    assert call["prompt"] == ["a", "b", "c"]
+    assert call["negative_prompt"] == ["blurry", "blurry", "blurry"]
+    # An empty negative prompt is still omitted entirely (never sent as [""] * n).
+    backend.generate(prompt = "fallback", prompts = ["a", "b"])
+    assert backend._state.pipe.last_kwargs["negative_prompt"] is None
+
+
+def test_generate_keeps_a_scalar_negative_prompt_off_the_list_paths(fake_runtime, tmp_path):
+    # Uniform-prompt and single-image forwards pass a SCALAR prompt, so the negative prompt
+    # must stay scalar too (a list would mismatch the batch-1 positive encode).
+    backend = _load_zimage_backend(tmp_path)
+    backend.generate(prompt = "a sloth", seeds = [1, 2, 3], negative_prompt = "blurry")
+    assert backend._state.pipe.last_kwargs["prompt"] == "a sloth"
+    assert backend._state.pipe.last_kwargs["negative_prompt"] == "blurry"
+    backend.generate(prompt = "a sloth", seed = 1, negative_prompt = "blurry")
+    assert backend._state.pipe.last_kwargs["negative_prompt"] == "blurry"
+
+
+class _TracingPipe(_CountingPipe):
+    """Appends ``("call", n)`` to a shared trace so resets can be interleaved with forwards."""
+
+    def __init__(self, trace, max_images = None):
+        super().__init__(max_images = max_images)
+        self.trace = trace
+
+    def __call__(self, *, prompt = None, **kwargs):
+        n = kwargs.get("num_images_per_prompt", 1)
+        if isinstance(prompt, list):
+            n *= len(prompt)
+        self.trace.append(("call", n))
+        return super().__call__(prompt = prompt, **kwargs)
+
+
+def test_generate_resets_the_step_cache_before_an_oom_retry(fake_runtime, tmp_path):
+    # A forward that RAISES skips the pipeline's end-of-__call__ maybe_free_model_hooks(),
+    # so its FBCache head-block residual stays on the resident transformer. Without a reset
+    # before each retry the halved chunk compares a batch-2 residual against the stale
+    # batch-4 one ("size of tensor a (2) must match ... b (4)"), turning a recoverable OOM
+    # into a hard failure.
+    backend = _load_zimage_backend(tmp_path)
+    trace: list = []
+    pipe = _TracingPipe(trace, max_images = 2)
+    pipe.transformer = types.SimpleNamespace(
+        _reset_stateful_cache = lambda: trace.append(("reset",))
+    )
+    object.__setattr__(backend._state, "pipe", pipe)
+    object.__setattr__(backend._state, "transformer_cache", "fbcache")
+    out = backend.generate(prompt = "p", seeds = [1, 2, 3, 4])
+    assert len(out["images"]) == 4 and out["seeds"] == [1, 2, 3, 4]
+    # Every forward -- including both post-OOM retries -- is preceded by a reset.
+    assert trace == [
+        ("reset",),
+        ("call", 4),
+        ("reset",),
+        ("call", 2),
+        ("reset",),
+        ("call", 2),
+    ]
+
+
+def test_generate_resets_the_step_cache_before_every_chunk(fake_runtime, tmp_path):
+    # Same guarantee for an explicit per-forward cap (no OOM involved).
+    backend = _load_zimage_backend(tmp_path)
+    trace: list = []
+    pipe = _TracingPipe(trace)
+    pipe.transformer = types.SimpleNamespace(
+        _reset_stateful_cache = lambda: trace.append(("reset",))
+    )
+    object.__setattr__(backend._state, "pipe", pipe)
+    object.__setattr__(backend._state, "transformer_cache", "fbcache")
+    backend.generate(prompt = "p", seeds = [1, 2, 3], batch_size = 2)
+    assert trace == [("reset",), ("call", 2), ("reset",), ("call", 1)]

@@ -1781,12 +1781,16 @@ class DiffusionBackend:
                     # trainers' cond_cache_dir): repeated prompts skip the text-encoder
                     # forward entirely, so warm prompts never onload the multi-GB encoders
                     # under an offload policy. Installed AFTER the TE quant above so the
-                    # cache key reflects the encoders that actually run. Instance-level;
+                    # cache key reflects the encoders that actually run. ``base`` keys the
+                    # companion repo the TEXT ENCODERS came from (a GGUF/single-file load
+                    # takes them from the base, so the same checkpoint against a different
+                    # base must not reuse the previous base's embeddings). Instance-level;
                     # dies with the pipe on unload.
                     cond_cache.install(
                         pipe,
                         family = fam.name,
                         repo_id = repo_id,
+                        base_repo = base,
                         dtype = dtype,
                         te_quant = te_quant,
                         logger = logger,
@@ -2556,18 +2560,19 @@ class DiffusionBackend:
 
     @staticmethod
     def _reset_step_cache(pipe: Any) -> None:
-        """Clear the transformer's stateful step cache (FBCache) before a generation.
+        """Clear the transformer's stateful step cache (FBCache) before a forward.
 
         diffusers keys FBCache residuals by cache context ("cond"/"uncond") on the
-        long-lived transformer, and neither the pipeline nor the context exit resets
-        them. The transformer-level reset entry point is ``_reset_stateful_cache`` in
-        diffusers 0.39 (``reset_stateful_hooks`` lives only on the HookRegistry, so a
-        getattr for it on the transformer is a silent no-op), and no pipeline calls it.
-        This backend reuses one resident pipe across generations, so without a reset the
-        next generation's first step compares its first-block residual against the
-        PREVIOUS request's -- a tensor-shape mismatch when the resolution/batch changed,
-        or a stale-cache reuse otherwise. Best-effort: a transformer without the hook
-        (uncached load) is a silent no-op."""
+        long-lived transformer. The context exit does NOT reset them; the end of a
+        pipeline ``__call__`` does, via ``maybe_free_model_hooks()`` -- but only when
+        the call RETURNS. A call that raised (an OOM this generate() backs off from, a
+        cancelled denoise, a failed prior request) leaves its own batch's residual on
+        the resident transformer, and the next forward's first step then compares
+        against it: a tensor-shape mismatch when the resolution/batch changed, or a
+        stale-cache reuse otherwise. The transformer-level reset entry point is
+        ``_reset_stateful_cache`` in diffusers 0.39 (``reset_stateful_hooks`` lives only
+        on the HookRegistry, so a getattr for it on the transformer is a silent no-op).
+        Best-effort: a transformer without the hook (uncached load) is a silent no-op."""
         transformer = getattr(pipe, "transformer", None)
         reset = getattr(transformer, "_reset_stateful_cache", None) or getattr(
             transformer, "reset_stateful_hooks", None
@@ -3034,11 +3039,6 @@ class DiffusionBackend:
                                 + ("reaches" if toggled else "is below")
                                 + f" {FBCACHE_MIN_STEPS}"
                             )
-                # Start each generation from a clean step cache: prior FBCache residuals would
-                # otherwise be compared against this first step (shape mismatch / stale reuse).
-                if state.transformer_cache:
-                    self._reset_step_cache(state.pipe)
-
                 self._gen = gen
                 images: list[Any] = []
                 per_image_seeds: list[int] = []
@@ -3063,10 +3063,28 @@ class DiffusionBackend:
                         chunk_kwargs["generator"] = generators
                         chunk_kwargs["num_images_per_prompt"] = len(chunk)
                     else:
-                        # Distinct prompts: one image per prompt in a single forward.
+                        # Distinct prompts: one image per prompt in a single forward. The
+                        # negative prompt must be broadcast to match: a pipeline either
+                        # asserts on the length (Z-Image) or encodes a batch-1 negative
+                        # against batch-N latents and fails in the transformer's txt/img
+                        # concat (Qwen-Image, Krea 2, FLUX true-CFG). Only the pipes that
+                        # already expand a scalar themselves (SDXL, Lumina 2, HiDream) are
+                        # unaffected, so broadcast here for all of them.
                         chunk_kwargs["prompt"] = [p for p, _ in chunk]
                         chunk_kwargs["generator"] = generators
                         chunk_kwargs["num_images_per_prompt"] = 1
+                        if isinstance(chunk_kwargs.get("negative_prompt"), str):
+                            chunk_kwargs["negative_prompt"] = [
+                                chunk_kwargs["negative_prompt"]
+                            ] * len(chunk)
+                    # Start every forward from a clean step cache. diffusers resets the
+                    # transformer's FBCache state at the END of a successful __call__
+                    # (maybe_free_model_hooks), but a call that RAISED -- the OOM below, a
+                    # cancelled denoise, a failed prior generation -- leaves the residual of
+                    # its own batch behind, and the next (differently sized) forward then
+                    # compares against it: "size of tensor a (16) must match ... b (32)".
+                    if state.transformer_cache:
+                        self._reset_step_cache(state.pipe)
                     try:
                         # inference_mode is faster than no_grad and numerically identical here.
                         with torch.inference_mode():

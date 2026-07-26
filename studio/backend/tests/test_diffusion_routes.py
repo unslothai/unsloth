@@ -99,10 +99,24 @@ class _FakeBackend:
         *,
         seed = None,
         batch_size = 1,
+        prompts = None,
+        seeds = None,
         **kwargs,
     ):
         if not self.loaded:
             raise RuntimeError("No diffusion model is loaded.")
+        if prompts is not None or seeds is not None:
+            # List-driven batch: the LIST sets the image count and each image's own seed
+            # (batch_size is only a per-forward cap), exactly as the real engine reports it.
+            base = seeds[0] if seeds else (seed if seed is not None else 4242)
+            count = len(prompts) if prompts is not None else len(seeds)
+            per_image = seeds if seeds is not None else [base + i for i in range(count)]
+            return {
+                "images": [object() for _ in range(count)],
+                "seed": base,
+                "seeds": list(per_image),
+                "repo_id": "x/z-image",
+            }
         # The real backend returns the PIL images; the route persists them. The
         # fake returns sentinels since image_gallery is stubbed in the fixture.
         return {
@@ -367,6 +381,72 @@ def test_generate_batch_size_persists_each_image(client):
     assert all(i["seed"] == 5 for i in images)  # the batch shares one seed
     assert len({i["id"] for i in images}) == 3  # but each is a distinct record
     assert len(client.get("/api/inference/images/gallery").json()["images"]) == 3
+
+
+def test_generate_seed_list_records_replay_from_each_own_seed(client):
+    # A seeds LIST sets each image's own seed, so the recipe must NOT claim the base seed +
+    # the request's batch_size: restore prefers batch_seed (frontend restoreSettings does
+    # `batch_seed ?? seed`), which would regenerate seed 5 for the seed-99 image.
+    client.post(
+        "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
+    )
+    resp = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "p", "seeds": [5, 99]},
+    )
+    assert resp.status_code == 200
+    images = resp.json()["images"]
+    assert [i["seed"] for i in images] == [5, 99]
+    assert [i["batch_seed"] for i in images] == [5, 99]  # replays THIS image, not the base
+    assert [i["batch_size"] for i in images] == [1, 1]  # as a single image, not a batch
+
+
+def test_generate_prompt_list_records_each_prompt_and_seed(client):
+    client.post(
+        "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
+    )
+    resp = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "unused", "prompts": ["a cat", "a dog"], "seed": 10},
+    )
+    assert resp.status_code == 200
+    images = resp.json()["images"]
+    assert [i["prompt"] for i in images] == ["a cat", "a dog"]
+    assert [i["seed"] for i in images] == [10, 11]
+    assert [i["batch_seed"] for i in images] == [10, 11]
+    assert [i["batch_size"] for i in images] == [1, 1]
+
+
+def test_generate_legacy_batch_still_records_the_base_seed_and_size(client):
+    # The batch_size path is unchanged: those images DO share one base seed, so restore
+    # must replay the whole batch (base seed + batch_size), not the derived per-image seed.
+    client.post(
+        "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
+    )
+    resp = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "p", "batch_size": 3, "seed": 5},
+    )
+    images = resp.json()["images"]
+    assert all(i["batch_seed"] == 5 for i in images)
+    assert all(i["batch_size"] == 3 for i in images)
+    assert [i["batch_index"] for i in images] == [0, 1, 2]
+
+
+def test_generate_request_rejects_zero_denoise_strength():
+    # strength 0 does NOT keep the source: every diffusers img2img/inpaint pipeline derives
+    # t_start = steps - int(steps * strength), so 0 leaves zero denoising steps (FLUX/Qwen/
+    # Z-Image raise "the number of pipeline steps is 0 which is < 1"; SDXL img2img has no
+    # such guard and crashes on empty latents). Reject it as a 422 up front.
+    import pydantic
+
+    from models.inference import DiffusionGenerateRequest
+
+    with pytest.raises(pydantic.ValidationError):
+        DiffusionGenerateRequest(prompt = "x", strength = 0.0)
+    assert DiffusionGenerateRequest(prompt = "x", strength = 0.1).strength == 0.1
+    assert DiffusionGenerateRequest(prompt = "x", strength = 1.0).strength == 1.0
+    assert DiffusionGenerateRequest(prompt = "x").strength is None  # unset stays the pipe default
 
 
 def test_gallery_pagination(client):
