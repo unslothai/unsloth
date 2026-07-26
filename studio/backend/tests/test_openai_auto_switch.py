@@ -387,6 +387,50 @@ def test_resolver_nonstring_model_is_failsafe():
     assert resolver.resolve_local_gguf(None) is None
 
 
+def test_describe_local_miss_separates_missing_repo_from_missing_quant(monkeypatch):
+    # A miss is two different situations and the error should say which: the repo
+    # isn't downloaded, or it is and only that quant is absent.
+    monkeypatch.setattr(
+        resolver,
+        "_build_index",
+        lambda: {"unsloth/b-gguf": _entry("unsloth/B-GGUF", "UD-Q5_K_XL", "Q4_K_M")},
+    )
+    resolver._scan = (0.0, {})
+    assert resolver.describe_local_miss("unsloth/B-GGUF:Q8_0") == (
+        resolver.MISS_VARIANT_NOT_FOUND,
+        ("UD-Q5_K_XL", "Q4_K_M"),
+    )
+    # Split the same way resolve_local_gguf does, so the two never disagree.
+    assert resolver.describe_local_miss("unsloth/b-gguf:q8_0")[0] == (
+        resolver.MISS_VARIANT_NOT_FOUND
+    )
+    # Unknown repo, and a bare id with no ":VARIANT" to blame.
+    assert resolver.describe_local_miss("totally/unknown:Q8_0") == (
+        resolver.MISS_MODEL_NOT_FOUND,
+        (),
+    )
+    assert resolver.describe_local_miss("unsloth/B-GGUF") == (
+        resolver.MISS_MODEL_NOT_FOUND,
+        (),
+    )
+
+
+def test_describe_local_miss_is_failsafe(monkeypatch):
+    # Runs inside an error path, so a broken scan must degrade to the generic miss
+    # rather than raise a 500 over what was already a 4xx.
+    def boom():
+        raise RuntimeError("scan blew up")
+
+    monkeypatch.setattr(resolver, "_build_index", boom)
+    resolver._scan = (0.0, {})
+    assert resolver.describe_local_miss("unsloth/B-GGUF:Q8_0") == (
+        resolver.MISS_MODEL_NOT_FOUND,
+        (),
+    )
+    assert resolver.describe_local_miss(123) == (resolver.MISS_MODEL_NOT_FOUND, ())
+    assert resolver.describe_local_miss("") == (resolver.MISS_MODEL_NOT_FOUND, ())
+
+
 def test_resolver_exact_id_with_colon_wins(monkeypatch):
     # A local id that itself contains a colon (e.g. a Windows path) must match
     # exactly rather than being split at the drive-letter colon.
@@ -3240,13 +3284,14 @@ def test_no_model_loaded_detail_appends_hint_only_when_off(monkeypatch):
     assert inference_route._no_model_loaded_detail(base) == base
 
 
-def _run_responses_stream_no_model(monkeypatch, *, enabled, active_model_name):
+def _run_responses_stream_no_model(monkeypatch, *, enabled, active_model_name, resolves_to = None):
     # Drive _responses_stream's GGUF-not-loaded guard: llama backend unloaded,
-    # inference backend maybe holding a non-GGUF model. Returns the 400 detail.
+    # inference backend maybe holding a non-GGUF model. Returns (status, detail).
     from fastapi import HTTPException
     from models.inference import ResponsesRequest, ChatMessage
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda name: resolves_to)
     monkeypatch.setattr(
         inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(loaded_id = None)
     )
@@ -3259,27 +3304,197 @@ def _run_responses_stream_no_model(monkeypatch, *, enabled, active_model_name):
     messages = [ChatMessage(role = "user", content = "hi")]
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route._responses_stream(payload, messages, None))
-    assert exc.value.status_code == 400
-    return exc.value.detail
+    return exc.value.status_code, exc.value.detail
 
 
 def test_responses_stream_hint_matches_toggle_regardless_of_active_model(monkeypatch):
-    # Streaming /v1/responses shares the GGUF-only 400 with the other "no model
-    # loaded" sites, so the auto-switch hint attaches whenever the toggle is
-    # off -- including while a non-GGUF model is active, since auto-switch
-    # evicts it to load a resolved GGUF (_maybe_auto_switch_model's resolver
-    # branch has no active-model guard, unlike its reload-stash branch). Only
-    # the toggle being on suppresses it.
-    hinted = _run_responses_stream_no_model(monkeypatch, enabled = False, active_model_name = None)
+    # The hint attaches whenever the toggle is off, including while a non-GGUF
+    # model is active, since auto-switch evicts it to load a resolved GGUF
+    # (the resolver branch has no active-model guard, unlike the reload stash).
+    # With it on the error changes kind: the name resolved to nothing local, so
+    # 404 model_not_found rather than a 400 pointing at /inference/load.
+    off_status, hinted = _run_responses_stream_no_model(
+        monkeypatch, enabled = False, active_model_name = None
+    )
+    assert off_status == 400
     assert "Model auto-switch" in hinted
 
-    on = _run_responses_stream_no_model(monkeypatch, enabled = True, active_model_name = None)
+    on_status, on = _run_responses_stream_no_model(
+        monkeypatch, enabled = True, active_model_name = None
+    )
+    assert on_status == 404
     assert "Model auto-switch" not in on
+    assert "unsloth/Qwen3.5-4B-GGUF" in on
 
-    non_gguf_loaded = _run_responses_stream_no_model(
+    non_gguf_status, non_gguf_loaded = _run_responses_stream_no_model(
         monkeypatch, enabled = False, active_model_name = "unsloth/Llama-3.2-1B-Instruct"
     )
+    assert non_gguf_status == 400
     assert "Model auto-switch" in non_gguf_loaded
+
+
+def _wire_unloaded_chat(monkeypatch, *, enabled, catalog = ("org/A-GGUF", "org/B-GGUF")):
+    # Nothing loaded, so a chat request reaches the "no model loaded" error. Pin
+    # the catalog so listed ids don't depend on what is cached on the test machine.
+    async def _catalog():
+        return [{"id": mid} for mid in catalog]
+
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda _m: None)
+    monkeypatch.setattr(
+        resolver, "describe_local_miss", lambda _m: (resolver.MISS_MODEL_NOT_FOUND, ())
+    )
+    monkeypatch.setattr(inference_route, "_openai_catalog_objects", _catalog)
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(loaded_id = None)
+    )
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("_B", (), {"active_model_name": None, "models": {}})(),
+    )
+
+
+def _chat_error(payload):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    return exc.value.status_code, exc.value.detail
+
+
+def test_chat_names_undownloaded_model_404s_with_available_ids(monkeypatch):
+    # The reported bug: auto-switch on, the named model is not on this machine, so
+    # the switch silently did nothing and /inference/load cannot fix it. Name the
+    # model and list what can serve, from the catalog GET /v1/models returns.
+    _wire_unloaded_chat(monkeypatch, enabled = True)
+    status, detail = _chat_error(_chat_request(model = "unsloth/gemma-4-E4B-it-GGUF:UD-Q5_K_XL"))
+    assert status == 404
+    assert "unsloth/gemma-4-E4B-it-GGUF:UD-Q5_K_XL" in detail
+    assert "org/A-GGUF, org/B-GGUF" in detail
+    assert "GET /v1/models" in detail
+    assert "POST /inference/load" not in detail
+
+
+def test_chat_undownloaded_model_with_empty_catalog(monkeypatch):
+    # Nothing downloaded: an empty list would read as a bug, so say so plainly.
+    _wire_unloaded_chat(monkeypatch, enabled = True, catalog = ())
+    status, detail = _chat_error(_chat_request(model = "org/nope-GGUF"))
+    assert status == 404
+    assert "no models are downloaded yet" in detail
+
+
+def test_chat_wrong_quant_lists_the_local_quants(monkeypatch):
+    # Repo downloaded, only the quant missing: sibling quants, not the catalog.
+    _wire_unloaded_chat(monkeypatch, enabled = True)
+    monkeypatch.setattr(
+        resolver,
+        "describe_local_miss",
+        lambda _m: (resolver.MISS_VARIANT_NOT_FOUND, ("Q4_K_M", "Q8_0")),
+    )
+    status, detail = _chat_error(_chat_request(model = "org/A-GGUF:UD-Q5_K_XL"))
+    assert status == 404
+    assert "'org/A-GGUF' is downloaded, but the quant 'UD-Q5_K_XL' is not" in detail
+    assert "Q4_K_M, Q8_0" in detail
+
+
+def test_chat_error_unchanged_when_auto_switch_off(monkeypatch):
+    # Toggle off: nothing was resolved, so "not downloaded" would be a guess. Keep
+    # the pre-existing status and text, hint included.
+    _wire_unloaded_chat(monkeypatch, enabled = False)
+    status, detail = _chat_error(_chat_request(model = "org/nope-GGUF"))
+    assert status == 400
+    assert detail.startswith("No model loaded. Call POST /inference/load first.")
+    assert "Model auto-switch" in detail
+
+
+def test_chat_error_unchanged_when_no_model_named(monkeypatch):
+    # An omitted model means "serve whatever is loaded", so the generic text is
+    # right and there is no name to report as missing.
+    _wire_unloaded_chat(monkeypatch, enabled = True)
+    status, detail = _chat_error(_chat_request())
+    assert status == 400
+    assert detail == "No model loaded. Call POST /inference/load first."
+
+
+def test_chat_not_downloaded_error_survives_a_broken_catalog_scan(monkeypatch):
+    # The diagnosis is layered onto an already-failing path: a scan blowing up
+    # must not turn the 4xx into a 500.
+    async def _boom():
+        raise RuntimeError("catalog scan blew up")
+
+    _wire_unloaded_chat(monkeypatch, enabled = True)
+    monkeypatch.setattr(inference_route, "_openai_catalog_objects", _boom)
+    status, detail = _chat_error(_chat_request(model = "org/nope-GGUF"))
+    assert status == 400
+    assert detail.startswith("No model loaded. Call POST /inference/load first.")
+
+
+def test_chat_available_id_list_is_capped(monkeypatch):
+    # A machine with 40 GGUFs must not print all 40 into a terminal error.
+    _wire_unloaded_chat(
+        monkeypatch, enabled = True, catalog = tuple(f"org/m{i:02d}-GGUF" for i in range(20))
+    )
+    status, detail = _chat_error(_chat_request(model = "org/nope-GGUF"))
+    assert status == 404
+    assert "and 12 more" in detail
+    assert "org/m08-GGUF" not in detail
+
+
+def test_anthropic_undownloaded_model_uses_the_anthropic_envelope(monkeypatch):
+    # Shared with /v1/messages, so the 404 must not leak an OpenAI-shaped body.
+    from fastapi import HTTPException
+
+    async def _noop_switch(*a, **k):
+        return None
+
+    _wire_unloaded_chat(monkeypatch, enabled = True)
+    monkeypatch.setattr(inference_route, "_automatic_model_load_may_run", lambda: True)
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
+
+    request = type("_R", (), {"url": type("_U", (), {"path": "/v1/messages"})()})()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.anthropic_messages(_anthropic_payload(64), request, "tester")
+        )
+    assert exc.value.status_code == 404
+    body = exc.value.detail
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "not_found_error"
+    assert "claude-x" in body["error"]["message"]
+
+
+def test_chat_undownloaded_model_uses_the_openai_envelope(monkeypatch):
+    # On the OpenAI surface it carries param/code so SDK clients can branch on it,
+    # matching GET /v1/models/{id}'s existing model_not_found.
+    from fastapi import HTTPException
+
+    _wire_unloaded_chat(monkeypatch, enabled = True)
+    request = type("_R", (), {"url": type("_U", (), {"path": "/v1/chat/completions"})()})()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.openai_chat_completions(
+                _chat_request(model = "org/nope-GGUF"), request, "tester"
+            )
+        )
+    assert exc.value.status_code == 404
+    err = exc.value.detail["error"]
+    assert err["type"] == "not_found_error"
+    assert err["code"] == "model_not_found"
+    assert err["param"] == "model"
+
+
+def test_responses_stream_keeps_generic_error_when_target_is_local(monkeypatch):
+    # Name resolves locally yet nothing is loaded: the switch failed, so the
+    # generic text is right and the status stays 400, not a bogus "missing".
+    status, detail = _run_responses_stream_no_model(
+        monkeypatch,
+        enabled = True,
+        active_model_name = None,
+        resolves_to = ("/p/A", "Q4_K_M", "unsloth/Qwen3.5-4B-GGUF"),
+    )
+    assert status == 400
+    assert "not downloaded" not in detail
 
 
 # ── idle-unload KV persistence (slot save/restore) ──────────────────

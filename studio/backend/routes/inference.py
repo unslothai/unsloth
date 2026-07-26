@@ -28,7 +28,7 @@ import re as _re
 # Model size extraction (shared with core/inference/llama_cpp.py)
 from utils.models import extract_model_size_b as _extract_model_size_b
 
-from utils.api_errors import openai_error_body, anthropic_error_body
+from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token
 from core.inference.orchestrator import GenStreamError, GenStreamErrorRaised
@@ -3559,6 +3559,116 @@ def _no_model_loaded_detail(base: str) -> str:
         return base
     return base + (
         " Or enable Model auto-switch (Settings > API) to load a requested model automatically."
+    )
+
+
+# Cap on ids listed by a "not downloaded" error: useful in a terminal without
+# burying the message.
+_MAX_LISTED_AVAILABLE_MODELS = 8
+
+
+def _raw_body_model(body) -> Optional[str]:
+    """The ``model`` a raw-body endpoint was given, else None (same value
+    :func:`_auto_switch_from_request_body` fed the switch hook)."""
+    return body.get("model") if isinstance(body, dict) else None
+
+
+async def _available_model_ids() -> list[str]:
+    """Sorted ids a /v1 request may name, from the catalog ``GET /v1/models``
+    serves, so an error and the listing can't disagree."""
+    return sorted(
+        mid for mid in (m.get("id") for m in await _openai_catalog_objects())
+        if isinstance(mid, str) and mid
+    )
+
+
+def _format_available_models(ids: list[str]) -> str:
+    if not ids:
+        return ""
+    shown = ", ".join(ids[:_MAX_LISTED_AVAILABLE_MODELS])
+    extra = len(ids) - _MAX_LISTED_AVAILABLE_MODELS
+    return f"{shown} and {extra} more" if extra > 0 else shown
+
+
+async def _unavailable_model_message(requested_model: str) -> str:
+    """Why a named model can't serve this request, and what can.
+
+    Auto-switch only loads already-downloaded GGUFs, so a request naming a real
+    model usually fails because it is not on this machine. Pointing the caller at
+    /inference/load cannot fix that; say what is actually wrong.
+    """
+    from core.inference.local_model_resolver import (
+        MISS_VARIANT_NOT_FOUND,
+        describe_local_miss,
+    )
+
+    reason, variants = await asyncio.to_thread(describe_local_miss, requested_model)
+    if reason == MISS_VARIANT_NOT_FOUND:
+        # Repo downloaded, only the quant missing: sibling quants beat the catalog.
+        base_id, _, wanted = requested_model.strip().rpartition(":")
+        return (
+            f"The model '{base_id}' is downloaded, but the quant '{wanted}' is not. "
+            f"Available quants: {', '.join(variants)}."
+        )
+    available = _format_available_models(await _available_model_ids())
+    if not available:
+        return (
+            f"The model '{requested_model}' is not downloaded on this server, and no "
+            "models are downloaded yet. Download one in Unsloth Studio."
+        )
+    return (
+        f"The model '{requested_model}' is not downloaded on this server. "
+        f"Available models: {available}. Download more in Unsloth Studio, "
+        "or list them with GET /v1/models."
+    )
+
+
+async def _no_model_loaded_error(
+    base: str,
+    requested_model: Optional[str],
+    fastapi_request: Optional[Request],
+    *,
+    status: int,
+):
+    """``(status, detail)`` for the /v1 sites that fail because nothing is loaded.
+
+    Changes only the case the generic text describes wrongly: auto-switch on, a
+    model named, and that name resolves to nothing local, so the switch silently
+    did nothing. That becomes a 404 model_not_found. Toggle off or no model named
+    keeps ``status`` and the :func:`_no_model_loaded_detail` text verbatim.
+    """
+    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+    from core.inference.local_model_resolver import resolve_local_gguf
+
+    named = (
+        requested_model
+        if isinstance(requested_model, str)
+        and requested_model.strip()
+        and requested_model != _RELOAD_ONLY_MODEL
+        else None
+    )
+    if named is None or not get_openai_auto_switch_enabled():
+        return status, _no_model_loaded_detail(base)
+    try:
+        if await asyncio.to_thread(resolve_local_gguf, named) is not None:
+            # Resolvable but unloaded: the switch failed (load error, race), which
+            # the generic text describes correctly.
+            return status, _no_model_loaded_detail(base)
+        message = await _unavailable_model_message(named)
+    except Exception as exc:
+        # The diagnosis is a nicety; never let it turn a 4xx into a 500.
+        logger.debug("no-model-loaded diagnosis failed for %r: %s", named, exc)
+        return status, _no_model_loaded_detail(base)
+    path = getattr(getattr(fastapi_request, "url", None), "path", None)
+    if not isinstance(path, str):
+        # No request in hand: let the global /v1/* handler pick the envelope.
+        return 404, message
+    return 404, error_body_for_path(
+        path,
+        message,
+        status = 404,
+        code = "model_not_found",
+        param = "model",
     )
 
 
@@ -7754,10 +7864,13 @@ async def openai_chat_completions(
     else:
         backend = get_inference_backend()
         if not backend.active_model_name:
-            raise HTTPException(
-                status_code = 400,
-                detail = _no_model_loaded_detail("No model loaded. Call POST /inference/load first."),
+            _status, _detail = await _no_model_loaded_error(
+                "No model loaded. Call POST /inference/load first.",
+                _switch_model_for_payload(payload),
+                request,
+                status = 400,
             )
+            raise HTTPException(status_code = _status, detail = _detail)
         # Clean public id so the response never echoes a local path; the audio
         # branch below receives this sanitized label too.
         model_name = public_model_id(backend.active_model_name) or payload.model
@@ -10721,10 +10834,13 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     # Opt-in: load the requested local GGUF before the loaded-state check.
     body = await _auto_switch_from_request_body(request, current_subject)
     if not llama_backend.is_loaded:
-        raise HTTPException(
-            status_code = 503,
-            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+        _status, _detail = await _no_model_loaded_error(
+            "No GGUF model loaded. Load a GGUF model first.",
+            _raw_body_model(body),
+            request,
+            status = 503,
         )
+        raise HTTPException(status_code = _status, detail = _detail)
     if not isinstance(body, dict):
         # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
         # a valid non-dict body such as a list is a clean 400 rather than a 500.
@@ -10941,10 +11057,13 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     # a non-embedding target switches, then llama-server returns a no-pooling error.
     body = await _auto_switch_from_request_body(request, current_subject)
     if not llama_backend.is_loaded:
-        raise HTTPException(
-            status_code = 503,
-            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+        _status, _detail = await _no_model_loaded_error(
+            "No GGUF model loaded. Load a GGUF model first.",
+            _raw_body_model(body),
+            request,
+            status = 503,
         )
+        raise HTTPException(status_code = _status, detail = _detail)
     if not isinstance(body, dict):
         # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
         # a valid non-dict body such as a list is a clean 400 rather than a 500.
@@ -11681,14 +11800,15 @@ async def _responses_stream(
         # double-layer asyncgen close pattern that produces "Attempted to exit
         # cancel scope in a different task" on Python 3.13. Surface a typed 400
         # so the client sees a useful error instead of a dangling stream.
-        raise HTTPException(
-            status_code = 400,
-            detail = _no_model_loaded_detail(
-                "Streaming /v1/responses requires a GGUF model loaded via "
-                "llama-server. Use non-streaming /v1/responses, "
-                "/v1/chat/completions, or load a GGUF model."
-            ),
+        _status, _detail = await _no_model_loaded_error(
+            "Streaming /v1/responses requires a GGUF model loaded via "
+            "llama-server. Use non-streaming /v1/responses, "
+            "/v1/chat/completions, or load a GGUF model.",
+            _switch_model_for_payload(payload),
+            request,
+            status = 400,
         )
+        raise HTTPException(status_code = _status, detail = _detail)
 
     # Direct pass-through bypasses the openai_chat_completions image gate.
     if not llama_backend.is_vision and any(
@@ -12930,10 +13050,13 @@ async def anthropic_count_tokens(
 
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
-        raise HTTPException(
-            status_code = 503,
-            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+        _status, _detail = await _no_model_loaded_error(
+            "No GGUF model loaded. Load a GGUF model first.",
+            _switch_model_for_payload(payload),
+            request,
+            status = 503,
         )
+        raise HTTPException(status_code = _status, detail = _detail)
 
     # Same Anthropic → OpenAI translation as anthropic_messages: system is
     # folded into the messages list, so pass system=None to the counter.
@@ -13002,6 +13125,8 @@ async def anthropic_messages(
     # before any request-shape check, exactly as the pre-feature endpoint did. When
     # an automatic load can run (auto-switch or a standalone idle TTL), fall through
     # so validation runs before the reload hook gets a chance to restore the model.
+    # Plain detail, not _no_model_loaded_error: no automatic load was possible, the
+    # case that helper leaves unchanged. The 404 comes from the post-switch check below.
     if not llama_backend.is_loaded and not _automatic_model_load_may_run():
         raise HTTPException(
             status_code = 503,
@@ -13101,10 +13226,13 @@ async def anthropic_messages(
         require_vision = _anthropic_request_has_image(payload),
     )
     if not llama_backend.is_loaded:
-        raise HTTPException(
-            status_code = 503,
-            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+        _status, _detail = await _no_model_loaded_error(
+            "No GGUF model loaded. Load a GGUF model first.",
+            _switch_model_for_payload(payload),
+            request,
+            status = 503,
         )
+        raise HTTPException(status_code = _status, detail = _detail)
 
     # Advertised repo id after an auto-switch load, else a clean public id, never
     # the local .gguf path (and a legacy raw path in payload.model is sanitized).

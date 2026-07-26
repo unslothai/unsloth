@@ -277,3 +277,30 @@ def resolve_local_gguf(requested: str) -> Optional[tuple[str, Optional[str], str
         # Best-effort: any resolver failure falls through to the loaded model,
         # so a malformed name can never turn a servable request into a 500.
         return None
+
+
+MISS_MODEL_NOT_FOUND = "model_not_found"
+MISS_VARIANT_NOT_FOUND = "variant_not_found"
+
+
+def describe_local_miss(requested: str) -> tuple[str, tuple[str, ...]]:
+    """Why :func:`resolve_local_gguf` missed, so an error can say "wrong quant"
+    instead of "no such model".
+
+    ``(MISS_VARIANT_NOT_FOUND, <local quants>)`` when the repo is downloaded but
+    the requested ``:VARIANT`` is not, else ``(MISS_MODEL_NOT_FOUND, ())``. Splits
+    the name like the resolver so the two agree. Fail-safe: a scan failure reports
+    the generic miss rather than raising into the handler.
+    """
+    if not isinstance(requested, str) or not requested.strip():
+        return MISS_MODEL_NOT_FOUND, ()
+    base, sep, _variant = requested.strip().rpartition(":")
+    if not sep:
+        return MISS_MODEL_NOT_FOUND, ()
+    try:
+        entry = _index().get(base.strip().lower())
+    except Exception:
+        return MISS_MODEL_NOT_FOUND, ()
+    if entry is None or not entry.variants:
+        return MISS_MODEL_NOT_FOUND, ()
+    return MISS_VARIANT_NOT_FOUND, entry.variants
