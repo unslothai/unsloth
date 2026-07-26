@@ -706,10 +706,9 @@ _smart_apt_install() {
         echo ""
         if _can_read_tty; then
             printf "    Accept? [Y/n] "
-            # An unreadable answer declines. _can_read_tty proved the device
-            # opens, so a failed read here is EOF, not consent; treating it as
-            # "yes" escalates on input nobody supplied, which is the same bug
-            # this branch exists to remove. Matches the autostart prompt below.
+            # The device opened, so a failed read is EOF, not consent. Decline,
+            # as the autostart prompt below already does. Enter is still yes:
+            # that is a successful read of an empty line.
             read -r REPLY </dev/tty || REPLY="n"
             case "$REPLY" in
                 [nN]*)
@@ -722,20 +721,16 @@ _smart_apt_install() {
             sudo apt-get update -y </dev/null
             sudo apt-get install -y $_STILL_MISSING </dev/null
         else
-            # Nobody can answer a prompt or type a password here, so pass -n:
-            # sudo then refuses outright instead of prompting into a closed
-            # stdin, which is how #7307 died. Running the real commands is the
-            # only reliable test of whether they are passwordless -- `sudo -l`
-            # reports whether a command is *authorized*, which is a different
-            # question from whether running it needs authentication.
-            #
-            # -k on top of that ignores any cached authentication timestamp, so
-            # this succeeds only under a real NOPASSWD rule, not because someone
-            # ran sudo in another shell minutes ago -- that would escalate here
-            # with nobody having answered the prompt. Per sudo(8), -k alongside
-            # a command ignores the cached credentials for this invocation and
-            # "will not update the user's cached credentials", so an interactive
-            # session elsewhere does not have to re-authenticate afterwards.
+            # Nobody can answer a prompt or type a password here. -n makes sudo
+            # refuse outright rather than prompt into a closed stdin, which is
+            # how #7307 died. Probe with the real commands: `sudo -l` answers
+            # whether they are *authorized*, not whether running them needs
+            # authentication. -k ignores any cached timestamp, so this succeeds
+            # only under a real NOPASSWD rule and not because someone ran sudo
+            # in another shell minutes ago. Per sudo(8), -k alongside a command
+            # ignores the cached credentials for this invocation and "will not
+            # update the user's cached credentials", so an interactive session
+            # elsewhere does not have to re-authenticate afterwards.
             echo "    No terminal to confirm on; trying passwordless sudo."
             if sudo -n -k apt-get update -y </dev/null &&
                 sudo -n -k apt-get install -y $_STILL_MISSING </dev/null; then
@@ -744,11 +739,11 @@ _smart_apt_install() {
                 echo ""
                 echo "    Could not install these packages: $_STILL_MISSING"
                 echo "    Detected ${_ad_desc}."
-                # A nonzero status here is sudo refusing (needs a password, or
-                # no NOPASSWD rule) OR apt's own failure -- a bad repo, a dpkg
-                # lock, a network outage. sudo returns the command's exit status
-                # when it does run, so the two are not distinguishable from the
-                # status alone; report both honestly rather than guessing.
+                # Either sudo refused (no NOPASSWD rule) or apt itself failed on
+                # a bad repo, a dpkg lock, a network outage. sudo exits 1 on an
+                # auth or config problem but passes the command's own status
+                # through otherwise, and it also exits 1 when the command cannot
+                # be executed, so state both rather than guessing a cause.
                 echo "    Either sudo needs a password here, or apt-get itself"
                 echo "    failed; see the error above. With no terminal to"
                 echo "    authenticate on, this cannot be done unattended."
