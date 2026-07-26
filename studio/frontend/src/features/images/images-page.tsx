@@ -1768,14 +1768,31 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
   handleLoadRef.current = handleLoad;
+  // Set when a staged download finished while this page was hidden. Both diffusion pages
+  // stay mounted, and a load evicts whatever holds the GPU, so a download landing in the
+  // background must not take the model out from under the page the user is actually on.
+  // The pick is not dropped: it fires when this page comes back.
+  const stagedLoadDeferred = useRef(false);
   const { stage } = useStagedDownload({
     scopeId: "diffusion",
     onReady: () => {
+      if (!active) {
+        stagedLoadDeferred.current = true;
+        return;
+      }
       const pending = pendingStagedLoad.current;
       pendingStagedLoad.current = null;
       if (pending) void handleLoadRef.current(pending.repoId, pending.opts);
     },
   });
+
+  useEffect(() => {
+    if (!active || !stagedLoadDeferred.current) return;
+    stagedLoadDeferred.current = false;
+    const pending = pendingStagedLoad.current;
+    pendingStagedLoad.current = null;
+    if (pending) void handleLoadRef.current(pending.repoId, pending.opts);
+  }, [active]);
 
   // Stage a not-yet-downloaded hub pick, else load it directly. Returns true when the pick
   // was accepted either way, so the callers' optimistic picker state stands.

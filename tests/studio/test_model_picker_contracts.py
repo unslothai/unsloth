@@ -626,6 +626,26 @@ def test_diffusion_pages_stage_downloads_through_the_manager():
         assert "catch" in body, f"{rel}: no fallback when the plan is unavailable"
 
 
+def test_a_hidden_diffusion_page_does_not_load_when_its_download_lands():
+    """Images and Video stay mounted behind the router, and a load evicts whoever holds the
+    GPU. A multi-GB staged download finishing while the user is on another page must not take
+    the model out from under them; the pick waits for its page to be visible again."""
+    for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(rel)
+        ready = re.search(r"onReady: \(\) => \{.*?\n    \},", src, re.S)
+        assert ready, f"{rel}: staged-download onReady not found"
+        assert "if (!active)" in ready.group(0), f"{rel}: a hidden page still takes the GPU"
+        # Deferred, not dropped: something has to fire the held pick when the page returns.
+        assert "stagedLoadDeferred" in ready.group(0), f"{rel}: the pick is discarded"
+        flush = re.search(
+            r"if \(!active \|\| !stagedLoadDeferred\.current\) return;.*?\n  \}, \[active\]\);",
+            src,
+            re.S,
+        )
+        assert flush, f"{rel}: nothing flushes the deferred load when the page is shown"
+        assert "handleLoadRef.current(" in flush.group(0), f"{rel}: deferred load never runs"
+
+
 def test_staged_downloads_always_scope_their_files():
     """Every staged entry must go out as a scoped job carrying its file list, GGUF
     checkpoints included. A plain snapshot job drops *.gguf via the Hub's ignore list, so

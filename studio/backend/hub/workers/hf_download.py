@@ -746,6 +746,23 @@ def _download_scoped_snapshot(
         allow_patterns = files,
         max_workers = 1,
     )
+    if info is None:
+        # With no metadata there is no manifest, so _verify_completed_download below is a
+        # no-op -- and snapshot_download RETURNS AN EXISTING SNAPSHOT FOLDER, without
+        # fetching anything, when its own repo_info call also fails. A repo already on disk
+        # from a full snapshot job (which ignores *.gguf) would therefore flip this job to
+        # complete having downloaded no weights, and the page would load against them. The
+        # requested list needs no network, so check it against the disk directly.
+        root = Path(snapshot_path)
+        absent = tuple(f for f in files if not (root / f).exists())
+        if absent:
+            print(
+                f"Could not reach Hugging Face for {repo_id} [{scope}] and the copy on disk "
+                f"is incomplete ({len(absent)} file(s) missing): {_format_path_list(absent)}. "
+                "Reconnect (or set a valid HF token) and resume the download.",
+                file = sys.stderr,
+            )
+            sys.exit(1)
     _verify_completed_download(
         "model",
         repo_id,

@@ -2338,6 +2338,30 @@ def _loading_model_matches_deleted_path(loading_model: object, deleted_path: Pat
     return _loaded_model_matches_deleted_path(str(loading_model), deleted_path)
 
 
+def _active_diffusion_backend():
+    """The live Images engine, or None when this install has no diffusion stack.
+
+    Fails OPEN on import: a chat-only install (no diffusers) must still be able to delete
+    its fine-tuned models. Reading the returned backend's state is what fails closed.
+    """
+    try:
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
+        return get_active_diffusion_engine()
+    except Exception as e:
+        logger.debug(f"Images engine unavailable during delete guard: {e}")
+        return None
+
+
+def _active_video_backend():
+    """The live Video backend, or None when this install has no video stack."""
+    try:
+        from core.inference.video import get_video_backend
+        return get_video_backend()
+    except Exception as e:
+        logger.debug(f"Video backend unavailable during delete guard: {e}")
+        return None
+
+
 def _prune_empty_parents(start: Path, stop_at: Path) -> None:
     """Remove empty ancestors of ``start`` up to (not including) ``stop_at``.
 
@@ -2556,6 +2580,44 @@ async def delete_finetuned_model(
             status_code = 503,
             detail = "Could not verify model load status before deleting",
         ) from e
+
+    # Every guard above is chat-only, and Images / Video hold their own pipelines: a local
+    # diffusion or video model under the storage root loads by path, so without this rmtree
+    # would pull the weights (and the companion VAE / text encoders sd.cpp re-reads on every
+    # generation) out from under a live engine. The cached-model delete route runs the same
+    # check via hub.services.models.deletion; it matches by repo id, this one by path.
+    for label, get_backend in (
+        ("Images", _active_diffusion_backend),
+        ("Video", _active_video_backend),
+    ):
+        backend = get_backend()
+        if backend is None:
+            continue
+        try:
+            status = backend.status()
+            held = [status.get(key) for key in ("repo_id", "base_repo")] if status.get("loaded") else []
+            held += list(getattr(backend, "loaded_repo_ids", tuple)())
+            if any(h and _loaded_model_matches_deleted_path(str(h), target_path) for h in held):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
+            if any(
+                _loading_model_matches_deleted_path(lid, target_path)
+                for lid in getattr(backend, "loading_repo_ids", tuple)()
+            ):
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "Cannot delete a model while it is loading",
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning("Could not check the %s model before delete: %s", label, e)
+            raise HTTPException(
+                status_code = 503,
+                detail = "Could not verify model load status before deleting",
+            ) from e
 
     try:
         if export_type == "gguf" and gguf_variant:

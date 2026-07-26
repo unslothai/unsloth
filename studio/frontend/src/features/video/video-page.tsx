@@ -1108,14 +1108,30 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
   handleLoadRef.current = handleLoad;
+  // A download finishing while this page is hidden must not evict the model the visible
+  // page has loaded (both pages stay mounted and a load takes the GPU unconditionally).
+  // The pick is held, not dropped, and fires when Video is on screen again.
+  const stagedLoadDeferred = useRef(false);
   const { stage } = useStagedDownload({
     scopeId: "diffusion",
     onReady: () => {
+      if (!active) {
+        stagedLoadDeferred.current = true;
+        return;
+      }
       const pending = pendingStagedLoad.current;
       pendingStagedLoad.current = null;
       if (pending) void handleLoadRef.current(pending.repoId, pending.opts);
     },
   });
+
+  useEffect(() => {
+    if (!active || !stagedLoadDeferred.current) return;
+    stagedLoadDeferred.current = false;
+    const pending = pendingStagedLoad.current;
+    pendingStagedLoad.current = null;
+    if (pending) void handleLoadRef.current(pending.repoId, pending.opts);
+  }, [active]);
 
   // Stage a not-yet-downloaded hub pick, else load it directly.
   const loadOrStage = useCallback(

@@ -430,6 +430,11 @@ def _try_http_retry(
             cancel_marker_transport = original_metadata.transport,
             hub_cache = original_metadata.hub_cache,
             xet_cache = original_metadata.xet_cache,
+            # Carry the scoped file list across the reclaim. The record it overwrites is what a
+            # later start for this scope slot is compared against, so dropping it makes an
+            # identical scoped start read as a different file set and 409 instead of adopting
+            # the running download (the worker args below read the same list).
+            scoped_files = original_metadata.scoped_files or None,
         )
         if claimed:
             break

@@ -170,6 +170,52 @@ def test_a_different_file_set_is_not_adopted(monkeypatch):
         dl._registry.set_job(key, "complete")
 
 
+def test_the_http_retry_keeps_the_scoped_file_list_on_the_record(monkeypatch):
+    # The retry reclaims the same slot with replace_active, and that claim OVERWRITES the
+    # stored metadata. Dropping the file list there left the record claiming an empty scope,
+    # so the next identical scoped start compared [] against the real list and 409'd on
+    # "already fetching a different set of files" instead of adopting the running download.
+    monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
+    monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
+    monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
+    monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
+
+    class _Proc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(download_lifecycle, "spawn_worker", lambda *a, **k: _Proc())
+    monkeypatch.setattr(download_lifecycle, "register_worker", lambda *a, **k: True)
+
+    key = dl._download_job_key("black-forest-labs/FLUX.1-dev", dl._scope_variant("diffusion"))
+    try:
+        # The retry only exists for a job that started on XET.
+        assert asyncio.run(dl.download_model_response(_request(use_xet = True)))["accepted"] is True
+
+        retried = download_lifecycle._try_http_retry(
+            dl._registry,
+            key,
+            hf_token = None,
+            label = "FLUX.1-dev [@diffusion]",
+            log_prefix = "[test]",
+            logger = download_lifecycle.logging.getLogger("test"),
+            repo_type = "model",
+            repo_id = "black-forest-labs/FLUX.1-dev",
+            watch_name = "test",
+        )
+        assert retried is True
+
+        metadata = dl._registry.get_job_metadata(key)
+        assert metadata is not None and list(metadata.scoped_files) == FILES
+        # And the retried job is still adoptable by the page that asked for those files.
+        again = asyncio.run(dl.download_model_response(_request()))
+        assert again["accepted"] is True and again["job_key"] == key
+    finally:
+        dl._registry.set_job(key, "complete")
+
+
 def test_scope_key_stays_derivable_from_the_scope_alone():
     # The download manager builds this key client-side (it polls and cancels before any
     # server round-trip tells it a key), so the scope name alone must produce it.

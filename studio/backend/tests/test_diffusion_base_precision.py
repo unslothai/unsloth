@@ -636,7 +636,7 @@ def test_dit_accelerator_missing_reason_and_info_hide_train_without_a_gpu(monkey
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(torch.xpu, "is_available", lambda: False)
-    monkeypatch.setattr(torch.mps, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
     assert "GPU" in (dit_accelerator_missing_reason("flux.1") or "")
     # SDXL and unknown families keep their own paths.
     assert dit_accelerator_missing_reason("sdxl") is None
@@ -652,5 +652,31 @@ def test_dit_accelerator_missing_reason_and_info_hide_train_without_a_gpu(monkey
             assert info["precision_modes"] != [] or name not in _DIT_TRAIN_FAMILIES
 
     # Any accelerator clears it (MPS here, which bitsandbytes accepts).
-    monkeypatch.setattr(torch.mps, "is_available", lambda: True)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    assert dit_accelerator_missing_reason("flux.1") is None
+
+
+def test_dit_accelerator_gate_survives_a_torch_without_every_probe(monkeypatch):
+    """torch.mps.is_available() only exists from torch 2.5 and the supported floor is 2.4.
+    Probing the accelerators under one shared try/except turned that AttributeError into
+    "no block", so the very hosts the gate exists for (CPU-only) sailed through it."""
+    import torch
+
+    from core.training.diffusion_train_common import dit_accelerator_missing_reason
+
+    class _Missing:
+        """A torch.mps that predates is_available()."""
+
+    class _Raising:
+        @staticmethod
+        def is_available():
+            raise RuntimeError("driver not initialised")
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch, "xpu", _Raising)
+    monkeypatch.setattr(torch.backends, "mps", _Missing)
+    assert "GPU" in (dit_accelerator_missing_reason("flux.1") or "")
+
+    # A working probe still clears the gate even when its neighbours are broken.
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     assert dit_accelerator_missing_reason("flux.1") is None

@@ -370,12 +370,22 @@ def dit_accelerator_missing_reason(resolved_family: str) -> Optional[str]:
     try:
         import torch
 
-        xpu = getattr(torch, "xpu", None)
-        mps = getattr(torch, "mps", None)
+        def probe(owner: Any) -> bool:
+            # Each accelerator is probed on its own: one missing or throwing probe must not
+            # decide the other two. torch.mps.is_available() only exists from torch 2.5 and
+            # the supported floor is 2.4, so a shared try/except here would swallow the
+            # AttributeError and wave a CPU-only host through the gate it exists for.
+            try:
+                fn = getattr(owner, "is_available", None)
+                return bool(fn()) if callable(fn) else False
+            except Exception:  # noqa: BLE001
+                return False
+
         if (
-            torch.cuda.is_available()
-            or bool(xpu is not None and xpu.is_available())
-            or bool(mps is not None and mps.is_available())
+            probe(torch.cuda)
+            # torch.backends.mps has carried is_available() since torch 1.12.
+            or probe(getattr(torch, "xpu", None))
+            or probe(getattr(torch.backends, "mps", None))
         ):
             return None
     except Exception:  # noqa: BLE001 -- probe failure must not block a start
