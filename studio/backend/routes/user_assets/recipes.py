@@ -29,26 +29,26 @@ from .errors import (
 )
 
 
-router = APIRouter(route_class=UserAssetsRoute)
+router = APIRouter(route_class = UserAssetsRoute)
 
 
 def _recipe_input(payload: RecipeCreateRequest | RecipeUpdateRequest) -> dict:
     return payload.model_dump(
-        exclude={"revision", "createdAt", "updatedAt"},
-        exclude_none=False,
-        exclude_unset=isinstance(payload, RecipeUpdateRequest),
+        exclude = {"revision", "createdAt", "updatedAt"},
+        exclude_none = False,
+        exclude_unset = isinstance(payload, RecipeUpdateRequest),
     )
 
 
-@router.get("/recipes", response_model=RecipeListResponse)
+@router.get("/recipes", response_model = RecipeListResponse)
 def list_recipes(current_subject: str = Depends(get_current_subject)):
     return {"recipes": user_assets_db.list_recipes(current_subject)}
 
 
 @router.post(
     "/recipes",
-    response_model=RecipeRecord,
-    status_code=status.HTTP_201_CREATED,
+    response_model = RecipeRecord,
+    status_code = status.HTTP_201_CREATED,
 )
 def create_recipe(
     payload: RecipeCreateRequest, current_subject: str = Depends(get_current_subject)
@@ -61,7 +61,7 @@ def create_recipe(
         raise_storage(error)
 
 
-@router.get("/recipes/{recipe_id}", response_model=RecipeRecord)
+@router.get("/recipes/{recipe_id}", response_model = RecipeRecord)
 def get_recipe(recipe_id: str, current_subject: str = Depends(get_current_subject)):
     try:
         record = user_assets_db.get_recipe(current_subject, recipe_id)
@@ -72,7 +72,7 @@ def get_recipe(recipe_id: str, current_subject: str = Depends(get_current_subjec
     return record
 
 
-@router.put("/recipes/{recipe_id}", response_model=RecipeRecord)
+@router.put("/recipes/{recipe_id}", response_model = RecipeRecord)
 def update_recipe(
     recipe_id: str,
     payload: RecipeUpdateRequest,
@@ -95,10 +95,10 @@ def update_recipe(
     return record
 
 
-@router.delete("/recipes/{recipe_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/recipes/{recipe_id}", status_code = status.HTTP_204_NO_CONTENT)
 def delete_recipe(
     recipe_id: str,
-    revision: int = Query(ge=1),
+    revision: int = Query(ge = 1),
     current_subject: str = Depends(get_current_subject),
 ):
     try:
@@ -109,25 +109,25 @@ def delete_recipe(
         raise_storage(error)
     if not deleted:
         raise_not_found()
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return Response(status_code = status.HTTP_204_NO_CONTENT)
 
 
 @router.get(
     "/recipes/{recipe_id}/executions",
-    response_model=ExecutionListResponse,
+    response_model = ExecutionListResponse,
 )
 def list_recipe_executions(
     recipe_id: str,
-    cursor: str | None = Query(default=None, min_length=1, max_length=512),
-    limit: int = Query(default=100, ge=1, le=100),
+    cursor: str | None = Query(default = None, min_length = 1, max_length = 512),
+    limit: int = Query(default = 100, ge = 1, le = 100),
     current_subject: str = Depends(get_current_subject),
 ):
     try:
         page = user_assets_db.list_recipe_executions(
             current_subject,
             recipe_id,
-            cursor=cursor,
-            limit=limit,
+            cursor = cursor,
+            limit = limit,
         )
     except UserAssetValidationError as error:
         raise_validation(error)
@@ -140,8 +140,8 @@ def list_recipe_executions(
 def get_persisted_execution_dataset(
     recipe_id: str,
     execution_id: str,
-    limit: int = Query(default=20, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default = 20, ge = 1, le = 500),
+    offset: int = Query(default = 0, ge = 0),
     current_subject: str = Depends(get_current_subject),
 ):
     try:
@@ -153,7 +153,7 @@ def get_persisted_execution_dataset(
     artifact_path = execution.get("artifact_path")
     if not isinstance(artifact_path, str) or not artifact_path:
         raise_not_found()
-    result = JobManager.get_dataset_from_artifact(artifact_path, limit=limit, offset=offset)
+    result = JobManager.get_dataset_from_artifact(artifact_path, limit = limit, offset = offset)
     if "error" in result:
         raise_not_found()
     return {**result, "limit": limit, "offset": offset}
@@ -161,7 +161,7 @@ def get_persisted_execution_dataset(
 
 @router.put(
     "/recipes/{recipe_id}/executions/{execution_id}",
-    response_model=ExecutionRecord,
+    response_model = ExecutionRecord,
 )
 def upsert_recipe_execution(
     recipe_id: str,
@@ -172,8 +172,8 @@ def upsert_recipe_execution(
     ensure_path_id(payload.id, execution_id, "execution id")
     ensure_path_id(payload.recipeId, recipe_id, "recipe id")
     metadata = payload.model_dump(
-        exclude={"id", "recipeId", "revision", "updatedAt"},
-        exclude_none=False,
+        exclude = {"id", "recipeId", "revision", "updatedAt"},
+        exclude_none = False,
     )
     if payload.artifact_path is not None:
         verified_artifact_path = get_job_manager().get_owned_completed_artifact_path(

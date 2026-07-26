@@ -11,18 +11,18 @@ from storage import studio_db, user_assets_db
 from utils.paths import studio_db_path
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def isolated_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(studio_db, "_schema_ready", False)
     monkeypatch.setattr(user_assets_db, "_now_ms", lambda: 1_800_000_000_000)
 
 
-def recipe(asset_id="r1", payload=None):
+def recipe(asset_id = "r1", payload = None):
     return {"id": asset_id, "name": "Recipe", "payload": payload or {"nodes": []}}
 
 
-def execution(asset_id="e1", **extra):
+def execution(asset_id = "e1", **extra):
     return {
         "id": asset_id,
         "recipeId": "r1",
@@ -41,7 +41,7 @@ def test_owner_isolation_and_secrets_never_reach_sqlite():
     assert user_assets_db.get_recipe("owner-c", "r1") is None
 
     marker = "never-store-this-token"
-    with pytest.raises(UserAssetValidationError, match="secret fields"):
+    with pytest.raises(UserAssetValidationError, match = "secret fields"):
         user_assets_db.create_recipe("owner-a", recipe("secret", {"apiKey": marker}))
     path = studio_db_path()
     assert marker.encode() not in path.read_bytes()
@@ -51,21 +51,21 @@ def test_execution_timestamps_remain_monotonic_across_clock_rollback(monkeypatch
     user_assets_db.create_recipe("owner", recipe())
     future = 1_900_000_000_000
     inserted = user_assets_db.upsert_recipe_execution(
-        "owner", "r1", "e1", execution(createdAt=future, finishedAt=future + 1)
+        "owner", "r1", "e1", execution(createdAt = future, finishedAt = future + 1)
     )
     monkeypatch.setattr(user_assets_db, "_now_ms", lambda: 1)
     updated = user_assets_db.upsert_recipe_execution(
         "owner",
         "r1",
         "e1",
-        execution(createdAt=future, finishedAt=future + 2),
-        expected_revision=inserted["revision"],
+        execution(createdAt = future, finishedAt = future + 2),
+        expected_revision = inserted["revision"],
     )
     assert inserted["updatedAt"] >= future
     assert updated["updatedAt"] > inserted["updatedAt"]
-    with pytest.raises(UserAssetValidationError, match="finishedAt"):
+    with pytest.raises(UserAssetValidationError, match = "finishedAt"):
         user_assets_db.upsert_recipe_execution(
-            "owner", "r1", "bad", execution("bad", createdAt=100, finishedAt=99)
+            "owner", "r1", "bad", execution("bad", createdAt = 100, finishedAt = 99)
         )
 
 
@@ -76,7 +76,7 @@ def test_execution_artifact_reference_is_owner_scoped_and_durable():
         "owner-a",
         "r1",
         "e1",
-        execution(artifact_path="recipes/recipe_r1"),
+        execution(artifact_path = "recipes/recipe_r1"),
     )
 
     assert saved["artifact_path"] == "recipes/recipe_r1"
@@ -104,14 +104,14 @@ def test_completed_execution_persists_when_replaced_job_cannot_verify_artifact(m
         "e1",
         ExecutionUpsertRequest(
             **execution(
-                artifact_path="recipes/recipe_r1",
-                jobId="replaced-job",
-                kind="full",
-                run_name="Finished run",
-                recipeSignature="signature",
-                rows=0,
-                datasetTotal=0,
-                completed_columns=[],
+                artifact_path = "recipes/recipe_r1",
+                jobId = "replaced-job",
+                kind = "full",
+                run_name = "Finished run",
+                recipeSignature = "signature",
+                rows = 0,
+                datasetTotal = 0,
+                completed_columns = [],
             )
         ),
         "owner",
@@ -161,8 +161,8 @@ def test_recipe_update_request_distinguishes_omitted_links_from_explicit_nulls()
     cleared = _recipe_input(
         RecipeUpdateRequest(
             **common,
-            learningRecipeId=None,
-            learningRecipeTitle=None,
+            learningRecipeId = None,
+            learningRecipeTitle = None,
         )
     )
 
@@ -209,7 +209,7 @@ def test_legacy_execution_import_discards_client_supplied_artifact_path():
         "owner",
         "recipe-indexeddb-v1",
         [],
-        [execution(artifact_path="recipes/recipe_other-account")],
+        [execution(artifact_path = "recipes/recipe_other-account")],
     )
 
     assert imported["executions"][0]["outcome"] == "imported"
@@ -270,6 +270,6 @@ def test_corrected_legacy_rejection_retries_after_restart(monkeypatch):
 
 
 def test_route_unsafe_ids_are_never_persisted():
-    with pytest.raises(UserAssetValidationError, match="URL path segment"):
+    with pytest.raises(UserAssetValidationError, match = "URL path segment"):
         user_assets_db.create_recipe("owner", recipe("folder/recipe"))
     assert user_assets_db.list_recipes("owner") == []
