@@ -4555,6 +4555,9 @@ def _unsloth_save_torchao_with_given_config(
         if hasattr(torch, "xpu") and torch.xpu.is_available():
             torch.xpu.empty_cache()
 
+    # The original stays offloaded until the quantized copy has been saved AND
+    # released, otherwise both are resident at once and the model that only fit
+    # because of the offload OOMs on the way back.
     try:
         # Reload with quantization applied
         quantized_model = auto_model.from_pretrained(
@@ -4563,25 +4566,33 @@ def _unsloth_save_torchao_with_given_config(
             quantization_config = quantization_config,
             **kwargs,
         )
+
+        torchao_save_directory = save_directory + "-torchao"
+
+        # TorchAO does not support safe_serialization right now 0.14.0 seems broken!
+        safe_serialization = Version(importlib_version("torchao")) > Version("0.14.0")
+        safe_serialization = False
+
+        if push_to_hub:
+            quantized_model.push_to_hub(
+                torchao_save_directory, safe_serialization = safe_serialization, token = token
+            )
+            tokenizer.push_to_hub(torchao_save_directory, token = token)
+        else:
+            quantized_model.save_pretrained(
+                torchao_save_directory, safe_serialization = safe_serialization
+            )
+            tokenizer.save_pretrained(torchao_save_directory, token = token)
+
+        del quantized_model
     finally:
+        for _ in range(3):
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if hasattr(torch, "xpu") and torch.xpu.is_available():
+                torch.xpu.empty_cache()
         _restore_model_after_quantize_subprocess(model, model_restore)
-
-    torchao_save_directory = save_directory + "-torchao"
-
-    # TorchAO does not support safe_serialization right now 0.14.0 seems broken!
-    safe_serialization = Version(importlib_version("torchao")) > Version("0.14.0")
-    safe_serialization = False
-
-    if push_to_hub:
-        quantized_model.push_to_hub(
-            torchao_save_directory, safe_serialization = safe_serialization, token = token
-        )
-        tokenizer.push_to_hub(torchao_save_directory, token = token)
-    else:
-        quantized_model.save_pretrained(
-            torchao_save_directory, safe_serialization = safe_serialization
-        )
-        tokenizer.save_pretrained(torchao_save_directory, token = token)
 
     # Clean up the intermediate unquantized model
     if os.path.exists(save_directory):
@@ -4662,10 +4673,20 @@ def _snapshot_dispatch_state(root):
         for name, mod in root.named_modules()
         if "_hf_hook" in mod.__dict__
     ]
-    places = {
-        name: tensor.device
-        for name, tensor in list(root.named_parameters()) + list(root.named_buffers())
-    }
+    # remove_duplicate=False: the default hides one half of every tied pair, which is
+    # exactly the half that needs re-tying below.
+    named = list(root.named_parameters(remove_duplicate = False)) + list(
+        root.named_buffers(remove_duplicate = False)
+    )
+    places = {name: tensor.device for name, tensor in named}
+    # Tied weights share one storage. The CPU round trip repoints every tensor and
+    # accelerate's tied_params_map is keyed on the old pointer, so replaying the
+    # hooks alone materialises independent copies: double VRAM, and later updates
+    # to one no longer reach the other.
+    groups = {}
+    for name, tensor in named:
+        groups.setdefault(tensor.untyped_storage().data_ptr(), []).append(name)
+    ties = [names for names in groups.values() if len(names) > 1]
     # Removing a hook restores `forward = _old_forward`, captured before unsloth
     # patched the module, so a remove/re-add drops every fused kernel installed
     # after the dispatch (measured: apply_lora_mlp_swiglu on all 28 MLPs) for good.
@@ -4674,7 +4695,7 @@ def _snapshot_dispatch_state(root):
         for name, mod in root.named_modules()
         if "forward" in mod.__dict__ or "_old_forward" in mod.__dict__
     }
-    return hooks, places, forwards
+    return hooks, places, forwards, ties
 
 
 def _drop_accelerator_tied_param_cache(snapshot) -> None:
@@ -4697,11 +4718,47 @@ def _drop_accelerator_tied_param_cache(snapshot) -> None:
                 del cache[ptr]
 
 
+def _split_tensor_path(root, full_name):
+    """``("model.embed_tokens.weight")`` -> ``(the module, "weight")``."""
+    mod_name, _, attr = full_name.rpartition(".")
+    try:
+        return (root.get_submodule(mod_name) if mod_name else root), attr
+    except AttributeError:
+        return None, attr
+
+
+def _lookup_tensor(root, full_name):
+    mod, attr = _split_tensor_path(root, full_name)
+    if mod is None:
+        return None
+    for store in ("_parameters", "_buffers"):
+        found = (getattr(mod, store, None) or {}).get(attr)
+        if found is not None:
+            return found
+    return None
+
+
+def _share_tensor(root, full_name, leader) -> None:
+    """Point ``full_name`` back at ``leader``, restoring a tie."""
+    mod, attr = _split_tensor_path(root, full_name)
+    if mod is None:
+        return
+    for store in ("_parameters", "_buffers"):
+        target = getattr(mod, store, None)
+        if target is None or attr not in target:
+            continue
+        current = target[attr]
+        if current is None or current.device != leader.device:
+            return  # accelerate split the tie across devices; leave it alone
+        target[attr] = leader
+        return
+
+
 def _restore_dispatch_state(root, snapshot) -> None:
     """Replay ``_snapshot_dispatch_state``."""
     from accelerate.hooks import add_hook_to_module
 
-    hooks, places, forwards = snapshot
+    hooks, places, forwards, ties = snapshot
     for name, hook in hooks:
         add_hook_to_module(root.get_submodule(name) if name else root, hook)
 
@@ -4734,6 +4791,18 @@ def _restore_dispatch_state(root, snapshot) -> None:
                     mod.to(want)
                 else:
                     tensor.data = tensor.data.to(want)
+
+    # Re-tie last, once every tensor is back on its own device.
+    for names in ties:
+        leader = _lookup_tensor(root, names[0])
+        if leader is None:
+            continue
+        for follower in names[1:]:
+            _share_tensor(root, follower, leader)
+    # init_hook refilled tied_params_map with the pre-retie tensors; those are now
+    # unreferenced by the model but still pinned by the map.
+    if ties:
+        _drop_accelerator_tied_param_cache(snapshot)
 
 
 def _offload_model_for_quantize_subprocess(model):

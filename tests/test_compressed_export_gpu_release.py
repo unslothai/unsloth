@@ -25,6 +25,9 @@ _WANTED = {
     "_accelerate_dispatch_root",
     "_snapshot_dispatch_state",
     "_drop_accelerator_tied_param_cache",
+    "_split_tensor_path",
+    "_lookup_tensor",
+    "_share_tensor",
     "_restore_dispatch_state",
     "_offload_model_for_quantize_subprocess",
     "_restore_model_after_quantize_subprocess",
@@ -360,10 +363,10 @@ class _Child:
             node = node._modules[part]
         return node
 
-    def named_parameters(self):
+    def named_parameters(self, remove_duplicate = True):
         return iter(())
 
-    def named_buffers(self):
+    def named_buffers(self, remove_duplicate = True):
         return iter(())
 
 
@@ -467,3 +470,46 @@ def test_snapshot_restores_a_forward_patched_after_the_dispatch(_fake_accelerate
     ns["_restore_dispatch_state"](root, snapshot)
     assert mlp.forward() == "unsloth-fused"
     assert mlp.__dict__["_old_forward"] is stock_forward
+
+
+def test_snapshot_reties_shared_parameters(_fake_accelerate):
+    """A CPU round trip repoints every tensor, so replaying the hooks alone leaves
+    formerly tied weights as independent copies: double VRAM, and an update to one
+    that never reaches the other."""
+    import torch
+
+    root = _Child(device_map = {"embed": 0, "head": 0})
+    shared = torch.nn.Parameter(torch.zeros(4, 4))
+    for name in ("embed", "head"):
+        child = _Child(name = name)
+        child._parameters = {"weight": shared}
+        child._buffers = {}
+        root._modules[name] = child
+
+    def named(remove_duplicate = True):
+        seen, out = set(), []
+        for mod_name, mod in root._modules.items():
+            for attr, tensor in mod._parameters.items():
+                if remove_duplicate and id(tensor) in seen:
+                    continue
+                seen.add(id(tensor))
+                out.append((f"{mod_name}.{attr}", tensor))
+        return iter(out)
+
+    root.named_parameters = named
+    ns = _load_helpers(_fake_torch(), _FakeLogger())
+    snapshot = ns_ties = ns["_snapshot_dispatch_state"](root)
+    assert ns_ties[3] == [["embed.weight", "head.weight"]]
+
+    # what the replay leaves behind before the retie step
+    root._modules["head"]._parameters["weight"] = torch.nn.Parameter(shared.detach().clone())
+    assert (
+        root._modules["embed"]._parameters["weight"].data_ptr()
+        != root._modules["head"]._parameters["weight"].data_ptr()
+    )
+
+    ns["_restore_dispatch_state"](root, snapshot)
+    assert (
+        root._modules["embed"]._parameters["weight"].data_ptr()
+        == root._modules["head"]._parameters["weight"].data_ptr()
+    )
