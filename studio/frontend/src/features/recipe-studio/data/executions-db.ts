@@ -376,7 +376,14 @@ function reconcileIncoming(
     return mergeTerminalSnapshots(incoming, current, useIncomingState);
   }
   if (incomingEvent < currentEvent) return null;
-  if (incomingEvent === currentEvent && incoming.status !== current.status) {
+  const forwardPolledTransition =
+    current.status === "pending" && incoming.status === "active";
+  if (
+    incomingEvent === currentEvent &&
+    incoming.status !== current.status &&
+    !incomingTerminal &&
+    !forwardPolledTransition
+  ) {
     return null;
   }
   return mergeTerminalSnapshots(incoming, current, true);
