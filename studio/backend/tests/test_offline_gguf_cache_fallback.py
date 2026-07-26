@@ -1129,7 +1129,6 @@ class TestInheritedFlavorDoesNotBreakOtherReaders:
     )
     def test_ud_prefix_is_part_of_the_quant_identity(self, path, expected):
         from hub.utils.gguf import extract_quant_label as hub_extract
-
         assert _extract_quant_label(path) == expected
         assert hub_extract(path) == expected
 
@@ -1169,7 +1168,6 @@ class TestInheritedFlavorDoesNotBreakOtherReaders:
     )
     def test_chat_template_lookup_accepts_legacy_keys(self, relative, needle, matches):
         from picker.service import _variant_matches
-
         assert _variant_matches(relative, needle) is matches
 
 
