@@ -1,0 +1,177 @@
+"""Regression coverage for the FlashAttention generation fallback."""
+
+import ast
+import inspect
+import os
+from contextlib import nullcontext
+from pathlib import Path
+from types import SimpleNamespace
+
+
+VISION_PATH = Path(__file__).parents[1] / "unsloth" / "models" / "vision.py"
+
+
+def _load_function(name, namespace):
+    tree = ast.parse(VISION_PATH.read_text(encoding = "utf-8"))
+    function = next(
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name
+    )
+    exec(compile(ast.Module(body = [function], type_ignores = []), str(VISION_PATH), "exec"), namespace)
+    return namespace[name]
+
+
+uses_flash_attention = _load_function(
+    "_uses_flash_attention_for_generation",
+    {
+        "_config_get": lambda config, field, default = None: (
+            config.get(field, default)
+            if isinstance(config, dict)
+            else getattr(config, field, default)
+        ),
+        "_is_flash_attention_requested": lambda value: (
+            isinstance(value, str) and value.startswith("flash_attention")
+        ),
+    },
+)
+
+
+def test_top_level_flash_attention_is_detected():
+    config = SimpleNamespace(_attn_implementation = "flash_attention_2")
+    assert uses_flash_attention(config)
+
+
+def test_per_backbone_text_flash_attention_is_detected():
+    private_config = SimpleNamespace(
+        _attn_implementation = {
+            "vision_config": "sdpa",
+            "text_config": "flash_attention_2",
+        }
+    )
+    public_config = SimpleNamespace(
+        attn_implementation = {
+            "vision_config": "sdpa",
+            "text_config": "flash_attention_2",
+        }
+    )
+    assert uses_flash_attention(private_config)
+    assert uses_flash_attention(public_config)
+
+
+def test_nested_text_and_decoder_configs_are_detected():
+    nested_text = SimpleNamespace(attn_implementation = "flash_attention_2")
+    assert uses_flash_attention(
+        SimpleNamespace(_attn_implementation = "sdpa", text_config = nested_text)
+    )
+    assert uses_flash_attention(
+        SimpleNamespace(decoder_config = {"_attn_implementation": "flash_attention_2"})
+    )
+
+
+def test_get_text_config_is_detected():
+    nested_text = SimpleNamespace(_attn_implementation = "flash_attention_2")
+    config = SimpleNamespace(get_text_config = lambda: nested_text)
+    assert uses_flash_attention(config)
+
+
+def test_vision_only_flash_attention_does_not_bypass_text_generation():
+    config = SimpleNamespace(
+        _attn_implementation = {
+            "vision_config": "flash_attention_2",
+            "text_config": "sdpa",
+        }
+    )
+    assert not uses_flash_attention(config)
+
+
+def test_non_flash_attention_does_not_bypass_fast_generation():
+    assert not uses_flash_attention(SimpleNamespace(_attn_implementation = "sdpa"))
+    assert not uses_flash_attention(SimpleNamespace())
+
+
+def test_fallback_preserves_normalization_and_skips_static_cache():
+    events = []
+
+    class FakeTensor:
+        shape = (1, 3)
+
+        def __init__(self):
+            self.converted_to = None
+
+        def to(self, dtype):
+            self.converted_to = dtype
+            return self
+
+    class FailIfUsed:
+        def __getattr__(self, name):
+            raise AssertionError(f"fast-generation path unexpectedly used torch._dynamo.{name}")
+
+    fake_torch = SimpleNamespace(
+        Tensor = FakeTensor,
+        bfloat16 = "bfloat16",
+        float16 = "float16",
+        _dynamo = FailIfUsed(),
+        inference_mode = nullcontext,
+        autocast = lambda **kwargs: nullcontext(),
+    )
+
+    class FakeFastBaseModel:
+        @staticmethod
+        def for_inference(model):
+            events.append("for_inference")
+
+    architecture = "Qwen3VLForConditionalGeneration"
+    namespace = {
+        "torch": fake_torch,
+        "os": os,
+        "inspect": inspect,
+        "FastBaseModel": FakeFastBaseModel,
+        "dtype_from_config": lambda config: "bfloat16",
+        "_get_dtype": lambda dtype: dtype,
+        "_unsloth_generate_accepts_kwarg": lambda model, name: False,
+        "NUM_LOGITS_TO_KEEP": {architecture: None},
+        "DEVICE_TYPE_TORCH": "cuda",
+        "_uses_flash_attention_for_generation": uses_flash_attention,
+    }
+    fast_generate = _load_function("unsloth_base_fast_generate", namespace)
+
+    captured = {}
+
+    class Model:
+        config = SimpleNamespace(
+            architectures = [architecture],
+            eos_token_id = 2,
+            text_config = SimpleNamespace(_attn_implementation = "flash_attention_2"),
+        )
+
+        def forward(self, input_ids = None):
+            return input_ids
+
+        def _old_generate(self, *args, **kwargs):
+            captured.update(kwargs)
+            return "fallback-result"
+
+    input_ids = FakeTensor()
+    pixel_values = FakeTensor()
+    result = fast_generate(
+        Model(),
+        input_ids = input_ids,
+        pixel_values = pixel_values,
+        mm_token_type_ids = FakeTensor(),
+    )
+
+    assert result == "fallback-result"
+    assert events == ["for_inference"]
+    assert "mm_token_type_ids" not in captured
+    assert captured["pixel_values"] is pixel_values
+    assert pixel_values.converted_to == "bfloat16"
+
+
+if __name__ == "__main__":
+    tests = [
+        value
+        for name, value in sorted(globals().items())
+        if name.startswith("test_") and callable(value)
+    ]
+    for test in tests:
+        test()
+    print(f"OK: {len(tests)} FA2 fallback regression tests passed")

@@ -36,6 +36,8 @@ from ._utils import (
     resolve_attention_implementation,
     _get_text_only_config,
     _is_family_text_decoder,
+    _config_get,
+    _is_flash_attention_requested,
     _apply_text_only_key_mapping,
     _select_moe_detection_targets,
     set_task_config_attr,
@@ -226,8 +228,7 @@ def _attach_bnb_multidevice_hooks(
                 param.__dict__[key] = val
 
         logger.info(
-            f"Unsloth: Attached accelerate AlignDevicesHook ({desc}) "
-            f"for bnb multi-GPU inference."
+            f"Unsloth: Attached accelerate AlignDevicesHook ({desc}) for bnb multi-GPU inference."
         )
     except Exception as exc:
         warnings.warn(
@@ -345,15 +346,47 @@ except:
     torch_compiler_set_stance = None
 
 
+def _uses_flash_attention_for_generation(config):
+    def _mapping_uses_flash_attention(attn_implementation):
+        if not isinstance(attn_implementation, dict):
+            return _is_flash_attention_requested(attn_implementation)
+        return any(
+            _is_flash_attention_requested(attn_implementation.get(config_name))
+            for config_name in (
+                "text_config",
+                "decoder_config",
+                "language_config",
+                "decoder",
+            )
+        )
+
+    configs = [config]
+    get_text_config = _config_get(config, "get_text_config", None)
+    if callable(get_text_config):
+        try:
+            text_config = get_text_config()
+        except Exception:
+            text_config = None
+        if text_config is not None and text_config is not config:
+            configs.append(text_config)
+    for config_name in (
+        "text_config",
+        "decoder_config",
+        "language_config",
+        "decoder",
+    ):
+        nested_config = _config_get(config, config_name, None)
+        if nested_config is not None and nested_config is not config:
+            configs.append(nested_config)
+
+    return any(
+        _mapping_uses_flash_attention(_config_get(attention_config, config_field, None))
+        for attention_config in configs
+        for config_field in ("_attn_implementation", "attn_implementation")
+    )
+
+
 def unsloth_base_fast_generate(self, *args, **kwargs):
-    # flash_attention_2 is incompatible with this fast-generation path: the forced
-    # cache_implementation="static" pre-allocates the full prompt+max_new_tokens KV
-    # buffer, and unlike SDPA, FA2 receives no attention mask covering the
-    # not-yet-filled slots, so decoding attends over uninitialized cache memory and
-    # produces incoherent output. Fall back to the original generate, which handles
-    # FA2 correctly (equivalent to UNSLOTH_DISABLE_FAST_GENERATION=1 for FA2 models).
-    if getattr(self.config, "_attn_implementation", None) == "flash_attention_2":
-        return self._old_generate(*args, **kwargs)
 
     if len(args) != 0:
         input_ids = args[0]
@@ -452,6 +485,13 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype)
     # Prepare LoRA
     # state_dict = convert_lora_modules(self, dtype = dtype)
+
+    # FlashAttention cannot use the forced static-cache path below: unfilled cache
+    # slots are not masked during decoding. Preserve inference setup and processor
+    # normalization above, then delegate before static-cache and compile handling.
+    if _uses_flash_attention_for_generation(self.config):
+        with torch.inference_mode(), autocaster:
+            return self._old_generate(*args, **kwargs)
 
     # Set compile dynamic shapes
     torch._dynamo.mark_static(input_ids, 0)
