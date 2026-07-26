@@ -175,15 +175,17 @@ def test_list_cached_gguf_load_id_follows_snapshot_dir_mtime(monkeypatch, tmp_pa
             SimpleNamespace(
                 files = [_file("Q4_K_M.gguf", 5_000, blob_path = "b1")], snapshot_path = older
             ),
-            SimpleNamespace(
-                files = [_file("Q8_0.gguf", 6_000, blob_path = "b2")], snapshot_path = newer
-            ),
+            SimpleNamespace(files = [_file("Q8_0.gguf", 6_000, blob_path = "b2")], snapshot_path = newer),
         ],
     )
 
-    monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])])
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
-    monkeypatch.setattr(models_route, "_blob_mtime", lambda f: 9_000 if f.blob_path == "b1" else 1.0)
+    monkeypatch.setattr(
+        models_route, "_blob_mtime", lambda f: 9_000 if f.blob_path == "b1" else 1.0
+    )
 
     rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
 
