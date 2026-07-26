@@ -305,7 +305,12 @@ class _FakeDS:
         return iter(self._rows)
 
 
-def _install_fake_load_dataset(monkeypatch, n_rows, features = "default", streamable = True):
+def _install_fake_load_dataset(
+    monkeypatch,
+    n_rows,
+    features = "default",
+    streamable = True,
+):
     calls = {"count": 0, "streaming": [], "features": features}
     rows = [
         {"image": Image.new("RGB", (8, 8), (i * 30 % 255, 60, 90)), "prompt": f"caption {i}"}
@@ -371,9 +376,7 @@ def test_import_example_respects_cap(client, ds_root, monkeypatch):
     assert r.json()["image_count"] == 2
 
 
-def test_import_example_streams_instead_of_preparing_the_whole_split(
-    client, ds_root, monkeypatch
-):
+def test_import_example_streams_instead_of_preparing_the_whole_split(client, ds_root, monkeypatch):
     # The cap keeps 10-100 rows, while the curated repos run to 49,859 rows / 328 MB
     # (m1guelpf/nouns), all of which a prepared load downloads and converts before the first row is
     # read. The import must ask for a streamed split.

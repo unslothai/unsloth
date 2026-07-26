@@ -16544,7 +16544,9 @@ def _absolute_image_url(request: Request, image_id: str) -> str:
     """The absolute, directly fetchable link for one gallery image, on the request's own
     scheme+host. Signed rather than bearer-gated (see above), so a standard image client can
     download it; b64_json still avoids the round trip entirely."""
-    relative = f"/api/inference/images/gallery/{image_id}/file-signed?token={_sign_image_id(image_id)}"
+    relative = (
+        f"/api/inference/images/gallery/{image_id}/file-signed?token={_sign_image_id(image_id)}"
+    )
     return str(request.base_url).rstrip("/") + relative
 
 

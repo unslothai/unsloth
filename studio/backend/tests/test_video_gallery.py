@@ -354,7 +354,11 @@ def _real_mp4_bytes(
     return buf.getvalue()
 
 
-def _real_mp4_with_audio(seconds: int = 1, size: int = 32, rate: int = 8) -> bytes:
+def _real_mp4_with_audio(
+    seconds: int = 1,
+    size: int = 32,
+    rate: int = 8,
+) -> bytes:
     # An LTX-2-shaped clip: video plus a synchronized audio track (a 440 Hz tone), so the WebM
     # export can be checked for the track rather than assumed silent.
     av = pytest.importorskip("av")
@@ -432,7 +436,12 @@ def test_webm_export_still_works_without_an_audio_encoder(monkeypatch):
 
     real_add_stream = av.container.OutputContainer.add_stream
 
-    def _no_opus(self, codec_name = None, *args, **kwargs):
+    def _no_opus(
+        self,
+        codec_name = None,
+        *args,
+        **kwargs,
+    ):
         if codec_name == "libopus":
             raise ValueError("unknown encoder 'libopus'")
         return real_add_stream(self, codec_name, *args, **kwargs)
