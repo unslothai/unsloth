@@ -223,6 +223,24 @@ def test_resuming_a_legacy_jsonl_migrates_it(tmp_path: Path, codepage: str, name
     assert [line["author"] for line in lines] == [name] * 3
 
 
+def test_a_coincidentally_utf8_legacy_line_follows_the_file(tmp_path: Path) -> None:
+    """cp1251 `Р°` is D0 B0, which is also UTF-8 `а`, so the shard has to decide."""
+    path = tmp_path / "out.jsonl"
+    ambiguous = "Р°"
+    assert ambiguous.encode("cp1251").decode("utf-8") == "а"  # the trap
+    path.write_bytes(
+        json.dumps({"id": 1, "author": "Привет"}, ensure_ascii = False).encode("cp1251")
+        + b"\n"
+        + json.dumps({"id": 2, "author": ambiguous}, ensure_ascii = False).encode("cp1251")
+        + b"\n"
+    )
+
+    _load_state_store("cp1251").JsonlWriter(path).close()
+
+    rows = [json.loads(x) for x in path.read_text(encoding = "utf-8").splitlines() if x.strip()]
+    assert [row["author"] for row in rows] == ["Привет", ambiguous]
+
+
 def test_a_torn_line_does_not_relabel_a_utf8_shard(tmp_path: Path) -> None:
     """One interrupted append must not get the whole shard read as cp1252."""
     path = tmp_path / "out.jsonl"
