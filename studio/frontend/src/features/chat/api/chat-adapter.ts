@@ -1427,7 +1427,9 @@ function autoLoadCandidateKey(
   id: string,
   ggufVariant?: string | null,
 ): string {
-  return `${kind}:${id.toLowerCase()}:${(ggufVariant ?? "").toLowerCase()}`;
+  // Path-shape-aware case handling: on a case-sensitive filesystem, a skip
+  // key recorded for /models/Foo must not also skip /models/foo.
+  return `${kind}:${normalizeLoadTargetKey(id)}:${(ggufVariant ?? "").toLowerCase()}`;
 }
 
 function findCachedRepo<T extends { repo_id: string }>(
@@ -1525,6 +1527,46 @@ function sizeOrUnknownBytes(bytes?: number | null): number {
   return bytes && bytes > 0 ? bytes : Number.MAX_SAFE_INTEGER;
 }
 
+/**
+ * Identifier-matching key with path-shape-aware case semantics: Windows-style
+ * paths (drive letter or UNC) and Hub repo ids compare case-insensitively,
+ * while POSIX paths keep their case, since Linux filesystems distinguish
+ * /models/Foo from /models/foo and folding them can match the wrong model.
+ */
+function normalizeLoadTargetKey(value: string): string {
+  const looksWindowsPath = /^(?:[A-Za-z]:[\\/]|\\\\)/.test(value);
+  if (!looksWindowsPath && (value.startsWith("/") || value.startsWith("~"))) {
+    return value;
+  }
+  return value.toLowerCase();
+}
+
+// Inventory scans hit disk on the backend; an unbounded fan-out over many
+// indexed folders can saturate the connection pool and disk.
+const AUTO_LOAD_VARIANT_SCAN_CONCURRENCY = 4;
+
+/** Map with at most `limit` requests in flight, preserving order. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.max(1, Math.min(limit, items.length)) },
+    async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await fn(items[index]);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
+}
+
 type ResolvedLocalCandidate = {
   candidate: AutoLoadCandidate;
   /** Size of what would actually load: the resolved quant's own size for a
@@ -1589,20 +1631,23 @@ function matchesRememberedLocalRow(
   if ((row.model_format === "gguf") !== (remembered.kind === "gguf")) {
     return false;
   }
+  // Inventory ids come from one backend generator on both sides, so they
+  // compare exactly; case folding could merge distinct case-sensitive paths
+  // embedded in the id.
   if (
     remembered.inventoryId &&
     row.inventory_id &&
-    row.inventory_id.toLowerCase() === remembered.inventoryId.toLowerCase()
+    row.inventory_id === remembered.inventoryId
   ) {
     return true;
   }
   const targets = new Set(
     [remembered.loadId, remembered.id]
       .filter((value): value is string => Boolean(value))
-      .map((value) => value.toLowerCase()),
+      .map((value) => normalizeLoadTargetKey(value)),
   );
   return [row.load_id, row.id, row.path, row.model_id].some(
-    (value) => !!value && targets.has(value.toLowerCase()),
+    (value) => !!value && targets.has(normalizeLoadTargetKey(value)),
   );
 }
 
@@ -1983,7 +2028,9 @@ export async function autoLoadOnDeviceModel(): Promise<{
     ...values: (string | null | undefined)[]
   ): void => {
     for (const value of values) {
-      if (value) seenLoadTargets.add(`${kind}:${value.toLowerCase()}`);
+      if (value) {
+        seenLoadTargets.add(`${kind}:${normalizeLoadTargetKey(value)}`);
+      }
     }
   };
   const isSeen = (
@@ -1991,7 +2038,9 @@ export async function autoLoadOnDeviceModel(): Promise<{
     ...values: (string | null | undefined)[]
   ): boolean =>
     values.some(
-      (value) => !!value && seenLoadTargets.has(`${kind}:${value.toLowerCase()}`),
+      (value) =>
+        !!value &&
+        seenLoadTargets.has(`${kind}:${normalizeLoadTargetKey(value)}`),
     );
 
   try {
@@ -2127,6 +2176,8 @@ export async function autoLoadOnDeviceModel(): Promise<{
           row: LocalModelInfo;
           candidate: AutoLoadCandidate;
           sizeBytes: number;
+          /** Re-queued quant of an already-visited row (skips the seen gate). */
+          retry?: boolean;
         };
     const bySizeAsc = (a: FallbackCandidate, b: FallbackCandidate): number =>
       a.sizeBytes - b.sizeBytes;
@@ -2146,28 +2197,28 @@ export async function autoLoadOnDeviceModel(): Promise<{
     // resolved quant's own size or a folder with a small quant would lose to
     // a larger single-quant model.
     const localEntries = (
-      await Promise.all(
-        cascadeLocalRows.map(
-          async (row): Promise<FallbackCandidate | null> => {
-            try {
-              const resolved = await resolveLocalRowCandidate(
-                row,
-                null,
-                isSkippedAutoLoadCandidate,
-              );
-              if (!resolved) return null;
-              return {
-                type: "local" as const,
-                row,
-                candidate: resolved.candidate,
-                sizeBytes: resolved.sizeBytes,
-              };
-            } catch {
-              hadNonTrustFailure = true;
-              return null;
-            }
-          },
-        ),
+      await mapWithConcurrency(
+        cascadeLocalRows,
+        AUTO_LOAD_VARIANT_SCAN_CONCURRENCY,
+        async (row): Promise<FallbackCandidate | null> => {
+          try {
+            const resolved = await resolveLocalRowCandidate(
+              row,
+              null,
+              isSkippedAutoLoadCandidate,
+            );
+            if (!resolved) return null;
+            return {
+              type: "local" as const,
+              row,
+              candidate: resolved.candidate,
+              sizeBytes: resolved.sizeBytes,
+            };
+          } catch {
+            hadNonTrustFailure = true;
+            return null;
+          }
+        },
       )
     ).filter((entry): entry is FallbackCandidate => entry !== null);
     const ggufGroup: FallbackCandidate[] = [
@@ -2191,7 +2242,12 @@ export async function autoLoadOnDeviceModel(): Promise<{
       ),
     ].sort(bySizeAsc);
 
-    for (const candidate of [...ggufGroup, ...modelGroup]) {
+    const queue: FallbackCandidate[] = [...ggufGroup, ...modelGroup];
+    const isModelKindEntry = (entry: FallbackCandidate): boolean =>
+      entry.type === "cached-model" ||
+      (entry.type === "local" && entry.candidate.kind === "model");
+    for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
+      const candidate = queue[queueIndex];
       if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
       if (candidate.type === "cached-gguf") {
         const repo = candidate.repo;
@@ -2266,41 +2322,61 @@ export async function autoLoadOnDeviceModel(): Promise<{
         continue;
       }
       const row = candidate.row;
-      let localCandidate: AutoLoadCandidate | null = candidate.candidate;
-      if (isSeen(localCandidate.kind, row.load_id, row.id, row.path)) {
+      const localCandidate = candidate.candidate;
+      if (!candidate.retry) {
+        if (isSeen(localCandidate.kind, row.load_id, row.id, row.path)) {
+          continue;
+        }
+        markSeen(localCandidate.kind, row.load_id, row.id, row.path);
+      }
+      if (isSkippedAutoLoadCandidate(localCandidate)) {
         continue;
       }
-      markSeen(localCandidate.kind, row.load_id, row.id, row.path);
-      // Try the row's quants smallest-first: a failed LOAD (not just a
-      // blocked validation) marks that quant skipped and the folder's next
-      // complete quant is resolved and tried, so one corrupt file cannot
-      // abandon a folder that still holds a loadable quant. The attempt cap
-      // still bounds total /load calls; single-candidate rows resolve to
-      // null once skipped, terminating the loop.
-      while (localCandidate && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS) {
-        if (!isSkippedAutoLoadCandidate(localCandidate)) {
-          try {
-            if (await loadAutoLoadCandidate(localCandidate)) {
-              return { loaded: true, blockedByTrustRemoteCode: false };
-            }
-          } catch {
-            hadNonTrustFailure = true;
-            skippedAutoLoadCandidates.add(
-              autoLoadCandidateKey(
-                localCandidate.kind,
-                localCandidate.id,
-                localCandidate.ggufVariant,
-              ),
-            );
-          }
+      try {
+        if (await loadAutoLoadCandidate(localCandidate)) {
+          return { loaded: true, blockedByTrustRemoteCode: false };
         }
+      } catch {
+        hadNonTrustFailure = true;
+        skippedAutoLoadCandidates.add(
+          autoLoadCandidateKey(
+            localCandidate.kind,
+            localCandidate.id,
+            localCandidate.ggufVariant,
+          ),
+        );
+        // A quant that passed validation can still fail /load (corrupt
+        // file, llama.cpp startup error). Re-enter the folder's next
+        // complete quant into the GLOBAL size order (still ahead of the
+        // safetensors group) instead of retrying inline, so one folder of
+        // failing quants cannot starve a smaller model elsewhere.
+        // Validation blocks are model-scoped, so they get no requeue.
         try {
-          localCandidate =
-            (await resolveLocalRowCandidate(row, null, isSkippedAutoLoadCandidate))
-              ?.candidate ?? null;
+          const next = await resolveLocalRowCandidate(
+            row,
+            null,
+            isSkippedAutoLoadCandidate,
+          );
+          if (next) {
+            const retryEntry: FallbackCandidate = {
+              type: "local",
+              row,
+              candidate: next.candidate,
+              sizeBytes: next.sizeBytes,
+              retry: true,
+            };
+            let insertAt = queueIndex + 1;
+            while (
+              insertAt < queue.length &&
+              !isModelKindEntry(queue[insertAt]) &&
+              queue[insertAt].sizeBytes <= retryEntry.sizeBytes
+            ) {
+              insertAt += 1;
+            }
+            queue.splice(insertAt, 0, retryEntry);
+          }
         } catch {
           hadNonTrustFailure = true;
-          break;
         }
       }
     }

@@ -574,7 +574,9 @@ def test_autoload_deduplicates_cached_and_local_candidates():
     assert "const seenLoadTargets = new Set<string>()" in auto_load
     # Keys carry the model kind: a folder emitting both GGUF and safetensors
     # rows shares a path while holding two different models.
-    assert "seenLoadTargets.add(`${kind}:${value.toLowerCase()}`)" in auto_load
+    assert (
+        "seenLoadTargets.add(`${kind}:${normalizeLoadTargetKey(value)}`)" in auto_load
+    )
     assert 'markSeen("gguf", repo.load_id || repo.repo_id, repo.cache_path)' in auto_load
     assert 'markSeen("model", repo.load_id || repo.repo_id, repo.cache_path)' in auto_load
     assert "isSeen(localCandidate.kind, row.load_id, row.id, row.path)" in auto_load
@@ -712,18 +714,66 @@ def test_local_fallback_orders_by_resolved_quant_size():
 
 def test_cascade_retries_next_quant_after_load_failure():
     """A failed /api/inference/load (not just a blocked validation) must mark
-    that quant skipped and try the folder's next complete quant before the
-    row is abandoned; single-candidate rows resolve to null once skipped so
-    the retry loop terminates, and the attempt cap bounds total loads."""
+    that quant skipped and re-enter the folder's next complete quant into the
+    GLOBAL size order (still ahead of the safetensors group) instead of
+    retrying inline, so one folder of failing quants cannot starve a smaller
+    model elsewhere; single-candidate rows resolve to null once skipped, and
+    the attempt cap bounds total loads."""
     src = _read("features/chat/api/chat-adapter.ts")
     auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
-    assert "while (localCandidate && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS)" in auto_load
-    # The cascade catch records the failed quant, unlike the old generic flag.
-    local_loop = auto_load.split(
-        "while (localCandidate && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS)", 1
-    )[1].split("\n    }", 1)[0]
-    assert "skippedAutoLoadCandidates.add(" in local_loop
+    # No inline retry loop: retries flow through the shared queue.
+    assert "while (localCandidate" not in auto_load
+    assert "const queue: FallbackCandidate[] = [...ggufGroup, ...modelGroup]" in auto_load
+    assert "retry: true," in auto_load
+    assert "queue.splice(insertAt, 0, retryEntry)" in auto_load
+    # Reinsertion respects the GGUF-before-safetensors group boundary and the
+    # ascending size order among the remaining candidates.
+    assert "!isModelKindEntry(queue[insertAt])" in auto_load
+    assert "queue[insertAt].sizeBytes <= retryEntry.sizeBytes" in auto_load
+    # Requeued entries bypass the seen gate; fresh rows still dedupe.
+    assert "if (!candidate.retry) {" in auto_load
+    # The cascade catch records the failed quant before requeueing.
+    catch_block = auto_load.split("// A quant that passed validation can still fail /load", 1)[0]
+    assert "skippedAutoLoadCandidates.add(" in catch_block
     # Termination guard: a skipped single candidate resolves to null.
     resolve_fn = src.split("async function resolveLocalRowCandidate", 1)[1]
     resolve_fn = resolve_fn.split("\nfunction ", 1)[0]
     assert "if (isSkippedCandidate?.(candidate)) return null;" in resolve_fn
+
+
+def test_autoload_keys_preserve_posix_path_case():
+    """Linux filesystems distinguish /models/Foo from /models/foo, so seen
+    keys and remembered-model matching must not fold case on POSIX paths;
+    Windows-style paths and Hub repo ids keep case-insensitive matching."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    norm_fn = src.split("function normalizeLoadTargetKey", 1)[1]
+    norm_fn = norm_fn.split("\nfunction ", 1)[0].split("\nconst ", 1)[0]
+    assert "looksWindowsPath" in norm_fn
+    assert 'value.startsWith("/") || value.startsWith("~")' in norm_fn
+    assert "return value;" in norm_fn
+    assert "return value.toLowerCase();" in norm_fn
+    match_fn = src.split("function matchesRememberedLocalRow", 1)[1]
+    match_fn = match_fn.split("\nfunction ", 1)[0]
+    assert "normalizeLoadTargetKey" in match_fn
+    # Inventory ids compare exactly (same backend generator on both sides).
+    assert "row.inventory_id === remembered.inventoryId" in match_fn
+    assert "row.inventory_id.toLowerCase()" not in match_fn
+    # Skip keys use the same semantics: a failure recorded for /models/Foo
+    # must not also skip /models/foo.
+    key_fn = src.split("function autoLoadCandidateKey", 1)[1]
+    key_fn = key_fn.split("\nfunction ", 1)[0]
+    assert "normalizeLoadTargetKey(id)" in key_fn
+    assert "id.toLowerCase()" not in key_fn
+
+
+def test_local_variant_scans_bounded_concurrency():
+    """Each /gguf-variants call triggers a recursive backend directory scan,
+    so pre-resolution must not fan out unbounded over every indexed folder
+    at once."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    assert "const AUTO_LOAD_VARIANT_SCAN_CONCURRENCY" in src
+    assert "async function mapWithConcurrency" in src
+    auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
+    assert "await mapWithConcurrency(" in auto_load
+    assert "AUTO_LOAD_VARIANT_SCAN_CONCURRENCY," in auto_load
+    assert "await Promise.all(\n        cascadeLocalRows.map(" not in auto_load
