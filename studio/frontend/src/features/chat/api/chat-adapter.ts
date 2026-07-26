@@ -1306,6 +1306,47 @@ export function findLatestUserAudioBase64(
   return pendingAudio ?? undefined;
 }
 
+/** Fold an extra system instruction into the leading system turn, or add one. */
+function addSystemInstruction(
+  targetMessages: SerializedMessage[],
+  text: string | null,
+): void {
+  if (!text) return;
+  const firstMessage = targetMessages[0];
+  if (firstMessage?.role === "system") {
+    if (typeof firstMessage.content === "string") {
+      targetMessages[0] = {
+        ...firstMessage,
+        content: `${firstMessage.content}\n\n${text}`,
+      };
+    } else {
+      targetMessages[0] = {
+        ...firstMessage,
+        content: [
+          ...(Array.isArray(firstMessage.content) ? firstMessage.content : []),
+          { type: "text", text: `\n\n${text}` },
+        ],
+      };
+    }
+    return;
+  }
+  targetMessages.unshift({ role: "system", content: text });
+}
+
+/**
+ * The Canvas system instruction, shared by the generation request and the token
+ * recount so the bar counts the prompt the next completion will actually get.
+ */
+function canvasInstruction(
+  artifactsEnabled: boolean,
+  renderHtmlToolEnabledForThisTurn: boolean,
+): string | null {
+  if (!artifactsEnabled) return null;
+  return renderHtmlToolEnabledForThisTurn
+    ? "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once."
+    : "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax.";
+}
+
 export async function buildOutboundMessagesForTokenCount(
   messages: RunMessages,
   threadId: string | undefined,
@@ -1353,6 +1394,23 @@ export async function buildOutboundMessagesForTokenCount(
       content: combinedSystemPrompt,
     });
   }
+
+  // Canvas adds a system instruction to the real request, so count it too;
+  // buildLocalTokenCountExtras already declares the matching render_html tool.
+  // The recount is local-only (external checkpoints never reach it), which is
+  // the isExternalRequest half of the generation-side gate.
+  const { artifactsEnabled, supportsTools } = useChatRuntimeStore.getState();
+  addSystemInstruction(
+    outboundMessages,
+    canvasInstruction(
+      artifactsEnabled,
+      Boolean(
+        supportsTools &&
+          artifactsEnabled &&
+          !outboundMessagesIncludeImage(outboundMessages as OpenAIChatMessage[]),
+      ),
+    ),
+  );
 
   return outboundMessages as OpenAIChatMessage[];
 }
@@ -2550,35 +2608,6 @@ export function createOpenAIStreamAdapter(
             "Do not return tool-call syntax inside your response.";
         }
       }
-      type OutboundMessage = (typeof outboundMessages)[number];
-      function addSystemInstruction(
-        targetMessages: OutboundMessage[],
-        text: string | null,
-      ): void {
-        if (!text) return;
-        const firstMessage = targetMessages[0];
-        if (firstMessage?.role === "system") {
-          if (typeof firstMessage.content === "string") {
-            targetMessages[0] = {
-              ...firstMessage,
-              content: `${firstMessage.content}\n\n${text}`,
-            };
-          } else {
-            targetMessages[0] = {
-              ...firstMessage,
-              content: [
-                ...(Array.isArray(firstMessage.content)
-                  ? firstMessage.content
-                  : []),
-                { type: "text", text: `\n\n${text}` },
-              ],
-            };
-          }
-          return;
-        }
-        targetMessages.unshift({ role: "system", content: text });
-      }
-
       // Scan post-prune history so a refused user turn's image/audio
       // doesn't gate or mis-attribute the next turn.
       const imageBase64 = findLatestUserImageBase64(survivingMessages);
@@ -2594,11 +2623,10 @@ export function createOpenAIStreamAdapter(
           artifactsEnabled &&
           !hasOutboundImage,
       );
-      const artifactInstruction = artifactsEnabled
-        ? renderHtmlToolEnabledForThisTurn
-          ? "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once."
-          : "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax."
-        : null;
+      const artifactInstruction = canvasInstruction(
+        artifactsEnabled,
+        renderHtmlToolEnabledForThisTurn,
+      );
       const effectiveDisabledToolGuard =
         disabledToolGuard && artifactsEnabled
           ? `${disabledToolGuard} HTML, CSS, or JavaScript canvas requests can still be answered by following the canvas fallback instruction.`

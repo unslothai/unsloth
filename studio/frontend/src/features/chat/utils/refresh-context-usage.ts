@@ -273,6 +273,14 @@ export async function refreshContextUsage(options?: {
       return;
     }
 
+    // A completion finishing mid-count writes the exact usage for a turn this
+    // count predates, so drop the recount rather than roll the bar backwards.
+    // Sampled the moment runMessages is fixed (and after the saved-usage
+    // restore above, which is our own write): the payload build awaits storage
+    // and the project/RAG lookups, and a completion landing in that window
+    // would otherwise be captured here and compare equal.
+    const usageBeforeCount = useChatRuntimeStore.getState().contextUsage;
+
     const outbound = await buildOutboundMessagesForTokenCount(
       runMessages,
       threadId,
@@ -283,9 +291,6 @@ export async function refreshContextUsage(options?: {
     }
 
     const toolExtras = await buildLocalTokenCountExtras(threadId, outbound);
-    // A completion finishing mid-count writes the exact usage for a turn this
-    // count predates, so drop the recount rather than roll the bar backwards.
-    const usageBeforeCount = useChatRuntimeStore.getState().contextUsage;
 
     let inputTokens = 0;
     if (outbound.length > 0) {
