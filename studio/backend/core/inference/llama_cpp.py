@@ -126,8 +126,9 @@ LLAMA_SERVER_NOT_FOUND_DETAIL = (
     "then try again. (Advanced: set LLAMA_SERVER_PATH to an existing binary.)"
 )
 
-# Shared by route preflight, load-time pre-teardown checks, and the post-metadata
-# diffusion defense so the rejection text stays consistent (#7205).
+# Shared by the load-time pre-teardown checks and the post-metadata diffusion
+# defense so the rejection text stays consistent (#7205). The route preflight
+# raises the same wording as its own HTTP 400.
 _VULKAN_DIFFUSION_GPU_IDS_ERROR = (
     "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
     "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "

@@ -22,6 +22,7 @@ and MoE offload itself (``--fit off``). These tests pin:
 from __future__ import annotations
 
 import inspect
+import struct
 import sys
 import types as _types
 from pathlib import Path
@@ -762,6 +763,90 @@ def test_local_vulkan_diffusion_rejection_keeps_active_server(monkeypatch, tmp_p
         backend.load_model(
             gguf_path = str(gguf_path),
             model_identifier = "local/diffusion",
+            gpu_ids = [0],
+        )
+
+    assert killed == []
+
+
+class _ReachedServerStart(Exception):
+    """Marks a load getting past the pre-teardown preflight."""
+
+
+def _write_gguf_header(path: Path, architecture: str, *, diffusion: bool = False) -> str:
+    """Smallest GGUF the header probe can classify: arch, plus the canvas marker."""
+
+    def _kv_str(key: str, value: str) -> bytes:
+        kb, vb = key.encode(), value.encode()
+        return (
+            struct.pack("<Q", len(kb)) + kb + struct.pack("<I", 8) + struct.pack("<Q", len(vb)) + vb
+        )
+
+    def _kv_u32(key: str, value: int) -> bytes:
+        kb = key.encode()
+        return struct.pack("<Q", len(kb)) + kb + struct.pack("<I", 4) + struct.pack("<I", value)
+
+    body = _kv_str("general.architecture", architecture)
+    if diffusion:
+        body += _kv_u32("diffusion.canvas_length", 256)
+    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 2 if diffusion else 1) + body)
+    return str(path)
+
+
+def _vulkan_pinned_backend(monkeypatch, killed: list) -> LlamaCppBackend:
+    backend = LlamaCppBackend()
+    monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
+    monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: True)
+    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None: [(0, 1024, 2048)])
+    monkeypatch.setattr(backend, "_kill_process", lambda: killed.append(True))
+    return backend
+
+
+def test_local_vulkan_pre_teardown_reads_the_real_gguf_header(monkeypatch, tmp_path):
+    # The pre-teardown branch must classify from the header, not from the
+    # Vulkan + gpu_ids combination alone, so a normal GGUF still loads.
+    killed = []
+    backend = _vulkan_pinned_backend(monkeypatch, killed)
+    monkeypatch.setattr(
+        backend,
+        "_wait_for_vram_settle",
+        lambda **_kwargs: (_ for _ in ()).throw(_ReachedServerStart()),
+    )
+
+    with pytest.raises(_ReachedServerStart):
+        backend.load_model(
+            gguf_path = _write_gguf_header(tmp_path / "chat.gguf", "llama"),
+            model_identifier = "local/chat",
+            gpu_ids = [0],
+        )
+
+    assert killed == [True]
+
+
+def test_local_vulkan_diffusion_header_rejects_before_teardown(monkeypatch, tmp_path):
+    # Same path, real DiffusionGemma canvas marker: rejected with the server intact.
+    killed = []
+    backend = _vulkan_pinned_backend(monkeypatch, killed)
+
+    with pytest.raises(ValueError, match = "DiffusionGemma"):
+        backend.load_model(
+            gguf_path = _write_gguf_header(tmp_path / "d.gguf", "gemma3", diffusion = True),
+            model_identifier = "local/diffusion",
+            gpu_ids = [0],
+        )
+
+    assert killed == []
+
+
+def test_local_vulkan_missing_gguf_is_reported_before_teardown(monkeypatch, tmp_path):
+    # The existence check the preflight needs must not cost the live model either.
+    killed = []
+    backend = _vulkan_pinned_backend(monkeypatch, killed)
+
+    with pytest.raises(FileNotFoundError):
+        backend.load_model(
+            gguf_path = str(tmp_path / "absent.gguf"),
+            model_identifier = "local/missing",
             gpu_ids = [0],
         )
 
