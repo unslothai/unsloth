@@ -6020,6 +6020,14 @@ async def generate_stream(
         disconnect_watcher = asyncio.create_task(
             _await_disconnect_then_cancel(fastapi_request, cancel_event)
         )
+        # Registered inside the generator, under the finally that unregisters it,
+        # so a response whose body never starts leaves nothing behind. /unload
+        # runs no idle drain, so without an entry it passes the 409 gate and then
+        # blocks on the backend's generation lock instead, and a forced swap has
+        # no event to signal. GenerateRequest carries no thread_id, so this run is
+        # counted but not nameable, the documented first-turn case.
+        _tracker = _TrackedCancel(cancel_event, model = backend.active_model_name)
+        _tracker.__enter__()
         try:
             gen = backend.generate_chat_response(
                 messages = request.messages,
@@ -6065,15 +6073,20 @@ async def generate_stream(
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
             yield "data: [DONE]\n\n"
         finally:
-            await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
-            if not completed and not cancel_event.is_set():
-                cancel_event.set()
-                backend.reset_generation_state()
-            if gen is not None:
-                try:
-                    await asyncio.to_thread(gen.close)
-                except (RuntimeError, ValueError):
-                    pass
+            # Nested so a teardown failure cannot skip the unregister and leave a
+            # phantom generation 409-ing every later swap.
+            try:
+                await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+                if not completed and not cancel_event.is_set():
+                    cancel_event.set()
+                    backend.reset_generation_state()
+                if gen is not None:
+                    try:
+                        await asyncio.to_thread(gen.close)
+                    except (RuntimeError, ValueError):
+                        pass
+            finally:
+                _tracker.__exit__(None, None, None)
 
     return _sse_streaming_response(stream())
 

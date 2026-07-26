@@ -982,6 +982,55 @@ def test_embeddings_proxy_is_visible_to_the_swap_gate(monkeypatch):
     assert active_generations.count() == 0
 
 
+def test_legacy_generate_stream_is_visible_to_the_swap_gate(monkeypatch):
+    # The legacy /generate/stream decodes on the standard backend for its whole
+    # run. /unload runs no idle drain, so without its own registration it passed
+    # the advertised 409 gate and then blocked on the backend's generation lock,
+    # and a forced swap had no event to signal.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+    from types import SimpleNamespace
+
+    import routes.inference as inf_mod
+    from models.inference import GenerateRequest
+
+    seen = {}
+
+    def _fake_generate_chat_response(**kwargs):
+        # Sampled mid-generation: exactly the window an /unload would land in.
+        seen["count"] = active_generations.count()
+        seen["snapshot"] = active_generations.snapshot()
+        seen["cancelled"] = active_generations.cancel_all()
+        yield "hello"
+        yield "world"
+
+    backend = SimpleNamespace(
+        active_model_name = "org/M",
+        models = {"org/M": {}},
+        generate_chat_response = lambda **kw: _fake_generate_chat_response(**kw),
+        reset_generation_state = lambda: None,
+        resize_image = lambda img: img,
+    )
+    monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: backend)
+
+    async def _drain():
+        response = await inf_mod.generate_stream(
+            GenerateRequest(messages = [{"role": "user", "content": "hi"}]),
+            _NeverDisconnectedRequest(),
+            current_subject = "tester",
+        )
+        async for _ in response.body_iterator:
+            pass
+
+    asyncio.run(_drain())
+
+    assert seen["count"] == 1
+    assert seen["snapshot"][0]["model"] == "org/M"
+    assert seen["cancelled"] == 1
+    # And it unregisters, or one legacy stream would 409 every later reload.
+    assert active_generations.count() == 0
+
+
 def _anthropic_stream_args(chunks):
     """(request, cancel_event, run_gen) for the local Anthropic stream helpers."""
     cancel_event = threading.Event()
