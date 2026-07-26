@@ -391,6 +391,8 @@ export const ja = {
         diskUsage: "{used} 使用中 / {total}",
         diskFree: "{free} 空き",
         modelsFolder: "モデルフォルダ",
+        modelsFolderKeywords:
+          "モデル フォルダ ディレクトリ パス 保存先 場所 ダウンロード キャッシュ ストレージ ディスク ドライブ 移動 変更 models folder path hugging face",
         modelsFolderDescription: "ダウンロードしたモデルの保存先。",
         openAction: "開く",
         copyAction: "パスをコピー",

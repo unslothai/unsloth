@@ -551,8 +551,12 @@ export const en = {
         systemDisk: "System disk",
         diskUsage: "{used} used / {total}",
         diskFree: "{free} free",
-        modelsFolder: "Model downloads",
-        modelsFolderDescription: "Hugging Face cache used for model downloads.",
+        modelsFolder: "Models folder",
+        modelsFolderDescription:
+          "Where downloaded models are stored. Change it to keep models off your system drive.",
+        // Not rendered: extra terms the settings search matches this row on.
+        modelsFolderKeywords:
+          "models folder directory path location download downloads cache storage disk drive move relocate hugging face",
         futureDownloads: "New downloads only",
         environmentManaged: "Managed by the {variable} environment variable.",
         locationFree: "{free} free",

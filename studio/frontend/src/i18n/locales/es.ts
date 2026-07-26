@@ -326,6 +326,8 @@ export const es = {
         diskUsage: "{used} en uso / {total}",
         diskFree: "{free} libre",
         modelsFolder: "Carpeta de modelos",
+        modelsFolderKeywords:
+          "modelos carpeta directorio ruta ubicacion ubicación descargas descarga cache caché almacenamiento disco unidad mover cambiar models folder path hugging face",
         modelsFolderDescription:
           "Dónde se almacenan los modelos descargados.",
         openAction: "Abrir",
