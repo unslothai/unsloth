@@ -37,8 +37,7 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Hub metadata is one small request; keep it short so a slow Hub can't stall the
-# request path for long.
+# Keep the Hub probe short so a slow Hub can't stall the request path.
 _MODEL_INFO_TIMEOUT_S = 8.0
 # Headroom left free after the download, so filling the disk can't wedge the box.
 _DISK_RESERVE_BYTES = 5 * 1024**3
@@ -73,9 +72,8 @@ class _Active:
 _lock = threading.Lock()
 _active: Optional[_Active] = None
 
-# Repos the Hub says this server cannot serve. A LiteLLM or OpenRouter client
-# names every provider "vendor/model", so without this each such request pays
-# another Hub probe on the way to being answered by the resident model.
+# Repos the Hub says this server cannot serve. Without it, every LiteLLM or OpenRouter
+# "vendor/model" request pays a Hub probe before falling through to the resident model.
 _NOT_SERVABLE_TTL_S = 10 * 60
 _NOT_SERVABLE_MAX = 256
 _cache_lock = threading.Lock()
@@ -248,8 +246,7 @@ async def _job_state(repo_id: str, variant: Optional[str]) -> tuple[str, Optiona
         status = await downloads.get_download_status_response(repo_id, variant or "")
         return status.state, status.error
     except Exception as exc:
-        # "unknown", not "idle": a probe that failed says nothing about the
-        # worker, and idle is read as "the job vanished" and ends the watch.
+        # "unknown", not "idle": idle ends the watch, and a failed probe proves nothing.
         logger.debug("auto-download: status probe failed for %r: %s", repo_id, exc)
         return "unknown", None
 
@@ -301,8 +298,7 @@ async def _watch(active: _Active, hf_token: Optional[str]) -> None:
             await asyncio.sleep(_WATCH_POLL_S)
             state, error = await _job_state(active.repo_id, active.variant)
             if state in ("running", "cancelling", "unknown"):
-                # Only "running" has progress to report; the other two are still
-                # in flight, so keep the slot rather than failing the row.
+                # Only "running" has progress; the others are still in flight, so keep the slot.
                 if state == "running":
                     api_monitor.set_progress(
                         active.monitor_id,
@@ -312,8 +308,7 @@ async def _watch(active: _Active, hf_token: Optional[str]) -> None:
                     )
                 continue
             if state == "complete":
-                # Drop the 5s resolver cache so the next retry resolves the new
-                # model instead of missing it again.
+                # Drop the resolver cache so the next retry sees the new model.
                 await asyncio.to_thread(invalidate_index)
                 api_monitor.finish(active.monitor_id, status = "completed")
             elif state == "idle":
@@ -358,8 +353,8 @@ async def maybe_auto_download(
     if _is_not_servable(repo_id, hf_token) and not looks_like_quant(wanted_variant):
         return None
 
-    # Adopt or reject against the single in-flight slot before touching the
-    # network, so retries during a long download stay free.
+    # Adopt or reject against the single in-flight slot before touching the network, so
+    # retries during a long download stay free.
     with _lock:
         current = _active
         if current is not None and current.repo_id == repo_id:
@@ -399,8 +394,7 @@ async def maybe_auto_download(
         if adopted.variant is None:
             # Another request is still probing this same repo.
             return _downloading_refusal(adopted.repo_id, None)
-        # complete/idle/cancelled: the watcher is about to release the slot, so
-        # ask for one more retry. Only "complete" actually got there.
+        # complete/idle/cancelled: the watcher is about to free the slot, so retry once more.
         return _downloading_refusal(
             _public_label(adopted.repo_id, adopted.variant),
             100.0 if state == "complete" else None,
@@ -411,11 +405,8 @@ async def maybe_auto_download(
             repo_id, wanted_variant, requested_model, hf_token, provisional
         )
     except BaseException:
-        # BaseException, not Exception: asyncio.CancelledError has not been an
-        # Exception since 3.8, so a request cancelled mid-probe would otherwise
-        # leave the provisional slot installed with variant None -- every other
-        # repo permanently model_download_busy and this one permanently
-        # "downloading", until the process restarts.
+        # BaseException, not Exception: CancelledError is not an Exception, so a request
+        # cancelled mid-probe would otherwise wedge the provisional slot until restart.
         _release(provisional)
         raise
 
@@ -444,10 +435,8 @@ async def _admit_and_start(
             return _gated_refusal(repo_id)
         if status == 404:
             _mark_not_servable(repo_id, hf_token)
-            # An id the Hub does not know is a foreign label, not a miss: pass it
-            # to the resident model as before rather than 404 every LiteLLM and
-            # OpenRouter "vendor/model". An explicit quant is a deliberate GGUF
-            # reference, so that one is answered.
+            # An id the Hub does not know is a foreign label, not a miss: fall through to the
+            # resident model. An explicit quant is a deliberate GGUF reference, so answer it.
             if not looks_like_quant(wanted_variant):
                 return None
             # A private repo reads as absent without a token; don't confirm either way.
@@ -468,9 +457,8 @@ async def _admit_and_start(
         )
 
     if getattr(info, "gated", False) and await asyncio.to_thread(_auth_denied, repo_id, hf_token):
-        # The Hub serves metadata for a gated repo without granting its files, so
-        # a probe that returned is not proof of access. Left unchecked the config
-        # read below fails instead and reports the unrelated custom-code refusal.
+        # The Hub serves metadata for a gated repo without granting its files, so a probe that
+        # returned is not proof of access. Unchecked, the config read below misreports it.
         _release(active)
         return _gated_refusal(repo_id)
 
@@ -489,9 +477,8 @@ async def _admit_and_start(
             ),
         )
 
-    # trust_remote_code gate. _config_has_auto_map is tri-state: refuse on True
-    # and on None (unreadable), rather than _requires_trust_remote_code_for_model,
-    # which swallows errors into False. Fine as a UI hint, wrong as an admission.
+    # trust_remote_code gate. _config_has_auto_map is tri-state, so refuse on True and on None
+    # (unreadable); _requires_trust_remote_code_for_model swallows errors into False.
     from utils.security.consent import _config_has_auto_map
 
     has_auto_map = await asyncio.to_thread(_config_has_auto_map, repo_id, hf_token)
@@ -555,8 +542,7 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
         return lowered.get(wanted.strip().lower())
     from utils.models.model_config import _pick_best_gguf
 
-    # _pick_best_gguf ranks filenames by quant substring, so give it synthesized
-    # "<label>.gguf" names and take the label back off the winner.
+    # _pick_best_gguf ranks filenames, so feed it "<label>.gguf" and strip the suffix back off.
     best = _pick_best_gguf([f"{name}.gguf" for name in variants])
     return best[: -len(".gguf")] if best else None
 
@@ -599,11 +585,8 @@ async def _dispatch(
             message = f"Could not start downloading '{requested_model}'.",
         )
 
-    # A same-repo whole-repo/cross-transport download or an in-progress delete
-    # makes the service refuse *without* raising: it returns accepted=False and
-    # launches no worker. Taking the slot then would promise a download that does
-    # not exist, and the watcher would fail its own monitor row two seconds later
-    # on a key that is idle by construction. Report the conflict instead.
+    # The service can refuse without raising (accepted=False, no worker launched). Taking the
+    # slot would promise a download that does not exist, so report the conflict instead.
     if isinstance(dispatched, dict) and not dispatched.get("accepted", True):
         _release(active)
         logger.info("auto-download: dispatch refused for %s (%s)", label, dispatched.get("state"))
@@ -619,8 +602,7 @@ async def _dispatch(
             active.monitor_id = monitor_id
             tracked = active
         else:
-            # Released underneath us: still track the job we just started so its
-            # monitor row resolves, but never stomp a newer owner of the slot.
+            # Released underneath us: track the job we started, but never stomp a newer owner.
             tracked = _Active(repo_id, variant, expected_bytes, monitor_id, time.time())
             if _active is None:
                 _active = tracked

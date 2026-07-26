@@ -290,8 +290,7 @@ def test_lifecycle_unload_row_is_terminal_on_arrival():
 
 
 def test_lifecycle_rows_are_visible_to_every_subject():
-    # A load is server-wide, not owned by whoever happened to trigger it, so it
-    # must not vanish for other API keys the way a request does.
+    # A load is server-wide, so it must not vanish for other API keys like a request does.
     monitor = ApiMonitor(max_entries = 5)
     monitor.start(
         endpoint = "/v1/chat/completions",
@@ -331,8 +330,7 @@ def test_discard_drops_a_row_that_never_happened():
 
 
 def test_fail_open_never_touches_a_finished_row():
-    # The load path calls this from a finally, so it must not stamp an error onto
-    # a load that in fact succeeded.
+    # Called from a finally, so it must not stamp an error onto a load that succeeded.
     monitor = ApiMonitor(max_entries = 5)
     event_id = monitor.record_lifecycle(event = "load", model = "org/A-GGUF", running = True)
     monitor.finish(event_id)

@@ -3586,8 +3586,7 @@ def _no_model_loaded_detail(base: str) -> str:
     )
 
 
-# Cap on ids listed by a "not downloaded" error: useful in a terminal without
-# burying the message.
+# Cap on ids listed by a "not downloaded" error, so it stays readable in a terminal.
 _MAX_LISTED_AVAILABLE_MODELS = 8
 
 
@@ -3672,14 +3671,11 @@ async def _no_model_loaded_error(
         return status, _no_model_loaded_detail(base)
     try:
         if _loaded_satisfies(named):
-            # The named model IS resident, just not on a backend this endpoint can
-            # use (a Transformers model on a GGUF-only surface). "Not downloaded"
-            # would be false, and the catalog GET /v1/models serves lists this very
-            # id as available, so keep the generic diagnosis, which is accurate.
+            # Resident, just not on a backend this endpoint can use (a Transformers model
+            # on a GGUF-only surface). "Not downloaded" would be false, so stay generic.
             return status, _no_model_loaded_detail(base)
         if await asyncio.to_thread(resolve_local_gguf, named) is not None:
-            # Resolvable but unloaded: the switch failed (load error, race), which
-            # the generic text describes correctly.
+            # Resolvable but unloaded: the switch failed, which the generic text covers.
             return status, _no_model_loaded_detail(base)
         message = await _unavailable_model_message(named)
     except Exception as exc:
@@ -3793,9 +3789,8 @@ def _loaded_satisfies(requested: str) -> bool:
     active = getattr(get_inference_backend(), "active_model_name", None)
     if not active:
         return False
-    # Only llama.cpp carries a quant identity, so this backend cannot show that
-    # an explicit quant is what is loaded. A non-quant tag is not a claim about
-    # the weights, so it still matches on the repo alone.
+    # Only llama.cpp carries a quant identity, so this backend cannot confirm an explicit
+    # quant. A non-quant tag claims nothing about the weights, so it matches on the repo.
     if looks_like_quant(variant):
         return False
     return base in {active.lower(), (public_model_id(active) or "").lower()}
@@ -3844,8 +3839,8 @@ async def _reject_unservable_model(
         )
         switchable = downloaded and get_openai_auto_switch_enabled()
     except Exception as exc:
-        # Can't verify. An explicit quant is still proof the caller meant this
-        # server, so refuse; anything else may be a foreign label, so let it by.
+        # Can't verify: an explicit quant still proves intent, so refuse; anything else
+        # may be a foreign label, so let it by.
         logger.debug("unservable-model check failed for %r: %s", requested_model, exc)
         if not quantified:
             return
@@ -3853,8 +3848,8 @@ async def _reject_unservable_model(
     if not (quantified or here):
         return
     if switchable:
-        # On disk and switching is allowed, so the swap itself failed. Answering
-        # as the resident model would be the wrong weights under the right name.
+        # On disk and switching allowed, so the swap failed. Answering as the resident
+        # model would be the wrong weights under the right name.
         status_code, code = 503, "model_switch_failed"
         message = (
             f"The model '{requested_model}' is downloaded, but this server could not "
@@ -3929,8 +3924,7 @@ async def _maybe_auto_switch_model(
     # loop freed is restored on the next request. The resolver-based switch still
     # requires the auto-switch toggle.
     if not auto_switch_on and get_auto_unload_idle_seconds() <= 0:
-        # No switching to do, but a named model still must not be answered by a
-        # different one.
+        # No switching to do, but a named model must still not be answered by another.
         await _reject_unservable_model(requested_model, fastapi_request)
         return
 
@@ -3945,8 +3939,8 @@ async def _maybe_auto_switch_model(
             else None
         )
         if resolved is None:
-            # Not on disk. Opt-in: fetch it in the background and tell the caller to
-            # retry, rather than silently answering from whatever is resident.
+            # Not on disk. Opt-in: fetch in the background and ask the caller to retry,
+            # rather than silently answering from whatever is resident.
             if auto_switch_on and not reload_only:
                 await _maybe_auto_download_model(requested_model, fastapi_request)
             # Idle-unload may have freed the model; reload exactly what it freed
@@ -4079,8 +4073,7 @@ async def _maybe_auto_switch_model(
                 _note_switch_waiter(key, -1)
 
     await _resolve_and_switch()
-    # The switch may have missed (not downloaded, or a swap that failed): refuse
-    # rather than let the handler answer as whatever is still resident.
+    # The switch may have missed, so refuse rather than answer as whatever is resident.
     await _reject_unservable_model(requested_model, fastapi_request)
 
 
@@ -4631,9 +4624,8 @@ async def _load_model_impl(
     # sampled step logs even if it reports 100% immediately (cached/small load).
     _reset_load_progress_step()
 
-    # Open a live "loading" row in the API monitor. Discarded below if the model
-    # turned out to be already loaded, relabelled once the real id is known, and
-    # closed on every exit by the handlers at the end of this function.
+    # Open a live "loading" row: discarded below if already loaded, relabelled once the
+    # real id is known, and closed on every exit by the handlers at the end of this function.
     _load_event = api_monitor.record_lifecycle(
         event = "load",
         model = _lifecycle_model_label(request.model_path, request.gguf_variant),
@@ -5349,8 +5341,7 @@ async def _load_model_impl(
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
     finally:
         gguf_load_stack.close()
-        # Catch-all: any exit that did not already close or discard the row (an
-        # error, or a cancelled load) leaves it stuck "loading" otherwise.
+        # Catch-all: an error or cancelled load would otherwise leave the row "loading".
         api_monitor.fail_open(_load_event, "Load did not complete")
 
 
@@ -5968,8 +5959,7 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
                 )
                 or not llama_backend.is_loaded
             ):
-                # Read the identity before the teardown clears it, so the row reads
-                # repo:QUANT like the matching load row rather than a bare path.
+                # Read the identity before teardown clears it, so the row reads repo:QUANT.
                 _unloaded = _llama_public_model_id(llama_backend, request.model_path)
                 _unloaded_variant = getattr(llama_backend, "hf_variant", None)
                 # A manual unload is a deliberate user action: tear down now even if a
@@ -6250,9 +6240,8 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             ):
                 _display_model_id = os.path.basename(_model_id)
             elif not _native_grant_backed and _display_model_id == _model_id:
-                # Not a leased native path, so no label was registered and the raw
-                # identifier came back. Report the clean public id instead: an HF
-                # cache load would otherwise show the snapshot's commit sha.
+                # No label was registered, so the raw identifier came back. Report the clean
+                # public id: an HF cache load would otherwise show the snapshot's commit sha.
                 _display_model_id = _llama_public_model_id(llama_backend) or _display_model_id
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
             _audio_type = getattr(llama_backend, "_audio_type", None)
@@ -10958,8 +10947,7 @@ async def _openai_catalog_objects() -> list[dict]:
     from core.inference.local_model_resolver import local_gguf_quants
 
     catalog = await _cached_local_catalog()
-    # One scan yields both "is this servable" and its on-disk quants, so an entry
-    # can advertise the quant to name without a second pass over the model dirs.
+    # One scan yields both "is this servable" and its on-disk quants, so no second pass.
     servable = await asyncio.to_thread(
         lambda: [(i, q) for i in catalog if (q := local_gguf_quants(i)) is not None]
     )
@@ -10974,8 +10962,7 @@ async def _openai_catalog_objects() -> list[dict]:
             "owned_by": _OWNED_BY,
             "loaded": False,
         }
-        # Bare label (never a filename or path): the id stays bare for OpenAI
-        # compat, and a client appends ":<quant>" to pin this exact quant.
+        # The id stays bare for OpenAI compat; a client appends ":<quant>" to pin one.
         if quants:
             obj["quant"] = quants[0]
         display = getattr(info, "display_name", None)
@@ -13404,8 +13391,7 @@ async def anthropic_messages(
     # before any request-shape check, exactly as the pre-feature endpoint did. When
     # an automatic load can run (auto-switch or a standalone idle TTL), fall through
     # so validation runs before the reload hook gets a chance to restore the model.
-    # Plain detail, not _no_model_loaded_error: no automatic load was possible, the
-    # case that helper leaves unchanged. The 404 comes from the post-switch check below.
+    # Plain detail, not _no_model_loaded_error: that helper leaves this case unchanged.
     if not llama_backend.is_loaded and not _automatic_model_load_may_run():
         raise HTTPException(
             status_code = 503,

@@ -124,8 +124,7 @@ function lifecycleLabel(entry: ApiMonitorEntry): string {
   return "Model load failed";
 }
 
-// Load/unload rows: a label, the model and a time. No prompt, reply, tokens or
-// detail fetch, so unlike a request row there is nothing to expand.
+// Load/unload rows: label, model and time. No prompt or detail, so nothing to expand.
 function LifecycleEntry({ entry }: { entry: ApiMonitorEntry }): ReactElement {
   return (
     <article className="min-w-0 rounded-lg border border-border/70 bg-muted/25">
@@ -279,10 +278,8 @@ export function ApiMonitorConsole(): ReactElement {
     }
   }, []);
 
-  // Free the VRAM the loaded model is holding. The monitor only knows the model's
-  // public id, and /unload matches on the internal one, so read that from status
-  // the same way the chat runtime does rather than putting a host path in this
-  // response. With auto-switch on the next API request loads a model again.
+  // /unload matches on the internal id, which the monitor response omits (it would be
+  // a host path), so read it from status the same way the chat runtime does.
   const unloadActiveModel = useCallback(async (): Promise<void> => {
     setUnloading(true);
     try {
@@ -293,8 +290,7 @@ export function ApiMonitorConsole(): ReactElement {
         return;
       }
       await unloadModel({ model_path: checkpoint });
-      // Same as the chat eject flow: the store still holds the checkpoint this
-      // just freed, and the usage examples would keep naming it.
+      // Same as the chat eject flow: the store still holds the freed checkpoint.
       useChatRuntimeStore.getState().clearCheckpoint();
       setError(null);
       await loadMonitor();
@@ -348,10 +344,8 @@ export function ApiMonitorConsole(): ReactElement {
   const hasActive = (data?.active_requests ?? 0) > 0;
   const entries = useMemo(() => data?.entries ?? [], [data]);
 
-  // Page 1 tracks the live list. Paging back freezes the id order captured at
-  // that moment: the poll keeps refreshing row contents, but new traffic must not
-  // shove history down a page while it is being read (finishing a request also
-  // moves it to the head, so even an idle server reorders).
+  // Page 1 tracks the live list. Paging back freezes the id order: rows keep
+  // refreshing, but new traffic must not shove history down a page while it is read.
   const [page, setPage] = useState(0);
   const [frozenIds, setFrozenIds] = useState<string[] | null>(null);
   const byId = useMemo(
@@ -444,8 +438,7 @@ export function ApiMonitorConsole(): ReactElement {
   );
 
   useEffect(() => {
-    // Only rows actually on screen: an expanded row left behind on another page
-    // would otherwise keep polling its detail every tick.
+    // Only rows on screen: an expanded row on another page would keep polling.
     for (const entry of visible) {
       if (isLifecycle(entry) || !expandedIds.has(entry.id)) {
         continue;
@@ -480,8 +473,8 @@ export function ApiMonitorConsole(): ReactElement {
           <div className="rounded-full border border-border px-2.5 py-1 text-xs capitalize text-muted-foreground">
             {statusLabel}
           </div>
-          {/* Always rendered, disabled when idle: hiding it made the only manual
-              release path invisible exactly when someone goes looking for it. */}
+          {/* Always rendered, disabled when idle: hiding the only manual release path
+              made it invisible exactly when someone goes looking for it. */}
           <Button
             type="button"
             variant="ghost"
@@ -551,11 +544,9 @@ export function ApiMonitorConsole(): ReactElement {
         )}
       </div>
 
-      {/* Also whenever a snapshot is frozen: the backend's 50-entry retention
-          window evicts frozen ids as new traffic arrives, so the frozen list can
-          shrink below one page (and eventually to nothing). Hiding the pager then
-          strands the console on a stale -- finally empty -- snapshot with no way
-          back to the live list short of closing the panel. */}
+      {/* Also whenever a snapshot is frozen: retention evicts frozen ids as new traffic
+          arrives, so the frozen list can shrink below one page. Hiding the pager then
+          strands the console on a stale snapshot with no way back to the live list. */}
       {ordered.length > PAGE_SIZE || frozenIds !== null ? (
         <div className="flex items-center justify-between gap-2 border-t border-border/60 px-4 py-2 text-xs text-muted-foreground">
           <span>

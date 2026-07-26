@@ -294,9 +294,9 @@ def test_openai_compat_routes_bound_to_handlers_with_auth():
     for key, handler in expected.items():
         assert key in seen, f"route {key} is not registered"
         route = seen[key]
-        assert (
-            route.endpoint.__name__ == handler
-        ), f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        assert route.endpoint.__name__ == handler, (
+            f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        )
         deps = [d.call.__name__ for d in route.dependant.dependencies]
         assert "get_current_subject" in deps, f"{key} lost its auth dependency"
 
@@ -393,8 +393,7 @@ def test_resolver_nonstring_model_is_failsafe():
 
 
 def test_describe_local_miss_separates_missing_repo_from_missing_quant(monkeypatch):
-    # A miss is two different situations and the error should say which: the repo
-    # isn't downloaded, or it is and only that quant is absent.
+    # Two different misses: the repo isn't downloaded, or only that quant is absent.
     monkeypatch.setattr(
         resolver,
         "_build_index",
@@ -418,8 +417,7 @@ def test_describe_local_miss_separates_missing_repo_from_missing_quant(monkeypat
 
 
 def test_describe_local_miss_is_failsafe(monkeypatch):
-    # Runs inside an error path, so a broken scan must degrade to the generic miss
-    # rather than raise a 500 over what was already a 4xx.
+    # Runs inside an error path, so a broken scan must degrade, not turn a 4xx into a 500.
     def boom():
         raise RuntimeError("scan blew up")
 
@@ -2948,9 +2946,8 @@ def test_require_vision_ignores_reload_stash(monkeypatch):
     monkeypatch.setattr(
         inference_route, "_target_is_vision", lambda _p: False
     )  # would reject if used
-    # 404 because the restored A is not the requested B; the restore still ran.
-    # B carries a quant so it reads as a reference to this server, not a foreign
-    # provider label.
+    # 404 because the restored A is not the requested B; the restore still ran. B carries
+    # a quant, so it reads as a reference to this server, not a foreign provider label.
     with pytest.raises(HTTPException):
         asyncio.run(
             inference_route._maybe_auto_switch_model(
@@ -3327,11 +3324,9 @@ def _run_responses_stream_no_model(
 
 
 def test_responses_stream_hint_matches_toggle_regardless_of_active_model(monkeypatch):
-    # The hint attaches whenever the toggle is off, including while a non-GGUF
-    # model is active, since auto-switch evicts it to load a resolved GGUF
-    # (the resolver branch has no active-model guard, unlike the reload stash).
-    # With it on the error changes kind: the name resolved to nothing local, so
-    # 404 model_not_found rather than a 400 pointing at /inference/load.
+    # The hint attaches whenever the toggle is off, even with a non-GGUF model active,
+    # since auto-switch evicts it to load a resolved GGUF. With it on the error changes
+    # kind: the name resolved to nothing local, so 404 rather than 400.
     off_status, hinted = _run_responses_stream_no_model(
         monkeypatch, enabled = False, active_model_name = None
     )
@@ -3358,8 +3353,8 @@ def _wire_unloaded_chat(
     enabled,
     catalog = ("org/A-GGUF", "org/B-GGUF"),
 ):
-    # Nothing loaded, so a chat request reaches the "no model loaded" error. Pin
-    # the catalog so listed ids don't depend on what is cached on the test machine.
+    # Nothing loaded, so a chat request reaches the "no model loaded" error. Pin the
+    # catalog so listed ids don't depend on what is cached on the test machine.
     async def _catalog():
         return [{"id": mid} for mid in catalog]
 
@@ -3387,9 +3382,8 @@ def _chat_error(payload):
 
 
 def test_chat_names_undownloaded_model_404s_with_available_ids(monkeypatch):
-    # The reported bug: auto-switch on, the named model is not on this machine, so
-    # the switch silently did nothing and /inference/load cannot fix it. Name the
-    # model and list what can serve, from the catalog GET /v1/models returns.
+    # The reported bug: the named model is not on this machine, so the switch silently
+    # did nothing and /inference/load cannot fix it. Name it and list what can serve.
     _wire_unloaded_chat(monkeypatch, enabled = True)
     status, detail = _chat_error(_chat_request(model = "unsloth/gemma-4-E4B-it-GGUF:UD-Q5_K_XL"))
     assert status == 404
@@ -3422,8 +3416,8 @@ def test_chat_wrong_quant_lists_the_local_quants(monkeypatch):
 
 
 def test_chat_error_unchanged_when_auto_switch_off(monkeypatch):
-    # Toggle off: nothing was resolved, so "not downloaded" would be a guess. Keep
-    # the pre-existing status and text, hint included.
+    # Toggle off: nothing resolved, so "not downloaded" would be a guess. Keep the
+    # pre-existing status and text, hint included.
     _wire_unloaded_chat(monkeypatch, enabled = False)
     status, detail = _chat_error(_chat_request(model = "org/nope-GGUF"))
     assert status == 400
@@ -3432,8 +3426,7 @@ def test_chat_error_unchanged_when_auto_switch_off(monkeypatch):
 
 
 def test_chat_error_unchanged_when_no_model_named(monkeypatch):
-    # An omitted model means "serve whatever is loaded", so the generic text is
-    # right and there is no name to report as missing.
+    # An omitted model means "serve whatever is loaded", so there is no name to report.
     _wire_unloaded_chat(monkeypatch, enabled = True)
     status, detail = _chat_error(_chat_request())
     assert status == 400
@@ -3441,8 +3434,7 @@ def test_chat_error_unchanged_when_no_model_named(monkeypatch):
 
 
 def test_chat_not_downloaded_error_survives_a_broken_catalog_scan(monkeypatch):
-    # The diagnosis is layered onto an already-failing path: a scan blowing up
-    # must not turn the 4xx into a 500.
+    # Layered onto an already-failing path, so a broken scan must not make it a 500.
     async def _boom():
         raise RuntimeError("catalog scan blew up")
 
@@ -3486,8 +3478,7 @@ def test_anthropic_undownloaded_model_uses_the_anthropic_envelope(monkeypatch):
 
 
 def test_chat_undownloaded_model_uses_the_openai_envelope(monkeypatch):
-    # On the OpenAI surface it carries param/code so SDK clients can branch on it,
-    # matching GET /v1/models/{id}'s existing model_not_found.
+    # The OpenAI surface carries param/code so SDK clients can branch on it.
     from fastapi import HTTPException
 
     _wire_unloaded_chat(monkeypatch, enabled = True)
@@ -3506,11 +3497,8 @@ def test_chat_undownloaded_model_uses_the_openai_envelope(monkeypatch):
 
 
 def test_gguf_only_paths_keep_the_generic_error_for_the_resident_non_gguf_model(monkeypatch):
-    # A Transformers model is resident and the caller names that exact model on a
-    # GGUF-only path. It is not a GGUF, so resolve_local_gguf misses -- but the
-    # catalog GET /v1/models serves lists this very id as available, so "not
-    # downloaded on this server. Available models: <that same id>" is both false
-    # and self-contradictory. The generic "no GGUF loaded" diagnosis is correct.
+    # A resident Transformers model named on a GGUF-only path: resolve_local_gguf misses,
+    # but the catalog lists that same id, so "not downloaded" would contradict itself.
     resident = "unsloth/Qwen3.5-4B-GGUF"  # the id _run_responses_stream_no_model asks for
 
     async def _catalog():
@@ -3526,8 +3514,7 @@ def test_gguf_only_paths_keep_the_generic_error_for_the_resident_non_gguf_model(
 
 
 def test_completions_keeps_the_generic_error_for_the_resident_non_gguf_model(monkeypatch):
-    # Same contradiction on the raw-body surface, which reaches the diagnosis
-    # through _auto_switch_from_request_body rather than a typed payload.
+    # Same contradiction on the raw-body surface, via _auto_switch_from_request_body.
     from fastapi import HTTPException
 
     resident = "unsloth/Llama-3.2-1B-Instruct"
@@ -3549,8 +3536,7 @@ def test_completions_keeps_the_generic_error_for_the_resident_non_gguf_model(mon
 
 
 def test_responses_stream_keeps_generic_error_when_target_is_local(monkeypatch):
-    # Name resolves locally yet nothing is loaded: the switch failed, so the
-    # generic text is right and the status stays 400, not a bogus "missing".
+    # Resolves locally yet nothing is loaded: the switch failed, so keep the generic 400.
     status, detail = _run_responses_stream_no_model(
         monkeypatch,
         enabled = True,

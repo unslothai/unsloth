@@ -164,8 +164,7 @@ async def get_current_subject_allow_password_change(
     )
 
 
-# The literal the copyable API examples ship with. Pasting a snippet unedited is
-# a much likelier mistake than a revoked key, so say so instead of "invalid".
+# The literal the examples ship with; pasting one unedited is likelier than a revoked key.
 API_KEY_PLACEHOLDER = f"{API_KEY_PREFIX}YOUR_KEY"
 
 

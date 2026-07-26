@@ -126,8 +126,7 @@ class OpenAIAutoSwitchResponse(BaseModel):
     # is false, so the UI can show idle-unload as active instead of "needs enable".
     idle_unload_active: bool = False
     auto_unload_keep_kv: bool = DEFAULT_AUTO_UNLOAD_KEEP_KV
-    # Stored, not effective: it only takes effect while auto-switch is on, but the
-    # UI must round-trip the saved value across an auto-switch toggle.
+    # Stored, not effective: the UI must round-trip the saved value across an auto-switch toggle.
     auto_download_model: bool = DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED
 
 

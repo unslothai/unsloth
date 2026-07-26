@@ -7,8 +7,7 @@ export type OpenAIModel = {
   id: string;
   // Resident in memory now; the rest are downloaded and servable.
   loaded?: boolean;
-  // On-disk GGUF quant. Ids stay bare for OpenAI compat, so append it as
-  // `id:quant` to pin this exact quant rather than letting the server pick.
+  // On-disk GGUF quant. Ids stay bare for OpenAI compat, so append `:quant` to pin it.
   quant?: string;
 };
 
@@ -20,9 +19,8 @@ type ApiOpenAIModelList = {
  * The models this server can serve.
  *
  * `/v1/models` rather than the hub inventory: it returns exactly the ids
- * `/v1/chat/completions` resolves against, so a snippet built from it is
- * runnable as printed. `/v1` accepts the UI session JWT as well as
- * `sk-unsloth-` keys, so `authFetch` works unchanged.
+ * `/v1/chat/completions` resolves against, so a snippet built from it runs as
+ * printed. `/v1` accepts the UI session JWT, so `authFetch` works unchanged.
  */
 export async function listOpenAIModels(): Promise<OpenAIModel[]> {
   const res = await authFetch("/v1/models");

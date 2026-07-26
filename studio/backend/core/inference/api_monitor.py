@@ -52,9 +52,8 @@ class ApiMonitorEntry:
     total_tokens: Optional[int] = None
     total_tokens_authoritative: bool = False
     error: Optional[str] = None
-    # "request" (an HTTP call) or "lifecycle" (a model load/unload). Lifecycle
-    # rows carry event/reason instead of a prompt and are server-wide, so they
-    # are shared across subjects rather than owned by the caller that caused them.
+    # "request" (an HTTP call) or "lifecycle" (a model load/unload). Lifecycle rows carry
+    # event/reason instead of a prompt, and are server-wide so every subject sees them.
     kind: str = "request"
     event: Optional[str] = None
     reason: Optional[str] = None
@@ -304,8 +303,7 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None or entry.finished_at is not None:
                 return
-            # Same lock as the check: a finish() landing in between would
-            # otherwise stamp this error onto a row that in fact succeeded.
+            # Same lock as the check, so a finish() cannot land in between.
             self._fail_locked(entry, error)
 
     def fail(self, entry_id: Optional[str], error: str) -> None:
@@ -361,8 +359,7 @@ class ApiMonitor:
             return entry.snapshot(include_details = True)
 
     def active_count(self, *, subject: Optional[str] = None) -> int:
-        # Lifecycle rows are excluded: a load in progress is "running" so the row
-        # can show as live, but it is not an in-flight API request.
+        # Lifecycle rows show as "running" while loading but are not in-flight API requests.
         with self._lock:
             return sum(
                 1

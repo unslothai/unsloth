@@ -106,8 +106,7 @@ def hub(monkeypatch):
         "auto_map": False,
         "started": [],
         "watched": [],
-        # What the hub download service hands back. accepted=False means it
-        # refused the claim and launched no worker.
+        # What the hub service returns; accepted=False means no worker was launched.
         "dispatch_result": {"job_key": "k", "state": "running", "accepted": True},
         "on_probe": None,
         "probes": 0,
@@ -199,8 +198,7 @@ def test_gguf_variants_skips_companions():
     variants = auto_dl._gguf_variants(_gguf_repo_info().siblings)
     # Companions are not quants of their own...
     assert set(variants) == {"UD-Q4_K_XL", "UD-Q5_K_XL", "Q8_0"}
-    # ...but the worker fetches them with every quant, so the disk reserve has
-    # to count them. Shards of one quant sum together on top of that.
+    # ...but every quant fetches them, so they count, and shards sum on top.
     companions = 2 * 1024**3  # mmproj + MTP drafter
     assert variants["Q8_0"] == 8 * 1024**3 + companions
     assert variants["UD-Q4_K_XL"] == 4 * 1024**3 + companions
@@ -272,9 +270,8 @@ def test_missing_repo_is_404_without_confirming_existence(hub):
 
 def test_an_id_the_hub_does_not_know_falls_through(hub):
     hub["raise"] = _hub_error(_repo_not_found_error(), 404, "nope")
-    # LiteLLM and OpenRouter name every provider "vendor/model". A namespace is
-    # not intent, so an id the Hub has never heard of stays a foreign label and
-    # the resident model answers it, exactly as before this feature existed.
+    # LiteLLM and OpenRouter name every provider "vendor/model", so a namespace is not
+    # intent: an id the Hub never heard of stays a foreign label the resident model answers.
     for foreign in (
         "anthropic/claude-3.5-sonnet",
         "openai/gpt-4o",
@@ -294,9 +291,8 @@ def test_a_foreign_id_is_probed_once_then_cached(hub):
 
 
 def test_an_anonymous_404_does_not_silence_an_authorised_caller(hub):
-    # The Hub answers 404 for a private repo the caller cannot see, so caching
-    # that verdict globally would let one anonymous request hide a private repo
-    # from the token holder for the whole TTL.
+    # The Hub 404s a private repo the caller cannot see, so caching that verdict globally
+    # would let one anonymous request hide it from the token holder for the whole TTL.
     hub["raise"] = _hub_error(_repo_not_found_error(), 404, "nope")
     assert _run("myorg/private-GGUF") is None
     assert hub["probes"] == 1
@@ -318,8 +314,8 @@ def test_the_cache_is_per_token(hub):
 
 
 def test_the_gated_message_names_the_header_that_actually_works(hub):
-    # Auto-download never uses the server's ambient token, so pointing the
-    # caller at a Studio setting would loop them on the same 403.
+    # Auto-download never uses the server's token, so naming a Studio setting would loop
+    # the caller on the same 403.
     hub["info"] = _Info(_gguf_repo_info().siblings, gated = "manual")
     hub["auth_denied"] = True
     refusal = _run("meta-llama/Llama-2-7b-hf")
@@ -334,9 +330,8 @@ def test_gated_repo_is_403(hub):
 
 
 def test_a_gated_repo_that_still_returns_metadata_is_403(hub):
-    # The Hub serves metadata for a gated repo without granting its files, so a
-    # probe that returned is not access. Reported as the licence gate it is, not
-    # as the custom-code refusal the unreadable config would otherwise produce.
+    # Metadata for a gated repo is not file access, so report the licence gate rather than
+    # the custom-code refusal the unreadable config would otherwise produce.
     hub["info"] = _Info(_gguf_repo_info().siblings, gated = "manual")
     hub["auth_denied"] = True
     refusal = _run("meta-llama/Llama-2-7b-hf")
@@ -383,8 +378,7 @@ def test_remote_code_repo_is_refused(hub):
 
 
 def test_unreadable_config_fails_closed(hub):
-    # _config_has_auto_map returns None when it cannot tell; refuse rather than
-    # assume the repo is safe.
+    # _config_has_auto_map returns None when it cannot tell; never assume safe.
     hub["auto_map"] = None
     refusal = _run("someone/unknown-GGUF")
     assert refusal.status == 403 and refusal.code == "remote_code_consent_required"
@@ -462,10 +456,8 @@ def test_hf_token_is_passed_to_the_worker(hub):
 
 
 def test_a_refused_dispatch_is_not_reported_as_downloading(hub):
-    # A same-repo whole-repo download or an in-progress delete makes the hub
-    # service decline the claim without raising: accepted=False, no worker. The
-    # caller must hear "busy", not a download that was never started (which the
-    # watcher would then fail two seconds later on an idle key).
+    # The hub service can decline a claim without raising (accepted=False, no worker), so
+    # the caller must hear "busy", not a download that was never started.
     hub["dispatch_result"] = {
         "job_key": "unsloth/x-gguf::ud-q5_k_xl",
         "state": "running",  # the blocking job's state, not ours
@@ -474,7 +466,7 @@ def test_a_refused_dispatch_is_not_reported_as_downloading(hub):
     }
     refusal = _run("unsloth/x-GGUF:UD-Q5_K_XL")
     assert refusal.status == 503 and refusal.code == "model_download_busy"
-    # No monitor row was opened and no watcher installed for a job that is not running.
+    # No watcher installed for a job that is not running.
     assert hub["watched"] == []
     # The slot is free, so an unrelated repo is still admitted.
     assert auto_dl._active is None
@@ -483,17 +475,16 @@ def test_a_refused_dispatch_is_not_reported_as_downloading(hub):
 
 
 def test_an_adoptable_dispatch_still_tracks_the_existing_job(hub):
-    # accepted=True with claimed=False means this exact repo+quant is already
-    # downloading (started from the Hub UI); attach to it rather than refuse.
+    # accepted=True with claimed=False means this repo+quant is already downloading
+    # (started from the Hub UI); attach to it rather than refuse.
     hub["dispatch_result"] = {"job_key": "k", "state": "running", "accepted": True}
     assert _run("unsloth/x-GGUF:UD-Q5_K_XL").code == "model_downloading"
     assert len(hub["watched"]) == 1
 
 
 def test_a_failed_status_probe_does_not_end_the_watch(hub, monkeypatch):
-    # A probe that raised says nothing about the worker. Reading it as "idle"
-    # failed the monitor row and freed the slot under a live download, which is
-    # how a second multi-GB fetch got admitted alongside the first.
+    # A probe that raised says nothing about the worker. Reading it as "idle" freed the
+    # slot under a live download, admitting a second multi-GB fetch alongside the first.
     from hub.services.models import downloads
 
     async def _boom(repo_id, gguf_variant = ""):
@@ -539,8 +530,7 @@ def test_a_stale_watcher_cannot_release_a_newer_download(hub, monkeypatch):
     watcher_b = hub["watched"][-1]
     assert auto_dl._active is watcher_b
 
-    # Only now does A's watcher wake up and run its cleanup. Keyed on repo_id
-    # alone that cleared B, letting a second repo download start alongside it.
+    # Only now does A's watcher clean up. Keyed on repo_id alone, that cleared B.
     errored["on"] = True
     monkeypatch.setattr(auto_dl, "_WATCH_POLL_S", 0.0)
     asyncio.run(hub["real_watch"](watcher_a, None))
@@ -549,9 +539,8 @@ def test_a_stale_watcher_cannot_release_a_newer_download(hub, monkeypatch):
 
 
 def test_a_cancelled_admission_does_not_wedge_the_slot(hub):
-    # CancelledError is a BaseException, so an `except Exception` cleanup would
-    # leave the provisional slot installed and refuse every later request for the
-    # rest of the process.
+    # CancelledError is a BaseException, so an `except Exception` cleanup would leave the
+    # provisional slot installed and refuse every later request.
     def _cancel():
         raise asyncio.CancelledError()
 
@@ -696,8 +685,7 @@ async def _fake_unavailable_message(model):
 
 
 def test_wrong_quant_is_not_answered_by_the_loaded_one(monkeypatch):
-    # The reported bug: asking for UD-Q6_K_XL while UD-Q4_K_XL is resident used to
-    # return 200 from the wrong weights.
+    # The reported bug: asking for UD-Q6_K_XL while UD-Q4_K_XL is resident returned 200.
     loaded = _Loaded("unsloth/gemma-4-E2B-it-GGUF", "UD-Q4_K_XL")
     with pytest.raises(HTTPException) as excinfo:
         _reject("unsloth/gemma-4-E2B-it-GGUF:UD-Q6_K_XL", loaded, monkeypatch)
@@ -736,8 +724,8 @@ def test_downloaded_but_auto_switch_off_says_so(monkeypatch):
 
 
 def test_a_failed_switch_is_reported_not_answered_by_the_resident_model(monkeypatch):
-    # On disk and switching allowed means the swap itself failed. Answering from
-    # whatever is resident would be the wrong weights under the right name.
+    # On disk and switching allowed means the swap failed, so answering from the resident
+    # model would be the wrong weights under the right name.
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
     with pytest.raises(HTTPException) as excinfo:
         _reject("unsloth/B-GGUF", loaded, monkeypatch, downloaded = True, auto_switch = True)
@@ -756,16 +744,14 @@ def test_a_failed_switch_is_reported_not_answered_by_the_resident_model(monkeypa
     ],
 )
 def test_a_provider_prefixed_label_still_reaches_the_resident_model(foreign, monkeypatch):
-    # LiteLLM and OpenRouter address every provider as "vendor/model". Treating a
-    # namespace as a concrete reference 404s all of them, so a bare one that is
-    # not on disk has to keep falling through.
+    # LiteLLM and OpenRouter address every provider as "vendor/model", so treating a
+    # namespace as a concrete reference would 404 all of them.
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
     assert _reject(foreign, loaded, monkeypatch) is None
 
 
 def test_an_explicit_quant_is_still_refused(monkeypatch):
-    # The signal that separates a GGUF reference from a foreign label: no
-    # LiteLLM or OpenRouter id carries a quant.
+    # A quant is the signal: no LiteLLM or OpenRouter id carries one.
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
     with pytest.raises(HTTPException) as excinfo:
         _reject("unsloth/B-GGUF:UD-Q6_K_XL", loaded, monkeypatch)
@@ -773,8 +759,7 @@ def test_an_explicit_quant_is_still_refused(monkeypatch):
 
 
 def test_a_repo_that_is_here_is_refused_without_a_quant(monkeypatch):
-    # The other half of the evidence test: a repo this server actually has is a
-    # reference to this server whether or not a quant was named.
+    # The other half of the evidence test: a repo this server has is a reference to it.
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
     with pytest.raises(HTTPException) as excinfo:
         _reject("unsloth/B-GGUF", loaded, monkeypatch, downloaded = True)
@@ -782,8 +767,8 @@ def test_a_repo_that_is_here_is_refused_without_a_quant(monkeypatch):
 
 
 def test_a_diagnosis_failure_does_not_serve_the_wrong_model(monkeypatch):
-    # The mismatch is already established before the diagnosis runs, so only the
-    # wording is uncertain. Falling through here would answer as another model.
+    # The mismatch is established before the diagnosis runs, so only the wording is
+    # uncertain; falling through here would answer as another model.
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
     monkeypatch.setattr(
@@ -802,8 +787,7 @@ def test_a_diagnosis_failure_does_not_serve_the_wrong_model(monkeypatch):
 
 
 def test_nothing_loaded_leaves_the_existing_error_alone(monkeypatch):
-    # With no model resident the handler's own no-model-loaded error is already
-    # correct, so this check must not preempt it.
+    # The handler's own no-model-loaded error is already correct; don't preempt it.
     idle = type("B", (), {"is_loaded": False, "model_identifier": None, "hf_variant": None})()
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: idle)
     monkeypatch.setattr(
@@ -929,9 +913,8 @@ def test_every_other_bad_key_stays_indistinguishable():
 
 
 def test_the_servers_own_hf_token_is_never_borrowed(monkeypatch):
-    # The repo here is named by whoever holds an API key. Fetching it under the
-    # owner's Hub identity would let that key pull the owner's private repos and
-    # publish them in /v1/models for every other key.
+    # The repo is named by whoever holds an API key, so fetching under the owner's Hub
+    # identity would let that key pull the owner's private repos.
     import routes.settings as settings_route
 
     monkeypatch.setattr(settings_route, "_ambient_hf_token", lambda: "hf_owner_secret")
@@ -941,8 +924,7 @@ def test_the_servers_own_hf_token_is_never_borrowed(monkeypatch):
 
 
 def test_a_quant_cannot_be_satisfied_by_a_non_gguf_backend(monkeypatch):
-    # The llama.cpp branch requires :QUANT to match hf_variant. The Transformers
-    # branch has no quant identity at all, so it cannot claim one is loaded.
+    # llama.cpp matches :QUANT against hf_variant; Transformers has no quant identity.
     idle = type("B", (), {"is_loaded": False, "model_identifier": None, "hf_variant": None})()
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: idle)
     monkeypatch.setattr(

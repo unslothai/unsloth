@@ -40,8 +40,7 @@ def test_directory_path_uses_basename():
 def test_hf_cache_snapshot_recovers_the_repo_id():
     from core.inference.model_ids import hf_cache_repo_id
 
-    # The snapshot basename is a commit sha, so plain basename() would label a
-    # cache-loaded model "c1ac76e9...". Recover org/name instead.
+    # The snapshot basename is a commit sha, so recover org/name instead.
     snapshot = (
         "/home/u/.cache/huggingface/hub/models--unsloth--gemma-4-31B-it-GGUF"
         "/snapshots/c1ac76e99d5513b141e8adde7288b85c3f9c32ec"

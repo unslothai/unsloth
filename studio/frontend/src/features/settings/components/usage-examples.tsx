@@ -330,8 +330,8 @@ function buildSnippets(
 
 const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
 const USE_TUNNEL_KEY = "unsloth_api_use_tunnel";
-// Slow retry while /v1 has nothing to name: a download or a load can finish
-// while this panel is open, and neither moves the checkpoint below.
+// Slow retry while /v1 has nothing to name: a download or load can finish while this
+// panel is open, and neither moves the checkpoint below.
 const CATALOG_RETRY_MS = 15000;
 
 function readUseTunnelPref(): boolean {
@@ -352,9 +352,8 @@ function writeUseTunnelPref(value: boolean): void {
   }
 }
 
-// A checkpoint can be an on-disk load path (an auto-switch load resolves to the
-// GGUF/snapshot dir), which must never reach a printed snippet: it leaks the host
-// layout and is not an id /v1 advertises. Mirrors the backend's _looks_like_path.
+// A checkpoint can be an on-disk load path, which leaks the host layout and is not an
+// id /v1 advertises. Mirrors the backend's _looks_like_path.
 function looksLikePath(id: string): boolean {
   return (
     id.startsWith("/") ||
@@ -366,23 +365,19 @@ function looksLikePath(id: string): boolean {
   );
 }
 
-// The model the examples name. With nothing loaded this used to print a
-// hardcoded repo id the user likely never downloaded, so the copied snippet
-// 404d. Only ever name an id /v1 resolves against; null means this server has
-// nothing to serve yet and the panel says so instead of printing a dead id.
+// The model the examples name. Only ever an id /v1 resolves against; null means the
+// server has nothing to serve yet, and the panel says so instead of a dead id.
 function useExampleModelName(): string | null {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  // null until /v1/models answers: "not asked yet" must not read as "this
-  // server holds nothing", or the first render already picks a name.
+  // null until /v1/models answers: "not asked yet" must not read as "holds nothing".
   const [catalog, setCatalog] = useState<OpenAIModel[] | null>(null);
   const usableCheckpoint =
     !!checkpoint && !checkpoint.startsWith("external::") && !looksLikePath(checkpoint);
   const needsCatalog = !usableCheckpoint;
 
-  // Only when the checkpoint can't answer it: /v1/models scans the model dirs and
-  // HF caches. Re-runs when a model is loaded or unloaded, and retries until the
-  // server reports something servable, since a download moves no store state.
+  // Only when the checkpoint can't answer it, since /v1/models scans the model dirs.
+  // Retries until something is servable, since a download moves no store state.
   // biome-ignore lint/correctness/useExhaustiveDependencies: a load or unload must refetch the servable ids
   useEffect(() => {
     if (!needsCatalog) return;
@@ -416,9 +411,8 @@ function useExampleModelName(): string | null {
       }
       return checkpoint;
     }
-    // No usable checkpoint (none, an external provider, or a raw load path):
-    // name something this server actually holds, quant included so the request
-    // pins the file on disk instead of letting the server pick a quant.
+    // No usable checkpoint: name something this server holds, quant included so the
+    // request pins the file on disk rather than letting the server pick.
     const pick = catalog?.find((m) => m.loaded) ?? catalog?.[0];
     if (!pick) {
       return null;
@@ -629,9 +623,8 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
         {t("settings.apiKeys.usageExamples")}
       </h2>
       <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-border bg-muted/20">
-        {/* No model-auto-switch row: ModelAutoSwitchSection renders the same
-            setting just below on this tab, and the two do not share state (the
-            settings module caches on first read), so a duplicate drifts. */}
+        {/* No model-auto-switch row: ModelAutoSwitchSection renders the same setting
+            just below and shares no state with it, so a duplicate would drift. */}
         {cloudflareUrl ? (
           <div className="flex min-w-0 items-center justify-between gap-2 border-b border-border px-2 py-1.5">
             <div className="flex shrink-0 items-center gap-1.5">

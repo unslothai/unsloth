@@ -64,8 +64,7 @@ def test_catalog_lists_loaded_and_available(monkeypatch):
         ]
 
     monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
-    # GGUF-ness and the quant labels both come from the on-disk files in one scan;
-    # drive them off each info's flag here.
+    # GGUF-ness and the quant labels come from one on-disk scan; drive both off the flag.
     monkeypatch.setattr(
         resolver, "local_gguf_quants", lambda info: ("Q8_0",) if info.is_gguf else None
     )
@@ -76,8 +75,7 @@ def test_catalog_lists_loaded_and_available(monkeypatch):
     # Loaded model is present, marked loaded, and keeps context fields.
     assert ids["Qwen3-Q4"]["loaded"] is True
     assert ids["Qwen3-Q4"]["context_length"] == 4096
-    # Available-but-not-loaded GGUF models are listed too, with the quant a client
-    # appends to the id to pin it.
+    # Not-loaded GGUFs are listed too, with the quant a client appends to pin them.
     assert ids["Llama-8B-Q8"]["loaded"] is False
     assert ids["Llama-8B-Q8"]["quant"] == "Q8_0"
     # The HF-cache GGUF is listed despite model_format being unset.
@@ -213,8 +211,7 @@ def test_cached_local_catalog_offloads_and_caches(monkeypatch):
 
 
 def test_monitor_active_model_is_a_public_id_not_a_host_path(monkeypatch):
-    # The settings UI renders this and --secure serves it over a public tunnel, so
-    # it must never be the on-disk load path (it used to be model_identifier raw).
+    # The settings UI renders this and --secure serves it publicly, so never a load path.
     class _Llama:
         is_loaded = True
         model_identifier = "/home/me/.cache/huggingface/hub/models--org--A-GGUF/snapshots/abc"
@@ -238,8 +235,7 @@ def test_monitor_active_model_cleans_a_path_with_no_advertised_id(monkeypatch):
 
 
 def test_lifecycle_label_recovers_the_repo_id_from_an_hf_cache_path():
-    # An auto-switch load is handed the snapshot dir, whose basename is a commit
-    # sha, so the row would otherwise be labelled with a hash.
+    # An auto-switch load gets the snapshot dir, whose basename is a commit sha.
     snap = "/home/me/.cache/huggingface/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/bfc15c3"
     assert (
         inf._lifecycle_model_label(snap, "UD-Q4_K_XL") == "unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL"
