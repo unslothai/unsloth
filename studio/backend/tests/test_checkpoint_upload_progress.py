@@ -49,3 +49,12 @@ def test_checkpoint_upload_preserves_checkpoint_directory():
     assert "path_in_repo = checkpoint.name" in trainer_source
     assert "folder_path = str(checkpoint)" in trainer_source
     assert 'config["push_to_hub"] = False' in trainer_source
+
+
+def test_completed_checkpoint_upload_does_not_stick_in_training_status():
+    """Terminal Hub progress must restore the header and ignore closed tqdm bars."""
+    worker_source = (
+        Path(__file__).resolve().parent.parent / "core" / "training" / "worker.py"
+    ).read_text()
+    assert '_send_status(event_queue, "Training...")' in worker_source
+    assert '0 < n < total and desc' in worker_source

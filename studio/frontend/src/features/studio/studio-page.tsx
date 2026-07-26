@@ -127,6 +127,12 @@ export function StudioPage(): ReactElement {
   }, [selectedModel, ensureModelDefaultsLoaded, ensureDatasetChecked]);
 
   function handleTabChange(value: string) {
+    // The configure panel is unmounted while another tab is active, so its
+    // checkpoint picker returns to "New training" when the user comes back.
+    // Keep the lifted disabled-state in sync with that reset; otherwise the
+    // dataset and parameter panels remain inert until "New training" is
+    // clicked a second time.
+    setIsCheckpointResumeSelected(false);
     setRequestedTab(value);
     if (value !== "history") {
       setSelectedHistoryRunId(null);
