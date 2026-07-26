@@ -4635,6 +4635,7 @@ def _print_compressed_hw_note(scheme, out_dir):
 
 _DISPATCH_SNAPSHOT_ATTR = "_unsloth_dispatch_snapshot"
 
+
 def _accelerate_move_guards():
     """The instance methods dispatch_model wraps to block moving an offloaded model."""
     try:

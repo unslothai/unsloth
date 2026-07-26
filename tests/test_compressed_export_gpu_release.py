@@ -33,7 +33,10 @@ _WANTED = {
     "_offload_model_for_quantize_subprocess",
     "_restore_model_after_quantize_subprocess",
 }
-_WANTED_ASSIGNS = {"_DISPATCH_SNAPSHOT_ATTR", "_ACCELERATE_MOVE_GUARDS"}  # module constants the helpers close over
+_WANTED_ASSIGNS = {
+    "_DISPATCH_SNAPSHOT_ATTR",
+    "_ACCELERATE_MOVE_GUARDS",
+}  # module constants the helpers close over
 
 
 class _FakeLogger:
@@ -524,20 +527,20 @@ def test_meta_tensors_never_form_tie_groups(_fake_accelerate):
 
     root = _Child(device_map = {"a": 0, "b": "cpu", "c": "cpu"})
     live = torch.nn.Parameter(torch.zeros(4, 4))
-    offloaded = [torch.nn.Parameter(torch.empty(4, 4, device = "meta")),
-                 torch.nn.Parameter(torch.empty(8, 2, device = "meta"))]
+    offloaded = [
+        torch.nn.Parameter(torch.empty(4, 4, device = "meta")),
+        torch.nn.Parameter(torch.empty(8, 2, device = "meta")),
+    ]
 
     def named(remove_duplicate = True):
-        return iter(
-            [("a.weight", live), ("b.weight", offloaded[0]), ("c.weight", offloaded[1])]
-        )
+        return iter([("a.weight", live), ("b.weight", offloaded[0]), ("c.weight", offloaded[1])])
 
     root.named_parameters = named
     ns = _load_helpers(_fake_torch(), _FakeLogger())
     _hooks, places, _attrs, ties = ns["_snapshot_dispatch_state"](root)
 
-    assert ties == []                       # nothing is tied here
-    assert "b.weight" in places             # still tracked for placement
+    assert ties == []  # nothing is tied here
+    assert "b.weight" in places  # still tracked for placement
 
 
 def test_accelerate_move_guards_survive_the_replay(_fake_accelerate):
@@ -545,7 +548,7 @@ def test_accelerate_move_guards_survive_the_replay(_fake_accelerate):
     installs to stop a caller moving an offloaded model."""
     ns = _load_helpers(_fake_torch(), _FakeLogger())
     root = _Child(device_map = {"": 0})
-    guard = lambda *a, **k: "blocked"       # noqa: E731
+    guard = lambda *a, **k: "blocked"  # noqa: E731
     root._hf_hook = object()
     root.to = guard
     root.cuda = guard
@@ -566,11 +569,16 @@ def test_cpu_spill_rejection_is_retryable():
 
     export_py = (
         Path(__file__).resolve().parent.parent
-        / "studio" / "backend" / "core" / "export" / "export.py"
+        / "studio"
+        / "backend"
+        / "core"
+        / "export"
+        / "export.py"
     )
     src = ast.parse(export_py.read_text(encoding = "utf-8"))
     keep = [
-        n for n in src.body
+        n
+        for n in src.body
         if isinstance(n, ast.FunctionDef) and n.name in {"_is_oom_error", "_is_cpu_spill_rejection"}
     ]
     assert len(keep) == 2
