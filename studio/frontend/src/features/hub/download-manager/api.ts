@@ -222,6 +222,9 @@ export async function startModelDownload(payload: {
   gguf_variant?: string | null;
   hf_token?: string | null;
   use_xet?: boolean;
+  // A partial-by-design download of `files` only (see DownloadRequest.scopeId).
+  scope_id?: string | null;
+  files?: string[];
 }): Promise<DownloadStartResult & { job_key: string }> {
   const { hf_token, ...body } = payload;
   const headers = {

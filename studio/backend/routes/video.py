@@ -25,6 +25,7 @@ from pydantic import ValidationError
 from auth.authentication import get_current_subject
 from loggers import get_logger
 from models.inference import (
+    DiffusionDownloadPlanResponse,
     GalleryVideo,
     VideoGalleryListResponse,
     VideoGenerateProgressResponse,
@@ -71,6 +72,46 @@ def _guard_video_load_against_training() -> None:
             "was left untouched. Try again after training finishes."
         ),
     )
+
+
+@router.post("/video/download-plan", response_model = DiffusionDownloadPlanResponse)
+async def video_download_plan(
+    request: VideoLoadRequest, current_subject: str = Depends(get_current_subject)
+):
+    """The repos + files this pick needs, so the frontend stages them through the Hub
+    download manager instead of the load downloading inline. Mirrors /images/download-plan."""
+    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.video import get_video_backend, resolve_video_model_kind
+    from utils.native_path_leases import redact_native_paths
+
+    backend = get_video_backend()
+    try:
+        kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)
+        if kind == "pipeline" and not request.gguf_filename:
+            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            if sole is not None:
+                request.gguf_filename = sole
+                kind = resolve_video_model_kind(sole, None)
+        await asyncio.to_thread(
+            backend.validate_load_request,
+            request.model_path,
+            gguf_filename = request.gguf_filename,
+            family_override = request.family_override,
+            model_kind = kind,
+            base_repo = request.base_repo,
+        )
+        plan = await asyncio.to_thread(
+            backend.download_plan,
+            request.model_path,
+            gguf_filename = request.gguf_filename,
+            base_repo = request.base_repo,
+            family_override = request.family_override,
+            model_kind = kind,
+            hf_token = request.hf_token,
+        )
+        return DiffusionDownloadPlanResponse(**plan)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
 
 
 @router.post("/video/load", response_model = VideoStatusResponse)

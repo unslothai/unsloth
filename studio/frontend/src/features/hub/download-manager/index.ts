@@ -40,6 +40,11 @@ export {
   type RepoDownloadConfig,
 } from "./use-repo-download";
 export {
+  useStagedDownload,
+  type StagedDownloadEntry,
+} from "./use-staged-download";
+export { scopedVariant } from "./download-manager-types";
+export {
   getTransportMode,
   useDownloadTransportCapabilities,
   useTransportMode,

@@ -604,3 +604,21 @@ def test_diffusion_pages_never_drop_a_gguf_pick_silently():
         )
         assert branch, f"{rel}: gguf extension guard not found"
         assert "toast.error(" in branch.group(0), f"{rel}: guard returns silently"
+
+
+def test_diffusion_pages_stage_downloads_through_the_manager():
+    """Images/Video must not download inside the load: an undownloaded hub pick goes to
+    the Hub download manager first, so it shares the panel, progress, cancel/resume,
+    disk preflight and manifest verification with every other model."""
+    for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(rel)
+        assert "useStagedDownload" in src, f"{rel}: not wired to the download manager"
+        # The plan carries the loader's own file scope, so nothing extra is pulled.
+        assert "DownloadPlan(" in src, f"{rel}: does not fetch a download plan"
+        stage_fn = re.search(r"const loadOrStage = useCallback\(.*?\n  \);", src, re.S)
+        assert stage_fn, f"{rel}: loadOrStage not found"
+        body = stage_fn.group(0)
+        # Already-downloaded (and local) picks must skip staging and load straight away.
+        assert "isDownloaded !== false" in body, f"{rel}: cached picks would re-stage"
+        # A missing plan must still load rather than dead-end.
+        assert "catch" in body, f"{rel}: no fallback when the plan is unavailable"

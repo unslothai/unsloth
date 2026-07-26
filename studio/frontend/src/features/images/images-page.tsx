@@ -94,9 +94,11 @@ import {
   getGenerateProgress,
   listDiffusionControlNets,
   listDiffusionLoras,
+  getDiffusionDownloadPlan,
   loadDiffusionModel,
   unloadDiffusionModel,
 } from "./api";
+import { useStagedDownload } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
 import {
   TrainBaseSelector,
@@ -1756,6 +1758,59 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setMaskResetKey((k) => k + 1);
   }, []);
 
+  // Downloads go through the Hub download manager like every other model, so they share its
+  // panel, progress, cancel/resume, disk preflight and manifest verification. The load itself
+  // then finds a warm cache. Held in a ref so the completion callback is not a render dep.
+  const pendingStagedLoad = useRef<{
+    repoId: string;
+    opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string };
+  } | null>(null);
+  const handleLoadRef = useRef(handleLoad);
+  handleLoadRef.current = handleLoad;
+  const { stage } = useStagedDownload({
+    scopeId: "diffusion",
+    onReady: () => {
+      const pending = pendingStagedLoad.current;
+      pendingStagedLoad.current = null;
+      if (pending) void handleLoadRef.current(pending.repoId, pending.opts);
+    },
+  });
+
+  // Stage a not-yet-downloaded hub pick, else load it directly. Returns true when the pick
+  // was accepted either way, so the callers' optimistic picker state stands.
+  const loadOrStage = useCallback(
+    async (
+      repoId: string,
+      opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string },
+      isDownloaded?: boolean,
+    ): Promise<boolean> => {
+      if (isDownloaded !== false) return handleLoadRef.current(repoId, opts);
+      try {
+        const plan = await getDiffusionDownloadPlan({
+          model_path: repoId,
+          gguf_filename: opts.filename,
+          model_kind: opts.kind,
+        });
+        if (plan.entries.length > 0) {
+          pendingStagedLoad.current = { repoId, opts };
+          stage(
+            plan.entries.map((e) => ({
+              repoId: e.repo_id,
+              files: e.files,
+              bytes: e.bytes,
+              ggufFilename: e.gguf_filename,
+            })),
+          );
+          return true;
+        }
+      } catch {
+        // No plan (older backend, metadata hiccup): fall back to the load's own download.
+      }
+      return handleLoadRef.current(repoId, opts);
+    },
+    [stage],
+  );
+
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
     const l = lastLoad.current;
@@ -1778,7 +1833,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const d = defaultsFor(id);
         setSteps(d.steps);
         setGuidance(d.guidance);
-        void handleLoad(id, { kind: spec.kind, filename: spec.filename });
+        void loadOrStage(id, { kind: spec.kind, filename: spec.filename }, meta.isDownloaded);
         return;
       }
       // GGUF quant pick from the variant expander. Optimistic for instant picker feedback, but
@@ -1793,7 +1848,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const dq = defaultsFor(id);
         setSteps(dq.steps);
         setGuidance(dq.guidance);
-        void handleLoad(id, { kind: "gguf", filename: meta.ggufFilename }).then((started) => {
+        void loadOrStage(
+          id,
+          { kind: "gguf", filename: meta.ggufFilename },
+          meta.isDownloaded,
+        ).then((started) => {
           if (!started) {
             setQuant(prevQuant);
             quantRevert.current = null;
@@ -1870,14 +1929,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const d = defaultsFor(id);
       setSteps(d.steps);
       setGuidance(d.guidance);
-      void handleLoad(id, { kind: "pipeline" }).then((started) => {
+      void loadOrStage(id, { kind: "pipeline" }, meta.isDownloaded).then((started) => {
         if (!started) {
           setQuant(prevQuant);
           quantRevert.current = null;
         }
       });
     },
-    [busy, handleLoad, quant],
+    [busy, handleLoad, loadOrStage, quant],
   );
 
   // Deploy a freshly-trained adapter from the Train tab: switch to Create, load the base as

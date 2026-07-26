@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+// Same plan shape as the images backend: both /download-plan routes share a response model.
+import type { DiffusionDownloadPlan } from "@/features/images/api";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 // One Advanced control's resolved value + provenance, for the "Auto: X" badges. Same shape the
@@ -178,6 +180,19 @@ export async function getVideoGenerateProgress(): Promise<VideoGenerateProgress>
 export async function loadVideoModel(body: VideoLoadRequest): Promise<VideoStatus> {
   return parseJson(
     await authFetch("/api/inference/video/load", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/** What to stage through the download manager before loading this pick. */
+export async function getVideoDownloadPlan(
+  body: VideoLoadRequest,
+): Promise<DiffusionDownloadPlan> {
+  return parseJson(
+    await authFetch("/api/inference/video/download-plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
