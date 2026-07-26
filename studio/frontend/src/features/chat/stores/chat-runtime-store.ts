@@ -2071,7 +2071,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ pendingImageEditReference }),
   clearPendingImageEditReference: () =>
     set({ pendingImageEditReference: null }),
-  setContextUsage: (contextUsage) => set({ contextUsage }),
+  // Write through to the visible thread's own entry, so a value restored by the
+  // history loader survives a switch away and back. That loader only runs once
+  // per mount, and setActiveThreadId reads the map, so without this the bar goes
+  // blank on return for a conversation hydrated from storage.
+  setContextUsage: (contextUsage) =>
+    set((state) => {
+      if (!state.activeThreadId) return { contextUsage };
+      const next = { ...state.contextUsageByThreadId };
+      if (contextUsage) {
+        next[state.activeThreadId] = contextUsage;
+      } else {
+        delete next[state.activeThreadId];
+      }
+      return { contextUsage, contextUsageByThreadId: next };
+    }),
   setThreadContextUsage: (threadId, usage) =>
     set((state) => ({
       contextUsageByThreadId: {
