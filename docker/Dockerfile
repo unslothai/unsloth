@@ -432,10 +432,13 @@ RUN set -eux; \
 # Register the venv's torch + NVIDIA lib dirs with the loader so torchcodec can
 # dlopen them. ld.so.conf.d, NOT LD_LIBRARY_PATH: the cache is consulted after
 # DT_RUNPATH, so llama.cpp keeps resolving its own $ORIGIN libs first.
+# cublas/lib and cu13/lib are here for llama.cpp's libggml-cuda.so, which links
+# against libcublas but does not ship it (see the guard after the fetch below).
 RUN set -eux \
  && SP=/opt/unsloth-venv/lib/python${PYTHON_VERSION}/site-packages \
  && printf "%s\n" "$SP/torch/lib" "$SP/nvidia/cuda_nvrtc/lib" \
                   "$SP/nvidia/cuda_runtime/lib" "$SP/nvidia/npp/lib" \
+                  "$SP/nvidia/cublas/lib" "$SP/nvidia/cu13/lib" \
         > /etc/ld.so.conf.d/zz-unsloth-venv.conf \
  && ldconfig \
  && { /opt/unsloth-venv/bin/python -c \
@@ -450,7 +453,7 @@ RUN set -eux \
 # target (see fetch_llama_prebuilt.py):
 #   * amd64 -> app-<tag>-linux-x64-cuda12-portable.tar.gz   (sm_70..sm_120)
 #     arm64 -> app-<tag>-linux-arm64-cuda13-portable.tar.gz (sm_90..sm_121)
-#   * portable bundles carry their own CUDA libs, so they also run CPU-only
+#   * portable bundles carry their own ggml backends, so they also run CPU-only
 #   * sha256-verified against the release's llama-prebuilt-sha256.json
 #   * converter + gguf-py from the SAME release's source tarball (mappings match)
 # /opt (not /root) so it survives `docker run --user`. Default "latest" resolves
@@ -462,6 +465,40 @@ RUN /opt/unsloth-venv/bin/python /tmp/fetch_llama_prebuilt.py \
         "${LLAMA_PREBUILT_TAG}" "${TARGETARCH:-amd64}" /opt/unsloth/llama.cpp \
  && rm -f /tmp/fetch_llama_prebuilt.py \
  && cat /opt/unsloth/llama.cpp/UNSLOTH_PREBUILT_INFO.json
+
+# libggml-cuda.so is loaded with dlopen (ggml_backend_dl), links against
+# libcublas, and does not ship it; the CUDA runtime base only carries libcudart.
+# A missing libcublas therefore makes the backend fail to load SILENTLY and
+# llama.cpp runs on the CPU: measured 1.6 tok/s instead of 222 tok/s for
+# gemma-4-E2B UD-Q4_K_XL on a B200, with `--list-devices` printing nothing.
+# torch's wheels already ship libcublas for their own CUDA major (registered
+# with the loader above); install the bundle's major when it differs. Then fail
+# the build on any dependency that is still unresolved, so a silent CPU fallback
+# can never ship again. libcuda.so.1 is exempt: that is the driver stub, injected
+# by nvidia-container-toolkit at `docker run --gpus`, never present in the image.
+# ldd needs no GPU, so this keeps the build host-independent.
+RUN set -eux \
+ && CUDA_SO=/opt/unsloth/llama.cpp/libggml-cuda.so \
+ && if [ -f "$CUDA_SO" ]; then \
+        want="$(ldd "$CUDA_SO" | sed -n 's/^[[:space:]]*\(libcublas\.so\.[0-9]*\)[[:space:]]*=> not found$/\1/p' | head -n1)"; \
+        if [ -n "$want" ]; then \
+            major="${want##*.}"; \
+            echo ">> $want missing, installing nvidia-cublas-cu${major}"; \
+            /opt/unsloth-venv/bin/uv pip install --python /opt/unsloth-venv/bin/python \
+                "nvidia-cublas-cu${major}"; \
+            ldconfig; \
+        fi; \
+        missing="$(ldd "$CUDA_SO" | grep 'not found' | grep -v 'libcuda\.so\.1 ' || true)"; \
+        if [ -n "$missing" ]; then \
+            echo "ERROR: llama.cpp CUDA backend has unresolved libraries:"; \
+            echo "$missing"; \
+            echo "GGUF inference would silently fall back to the CPU."; \
+            exit 1; \
+        fi; \
+        echo "OK: llama.cpp CUDA backend dependencies all resolve"; \
+    else \
+        echo ">> no libggml-cuda.so in this bundle (CPU-only build)"; \
+    fi
 ENV UNSLOTH_LLAMA_CPP_PATH=/opt/unsloth/llama.cpp
 
 WORKDIR /workspace
