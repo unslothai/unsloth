@@ -65,9 +65,7 @@ const LOCAL_MODEL_SOURCES: readonly LastLocalModelSource[] = [
   "local",
 ];
 
-function isLastLocalModelSource(
-  value: unknown,
-): value is LastLocalModelSource {
+function isLastLocalModelSource(value: unknown): value is LastLocalModelSource {
   return LOCAL_MODEL_SOURCES.includes(value as LastLocalModelSource);
 }
 
