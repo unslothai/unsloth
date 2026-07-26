@@ -292,6 +292,15 @@ async function flushSettingsPatch(keepalive = false): Promise<void> {
   }
 }
 
+function flushPendingSettingsPatch(): void {
+  if (pendingTimer !== null) {
+    clearTimeout(pendingTimer);
+    pendingTimer = null;
+  }
+  inflightFlush = inflightFlush
+    .catch(() => undefined)
+    .then(() => flushSettingsPatch());
+}
 function saveSettingsPatch(patch: SettingsPatch): void {
   mergePatch(pendingPatch, patch);
   if (pendingTimer !== null) clearTimeout(pendingTimer);
@@ -846,6 +855,11 @@ type ChatRuntimeStore = {
    * consulted when `providerSupportsBuiltinWebFetch` is true.
    */
   webFetchToolsEnabled: boolean;
+  /** Persisted user preference: include saved memories in normal chats. */
+  referenceMemories: boolean;
+  /** Persisted user preference: schedule best-effort automatic capture. */
+  autoSaveMemories: boolean;
+
   toolStatus: string | null;
   /** Live stdout/stderr from running tools, keyed by toolCallId. Transient:
    *  appended by tool_output, cleared on tool_end or run end. */
@@ -968,6 +982,8 @@ type ChatRuntimeStore = {
   registerThreadCancel: (threadId: string, cancel: () => void) => void;
   clearThreadCancel: (threadId: string) => void;
   setAutoTitle: (enabled: boolean) => void;
+  setReferenceMemories: (enabled: boolean) => void;
+  setAutoSaveMemories: (enabled: boolean) => void;
   setHfToken: (token: string) => void;
   setModelsError: (error: string | null) => void;
   setLastModelLoadError: (error: string | null) => void;
@@ -1058,6 +1074,8 @@ type PersistedInferenceParams = NonNullable<
 type PersistedInferenceParamKey = keyof PersistedInferenceParams;
 type ScalarSettingKey =
   | "autoTitle"
+  | "referenceMemories"
+  | "autoSaveMemories"
   | "reasoningEffort"
   | "preserveThinking"
   | "collapseHtmlArtifacts"
@@ -1096,6 +1114,8 @@ const PERSISTED_INFERENCE_PARAM_KEYS = [
 
 const SCALAR_SETTING_KEYS = [
   "autoTitle",
+  "referenceMemories",
+  "autoSaveMemories",
   "reasoningEffort",
   "preserveThinking",
   "collapseHtmlArtifacts",
@@ -1264,6 +1284,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   runningByThreadId: {},
   cancelByThreadId: {},
   autoTitle: false,
+  referenceMemories: true,
+  autoSaveMemories: true,
   hfToken: useHfTokenStore.getState().token,
   modelsError: null,
   lastModelLoadError: null,
@@ -1495,6 +1517,26 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       setScalarSettingVersion("autoTitle", autoTitle, state.autoTitle);
       return { autoTitle };
+    }),
+  setReferenceMemories: (referenceMemories) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "referenceMemories",
+        referenceMemories,
+        state.referenceMemories,
+      );
+      flushPendingSettingsPatch();
+      return { referenceMemories };
+    }),
+  setAutoSaveMemories: (autoSaveMemories) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "autoSaveMemories",
+        autoSaveMemories,
+        state.autoSaveMemories,
+      );
+      flushPendingSettingsPatch();
+      return { autoSaveMemories };
     }),
   setHfToken: (hfToken) => useHfTokenStore.getState().setToken(hfToken),
   setModelsError: (modelsError) => set({ modelsError }),

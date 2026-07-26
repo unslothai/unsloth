@@ -50,7 +50,7 @@ export function markThreadIncognito(threadId: string): void {
   incognitoThreadIds.add(threadId);
 }
 
-function isThreadIncognito(threadId: string): boolean {
+export function isThreadIncognito(threadId: string): boolean {
   return incognitoThreadIds.has(threadId);
 }
 

@@ -1055,8 +1055,11 @@ function classifyStructuredDeltaContent(content: unknown): {
 export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
+  endpoint:
+    | "/v1/chat/completions"
+    | "/v1/chat/completions/memory-capture" = "/v1/chat/completions",
 ): AsyncGenerator<OpenAIChatChunk> {
-  const response = await authFetch("/v1/chat/completions", {
+  const response = await authFetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

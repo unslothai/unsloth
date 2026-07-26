@@ -52,6 +52,7 @@ class ApiMonitorEntry:
     total_tokens: Optional[int] = None
     total_tokens_authoritative: bool = False
     error: Optional[str] = None
+    redact_reply: bool = False
 
     def snapshot(self, *, include_details: bool = True) -> dict[str, Any]:
         duration_ms = None
@@ -107,6 +108,7 @@ class ApiMonitor:
         prompt: str,
         context_length: Optional[int] = None,
         subject: Optional[str] = None,
+        redact_reply: bool = False,
     ) -> str:
         now = time.time()
         entry = ApiMonitorEntry(
@@ -121,6 +123,8 @@ class ApiMonitor:
             subject = subject,
             started_monotonic = time.monotonic(),
             context_length = context_length,
+            reply = "[memory capture]" if redact_reply else "",
+            redact_reply = redact_reply,
         )
         with self._lock:
             self._entries.appendleft(entry)
@@ -132,7 +136,7 @@ class ApiMonitor:
             return
         with self._lock:
             entry = self._find_locked(entry_id)
-            if entry is None:
+            if entry is None or entry.redact_reply:
                 return
             # Preview is capped: once the "..." marker is present the head is
             # frozen, so skip the per-chunk re-concat (avoids O(n^2) on long
@@ -151,7 +155,7 @@ class ApiMonitor:
             return
         with self._lock:
             entry = self._find_locked(entry_id)
-            if entry is None:
+            if entry is None or entry.redact_reply:
                 return
             entry.reply = _trim(text, _MAX_REPLY_CHARS)
             entry.updated_at = time.time()
