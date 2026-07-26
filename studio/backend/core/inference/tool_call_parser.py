@@ -169,12 +169,13 @@ RAG_SEARCH_CAP_NUDGE = (
 # Forward-looking intent: the model says what it *will* do, not a final answer.
 INTENT_SIGNAL = re.compile(
     r"(?i)("
-    # Direct intent ("I'll", "Let me"); lookahead drops negated forms
-    # ("I will not") so a refusal does not re-prompt.
-    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b(?!\s+(?:not|never)\b)"
+    # Direct intent ("I'll", "Let me"); lookahead drops negated forms ("I will
+    # not") and "let me know", which hands control back rather than announcing.
+    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b(?!\s+(?:not|never|know)\b)"
     r"|"
-    # Step/plan framing: "First ...", "Step 1:", "Here's my plan"
-    r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
+    # Step/plan framing: "First, I ...", "Step 1:", "Here's my plan". "first"
+    # needs first person so "First, the answer is 42" isn't read as a stall.
+    r"\b(?:first,?\s+(?:i|let me|we)\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
     r"|"
     r"\b(?:now i|next i)\b"
     r")"
@@ -188,6 +189,29 @@ REPROMPT_MAX_CHARS = 2000
 def is_short_intent_without_action(text: str) -> bool:
     stripped = text.strip()
     return 0 < len(stripped) < REPROMPT_MAX_CHARS and INTENT_SIGNAL.search(stripped) is not None
+
+
+_REPEAT_WORD_RE = re.compile(r"[^\w\s]+")
+REPROMPT_REPEAT_SIMILARITY = 0.85
+
+
+def _normalize_for_repeat(text: str) -> str:
+    return " ".join(_REPEAT_WORD_RE.sub(" ", text.lower()).split())
+
+
+# A nudge that just gets the same answer back has not worked, so stop there.
+def is_reprompt_repeat(text: str, previous: str) -> bool:
+    if not previous:
+        return False
+    a, b = _normalize_for_repeat(text), _normalize_for_repeat(previous)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    wa, wb = set(a.split()), set(b.split())
+    if len(wa) < 4 or len(wb) < 4:
+        return False  # too short for overlap to mean anything
+    return len(wa & wb) / len(wa | wb) >= REPROMPT_REPEAT_SIMILARITY
 
 
 def reprompt_to_act_message(tool_hint: str) -> str:

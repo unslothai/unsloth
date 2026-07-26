@@ -92,6 +92,7 @@ from utils.process_lifetime import child_popen_kwargs as _child_popen_kwargs
 from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS as _MAX_REPROMPTS,
     REPROMPT_MAX_CHARS as _REPROMPT_MAX_CHARS,
+    is_reprompt_repeat as _is_reprompt_repeat,
     is_short_intent_without_action as _is_short_intent_without_action,
     reprompt_to_act_message as _reprompt_to_act_message,
 )
@@ -339,10 +340,6 @@ _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
 # loop). Structured delta.tool_calls are grammar-bounded by llama-server; text
 # parsed from content is not, so one runaway turn could fan out unbounded.
 _MAX_TOOL_CALLS_PER_TURN = 8
-_FORCED_REPEAT_PLAN_SIGNAL = re.compile(
-    r"\b(?:i\s+will|i'll|let\s+me|going\s+to|need\s+to|call|use|run|search|fetch|render)\b",
-    re.I,
-)
 _FINAL_ANSWER_SIGNAL = re.compile(
     r"\b(?:final\s+answer|answer\s*:|here\s+is|here's|in\s+summary|result\s*:)\b",
     re.I,
@@ -443,7 +440,8 @@ def _should_suppress_forced_no_tool_output(text: str) -> bool:
         return False
     if _FINAL_ANSWER_SIGNAL.search(stripped):
         return False
-    return _FORCED_REPEAT_PLAN_SIGNAL.search(stripped) is not None
+    # Planning language, not topic words: "call|use|run|search" ate real answers.
+    return _is_short_intent_without_action(stripped)
 
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
@@ -11241,6 +11239,8 @@ class LlamaCppBackend:
         # direct answer ("4", "Hello!") won't match. Pattern shared with the
         # safetensors loop (tool_call_parser.INTENT_SIGNAL).
         _reprompt_count = 0
+        # Text that triggered the last nudge; if the retry restates it, stop.
+        _last_reprompt_text = ""
         # Gates ``max_tool_iterations`` on real tool turns (not the enlarged range) so reserved
         # re-prompt slots don't extend the budget. Mirrors the safetensors guard.
         _tool_iters_done = 0
@@ -11876,7 +11876,7 @@ class LlamaCppBackend:
                         # ── Re-prompt on plan-without-action ──
                         # If the model described its intent (forward-looking
                         # language) without calling a tool, nudge it to act.
-                        # Fires at most once per request, only on short
+                        # Fires up to _MAX_REPROMPTS times, only on short
                         # responses with intent signals -- "4" or "Hello!"
                         # won't trigger it. Use content if available, else
                         # fall back to reasoning text (reasoning-only stalls).
@@ -11889,18 +11889,26 @@ class LlamaCppBackend:
                             r"(?i)\brender[_\s-]?html\b",
                             _stripped,
                         )
+                        # A stall after a tool ran still deserves a nudge, but
+                        # each retry re-runs tools, so allow only one.
+                        _already_acted = any(
+                            record.executed for record in tool_controller.history
+                        )
+                        _reprompt_cap = 1 if _already_acted else _MAX_REPROMPTS
                         # None keeps the default-on re-prompt; False disables it.
                         if (
                             auto_heal_tool_calls
                             and (nudge_tool_calls is None or nudge_tool_calls)
                             and active_tools
                             and not _render_html_already_done_intent
-                            and _reprompt_count < _MAX_REPROMPTS
+                            and _reprompt_count < _reprompt_cap
+                            and not _is_reprompt_repeat(_stripped, _last_reprompt_text)
                             and _is_short_intent_without_action(_stripped)
                         ):
                             _reprompt_count += 1
+                            _last_reprompt_text = _stripped
                             logger.info(
-                                f"Re-prompt {_reprompt_count}/{_MAX_REPROMPTS}: "
+                                f"Re-prompt {_reprompt_count}/{_reprompt_cap}: "
                                 f"model responded without calling tools "
                                 f"({len(_stripped)} chars)"
                             )

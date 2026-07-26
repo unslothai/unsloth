@@ -1486,7 +1486,8 @@ def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
 
     content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
     assert content_texts == ["I will use render_html now."]
-    assert len(payloads) == _MAX_REPROMPTS + 1
+    # Each retry restates the last, so the loop gives up: initial + 2 re-prompts.
+    assert len(payloads) == 3 < _MAX_REPROMPTS + 1
 
 
 def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):

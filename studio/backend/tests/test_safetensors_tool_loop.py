@@ -3654,6 +3654,24 @@ class TestGGUFSafetensorsHealingParity:
 
         assert gguf_cap == sf_cap == shared_cap
 
+    def test_reprompt_repeat_detects_restated_answers(self):
+        # A nudge answered with the same text again has not worked; stop there.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+
+        same = "I will summarize what I found."
+        assert is_reprompt_repeat(same, same)
+        assert is_reprompt_repeat("I WILL summarize what I found!", same)
+        assert is_reprompt_repeat(
+            "The summary is ready, please let me know if you need anything else",
+            "The summary is ready. Please let me know if you need anything else!",
+        )
+
+        # No previous text, or genuinely different progress, keeps the nudge.
+        assert not is_reprompt_repeat(same, "")
+        assert not is_reprompt_repeat("Tokyo is 18C and cloudy right now.", same)
+        # Short texts must not collide on incidental word overlap.
+        assert not is_reprompt_repeat("Let me check.", "Let me search.")
+
 
 class TestLoopControl:
     def test_cancel_event_breaks_loop(self):
