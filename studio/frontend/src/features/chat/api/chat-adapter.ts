@@ -3295,7 +3295,7 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolStatus?: string }
               )._toolStatus;
               if (toolStatusText !== undefined) {
-                runtime.setToolStatus(toolStatusText || null);
+                runtime.setToolStatus(threadKey, toolStatusText || null);
                 continue;
               }
 
@@ -4158,7 +4158,9 @@ export function createOpenAIStreamAdapter(
           confirmStore.clearToolConfirmation(part.toolCallId);
         }
         runtime.setGeneratingStatus(null);
-        runtime.setToolStatus(null);
+        // Scoped: clearing globally used to wipe the badge of every OTHER chat
+        // whose tool was still running.
+        runtime.setToolStatus(threadKey, null);
         // Clear only this run's live keys (a concurrent pane owns its own). A
         // key still here streamed stdout but never reached tool_end (SSE drop or
         // cancel), so promote it to full output first, else the partial

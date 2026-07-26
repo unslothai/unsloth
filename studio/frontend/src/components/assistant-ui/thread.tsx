@@ -2696,9 +2696,20 @@ const ArtifactsToggle: FC = () => {
 };
 
 const ToolStatusDisplay: FC = () => {
-  const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
+  // This conversation's tool call only. Chats run in parallel, so a global
+  // status would put one chat's "Running Python..." above every composer,
+  // including a brand-new empty chat.
+  const threadListItemId = useAuiState(({ threadListItem }) => threadListItem.id);
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
-  const [elapsed, setElapsed] = useState(0);
+  const entry = useChatRuntimeStore((s) => {
+    const own = s.toolStatusByThreadId[threadListItemId ?? ""];
+    // A first turn can start before the thread id is persisted, so the adapter
+    // files it under "__default". Only this thread's own run may claim it.
+    return own ?? (isThreadRunning ? s.toolStatusByThreadId.__default : undefined);
+  });
+  const toolStatus = entry?.status ?? null;
+  const startedAt = entry?.startedAt ?? null;
+  const [now, setNow] = useState(() => Date.now());
   const [visible, setVisible] = useState(false);
   const visibleRef = useRef(false);
 
@@ -2707,15 +2718,14 @@ const ToolStatusDisplay: FC = () => {
   }, [visible]);
 
   useEffect(() => {
-    if (!toolStatus) {
-      setElapsed(0);
+    if (!startedAt) {
       if (!isThreadRunning) {
         setVisible(false);
       }
       return;
     }
 
-    setElapsed(0);
+    setNow(Date.now());
 
     // Debounce visibility by 300ms when the badge isn't already on screen.
     // Once visible from a prior tool, later tools show immediately so it
@@ -2725,24 +2735,28 @@ const ToolStatusDisplay: FC = () => {
       showTimer = setTimeout(() => setVisible(true), 300);
     }
 
-    const interval = setInterval(() => {
-      setElapsed((prev) => prev + 1);
-    }, 1000);
+    const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => {
       clearInterval(interval);
       if (showTimer) {
         clearTimeout(showTimer);
       }
     };
-  }, [toolStatus, isThreadRunning]);
+  }, [startedAt, isThreadRunning]);
 
-  if (!(toolStatus && visible)) {
+  if (!(toolStatus && startedAt && visible)) {
     return null;
   }
+  // Counted from the store's start time, not a local tick, so leaving the
+  // conversation and coming back resumes instead of restarting at 0.
+  const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000));
   const isRunning = toolStatus.startsWith("Running");
   const StatusIcon = isRunning ? TerminalIcon : GlobeIcon;
   return (
-    <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
+    <div
+      data-testid="composer-tool-status"
+      className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1"
+    >
       <div className="flex animate-pulse items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary">
         <StatusIcon className="size-3.5" />
         <span>{toolStatus}</span>

@@ -856,7 +856,13 @@ type ChatRuntimeStore = {
    * consulted when `providerSupportsBuiltinWebFetch` is true.
    */
   webFetchToolsEnabled: boolean;
-  toolStatus: string | null;
+  /**
+   * Live tool status per conversation ("Running Python: ...") with the moment
+   * it started. Keyed by thread: chats run in parallel, so a global string
+   * would show one chat's tool call above every other chat's composer, and the
+   * timestamp keeps the elapsed counter from restarting on a thread switch.
+   */
+  toolStatusByThreadId: Record<string, { status: string; startedAt: number }>;
   /** Live stdout/stderr from running tools, keyed by toolCallId. Transient:
    *  appended by tool_output, cleared on tool_end or run end. */
   toolLiveOutput: Record<string, string>;
@@ -1030,7 +1036,7 @@ type ChatRuntimeStore = {
   setRagAutoInjectMinScore: (score: number) => void;
   setRagOcrScanned: (enabled: boolean) => void;
   setRagCaptionFigures: (enabled: boolean) => void;
-  setToolStatus: (status: string | null) => void;
+  setToolStatus: (threadId: string, status: string | null) => void;
   appendToolLiveOutput: (toolCallId: string, text: string) => void;
   /** Clear one tool's live output, or all when no id is given. */
   clearToolLiveOutput: (toolCallId?: string) => void;
@@ -1337,7 +1343,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ),
   ragOcrScanned: loadBool(CHAT_RAG_OCR_KEY, DEFAULT_RAG_OCR),
   ragCaptionFigures: loadBool(CHAT_RAG_CAPTION_KEY, DEFAULT_RAG_CAPTION),
-  toolStatus: null,
+  toolStatusByThreadId: {},
   toolLiveOutput: {},
   toolFullOutput: {},
   generatingStatus: null,
@@ -1612,7 +1618,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       webFetchToolsEnabled: false,
       // Only the per-session enable pill resets; source/mode/top_k persist.
       ragEnabled: false,
-      toolStatus: null,
+      toolStatusByThreadId: {},
       toolLiveOutput: {},
       toolFullOutput: {},
       activeDiffusionCanvas: null,
@@ -1856,7 +1862,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveBool(CHAT_RAG_CAPTION_KEY, ragCaptionFigures);
       return { ragCaptionFigures };
     }),
-  setToolStatus: (toolStatus) => set({ toolStatus }),
+  setToolStatus: (threadId, status) =>
+    set((state) => {
+      const next = { ...state.toolStatusByThreadId };
+      if (!status) {
+        if (next[threadId] === undefined) return state;
+        delete next[threadId];
+      } else {
+        // Same text means the same tool call, so keep startedAt: only a new
+        // tool restarts the counter.
+        const current = next[threadId];
+        if (current?.status === status) return state;
+        next[threadId] = { status, startedAt: Date.now() };
+      }
+      return { toolStatusByThreadId: next };
+    }),
   appendToolLiveOutput: (toolCallId, text) =>
     set((state) => ({
       toolLiveOutput: {
