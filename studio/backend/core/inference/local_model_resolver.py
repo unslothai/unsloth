@@ -229,18 +229,39 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             continue
         # Index every alias (including the path) so a client can resolve by any of
         # them, even though only the non-path loader_id is advertised.
-        # public_model_id too: an inactive-cache repo carries its snapshot path as the
-        # id, and /v1/models advertises only that directory's basename once loaded, so
-        # anything durable pinned to it (a subagent config) must resolve back here.
         for key in (
             raw_id,
             getattr(info, "model_id", None),
             getattr(info, "display_name", None),
-            public_model_id(raw_id),
+            *_public_aliases(raw_id),
         ):
             if key:
                 index.setdefault(key.strip().lower(), entry)
     return index
+
+
+def _public_aliases(raw_id: str) -> list[str]:
+    """Public ids that must resolve back to *raw_id*'s entry.
+
+    An inactive-cache repo carries its snapshot path as the id, and /v1/models
+    advertises only that directory's basename once loaded, so anything durable
+    pinned to it (a subagent config) holds one revision hash. Hugging Face writes a
+    NEW snapshot dir on every update, so indexing only the scanned one would strand
+    that pin and drop the request through to an unrelated model. Alias every
+    revision of the same repo instead.
+    """
+    from pathlib import Path
+
+    alias = public_model_id(raw_id)
+    aliases = [alias] if alias else []
+    snapshots = Path(raw_id).parent
+    if snapshots.name != "snapshots":
+        return aliases
+    try:
+        aliases.extend(p.name for p in snapshots.iterdir() if p.is_dir())
+    except OSError:
+        pass
+    return aliases
 
 
 def _index() -> dict[str, _LocalGgufEntry]:

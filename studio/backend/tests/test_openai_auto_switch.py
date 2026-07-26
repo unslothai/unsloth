@@ -1337,6 +1337,24 @@ def test_hf_cache_entry_loads_from_local_snapshot_path(tmp_path):
 # ── review round 5: concurrent-swap, repo-id identity, /v1/models id, gate, 503 ──
 
 
+def test_snapshot_aliases_survive_a_repo_update(tmp_path):
+    # /v1/models advertises only the snapshot dir name, so a durable pin holds one
+    # revision hash. A later snapshot must not strand it: every revision aliases here.
+    snaps = tmp_path / "models--org--Repo" / "snapshots"
+    old, new = snaps / "rev-old", snaps / "rev-new"
+    for path in (old, new):
+        path.mkdir(parents = True)
+
+    aliases = resolver._public_aliases(str(new))
+
+    assert "rev-old" in aliases
+    assert "rev-new" in aliases
+
+
+def test_public_aliases_leaves_repo_ids_alone():
+    assert resolver._public_aliases("org/Repo-GGUF") == ["org/Repo-GGUF"]
+
+
 def test_already_loaded_by_repo_id_is_not_reswapped(monkeypatch):
     # A model loaded normally has model_identifier == repo id, but the resolver
     # returns the concrete load path. A request for that repo must count as already

@@ -46,6 +46,20 @@ def test_dir_model_format_gguf_only(tmp_path):
     assert models_route._dir_model_format(d) == "gguf"
 
 
+def test_dir_model_format_mmproj_only_is_not_gguf(tmp_path):
+    # A lone vision adapter has nothing servable: the variant selector drops mmproj.
+    d = tmp_path / "model"
+    _touch(d / "mmproj-F16.gguf")
+    assert models_route._dir_model_format(d) is None
+
+
+def test_dir_model_format_mmproj_beside_weights_is_still_gguf(tmp_path):
+    d = tmp_path / "model"
+    _touch(d / "mmproj-F16.gguf")
+    _touch(d / "model-Q4_K_M.gguf")
+    assert models_route._dir_model_format(d) == "gguf"
+
+
 def test_dir_model_format_gguf_with_config_is_still_gguf(tmp_path):
     # A config.json alongside the .gguf must not flip it to non-GGUF.
     d = tmp_path / "model"

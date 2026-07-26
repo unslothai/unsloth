@@ -420,10 +420,12 @@ def _dir_model_format(path: Path) -> Optional[str]:
 
     LM Studio and custom GGUF folders frequently lack a ``-GGUF`` name suffix,
     so the UI relies on this hint to route them through the GGUF load path
-    rather than treating them as plain local checkpoints.
+    rather than treating them as plain local checkpoints. A directory whose only
+    ``.gguf`` is an mmproj vision adapter is not one: the variant selector drops
+    mmproj, so that path would find nothing to serve.
     """
     try:
-        if not any(path.glob("*.gguf")):
+        if not any(_is_main_gguf_filename(p.name) for p in path.glob("*.gguf")):
             return None
         return None if _has_non_gguf_weights(path) else "gguf"
     except OSError:
@@ -3039,7 +3041,7 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
     # which is what variant discovery reads. Blob mtimes would disagree with it whenever
     # Hugging Face reuses an older blob in a newer snapshot, and the command would then
     # name a snapshot that does not hold the quant the picker offered.
-    newest_snapshot, newest_mtime = None, -1.0
+    candidates: List[tuple[float, str]] = []
     for revision in repo_info.revisions:
         snapshot = getattr(revision, "snapshot_path", None)
         if snapshot is None:
@@ -3050,9 +3052,17 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
             mtime = Path(snapshot).stat().st_mtime
         except OSError:
             mtime = 0.0
-        if mtime > newest_mtime:
-            newest_snapshot, newest_mtime = snapshot, mtime
-    return str(newest_snapshot) if newest_snapshot is not None else None
+        candidates.append((mtime, str(snapshot)))
+    candidates.sort(key = lambda c: c[0], reverse = True)
+    # Newest first, but skip one holding only part of a split quant: an interrupted
+    # download would otherwise beat an older snapshot that can still load. Scanning
+    # stops at the first complete snapshot, so the usual case walks one directory.
+    from hub.utils import inventory_scan
+    for _, snapshot in candidates:
+        if inventory_scan._completed_gguf_variants(Path(snapshot)):
+            return snapshot
+    # Nothing complete anywhere: keep the newest rather than dropping the id.
+    return candidates[0][1] if candidates else None
 
 
 @router.get("/cached-gguf")
