@@ -296,8 +296,12 @@ export async function refreshContextUsage(options?: {
 
     const toolExtras = await buildLocalTokenCountExtras(payloadThreadId, outbound);
 
+    // Tool schemas and the tool/RAG nudge the backend injects are prompt tokens
+    // in their own right, so an empty transcript with tools enabled still has a
+    // prompt to count. buildLocalTokenCountExtras returns {} when nothing is
+    // enabled, which is the only case that is genuinely zero.
     let inputTokens = 0;
-    if (outbound.length > 0) {
+    if (outbound.length > 0 || Object.keys(toolExtras).length > 0) {
       const result = await countChatInputTokens({
         model: capturedCheckpoint,
         messages: outbound,
