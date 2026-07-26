@@ -1901,8 +1901,8 @@ def get_chat_template(
 
         chat_template, stop_word, yes_map_eos_token, ollama_modelfile = CHAT_TEMPLATES[chat_template]
 
-        # Check mapping to eos_token
-        if not map_eos_token and yes_map_eos_token: map_eos_token = True
+        # Check mapping to eos_token. The template can veto the mapping, but it must not
+        # force it back on: `map_eos_token = False` is an explicit choice by the caller.
         if not yes_map_eos_token and map_eos_token: map_eos_token = False
 
         if type(stop_word) in (list, tuple,):
