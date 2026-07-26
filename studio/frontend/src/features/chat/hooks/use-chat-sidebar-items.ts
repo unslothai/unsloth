@@ -17,6 +17,7 @@ import {
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
 import { clearComposerDraft } from "../utils/composer-draft";
+import { stopChatThread } from "../utils/stop-chat-thread";
 import {
   markChatThreadsDeleted,
   removeChatThreadTombstones,
@@ -160,10 +161,10 @@ export function useChatSidebarItems(options?: {
 }
 
 function cancelIfRunning(threadId: string): void {
-  const { runningByThreadId, cancelByThreadId } =
-    useChatRuntimeStore.getState();
-  if (!runningByThreadId[threadId]) return;
-  cancelByThreadId[threadId]?.();
+  // Reaches a background thread too, which cancelByThreadId cannot: it only
+  // holds the visible thread's cancelRun(). A deleted chat must stop streaming,
+  // or the run keeps writing to a conversation that no longer exists.
+  stopChatThread(threadId);
 }
 
 export async function renameChatItem(

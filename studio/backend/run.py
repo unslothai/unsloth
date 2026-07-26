@@ -1797,11 +1797,12 @@ def run_server(
     return app
 
 
-# Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1 is for direct
-# backend launches; `unsloth studio run` always passes its own value (4).
+# Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. The Chat tab streams
+# several conversations at once and the admission queue caps decodes at the slot
+# count, so a direct launch matches the CLI. VRAM fit may still cut it back.
 _PARALLEL_MIN = 1
 _PARALLEL_MAX = 64
-_PARALLEL_DEFAULT_PLAIN = 1
+_PARALLEL_DEFAULT_PLAIN = 4
 
 
 def _build_arg_parser():
@@ -1898,7 +1899,7 @@ def _build_arg_parser():
         default = _PARALLEL_DEFAULT_PLAIN,
         help = (
             f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
-            f"Default {_PARALLEL_DEFAULT_PLAIN}; `unsloth studio run` uses 4."
+            f"Default {_PARALLEL_DEFAULT_PLAIN}."
         ),
     )
     return parser

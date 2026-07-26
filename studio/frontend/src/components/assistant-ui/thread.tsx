@@ -713,10 +713,10 @@ function startPromptQueue(
   }
 }
 
-function stopPromptQueueRun() {
+function stopPromptQueueRun(cancelActiveRun = true) {
   const activeItem = promptQueueItems[Math.max(promptQueueIndex, 0)];
   const activeTarget = activeItem?.target;
-  const shouldCancelActiveRun = Boolean(activeItem?.dispatched);
+  const shouldCancelActiveRun = cancelActiveRun && Boolean(activeItem?.dispatched);
   resetPromptQueue();
   if (!shouldCancelActiveRun) {
     return;
@@ -729,7 +729,12 @@ function stopPromptQueueRun() {
 }
 
 if (typeof window !== "undefined") {
-  window.addEventListener(PROMPT_QUEUE_STOP_EVENT, () => stopPromptQueueRun());
+  window.addEventListener(PROMPT_QUEUE_STOP_EVENT, (event) => {
+    // Navigation stops the queue but leaves the dispatched prompt streaming in
+    // the background; an explicit stop (the default) cancels it too.
+    const detail = (event as CustomEvent<{ cancelActiveRun?: boolean }>).detail;
+    stopPromptQueueRun(detail?.cancelActiveRun ?? true);
+  });
 }
 
 interface PromptQueueCallbacks {

@@ -728,6 +728,16 @@ type ChatRuntimeStore = {
   loras: ChatLoraSummary[];
   runningByThreadId: Record<string, boolean>;
   cancelByThreadId: Record<string, () => void>;
+  /**
+   * Backend cancel for a thread generating in the background.
+   *
+   * `cancelByThreadId` only holds the visible thread's `cancelRun()`, but New
+   * Chat now leaves the previous conversation streaming and it still has to be
+   * stoppable (deleting it, a forced reload). The adapter parks a closure here
+   * that POSTs that run's own cancel_id: same per-run path as Stop, and it
+   * never touches a sibling conversation.
+   */
+  serverCancelByThreadId: Record<string, () => void>;
   autoTitle: boolean;
   hfToken: string;
   modelsError: string | null;
@@ -967,6 +977,8 @@ type ChatRuntimeStore = {
   setThreadRunning: (threadId: string, running: boolean) => void;
   registerThreadCancel: (threadId: string, cancel: () => void) => void;
   clearThreadCancel: (threadId: string) => void;
+  registerThreadServerCancel: (threadId: string, cancel: () => void) => void;
+  clearThreadServerCancel: (threadId: string, cancel?: () => void) => void;
   setAutoTitle: (enabled: boolean) => void;
   setHfToken: (token: string) => void;
   setModelsError: (error: string | null) => void;
@@ -1263,6 +1275,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loras: [],
   runningByThreadId: {},
   cancelByThreadId: {},
+  serverCancelByThreadId: {},
   autoTitle: false,
   hfToken: useHfTokenStore.getState().token,
   modelsError: null,
@@ -1490,6 +1503,23 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const next = { ...state.cancelByThreadId };
       delete next[threadId];
       return { cancelByThreadId: next };
+    }),
+  registerThreadServerCancel: (threadId, cancel) =>
+    set((state) => {
+      const next = { ...state.serverCancelByThreadId };
+      next[threadId] = cancel;
+      return { serverCancelByThreadId: next };
+    }),
+  // `cancel` narrows removal to the run that registered it: a tool continuation
+  // can start the next leg first, and a blind delete would drop the live handle.
+  clearThreadServerCancel: (threadId, cancel) =>
+    set((state) => {
+      const current = state.serverCancelByThreadId[threadId];
+      if (current === undefined) return state;
+      if (cancel !== undefined && current !== cancel) return state;
+      const next = { ...state.serverCancelByThreadId };
+      delete next[threadId];
+      return { serverCancelByThreadId: next };
     }),
   setAutoTitle: (autoTitle) =>
     set((state) => {

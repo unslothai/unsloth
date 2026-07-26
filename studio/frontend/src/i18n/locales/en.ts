@@ -34,6 +34,8 @@ export const en = {
     navigation: {
       newChat: "New chat",
       returnToChat: "Return to Chat",
+      returnToChats: "Return to {count} Chats",
+      chatGenerating: "Generating",
       compare: "Compare",
       search: "Search",
       hub: "Model hub",

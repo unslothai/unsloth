@@ -49,6 +49,7 @@ export {
 export {
   preferFullToolOutput,
   toolOutputKey,
+  toolThreadScope,
   useToolPaneScope,
 } from "./tool-output-scope";
 export { PermissionModeDropdown } from "./permission-mode-select";
@@ -74,6 +75,7 @@ export {
 export { ApiProviderLogo } from "./api-provider-logo";
 export { useExternalProvidersStore } from "./stores/external-providers-store";
 export { ChatSearchDialog } from "./components/chat-search-dialog";
+export { StopRunningChatsDialog } from "./components/stop-running-chats-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";

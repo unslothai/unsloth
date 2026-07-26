@@ -9,12 +9,24 @@ import { cn } from "@/lib/utils";
 /**
  * App-wide spinner: a clean circular arc with a rounded cap (lucide
  * Loader2 / LoaderCircle), animated, inheriting the current text color.
+ *
+ * `label` overrides the announcement where "loading" is not what it means (a
+ * sidebar chat is generating); `data-testid` targets one of several on screen.
  */
-function Spinner({ className }: { className?: string }) {
+function Spinner({
+  className,
+  label = "Loading",
+  "data-testid": dataTestId,
+}: {
+  className?: string;
+  label?: string;
+  "data-testid"?: string;
+}) {
   return (
     <Loader2Icon
       role="status"
-      aria-label="Loading"
+      aria-label={label}
+      data-testid={dataTestId}
       className={cn("size-4 shrink-0 animate-spin", className)}
     />
   );

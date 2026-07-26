@@ -3,6 +3,7 @@
 
 "use client";
 
+import { useAuiState } from "@assistant-ui/react";
 import { createContext, useContext } from "react";
 import type { ModelType } from "./types";
 
@@ -20,10 +21,30 @@ export function toolPaneScope(modelType?: ModelType, pairId?: string): string {
   return `${modelType ?? "base"}\u0000${pairId ?? ""}`;
 }
 
+/**
+ * Narrow a pane scope to one conversation.
+ *
+ * Conversations in one pane stream concurrently now, so two threads can each be
+ * mid tool call and both call it "call_0". Without the thread in the key they
+ * share a store entry and the finished cards show each other's output.
+ */
+export function toolThreadScope(paneScope: string, threadId?: string): string {
+  return `${paneScope}\u0000${threadId ?? ""}`;
+}
+
 export const ToolPaneScopeContext = createContext<string>(toolPaneScope());
 
+/**
+ * Store-key scope for the conversation this component renders in.
+ *
+ * Takes the thread id from the surrounding runtime, the same id the adapter
+ * gets as `unstable_threadId` and writes under, so reader and writer agree
+ * without threading a prop through every tool card.
+ */
 export function useToolPaneScope(): string {
-  return useContext(ToolPaneScopeContext);
+  const paneScope = useContext(ToolPaneScopeContext);
+  const threadId = useAuiState(({ threadListItem }) => threadListItem.id);
+  return toolThreadScope(paneScope, threadId);
 }
 
 /** Store key for the live/full tool output maps: pane scope + tool call id. */

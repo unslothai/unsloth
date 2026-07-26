@@ -59,6 +59,7 @@ import {
   shouldPreserveFullOutput,
   toolOutputKey,
   toolPaneScope,
+  toolThreadScope,
 } from "../tool-output-scope";
 import type { ModelType } from "../types";
 import { isMultimodalResponse } from "../types/api";
@@ -2052,12 +2053,13 @@ export function createOpenAIStreamAdapter(
         ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
         : sandboxSessionId || "_default";
       const toolConfirmationIdsByBackendId = new Map<string, string>();
-      // Store keys are pane-scoped since local tool ids ("call_0") repeat across
-      // turns and concurrent panes (compare mode). Track this run's keys so
-      // cleanup can't wipe another pane's.
-      const toolOutputPaneScope = toolPaneScope(
-        options.modelType,
-        options.pairId,
+      // Local tool ids ("call_0") repeat across turns, panes (compare mode) and
+      // now conversations, since two chats in one pane can each be mid tool
+      // call. Scope by pane AND thread; the cards read the same key through
+      // useToolPaneScope(). Prefer unstable_threadId: the id the reader sees.
+      const toolOutputPaneScope = toolThreadScope(
+        toolPaneScope(options.modelType, options.pairId),
+        unstable_threadId ?? resolvedThreadId,
       );
       const scopedToolOutputKey = (id: string) =>
         toolOutputKey(toolOutputPaneScope, id);
@@ -2787,6 +2789,26 @@ export function createOpenAIStreamAdapter(
           keepalive: true,
         }).catch(() => {});
       };
+
+      // Stop handle that works when this conversation is not the visible one.
+      // cancelByThreadId only holds the main thread's cancelRun(), yet a
+      // background chat still has to be stoppable (deleting it, a forced
+      // reload). Posting this run's own cancel_id closes just its stream.
+      const serverCancel = () => {
+        const body: Record<string, string> = { cancel_id: cancelId };
+        if (sandboxSessionId) body.session_id = sandboxSessionId;
+        const token = getAuthToken();
+        void fetch(apiUrl("/api/inference/cancel"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify(body),
+          keepalive: true,
+        }).catch(() => {});
+      };
+      runtime.registerThreadServerCancel(threadKey, serverCancel);
       try {
         if (abortSignal.aborted) {
           onAbortCancel();
@@ -4164,6 +4186,9 @@ export function createOpenAIStreamAdapter(
           }
         }
         runtime.setThreadRunning(threadKey, false);
+        // Passing serverCancel keeps a newer run's handle: a tool continuation
+        // can register the next leg before this one unwinds.
+        runtime.clearThreadServerCancel(threadKey, serverCancel);
       }
     },
   };

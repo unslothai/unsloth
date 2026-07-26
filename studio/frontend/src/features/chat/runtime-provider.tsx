@@ -1248,17 +1248,6 @@ function createRuntimeHook(modelType: ModelType, pairId?: string) {
   };
 }
 
-function stopChatRun(threadId: string | null | undefined) {
-  if (!threadId) {
-    return;
-  }
-  try {
-    useChatRuntimeStore.getState().cancelByThreadId[threadId]?.();
-  } catch {
-    // The run may have ended while navigation was mounting.
-  }
-}
-
 function ThreadAutoSwitch({
   threadId,
   syncActiveThreadId = true,
@@ -1273,8 +1262,11 @@ function ThreadAutoSwitch({
   useEffect(() => {
     if (!isLoading && mainThreadId !== threadId) {
       if (syncActiveThreadId) {
-        requestPromptQueueStop();
-        stopChatRun(mainThreadId);
+        // Stop feeding the outgoing thread queued prompts, but leave its run
+        // alone: assistant-ui keeps every visited thread's runtime mounted, so
+        // it keeps streaming and the sidebar shows it running. Only an explicit
+        // Stop (or deleting the conversation) cancels one now.
+        requestPromptQueueStop({ cancelActiveRun: false });
       }
       const switchResult = aui.threads().switchToThread(threadId) as unknown;
       if (
@@ -1305,16 +1297,16 @@ function ThreadNewChatSwitch({
 }: { nonce: string }): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
-  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
-  const mainThreadIdRef = useRef(mainThreadId);
-  mainThreadIdRef.current = mainThreadId;
-
+  // The outgoing thread is not read here: New Chat leaves it running.
   useEffect(() => {
     if (isLoading) {
       return;
     }
-    requestPromptQueueStop();
-    stopChatRun(mainThreadIdRef.current);
+    // New Chat leaves the previous conversation generating: its runtime stays
+    // mounted (assistant-ui only tears one down on delete/detach), the adapter
+    // keeps appending to it and the sidebar spins, exactly like switching to
+    // Train or Export. Stopping it is its own Stop button's job.
+    requestPromptQueueStop({ cancelActiveRun: false });
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.
     void aui.threads().switchToNewThread();

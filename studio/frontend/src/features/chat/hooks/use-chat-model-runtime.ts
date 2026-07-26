@@ -28,6 +28,7 @@ import {
   validateModel,
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
+import { confirmStopRunningChatsIfNeeded } from "../utils/confirm-stop-running-chats";
 import {
   GPU_LAYERS_AUTO,
   isLocalModelPath,
@@ -463,6 +464,9 @@ export function useChatModelRuntime() {
     useChatRuntimeStore.getState().setModelLoading(true);
     void (async () => {
       try {
+        // The model being unloaded is the one still loading, so it has no
+        // generations, but a chat may stream on the previous one. No force:
+        // let the 409 surface rather than kill it.
         await unloadModel({ model_path: model.id }).catch(() => {});
       } finally {
         cancelUnloadPendingRef.current = false;
@@ -526,6 +530,20 @@ export function useChatModelRuntime() {
         });
         return;
       }
+
+      // Every chat decodes on the llama-server this load replaces, so a load
+      // ends all of them. Ask first, then allow the cancel; the 409 gate stays
+      // armed for callers that never confirmed (second tab, desktop app, curl).
+      const stopDecision = await confirmStopRunningChatsIfNeeded(
+        forceReload ? "Applying these settings" : "Loading a different model",
+      );
+      if (!stopDecision.proceed) {
+        if (typeof selection !== "string" && selection.previousConfig) {
+          applyPerModelConfigToRuntime(selection.previousConfig);
+        }
+        return;
+      }
+      const forceCancelActive = stopDecision.forceCancelActive;
 
       const explicitIsLora =
         typeof selection === "string" ? undefined : selection.isLora;
@@ -808,7 +826,12 @@ export function useChatModelRuntime() {
               : undefined;
 
             if (currentCheckpoint) {
-              await unloadModel({ model_path: currentCheckpoint });
+              // Covered by the load's confirmation below; without the flag the
+              // gate would 409 the swap the user just approved.
+              await unloadModel({
+                model_path: currentCheckpoint,
+                force_cancel_active: forceCancelActive,
+              });
               previousWasUnloaded = true;
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -915,6 +938,7 @@ export function useChatModelRuntime() {
               n_cpu_moe: loadNCpuMoe,
               tensor_split: loadSplitRatio ?? undefined,
               gpu_ids: loadSelectedGpuIds ?? undefined,
+              force_cancel_active: forceCancelActive,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -1144,6 +1168,9 @@ export function useChatModelRuntime() {
                   n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
                   tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
+                  // The failed swap already unloaded the server those
+                  // generations ran on, so the gate must not block the restore.
+                  force_cancel_active: true,
                 });
                 const rollbackSpeculativeType = normalizeSpeculativeType(
                   rollbackResponse.speculative_type,
@@ -1554,8 +1581,17 @@ export function useChatModelRuntime() {
       return true;
     }
     try {
+      // Ejecting tears down llama-server, so every chat stops. Same prompt.
+      const stopDecision = await confirmStopRunningChatsIfNeeded(
+        "Unloading the model",
+      );
+      if (!stopDecision.proceed) return false;
+
       async function performUnload(): Promise<void> {
-        await unloadModel({ model_path: params.checkpoint });
+        await unloadModel({
+          model_path: params.checkpoint,
+          force_cancel_active: stopDecision.forceCancelActive,
+        });
         clearCheckpoint();
         await refresh();
       }

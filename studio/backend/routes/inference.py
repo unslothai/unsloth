@@ -1755,6 +1755,7 @@ from core.inference.anthropic_compat import (
     AnthropicPassthroughEmitter,
 )
 from auth.authentication import get_current_subject
+from state import active_generations
 from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
@@ -2206,11 +2207,28 @@ def _prune_pending(now: float) -> None:
 
 
 class _TrackedCancel:
-    """Register cancel_event in _CANCEL_REGISTRY for the block's duration."""
+    """Register cancel_event in _CANCEL_REGISTRY for the block's duration.
 
-    def __init__(self, event: threading.Event, *keys):
+    Also records the run in state.active_generations so /load and /unload can
+    see which chats a reload would interrupt. Both registries share this event,
+    so either one cancels down the same per-request path.
+    """
+
+    def __init__(self, event: threading.Event, *keys, thread_id = None, model = None):
         self.event = event
         self.keys = tuple(k for k in keys if k)
+        self._active = active_generations.ActiveGeneration(
+            event, thread_id = thread_id, model = model
+        )
+
+    @classmethod
+    def for_payload(cls, event: threading.Event, payload, *keys):
+        """Track the run against the conversation its request names."""
+        return cls(
+            event, *keys,
+            thread_id = getattr(payload, "thread_id", None),
+            model = getattr(payload, "model", None),
+        )
 
     def __enter__(self):
         # Register + consume-pending in one critical section to close the
@@ -2224,6 +2242,7 @@ class _TrackedCancel:
             for k in self.keys:
                 if k and _PENDING_CANCELS.pop(k, None) is not None:
                     should_cancel = True
+        self._active.__enter__()
         if should_cancel:
             self.event.set()
         return self.event
@@ -2237,6 +2256,7 @@ class _TrackedCancel:
                 bucket.discard(self.event)
                 if not bucket:
                     _CANCEL_REGISTRY.pop(k, None)
+        self._active.__exit__(*exc)
         return False
 
 
@@ -4252,6 +4272,69 @@ def _raise_if_sidecar_swap_in_progress() -> None:
         )
 
 
+def _raise_or_cancel_active_generations(*, force: bool, action: str) -> int:
+    """Gate a model swap on the chats currently generating.
+
+    Every open conversation decodes on the single llama-server this route is
+    about to replace, so refuse with 409 and name them. force_cancel_active
+    instead stops them through the same events an explicit Stop uses. Returns
+    how many were cancelled. The frontend guard is bypassable from a second tab
+    or curl; this one is not.
+    """
+    if not active_generations.count():
+        return 0
+    if not force:
+        thread_ids = active_generations.active_thread_ids()
+        running = active_generations.count()
+        raise HTTPException(
+            status_code = 409,
+            detail = {
+                "error": "active_generations",
+                "message": (
+                    f"{action} would stop {running} chat"
+                    f"{'s' if running != 1 else ''} that "
+                    f"{'are' if running != 1 else 'is'} still generating. "
+                    "Stop them first, or retry with force_cancel_active."
+                ),
+                "running": running,
+                "thread_ids": thread_ids,
+            },
+        )
+    cancelled = active_generations.cancel_all()
+    if cancelled:
+        logger.info(
+            "model_swap_cancelled_active_generations",
+            extra = {"event": "inference.reload_cancelled_generations", "count": cancelled},
+        )
+    return cancelled
+
+
+@studio_router.get("/active-generations")
+async def get_active_generations(
+    fastapi_request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Conversations currently generating, plus how many can decode at once.
+
+    Restores the sidebar's background-run spinners after a page reload and lets
+    the model picker name the chats an Apply would interrupt. parallel_slots is
+    the slot count actually in use, which the VRAM fit may have cut below the
+    requested --parallel; chats beyond it queue rather than fail.
+    """
+    entries = active_generations.snapshot()
+    slots = 1
+    try:
+        slots = _openai_llama_admission_capacity(fastapi_request, get_llama_cpp_backend())
+    except Exception:
+        slots = int(getattr(fastapi_request.app.state, "llama_parallel_slots", 1) or 1)
+    return {
+        "active": entries,
+        "count": len(entries),
+        "thread_ids": active_generations.active_thread_ids(),
+        "parallel_slots": max(1, int(slots)),
+    }
+
+
 @router.post("/load", response_model = LoadResponse)
 async def load_model(
     request: LoadRequest,
@@ -4274,11 +4357,18 @@ async def load_model(
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
     _raise_if_sidecar_swap_in_progress()
+    _raise_or_cancel_active_generations(
+        force = request.force_cancel_active, action = "Loading a model"
+    )
     # Hold the lifecycle gate across the load so idle auto-unload can't unload the
     # model mid-load. Auto-switch calls _load_model_impl directly since it already
     # holds this gate.
     async with inference_lifecycle_gate():
         _raise_if_sidecar_swap_in_progress()
+        # Rechecked under the gate: a chat can start while this request queues.
+        _raise_or_cancel_active_generations(
+            force = request.force_cancel_active, action = "Loading a model"
+        )
         return await _load_model_impl(request, fastapi_request, current_subject)
 
 
@@ -5555,6 +5645,12 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     # next /v1 request can't resurrect this model. The idle loop unloads via the
     # backend directly (not this route), so clearing here never fights keep-warm.
     from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
+
+    # Same gate as /load. Ahead of the "stop loading" fast paths below, which
+    # only fire for a still-loading model and so have no generations of their own.
+    _raise_or_cancel_active_generations(
+        force = request.force_cancel_active, action = "Unloading the model"
+    )
     try:
         # "Stop loading" (frontend cancelLoading -> /unload) must abort a still-loading
         # model promptly. /load holds the lifecycle gate for the whole (multi-minute) load,
@@ -7827,7 +7923,7 @@ async def openai_chat_completions(
 
             if payload.stream:
                 _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-                _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+                _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
                 _tracker.__enter__()
 
                 async def audio_input_stream():
@@ -8064,7 +8160,7 @@ async def openai_chat_completions(
                 monitor_id = monitor_id,
             )
         _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-        _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+        _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
         _tracker.__enter__()
         try:
             return await _openai_passthrough_non_streaming(
@@ -8301,7 +8397,7 @@ async def openai_chat_completions(
             _tool_sentinel = object()
 
             _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-            _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+            _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
             _tracker.__enter__()
 
             async def gguf_tool_stream():
@@ -8878,7 +8974,7 @@ async def openai_chat_completions(
             if _wants_multiple_choices(payload):
                 raise _reject_unsupported_n("streaming GGUF chat completions")
             _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-            _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+            _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
             _tracker.__enter__()
             try:
                 reservation, admission_config = _openai_llama_admission_reserve(
@@ -9197,7 +9293,7 @@ async def openai_chat_completions(
                 raise _openai_admission_http_exception(exc, status_code = 429)
 
             _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-            _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+            _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
             _tracker.__enter__()
             admission_lease = None
             admission_wait_started_at = None
@@ -9639,7 +9735,7 @@ async def openai_chat_completions(
 
         _sf_tool_sentinel = object()
         _sf_cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-        _sf_tracker = _TrackedCancel(cancel_event, *_sf_cancel_keys)
+        _sf_tracker = _TrackedCancel.for_payload(cancel_event, payload, *_sf_cancel_keys)
         _sf_tracker.__enter__()
 
         async def sf_tool_stream():
@@ -10031,7 +10127,7 @@ async def openai_chat_completions(
     # ── Streaming response ────────────────────────────────────────
     if payload.stream:
         _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-        _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+        _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
         _tracker.__enter__()
 
         async def stream_chunks():
@@ -13983,7 +14079,11 @@ async def _anthropic_passthrough_stream(
 
     # cancel_id mirrors the OpenAI passthrough so a per-run cancel POST
     # works without the caller having to know the local message_id.
-    _tracker = _TrackedCancel(cancel_event, cancel_id, session_id, message_id)
+    # No thread_id: this is the public API surface, not a Studio conversation.
+    # It still registers so a reload cannot yank llama-server out from under it.
+    _tracker = _TrackedCancel(
+        cancel_event, cancel_id, session_id, message_id, model = model_name,
+    )
     _tracker.__enter__()
 
     async def _stream():
@@ -14659,7 +14759,7 @@ async def _openai_passthrough_stream(
     monitor_id: Optional[str] = None,
 ):
     _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-    _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
+    _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
     _tracker.__enter__()
     try:
         reservation, admission_config = _openai_llama_admission_reserve(

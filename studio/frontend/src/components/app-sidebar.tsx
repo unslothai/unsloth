@@ -520,15 +520,19 @@ export function AppSidebar() {
     });
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
-  const anyChatRunning = useChatRuntimeStore((s) =>
-    Object.values(s.runningByThreadId).some(Boolean),
-  );
-  // The thread currently generating (if any), so "Return to Chat" lands on the
-  // live chat rather than an empty new-chat draft left active after New Chat.
-  const runningThreadId = useChatRuntimeStore((s) => {
-    const entry = Object.entries(s.runningByThreadId).find(([, on]) => on);
-    return entry ? entry[0] : null;
-  });
+  // The whole map, so each row can show its own spinner: several conversations
+  // generate at once now that New Chat leaves the previous one running.
+  const runningThreadIds = useChatRuntimeStore((s) => s.runningByThreadId);
+  const runningChatCount = Object.values(runningThreadIds).filter(Boolean).length;
+  const anyChatRunning = runningChatCount > 0;
+  // Where "Return to Chat" lands: the newest running chat, not the empty draft
+  // New Chat left active. Map insertion order is start order.
+  const runningThreadId = (() => {
+    const ids = Object.entries(runningThreadIds)
+      .filter(([, on]) => on)
+      .map(([id]) => id);
+    return ids.length > 0 ? ids[ids.length - 1] : null;
+  })();
   const activeThreadId = isChatRoute
     ? (search.thread as string | undefined) ??
       (search.compare as string | undefined) ??
@@ -895,6 +899,9 @@ export function AppSidebar() {
     variant: "project" | "recent",
   ) {
     const isPinned = pinnedIdSet.has(item.id);
+    // A row can be generating while you look at another one, so mirror the
+    // Train / Export nav spinners instead of running silently.
+    const isGenerating = Boolean(runningThreadIds[item.id]);
     const itemClass =
       variant === "project"
         ? "group/project-chat-item relative"
@@ -954,6 +961,8 @@ export function AppSidebar() {
           data-testid="recent-thread"
           data-thread-type={item.type}
           data-thread-id={item.id}
+          data-generating={isGenerating ? "true" : undefined}
+          aria-busy={isGenerating || undefined}
           isActive={activeThreadId === item.id}
           className={buttonClass}
           onClick={() => {
@@ -979,6 +988,14 @@ export function AppSidebar() {
           <span className="truncate">
             {pendingRename?.id === item.id ? pendingRename.title : item.title}
           </span>
+          {isGenerating && (
+            <Spinner
+              data-testid="chat-row-spinner"
+              // role="status" + label: announced, not motion-only.
+              label={translate("shell.navigation.chatGenerating")}
+              className="ml-auto size-3.5 shrink-0 text-muted-foreground"
+            />
+          )}
         </SidebarMenuButton>
         {variant === "project" && (
           <button
@@ -1292,9 +1309,16 @@ export function AppSidebar() {
               icon={PencilEdit02Icon}
               label={
                 showReturnToChat
-                  ? t("shell.navigation.returnToChat")
+                  ? runningChatCount > 1
+                    // Name the count rather than imply a single live chat.
+                    ? t("shell.navigation.returnToChats", {
+                        count: runningChatCount,
+                      })
+                    : t("shell.navigation.returnToChat")
                   : t("shell.navigation.newChat")
               }
+              // Off-route this row is the only sign chats are still running.
+              spinner={anyChatRunning && !isChatRoute}
               active={
                 isChatRoute &&
                 !search.thread &&
