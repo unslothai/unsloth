@@ -174,7 +174,10 @@ def test_web_search_without_a_policy_does_not_overfetch(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
     tools._web_search("q", website_policy = None)
-    assert queries == [("q", 5)]
+    # A run always stores a normalized policy, so the unrestricted case is an object with empty
+    # lists, not None. Neither may pay the deeper-pool latency.
+    tools._web_search("q", website_policy = {"allowedDomains": [], "blockedDomains": []})
+    assert queries == [("q", 5), ("q", 5)]
 
 
 def test_scope_search_query_reaches_every_allowed_domain():

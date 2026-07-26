@@ -4642,10 +4642,14 @@ def _web_search(
         from .web_access_policy import check_url_access, scope_search_query
 
         effective_query = scope_search_query(query, website_policy)
-        # The policy filters below, so ask for a deeper pool when one is set: otherwise a page
-        # whose top hits are all disallowed yields nothing even when valid results rank just
-        # under them, wasting a research step.
-        wanted = max_results * _POLICY_OVERFETCH if website_policy else max_results
+        # The policy filters below, so ask for a deeper pool when one actually restricts:
+        # otherwise a page whose top hits are all disallowed yields nothing even when valid
+        # results rank just under them, wasting a research step. Test the domain lists, not the
+        # dict: a run always stores a normalized policy, which is truthy even when unrestricted.
+        restricted = any(
+            (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
+        )
+        wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
         results = DDGS(timeout = timeout).text(effective_query, max_results = wanted)
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
