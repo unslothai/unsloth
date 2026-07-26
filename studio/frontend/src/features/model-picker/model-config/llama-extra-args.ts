@@ -77,11 +77,13 @@ export function normalizeLlamaExtraArgs(
     if (typeof raw !== "string") {
       continue;
     }
-    const token = raw.trim();
-    if (!token) {
+    // Validate on the trimmed form but store the token verbatim. Only explicit
+    // quoting can give a token edge whitespace, and trimming it would persist a
+    // different argv than the same config already loaded with.
+    if (!raw.trim()) {
       continue;
     }
-    out.push(token);
+    out.push(raw);
   }
   return out;
 }

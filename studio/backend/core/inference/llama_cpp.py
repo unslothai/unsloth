@@ -1576,12 +1576,28 @@ _GPU_OFFLOAD_OVERRIDE_FLAGS = _LAYER_OFFLOAD_FLAGS
 _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
 
 
+def _canonical_long_flag_name(name: str) -> str:
+    """``name`` with llama.cpp's long-option underscore folding applied.
+
+    llama.cpp runs ``std::replace(arg, '_', '-')`` on every argv token starting
+    with ``--`` before matching it (common/arg.cpp), so ``--spec_type`` reaches
+    the same option as ``--spec-type``. Every parser that reads pass-through
+    extras must match the same way, or Studio budgets VRAM, picks a drafter and
+    reports a launch mode for flags the child resolves differently. Shorts never
+    carry underscores upstream and keep their exact spelling.
+
+    Single source of truth for the module; ``llama_server_args._flag_name``
+    applies the same rule on the validation boundary.
+    """
+    return name.replace("_", "-") if name.startswith("--") else name
+
+
 def _extra_arg_flag_name(token: str) -> Optional[str]:
     if not token.startswith("-") or token in {"-", "--"}:
         return None
     if len(token) >= 2 and (token[1].isdigit() or token[1] == "."):
         return None
-    return token.split("=", 1)[0]
+    return _canonical_long_flag_name(token.split("=", 1)[0])
 
 
 def _extra_args_set_any_flag(extra_args: Optional[Iterable[str]], flags: Collection[str]) -> bool:
@@ -1606,6 +1622,7 @@ def _effective_spec_type(
     cli_value: Optional[str] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
+        flag = _canonical_long_flag_name(flag)
         if flag == "--spec-default":
             cli_present = True
             cli_value = "default"
@@ -1650,6 +1667,7 @@ def _extra_args_spec_draft_n_max(extra_args: Optional[Iterable[str]]) -> Optiona
     found: Optional[int] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
+        flag = _canonical_long_flag_name(flag)
         if flag not in ("--spec-draft-n-max", "--draft-max"):
             continue
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
@@ -1680,6 +1698,7 @@ def _extra_args_mtp_draft_path(
     found: Optional[str] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
+        flag = _canonical_long_flag_name(flag)
         if flag not in flags:
             continue
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
@@ -1704,6 +1723,7 @@ def _extra_args_draft_cache_types(
     v_type: Optional[str] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
+        flag = _canonical_long_flag_name(flag)
         if flag not in k_flags and flag not in v_flags:
             continue
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
@@ -1736,6 +1756,7 @@ def _extra_args_draft_offloaded_to_cpu(
     last_dev: Optional[str] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
+        flag = _canonical_long_flag_name(flag)
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
         if flag in ngl_flags:
             last_ngl = value
@@ -1766,6 +1787,7 @@ def _extra_args_n_ubatch(
     found: Optional[int] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
+        flag = _canonical_long_flag_name(flag)
         if flag not in ("--ubatch-size", "-ub"):
             continue
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
@@ -6177,9 +6199,7 @@ class LlamaCppBackend:
         same canonical name. Short flags (``-ctv``) never carry underscores and
         keep their exact spelling; pass only the flag name (no attached value).
         """
-        if name.startswith("--"):
-            return name.replace("_", "-")
-        return name
+        return _canonical_long_flag_name(name)
 
     @staticmethod
     def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
@@ -9269,6 +9289,7 @@ class LlamaCppBackend:
         args = [str(arg) for arg in cmd]
         for index, raw in enumerate(args):
             flag, equals, inline = raw.partition("=")
+            flag = _canonical_long_flag_name(flag)
             if flag not in main_flags and flag not in draft_flags:
                 continue
             value = inline if equals else (args[index + 1] if index + 1 < len(args) else "")
@@ -9917,6 +9938,7 @@ class LlamaCppBackend:
         files: list[str] = []
         for i, arg in enumerate(args):
             flag, sep, inline = arg.partition("=")
+            flag = _canonical_long_flag_name(flag)
             if flag not in self._SIDECAR_WEIGHT_FLAGS:
                 continue
             operand = inline if sep else (args[i + 1] if i + 1 < len(args) else "")
@@ -9946,7 +9968,7 @@ class LlamaCppBackend:
         # Caching off makes restores useless; last prompt-cache flag wins, env only when unset.
         last = None
         for arg in self._extra_args or ():
-            flag = arg.strip().split("=", 1)[0]
+            flag = _canonical_long_flag_name(arg.strip().split("=", 1)[0])
             if flag in ("--cache-prompt", "--no-cache-prompt"):
                 last = flag
         if last is not None:
