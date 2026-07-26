@@ -228,17 +228,47 @@ def test_a_coincidentally_utf8_legacy_line_follows_the_file(tmp_path: Path) -> N
     path = tmp_path / "out.jsonl"
     ambiguous = "Р°"
     assert ambiguous.encode("cp1251").decode("utf-8") == "а"  # the trap
+    # Ordinary Cyrillic on the other lines is what settles the verdict.
+    authors = ["Привет", "Здравствуйте", "Москва", ambiguous]
     path.write_bytes(
-        json.dumps({"id": 1, "author": "Привет"}, ensure_ascii = False).encode("cp1251")
-        + b"\n"
-        + json.dumps({"id": 2, "author": ambiguous}, ensure_ascii = False).encode("cp1251")
-        + b"\n"
+        b"".join(
+            json.dumps({"id": i, "author": a}, ensure_ascii = False).encode("cp1251") + b"\n"
+            for i, a in enumerate(authors)
+        )
     )
 
     _load_state_store("cp1251").JsonlWriter(path).close()
 
     rows = [json.loads(x) for x in path.read_text(encoding = "utf-8").splitlines() if x.strip()]
-    assert [row["author"] for row in rows] == ["Привет", ambiguous]
+    assert [row["author"] for row in rows] == authors
+
+
+def test_one_damaged_byte_does_not_relabel_a_utf8_shard(tmp_path: Path) -> None:
+    """A complete JSON line with a stray 0x96 parses as cp1252, but is only one vote."""
+    path = tmp_path / "out.jsonl"
+    healthy = ["Jürgen", "Grüße", "Björn"]
+    path.write_bytes(
+        json.dumps({"id": 0, "author": healthy[0]}, ensure_ascii = False).encode()
+        + b"\n"
+        + b'{"id": 99, "author": "bad \x96 byte"}\n'
+        + b"".join(
+            json.dumps({"id": i, "author": a}, ensure_ascii = False).encode() + b"\n"
+            for i, a in enumerate(healthy[1:], start = 1)
+        )
+    )
+    before = path.read_bytes()
+
+    _load_state_store("cp1252").JsonlWriter(path).close()
+
+    # Untouched, so the healthy records were never re-read as cp1252.
+    assert path.read_bytes() == before
+    rows = []
+    for line in path.read_bytes().splitlines():
+        try:
+            rows.append(json.loads(line.decode()))
+        except (UnicodeDecodeError, ValueError):
+            continue
+    assert [row["author"] for row in rows] == healthy
 
 
 def test_a_torn_line_does_not_relabel_a_utf8_shard(tmp_path: Path) -> None:

@@ -119,6 +119,7 @@ class JsonlWriter:
         # Encoding to fall back to if the file turns out to be legacy and the
         # migration cannot be written.
         self._append_encoding = "utf-8"
+        self._ensure_ascii = False
         # Preload seen keys for dedup across resumes. Must run before the append
         # handle opens: a legacy file is rewritten as UTF-8 first, and Windows
         # cannot replace a file it still holds open.
@@ -126,34 +127,53 @@ class JsonlWriter:
         if self.path.exists() and self.path.stat().st_size > 0:
             if self._preload_seen_keys() and not self._rewrite_as_utf8():
                 # Could not convert it, so keep matching what is already there
-                # rather than appending UTF-8 into a legacy file.
+                # rather than appending UTF-8 into a legacy file. Escaping to
+                # \uXXXX keeps that lossless: the escapes are plain ASCII, so
+                # every codepage can hold them and json.loads gives the exact
+                # characters back. Nothing needs replacing, so nothing is lost.
                 encoding = self._append_encoding
-        self._fh = self.path.open("a", buffering = 1, encoding = encoding, errors = "replace")
+                self._ensure_ascii = True
+        self._fh = self.path.open("a", buffering = 1, encoding = encoding, errors = "strict")
 
     def _preload_seen_keys(self) -> bool:
         """Collect seen keys, returning True if the file needs migrating.
 
         Reads line by line: these shards reach gigabytes on a large scrape, so
-        neither the bytes nor the decoded text are held whole. A file counts as
-        legacy on the evidence of any one line that parses under the codepage
-        and not as UTF-8. Lines that parse as both are decided by that verdict,
-        since a shard of Cyrillic or Japanese is only ambiguous line by line.
+        neither the bytes nor the decoded text are held whole.
+
+        The verdict weighs the whole file. Each line with non-ASCII bytes votes:
+        one that parses only under the codepage is evidence of a legacy shard,
+        one that parses as UTF-8 is evidence against, since arbitrary codepage
+        text almost never forms valid multibyte UTF-8. A single corrupt byte in
+        a healthy shard therefore cannot outvote the records around it, and a
+        genuinely legacy shard has a legacy vote on every line that carries an
+        umlaut. Lines that parse both ways follow whichever side wins.
+
+        A tie leaves the file alone. Rewriting a healthy shard would mojibake
+        every good record in it, which is far worse than declining to convert
+        one, and declining still recovers the keys through the legacy reading.
         """
-        legacy = False
+        legacy_votes = 0
+        utf8_votes = 0
         try:
             with self.path.open("rb") as f:
                 for raw in f:
-                    as_utf8, as_legacy, encoding = _parse_both(raw.strip())
-                    if as_utf8 is None and as_legacy is not None:
-                        legacy = True
+                    line = raw.strip()
+                    as_utf8, as_legacy, encoding = _parse_both(line)
+                    if line.isascii():
+                        pass  # identical either way, so it casts no vote
+                    elif as_utf8 is None and as_legacy is not None:
+                        legacy_votes += 1
                         self._append_encoding = encoding
+                    elif as_utf8 is not None:
+                        utf8_votes += 1
                     obj = as_utf8 if as_utf8 is not None else as_legacy
                     key = self._key(obj) if isinstance(obj, dict) else None
                     if key is not None:
                         self._count_seen_keys.add(key)
         except OSError:
             return False
-        return legacy
+        return legacy_votes > utf8_votes
 
     def _rewrite_as_utf8(self) -> bool:
         """Convert legacy lines so appends match what precedes them.
@@ -200,7 +220,7 @@ class JsonlWriter:
                 return False
             if k is not None:
                 self._count_seen_keys.add(k)
-            self._fh.write(json.dumps(obj, default = str, ensure_ascii = False))
+            self._fh.write(json.dumps(obj, default = str, ensure_ascii = self._ensure_ascii))
             self._fh.write("\n")
             self._fh.flush()
         return True

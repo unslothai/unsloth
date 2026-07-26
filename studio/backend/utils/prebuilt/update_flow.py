@@ -24,6 +24,7 @@ from typing import Callable, Optional
 
 import structlog
 
+from utils.child_stdio import utf8_child_env
 from utils.process_lifetime import child_popen_kwargs
 
 logger = structlog.get_logger(__name__)
@@ -307,7 +308,9 @@ def stream_installer(
         text = True,
         encoding = "utf-8",
         errors = "replace",
-        env = env,
+        # The installer is a Python child, so tell it to emit UTF-8 rather than
+        # the ANSI codepage we would otherwise misread.
+        env = utf8_child_env(env),
         **child_popen_kwargs(),
     )
     timed_out = threading.Event()
