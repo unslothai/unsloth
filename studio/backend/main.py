@@ -1187,9 +1187,11 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             or not utilization_backend
             or visibility_backend == utilization_backend
         )
-        util_devices = {
-            d.get("index"): d for d in utilization_info.get("devices", [])
-        } if metrics_match else {}
+        util_devices = (
+            {d.get("index"): d for d in utilization_info.get("devices", [])}
+            if metrics_match
+            else {}
+        )
         enriched_devices = []
 
         for dev in visibility_info.get("devices", []):

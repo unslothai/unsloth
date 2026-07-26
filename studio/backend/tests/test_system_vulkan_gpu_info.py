@@ -51,9 +51,7 @@ def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
     monkeypatch.setattr(main, "_system_gpu_cache", None)
 
-    gpu, inference_gpu = main._get_cached_system_gpu_info(
-        SimpleNamespace(debug = lambda *args: None)
-    )
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
 
     assert gpu["available"] is False
     assert gpu["backend"] == "cpu"
@@ -120,9 +118,7 @@ def test_system_gpu_info_keeps_forced_vulkan_separate_from_training_metrics(monk
     monkeypatch.setattr(hardware, "get_device", lambda: DeviceType.CUDA)
     monkeypatch.setattr(main, "_system_gpu_cache", None)
 
-    gpu, inference_gpu = main._get_cached_system_gpu_info(
-        SimpleNamespace(debug = lambda *args: None)
-    )
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
 
     assert gpu["backend"] == "cuda"
     assert gpu["devices"][0]["vram_used_gb"] == 6.0
@@ -169,9 +165,7 @@ def test_system_gpu_info_does_not_merge_metrics_across_backend_index_spaces(monk
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
     monkeypatch.setattr(main, "_system_gpu_cache", None)
 
-    gpu, inference_gpu = main._get_cached_system_gpu_info(
-        SimpleNamespace(debug = lambda *args: None)
-    )
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
 
     assert gpu["devices"] == [vulkan_device]
     assert inference_gpu == gpu

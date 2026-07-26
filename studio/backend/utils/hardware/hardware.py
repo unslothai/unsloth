@@ -2615,9 +2615,7 @@ def get_vulkan_inference_gpu_info() -> Optional[Dict[str, Any]]:
                     "visible_ordinal": ordinal,
                     "name": f"Vulkan{ordinal}",
                     "memory_total_gb": round(budget_mib / 1024, 2),
-                    "vram_used_gb": round(used_mib / 1024, 2)
-                    if used_mib is not None
-                    else None,
+                    "vram_used_gb": round(used_mib / 1024, 2) if used_mib is not None else None,
                     "vram_free_gb": round(free_mib / 1024, 2),
                     "vram_utilization_pct": round((used_mib / total_mib) * 100, 1)
                     if used_mib is not None and total_mib > 0
