@@ -96,7 +96,9 @@ def _strix_needs_amd_arch_index(ver: tuple[int, int]) -> bool:
 
 # AMD per-arch leaves needing the torch 2.11 floor (the _grouped_mm <2.11 bug).
 # Mirrors *FloorMap in install.ps1 / setup.ps1; other arches ship <2.11 and stay bare.
-_ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset({"gfx120x-all", "gfx1151", "gfx1150"})
+_ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset(
+    {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152"}
+)
 
 # pytorch.org rocmX.Y indexes KNOWN to ship torch 2.11 (rocm7.2 only today); don't
 # floor an unknown newer rocm speculatively. Match install.sh / setup.ps1 / install.ps1.
@@ -124,6 +126,7 @@ _WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     "gfx1200": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1151": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1150": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1152": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
 }
 _PYTORCH_WHL_BASE = (
     os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
@@ -369,6 +372,7 @@ _GFX_TO_AMD_INDEX_ARCH: dict[str, str] = {
     "gfx1200": "gfx120X-all",  # RDNA 4
     "gfx1151": "gfx1151",
     "gfx1150": "gfx1150",  # RDNA 3.5 (Strix Halo/Point)
+    "gfx1152": "gfx1152",  # RDNA 3.5 (Krackan Point)
     "gfx1103": "gfx110X-all",
     "gfx1102": "gfx110X-all",  # RDNA 3
     "gfx1101": "gfx110X-all",
@@ -738,19 +742,18 @@ def _detect_windows_gfx_arch() -> str | None:
 # prebuilts / AMD Windows torch indexes support; unknown names return None
 # (callers then fall back cleanly to CPU).
 _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
-    (r"9070 XT|9080", "gfx1201"),  # RDNA 4 (Radeon RX 9070 XT / 9080)
-    (r"9070|9060", "gfx1200"),  # RDNA 4 (Radeon RX 9070 / 9060)
+    (r"9070|9080", "gfx1201"),  # RDNA 4 (Navi 48: Radeon RX 9070 XT / 9070 GRE / 9070 / 9080)
+    (r"9060", "gfx1200"),  # RDNA 4 (Navi 44: Radeon RX 9060 XT / 9060)
     # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
     (r"8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max", "gfx1151"),
-    # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
-    (
-        r"890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]"
-        r"|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33",
-        "gfx1150",
-    ),
+    # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
+    (r"890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]", "gfx1150"),
+    # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
+    (r"860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33", "gfx1152"),
     # RDNA 3 desktop / workstation (Navi 31)
-    (r"RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700", "gfx1100"),
-    (r"RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710", "gfx1102"),  # Navi 33
+    (r"RX 7900|PRO W7900|PRO W7800", "gfx1100"),
+    (r"RX 7800|RX 7700(?!S)|PRO W7700|PRO V710", "gfx1101"),  # Navi 32
+    (r"RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500", "gfx1102"),  # Navi 33
     # RDNA 3 iGPU (Phoenix / Hawk Point)
     (r"780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme", "gfx1103"),
     (r"RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),  # Navi 21
@@ -777,13 +780,12 @@ def _linux_amd_gfx_from_cpuinfo() -> "str | None":
         return None
     if re.search(r"Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo", text, re.IGNORECASE):
         return "gfx1151"
-    if re.search(
-        r"890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]"
-        r"|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33",
-        text,
-        re.IGNORECASE,
-    ):
+    if re.search(r"890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]", text, re.IGNORECASE):
         return "gfx1150"
+    if re.search(
+        r"860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33", text, re.IGNORECASE
+    ):
+        return "gfx1152"
     return None
 
 
@@ -1896,7 +1898,7 @@ def _ensure_rocm_torch() -> None:
     # An explicit ROCm pin is authoritative: never auto-reroute it.
     if _strix_needs_amd_arch_index(ver) and _explicit_rocm_torch_index_url() is None:
         gfx_codes = _detect_amd_gfx_codes()
-        _strix_gfx = {"gfx1151", "gfx1150"}
+        _strix_gfx = {"gfx1151", "gfx1150", "gfx1152"}
         _detected_strix = _strix_gfx.intersection(gfx_codes)
         if _detected_strix:
             # Runtime-visible GPU (HIP_VISIBLE_DEVICES index into gfx_codes, else first);
