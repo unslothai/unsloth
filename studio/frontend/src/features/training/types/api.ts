@@ -31,6 +31,8 @@ export interface TrainingStartRequest {
   train_split: string | null;
   eval_split: string | null;
   dataset_streaming: boolean;
+  /** Controls how much dataset state is retained for portable checkpoint resume. */
+  portable_resume_data: "metadata" | "pinned" | "snapshot";
   dataset_slice_start: number | null;
   dataset_slice_end: number | null;
   local_datasets: string[];

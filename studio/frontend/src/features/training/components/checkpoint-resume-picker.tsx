@@ -3,9 +3,8 @@
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
+import { InfoHint } from "@/components/ui/info-hint";
 import { Label } from "@/components/ui/label";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Spinner } from "@/components/ui/spinner";
 import { FolderBrowser } from "@/features/model-picker";
 import { loadCheckpointLocation } from "@/features/settings/api/checkpoint-location";
@@ -13,7 +12,7 @@ import { useEffect, useId, useState } from "react";
 import { inspectCheckpoint } from "../api/train-api";
 import type { CheckpointInspection } from "../types/api";
 
-type Source = "none" | "latest" | "browse" | "mounted";
+type Source = "none" | "browse";
 
 export interface CheckpointResumePickerProps {
   disabled?: boolean;
@@ -34,7 +33,7 @@ export function CheckpointResumePicker({ disabled, onInspectionChange }: Checkpo
   const id = useId();
   const [source, setSource] = useState<Source>("none");
   const [configuredPath, setConfiguredPath] = useState("");
-  const [path, setPath] = useState("");
+  const [selectedPath, setSelectedPath] = useState("");
   const [browserOpen, setBrowserOpen] = useState(false);
   const [inspection, setInspection] = useState<CheckpointInspection | null>(null);
   const [confirmed, setConfirmed] = useState(false);
@@ -44,12 +43,6 @@ export function CheckpointResumePicker({ disabled, onInspectionChange }: Checkpo
   useEffect(() => {
     void loadCheckpointLocation().then((value) => setConfiguredPath(value.path)).catch(() => undefined);
   }, []);
-
-  useEffect(() => {
-    if (source === "latest" && configuredPath && !inspection && !loading) void inspect(configuredPath);
-    // `inspect` deliberately stays event-like; re-run only when the setting arrives.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [configuredPath, source]);
 
   async function inspect(selectedPath: string) {
     setInspection(null);
@@ -78,7 +71,6 @@ export function CheckpointResumePicker({ disabled, onInspectionChange }: Checkpo
     setConfirmed(false);
     setError(null);
     onInspectionChange(null, false, next !== "none");
-    if (next === "latest" && configuredPath) void inspect(configuredPath);
     if (next === "browse") setBrowserOpen(true);
   }
 
@@ -94,19 +86,48 @@ export function CheckpointResumePicker({ disabled, onInspectionChange }: Checkpo
   );
 
   return (
-    <div className="space-y-3 rounded-lg border border-border/60 p-3" data-testid="checkpoint-resume-picker">
-      <Label className="text-sm font-medium">Resume from checkpoint</Label>
-      <RadioGroup value={source} onValueChange={(value) => choose(value as Source)} disabled={disabled}>
-        <label className="flex items-start gap-2"><RadioGroupItem value="none" /> <span className="text-sm">Start a new training run</span></label>
-        <label className="flex items-start gap-2"><RadioGroupItem value="latest" /> <span className="text-sm">Latest Studio checkpoint<span className="block max-w-72 truncate font-mono text-xs text-muted-foreground" title={configuredPath}>{configuredPath || "Configured checkpoint location"}</span></span></label>
-        <label className="flex items-center gap-2"><RadioGroupItem value="browse" /> <span className="text-sm">Browse directory</span></label>
-        <label className="flex items-start gap-2"><RadioGroupItem value="mounted" /> <span className="text-sm">Mounted-storage path<span className="block text-xs text-muted-foreground">Use paths such as /content/drive/MyDrive/… on Colab or /kaggle/working/… on Kaggle.</span></span></label>
-      </RadioGroup>
+    <div className="space-y-3 rounded-xl border border-border/60 bg-muted/10 p-3" data-testid="checkpoint-resume-picker">
+      <div className="flex items-center gap-1.5">
+        <Label className="text-sm font-medium">How should training start?</Label>
+        <InfoHint>
+          Resume restores model, optimizer, scheduler, and step state from a complete checkpoint. Use New training when you do not need previous trainer state.
+        </InfoHint>
+      </div>
 
-      {source === "mounted" && <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); void inspect(path); }}>
-        <Input aria-label="Absolute mounted-storage path" value={path} onChange={(event) => setPath(event.target.value)} placeholder="/content/drive/MyDrive/checkpoints" />
-        <Button type="submit" variant="outline" disabled={loading}>Inspect</Button>
-      </form>}
+      <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted/60 p-1" role="group" aria-label="Training start mode">
+        <Button
+          type="button"
+          size="sm"
+          variant={source === "none" ? "secondary" : "ghost"}
+          className={source === "none" ? "bg-background shadow-sm hover:bg-background" : "text-muted-foreground"}
+          aria-pressed={source === "none"}
+          disabled={disabled}
+          onClick={() => choose("none")}
+        >
+          New training
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={source !== "none" ? "secondary" : "ghost"}
+          className={source !== "none" ? "bg-background shadow-sm hover:bg-background" : "text-muted-foreground"}
+          aria-pressed={source !== "none"}
+          disabled={disabled}
+          onClick={() => choose("browse")}
+        >
+          Resume checkpoint
+        </Button>
+      </div>
+
+      {source === "browse" && <div className="space-y-2 animate-in fade-in-0 slide-in-from-top-1 duration-150">
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          Browse any local or mounted folder, including Google Drive on Colab and persistent Kaggle storage. Studio will find the newest complete checkpoint inside it.
+        </p>
+        <Button type="button" variant="outline" className="w-full" disabled={disabled || loading} onClick={() => setBrowserOpen(true)}>
+          Browse checkpoint folder
+        </Button>
+        {selectedPath && <p className="truncate rounded-md bg-muted/50 px-2.5 py-2 font-mono text-[11px] text-muted-foreground" title={selectedPath}>{selectedPath}</p>}
+      </div>}
       {loading && <div className="flex items-center gap-2 text-xs text-muted-foreground"><Spinner className="size-3" />Inspecting checkpoint…</div>}
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
 
@@ -129,7 +150,7 @@ export function CheckpointResumePicker({ disabled, onInspectionChange }: Checkpo
         {inspection.external && <label htmlFor={`${id}-confirm`} className="flex items-start gap-2 border-t pt-2 font-medium"><Checkbox id={`${id}-confirm`} checked={confirmed} onCheckedChange={(value) => setConfirmation(value === true)} />I understand this checkpoint was imported from outside Studio and want to resume it.</label>}
       </div>}
 
-      <FolderBrowser open={browserOpen} onOpenChange={setBrowserOpen} initialPath={configuredPath || undefined} title="Select checkpoint directory" confirmLabel="Inspect this directory" showModelHints={false} onSelect={(selected) => { setPath(selected); void inspect(selected); }} />
+      <FolderBrowser open={browserOpen} onOpenChange={setBrowserOpen} initialPath={configuredPath || undefined} title="Select checkpoint directory" confirmLabel="Inspect this directory" showModelHints={false} onSelect={(selected) => { setSelectedPath(selected); void inspect(selected); }} />
     </div>
   );
 }
