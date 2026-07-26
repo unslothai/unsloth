@@ -1042,7 +1042,6 @@ class TestCompanionSearchRootSuffixedQuantDir:
     @staticmethod
     def _root(path):
         from utils.models.model_config import _local_gguf_companion_search_root
-
         return _local_gguf_companion_search_root(path, path)
 
     @pytest.mark.parametrize(
