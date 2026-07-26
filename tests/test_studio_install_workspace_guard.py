@@ -564,7 +564,7 @@ def test_tauri_preflight_scrubs_studio_home_env():
         preflight_root / "preflight.rs",
         *(preflight_root / "preflight").glob("*.rs"),
     ]
-    preflight = "\n".join(p.read_text() for p in preflight_paths if p.exists())
+    preflight = "\n".join(p.read_text(encoding = "utf-8") for p in preflight_paths if p.exists())
     commands = (REPO_ROOT / "studio" / "src-tauri" / "src" / "commands.rs").read_text(
         encoding = "utf-8"
     )

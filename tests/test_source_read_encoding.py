@@ -37,14 +37,17 @@ the call sites of the helper it sits in, which keeps them mechanical enough to
 enforce with no allowlist and quiet about temp-dir I/O, where the platform
 default is harmless and the test wrote the bytes itself.
 
-Two shapes are consequently out of reach, both fixed by hand and neither
-decidable without tracking values through returns. A path a helper hands back
-rather than takes in, as `for path in _iter_caller_files()` does in
-test_security_gate_consistency.py, says nothing about itself at the read. And
-text read from a checked-in file then written back to a tmp_path, as at
-test_studio_install_workspace_guard.py:851 and test_scan_packages.py:40, is
-unsafe only because of where the string came from. Reviewers have to catch
-those two.
+Three shapes are consequently out of reach, all fixed by hand and none decidable
+from the call. A path a helper hands back rather than takes in, as
+`for path in _iter_caller_files()` does in test_security_gate_consistency.py,
+says nothing about itself at the read. Text read from a checked-in file and
+then written back to a tmp_path, at test_studio_install_workspace_guard.py:851
+and test_scan_packages.py:40, is unsafe only because of where the string came
+from. And a read inside a `python -c` snippet, as test_studio_import_no_torch.py
+builds for eight subprocess tests, runs in a child interpreter this scan never
+parses: the snippet is an f-string whose paths are replacement fields, so
+recovering it would mean evaluating the interpolation. Reviewers have to catch
+those three.
 """
 
 # `str | None` below is evaluated at import on Python 3.9 without this, and
@@ -77,19 +80,9 @@ def _test_roots(repo: Path) -> tuple:
 
 ROOTS = _test_roots(REPO)
 GUARDED_METHODS = {"read_text", "write_text"}
-NOT_PATH_RECEIVERS = {
-    "codecs",
-    "dbm",
-    "fitz",
-    "os",
-    "pymupdf",
-    "shelve",
-    "sqlite3",
-    "tarfile",
-    "wave",
-    "webbrowser",
-    "zipfile",
-}
+# Openers that are somebody else's are recognised by the file's own imports
+# rather than a fixed list, so `import tarfile as tf` and `from PIL import
+# Image` are both covered without naming either.
 # These wrap their stream in a TextIOWrapper for a "t" mode, which takes the
 # platform default exactly like builtin open. Unlike open they default to "rb",
 # so only an explicit text mode is in scope. lzma takes encoding keyword-only.
@@ -127,8 +120,6 @@ PATH_METHODS = {
     "with_name",
     "with_suffix",
 }
-# Receivers that are not themselves a path, so the path is the first argument.
-MODULE_RECEIVERS = set(NOT_PATH_RECEIVERS) | set(COMPRESSED_OPENERS) | PATH_CLASSES | {"io"}
 # Where each API takes its encoding positionally, for the bound call.
 ENCODING_POSITION = {"read_text": 0, "write_text": 1, "Path.open": 2, "open": 3}
 # Distinct from None so that "no mode argument at all" still means text.
@@ -308,7 +299,27 @@ def _local_names(func) -> set:
     return names
 
 
-def _path_expr(call: ast.Call):
+def _imported_names(tree: ast.Module) -> set:
+    """Every name an import binds anywhere in the file.
+
+    A receiver bound that way is a module, so `Image.open(...)` after
+    `from PIL import Image` and `tf.open(...)` after `import tarfile as tf` are
+    both somebody else's opener. Reading the imports instead of keeping a list
+    of module names is what makes aliases and unfamiliar libraries work.
+    """
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.update((a.asname or a.name).split(".")[0] for a in node.names)
+    return names
+
+
+def _is_module_receiver(name, modules) -> bool:
+    """True for a receiver that is not itself a path."""
+    return name in modules or name in PATH_CLASSES or name in COMPRESSED_OPENERS or name == "io"
+
+
+def _path_expr(call: ast.Call, modules = frozenset()):
     """The expression naming the file the call reads.
 
     Usually the receiver, but a module or the Path class in that slot means the
@@ -317,7 +328,7 @@ def _path_expr(call: ast.Call):
     """
     func = call.func
     if isinstance(func, ast.Attribute):
-        if isinstance(func.value, ast.Name) and func.value.id in MODULE_RECEIVERS:
+        if isinstance(func.value, ast.Name) and _is_module_receiver(func.value.id, modules):
             return call.args[0] if call.args else None
         return func.value
     if isinstance(func, ast.Name) and func.id == "open":
@@ -371,7 +382,13 @@ def _is_checked_in_root(
         # `for path in (MODEL_SELECTOR, APP_SIDEBAR)` is checked in when every
         # element is, which is what makes the loop variable one too.
         return bool(node.elts) and all(
-            _is_checked_in_root(e, module_names, shadowed, derived) for e in node.elts
+            _is_checked_in_root(
+                e.value if isinstance(e, ast.Starred) else e,
+                module_names,
+                shadowed,
+                derived,
+            )
+            for e in node.elts
         )
     root = _path_root(node)
     if isinstance(root, ast.Constant) and isinstance(root.value, str):
@@ -518,7 +535,7 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
         good = grown
 
 
-def _checked_in_path_calls(tree: ast.Module):
+def _checked_in_path_calls(tree: ast.Module, modules = frozenset()):
     """Yield calls, at any depth, whose path is provably a checked-in file.
 
     The import-time walk alone leaves test bodies unguarded, and a bare read
@@ -556,7 +573,7 @@ def _checked_in_path_calls(tree: ast.Module):
                 yield from visit(node.generators[0].iter, shadowed, derived)
             return
         elif isinstance(node, ast.Call):
-            expr = _path_expr(node)
+            expr = _path_expr(node, modules)
             if expr is not None and _is_checked_in_root(expr, module_names, shadowed, derived):
                 yield node
         for child in ast.iter_child_nodes(node):
@@ -625,7 +642,7 @@ def _pins_encoding(call: ast.Call, position: int | None) -> bool:
     return _names_encoding(call)
 
 
-def _offender(call: ast.Call) -> str | None:
+def _offender(call: ast.Call, modules = frozenset()) -> str | None:
     """The call's name if it reads text without an encoding, else None."""
     func = call.func
     if isinstance(func, ast.Attribute):
@@ -657,9 +674,10 @@ def _offender(call: ast.Call) -> str | None:
                     return None  # "rb" default, so binary unless asked otherwise
                 position = COMPRESSED_OPENERS[receiver]
                 return None if _pins_encoding(call, position) else f"{receiver}.open()"
-            # Any other `<module>.open(...)` is somebody else's opener:
-            # tarfile.open takes a compression mode, fitz.open takes filetype=.
-            if receiver in NOT_PATH_RECEIVERS:
+            # Any other module receiver is somebody else's opener: tarfile.open
+            # takes a compression mode, Image.open takes a binary file. Neither
+            # has an encoding to name, so demanding one leaves no correct edit.
+            if receiver is not None and receiver in modules and receiver not in PATH_CLASSES:
                 return None
             if not _is_text(call, shift):
                 return None
@@ -677,10 +695,11 @@ def _offender(call: ast.Call) -> str | None:
 
 def _scan(tree: ast.Module, rel: str):
     """Offenders from both rules, reported once each and in source order."""
+    modules = _imported_names(tree)
     calls = {id(c): c for c in _import_time_calls(tree)}
-    calls.update({id(c): c for c in _checked_in_path_calls(tree)})
+    calls.update({id(c): c for c in _checked_in_path_calls(tree, modules)})
     for call in sorted(calls.values(), key = lambda c: (c.lineno, c.col_offset)):
-        name = _offender(call)
+        name = _offender(call, modules)
         if name is not None:
             yield f"{rel}:{call.lineno}: {name}"
 
