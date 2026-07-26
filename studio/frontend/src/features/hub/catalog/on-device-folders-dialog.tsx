@@ -131,15 +131,17 @@ export function OnDeviceFoldersDialog({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
+    // The dialog stays mounted between opens, so re-arm the flag or a reopen
+    // shows the previous answer as if it were fresh.
+    setDownloadCacheLoaded(false);
     loadHuggingFaceCacheSettings()
+      // Indexed locations do not depend on this. Null drops the stale path
+      // rather than offer Change against a location we could not confirm.
+      .catch(() => null)
       .then((settings) => {
-        if (!cancelled) setDownloadCache(settings);
-      })
-      // Indexed locations do not depend on this; on failure the path shows as
-      // unknown and Change stays disabled.
-      .catch(() => undefined)
-      .finally(() => {
-        if (!cancelled) setDownloadCacheLoaded(true);
+        if (cancelled) return;
+        setDownloadCache(settings);
+        setDownloadCacheLoaded(true);
       });
     return () => {
       cancelled = true;
