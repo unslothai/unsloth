@@ -2268,27 +2268,72 @@ export async function autoLoadOnDeviceModel(): Promise<{
         row.model_format === "gguf" ||
         row.capabilities?.requires_variant !== true,
     );
-    const resolutionJobs: Array<() => Promise<FallbackCandidate | null>> = [
-      ...ggufRepos.map((repo) => () => resolveCachedGgufEntry(repo)),
-      ...cascadeLocalRows.map(
-        (row) => async (): Promise<FallbackCandidate | null> => {
-          const resolved = await resolveLocalRowCandidate(
-            row,
-            null,
-            isSkippedAutoLoadCandidate,
-          );
-          if (!resolved) {
-            return null;
+    // Only GGUF directory rows hit the backend folder scan; everything else
+    // resolves in-process and is seeded straight into the pool so it can
+    // never queue behind slow scans.
+    const needsVariantScan = (row: LocalModelInfo): boolean =>
+      row.model_format === "gguf" &&
+      row.capabilities?.requires_variant === true;
+    await Promise.all(
+      cascadeLocalRows
+        .filter((row) => !needsVariantScan(row))
+        .map(async (row) => {
+          try {
+            const resolved = await resolveLocalRowCandidate(
+              row,
+              null,
+              isSkippedAutoLoadCandidate,
+            );
+            if (resolved) {
+              insertReady({
+                type: "local",
+                row,
+                candidate: resolved.candidate,
+                sizeBytes: resolved.sizeBytes,
+              });
+            }
+          } catch {
+            hadNonTrustFailure = true;
           }
-          return {
-            type: "local",
-            row,
-            candidate: resolved.candidate,
-            sizeBytes: resolved.sizeBytes,
-          };
-        },
-      ),
-    ];
+        }),
+    );
+    // The remaining jobs all need a backend scan and can all yield GGUF
+    // candidates. Cached repos and local folders interleave so a run of
+    // slow scans from one source cannot monopolize every worker.
+    const cachedScanJobs = ggufRepos.map(
+      (repo) => () => resolveCachedGgufEntry(repo),
+    );
+    const localScanJobs = cascadeLocalRows.filter(needsVariantScan).map(
+      (row) => async (): Promise<FallbackCandidate | null> => {
+        const resolved = await resolveLocalRowCandidate(
+          row,
+          null,
+          isSkippedAutoLoadCandidate,
+        );
+        if (!resolved) {
+          return null;
+        }
+        return {
+          type: "local",
+          row,
+          candidate: resolved.candidate,
+          sizeBytes: resolved.sizeBytes,
+        };
+      },
+    );
+    const resolutionJobs: Array<() => Promise<FallbackCandidate | null>> = [];
+    for (
+      let jobIndex = 0;
+      jobIndex < Math.max(cachedScanJobs.length, localScanJobs.length);
+      jobIndex += 1
+    ) {
+      if (jobIndex < cachedScanJobs.length) {
+        resolutionJobs.push(cachedScanJobs[jobIndex]);
+      }
+      if (jobIndex < localScanJobs.length) {
+        resolutionJobs.push(localScanJobs[jobIndex]);
+      }
+    }
     let pendingJobs = resolutionJobs.length;
     let progressWaiters: Array<() => void> = [];
     const signalProgress = (): void => {
@@ -2341,7 +2386,7 @@ export async function autoLoadOnDeviceModel(): Promise<{
       });
     }
     while (loadAttempts < MAX_AUTO_LOAD_ATTEMPTS) {
-      const candidate = readyPool.shift();
+      const candidate = readyPool[0];
       if (!candidate) {
         if (pendingJobs <= 0) {
           break;
@@ -2349,6 +2394,15 @@ export async function autoLoadOnDeviceModel(): Promise<{
         await nextProgress();
         continue;
       }
+      // Every pending scan job can still yield a GGUF candidate (no-scan
+      // rows were seeded upfront), and GGUF outranks safetensors in the
+      // documented order, so the model-kind group stays gated until the
+      // scans settle; resolved GGUF entries keep flowing immediately.
+      if (isModelKindEntry(candidate) && pendingJobs > 0) {
+        await nextProgress();
+        continue;
+      }
+      readyPool.shift();
       if (candidate.type === "cached-gguf") {
         const repo = candidate.repo;
         if (!candidate.retry) {

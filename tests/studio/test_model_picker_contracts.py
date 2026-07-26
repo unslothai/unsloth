@@ -909,6 +909,27 @@ def test_send_not_blocked_by_full_inventory_resolution():
     assert "clearTimeout(graceTimer)" in auto_load
     assert "await nextProgress();" in auto_load
     assert "if (pendingJobs <= 0) {" in auto_load
+    # Rows that need no backend scan seed the pool before the workers start,
+    # so they can never queue behind slow folder scans.
+    assert "const needsVariantScan" in auto_load
+    assert ".filter((row) => !needsVariantScan(row))" in auto_load
+    assert auto_load.index(".filter((row) => !needsVariantScan(row))") < auto_load.index(
+        "const cachedScanJobs"
+    )
+    # Cached and local scans interleave so one slow source cannot
+    # monopolize every worker.
+    assert "resolutionJobs.push(cachedScanJobs[jobIndex])" in auto_load
+    assert "resolutionJobs.push(localScanJobs[jobIndex])" in auto_load
+
+
+def test_pending_gguf_scans_gate_safetensors_candidates():
+    """GGUF-first is the documented preference order, and incremental
+    consumption must not let an instantly-resolved safetensors row claim a
+    load slot while a pending folder scan can still yield a GGUF candidate;
+    resolved GGUF entries are never gated."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
+    assert "if (isModelKindEntry(candidate) && pendingJobs > 0) {" in auto_load
 
 
 def test_autoload_keys_preserve_posix_path_case():
