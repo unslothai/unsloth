@@ -460,6 +460,30 @@ def list_recipe_executions(
         conn.close()
 
 
+def get_recipe_execution(
+    owner_subject: str, recipe_id: str, execution_id: str
+) -> dict[str, Any] | None:
+    owner = _require_owner(owner_subject)
+    parent_id = validate_id(recipe_id, "recipe id")
+    asset_id = validate_id(execution_id, "execution id")
+    conn = studio_db.get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT execution.* FROM data_recipe_executions AS execution
+            JOIN data_recipes AS recipe
+              ON recipe.owner_subject = execution.owner_subject
+             AND recipe.id = execution.recipe_id
+            WHERE execution.owner_subject = ? AND execution.recipe_id = ?
+              AND execution.id = ? AND recipe.deleted_at IS NULL
+            """,
+            (owner, parent_id, asset_id),
+        ).fetchone()
+        return _execution_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
 def upsert_recipe_execution(
     owner_subject: str,
     recipe_id: str,

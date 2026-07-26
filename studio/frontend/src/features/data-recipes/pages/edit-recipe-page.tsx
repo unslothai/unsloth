@@ -119,6 +119,9 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
           } catch (error) {
             if (!controller.signal.aborted) {
               console.warn("Legacy recipe import failed:", error);
+              throw new Error(
+                "We couldn't import this local recipe. Check your connection and try again.",
+              );
             }
           }
           if (!controller.signal.aborted) {

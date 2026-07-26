@@ -178,6 +178,7 @@ export function serializeExecutionMetadata(
     source_progress: null,
     model_usage: null,
     lastEventId: record.lastEventId,
+    artifact_path: truncateUtf8(record.artifact_path, 4096),
     datasetTotal: Math.max(0, Math.floor(record.datasetTotal || 0)),
     analysis: null,
     error: truncateUtf8(record.error, 4096),
@@ -263,7 +264,10 @@ function mergeJsonValue(current: unknown, incoming: unknown): unknown {
     }
     return merged;
   }
-  return incoming;
+  // Terminal snapshots can arrive out of order from another tab. Once a scalar
+  // was persisted, retaining it is safer than letting a delayed sparse snapshot
+  // regress progress or usage counters.
+  return current;
 }
 
 function mergeOptionalObject<T extends object>(
@@ -293,6 +297,7 @@ function mergeTerminalSnapshots(
     status: useIncomingState ? incoming.status : current.status,
     lastEventId: useIncomingState ? incoming.lastEventId : current.lastEventId,
     jobId: preferString(current.jobId, incoming.jobId),
+    artifact_path: preferString(current.artifact_path, incoming.artifact_path),
     run_name: preferString(current.run_name, incoming.run_name),
     rows: Math.max(current.rows, incoming.rows),
     recipeSignature:

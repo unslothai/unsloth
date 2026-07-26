@@ -245,6 +245,20 @@ export function listServerRecipeExecutions<TExecution>(
   );
 }
 
+export function getServerRecipeExecutionDataset(
+  recipeId: string,
+  executionId: string,
+  options: { limit?: number; offset?: number } = {},
+) {
+  const params = new URLSearchParams({
+    limit: String(options.limit ?? 20),
+    offset: String(options.offset ?? 0),
+  });
+  return requestJson<{ dataset?: unknown[]; total?: number }>(
+    `/recipes/${assetPathSegment(recipeId)}/executions/${assetPathSegment(executionId)}/dataset?${params.toString()}`,
+  );
+}
+
 export function upsertServerRecipeExecution<TExecution>(
   input: {
     recipeId: string;

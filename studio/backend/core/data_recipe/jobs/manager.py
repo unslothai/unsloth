@@ -411,13 +411,25 @@ class JobManager:
                 return {"error": "artifact path missing"}
             return None
 
+        return self.get_dataset_from_artifact(
+            artifact_path, limit = limit, offset = offset
+        )
+
+    @staticmethod
+    def get_dataset_from_artifact(
+        artifact_path: str, *, limit: int, offset: int = 0
+    ) -> dict[str, Any]:
+        """Load a durable dataset page from a server-owned recipe artifact."""
         try:
-            base_dataset_path = Path(artifact_path)
+            from utils.paths import resolve_dataset_path
+
+            base_dataset_path = resolve_dataset_path(artifact_path)
             parquet_dir = base_dataset_path / "parquet-files"
             if not parquet_dir.exists():
                 return {"error": f"dataset path missing: {parquet_dir}"}
-
-            return self._load_dataset_page(parquet_dir = parquet_dir, limit = limit, offset = offset)
+            return JobManager._load_dataset_page(
+                parquet_dir = parquet_dir, limit = limit, offset = offset
+            )
         except Exception as exc:
             return {"error": f"dataset load failed: {exc}"}
 

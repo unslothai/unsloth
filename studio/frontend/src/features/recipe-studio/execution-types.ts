@@ -128,6 +128,7 @@ export type RecipeExecutionMetadata = Pick<
   | "source_progress"
   | "model_usage"
   | "lastEventId"
+  | "artifact_path"
   | "datasetTotal"
   | "analysis"
   | "error"

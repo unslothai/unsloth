@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getRecipeJobDataset } from "../api";
+import { getServerRecipeExecutionDataset } from "@/features/user-assets";
 import { listRecipeExecutionPage } from "../data/executions-db";
 import type { RecipeExecutionRecord } from "../execution-types";
 import {
@@ -24,10 +24,11 @@ export async function hydrateCompletedFullExecutionDataset(
   ) {
     return execution;
   }
-  const response = await getRecipeJobDataset(execution.jobId, {
-    limit: DATASET_PAGE_SIZE,
-    offset: 0,
-  });
+  const response = await getServerRecipeExecutionDataset(
+    execution.recipeId,
+    execution.id,
+    { limit: DATASET_PAGE_SIZE, offset: 0 },
+  );
   return {
     ...execution,
     dataset: normalizeDatasetRows(response.dataset),

@@ -76,6 +76,7 @@ class ExecutionUpsertRequest(StrictModel):
     source_progress: dict[str, Any] | None = None
     model_usage: dict[str, Any] | None = None
     lastEventId: int | None = Field(default = None, ge = 0)
+    artifact_path: str | None = Field(default = None, max_length = 4096)
     datasetTotal: int | None = Field(default = None, ge = 0)
     analysis: dict[str, Any] | None = None
     error: str | None = None

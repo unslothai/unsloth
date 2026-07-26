@@ -47,6 +47,7 @@ EXECUTION_METADATA_FIELDS = frozenset(
         "source_progress",
         "model_usage",
         "lastEventId",
+        "artifact_path",
         "datasetTotal",
         "analysis",
         "error",
@@ -424,6 +425,7 @@ def project_execution_metadata(value: Any) -> dict[str, Any]:
     projected: dict[str, Any] = {}
     string_fields = {
         "jobId": (MAX_ID_CHARS, True),
+        "artifact_path": (4096, True),
         "kind": (32, False),
         "run_name": (MAX_NAME_CHARS, True),
         "status": (32, False),

@@ -68,6 +68,24 @@ def test_execution_timestamps_remain_monotonic_across_clock_rollback(monkeypatch
         )
 
 
+def test_execution_artifact_reference_is_owner_scoped_and_durable():
+    user_assets_db.create_recipe("owner-a", recipe())
+    user_assets_db.create_recipe("owner-b", recipe())
+    saved = user_assets_db.upsert_recipe_execution(
+        "owner-a",
+        "r1",
+        "e1",
+        execution(artifact_path = "recipes/recipe_r1"),
+    )
+
+    assert saved["artifact_path"] == "recipes/recipe_r1"
+    assert (
+        user_assets_db.get_recipe_execution("owner-a", "r1", "e1")["artifact_path"]
+        == "recipes/recipe_r1"
+    )
+    assert user_assets_db.get_recipe_execution("owner-b", "r1", "e1") is None
+
+
 def test_recipe_update_preserves_omitted_learning_linkage_and_can_clear_it():
     inserted = user_assets_db.create_recipe(
         "owner",

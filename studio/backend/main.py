@@ -767,6 +767,11 @@ from utils.upload_limits import (  # noqa: E402
     default_request_body_limit_bytes,
     upload_request_limit_bytes,
 )
+from core.user_assets_validation import (  # noqa: E402
+    MAX_EXECUTION_JSON_BYTES,
+    MAX_LEGACY_BATCH_JSON_BYTES,
+    MAX_RECIPE_JSON_BYTES,
+)
 
 _BODY_PROTECTED_PREFIXES = (
     "/api/user-assets",
@@ -803,6 +808,12 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
 
 
 def _get_request_body_max_bytes(path: str) -> int:
+    if path.startswith("/api/user-assets/legacy-import"):
+        return MAX_LEGACY_BATCH_JSON_BYTES
+    if "/executions/" in path and path.startswith("/api/user-assets/recipes/"):
+        return MAX_EXECUTION_JSON_BYTES
+    if path.startswith("/api/user-assets/recipes"):
+        return MAX_RECIPE_JSON_BYTES
     if path.startswith("/api/inference/audio/transcribe/raw"):
         return STT_AUDIO_RAW_MAX_BYTES
     if path.startswith("/api/inference/audio/transcribe"):

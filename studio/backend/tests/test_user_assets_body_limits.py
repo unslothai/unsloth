@@ -5,7 +5,12 @@ from __future__ import annotations
 
 import pytest
 
-from main import MaxBodyMiddleware, _BODY_PROTECTED_PREFIXES
+from core.user_assets_validation import (
+    MAX_EXECUTION_JSON_BYTES,
+    MAX_LEGACY_BATCH_JSON_BYTES,
+    MAX_RECIPE_JSON_BYTES,
+)
+from main import MaxBodyMiddleware, _BODY_PROTECTED_PREFIXES, _get_request_body_max_bytes
 
 
 MUTATION_PATHS = [
@@ -82,3 +87,16 @@ async def test_user_asset_mutations_reject_chunked_oversized_bodies(method, path
     )
     assert not called
     assert sent[0]["status"] == 413
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/api/user-assets/recipes", MAX_RECIPE_JSON_BYTES),
+        ("/api/user-assets/recipes/r1", MAX_RECIPE_JSON_BYTES),
+        ("/api/user-assets/recipes/r1/executions/e1", MAX_EXECUTION_JSON_BYTES),
+        ("/api/user-assets/legacy-import", MAX_LEGACY_BATCH_JSON_BYTES),
+    ],
+)
+def test_user_asset_routes_use_policy_sized_body_caps(path, expected):
+    assert _get_request_body_max_bytes(path) == expected

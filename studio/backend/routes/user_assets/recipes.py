@@ -6,6 +6,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, Response, status
 
 from auth.authentication import get_current_subject
+from core.data_recipe.jobs.manager import JobManager
 from core.user_assets_validation import UserAssetValidationError
 from models.user_assets import (
     ExecutionListResponse,
@@ -133,6 +134,33 @@ def list_recipe_executions(
     if page is None:
         raise_not_found()
     return page
+
+
+@router.get("/recipes/{recipe_id}/executions/{execution_id}/dataset")
+def get_persisted_execution_dataset(
+    recipe_id: str,
+    execution_id: str,
+    limit: int = Query(default = 20, ge = 1, le = 500),
+    offset: int = Query(default = 0, ge = 0),
+    current_subject: str = Depends(get_current_subject),
+):
+    try:
+        execution = user_assets_db.get_recipe_execution(
+            current_subject, recipe_id, execution_id
+        )
+    except UserAssetValidationError as error:
+        raise_validation(error)
+    if execution is None:
+        raise_not_found()
+    artifact_path = execution.get("artifact_path")
+    if not isinstance(artifact_path, str) or not artifact_path:
+        raise_not_found()
+    result = JobManager.get_dataset_from_artifact(
+        artifact_path, limit = limit, offset = offset
+    )
+    if "error" in result:
+        raise_not_found()
+    return {**result, "limit": limit, "offset": offset}
 
 
 @router.put(
