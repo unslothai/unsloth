@@ -41,11 +41,15 @@ _ARCHES = {
 # Child: spoof each arch, then record device_type once (fresh import) and the
 # live llama.cpp target per arch. Emits one JSON line the parent parses.
 _CHILD = """
-import json, sys, types
+import importlib.machinery, json, sys, types
 sys.path.insert(0, {tests!r})
 # unsloth_zoo.__init__ imports bitsandbytes; once the ROCm spoof sets
-# torch.version.hip, that import tries to load libhipblas on CPU CI.
-sys.modules.setdefault("bitsandbytes", types.ModuleType("bitsandbytes"))
+# torch.version.hip, that import tries to load libhipblas on CPU CI. The stub
+# needs a __spec__: importlib.util.find_spec() raises ValueError without one,
+# and transformers < 5 probes the package that way at import time.
+_bnb = types.ModuleType("bitsandbytes")
+_bnb.__spec__ = importlib.machinery.ModuleSpec("bitsandbytes", None)
+sys.modules.setdefault("bitsandbytes", _bnb)
 import _zoo_rocm_spoof as spoof
 arches = {arches!r}
 spoof.apply(arches[0])

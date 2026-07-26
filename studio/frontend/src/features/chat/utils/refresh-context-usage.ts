@@ -96,29 +96,48 @@ function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
   };
 }
 
-function orderByParentChain<T extends MessageRecord>(
-  messages: T[],
-): T[] {
-  const byId = new Map<string, T>(messages.map((m) => [m.id, m]));
-  const childrenOf = new Map<string | null, T[]>();
-  for (const m of messages) {
-    const pid = m.parentId ?? null;
-    if (!childrenOf.has(pid)) childrenOf.set(pid, []);
-    childrenOf.get(pid)!.push(m);
+// Same order the history adapter sorts stored records in before importing them.
+const ROLE_ORDER: Record<string, number> = { system: 0, user: 1, assistant: 2 };
+
+/**
+ * Reproduce the branch the runtime actually displays for a stored thread.
+ *
+ * Mirrors the history adapter: sort by (createdAt, role, id), give legacy
+ * records without a parentId the previous record as parent, then take the
+ * ancestor chain of the last record -- assistant-ui imports without a headId,
+ * so it resets the head to the last message and shows that chain. A greedy
+ * newest-child descent picks a different branch (and drops pre-parentId
+ * history), which counts a conversation the user is not looking at.
+ */
+function orderBySelectedBranch<T extends MessageRecord>(messages: T[]): T[] {
+  const sorted = messages.slice().sort((a, b) => {
+    if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+    const aOrder = ROLE_ORDER[a.role] ?? 99;
+    const bOrder = ROLE_ORDER[b.role] ?? 99;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+
+  const byId = new Map<string, T>();
+  const parentOf = new Map<string, string | null>();
+  let previousId: string | null = null;
+  for (const m of sorted) {
+    byId.set(m.id, m);
+    parentOf.set(m.id, m.parentId ?? previousId);
+    previousId = m.id;
   }
 
-  const result: T[] = [];
-  let cur: string | null = null;
-  while (childrenOf.has(cur)) {
-    const children: T[] = childrenOf.get(cur)!;
-    const next: T = children.reduce((a: T, b: T) =>
-      a.createdAt >= b.createdAt ? a : b,
-    );
-    result.push(next);
-    cur = next.id;
-    byId.delete(next.id);
+  const chain: T[] = [];
+  const seen = new Set<string>();
+  let cur: string | null = sorted.at(-1)?.id ?? null;
+  while (cur != null && !seen.has(cur)) {
+    seen.add(cur);
+    const record = byId.get(cur);
+    if (!record) break;
+    chain.push(record);
+    cur = parentOf.get(cur) ?? null;
   }
-  return result;
+  return chain.reverse();
 }
 
 function zeroContextUsage(): SavedContextUsage {
@@ -140,7 +159,6 @@ export async function refreshContextUsage(options?: {
   /** When true, skip the modelLoading guard (post-load recount). */
   afterModelLoad?: boolean;
 }): Promise<void> {
-  const generation = ++refreshGeneration;
   const store = useChatRuntimeStore.getState();
   const threadId = options?.threadId ?? store.activeThreadId;
   const checkpoint = store.params.checkpoint;
@@ -153,6 +171,10 @@ export async function refreshContextUsage(options?: {
   ) {
     return;
   }
+
+  // Bump only once this call is going to do work, so a call that bails here
+  // cannot cancel a recount that is already in flight.
+  const generation = ++refreshGeneration;
 
   const capturedThreadId = threadId ?? null;
   const capturedCheckpoint = checkpoint;
@@ -183,13 +205,7 @@ export async function refreshContextUsage(options?: {
     }
 
     if (records.length > 0) {
-      const hasParentIds = records.some((m) => m.parentId != null);
-      const ordered = hasParentIds
-        ? orderByParentChain(records)
-        : records
-            .slice()
-            .sort((a, b) => a.createdAt - b.createdAt);
-      runMessages = ordered.map(storedMessageToRunMessage);
+      runMessages = orderBySelectedBranch(records).map(storedMessageToRunMessage);
 
       const savedUsage = getSavedContextUsageFromMessages(
         records,
@@ -224,6 +240,9 @@ export async function refreshContextUsage(options?: {
     }
 
     const toolExtras = await buildLocalTokenCountExtras(threadId, outbound);
+    // A completion finishing mid-count writes the exact usage for a turn this
+    // count predates, so drop the recount rather than roll the bar backwards.
+    const usageBeforeCount = useChatRuntimeStore.getState().contextUsage;
 
     let inputTokens = 0;
     if (outbound.length > 0) {
@@ -243,6 +262,9 @@ export async function refreshContextUsage(options?: {
       capturedThreadId != null &&
       useChatRuntimeStore.getState().activeThreadId !== capturedThreadId
     ) {
+      return;
+    }
+    if (useChatRuntimeStore.getState().contextUsage !== usageBeforeCount) {
       return;
     }
 

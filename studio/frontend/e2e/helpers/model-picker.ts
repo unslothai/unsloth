@@ -115,8 +115,11 @@ export async function ensureLocalModelLoaded(
     }
   }
 
+  // Arm the waiter before the load: waitForResponse only sees responses that
+  // arrive after it is called, and the recount fires as soon as the load ends.
+  const tokenCount = waitForContextTokenCount(page).catch(() => undefined);
   await selectLocalModelByName(page, displayName);
-  await waitForContextTokenCount(page).catch(() => undefined);
+  await tokenCount;
   await waitForContextUsageBar(page);
 }
 

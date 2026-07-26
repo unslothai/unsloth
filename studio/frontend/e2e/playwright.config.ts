@@ -32,7 +32,7 @@ export default defineConfig({
     {
       command: `npm run dev -- --host 127.0.0.1 --port ${frontendPort} --strictPort`,
       url: frontendBaseUrl,
-      reuseExistingServer: true,
+      reuseExistingServer: !process.env.CI,
       timeout: 180_000,
       cwd: "..",
     },

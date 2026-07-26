@@ -1,16 +1,28 @@
 #!/usr/bin/env python3
-"""API-stack E2E: load stories260K.gguf and POST /api/inference/chat/count_tokens."""
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""API-stack E2E: load a small GGUF and POST /api/inference/chat/count_tokens."""
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
-BASE = "http://127.0.0.1:8888"
-MODEL_PATH = "/root/.unsloth/.cache/stories260K.gguf"
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(BACKEND_DIR))
+
+from utils.paths.storage_roots import cache_root  # noqa: E402
+
+BASE = os.environ.get("E2E_BACKEND_URL", "http://127.0.0.1:8888")
+MODEL_PATH = os.environ.get(
+    "E2E_GGUF_PATH", str(cache_root() / "stories260K.gguf")
+)
 
 
 def _request(
@@ -46,9 +58,12 @@ def _request(
 
 
 def main() -> int:
-    sys.path.insert(0, "/root/unsloth/studio/backend")
     from auth import storage
     from auth.authentication import create_access_token
+
+    if not Path(MODEL_PATH).exists():
+        print(f"GGUF not found at {MODEL_PATH}; set E2E_GGUF_PATH")
+        return 1
 
     storage.ensure_default_admin()
     token = create_access_token(storage.DEFAULT_ADMIN_USERNAME)
