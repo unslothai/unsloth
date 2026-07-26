@@ -43,6 +43,15 @@ _ARCHES = {
 _CHILD = """
 import json, sys
 sys.path.insert(0, {tests!r})
+# Import bitsandbytes under the real torch first. unsloth_zoo pulls it in, and it
+# picks a compute backend at import: once the spoof reports an AMD GPU, it loads
+# its ROCm/CUDA ops, which a CPU-only torch cannot satisfy (no libhipblas, no
+# torch._C._cuda_getCurrentRawStream) and the child dies before printing RESULT.
+# Nothing here tests bitsandbytes, so let it see the honest hardware.
+try:
+    import bitsandbytes  # noqa: F401
+except Exception:
+    pass
 import _zoo_rocm_spoof as spoof
 arches = {arches!r}
 spoof.apply(arches[0])
