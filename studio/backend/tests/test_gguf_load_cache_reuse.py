@@ -32,9 +32,8 @@ _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
 _structlog_stub = _types.ModuleType("structlog")
-# routes/inference.py binds structlog.get_logger at import time through
-# core.inference.external_provider. setdefault keeps any bare stub an earlier
-# test module left behind, so repair that one too instead of relying on order.
+# routes/inference.py binds structlog.get_logger at import time, and setdefault
+# keeps a bare stub an earlier test left behind: repair it rather than rely on order.
 _structlog_stub.get_logger = lambda *_args, **_kwargs: logging.getLogger("structlog_stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 if not hasattr(sys.modules["structlog"], "get_logger"):
@@ -843,8 +842,8 @@ class TestLoadHubDownloadExclusion:
     ):
         """Drive /load's GGUF path and return the hub guard's require_mmproj.
 
-        Stops at the guard by making it report a conflicting download, so the
-        409 is the observation point and no llama-server is ever started.
+        The guard reports a conflicting download, so the 409 is the observation
+        point and no llama-server ever starts.
         """
         import core.inference.llama_cpp as llama_cpp_module
 
@@ -935,9 +934,9 @@ class TestLoadHubDownloadExclusion:
         return captured["require_mmproj"]
 
     def test_inherited_extra_args_shape_hub_guard_require_mmproj(self):
-        # Inheritance must resolve before the hub-download guard: the inherited
-        # --no-mmproj decides require_mmproj, so resolving it later would reject
-        # a load over an mmproj download the effective arguments disable (#7251).
+        # Inheritance must resolve before the hub-download guard: an inherited
+        # --no-mmproj decides require_mmproj, so resolving later rejects a load
+        # over a download the effective arguments disable (#7251).
         assert self._capture_hub_guard_require_mmproj(["--no-mmproj"]) is False
         # Control: nothing to inherit, so a vision GGUF still needs its mmproj.
         assert self._capture_hub_guard_require_mmproj([]) is True
