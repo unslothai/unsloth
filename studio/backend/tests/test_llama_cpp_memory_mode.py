@@ -1051,6 +1051,117 @@ def test_remote_diffusion_rejects_explicit_memory_mode_after_download(tmp_path):
         )
 
 
+def _memory_mode_preflight_backend(tmp_path, killed, *, arch, downloads = None):
+    """A backend whose teardown is observable, for the pre-Phase-1 checks."""
+    gguf = tmp_path / "model.gguf"
+    _write_minimal_gguf(gguf, arch = arch)
+
+    def _download(**_kwargs):
+        if downloads is not None:
+            downloads.append(True)
+        return str(gguf)
+
+    backend = LlamaCppBackend()
+    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend._is_vulkan_backend = lambda _binary = None: False
+    backend._download_gguf = _download
+    backend._kill_process = lambda *a, **k: killed.append(True)
+    backend._start_diffusion_server = lambda **_kwargs: pytest.fail(
+        "unsupported memory mode reached the diffusion runner"
+    )
+    return backend, gguf
+
+
+@pytest.mark.parametrize("mode", ["pinned", "resident", "RESIDENT"])
+def test_local_diffusion_memory_mode_rejected_before_teardown(tmp_path, mode):
+    """The reject is header-dependent, so it must not cost the live model.
+
+    Mirrors the Vulkan gpu_ids preflight (#7205): classify the GGUF before
+    Phase 1 rather than killing a healthy server and then returning 400.
+    """
+    killed: list[bool] = []
+    backend, gguf = _memory_mode_preflight_backend(
+        tmp_path, killed, arch = "diffusion-gemma"
+    )
+
+    with pytest.raises(ValueError, match = "host-memory modes are not supported"):
+        backend.load_model(
+            gguf_path = str(gguf),
+            model_identifier = "renamed/model",
+            speculative_type = "off",
+            memory_mode = mode,
+        )
+
+    assert killed == []
+
+
+def test_remote_diffusion_memory_mode_rejected_before_teardown(tmp_path):
+    """Same for an HF repo whose name gives the route no diffusion hint."""
+    killed: list[bool] = []
+    downloads: list[bool] = []
+    backend, _ = _memory_mode_preflight_backend(
+        tmp_path, killed, arch = "diffusion-gemma", downloads = downloads
+    )
+
+    with pytest.raises(ValueError, match = "host-memory modes are not supported"):
+        backend.load_model(
+            hf_repo = "renamed/model",
+            hf_variant = "Q4_K_M",
+            model_identifier = "renamed/model",
+            speculative_type = "off",
+            memory_mode = "resident",
+        )
+
+    assert killed == []
+    # The Phase 2 call reuses _preflight_model_path, so the classification
+    # must not cost a second fetch.
+    assert downloads == [True]
+
+
+@pytest.mark.parametrize("mode", [None, "auto", "AUTO", ""])
+def test_default_memory_mode_skips_the_diffusion_preflight(tmp_path, mode):
+    """Only an explicit mode has something to reject.
+
+    An auto/omitted load keeps downloading in Phase 2 (after teardown), so the
+    common path pays neither an extra header read nor a pre-teardown fetch.
+    """
+    killed: list[bool] = []
+    downloads: list[bool] = []
+    backend, _ = _memory_mode_preflight_backend(
+        tmp_path, killed, arch = "diffusion-gemma", downloads = downloads
+    )
+    backend._start_diffusion_server = lambda **_kwargs: True
+
+    assert backend.load_model(
+        hf_repo = "renamed/model",
+        hf_variant = "Q4_K_M",
+        model_identifier = "renamed/model",
+        speculative_type = "off",
+        memory_mode = mode,
+    )
+    assert killed == [True]
+    assert downloads == [True]
+
+
+@pytest.mark.parametrize("mode", ["pinned", "resident"])
+def test_non_diffusion_memory_mode_survives_the_preflight(tmp_path, mode):
+    """A normal GGUF with an explicit mode is not caught by the new preflight."""
+    backend, gguf = _fit_fallback_backend(tmp_path, gpu_memory = [(0, 10000, 16000)])
+    backend._select_gpus = lambda *a, **k: ([0], False)
+
+    with patch.object(subprocess, "Popen"):
+        assert (
+            backend.load_model(
+                gguf_path = str(gguf),
+                model_identifier = "plain/model",
+                speculative_type = "off",
+                memory_mode = mode,
+            )
+            is True
+        )
+    assert backend.requested_memory_mode == mode
+
+
 @pytest.mark.parametrize("mode", [None, "auto", "AUTO", ""])
 def test_diffusion_load_clears_stale_memory_mode(tmp_path, mode):
     """A diffusion load clears stale llama-server memory-mode state."""

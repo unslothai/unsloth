@@ -185,6 +185,10 @@ import {
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
+import {
+  consumeProjectSourcesPending,
+  hasProjectSourcesPending,
+} from "@/features/rag/components/project-source-dropzone";
 
 
 const ProjectSourcesPanel = lazy(() =>
@@ -998,7 +1002,14 @@ function ProjectLanding({
   const active = useChatActive();
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const initialActiveThreadRef = useRef<string | null>(null);
-  const [projectTab, setProjectTab] = useState<"chats" | "sources">("chats");
+  // Land on Sources when the project was just created with dropped files.
+  const [projectTab, setProjectTab] = useState<"chats" | "sources">(() =>
+    hasProjectSourcesPending(projectId) ? "sources" : "chats",
+  );
+  // Drop the marker once committed: React may replay the initializer above.
+  useEffect(() => {
+    consumeProjectSourcesPending(projectId);
+  }, [projectId]);
   const [pendingNewThreadId, setPendingNewThreadId] = useState<string | null>(
     null,
   );
@@ -2676,7 +2687,7 @@ export function ChatPage({
           config: meta?.config,
           nativePathToken: meta?.nativePathToken,
           nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,
-          forceReload: isSameLoadedModel || undefined,
+          forceReload: meta?.forceReload ?? (isSameLoadedModel || undefined),
         };
         await stageOrLoad(selection);
       })();

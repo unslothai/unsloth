@@ -68,16 +68,15 @@ def _emitter_client_text(events: list[str]) -> str:
 
 
 def test_anthropic_emitter_closes_reasoning_only_think_block():
-    # A reasoning-only reply streams <think>X live then shrinks to bare X at EOF.
-    # This emitter diffs cumulative snapshots and drops the shrink, so without a
-    # closing pass the client text would end on an unclosed <think>. finish()
-    # must balance it.
+    # Anthropic asks the GGUF generator not to promote reasoning into a duplicate
+    # visible fallback, so its final cumulative snapshot only balances the block.
     emitter = AnthropicStreamEmitter()
     events = emitter.start("msg_1", "m")
     events += emitter.feed({"type": "content", "text": "<think>The capital"})
     events += emitter.feed({"type": "content", "text": "<think>The capital of France is Paris."})
-    # The generator's final bare-text shrink (dropped by the cumulative diff).
-    events += emitter.feed({"type": "content", "text": "The capital of France is Paris."})
+    events += emitter.feed(
+        {"type": "content", "text": "<think>The capital of France is Paris.</think>"}
+    )
     events += emitter.finish()
 
     assert _emitter_client_text(events) == "<think>The capital of France is Paris.</think>"
@@ -1562,6 +1561,44 @@ class TestAnthropicMessagesToolRouting:
         assert entry["reply_preview"] == "ok"
         assert entry["context_length"] == 2048
         assert monitor.active_count() == 0
+
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.parametrize("with_tools", [False, True])
+    def test_reasoning_only_output_is_not_duplicated(self, monkeypatch, stream, with_tools):
+        reasoning = "The capital of France is Paris."
+
+        def _gen_plain(**kwargs):
+            assert kwargs["promote_reasoning_only"] is False
+            yield f"<think>{reasoning}"
+            yield f"<think>{reasoning}</think>"
+
+        def _gen_tools(**kwargs):
+            assert kwargs["promote_reasoning_only"] is False
+            yield {"type": "content", "text": f"<think>{reasoning}"}
+            yield {"type": "content", "text": f"<think>{reasoning}</think>"}
+
+        _mock_backend(
+            monkeypatch,
+            generate_chat_completion = _gen_plain,
+            generate_chat_completion_with_tools = _gen_tools,
+        )
+        payload_fields = {"stream": stream}
+        if with_tools:
+            payload_fields.update(
+                {
+                    "enable_tools": True,
+                    "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+                }
+            )
+        payload = _basic_payload(**payload_fields)
+
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+        if stream:
+            body = self._sse_blob(self._consume_response(response))
+            assert body.count(reasoning) == 1
+        else:
+            body = json.loads(response.body)
+            assert body["content"][0]["text"] == f"<think>{reasoning}</think>"
 
     def test_tool_use_non_streaming_records_api_monitor_reply(self, monkeypatch):
         import routes.inference as inf_mod

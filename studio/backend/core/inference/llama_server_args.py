@@ -77,12 +77,28 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
 _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
 
 
+def canonical_long_flag(name: str) -> str:
+    """Return ``name`` under llama.cpp's long-option underscore normalization.
+
+    ``common/arg.cpp`` runs ``std::replace(arg.begin(), arg.end(), '_', '-')``
+    on any argv token that starts with ``--`` before looking the option up, so
+    ``--no_mmap`` and ``--load_mode`` reach the child as ``--no-mmap`` and
+    ``--load-mode``. Match the same canonical name here, or an underscore
+    spelling slips past every managed/shadowing group and last-wins-overrides
+    the setting Unsloth owns. Short flags (``-lm``) are matched verbatim
+    upstream and never carry underscores, so they are returned unchanged.
+    Pass only the flag name: an attached ``=value`` must not be rewritten.
+    """
+    return name.replace("_", "-") if name.startswith("--") else name
+
+
 def _flag_name(token: str) -> Optional[str]:
     """Flag name for ``token``, or None if it isn't a flag.
 
     Peels `--key=value` to `--key`, treats `-1`/`-0.5` as values (shorts
-    always start with a letter), and normalises attached `-np8` / `-np-1` /
-    `-np8x` to `-np`. Mirrors the CLI's `_expand_attached_np_short`.
+    always start with a letter), normalises attached `-np8` / `-np-1` /
+    `-np8x` to `-np` (mirrors the CLI's `_expand_attached_np_short`), and
+    canonicalises long-flag underscores the way llama.cpp does.
     """
     token = token.strip()
     if not token.startswith("-") or token in {"-", "--"}:
@@ -96,7 +112,7 @@ def _flag_name(token: str) -> Optional[str]:
             len(suffix) > 1 and suffix[0] in {"-", "+"} and suffix[1].isdigit()
         ):
             return "-np"
-    return name
+    return canonical_long_flag(name)
 
 
 def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:

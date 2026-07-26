@@ -50,6 +50,21 @@ export class StreamInterruptedError extends Error {
   }
 }
 
+/**
+ * Thrown when a reasoning model consumes its output budget before emitting any
+ * standard content. Keeping this distinct from a dropped connection lets the
+ * chat UI explain why a completed stream contains only a thinking panel.
+ */
+export class GenerationLengthError extends Error {
+  constructor() {
+    super(
+      "The model reached the Max Tokens limit before producing a final answer. " +
+        "Increase Max Tokens or disable thinking, then retry.",
+    );
+    this.name = "GenerationLengthError";
+  }
+}
+
 export function notifyChatHistoryUpdated(): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
@@ -984,6 +999,61 @@ function parseSseEvent(rawEvent: string): string[] {
   return dataLines;
 }
 
+function hasNonWhitespaceText(value: unknown): boolean {
+  if (typeof value === "string") {
+    return value.trim().length > 0;
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => hasNonWhitespaceText(item));
+  }
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return ["thinking", "text", "content", "reasoning", "summary"].some(
+    (key) => key in record && hasNonWhitespaceText(record[key]),
+  );
+}
+
+function classifyStructuredDeltaContent(content: unknown): {
+  hasAssistantContent: boolean;
+  hasReasoningContent: boolean;
+} {
+  if (typeof content === "string") {
+    return {
+      hasAssistantContent: hasNonWhitespaceText(content),
+      hasReasoningContent: false,
+    };
+  }
+  if (!Array.isArray(content)) {
+    return {
+      hasAssistantContent: false,
+      hasReasoningContent: false,
+    };
+  }
+
+  let hasAssistantContent = false;
+  let hasReasoningContent = false;
+  for (const part of content) {
+    if (typeof part === "string") {
+      hasAssistantContent ||= hasNonWhitespaceText(part);
+      continue;
+    }
+    if (!part || typeof part !== "object") {
+      continue;
+    }
+    const record = part as Record<string, unknown>;
+    if (record.type === "thinking" || record.type === "reasoning") {
+      hasReasoningContent ||= hasNonWhitespaceText(record);
+    } else if (record.type === "text" || record.type === "output_text") {
+      const text =
+        typeof record.text === "string" ? record.text : record.content;
+      hasAssistantContent ||= hasNonWhitespaceText(text);
+    }
+  }
+  return { hasAssistantContent, hasReasoningContent };
+}
+
 export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
@@ -1011,6 +1081,19 @@ export async function* streamChatCompletions(
   // EOF without `[DONE]` or a finish_reason chunk means the stream was cut
   // mid-generation: surface as interrupted, not silent success.
   let sawTerminalSignal = false;
+  let terminalFinishReason: string | null = null;
+  let sawAssistantContent = false;
+  let sawReasoningContent = false;
+
+  const throwIfReasoningOnlyLength = () => {
+    if (
+      terminalFinishReason === "length" &&
+      sawReasoningContent &&
+      !sawAssistantContent
+    ) {
+      throw new GenerationLengthError();
+    }
+  };
 
   try {
     while (true) {
@@ -1020,6 +1103,7 @@ export async function* streamChatCompletions(
         if (!sawTerminalSignal) {
           throw new StreamInterruptedError();
         }
+        throwIfReasoningOnlyLength();
         break;
       }
 
@@ -1041,6 +1125,7 @@ export async function* streamChatCompletions(
         if (dataText === "[DONE]") {
           completed = true;
           sawTerminalSignal = true;
+          throwIfReasoningOnlyLength();
           return;
         }
 
@@ -1096,11 +1181,31 @@ export async function* streamChatCompletions(
         }
         // finish_reason is a valid terminal signal for providers that close
         // the stream without an explicit [DONE] sentinel.
-        const finishReason = (
+        const parsedChoices = (
           parsed as {
-            choices?: Array<{ finish_reason?: string | null }>;
+            choices?: Array<{
+              delta?: Record<string, unknown>;
+              finish_reason?: string | null;
+            }>;
           }
-        ).choices?.[0]?.finish_reason;
+        ).choices;
+        for (const choice of parsedChoices ?? []) {
+          const delta = choice.delta;
+          if (delta) {
+            const contentState = classifyStructuredDeltaContent(delta.content);
+            sawAssistantContent ||= contentState.hasAssistantContent;
+            sawReasoningContent ||= contentState.hasReasoningContent;
+            const reasoning =
+              delta.reasoning_content ??
+              delta.reasoning ??
+              delta.reasoning_details;
+            sawReasoningContent ||= hasNonWhitespaceText(reasoning);
+          }
+          if (choice.finish_reason) {
+            terminalFinishReason = choice.finish_reason;
+          }
+        }
+        const finishReason = parsedChoices?.[0]?.finish_reason;
         if (finishReason) {
           sawTerminalSignal = true;
         }

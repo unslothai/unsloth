@@ -965,3 +965,103 @@ def test_strip_memory_mode_kept_when_field_not_supplied():
     # Pass-through preserved when the user didn't change gguf_memory_mode.
     out = strip_shadowing_flags(["--mmap"], strip_memory_mode = False)
     assert out == ["--mmap"]
+
+
+# ── llama.cpp long-option underscore aliases ────────────────────────
+
+
+def test_canonical_long_flag_mirrors_llama_cpp_normalization():
+    """llama.cpp rewrites '_' to '-' for tokens starting with '--'.
+
+    common/arg.cpp runs std::replace(arg.begin(), arg.end(), '_', '-') before
+    the option lookup, and only for the '--' prefix, so short flags and values
+    must be left alone.
+    """
+    assert _lsa.canonical_long_flag("--no_mmap") == "--no-mmap"
+    assert _lsa.canonical_long_flag("--load_mode") == "--load-mode"
+    assert _lsa.canonical_long_flag("--no-mmap") == "--no-mmap"
+    # Short flags never carry underscores and are matched verbatim upstream.
+    assert _lsa.canonical_long_flag("-lm") == "-lm"
+    assert _lsa.canonical_long_flag("-np") == "-np"
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "--api_key",
+        "--api_key_file",
+        "--hf_token",
+        "--hf_repo",
+        "--model_url",
+        "--ssl_key_file",
+        "--no_webui",
+        "--slot_save_path",
+        "--n_parallel",
+        "--models_dir",
+    ],
+)
+def test_denylist_covers_underscore_aliases(flag):
+    # llama.cpp accepts the underscore spelling, so accepting it here would let
+    # a pass-through arg last-wins-override a flag Unsloth owns (auth, model
+    # identity, the proxy hop, the parallel-slot count).
+    assert is_managed_flag(flag) is True
+    with pytest.raises(ValueError, match = "managed by Unsloth Studio"):
+        validate_extra_args([flag, "x"])
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--no_mmap"],
+        ["--mmap"],
+        ["--load_mode", "mlock"],
+        ["--direct_io"],
+        ["--no_direct_io"],
+    ],
+)
+def test_strip_memory_mode_covers_underscore_aliases(args):
+    # gguf_memory_mode is Unsloth-owned once the caller supplies it; an
+    # inherited --no_mmap would otherwise survive and flip the applied mode.
+    assert strip_shadowing_flags(args, strip_memory_mode = True) == []
+
+
+@pytest.mark.parametrize(
+    ("args", "kwargs"),
+    [
+        (["--ctx_size", "8192"], {}),
+        (["--cache_type_k", "q8_0"], {}),
+        (["--cache_type_v", "q8_0"], {}),
+        (["--chat_template", "x"], {}),
+        (["--split_mode", "row"], {}),
+        (["--tensor_split", "1,1"], {"strip_tensor_split": True}),
+        (["--n_cpu_moe", "4"], {"strip_offload": True}),
+        (["--n_gpu_layers", "10"], {"strip_offload": True}),
+        (["--device", "CUDA0"], {"strip_device": True}),
+    ],
+)
+def test_strip_shadowing_flags_covers_underscore_aliases(args, kwargs):
+    assert strip_shadowing_flags(args, **kwargs) == []
+
+
+def test_underscore_alias_parsers_agree_with_hyphen_forms():
+    assert parse_ctx_override(["--ctx_size", "8192"]) == 8192
+    assert parse_cache_override(["--cache_type_k", "q8_0"]) == "q8_0"
+    assert parse_split_mode_override(["--split_mode", "row"]) == "row"
+
+
+def test_underscore_normalization_never_rewrites_values():
+    # Only the flag NAME is canonicalized: a value carrying underscores (an
+    # alias, a template, a path) must survive untouched.
+    assert strip_shadowing_flags(["--top-k", "my_value"]) == ["--top-k", "my_value"]
+    assert validate_extra_args(["--top_k", "my_value"]) == ["--top_k", "my_value"]
+    assert strip_shadowing_flags(["--chat-template", "a_b_c"], strip_template = False) == [
+        "--chat-template",
+        "a_b_c",
+    ]
+
+
+def test_underscore_alias_kept_when_group_not_stripped():
+    # Canonicalization must not widen what gets stripped: the memory-mode group
+    # is still opt-in, so an untouched Apply keeps the user's pass-through flag.
+    assert strip_shadowing_flags(["--no_mmap"]) == ["--no_mmap"]
+    assert strip_shadowing_flags(["--device"], strip_device = False) == ["--device"]

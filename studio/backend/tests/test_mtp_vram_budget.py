@@ -643,6 +643,52 @@ class TestExtraArgsMtpDetection:
     @pytest.mark.parametrize(
         "args,expected",
         [
+            # llama.cpp normalises '_' to '-' for any '--' token before the
+            # option lookup, so these place the drafter on a GPU exactly like
+            # the hyphen spellings. Missing them lets a pass-through arg escape
+            # the gpu_ids pin the training-coexistence guard budgeted.
+            (["--spec_draft_device", "CUDA1"], "CUDA1"),
+            (["--device_draft", "Vulkan2"], "Vulkan2"),
+            (["--spec_draft_device=CUDA1"], "CUDA1"),
+            # cpu / none stay non-conflicting under the alias too.
+            (["--spec_draft_device", "cpu"], None),
+            # last-wins across mixed spellings of the same flag.
+            (["--spec-draft-device", "CUDA1", "--spec_draft_device", "cpu"], None),
+            (["--spec_draft_device", "cpu", "--spec-draft-device", "CUDA1"], "CUDA1"),
+        ],
+    )
+    def test_draft_device_pin_underscore_aliases(self, args, expected):
+        assert _extra_args_draft_device_pin(args) == expected
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--spec_draft_ngl", "0"],
+            ["--gpu_layers_draft", "0"],
+            ["--n_gpu_layers_draft", "0"],
+        ],
+    )
+    def test_draft_cpu_offload_underscore_aliases(self, args):
+        # The budget must not charge a drafter llama.cpp will keep on CPU.
+        assert _extra_args_draft_offloaded_to_cpu(args, env = {}) is True
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            ["--spec_draft_device", "CUDA1"],
+            ["--device_draft=Vulkan0"],
+        ],
+    )
+    def test_gpu_device_pin_detects_underscore_aliases(self, cmd):
+        # A zero-offload launch masks the GPUs away from the child; a pin it
+        # cannot see aborts llama-server, so the alias must count as a pin.
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        assert LlamaCppBackend._cmd_has_gpu_device_pin(cmd) is True
+
+    @pytest.mark.parametrize(
+        "args,expected",
+        [
             (["--spec-draft-n-max", "4"], 4),
             (["--spec-draft-n-max=6"], 6),
             (["--spec-type", "draft-mtp", "--spec-draft-n-max", "3"], 3),
