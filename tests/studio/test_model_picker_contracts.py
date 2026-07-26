@@ -651,3 +651,19 @@ def test_local_model_sections_respect_the_task_filter():
         assert "passesTaskGate(m.task" in block.group(0), (
             f"{memo} does not apply the task gate"
         )
+
+
+def test_chat_picker_routes_diffusion_picks_to_their_page():
+    """Chat cannot load a diffusion model. Rather than hiding an on-device one or letting
+    it 400, the unfiltered picker routes the pick to the Images/Video page, which loads it."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    gate = re.search(r"function passesTaskGate\(.*?\n\}", src, re.S)
+    assert gate, "passesTaskGate not found"
+    # The chat branch no longer drops the generation tasks outright.
+    assert "UNSUPPORTED_DIFFUSION_TASK" in gate.group(0)
+    wrapper = re.search(r"const onSelect = useCallback\(.*?\n  \);", src, re.S)
+    assert wrapper, "the routing wrapper around onSelect is missing"
+    body = wrapper.group(0)
+    assert "diffusionPageForTask" in body and "navigateToPage" in body
+    # Task-scoped pickers (already on those pages) must select normally.
+    assert "if (!task)" in body

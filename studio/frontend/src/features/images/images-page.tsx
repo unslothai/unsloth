@@ -98,6 +98,7 @@ import {
   loadDiffusionModel,
   unloadDiffusionModel,
 } from "./api";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
 import {
@@ -1810,6 +1811,28 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     },
     [stage],
   );
+
+  // A diffusion model picked from the chat picker arrives as ?model= on this route. Load it
+  // once, then clear the params so a refresh or a later manual eject does not reload it.
+  const routeSearch = useSearch({ strict: false }) as {
+    model?: string;
+    quant?: string;
+  };
+  const navigateSelf = useNavigate();
+  const handledRouteModel = useRef<string | null>(null);
+  useEffect(() => {
+    const wanted = routeSearch.model;
+    if (!wanted || handledRouteModel.current === wanted) return;
+    handledRouteModel.current = wanted;
+    void navigateSelf({ to: "/images", search: {}, replace: true });
+    void loadOrStage(
+      wanted,
+      routeSearch.quant
+        ? { kind: "gguf", filename: routeSearch.quant }
+        : { kind: "pipeline" },
+      false,
+    );
+  }, [routeSearch.model, routeSearch.quant, loadOrStage, navigateSelf]);
 
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {

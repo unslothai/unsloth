@@ -56,6 +56,7 @@ import { ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
@@ -1138,6 +1139,28 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     },
     [stage],
   );
+
+  // A diffusion model picked from the chat picker arrives as ?model= on this route. Load it
+  // once, then clear the params so a refresh or a later manual eject does not reload it.
+  const routeSearch = useSearch({ strict: false }) as {
+    model?: string;
+    quant?: string;
+  };
+  const navigateSelf = useNavigate();
+  const handledRouteModel = useRef<string | null>(null);
+  useEffect(() => {
+    const wanted = routeSearch.model;
+    if (!wanted || handledRouteModel.current === wanted) return;
+    handledRouteModel.current = wanted;
+    void navigateSelf({ to: "/video", search: {}, replace: true });
+    void loadOrStage(
+      wanted,
+      routeSearch.quant
+        ? { kind: "gguf", filename: routeSearch.quant }
+        : { kind: "pipeline" },
+      false,
+    );
+  }, [routeSearch.model, routeSearch.quant, loadOrStage, navigateSelf]);
 
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
