@@ -18,9 +18,9 @@ import { useShallow } from "zustand/react/shallow";
 import {
   cancelRecipeJob,
   createRecipeJob,
-  getRecipeJobDataset,
   validateRecipe,
 } from "../api";
+import { getServerRecipeExecutionDataset } from "@/features/user-assets";
 import { saveRecipeExecution } from "../data/executions-db";
 import type {
   RecipeExecutionKind,
@@ -1265,7 +1265,7 @@ export function useRecipeExecutions({
         !execution ||
         execution.recipeId !== owner.recipeId ||
         execution.kind !== "full" ||
-        !execution.jobId ||
+        execution.status !== "completed" ||
         page < 1
       ) {
         return;
@@ -1274,16 +1274,20 @@ export function useRecipeExecutions({
       const pageSize = execution.datasetPageSize || DATASET_PAGE_SIZE;
       const offset = (page - 1) * pageSize;
       try {
-        const response = await getRecipeJobDataset(execution.jobId, {
-          limit: pageSize,
-          offset,
-        });
+        const response = await getServerRecipeExecutionDataset(
+          execution.recipeId,
+          execution.id,
+          {
+            limit: pageSize,
+            offset,
+          },
+        );
         const dataset = normalizeDatasetRows(response.dataset);
         const total =
           typeof response.total === "number"
             ? response.total
             : execution.datasetTotal;
-        upsertAndPersistForOwner(owner, {
+        upsertExecution({
           ...execution,
           dataset,
           datasetTotal: total,
@@ -1300,7 +1304,7 @@ export function useRecipeExecutions({
       activeExecutionHistory,
       executions,
       isExecutionOwnerActive,
-      upsertAndPersistForOwner,
+      upsertExecution,
     ],
   );
 

@@ -10,7 +10,12 @@ from core.user_assets_validation import (
     MAX_LEGACY_BATCH_JSON_BYTES,
     MAX_RECIPE_JSON_BYTES,
 )
-from main import MaxBodyMiddleware, _BODY_PROTECTED_PREFIXES, _get_request_body_max_bytes
+from main import (
+    MaxBodyMiddleware,
+    _BODY_PROTECTED_PREFIXES,
+    _USER_ASSET_TRANSPORT_HEADROOM_BYTES,
+    _get_request_body_max_bytes,
+)
 
 
 MUTATION_PATHS = [
@@ -99,4 +104,4 @@ async def test_user_asset_mutations_reject_chunked_oversized_bodies(method, path
     ],
 )
 def test_user_asset_routes_use_policy_sized_body_caps(path, expected):
-    assert _get_request_body_max_bytes(path) == expected
+    assert _get_request_body_max_bytes(path) == expected + _USER_ASSET_TRANSPORT_HEADROOM_BYTES

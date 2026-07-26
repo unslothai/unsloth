@@ -6,7 +6,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, Response, status
 
 from auth.authentication import get_current_subject
-from core.data_recipe.jobs.manager import JobManager
+from core.data_recipe.jobs.manager import JobManager, get_job_manager
 from core.user_assets_validation import UserAssetValidationError
 from models.user_assets import (
     ExecutionListResponse,
@@ -175,6 +175,17 @@ def upsert_recipe_execution(
         exclude = {"id", "recipeId", "revision", "updatedAt"},
         exclude_none = False,
     )
+    if payload.artifact_path is not None:
+        verified_artifact_path = get_job_manager().get_owned_completed_artifact_path(
+            payload.jobId or "", current_subject
+        )
+        if verified_artifact_path != payload.artifact_path:
+            raise_validation(
+                UserAssetValidationError(
+                    "invalid_execution_artifact",
+                    "execution artifact is not owned by this completed job",
+                )
+            )
     try:
         record = user_assets_db.upsert_recipe_execution(
             current_subject,

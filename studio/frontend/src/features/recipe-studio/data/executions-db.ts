@@ -244,7 +244,11 @@ function mergeStringLists(current: string[], incoming: string[]): string[] {
   return merged;
 }
 
-function mergeJsonValue(current: unknown, incoming: unknown): unknown {
+function mergeJsonValue(
+  current: unknown,
+  incoming: unknown,
+  preferIncomingScalars: boolean,
+): unknown {
   if (incoming === null || incoming === undefined) return current;
   if (current === null || current === undefined) return incoming;
   if (Array.isArray(current) && Array.isArray(incoming)) {
@@ -260,21 +264,23 @@ function mergeJsonValue(current: unknown, incoming: unknown): unknown {
     for (const [key, value] of Object.entries(
       incoming as Record<string, unknown>,
     )) {
-      merged[key] = mergeJsonValue(merged[key], value);
+      merged[key] = mergeJsonValue(
+        merged[key],
+        value,
+        preferIncomingScalars,
+      );
     }
     return merged;
   }
-  // Terminal snapshots can arrive out of order from another tab. Once a scalar
-  // was persisted, retaining it is safer than letting a delayed sparse snapshot
-  // regress progress or usage counters.
-  return current;
+  return preferIncomingScalars ? incoming : current;
 }
 
 function mergeOptionalObject<T extends object>(
   current: T | null,
   incoming: T | null,
+  preferIncomingScalars: boolean,
 ): T | null {
-  return mergeJsonValue(current, incoming) as T | null;
+  return mergeJsonValue(current, incoming, preferIncomingScalars) as T | null;
 }
 
 function persistedMetadata(
@@ -311,19 +317,33 @@ function mergeTerminalSnapshots(
       current.completed_columns,
       incoming.completed_columns,
     ),
-    progress: mergeOptionalObject(current.progress, incoming.progress),
+    progress: mergeOptionalObject(
+      current.progress,
+      incoming.progress,
+      useIncomingState,
+    ),
     column_progress: mergeOptionalObject(
       current.column_progress,
       incoming.column_progress,
+      useIncomingState,
     ),
-    batch: mergeOptionalObject(current.batch, incoming.batch),
+    batch: mergeOptionalObject(current.batch, incoming.batch, useIncomingState),
     source_progress: mergeOptionalObject(
       current.source_progress,
       incoming.source_progress,
+      useIncomingState,
     ),
-    model_usage: mergeOptionalObject(current.model_usage, incoming.model_usage),
+    model_usage: mergeOptionalObject(
+      current.model_usage,
+      incoming.model_usage,
+      useIncomingState,
+    ),
     datasetTotal: Math.max(current.datasetTotal, incoming.datasetTotal),
-    analysis: mergeOptionalObject(current.analysis, incoming.analysis),
+    analysis: mergeOptionalObject(
+      current.analysis,
+      incoming.analysis,
+      useIncomingState,
+    ),
     error: preferString(current.error, incoming.error),
     createdAt: Math.min(current.createdAt, incoming.createdAt),
     finishedAt:

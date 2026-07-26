@@ -382,6 +382,20 @@ class JobManager:
                 return None
             return self._job.analysis
 
+    def get_owned_completed_artifact_path(
+        self, job_id: str, owner_subject: str
+    ) -> str | None:
+        """Return an artifact only while its owning completed job is authoritative."""
+        with self._lock:
+            if (
+                self._job is None
+                or self._job.job_id != job_id
+                or self._job.owner_subject != owner_subject
+                or self._job.status != "completed"
+            ):
+                return None
+            return self._job.artifact_path
+
     def get_dataset(
         self,
         job_id: str,
