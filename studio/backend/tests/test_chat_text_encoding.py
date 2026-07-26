@@ -139,9 +139,7 @@ def test_utf8_child_env_round_trips_non_ascii(tmp_path: Path) -> None:
 
     payload = "Grüße über Öl → 世界"
     child = tmp_path / "child.py"
-    child.write_text(
-        "import sys\nsys.stdout.write(" + repr(payload) + ")\n", encoding = "utf-8"
-    )
+    child.write_text("import sys\nsys.stdout.write(" + repr(payload) + ")\n", encoding = "utf-8")
 
     env = utf8_child_env()
     assert env["PYTHONIOENCODING"] == "utf-8"
@@ -186,6 +184,5 @@ def test_python_children_are_told_to_emit_utf8() -> None:
 
     assert not offenders, (
         "these spawn a Python child and decode it as utf-8 without setting the "
-        "child's own stdio encoding; wrap env in utf8_child_env():\n  "
-        + "\n  ".join(offenders)
+        "child's own stdio encoding; wrap env in utf8_child_env():\n  " + "\n  ".join(offenders)
     )

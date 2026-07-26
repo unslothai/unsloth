@@ -535,14 +535,19 @@ def _adapter_base_from_hf_cache(model_name: str) -> str | None:
     try:
         if ref_main.is_file():
             candidates.append(
-                repo_dir / "snapshots" / ref_main.read_text(encoding = "utf-8").strip() / "adapter_config.json"
+                repo_dir
+                / "snapshots"
+                / ref_main.read_text(encoding = "utf-8").strip()
+                / "adapter_config.json"
             )
         candidates += sorted(
             repo_dir.glob("snapshots/*/adapter_config.json"), key = _mtime, reverse = True
         )
         for cfg_path in candidates:
             if cfg_path.is_file():
-                base = json.loads(cfg_path.read_text(encoding = "utf-8-sig")).get("base_model_name_or_path")
+                base = json.loads(cfg_path.read_text(encoding = "utf-8-sig")).get(
+                    "base_model_name_or_path"
+                )
                 return base or None
     except Exception as exc:
         logger.debug("HF cache adapter_config.json lookup failed for '%s': %s", model_name, exc)
@@ -689,7 +694,12 @@ def _config_json_from_hf_cache(model_name: str) -> dict | None:
     ref_main = repo_dir / "refs" / "main"
     try:
         if ref_main.is_file():
-            candidates.append(repo_dir / "snapshots" / ref_main.read_text(encoding = "utf-8").strip() / "config.json")
+            candidates.append(
+                repo_dir
+                / "snapshots"
+                / ref_main.read_text(encoding = "utf-8").strip()
+                / "config.json"
+            )
         # No refs/main (e.g. commit-pinned downloads): newest snapshot by mtime, not a stale
         # lexicographically-first SHA, matching what the Hub cache would actually load.
         candidates += sorted(
@@ -1832,9 +1842,7 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
         text = True,
         encoding = "utf-8",
         errors = "replace",
-        env = utf8_child_env(
-                get_hf_cache_paths().child_env(child_env_without_native_path_secret())
-            ),
+        env = utf8_child_env(get_hf_cache_paths().child_env(child_env_without_native_path_secret())),
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
@@ -2401,7 +2409,10 @@ def _llmcompressor_shadow_is_valid() -> bool:
     """True if the shadow dir exists with a marker matching the current pin fingerprint."""
     marker = Path(_VENV_LLMCOMPRESSOR_DIR) / _LLMC_SHADOW_MARKER
     try:
-        return marker.is_file() and marker.read_text(encoding = "utf-8").strip() == _LLMC_SHADOW_FINGERPRINT
+        return (
+            marker.is_file()
+            and marker.read_text(encoding = "utf-8").strip() == _LLMC_SHADOW_FINGERPRINT
+        )
     except Exception:
         return False
 

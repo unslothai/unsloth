@@ -961,7 +961,10 @@ def run_inference_process(
     if _local_adapter_cfg.is_file():
         try:
             _lora_base = (
-                _json.loads(_local_adapter_cfg.read_text(encoding = "utf-8-sig")).get("base_model_name_or_path") or None
+                _json.loads(_local_adapter_cfg.read_text(encoding = "utf-8-sig")).get(
+                    "base_model_name_or_path"
+                )
+                or None
             )
         except Exception:
             _lora_base = None

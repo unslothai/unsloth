@@ -47,9 +47,9 @@ class LogConfig:
         # lose the value they just read. Windows is the usual case; LANG=C in a
         # container hits it too, so key off the stream, not the platform.
         for stream in (sys.stdout, sys.stderr):
-            if getattr(stream, "encoding", "") and not str(
-                stream.encoding
-            ).lower().replace("-", "").startswith("utf8"):
+            if getattr(stream, "encoding", "") and not str(stream.encoding).lower().replace(
+                "-", ""
+            ).startswith("utf8"):
                 if hasattr(stream, "reconfigure"):
                     try:
                         stream.reconfigure(encoding = "utf-8", errors = "replace")

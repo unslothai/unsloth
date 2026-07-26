@@ -199,7 +199,9 @@ def _indexed_shard_paths(
                 inconclusive = True  # transient: an index that might exist could not be read
                 continue
             try:
-                weight_map = (json.loads(open(index_path, encoding = "utf-8-sig").read()) or {}).get("weight_map") or {}
+                weight_map = (json.loads(open(index_path, encoding = "utf-8-sig").read()) or {}).get(
+                    "weight_map"
+                ) or {}
                 for shard in weight_map.values():
                     shard_norm = _normalize_repo_path(str(shard))
                     # weight_map paths are relative to the index file's directory.

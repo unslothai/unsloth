@@ -430,7 +430,9 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
             # for an RCE gate (HIGH stays approvable; only CRITICAL hard-blocks).
             for p in root.rglob("*.py"):
                 if p.is_file():
-                    files[str(p.relative_to(root))] = p.read_text(encoding = "utf-8", errors = "replace")
+                    files[str(p.relative_to(root))] = p.read_text(
+                        encoding = "utf-8", errors = "replace"
+                    )
             # A local config can still point auto_map at an EXTERNAL Hub repo
             # (owner/name--module.Class) that executes on load, so fetch it. Every config
             # that can declare auto_map is checked, so a custom processor's external code
