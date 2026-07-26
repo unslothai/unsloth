@@ -149,8 +149,13 @@ def test_save_persists_the_same_argv_the_load_sent():
         assert row["persisted"] == row["live"], row
 
 
-def test_normalize_still_rejects_blank_and_non_string_entries():
-    """Keeping tokens verbatim must not stop normalize being a validator."""
+def test_normalize_drops_non_strings_and_keeps_every_token():
+    """normalize validates the container, it does not rewrite the argv.
+
+    Only explicit quoting can produce a blank or edge-padded token, so every
+    string entry is a deliberate argument and must survive; non-strings cannot
+    be argv and are dropped.
+    """
     out = _run(
         """
         console.log(JSON.stringify({
@@ -160,9 +165,43 @@ def test_normalize_still_rejects_blank_and_non_string_entries():
         }));
         """
     )
-    assert out["cleaned"] == ["--cpu-moe"]
+    assert out["cleaned"] == ["--cpu-moe", "  ", ""]
     assert out["notArray"] is None
     assert out["empty"] == []
+
+
+def test_empty_quoted_argument_survives_the_field():
+    """Dropping an empty argument shifts every token after it.
+
+    Verified on llama-server b10107: `--chat-template "" --ctx-size BOGUS`
+    fails with `error while handling argument "--ctx-size"`, while the argv the
+    field produced without the empty token, `--chat-template --ctx-size BOGUS`,
+    fails with `invalid argument: BOGUS` -- llama-server took `--ctx-size` as
+    the template string and never applied it.
+    """
+    out = _run(
+        """
+        const typed = parseLlamaExtraArgsInput('--chat-template "" --no-mmap');
+        const argv = ["--chat-template", "", "--no-mmap"];
+        const rendered = formatLlamaExtraArgs(argv);
+        console.log(JSON.stringify({
+          typed,
+          rendered,
+          reparsed: parseLlamaExtraArgsInput(rendered),
+          persisted: normalizeLlamaExtraArgs(argv),
+          blankField: parseLlamaExtraArgsInput("   "),
+          adjacent: parseLlamaExtraArgsInput('a""b'),
+        }));
+        """
+    )
+    assert out["typed"] == ["--chat-template", "", "--no-mmap"]
+    assert out["rendered"] == '--chat-template "" --no-mmap'
+    assert out["reparsed"] == ["--chat-template", "", "--no-mmap"]
+    assert out["persisted"] == ["--chat-template", "", "--no-mmap"]
+    # A field holding only whitespace still yields no tokens at all, and quotes
+    # adjacent to bare text still join into one token as a shell would.
+    assert out["blankField"] == []
+    assert out["adjacent"] == ["ab"]
 
 
 def test_clearing_the_field_sends_an_explicit_empty_list():

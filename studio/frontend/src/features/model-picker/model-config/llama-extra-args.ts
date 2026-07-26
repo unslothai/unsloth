@@ -9,6 +9,11 @@ export function parseLlamaExtraArgsInput(input: string): string[] {
   }
   const tokens: string[] = [];
   let current = "";
+  // A token exists once one is opened, whatever it ends up holding. Keying on
+  // `current` instead would swallow a deliberate empty argument (`--flag ""`),
+  // and dropping it shifts the argv: llama-server then reads the NEXT token as
+  // the flag's value and silently ignores it.
+  let started = false;
   let quote: '"' | "'" | null = null;
   for (let i = 0; i < trimmed.length; i += 1) {
     const ch = trimmed[i];
@@ -31,18 +36,21 @@ export function parseLlamaExtraArgsInput(input: string): string[] {
     }
     if (ch === '"' || ch === "'") {
       quote = ch;
+      started = true;
       continue;
     }
     if (/\s/.test(ch)) {
-      if (current) {
+      if (started) {
         tokens.push(current);
         current = "";
+        started = false;
       }
       continue;
     }
     current += ch;
+    started = true;
   }
-  if (current) {
+  if (started) {
     tokens.push(current);
   }
   return tokens;
@@ -56,6 +64,10 @@ export function formatLlamaExtraArgs(
   }
   return args
     .map((token) => {
+      // An empty argument only survives re-parsing as an explicit `""`.
+      if (token === "") {
+        return '""';
+      }
       // Quote chars need quoting too, else re-parsing the field strips them
       // (`{"a":1}` -> `{a:1}`) and silently corrupts the value on the next blur.
       if (!/[\s"']/.test(token)) {
@@ -77,12 +89,9 @@ export function normalizeLlamaExtraArgs(
     if (typeof raw !== "string") {
       continue;
     }
-    // Validate on the trimmed form but store the token verbatim. Only explicit
-    // quoting can give a token edge whitespace, and trimming it would persist a
-    // different argv than the same config already loaded with.
-    if (!raw.trim()) {
-      continue;
-    }
+    // Store every string token verbatim. The parser only emits a blank or
+    // edge-padded token when the user quoted one, so rewriting or dropping it
+    // here would persist a different argv than the same config just loaded with.
     out.push(raw);
   }
   return out;
