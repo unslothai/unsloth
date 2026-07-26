@@ -25,12 +25,15 @@ def _resolution_statements():
     """The `if ...: map_eos_token = ...` statements inside get_chat_template, in source order."""
     tree = ast.parse(open(CHAT_TEMPLATES_PATH, encoding = "utf-8").read())
     func = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "get_chat_template"
     )
     statements = [
-        node for node in ast.walk(func)
-        if isinstance(node, ast.If) and any(
+        node
+        for node in ast.walk(func)
+        if isinstance(node, ast.If)
+        and any(
             isinstance(stmt, ast.Assign)
             and any(getattr(target, "id", None) == "map_eos_token" for target in stmt.targets)
             for stmt in node.body
