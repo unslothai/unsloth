@@ -605,6 +605,102 @@ def test_forced_unload_of_the_loaded_model_still_stops_its_chats(monkeypatch):
     assert response.status == "unloaded"
 
 
+def test_unforced_unload_of_a_stale_model_path_is_still_a_no_op(monkeypatch):
+    # Same stale Eject without the force flag. It reaches no teardown branch, so
+    # refusing it counts a teardown that cannot happen and leaves the stale tab
+    # holding a selection it can never clear.
+    _route_gate()  # skips when the inference stack is unavailable
+    import routes.inference as inf_mod
+
+    torn_down: list[str] = []
+    ev = threading.Event()
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        response = _run_unload(
+            inf_mod,
+            monkeypatch,
+            loaded_gguf = "org/B-GGUF",  # what the other tab actually loaded
+            requested = "org/A-GGUF",  # this tab's stale idea of it
+            force = False,
+            torn_down = torn_down,
+        )
+        assert not ev.is_set()
+        assert active_generations.count() == 1
+    # The resident GGUF was never touched; only the standard backend's own
+    # "don't unload a stale model" no-op ran.
+    assert torn_down == ["unsloth"]
+    assert response.status == "unloaded"
+
+
+def test_unforced_unload_of_the_loaded_model_still_refuses_while_chats_stream(monkeypatch):
+    # The stale skip above must not disarm the gate for a request that really
+    # does replace the running server.
+    _route_gate()  # skips when the inference stack is unavailable
+    import routes.inference as inf_mod
+
+    from fastapi import HTTPException
+
+    torn_down: list[str] = []
+    ev = threading.Event()
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        with pytest.raises(HTTPException) as exc:
+            _run_unload(
+                inf_mod,
+                monkeypatch,
+                loaded_gguf = "org/A-GGUF",
+                requested = "org/A-GGUF",
+                force = False,
+                torn_down = torn_down,
+            )
+    assert exc.value.status_code == 409
+    assert exc.value.detail["thread_ids"] == ["t1"]
+    assert torn_down == []
+    assert not ev.is_set()
+
+
+def test_unforced_unload_still_refuses_while_a_gguf_load_is_in_flight(monkeypatch):
+    # cancelLoading -> /unload with no force. The GGUF branch evicts a
+    # llama-server that is up but not yet serving whatever model the request
+    # names, so a stale path is NOT harmless here: a chat streaming on the
+    # previous model must still surface the 409 rather than be killed.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from models.inference import UnloadRequest
+
+    torn_down: list[str] = []
+    inf_mod, _kw = _stub_unload_backends(
+        monkeypatch,
+        llama = SimpleNamespace(
+            is_active = True,
+            is_loaded = False,  # spawned, health check not passed: mid-load
+            model_identifier = "org/B-GGUF",
+            unload_model = lambda: torn_down.append("gguf"),
+        ),
+        backend = SimpleNamespace(
+            get_loading_model = lambda: None,
+            active_model_name = None,
+            models = {},
+            unload_model = lambda path: torn_down.append("unsloth"),
+        ),
+    )
+
+    ev = threading.Event()
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                inf_mod.unload_model(
+                    UnloadRequest(model_path = "org/A-GGUF", force_cancel_active = False),
+                    "tester",
+                )
+            )
+    assert exc.value.status_code == 409
+    assert torn_down == []
+    assert not ev.is_set()
+
+
 def _install_responses_stream_mock(monkeypatch, chunks):
     """Point the direct /v1/responses GGUF pass-through at an in-process
     llama-server. Mirrors the harness in test_responses_tool_passthrough.py."""
@@ -718,6 +814,72 @@ def test_forced_reload_stops_a_direct_responses_stream(monkeypatch):
 
     # Cancelled mid-stream: the run ends without a completed envelope.
     assert "response.completed" not in body
+    assert active_generations.count() == 0
+
+
+def test_forced_reload_stops_a_responses_stream_still_queued_for_a_slot(monkeypatch):
+    # The run registers before it holds a decode slot, so cancel_all() has to
+    # reach it while it is still queued in admission. Watching only the client
+    # socket there lets a cancelled run wait out the queue and then open an
+    # upstream generation the swap already revoked, while the swap's
+    # post-cancel drain waits for this same registration to clear.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    from core.inference import llama_admission
+    from models.inference import ChatMessage, ResponsesRequest
+
+    for name in (
+        llama_admission.ADMISSION_CONTROL_ENV,
+        llama_admission.ADMISSION_QUEUE_TIMEOUT_ENV,
+        llama_admission.ADMISSION_KEEPALIVE_INTERVAL_ENV,
+        llama_admission.ADMISSION_MAX_QUEUE_ENV,
+    ):
+        monkeypatch.delenv(name, raising = False)
+
+    inf_mod = _install_responses_stream_mock(
+        monkeypatch, [{"choices": [{"delta": {"content": "33"}}]}]
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    llama_admission.reset_llama_admission_queues()
+    try:
+
+        async def run():
+            # Hold the backend's only decode slot so the run below has to queue.
+            queue = llama_admission.get_llama_admission_queue("http://llama.test")
+            holder = queue.reserve(capacity = 1, config = llama_admission.LlamaAdmissionConfig())
+            assert holder.lease_nowait() is not None
+            response = await inf_mod._responses_stream(
+                payload, messages, _NeverDisconnectedRequest()
+            )
+            chunks = []
+
+            async def drain():
+                async for chunk in response.body_iterator:
+                    chunks.append(chunk)
+
+            task = asyncio.create_task(drain())
+            for _ in range(500):
+                if active_generations.count() == 1:
+                    break
+                await asyncio.sleep(0.01)
+            assert active_generations.count() == 1, "the queued run never registered"
+            assert active_generations.cancel_all() == 1
+            # Unbounded queue by default, so without the tracked event this
+            # never returns while the slot above is held.
+            await asyncio.wait_for(task, timeout = 5)
+            return chunks
+
+        chunks = asyncio.run(run())
+    finally:
+        llama_admission.reset_llama_admission_queues()
+
+    body = "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
+    # It gave up its place instead of taking the slot: no upstream call, so no
+    # Responses envelope was ever opened.
+    assert "response.created" not in body
     assert active_generations.count() == 0
 
 
@@ -1391,3 +1553,98 @@ def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
     src = inspect.getsource(inf_mod._anthropic_passthrough_stream)
     assert src.index("async def _stream()") < src.index("_tracker.__enter__()")
     assert src.index("_tracker.__enter__()") < src.index("_tracker.__exit__(None, None, None)")
+
+
+def test_audio_generation_is_visible_to_the_swap_gate(monkeypatch):
+    # /audio/generate is non-streaming and holds the model for the whole request,
+    # and /unload runs no idle drain: unregistered, a non-forced swap counted zero
+    # generations and could tear the model down under the TTS work, and a forced
+    # one had no entry to name. Same shape as the non-streaming completions proxy.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+    from types import SimpleNamespace
+
+    import routes.inference as inf_mod
+    from models.inference import ChatCompletionRequest
+
+    seen = {}
+
+    class _TtsBackend:
+        active_model_name = "org/TTS"
+        models = {"org/TTS": {"is_audio": True}}
+
+        def generate_audio_response(self, **kwargs):
+            # Sampled mid-generation: exactly the window a concurrent swap
+            # would tear the model down in.
+            seen["count"] = active_generations.count()
+            seen["snapshot"] = active_generations.snapshot()
+            return (b"RIFFfake", 24000)
+
+    # is_loaded False picks the transformers TTS branch, not the GGUF one.
+    monkeypatch.setattr(
+        inf_mod,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = False, _is_audio = False),
+    )
+    monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: _TtsBackend())
+
+    async def _no_auto_switch(*a, **k):
+        return None
+
+    monkeypatch.setattr(inf_mod, "_maybe_auto_switch_model", _no_auto_switch)
+
+    payload = ChatCompletionRequest(
+        model = "org/TTS",
+        messages = [{"role": "user", "content": "hi"}],
+        thread_id = "thread-tts",
+    )
+    asyncio.run(inf_mod.generate_audio(payload, request = None, current_subject = "tester"))
+
+    assert seen["count"] == 1
+    # Named, so the swap dialog can say which chat it would interrupt.
+    assert seen["snapshot"][0]["thread_id"] == "thread-tts"
+    # And it unregisters, or one TTS call would 409 every later reload.
+    assert active_generations.count() == 0
+
+
+def test_audio_generation_unregisters_when_it_fails(monkeypatch):
+    # A raising backend must not strand an entry: that would 409 every later
+    # load until the process restarts.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    import routes.inference as inf_mod
+    from models.inference import ChatCompletionRequest
+
+    class _BrokenTtsBackend:
+        active_model_name = "org/TTS"
+        models = {"org/TTS": {"is_audio": True}}
+
+        def generate_audio_response(self, **kwargs):
+            raise RuntimeError("codec exploded")
+
+    monkeypatch.setattr(
+        inf_mod,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = False, _is_audio = False),
+    )
+    monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: _BrokenTtsBackend())
+
+    async def _no_auto_switch(*a, **k):
+        return None
+
+    monkeypatch.setattr(inf_mod, "_maybe_auto_switch_model", _no_auto_switch)
+
+    payload = ChatCompletionRequest(
+        model = "org/TTS",
+        messages = [{"role": "user", "content": "hi"}],
+    )
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            inf_mod.generate_audio(payload, request = None, current_subject = "tester")
+        )
+
+    assert active_generations.count() == 0

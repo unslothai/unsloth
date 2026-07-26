@@ -4376,6 +4376,42 @@ def _unload_evicts_standard_backend(backend, model_path: str) -> bool:
     return isinstance(loaded, dict) and model_path in loaded
 
 
+def _unload_may_evict(model_path: str) -> bool:
+    """Whether POST /unload for ``model_path`` can still tear something down.
+
+    The refusal passes gate on this. A request naming a model another tab has
+    already replaced reaches none of the teardown branches and returns the
+    documented idempotent no-op (see _unload_evicts_standard_backend), so
+    refusing it counts a teardown that cannot happen and leaves a stale tab
+    unable to clear its selection. Each disjunct mirrors one teardown branch, so
+    True means "some branch may fire", never "this unload succeeds".
+
+    Attribute reads only, no lifecycle gate, so the pre-gate pass still fails
+    fast on a swap that would really stop chats. A stale answer is safe in both
+    directions: the gated pass re-runs this under the gate, and every branch
+    re-runs the refusal at its own point of no return, so a False here can never
+    let a teardown through unrefused.
+    """
+    backend = get_inference_backend()
+    loading = getattr(backend, "get_loading_model", lambda: None)()
+    if (
+        loading is not None
+        and hasattr(backend, "cancel_load")
+        and (model_path == loading or model_path.lower() == loading.lower())
+    ):
+        return True
+    llama_backend = get_llama_cpp_backend()
+    if llama_backend.is_active and (
+        llama_backend.model_identifier == model_path
+        or is_registered_native_path_label(llama_backend.model_identifier, model_path)
+        # A llama-server that is up but not serving is mid-load, and the GGUF
+        # branch evicts it whatever model the request names.
+        or not llama_backend.is_loaded
+    ):
+        return True
+    return _unload_evicts_standard_backend(backend, model_path)
+
+
 @studio_router.get("/active-generations")
 async def get_active_generations(
     fastapi_request: Request, current_subject: str = Depends(get_current_subject)
@@ -5772,14 +5808,17 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
 
     # Same gate as /load: refusal only, so a non-forced unload fails fast before
-    # queueing on the lifecycle gate, but this request has not yet resolved that it
-    # unloads anything. The destructive pass runs at each teardown below. Ahead of
-    # the "stop loading" fast paths, which have no generations of their own.
-    _raise_or_cancel_active_generations(
-        force = request.force_cancel_active,
-        action = "Unloading the model",
-        cancel = False,
-    )
+    # queueing on the lifecycle gate. Skipped when no teardown branch can fire, or
+    # a request for a model another tab already replaced would 409 on chats it
+    # cannot interrupt instead of returning its no-op. The destructive pass runs at
+    # each teardown below. Ahead of the "stop loading" fast paths, which have no
+    # generations of their own.
+    if _unload_may_evict(request.model_path):
+        _raise_or_cancel_active_generations(
+            force = request.force_cancel_active,
+            action = "Unloading the model",
+            cancel = False,
+        )
     try:
         # "Stop loading" (frontend cancelLoading -> /unload) must abort a still-loading
         # model promptly. /load holds the lifecycle gate for the whole (multi-minute) load,
@@ -5827,12 +5866,15 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
         async with inference_lifecycle_gate():
             # Rechecked under the gate, like /load: the middleware takes and releases
             # this same gate before a request starts inference, so a chat can register
-            # while this request queues here. Still refusal only.
-            _raise_or_cancel_active_generations(
-                force = request.force_cancel_active,
-                action = "Unloading the model",
-                cancel = False,
-            )
+            # while this request queues here. Still refusal only, and still only for a
+            # request that can reach a teardown -- a load may have finished while this
+            # one queued, so the predicate is re-read here rather than carried down.
+            if _unload_may_evict(request.model_path):
+                _raise_or_cancel_active_generations(
+                    force = request.force_cancel_active,
+                    action = "Unloading the model",
+                    cancel = False,
+                )
             # Check if the GGUF backend has this model loaded or is loading it.
             llama_backend = get_llama_cpp_backend()
             if llama_backend.is_active and (
@@ -6394,11 +6436,24 @@ async def generate_audio(
     # /audio/generate route and the chat-completions audio branches that delegate here.
     _fill_recommended_sampling_openai(payload, _audio_model_id)
 
-    try:
-        wav_bytes, sample_rate = await asyncio.to_thread(gen)
-    except Exception as e:
-        logger.error(f"Audio generation error: {e}", exc_info = True)
-        raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+    # TTS holds the model for this whole request and /unload runs no idle drain,
+    # so unregistered a non-forced swap counted zero generations and tore the
+    # model down mid-generation. Registering makes the gate see it and name its
+    # chat in the 409. No cancel keys, because nothing here can honour a /cancel:
+    # generate_audio_response takes no cancel_event on any backend, so this event
+    # has no observer and a forced swap still cannot interrupt audio in flight.
+    # Reaching the GPU with a cancel means streaming the route.
+    _audio_cancel = threading.Event()
+    with _TrackedCancel(
+        _audio_cancel,
+        thread_id = getattr(payload, "thread_id", None),
+        model = model_name,
+    ):
+        try:
+            wav_bytes, sample_rate = await asyncio.to_thread(gen)
+        except Exception as e:
+            logger.error(f"Audio generation error: {e}", exc_info = True)
+            raise HTTPException(status_code = 500, detail = safe_error_detail(e))
 
     audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
     return JSONResponse(
@@ -11077,7 +11132,11 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     "POST", target_url, json = body, headers = {"Connection": "close"}
                 )
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-                resp = await _send_stream_with_preheader_cancel(client, req, request = request)
+                # Same event the relay loop polls, so a forced swap ends the
+                # request during prefill instead of only once headers arrive.
+                resp = await _send_stream_with_preheader_cancel(
+                    client, req, disconnect_event, request = request
+                )
                 if resp is None:
                     api_monitor.finish(monitor_id, "cancelled")
                     return
@@ -12551,7 +12610,11 @@ async def _responses_stream(
             )
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
             try:
-                resp = await _send_stream_with_preheader_cancel(client, req, request = request)
+                # Same event the loop below polls: prefill can run for the whole
+                # first-token window, and only the send watcher can end it early.
+                resp = await _send_stream_with_preheader_cancel(
+                    client, req, disconnect_event, request = request
+                )
                 if resp is None:
                     api_monitor.finish(monitor_id, "cancelled")
                     return
@@ -12968,11 +13031,17 @@ async def _responses_stream(
                     completion_id = resp_id,
                     level = "debug",
                 )
+                # The tracked event, not just the client socket: the run is in
+                # active_generations from __enter__ above, so a forced swap's
+                # cancel_all() lands on it while it is still queued. Without it
+                # the wait only sees a disconnect, the queued run takes a lease
+                # it was told to give up, and the swap's post-cancel drain waits
+                # out the upstream round trip it just cancelled.
                 async for wait_item in _openai_admission_wait_stream_chunks(
                     reservation,
                     admission_config,
                     request = request,
-                    cancel_event = None,
+                    cancel_event = cancel_event,
                 ):
                     if isinstance(wait_item, str):
                         yield wait_item
@@ -12993,7 +13062,7 @@ async def _responses_stream(
             await _raise_if_openai_admission_cancelled(
                 reservation,
                 request = request,
-                cancel_event = None,
+                cancel_event = cancel_event,
             )
             iterator = event_generator()
             stream_started = True
