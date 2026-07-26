@@ -95,6 +95,10 @@ _MAX_SYNTHESIS_EVIDENCE_CHARS = 32_000
 # reserve covers the generated report, and every trimmable section is measured against what the
 # untrimmable scaffolding leaves. Unknown context keeps the full cap.
 _MIN_SYNTHESIS_EVIDENCE_CHARS = 1_500
+# The question and the evidence carry the request and the answer; trimming either to
+# nothing produces a confidently empty report, so each keeps a floor even when the
+# context cannot fit it. Overflow on a tiny context is recoverable, an empty prompt is not.
+_MIN_QUESTION_CHARS = 800
 _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN = 3.0
 _SYNTHESIS_CONTEXT_RESERVE_TOKENS = 4_096
 # Below this loaded context the prompt scaffolding alone fills the window and the grounded
@@ -537,12 +541,35 @@ def _local_model_ready() -> bool:
     return not probed
 
 
+def _fit_source_catalog(catalog: str, max_chars: int) -> str:
+    """Trim whole catalog entries from the tail so every surviving URL stays citable.
+
+    Slicing mid-entry would hand the model a truncated URL, which the validator then strips.
+    """
+    if max_chars <= 0 or len(catalog) <= max_chars:
+        return catalog if max_chars > 0 else ""
+    kept: list[str] = []
+    used = 0
+    for entry in catalog.split("\n\n") if "\n\n" in catalog else catalog.splitlines(True):
+        used += len(entry)
+        if used > max_chars:
+            break
+        kept.append(entry)
+    return ("".join(kept) if not kept or kept[0].endswith("\n") else "\n\n".join(kept)).rstrip()
+
+
 def _prompt_char_budget(reserve_tokens: int) -> int | None:
-    """Chars the whole prompt may occupy on the loaded context, or None when it is unknown."""
+    """Chars the whole prompt may occupy on the loaded context, or None when it is unknown.
+
+    The output reserve is capped at half the window: a flat reserve at or above the context
+    (4096 on the 4096-token GGUF floor) would leave a budget of 0 and empty the prompt, and a
+    truncated completion is far better than one that never saw the question.
+    """
     ctx = _loaded_context_length()
     if not ctx:
         return None
-    return int(max(0, ctx - reserve_tokens) * _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN)
+    reserve = min(reserve_tokens, max(1, ctx // 2))
+    return int(max(0, ctx - reserve) * _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN)
 
 
 def _trimmable_budget(total: int | None, fixed_chars: int, hard_cap: int) -> int:
@@ -1661,7 +1688,12 @@ class ResearchSupervisor:
         # pasted document arrives here verbatim) and would otherwise overflow before planning.
         planning_total = _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS)
         planning_question = question[
-            : _trimmable_budget(planning_total, len(planner_system), _MAX_SYNTHESIS_EVIDENCE_CHARS)
+            : max(
+                _MIN_QUESTION_CHARS,
+                _trimmable_budget(
+                    planning_total, len(planner_system), _MAX_SYNTHESIS_EVIDENCE_CHARS
+                ),
+            )
         ]
         planning_context = conversation_context[
             : _trimmable_budget(
@@ -1844,10 +1876,23 @@ class ResearchSupervisor:
             # small loaded context, and this runs on every step, so an overflow here kills the
             # run long before it can synthesize what it already gathered.
             decision_plan_json = json.dumps(run["plan"], ensure_ascii = False)
-            decision_scaffold = (
-                len(decision_system) + len(question) + len(decision_plan_json) + len(source_catalog)
-            )
             decision_total = _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS)
+            # The catalog is unbounded too (maxSources entries, snippets up to 4000 chars), so it
+            # is fitted before the sections that depend on what it leaves.
+            decision_catalog = _fit_source_catalog(
+                source_catalog,
+                _trimmable_budget(
+                    decision_total,
+                    len(decision_system) + len(question) + len(decision_plan_json),
+                    len(source_catalog),
+                ),
+            )
+            decision_scaffold = (
+                len(decision_system)
+                + len(question)
+                + len(decision_plan_json)
+                + len(decision_catalog)
+            )
             evidence_chars = _trimmable_budget(
                 decision_total, decision_scaffold, _MAX_SYNTHESIS_EVIDENCE_CHARS
             )
@@ -1872,7 +1917,7 @@ class ResearchSupervisor:
                             f"{_shield_untrusted(decision_plan_json)}\n\n"
                             f"Actions remaining after this one: {max_steps - position - 1}\n"
                             f"<untrusted_web_evidence>\n"
-                            f"Gathered sources:\n{_shield_untrusted(source_catalog) or '(none)'}\n\n"
+                            f"Gathered sources:\n{_shield_untrusted(decision_catalog) or '(none)'}\n\n"
                             f"{_shield_untrusted(evidence[-evidence_chars:] if evidence_chars else '') or '(none)'}\n"
                             f"</untrusted_web_evidence>"
                         ),
@@ -2148,7 +2193,8 @@ class ResearchSupervisor:
         # Evidence is the report, so it is budgeted first and the chat history takes what is left.
         total_budget = _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS)
         evidence_text = _bounded_synthesis_evidence(
-            notes, _synthesis_evidence_budget(scaffold_chars)
+            notes,
+            max(_MIN_SYNTHESIS_EVIDENCE_CHARS, _synthesis_evidence_budget(scaffold_chars)),
         )
         conversation_context = conversation_context[
             : _trimmable_budget(

@@ -187,11 +187,13 @@ def test_synthesis_evidence_budget_tracks_loaded_context(monkeypatch):
     monkeypatch.setattr(worker, "_loaded_context_length", lambda: None)
     assert worker._synthesis_evidence_budget() == worker._MAX_SYNTHESIS_EVIDENCE_CHARS
 
-    # A small context (Studio's 2048 default) shrinks the budget so evidence fits. It must reach
-    # 0 rather than a floor: the old floor handed back 1500 chars even when the context left room
-    # for none, so the request still overflowed and failed the run after every search had run.
+    # A small context shrinks the budget so evidence fits, and the rest of the prompt eats into
+    # it, but the output reserve is capped at half the window so the budget never collapses to 0
+    # and empties the prompt (which is worse than a truncated one).
     monkeypatch.setattr(worker, "_loaded_context_length", lambda: 2048)
-    assert worker._synthesis_evidence_budget() == 0
+    small = worker._synthesis_evidence_budget()
+    assert 0 < small < worker._MAX_SYNTHESIS_EVIDENCE_CHARS
+    assert worker._synthesis_evidence_budget(small) == 0
 
     # The rest of the prompt counts against the same budget, not just the evidence.
     monkeypatch.setattr(worker, "_loaded_context_length", lambda: 16384)

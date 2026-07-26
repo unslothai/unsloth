@@ -187,8 +187,37 @@ def test_every_research_prompt_path_is_budgeted():
     for budget in ("planning_total = ", "decision_total = ", "total_budget = "):
         assert f"{budget}_prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS)" in src
     assert "evidence[-60000:]" not in src
-    # The question reaches the planner verbatim, so it is budgeted too.
+    # The question reaches the planner verbatim, so it is budgeted too, but never to nothing.
     assert "planning_question = question[" in src
+    assert "_MIN_QUESTION_CHARS," in src
+    # The catalog is unbounded as well, and is fitted by whole entries so URLs stay citable.
+    assert "decision_catalog = _fit_source_catalog(" in src
+
+
+def test_prompt_budget_never_empties_the_question_or_evidence(monkeypatch):
+    # A flat 4096-token reserve on the 4096-token GGUF floor made the budget 0, which sliced the
+    # question to "" so the planner never saw the request. Reserve at most half the window.
+    for ctx in (1024, 2048, 4096):
+        monkeypatch.setattr(research_runs, "_loaded_context_length", lambda c = ctx: c)
+        total = research_runs._prompt_char_budget(
+            research_runs._SYNTHESIS_CONTEXT_RESERVE_TOKENS
+        )
+        assert total is not None and total > 0
+        assert total < int(ctx * research_runs._SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN)
+
+
+def test_source_catalog_is_fitted_by_whole_entries():
+    catalog = "\n".join(
+        f"{i}. Title: Result {i}\n   URL: https://example.com/{i}" for i in range(1, 11)
+    )
+    assert research_runs._fit_source_catalog(catalog, 10_000) == catalog
+    assert research_runs._fit_source_catalog(catalog, 0) == ""
+    trimmed = research_runs._fit_source_catalog(catalog, 200)
+    assert 0 < len(trimmed) <= 200
+    # Never cuts mid-entry: every retained URL must still be complete and therefore citable.
+    for line in trimmed.splitlines():
+        if "URL:" in line:
+            assert line.strip().startswith("URL: https://example.com/")
 
 
 def _make_payload(**overrides) -> CreateResearchRun:
