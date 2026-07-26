@@ -606,9 +606,8 @@ def test_forced_unload_of_the_loaded_model_still_stops_its_chats(monkeypatch):
 
 
 def test_unforced_unload_of_a_stale_model_path_is_still_a_no_op(monkeypatch):
-    # Same stale Eject without the force flag. It reaches no teardown branch, so
-    # refusing it counts a teardown that cannot happen and leaves the stale tab
-    # holding a selection it can never clear.
+    # Same stale Eject without the force flag. It reaches no teardown branch, so refusing
+    # it counts a teardown that cannot happen and strands the stale tab's selection.
     _route_gate()  # skips when the inference stack is unavailable
     import routes.inference as inf_mod
 
@@ -625,15 +624,13 @@ def test_unforced_unload_of_a_stale_model_path_is_still_a_no_op(monkeypatch):
         )
         assert not ev.is_set()
         assert active_generations.count() == 1
-    # The resident GGUF was never touched; only the standard backend's own
-    # "don't unload a stale model" no-op ran.
+    # The resident GGUF was untouched; only the standard backend's stale-path no-op ran.
     assert torn_down == ["unsloth"]
     assert response.status == "unloaded"
 
 
 def test_unforced_unload_of_the_loaded_model_still_refuses_while_chats_stream(monkeypatch):
-    # The stale skip above must not disarm the gate for a request that really
-    # does replace the running server.
+    # The stale skip above must not disarm the gate for a real replacement.
     _route_gate()  # skips when the inference stack is unavailable
     import routes.inference as inf_mod
 
@@ -658,10 +655,9 @@ def test_unforced_unload_of_the_loaded_model_still_refuses_while_chats_stream(mo
 
 
 def test_unforced_unload_still_refuses_while_a_gguf_load_is_in_flight(monkeypatch):
-    # cancelLoading -> /unload with no force. The GGUF branch evicts a
-    # llama-server that is up but not yet serving whatever model the request
-    # names, so a stale path is NOT harmless here: a chat streaming on the
-    # previous model must still surface the 409 rather than be killed.
+    # cancelLoading -> /unload with no force. The GGUF branch evicts a llama-server that is
+    # up but not yet serving whatever model the request names, so a stale path is NOT
+    # harmless here: a chat on the previous model must still get the 409, not be killed.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
     from types import SimpleNamespace
@@ -818,10 +814,9 @@ def test_forced_reload_stops_a_direct_responses_stream(monkeypatch):
 
 
 def test_forced_reload_stops_a_responses_stream_still_queued_for_a_slot(monkeypatch):
-    # The run registers before it holds a decode slot, so cancel_all() has to
-    # reach it while it is still queued in admission. Watching only the client
-    # socket there lets a cancelled run wait out the queue and then open an
-    # upstream generation the swap already revoked, while the swap's
+    # The run registers before it holds a decode slot, so cancel_all() has to reach it while
+    # it is still queued in admission. Watching only the client socket there lets a cancelled
+    # run wait out the queue and open a generation the swap revoked, while the swap's
     # post-cancel drain waits for this same registration to clear.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
@@ -867,8 +862,8 @@ def test_forced_reload_stops_a_responses_stream_still_queued_for_a_slot(monkeypa
                 await asyncio.sleep(0.01)
             assert active_generations.count() == 1, "the queued run never registered"
             assert active_generations.cancel_all() == 1
-            # Unbounded queue by default, so without the tracked event this
-            # never returns while the slot above is held.
+            # Unbounded queue by default: without the tracked event this never returns
+            # while the slot above is held.
             await asyncio.wait_for(task, timeout = 5)
             return chunks
 
@@ -877,8 +872,7 @@ def test_forced_reload_stops_a_responses_stream_still_queued_for_a_slot(monkeypa
         llama_admission.reset_llama_admission_queues()
 
     body = "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
-    # It gave up its place instead of taking the slot: no upstream call, so no
-    # Responses envelope was ever opened.
+    # It gave up its place instead of taking the slot: no upstream call, no envelope.
     assert "response.created" not in body
     assert active_generations.count() == 0
 
@@ -1145,10 +1139,9 @@ def test_embeddings_proxy_is_visible_to_the_swap_gate(monkeypatch):
 
 
 def test_legacy_generate_stream_is_visible_to_the_swap_gate(monkeypatch):
-    # The legacy /generate/stream decodes on the standard backend for its whole
-    # run. /unload runs no idle drain, so without its own registration it passed
-    # the advertised 409 gate and then blocked on the backend's generation lock,
-    # and a forced swap had no event to signal.
+    # The legacy /generate/stream decodes on the standard backend for its whole run.
+    # /unload runs no idle drain, so unregistered it passed the advertised 409 gate then
+    # blocked on the backend's generation lock, and a forced swap had no event to signal.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
     from types import SimpleNamespace
@@ -1556,10 +1549,9 @@ def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
 
 
 def test_audio_generation_is_visible_to_the_swap_gate(monkeypatch):
-    # /audio/generate is non-streaming and holds the model for the whole request,
-    # and /unload runs no idle drain: unregistered, a non-forced swap counted zero
-    # generations and could tear the model down under the TTS work, and a forced
-    # one had no entry to name. Same shape as the non-streaming completions proxy.
+    # /audio/generate is non-streaming and holds the model for the whole request, and
+    # /unload runs no idle drain: unregistered, a non-forced swap counted zero generations
+    # and could tear the model down under the TTS work, and a forced one had no entry to name.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
     from types import SimpleNamespace
@@ -1574,8 +1566,7 @@ def test_audio_generation_is_visible_to_the_swap_gate(monkeypatch):
         models = {"org/TTS": {"is_audio": True}}
 
         def generate_audio_response(self, **kwargs):
-            # Sampled mid-generation: exactly the window a concurrent swap
-            # would tear the model down in.
+            # Sampled mid-generation: the window a concurrent swap would tear down in.
             seen["count"] = active_generations.count()
             seen["snapshot"] = active_generations.snapshot()
             return (b"RIFFfake", 24000)
@@ -1653,12 +1644,11 @@ def _standard_chat_stubs(monkeypatch, backend):
 
 
 def test_standard_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
-    # ``stream`` defaults to false on ChatCompletionRequest, so this is the
-    # default shape of a standard (non-GGUF) chat, and it drains generate() on
-    # the worker for the whole request. /unload runs no idle drain: unregistered,
-    # a non-forced swap counted zero generations, passed the gate and let
-    # unload_model() cancel the run, truncating the completion instead of 409ing.
-    # Only the streaming branch beside it was registered.
+    # ``stream`` defaults to false on ChatCompletionRequest, so this is the default shape of
+    # a standard (non-GGUF) chat, draining generate() on the worker for the whole request.
+    # /unload runs no idle drain: unregistered, a non-forced swap counted zero generations,
+    # passed the gate and let unload_model() cancel the run, truncating the completion
+    # instead of 409ing. Only the streaming branch beside it was registered.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
 
@@ -1711,8 +1701,7 @@ def test_standard_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
 
 
 def test_standard_non_stream_chat_unregisters_when_it_fails(monkeypatch):
-    # A raising backend must not strand an entry: that would 409 every later swap
-    # until the process restarts.
+    # A raising backend must not strand an entry: that would 409 every later swap.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
 
@@ -1744,11 +1733,10 @@ def test_standard_non_stream_chat_unregisters_when_it_fails(monkeypatch):
 
 
 def test_audio_input_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
-    # An audio-input model answering with the default stream=false transcribes
-    # (or generates an audio-conditioned reply) on the standard worker for the
-    # whole request, and /unload runs no idle drain: unregistered, a non-forced
-    # swap bypassed the 409 guard and could cancel and unload the worker
-    # mid-transcription. The streaming sibling beside it was already registered.
+    # An audio-input model answering with the default stream=false transcribes (or replies
+    # audio-conditioned) on the standard worker for the whole request, and /unload runs no
+    # idle drain: unregistered, a non-forced swap bypassed the 409 guard and could cancel
+    # and unload the worker mid-transcription. Only the streaming sibling was registered.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
 
@@ -1836,11 +1824,10 @@ class _MessagesRequest(_NeverDisconnectedRequest):
 
 @pytest.mark.parametrize("with_server_tools", [False, True])
 def test_local_anthropic_non_stream_is_visible_to_the_swap_gate(monkeypatch, with_server_tools):
-    # ``stream`` defaults to false on /v1/messages, so the non-streaming plain
-    # and server-tool branches are the route's common shape, and both decode on
-    # llama-server for the whole request. Only their streaming siblings were
-    # registered, so a non-forced /unload counted zero generations and tore the
-    # server down mid-request.
+    # ``stream`` defaults to false on /v1/messages, so the non-streaming plain and
+    # server-tool branches are the route's common shape, and both decode on llama-server for
+    # the whole request. Only their streaming siblings were registered, so a non-forced
+    # /unload counted zero generations and tore the server down mid-request.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
 
@@ -1891,10 +1878,9 @@ def test_local_anthropic_non_stream_is_visible_to_the_swap_gate(monkeypatch, wit
 
 
 def test_anthropic_passthrough_non_stream_is_visible_to_the_swap_gate(monkeypatch):
-    # The client-tool pass-through holds llama-server for one non-streaming POST.
-    # Its streaming sibling registers inside the body generator; this branch had
-    # no entry at all, so a non-forced /unload counted zero generations and tore
-    # the server down mid-request.
+    # The client-tool pass-through holds llama-server for one non-streaming POST. Its
+    # streaming sibling registers inside the body generator; this branch had no entry at
+    # all, so a non-forced /unload counted zero generations and tore the server down.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
 
@@ -1924,8 +1910,8 @@ def test_anthropic_passthrough_non_stream_is_visible_to_the_swap_gate(monkeypatc
         inf_mod, "nonstreaming_client", lambda: real_async_client(transport = transport)
     )
 
-    # enable_tools False keeps the server-tool loop out of it, so the declared
-    # client tool takes the pass-through branch.
+    # enable_tools False keeps the server-tool loop out, so the declared client tool
+    # takes the pass-through branch.
     payload = AnthropicMessagesRequest(
         max_tokens = 16,
         messages = [{"role": "user", "content": "hi"}],
@@ -1946,8 +1932,7 @@ def test_anthropic_passthrough_non_stream_is_visible_to_the_swap_gate(monkeypatc
 
 
 def test_audio_generation_unregisters_when_it_fails(monkeypatch):
-    # A raising backend must not strand an entry: that would 409 every later
-    # load until the process restarts.
+    # A raising backend must not strand an entry: that would 409 every later load.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
     from types import SimpleNamespace

@@ -4404,8 +4404,7 @@ def _unload_may_evict(model_path: str) -> bool:
     if llama_backend.is_active and (
         llama_backend.model_identifier == model_path
         or is_registered_native_path_label(llama_backend.model_identifier, model_path)
-        # A llama-server that is up but not serving is mid-load, and the GGUF
-        # branch evicts it whatever model the request names.
+        # Up but not serving is mid-load, evicted whatever model was named.
         or not llama_backend.is_loaded
     ):
         return True
@@ -5808,11 +5807,10 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
 
     # Same gate as /load: refusal only, so a non-forced unload fails fast before
-    # queueing on the lifecycle gate. Skipped when no teardown branch can fire, or
-    # a request for a model another tab already replaced would 409 on chats it
-    # cannot interrupt instead of returning its no-op. The destructive pass runs at
-    # each teardown below. Ahead of the "stop loading" fast paths, which have no
-    # generations of their own.
+    # queueing on the lifecycle gate. Skipped when no teardown branch can fire, or a
+    # request naming a model another tab already replaced would 409 on chats it cannot
+    # interrupt instead of returning its no-op. The destructive pass runs at each
+    # teardown below. Ahead of the "stop loading" fast paths, which have no generations.
     if _unload_may_evict(request.model_path):
         _raise_or_cancel_active_generations(
             force = request.force_cancel_active,
@@ -5864,11 +5862,10 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
         # swap in a fresh subprocess mid-unload and the unload command would land on the
         # new worker. The gate makes load and unload exclusive.
         async with inference_lifecycle_gate():
-            # Rechecked under the gate, like /load: the middleware takes and releases
-            # this same gate before a request starts inference, so a chat can register
-            # while this request queues here. Still refusal only, and still only for a
-            # request that can reach a teardown -- a load may have finished while this
-            # one queued, so the predicate is re-read here rather than carried down.
+            # Rechecked under the gate, like /load: the middleware takes and releases this
+            # same gate before a request starts inference, so a chat can register while this
+            # one queues here. Still refusal only, and still only if a teardown can fire --
+            # re-read, not carried down, since a load may have finished while this queued.
             if _unload_may_evict(request.model_path):
                 _raise_or_cancel_active_generations(
                     force = request.force_cancel_active,
@@ -6062,12 +6059,11 @@ async def generate_stream(
         disconnect_watcher = asyncio.create_task(
             _await_disconnect_then_cancel(fastapi_request, cancel_event)
         )
-        # Registered inside the generator, under the finally that unregisters it,
-        # so a response whose body never starts leaves nothing behind. /unload
-        # runs no idle drain, so without an entry it passes the 409 gate and then
-        # blocks on the backend's generation lock instead, and a forced swap has
-        # no event to signal. GenerateRequest carries no thread_id, so this run is
-        # counted but not nameable, the documented first-turn case.
+        # Registered inside the generator, under the finally that unregisters it, so a
+        # response whose body never starts leaves nothing behind. /unload runs no idle
+        # drain, so unregistered it passes the 409 gate then blocks on the backend's
+        # generation lock, and a forced swap has no event to signal. GenerateRequest
+        # carries no thread_id, so this run is counted but not nameable: first-turn case.
         _tracker = _TrackedCancel(cancel_event, model = backend.active_model_name)
         _tracker.__enter__()
         try:
@@ -6115,8 +6111,7 @@ async def generate_stream(
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
             yield "data: [DONE]\n\n"
         finally:
-            # Nested so a teardown failure cannot skip the unregister and leave a
-            # phantom generation 409-ing every later swap.
+            # Nested so a teardown failure still unregisters; a phantom entry 409s swaps.
             try:
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                 if not completed and not cancel_event.is_set():
@@ -6436,13 +6431,12 @@ async def generate_audio(
     # /audio/generate route and the chat-completions audio branches that delegate here.
     _fill_recommended_sampling_openai(payload, _audio_model_id)
 
-    # TTS holds the model for this whole request and /unload runs no idle drain,
-    # so unregistered a non-forced swap counted zero generations and tore the
-    # model down mid-generation. Registering makes the gate see it and name its
-    # chat in the 409. No cancel keys, because nothing here can honour a /cancel:
-    # generate_audio_response takes no cancel_event on any backend, so this event
-    # has no observer and a forced swap still cannot interrupt audio in flight.
-    # Reaching the GPU with a cancel means streaming the route.
+    # TTS holds the model for this whole request and /unload runs no idle drain, so
+    # unregistered a non-forced swap counted zero generations and tore the model down
+    # mid-generation. Registering makes the gate see it and name its chat in the 409. No
+    # cancel keys: generate_audio_response takes no cancel_event on any backend, so this
+    # event has no observer and a forced swap still cannot interrupt audio in flight --
+    # reaching the GPU with a cancel means streaming the route.
     _audio_cancel = threading.Event()
     with _TrackedCancel(
         _audio_cancel,
@@ -8208,11 +8202,10 @@ async def openai_chat_completions(
                     },
                 )
             else:
-                # `stream` defaults to False, so this is the ordinary shape of an
-                # audio-input chat, and it holds the worker for the whole request.
-                # /unload runs no idle drain, so unregistered a swap counted zero
-                # generations and cancelled this instead of returning 409. The
-                # streaming sibling's tracker covers only its own branch.
+                # `stream` defaults to False, so this is the ordinary shape of an audio-input
+                # chat, holding the worker for the whole request. /unload runs no idle drain,
+                # so unregistered a swap counted zero generations and cancelled this instead
+                # of 409ing. The streaming sibling's tracker covers only its own branch.
                 _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
                 _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
                 _tracker.__enter__()
@@ -8230,8 +8223,8 @@ async def openai_chat_completions(
                     api_monitor.fail(monitor_id, _friendly_error(e))
                     raise
                 finally:
-                    # Nested under the except arms too: api_monitor.fail() above can
-                    # throw, and a leaked entry 409s every later swap until restart.
+                    # Nested under the except arms too: api_monitor.fail() can throw,
+                    # and a leaked entry 409s every later swap until restart.
                     _tracker.__exit__(None, None, None)
                 api_monitor.set_reply(monitor_id, full_text)
                 api_monitor.finish(monitor_id)
@@ -10591,11 +10584,10 @@ async def openai_chat_completions(
 
     # ── Non-streaming response ────────────────────────────────────
     else:
-        # `stream` defaults to False, so this is the default shape of a standard
-        # (non-GGUF) chat, and generate() holds the worker for the whole request.
-        # /unload runs no idle drain, so unregistered a swap had unload_model()
-        # cancel this run rather than returning 409. The GGUF sibling already
-        # registers its own non-streaming branch; this matches it.
+        # `stream` defaults to False, so this is the default shape of a standard (non-GGUF)
+        # chat, and generate() holds the worker for the whole request. /unload runs no idle
+        # drain, so unregistered a swap had unload_model() cancel this run rather than
+        # returning 409. Matches the GGUF sibling, which registers its own branch.
         _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
         _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
         _tracker.__enter__()
@@ -13055,12 +13047,10 @@ async def _responses_stream(
                     completion_id = resp_id,
                     level = "debug",
                 )
-                # The tracked event, not just the client socket: the run is in
-                # active_generations from __enter__ above, so a forced swap's
-                # cancel_all() lands on it while it is still queued. Without it
-                # the wait only sees a disconnect, the queued run takes a lease
-                # it was told to give up, and the swap's post-cancel drain waits
-                # out the upstream round trip it just cancelled.
+                # The tracked event, not just the client socket: registered at __enter__
+                # above, so a forced swap's cancel_all() reaches this run while it is still
+                # queued. Otherwise it takes a lease it was told to give up and the swap's
+                # post-cancel drain waits out the round trip it just cancelled.
                 async for wait_item in _openai_admission_wait_stream_chunks(
                     reservation,
                     admission_config,

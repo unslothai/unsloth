@@ -694,8 +694,8 @@ def test_generate_stream_cancels_backend_on_stream_cancelled_error():
             )
         if isinstance(sub, ast.Try) and sub.finalbody:
             final_src = "\n".join(ast.unparse(stmt) for stmt in sub.finalbody)
-            # Accumulate: this is an existence claim, and the cleanup sits in a
-            # nested try whose own finally only unregisters the swap-gate entry.
+            # Accumulate: an existence claim, and the cleanup sits in a nested try
+            # whose own finally only unregisters the swap-gate entry.
             found_finally_cleanup = found_finally_cleanup or (
                 "not completed" in final_src
                 and "not cancel_event.is_set()" in final_src
