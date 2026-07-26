@@ -44,7 +44,7 @@ from storage import studio_db  # noqa: E402
 BASE = os.environ["BASE_URL"].rstrip("/")
 ACCOUNT_A_PASSWORD = os.environ["STUDIO_PW"]
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_recipe_persistence"))
-ART.mkdir(parents = True, exist_ok = True)
+ART.mkdir(parents=True, exist_ok=True)
 
 RECIPE_ID = f"recipe-sync-{secrets.token_hex(6)}"
 ACCOUNT_A_NAME = f"Legacy recipe A {RECIPE_ID}"
@@ -53,7 +53,7 @@ LEGACY_SOURCE = "recipe-indexeddb-v1"
 
 
 def info(message: str) -> None:
-    print(f"[recipe-sync] {message}", flush = True)
+    print(f"[recipe-sync] {message}", flush=True)
 
 
 def request_json(
@@ -65,25 +65,25 @@ def request_json(
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = urllib.request.Request(
         f"{BASE}{path}",
-        data = data,
-        method = method,
-        headers = {"Content-Type": "application/json"} if data is not None else {},
+        data=data,
+        method=method,
+        headers={"Content-Type": "application/json"} if data is not None else {},
     )
-    with urllib.request.urlopen(request, timeout = 30) as response:
+    with urllib.request.urlopen(request, timeout=30) as response:
         return json.load(response)
 
 
 def login(username: str, password: str) -> dict:
     payload = request_json(
         "/api/auth/login",
-        method = "POST",
-        body = {"username": username, "password": password},
+        method="POST",
+        body={"username": username, "password": password},
     )
     assert payload.get("access_token"), f"login for {username!r} returned no access token"
     assert payload.get("refresh_token"), f"login for {username!r} returned no refresh token"
-    assert not payload.get(
-        "must_change_password"
-    ), f"account {username!r} still requires a password change"
+    assert not payload.get("must_change_password"), (
+        f"account {username!r} still requires a password change"
+    )
     return payload
 
 
@@ -126,6 +126,10 @@ def delete_legacy_database(page: Page) -> None:
             request.onblocked = () => reject(new Error("legacy IndexedDB delete was blocked"));
         })"""
     )
+
+
+def clear_legacy_import_claim(page: Page) -> None:
+    page.evaluate("localStorage.removeItem('user-assets:recipe-indexeddb-v1:owner')")
 
 
 def put_legacy_recipe(page: Page, name: str) -> None:
@@ -183,11 +187,11 @@ def wait_for_recipe_list(page: Page, tokens: dict) -> Response:
     with page.expect_response(
         lambda response: is_user_assets_response(
             response,
-            method = "GET",
-            suffix = "/recipes",
-            token = tokens["access_token"],
+            method="GET",
+            suffix="/recipes",
+            token=tokens["access_token"],
         ),
-        timeout = 30_000,
+        timeout=30_000,
     ) as response_info:
         set_tokens(page, tokens)
     response = response_info.value
@@ -235,7 +239,7 @@ def cleanup_assets(*subjects: str) -> None:
 
 
 def main() -> None:
-    wait_for_health(BASE, timeout = 30.0, info = info)
+    wait_for_health(BASE, timeout=30.0, info=info)
     status = request_json("/api/auth/status")
     account_a_username = status.get("default_username")
     assert isinstance(account_a_username, str) and account_a_username
@@ -246,7 +250,7 @@ def main() -> None:
         account_b_username,
         account_b_password,
         secrets.token_urlsafe(48),
-        must_change_password = False,
+        must_change_password=False,
     )
 
     tokens_a: dict | None = None
@@ -263,19 +267,19 @@ def main() -> None:
 
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(
-                headless = True,
-                args = chromium_launch_args(),
+                headless=True,
+                args=chromium_launch_args(),
             )
             context = browser.new_context(
-                viewport = {"width": 1280, "height": 900},
-                reduced_motion = "reduce",
+                viewport={"width": 1280, "height": 900},
+                reduced_motion="reduce",
             )
             install_view_transition_killer(context)
             page = context.new_page()
             page.set_default_timeout(30_000)
-            page.goto(f"{BASE}/login", wait_until = "domcontentloaded")
+            page.goto(f"{BASE}/login", wait_until="domcontentloaded")
             set_tokens(page, tokens_a)
-            page.goto(f"{BASE}/chat", wait_until = "domcontentloaded")
+            page.goto(f"{BASE}/chat", wait_until="domcontentloaded")
 
             info("seed native legacy IndexedDB and migrate it as account A")
             delete_legacy_database(page)
@@ -283,21 +287,23 @@ def main() -> None:
             migration_requests = []
             page.on(
                 "request",
-                lambda request: migration_requests.append(request)
-                if request.method == "POST"
-                and urlparse(request.url).path == "/api/user-assets/legacy-import"
-                else None,
+                lambda request: (
+                    migration_requests.append(request)
+                    if request.method == "POST"
+                    and urlparse(request.url).path == "/api/user-assets/legacy-import"
+                    else None
+                ),
             )
             with page.expect_response(
                 lambda response: is_user_assets_response(
                     response,
-                    method = "POST",
-                    suffix = "/legacy-import",
-                    token = tokens_a["access_token"],
+                    method="POST",
+                    suffix="/legacy-import",
+                    token=tokens_a["access_token"],
                 ),
-                timeout = 30_000,
+                timeout=30_000,
             ) as migration_info:
-                page.goto(f"{BASE}/data-recipes", wait_until = "domcontentloaded")
+                page.goto(f"{BASE}/data-recipes", wait_until="domcontentloaded")
             migration = migration_info.value
             assert migration.status == 200
             migration_body = migration.json()
@@ -306,7 +312,7 @@ def main() -> None:
             assert migration_payload["source"] == LEGACY_SOURCE
             assert migration_payload["confirmSubject"] == subject_a
             assert [item["id"] for item in migration_payload["recipes"]] == [RECIPE_ID]
-            page.get_by_text(ACCOUNT_A_NAME, exact = True).wait_for(state = "visible")
+            page.get_by_text(ACCOUNT_A_NAME, exact=True).wait_for(state="visible")
 
             info("remove browser source and prove a hard reload reads server persistence")
             delete_legacy_database(page)
@@ -314,55 +320,57 @@ def main() -> None:
             with page.expect_response(
                 lambda response: is_user_assets_response(
                     response,
-                    method = "GET",
-                    suffix = "/recipes",
-                    token = tokens_a["access_token"],
+                    method="GET",
+                    suffix="/recipes",
+                    token=tokens_a["access_token"],
                 ),
-                timeout = 30_000,
+                timeout=30_000,
             ) as reload_list_info:
-                page.reload(wait_until = "domcontentloaded")
+                page.reload(wait_until="domcontentloaded")
             reload_list = reload_list_info.value
             assert reload_list.status == 200
             reloaded_recipe = next(
                 recipe for recipe in reload_list.json()["recipes"] if recipe["id"] == RECIPE_ID
             )
             assert reloaded_recipe["name"] == ACCOUNT_A_NAME
-            page.get_by_text(ACCOUNT_A_NAME, exact = True).wait_for(state = "visible")
+            page.get_by_text(ACCOUNT_A_NAME, exact=True).wait_for(state="visible")
             page.wait_for_timeout(500)
             assert len(migration_requests) == posts_before_reload
 
             info("switch A -> B -> A in the same page and reject cross-account cache reuse")
             list_b = wait_for_recipe_list(page, tokens_b)
             assert list_b.json()["recipes"] == []
-            page.get_by_text(ACCOUNT_A_NAME, exact = True).wait_for(state = "hidden")
+            page.get_by_text(ACCOUNT_A_NAME, exact=True).wait_for(state="hidden")
             list_a = wait_for_recipe_list(page, tokens_a)
             assert any(recipe["id"] == RECIPE_ID for recipe in list_a.json()["recipes"])
-            page.get_by_text(ACCOUNT_A_NAME, exact = True).wait_for(state = "visible")
+            page.get_by_text(ACCOUNT_A_NAME, exact=True).wait_for(state="visible")
 
             info("delete on the server, clear only the ledger, and force legacy tombstone handling")
             put_legacy_recipe(page, ACCOUNT_A_NAME)
             with page.expect_response(
-                lambda response: response.request.method == "DELETE"
-                and urlparse(response.url).path == f"/api/user-assets/recipes/{RECIPE_ID}"
-                and response.request.headers.get("authorization")
-                == f"Bearer {tokens_a['access_token']}",
-                timeout = 30_000,
+                lambda response: (
+                    response.request.method == "DELETE"
+                    and urlparse(response.url).path == f"/api/user-assets/recipes/{RECIPE_ID}"
+                    and response.request.headers.get("authorization")
+                    == f"Bearer {tokens_a['access_token']}"
+                ),
+                timeout=30_000,
             ) as delete_info:
-                page.get_by_role("button", name = f"Delete {ACCOUNT_A_NAME}").click()
+                page.get_by_role("button", name=f"Delete {ACCOUNT_A_NAME}").click()
             assert delete_info.value.status == 204
-            page.get_by_text(ACCOUNT_A_NAME, exact = True).wait_for(state = "hidden")
+            page.get_by_text(ACCOUNT_A_NAME, exact=True).wait_for(state="hidden")
             remove_legacy_ledger(subject_a)
 
             with page.expect_response(
                 lambda response: is_user_assets_response(
                     response,
-                    method = "POST",
-                    suffix = "/legacy-import",
-                    token = tokens_a["access_token"],
+                    method="POST",
+                    suffix="/legacy-import",
+                    token=tokens_a["access_token"],
                 ),
-                timeout = 30_000,
+                timeout=30_000,
             ) as retired_info:
-                page.reload(wait_until = "domcontentloaded")
+                page.reload(wait_until="domcontentloaded")
             retired = retired_info.value
             assert retired.status == 200
             retired_recipes = retired.json()["recipes"]
@@ -371,31 +379,34 @@ def main() -> None:
             assert retired_recipes[0]["outcome"] == "id_retired"
             assert retired_recipes[0]["reason"] == "id_retired"
             assert not retired_recipes[0].get("redactedPaths")
-            page.get_by_text(ACCOUNT_A_NAME, exact = True).wait_for(state = "hidden")
+            page.get_by_text(ACCOUNT_A_NAME, exact=True).wait_for(state="hidden")
 
             info("prove account A's tombstone does not suppress account B's same legacy id")
             put_legacy_recipe(page, ACCOUNT_B_NAME)
+            # The test has replaced the legacy source with B's synthetic data;
+            # release A's one-device migration claim before exercising B's import.
+            clear_legacy_import_claim(page)
             with page.expect_response(
                 lambda response: is_user_assets_response(
                     response,
-                    method = "POST",
-                    suffix = "/legacy-import",
-                    token = tokens_b["access_token"],
+                    method="POST",
+                    suffix="/legacy-import",
+                    token=tokens_b["access_token"],
                 ),
-                timeout = 30_000,
+                timeout=30_000,
             ) as account_b_import_info:
                 set_tokens(page, tokens_b)
             account_b_import = account_b_import_info.value
             assert account_b_import.status == 200
             assert account_b_import.json()["recipes"][0]["outcome"] in {"imported", "redacted"}
-            page.get_by_text(ACCOUNT_B_NAME, exact = True).wait_for(state = "visible")
+            page.get_by_text(ACCOUNT_B_NAME, exact=True).wait_for(state="visible")
 
             list_a_after_delete = wait_for_recipe_list(page, tokens_a)
             assert all(
                 recipe["id"] != RECIPE_ID for recipe in list_a_after_delete.json()["recipes"]
             )
-            page.get_by_text(ACCOUNT_B_NAME, exact = True).wait_for(state = "hidden")
-            page.screenshot(path = str(ART / "recipe-persistence-pass.png"), full_page = True)
+            page.get_by_text(ACCOUNT_B_NAME, exact=True).wait_for(state="hidden")
+            page.screenshot(path=str(ART / "recipe-persistence-pass.png"), full_page=True)
             info("PASS recipe persistence lifecycle")
             context.close()
             browser.close()
@@ -403,7 +414,7 @@ def main() -> None:
     except Exception:
         if browser is not None:
             try:
-                page.screenshot(path = str(ART / "recipe-persistence-failure.png"), full_page = True)
+                page.screenshot(path=str(ART / "recipe-persistence-failure.png"), full_page=True)
             except Exception:
                 pass
         raise
