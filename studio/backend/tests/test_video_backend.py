@@ -8,6 +8,7 @@ stack loads."""
 
 import contextlib
 import sys
+import time
 import types
 
 import pytest
@@ -1105,6 +1106,44 @@ def test_generate_progress_derives_total_steps_and_fraction(fake_runtime):
     gen = backend.generate_progress()
     assert gen["total"] == 20 and gen["total_steps"] == 20
     assert gen["step"] == 5 and gen["fraction"] == 0.25
+
+
+def test_failed_background_generate_retains_terminal_error(fake_runtime, tmp_path, monkeypatch):
+    # A page mounted AFTER a background job failed (browser reload during a minutes-long
+    # generation) reads the outcome from this retained terminal record -- its only diagnosis,
+    # since nothing else survives the reload. So a failure must stay pollable as
+    # active=False + phase="failed" + error, repeatedly, until the next job replaces it.
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+
+    def _boom(
+        self,
+        *,
+        prompt = None,
+        negative_prompt = None,
+        num_inference_steps = None,
+        guidance_scale = None,
+        width = None,
+        height = None,
+        num_frames = None,
+        frame_rate = None,
+        generator = None,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
+        raise ValueError("frames exceed the device memory")
+
+    monkeypatch.setattr(type(backend._state.pipe), "__call__", _boom)
+    backend.begin_generate(prompt = "a clip")
+    deadline = time.monotonic() + 10
+    while backend.generate_progress()["active"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    gen = backend.generate_progress()
+    assert gen["active"] is False
+    assert gen["phase"] == "failed"
+    assert gen["error"] == "frames exceed the device memory"
+    # Re-poll: a mount-time probe is a second read of the same record, not a one-shot drain.
+    assert backend.generate_progress()["phase"] == "failed"
 
 
 def test_cache_bytes_counts_incomplete_blobs(fake_runtime, tmp_path, monkeypatch):

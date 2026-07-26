@@ -1002,6 +1002,12 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           const clip = g.video;
           setVideos((prev) => (prev.some((v) => v.id === clip.id) ? prev : [clip, ...prev]));
           void ensureSrc(clip);
+        } else if (g.phase === "failed") {
+          // The other terminal phase, and the backend keeps it only until the next job: without
+          // this a reload after a minutes-long generation failed shows an idle page and the
+          // error (OOM, bad input, disk) is lost. Same cancelled-sentinel filter the poll uses.
+          const msg = g.error || "Video generation failed";
+          if (!msg.toLowerCase().includes("cancelled")) toast.error(msg);
         }
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
