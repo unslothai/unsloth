@@ -44,15 +44,17 @@ export function useTrainingActions() {
   const startError = useTrainingRuntimeStore((state) => state.startError);
 
   const startTrainingRun = useCallback(async (options?: {
-    checkpointImportToken?: string | null;
+    resumeCheckpointPath?: string | null;
+    resumeConfig?: Partial<TrainingStartRequest> | null;
   }): Promise<boolean> => {
     let config = useTrainingConfigStore.getState();
     const runtimeStore = useTrainingRuntimeStore.getState();
     const dialogStore = useDatasetPreviewDialogStore.getState();
 
     runtimeStore.setStartError(null);
+    const isResume = Boolean(options?.resumeCheckpointPath);
     const validation = validateTrainingConfig(config);
-    if (!validation.ok) {
+    if (!isResume && !validation.ok) {
       runtimeStore.setStartError(validation.message);
       return false;
     }
@@ -78,7 +80,7 @@ export function useTrainingActions() {
       const datasetName = getDatasetName(config);
       let isVlm = config.isVisionModel && config.isDatasetImage === true;
 
-      if (datasetName) {
+      if (!isResume && datasetName) {
         const check = await checkDatasetFormat({
           datasetName,
           hfToken: config.hfToken.trim() || null,
@@ -162,12 +164,19 @@ export function useTrainingActions() {
       }
 
       // Re-read config after potential store updates from dataset check
-      const payload = buildTrainingStartPayload(useTrainingConfigStore.getState());
-      payload.checkpoint_import_token = options?.checkpointImportToken ?? null;
+      const freshPayload = buildTrainingStartPayload(useTrainingConfigStore.getState());
+      const payload: TrainingStartRequest = {
+        ...freshPayload,
+        ...options?.resumeConfig,
+        // Credentials are never restored from a portable manifest.
+        hf_token: freshPayload.hf_token,
+        wandb_token: null,
+      };
+      payload.imported_resume_checkpoint = options?.resumeCheckpointPath ?? null;
       runtimeStore.setStartResources(
         payload.model_name,
         payload.hf_dataset,
-        false,
+        Boolean(options?.resumeCheckpointPath),
         payload.project_name ?? "",
       );
       const response = await startTraining(payload);

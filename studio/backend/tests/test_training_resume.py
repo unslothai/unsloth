@@ -40,6 +40,47 @@ def test_resume_request_accepts_sanitized_null_target_modules():
     assert request.target_modules == []
 
 
+@pytest.mark.parametrize(
+    "dataset_fields",
+    [
+        {"local_datasets": ["/tmp/train.jsonl"]},
+        {"local_eval_datasets": ["/tmp/eval.jsonl"]},
+        {
+            "training_datasets": [
+                {"hf_dataset": "org/hub-data", "split": "train"},
+                {"local_path": "/tmp/local.jsonl", "split": "train"},
+            ]
+        },
+    ],
+)
+def test_non_hf_dataset_forces_portable_snapshot(dataset_fields):
+    from models.training import TrainingStartRequest
+
+    request = TrainingStartRequest(
+        model_name = "unsloth/Qwen3-0.6B",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        portable_resume_data = "metadata",
+        **dataset_fields,
+    )
+
+    assert request.portable_resume_data == "snapshot"
+
+
+def test_hf_only_dataset_keeps_selected_portable_mode():
+    from models.training import TrainingStartRequest
+
+    request = TrainingStartRequest(
+        model_name = "unsloth/Qwen3-0.6B",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        hf_dataset = "org/hub-data",
+        portable_resume_data = "pinned",
+    )
+
+    assert request.portable_resume_data == "pinned"
+
+
 def _write_checkpoint(out: Path, step: int) -> Path:
     checkpoint = out / f"checkpoint-{step}"
     checkpoint.mkdir(parents = True, exist_ok = True)

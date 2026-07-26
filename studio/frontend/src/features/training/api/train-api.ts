@@ -44,49 +44,65 @@ export async function startTraining(
 }
 
 type CheckpointInspectionApi = {
-  inspection_token: string;
-  checkpoint_path: string;
-  checkpoint_name?: string;
-  checkpoint?: string;
+  selected_checkpoint: string;
+  output_dir: string;
   global_step: number;
-  model_identity?: string | null;
-  model_name?: string | null;
-  adapter_identity?: string | null;
-  adapter_name?: string | null;
-  training_backend?: string | null;
-  optimizer_complete: boolean;
-  scheduler_complete: boolean;
-  trainer_state_complete: boolean;
-  bundled_configuration_found?: boolean;
-  has_training_config?: boolean;
-  incompatibilities?: string[];
-  missing_datasets?: string[];
-  external?: boolean;
+  backend_type: string;
+  configuration?: Record<string, Record<string, unknown>>;
+  manifest?: Record<string, unknown> | null;
+  compatibility_warnings?: string[];
 };
 
 export async function inspectCheckpoint(path: string): Promise<CheckpointInspection> {
-  const response = await authFetch("/api/train/checkpoints/inspect", {
+  const response = await authFetch("/api/train/resume/import/inspect", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ directory: path }),
   });
   const value = await parseJson<CheckpointInspectionApi>(response);
+  const adapterConfig = value.configuration?.["adapter_config.json"];
+  const manifestModel = typeof value.manifest?.base_model === "string"
+    ? value.manifest.base_model
+    : null;
+  const adapterModel = typeof adapterConfig?.base_model_name_or_path === "string"
+    ? adapterConfig.base_model_name_or_path
+    : null;
+  const manifest = value.manifest;
+  const datasets = manifest?.datasets && typeof manifest.datasets === "object"
+    ? manifest.datasets as Record<string, unknown>
+    : {};
+  const resumeConfig = manifest
+    ? {
+        ...(manifest.training_arguments as Partial<TrainingStartRequest> | undefined),
+        ...(manifest.fine_tuning as Partial<TrainingStartRequest> | undefined),
+        ...(manifest.preprocessing as Partial<TrainingStartRequest> | undefined),
+        model_name: manifestModel ?? adapterModel ?? "",
+        hf_dataset: typeof datasets.repository === "string" ? datasets.repository : null,
+        training_datasets: Array.isArray(datasets.descriptors) ? datasets.descriptors : [],
+        local_datasets: Array.isArray(datasets.local) ? datasets.local as string[] : [],
+        local_eval_datasets: Array.isArray(datasets.local_eval) ? datasets.local_eval as string[] : [],
+        portable_resume_data:
+          datasets.portable_resume_data === "pinned" || datasets.portable_resume_data === "snapshot"
+            ? datasets.portable_resume_data
+            : "metadata",
+      } satisfies Partial<TrainingStartRequest>
+    : null;
   return {
-    inspectionToken: value.inspection_token,
-    checkpointPath: value.checkpoint_path,
-    checkpointName: value.checkpoint_name ?? value.checkpoint ?? `checkpoint-${value.global_step}`,
+    checkpointPath: value.selected_checkpoint,
+    checkpointName: value.selected_checkpoint.split(/[\\/]/).filter(Boolean).pop() ?? `checkpoint-${value.global_step}`,
     globalStep: value.global_step,
-    modelIdentity: value.model_identity ?? value.model_name ?? null,
-    adapterIdentity: value.adapter_identity ?? value.adapter_name ?? null,
-    trainingBackend: value.training_backend ?? null,
-    optimizerComplete: value.optimizer_complete,
-    schedulerComplete: value.scheduler_complete,
-    trainerStateComplete: value.trainer_state_complete,
-    bundledConfigurationFound:
-      value.bundled_configuration_found ?? value.has_training_config ?? false,
-    incompatibilities: value.incompatibilities ?? [],
-    missingDatasets: value.missing_datasets ?? [],
-    external: value.external ?? true,
+    modelIdentity: manifestModel ?? adapterModel,
+    adapterIdentity: adapterModel,
+    trainingBackend: value.backend_type,
+    // Invalid or incomplete state is rejected by the inspection endpoint.
+    optimizerComplete: true,
+    schedulerComplete: true,
+    trainerStateComplete: true,
+    bundledConfigurationFound: Boolean(value.manifest),
+    incompatibilities: value.compatibility_warnings ?? [],
+    missingDatasets: [],
+    external: true,
+    resumeConfig,
   };
 }
 

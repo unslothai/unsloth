@@ -635,6 +635,19 @@ class TrainingStartRequest(BaseModel):
         return self
 
     @model_validator(mode = "after")
+    def _require_snapshot_for_non_hf_datasets(self) -> "TrainingStartRequest":
+        """Ephemeral/non-Hub inputs need their processed data bundled for resume."""
+        has_non_hf_dataset = bool(
+            self.local_datasets
+            or self.local_eval_datasets
+            or self.s3_config
+            or any(dataset.local_path for dataset in self.training_datasets)
+        )
+        if has_non_hf_dataset:
+            self.portable_resume_data = "snapshot"
+        return self
+
+    @model_validator(mode = "after")
     def _check_steps_or_epochs(self) -> "TrainingStartRequest":
         # Each accepts 0 as "use the other"; both 0 means nothing to train.
         if (self.max_steps is None or self.max_steps == 0) and self.num_epochs == 0:

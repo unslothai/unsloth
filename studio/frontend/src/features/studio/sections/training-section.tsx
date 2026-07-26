@@ -41,7 +41,11 @@ const placeholderData = [
   { step: 50, loss: 0.8 },
 ];
 
-export function TrainingSection() {
+export function TrainingSection({
+  onResumeSelectedChange,
+}: {
+  onResumeSelectedChange?: (selected: boolean) => void;
+}) {
   const t = useT();
   const chartConfig = {
     loss: { label: t("studio.charts.loss"), color: "#3b82f6" },
@@ -62,7 +66,8 @@ export function TrainingSection() {
   const resumeBlocked = resumeSelected && (!resumeInspection || (
     (resumeInspection.external && !resumeConfirmed) ||
     !resumeInspection.optimizerComplete || !resumeInspection.schedulerComplete ||
-    !resumeInspection.trainerStateComplete || resumeInspection.incompatibilities.length > 0 ||
+    !resumeInspection.trainerStateComplete || !resumeInspection.bundledConfigurationFound ||
+    resumeInspection.incompatibilities.length > 0 ||
     resumeInspection.missingDatasets.length > 0
   ));
 
@@ -186,14 +191,15 @@ export function TrainingSection() {
           setResumeInspection(value);
           setResumeConfirmed(confirmed);
           setResumeSelected(selected);
+          onResumeSelectedChange?.(selected);
         }} />
 
         {/* Start/Stop */}
         <Button
           data-tour="studio-start"
           className="w-full cursor-pointer bg-primary text-primary-foreground hover:bg-primary/90"
-          onClick={() => void startTrainingRun({ checkpointImportToken: resumeInspection?.inspectionToken })}
-          disabled={isStarting || resumeBlocked || isIncompatible || store.isCheckingDataset || isLoadingModel || !configValidation.ok}
+          onClick={() => void startTrainingRun({ resumeCheckpointPath: resumeInspection?.checkpointPath, resumeConfig: resumeInspection?.resumeConfig })}
+          disabled={isStarting || resumeBlocked || (!resumeSelected && (isIncompatible || store.isCheckingDataset || isLoadingModel || !configValidation.ok))}
         >
           <HugeiconsIcon icon={Rocket01Icon} className="size-4" />
           {isStarting
@@ -214,7 +220,7 @@ export function TrainingSection() {
               : t("studio.training.visionIncompatible")}
           </p>
         )}
-        {!configValidation.ok && configValidation.message && !isIncompatible && (
+        {!resumeSelected && !configValidation.ok && configValidation.message && !isIncompatible && (
           <p className="text-xs text-red-500 leading-relaxed">{configValidation.message}</p>
         )}
 
