@@ -3356,7 +3356,19 @@ def _request_matches_loaded_settings(
             except OSError:
                 return False
             if detected_resolved != stored_resolved:
-                return False
+                # A native load whose root drafter was out of bounds runs the
+                # MTP/ fallback instead, so root-first detection never equals
+                # what launched. Accept the subdir copy as current too, else
+                # that layout reloads on every apply.
+                fallback = detect_mtp_file(
+                    llama_backend.gguf_path, search_root = companion_root, skip_root = True
+                )
+                try:
+                    fallback_resolved = Path(fallback).resolve() if fallback else None
+                except OSError:
+                    return False
+                if stored_resolved is None or fallback_resolved != stored_resolved:
+                    return False
     return True
 
 

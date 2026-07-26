@@ -632,3 +632,60 @@ def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):
     b._download_companion_gguf = _fake_companion
     assert b._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF") is None
     assert reached.get("hit") is True
+
+
+def test_detect_mtp_file_returns_first_shard_of_split_subdir_drafter(tmp_path):
+    """llama-server takes shard 1 as the model path, so a split MTP/ copy must
+    not resolve to whichever shard happens to be smallest."""
+    weight = tmp_path / "model-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    first = sub / "mtp-model-Q4_0-00001-of-00002.gguf"
+    first.write_bytes(b"x" * 4096)
+    (sub / "mtp-model-Q4_0-00002-of-00002.gguf").write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) == str(first.resolve())
+
+
+def test_detect_mtp_file_skip_root_ignores_root_drafter(tmp_path):
+    """skip_root is how a native load recovers when the root drafter is out
+    of bounds for its grant."""
+    quant_dir = tmp_path / "Q4_0"
+    quant_dir.mkdir()
+    weight = quant_dir / "model.gguf"
+    weight.write_bytes(b"x")
+    (tmp_path / "mtp-model.gguf").write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    subdir_copy = sub / "mtp-model-Q4_0.gguf"
+    subdir_copy.write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight), str(tmp_path)) == str(
+        (tmp_path / "mtp-model.gguf").resolve()
+    )
+    assert detect_mtp_file(str(weight), str(tmp_path), skip_root = True) == str(subdir_copy.resolve())
+
+
+def test_detect_mtp_file_rejects_weight_copy_inside_mtp_dir(tmp_path):
+    """Everything under MTP/ counts as a drafter for menu exclusion, but only
+    a published drafter name may be launched as --model-draft."""
+    weight = tmp_path / "gemma-4-E4B-it-qat-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    (sub / "gemma-4-E4B-it-qat-Q4_0.gguf").write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) is None
+
+
+def test_detect_mtp_file_pairs_k_quant_subdir_drafter(tmp_path):
+    """Pairing must use the full quant vocabulary, not just Q<d>_<d>/BF16/F16."""
+    weight = tmp_path / "gemma-4-12b-it-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    drafter = sub / "mtp-gemma-4-12b-it-UD-Q4_K_XL.gguf"
+    drafter.write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) == str(drafter.resolve())

@@ -1472,7 +1472,7 @@ def detect_mtp_file(
             stem = stem[len("mtp-") :]
         # Shard suffix sits outside the quant token, so strip it first or the
         # anchored strip below cannot match.
-        stem = re.sub(r"-[0-9]+-of-[0-9]+$", "", stem)
+        stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", stem)
         if stem.endswith("-mtp"):
             stem = stem[: -len("-mtp")]
         # Full quant vocabulary, not a subset: K/IQ/UD/MXFP drafters pair too.
@@ -1565,11 +1565,13 @@ def detect_mtp_file(
                     continue
                 try:
                     if f.is_file():
-                        subdir_candidates.append(f)
+                        # llama-server takes shard 1 as the model path, so
+                        # collapse a split copy to it before ranking.
+                        subdir_candidates.append(_local_gguf_load_path(f))
                 except OSError:
                     continue
 
-    for candidate in sorted(subdir_candidates, key = _smallest_first):
+    for candidate in sorted(dict.fromkeys(subdir_candidates), key = _smallest_first):
         try:
             resolved = candidate.resolve()
         except OSError:

@@ -194,3 +194,46 @@ def test_native_companion_rejects_missing_weight(tmp_path):
 
 def test_native_companion_none_is_noop():
     _validate_native_gguf_companion(None, None, "MTP drafter")
+
+
+def test_reload_dedup_accepts_native_subdir_fallback(tmp_path, monkeypatch):
+    """A native load whose root drafter was out of bounds launches the MTP/
+    copy, so root-first detection never matches it. Dedup must still hold."""
+    quant_dir = tmp_path / "Q4_0"
+    quant_dir.mkdir()
+    weight = quant_dir / "model.gguf"
+    weight.write_bytes(b"model")
+    (tmp_path / "mtp-model.gguf").write_bytes(b"root drafter")
+    companion_dir = tmp_path / "MTP"
+    companion_dir.mkdir()
+    companion = companion_dir / "mtp-model-Q4_0.gguf"
+    companion.write_bytes(b"draft")
+
+    monkeypatch.setattr(LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 0))
+    backend = LlamaCppBackend()
+    backend._gguf_path = str(weight)
+    backend._mtp_draft_path = str(companion)
+
+    request = LoadRequest(model_path = str(weight))
+    assert _request_matches_loaded_settings(request, backend)
+
+
+def test_reload_dedup_still_reloads_when_drafter_disappears(tmp_path, monkeypatch):
+    """The fallback comparison must not mask a deleted drafter."""
+    quant_dir = tmp_path / "Q4_0"
+    quant_dir.mkdir()
+    weight = quant_dir / "model.gguf"
+    weight.write_bytes(b"model")
+    companion_dir = tmp_path / "MTP"
+    companion_dir.mkdir()
+    companion = companion_dir / "mtp-model-Q4_0.gguf"
+    companion.write_bytes(b"draft")
+
+    monkeypatch.setattr(LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 0))
+    backend = LlamaCppBackend()
+    backend._gguf_path = str(weight)
+    backend._mtp_draft_path = str(companion)
+
+    companion.unlink()
+    request = LoadRequest(model_path = str(weight))
+    assert not _request_matches_loaded_settings(request, backend)
