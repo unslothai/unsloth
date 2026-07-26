@@ -985,9 +985,7 @@ def test_the_remote_fetch_has_a_total_deadline(changelog_module):
 def test_truncated_notes_close_their_fence(changelog_module):
     """A blind slice could end inside a code block and break the rendering."""
     body = "```\n" + "x\n" * 20_000 + "```\n"
-    payload = changelog_module._notes_response(
-        version = "1.0", markdown = body, source = "local"
-    )
+    payload = changelog_module._notes_response(version = "1.0", markdown = body, source = "local")
     assert payload["truncated"] is True
     assert payload["markdown"].rstrip().endswith("```")
 
