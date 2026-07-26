@@ -1061,6 +1061,7 @@ def test_a_forced_load_that_loses_to_a_sidecar_install_leaves_the_chats_alone(mo
         assert active_generations.count() == 1
     assert exc.value.status_code == 409
 
+
 def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
     # A pass-through response whose body never starts -- the client dropped while
     # the headers went out, or the request task was cancelled before Starlette
@@ -1093,7 +1094,10 @@ def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
             llama_backend,
             [{"role": "user", "content": "hi"}],
             [],
-            0.7, 0.9, 40, 128,
+            0.7,
+            0.9,
+            40,
+            128,
             "msg_1",
             "org/A",
             session_id = "s1",
