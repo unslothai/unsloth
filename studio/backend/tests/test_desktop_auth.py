@@ -649,7 +649,7 @@ def test_desktop_auth_provision_has_bounded_timeout():
     rs_path = (
         Path(__file__).resolve().parents[3] / "studio" / "src-tauri" / "src" / "desktop_auth.rs"
     )
-    src = rs_path.read_text()
+    src = rs_path.read_text(encoding = "utf-8")
     start = src.index("async fn provision_desktop_auth(")
     depth = 0
     body_start = src.index("{", start)

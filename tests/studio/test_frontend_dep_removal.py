@@ -1114,7 +1114,7 @@ def run_adversarial_cases() -> int:
         # Drop the synthetic file.
         fpath = ADVERSARIAL_TMP_DIR / ac.filename
         try:
-            fpath.write_text(ac.content)
+            fpath.write_text(ac.content, encoding = "utf-8")
             # Base adds the target pkg; real head lacks it, so the script
             # treats it as removed and scans the repo (now with our file).
             synth_base = json.loads(json.dumps(head_pkg))

@@ -14,27 +14,32 @@ source-scanning tests do constantly:
     "byte 0x81", taking test_cancel_atomicity.py and test_cancel_id_wiring.py
     out at collection time.
 
-A call is an offence when it does un-pinned text I/O and any of three things
-holds. It runs at import, where nothing can see a tmp_path fixture yet. Its
-path is a module-level constant, which a fixture parameter cannot be. Or its
-path is built from `__file__`, which is checked in by construction. The last
-two reach test bodies, where the same failure lands one step later:
+A call is an offence when it does un-pinned text I/O and either of two things
+holds. It runs at import, where nothing can see a tmp_path fixture yet. Or the
+path it reads anchors on something checked in: a module-level constant, which a
+fixture parameter can never be, or `__file__`. Anchoring is what decides the
+second one, followed through `/` joins, path methods, and the locals and loop
+variables of the enclosing function, so `for p in (_B / "routes").rglob("*.py")`
+is in scope and anything growing out of a tmp_path is not. That rule reaches
+test bodies, where the same failure lands one step later:
 
     test_gemma4_chat_template.py opens unsloth/chat_templates.py through a
     helper its tests call, and cp1252 cannot decode that file ("byte 0x90").
-    test_gguf_load_cache_reuse.py reads routes/inference.py the same way, via
-    `Path(__file__).parent.parent`, and dies on the same 0x81 as the two cancel
-    modules do at collection.
+    test_consent_gate.py reads routes/inference.py as `(_BACKEND / rel)` and
+    test_gguf_load_cache_reuse.py as `Path(__file__).parent.parent / ...`, both
+    dying on the same 0x81 the two cancel modules hit at collection.
 
-Each rule is a property of the path expression alone, so together they stay
-mechanical enough to enforce with no allowlist while staying quiet about
-temp-dir I/O, where the platform default is harmless and the test wrote the
-bytes itself.
+Every question the rules ask is answered inside one function, which keeps them
+mechanical enough to enforce with no allowlist and quiet about temp-dir I/O,
+where the platform default is harmless and the test wrote the bytes itself.
 
-One shape is deliberately out of reach: text read from a checked-in file and
-then written back out to a tmp_path, as at test_studio_install_workspace_guard
-.py:851, is only unsafe because of where the string came from, and tracing that
-needs dataflow rather than a look at the call.
+Two shapes are consequently out of reach, both fixed by hand and neither
+detectable without whole-program dataflow. A path that arrives from another
+function, as `for path in _iter_caller_files()` does in
+test_security_gate_consistency.py, says nothing about itself at the read. And
+text read from a checked-in file then written back to a tmp_path, as at
+test_studio_install_workspace_guard.py:851, is unsafe only because of where the
+string came from. Reviewers have to catch those two.
 """
 
 # `str | None` below is evaluated at import on Python 3.9 without this, and
@@ -51,12 +56,9 @@ REPO = TESTS.parent
 ROOTS = (TESTS, REPO / "studio" / "backend" / "tests")
 GUARDED_METHODS = {"read_text", "write_text"}
 NOT_PATH_RECEIVERS = {
-    "bz2",
     "codecs",
     "dbm",
     "fitz",
-    "gzip",
-    "lzma",
     "os",
     "pymupdf",
     "shelve",
@@ -66,6 +68,10 @@ NOT_PATH_RECEIVERS = {
     "webbrowser",
     "zipfile",
 }
+# These wrap their stream in a TextIOWrapper for a "t" mode, which takes the
+# platform default exactly like builtin open. Unlike open they default to "rb",
+# so only an explicit text mode is in scope. lzma takes encoding keyword-only.
+COMPRESSED_OPENERS = {"bz2": 3, "gzip": 3, "lzma": None}
 # Callables that drain a generator argument immediately.
 EAGER_CONSUMERS = {
     "all",
@@ -86,6 +92,19 @@ PLATFORM_DEFAULT_ENCODINGS = (None, "locale")
 # platform default, but the instance takes the first slot so every argument
 # shifts one place right.
 PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
+# Path methods that hand back another path, so the receiver is still the anchor.
+PATH_METHODS = {
+    "absolute",
+    "as_posix",
+    "expanduser",
+    "glob",
+    "iterdir",
+    "joinpath",
+    "resolve",
+    "rglob",
+    "with_name",
+    "with_suffix",
+}
 # Where each API takes its encoding positionally, for the bound call.
 ENCODING_POSITION = {"read_text": 0, "write_text": 1, "Path.open": 2, "open": 3}
 # Distinct from None so that "no mode argument at all" still means text.
@@ -157,7 +176,7 @@ def _import_time_calls(tree: ast.Module):
                     scopes.append(node.body)
 
     _collect(tree.body)
-    consumed = _consumed_genexps(tree)
+    consumed = _eagerly_consumed(tree)
     entered = set()
     frontier = [list(tree.body)]
     while frontier:
@@ -186,26 +205,49 @@ def _import_time_calls(tree: ast.Module):
                 yield node
                 func = node.func
                 if isinstance(func, ast.Name) and func.id in helpers and func.id not in entered:
-                    entered.add(func.id)
-                    body = list(helpers[func.id].body)
-                    _collect(body)  # a def nested in this helper is now callable
-                    frontier.append(body)
+                    helper = helpers[func.id]
+                    # `READS = _load(paths)` on a generator function only builds
+                    # the generator, so its body waits for a consumer just as a
+                    # genexp does.
+                    if not _is_generator(helper) or id(node) in consumed:
+                        entered.add(func.id)
+                        body = list(helper.body)
+                        _collect(body)  # a def nested here is now callable
+                        frontier.append(body)
             stack.extend(ast.iter_child_nodes(node))
 
 
-def _consumed_genexps(tree: ast.Module) -> set:
-    """Generator expressions handed straight to something that drains them.
+def _eagerly_consumed(tree: ast.Module) -> set:
+    """Nodes whose lazy value is drained right where it is written.
 
-    An unconsumed one has not run where it is written, so neither rule should
-    read anything into the calls inside it.
+    Covers both things that defer: a generator expression, and a call to a
+    generator function. Neither runs its body until something pulls from it, so
+    an unconsumed one has not happened yet.
     """
-    return {
-        id(arg)
-        for call in ast.walk(tree)
-        if isinstance(call, ast.Call) and _is_eager_consumer(call.func)
-        for arg in [*call.args, *(k.value for k in call.keywords)]
-        if isinstance(arg, ast.GeneratorExp)
-    }
+    consumed = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _is_eager_consumer(node.func):
+            consumed.update(id(a) for a in node.args)
+            consumed.update(id(k.value) for k in node.keywords)
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            consumed.add(id(node.iter))  # the loop pulls every item
+    return consumed
+
+
+def _is_generator(func) -> bool:
+    """True when calling this only builds a generator, leaving the body unrun.
+
+    Yields inside a nested def belong to that def, so those do not count.
+    """
+    stack = list(func.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.Yield, ast.YieldFrom)):
+            return True
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return False
 
 
 def _module_level_names(tree: ast.Module) -> set:
@@ -248,14 +290,97 @@ def _path_expr(call: ast.Call):
     return None
 
 
-def _rooted_at_file(node: ast.AST) -> bool:
-    """True for a path built from `__file__`, which is checked in by definition.
+def _path_root(node: ast.AST) -> ast.AST:
+    """Follow a path expression back to whatever it is anchored on.
 
-    `(Path(__file__).parent.parent / "routes" / "inference.py").read_text()` is
-    the same read as through a constant, just spelled inline, and no tmp_path
-    can be written that way.
+    `(_BACKEND / rel).read_text()` anchors on _BACKEND and
+    `Path(__file__).parent / "routes"` on __file__, so joining a relative name
+    onto a checked-in root stays in scope. Anchoring is what decides it, not the
+    names further down: `tmp_path / SUBDIR` anchors on the fixture, so a
+    constant used as a leaf cannot drag temp-dir I/O in.
     """
-    return any(isinstance(n, ast.Name) and n.id == "__file__" for n in ast.walk(node))
+    while True:
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            node = node.left
+        elif isinstance(node, (ast.Attribute, ast.Subscript)):
+            node = node.value
+        elif isinstance(node, ast.Call):
+            func = node.func
+            # `p.rglob("*.py")` anchors on p, not on the pattern, while
+            # Path(x), str(x) and os.path.join(x, ...) anchor on the argument.
+            if isinstance(func, ast.Attribute) and func.attr in PATH_METHODS:
+                node = func.value
+            elif node.args:
+                node = node.args[0]
+            elif isinstance(func, ast.Attribute):
+                node = func.value
+            else:
+                return node
+        else:
+            return node
+
+
+def _is_checked_in_root(
+    node: ast.AST,
+    module_names: set,
+    shadowed,
+    derived = (),
+) -> bool:
+    """True when a path expression anchors on something that ships in the repo."""
+    root = _path_root(node)
+    if not isinstance(root, ast.Name):
+        return False
+    if root.id in derived:
+        return True
+    return root.id == "__file__" or (root.id in module_names and root.id not in shadowed)
+
+
+def _checked_in_locals(func, module_names: set, shadowed) -> set:
+    """Locals that only ever hold a checked-in path.
+
+    `route = Path(_BACKEND_DIR) / "routes" / "inference.py"` followed by
+    `route.read_text()` is the same read one line apart. A name bound any other
+    way, or assigned anything else anywhere in the scope, is not tracked, and
+    the pass repeats so that a path built up over several locals still counts.
+    """
+    assignments = []
+    targets = set()
+    bad = set()
+    for node in ast.walk(func):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            # `for p in SRC_DIR.rglob("*.py")` binds p to a checked-in path too.
+            target, value = node.target, node.iter
+        else:
+            continue
+        if isinstance(target, ast.Name):
+            targets.add(id(target))
+            assignments.append((target.id, value))
+    for node in ast.walk(func):
+        # A with-as or an augassign says nothing about the value it binds.
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            if id(node) not in targets:
+                bad.add(node.id)
+    args = func.args
+    bad.update(a.arg for a in [*args.posonlyargs, *args.args, *args.kwonlyargs])
+    good: set = set()
+    while True:
+        grown = {
+            name
+            for name, value in assignments
+            if name not in bad and _is_checked_in_root(value, module_names, shadowed, good)
+        }
+        # A name assigned a checked-in path somewhere and something else
+        # elsewhere stays out, since only one of the two is provable.
+        grown -= {
+            name
+            for name, value in assignments
+            if name in grown and not _is_checked_in_root(value, module_names, shadowed, good)
+        }
+        if grown == good:
+            return good
+        good = grown
 
 
 def _checked_in_path_calls(tree: ast.Module):
@@ -273,29 +398,34 @@ def _checked_in_path_calls(tree: ast.Module):
     the bytes itself.
     """
     module_names = _module_level_names(tree)
-    consumed = _consumed_genexps(tree)
+    consumed = _eagerly_consumed(tree)
 
-    def visit(node, shadowed):
+    def visit(
+        node,
+        shadowed,
+        derived = frozenset(),
+    ):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             shadowed = shadowed | _local_names(node)
+            derived = _checked_in_locals(node, module_names, shadowed)
         elif _is_main_guard(node):
             # Never runs under pytest, so rule 1 skips it for the same reason.
             for child in node.orelse:
-                yield from visit(child, shadowed)
+                yield from visit(child, shadowed, derived)
             return
         elif isinstance(node, ast.GeneratorExp) and id(node) not in consumed:
             if node.generators:
-                yield from visit(node.generators[0].iter, shadowed)
+                yield from visit(node.generators[0].iter, shadowed, derived)
             return
         elif isinstance(node, ast.Call):
             expr = _path_expr(node)
-            name = expr.id if isinstance(expr, ast.Name) else None
-            if expr is not None and (
-                _rooted_at_file(expr) or (name in module_names and name not in shadowed)
+            root = _path_root(expr) if expr is not None else None
+            if isinstance(root, ast.Name) and (
+                root.id in derived or _is_checked_in_root(root, module_names, shadowed)
             ):
                 yield node
         for child in ast.iter_child_nodes(node):
-            yield from visit(child, shadowed)
+            yield from visit(child, shadowed, derived)
 
     yield from visit(tree, frozenset())
 
@@ -343,15 +473,16 @@ def _names_encoding(call: ast.Call) -> bool:
     return False
 
 
-def _pins_encoding(call: ast.Call, position: int) -> bool:
+def _pins_encoding(call: ast.Call, position: int | None) -> bool:
     """True when the call names an encoding, positionally or by keyword.
 
-    A splat makes the positions meaningless, so it counts as named rather than
-    demanding an edit the contributor cannot make correctly.
+    `position` is None where the API takes it keyword-only. A splat makes the
+    positions meaningless, so it counts as named rather than demanding an edit
+    the contributor cannot make correctly.
     """
     if any(isinstance(a, ast.Starred) for a in call.args):
         return True
-    if len(call.args) > position:
+    if position is not None and len(call.args) > position:
         node = call.args[position]
         if isinstance(node, ast.Constant):
             return node.value not in PLATFORM_DEFAULT_ENCODINGS
@@ -385,6 +516,12 @@ def _offender(call: ast.Call) -> str | None:
                 if not _is_text(call, 1) or _pins_encoding(call, ENCODING_POSITION["open"]):
                     return None
                 return "io.open()"
+            if receiver in COMPRESSED_OPENERS:
+                mode = _open_mode(call, 1)
+                if mode is UNKNOWN_MODE or "t" not in str(mode):
+                    return None  # "rb" default, so binary unless asked otherwise
+                position = COMPRESSED_OPENERS[receiver]
+                return None if _pins_encoding(call, position) else f"{receiver}.open()"
             # Any other `<module>.open(...)` is somebody else's opener:
             # tarfile.open takes a compression mode, fitz.open takes filetype=.
             if receiver in NOT_PATH_RECEIVERS:

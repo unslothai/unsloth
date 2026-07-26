@@ -558,24 +558,24 @@ class TestSandboxCpuRlimitDefault:
     """Pin the default so a regression below 600s without opt-in is caught."""
 
     def test_default_cpu_s_is_600(self):
-        src = (_BACKEND_ROOT / "core" / "inference" / "tools.py").read_text()
+        src = (_BACKEND_ROOT / "core" / "inference" / "tools.py").read_text(encoding = "utf-8")
         assert 'UNSLOTH_STUDIO_SANDBOX_CPU_S", "600"' in src
 
     def test_clone_newnet_removed(self):
-        src = (_BACKEND_ROOT / "core" / "inference" / "tools.py").read_text()
+        src = (_BACKEND_ROOT / "core" / "inference" / "tools.py").read_text(encoding = "utf-8")
         assert "_libc.unshare(0x40000000)" not in src
         # Explanatory comment retained.
         assert "CLONE_NEWNET" in src
 
     def test_nofile_env_tunable(self):
-        src = (_BACKEND_ROOT / "core" / "inference" / "tools.py").read_text()
+        src = (_BACKEND_ROOT / "core" / "inference" / "tools.py").read_text(encoding = "utf-8")
         # Parity with the other rlimits: must come from the env, not be hardcoded.
         assert "UNSLOTH_STUDIO_SANDBOX_NOFILE" in src
 
 
 class TestMaxBodyDefault:
     def test_default_is_500_mb(self):
-        src = (_BACKEND_ROOT / "utils" / "upload_limits.py").read_text()
+        src = (_BACKEND_ROOT / "utils" / "upload_limits.py").read_text(encoding = "utf-8")
         assert "DEFAULT_UPLOAD_LIMIT_MB = 500" in src
         assert "UNSLOTH_STUDIO_MAX_BODY_MB" in src
 

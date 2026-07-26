@@ -522,7 +522,7 @@ def test_install_ps1_bakes_studio_root_id_into_launcher():
 def test_health_endpoint_exposes_studio_root_id_not_raw_path():
     """/api/health must expose studio_root_id (hex digest), NOT the raw path (info disclosure on -H 0.0.0.0)."""
     main_py = REPO_ROOT / "studio" / "backend" / "main.py"
-    src = main_py.read_text()
+    src = main_py.read_text(encoding = "utf-8")
     health_idx = src.index('@app.get("/api/health")')
     # Slice up to the next top-level @app. so a growing body stays in scope.
     next_app_idx = src.find("\n@app.", health_idx + 1)
@@ -565,7 +565,9 @@ def test_tauri_preflight_scrubs_studio_home_env():
         *(preflight_root / "preflight").glob("*.rs"),
     ]
     preflight = "\n".join(p.read_text() for p in preflight_paths if p.exists())
-    commands = (REPO_ROOT / "studio" / "src-tauri" / "src" / "commands.rs").read_text()
+    commands = (REPO_ROOT / "studio" / "src-tauri" / "src" / "commands.rs").read_text(
+        encoding = "utf-8"
+    )
     # Expect 2 scrubs in preflight (run_cli_probe + probe_cli_capability), 1 in commands.
     assert (
         preflight.count('cmd.env_remove("UNSLOTH_STUDIO_HOME")') >= 2
@@ -720,7 +722,7 @@ def test_install_sh_launcher_gates_port_file_on_baked_flag_not_runtime_env():
 
 def test_main_py_studio_root_id_caches_at_module_load():
     """_studio_root_id() must read the id once at module load and reuse it (no per-poll FS/hash work)."""
-    main_py = (REPO_ROOT / "studio" / "backend" / "main.py").read_text()
+    main_py = (REPO_ROOT / "studio" / "backend" / "main.py").read_text(encoding = "utf-8")
     assert (
         "_STUDIO_ROOT_ID_CACHE: str = _read_studio_install_id()" in main_py
     ), "main.py must populate _STUDIO_ROOT_ID_CACHE from _read_studio_install_id() at module load"
@@ -781,7 +783,7 @@ def test_llama_cpp_search_roots_handles_studio_root_oserror():
     holds the handler so the two never disagree on which root is legacy."""
     llama_cpp = (
         REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
-    ).read_text()
+    ).read_text(encoding = "utf-8")
 
     def _method_body(name: str) -> str:
         # Whole method body (def to next sibling def) so the check survives growth.

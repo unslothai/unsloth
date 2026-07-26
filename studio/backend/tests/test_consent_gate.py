@@ -410,14 +410,14 @@ class TestWorkersWireTheGate:
     def test_mlx_training_path_gates_before_load(self):
         # The Apple-Silicon path returns before run_training_process's gate, so it must
         # scan before FastMLXModel.from_pretrained runs repo code.
-        src = (_BACKEND / "core/training/worker.py").read_text()
+        src = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
         head = src[: src.index("FastMLXModel.from_pretrained(")]
         assert "evaluate_remote_code_consent" in head
 
     def test_lora_base_model_is_gated(self):
         # Inference + export expand the consent scan to the LoRA base model's code.
         for rel in ("core/inference/worker.py", "core/export/worker.py"):
-            src = (_BACKEND / rel).read_text()
+            src = (_BACKEND / rel).read_text(encoding = "utf-8")
             assert "evaluate_remote_code_consent" in src
             assert "get_base_model_from_lora" in src or "mc.base_model" in src
 
@@ -431,12 +431,12 @@ class TestWorkersWireTheGate:
             "core/training/worker.py",
             "core/export/worker.py",
         ):
-            src = (_BACKEND / rel).read_text()
+            src = (_BACKEND / rel).read_text(encoding = "utf-8")
             assert "get_base_model_from_lora_identifier" in src, rel
 
     def test_embedding_training_path_gates_before_load(self):
         # The embedding pipeline must run the malware + consent gates before loading, like the other paths.
-        src = (_BACKEND / "core/training/worker.py").read_text()
+        src = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
         start = src.index("def _run_embedding_training(")
         end = src.index("FastSentenceTransformer.from_pretrained(", start)
         region = src[start:end]
@@ -740,7 +740,7 @@ class TestNemotronGateUsesTrustCheck:
         ],
     )
     def test_worker_nemotron_block_calls_trust_check(self, rel):
-        src = (_BACKEND / rel).read_text()
+        src = (_BACKEND / rel).read_text(encoding = "utf-8")
         assert "_NEMOTRON_TRUST_SUBSTRINGS" in src
         assert "is_trusted_org_repo(" in src
 
@@ -1527,6 +1527,6 @@ class TestDiscardRemoteCodeDownload:
         assert res == {"deleted": False, "reason": "not_cached"}
 
     def test_route_source_reports_created_by_scan(self):
-        src = (_BACKEND / "routes/models.py").read_text()
+        src = (_BACKEND / "routes/models.py").read_text(encoding = "utf-8")
         assert "created_by_scan" in src
         assert "discard-remote-code" in src
