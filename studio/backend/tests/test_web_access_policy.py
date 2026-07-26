@@ -133,13 +133,19 @@ def test_web_search_refills_past_disallowed_results(monkeypatch):
     # valid results ranked just below them, wasting a research step.
     blocked_then_allowed = [
         {"title": "Bad", "href": f"https://example.com/{i}", "body": "Blocked"} for i in range(5)
-    ] + [{"title": "Good", "href": f"https://arxiv.org/abs/{i}", "body": "Allowed"} for i in range(5)]
+    ] + [
+        {"title": "Good", "href": f"https://arxiv.org/abs/{i}", "body": "Allowed"} for i in range(5)
+    ]
 
     class FakeDDGS:
         def __init__(self, **_kwargs):
             pass
 
-        def text(self, query, max_results = 5):
+        def text(
+            self,
+            query,
+            max_results = 5,
+        ):
             return blocked_then_allowed[:max_results]
 
     monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
@@ -158,7 +164,11 @@ def test_web_search_without_a_policy_does_not_overfetch(monkeypatch):
         def __init__(self, **_kwargs):
             pass
 
-        def text(self, query, max_results = 5):
+        def text(
+            self,
+            query,
+            max_results = 5,
+        ):
             queries.append((query, max_results))
             return [{"title": "T", "href": "https://a.example/1", "body": "B"}]
 
