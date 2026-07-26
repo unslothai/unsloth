@@ -39,7 +39,6 @@ NOT_PATH_RECEIVERS = {
     "dbm",
     "fitz",
     "gzip",
-    "io",
     "lzma",
     "os",
     "pymupdf",
@@ -79,9 +78,10 @@ def _import_time_calls(tree: ast.Module):
     collection, so skipping every def would let the Windows failure back in.
 
     A def's body waits for a call, but its decorators and argument defaults run
-    when the def executes, so those are followed. Lambda bodies and
-    comprehension elements do not run at definition and are skipped, which
-    keeps the rule free of false positives.
+    when the def executes, so those are followed. Lambda bodies are skipped for
+    the same reason, as is everything but the outermost iterable of a generator
+    expression. List, set and dict comprehensions are walked in full: unlike a
+    genexp they run their element, filters and nested iterators immediately.
 
     A body is only ever entered through an executed statement, never by walking
     into a def, so the "this definitely runs" property that makes the rule
@@ -111,8 +111,8 @@ def _import_time_calls(tree: ast.Module):
                 stack.extend(d for d in node.args.defaults if d is not None)
                 stack.extend(d for d in node.args.kw_defaults if d is not None)
                 continue
-            if isinstance(node, (ast.GeneratorExp, ast.ListComp, ast.SetComp, ast.DictComp)):
-                # Only the outermost iterable is evaluated where it is written.
+            if isinstance(node, ast.GeneratorExp):
+                # Lazy: only the outermost iterable is evaluated where written.
                 if node.generators:
                     stack.append(node.generators[0].iter)
                 continue
@@ -183,9 +183,14 @@ def _offender(call: ast.Call) -> str | None:
                 return None
             return None if _names_encoding(call) else f"{func.attr}()"
         if func.attr == "open":
-            # `<module>.open(...)` is somebody else's opener: tarfile.open takes
-            # a compression mode, fitz.open takes filetype=.
-            if isinstance(func.value, ast.Name) and func.value.id in NOT_PATH_RECEIVERS:
+            receiver = func.value.id if isinstance(func.value, ast.Name) else None
+            # io.open IS the builtin, so it takes the builtin's mode position
+            # and carries the same platform default.
+            if receiver == "io":
+                return None if not _is_text(call, 1) or _names_encoding(call) else "io.open()"
+            # Any other `<module>.open(...)` is somebody else's opener:
+            # tarfile.open takes a compression mode, fitz.open takes filetype=.
+            if receiver in NOT_PATH_RECEIVERS:
                 return None
             if not _is_text(call, 0):
                 return None
