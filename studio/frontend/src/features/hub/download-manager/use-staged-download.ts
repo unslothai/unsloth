@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { toast } from "@/lib/toast";
 
@@ -55,6 +55,22 @@ export function useStagedDownload({
     });
   }, []);
 
+  // The job this hook is waiting on, keyed by the entry it started (repo + exact file set) and
+  // the staging generation it belongs to. Every scoped pick in a repo shares the "@diffusion"
+  // variant, so the variant alone cannot tell two file sets in that repo apart: restaging while
+  // the first job finishes would let its completion pass for the new pick and load a checkpoint
+  // that has not downloaded. A completion is only ours when it matches BOTH.
+  const inFlight = useRef<{ key: string; generation: number } | null>(null);
+  const generation = useRef(0);
+  const entryKey = (entry: StagedDownloadEntry) =>
+    `${entry.repoId}|${[...entry.files].sort().join(",")}`;
+  const isOurs = (variant: string | null | undefined) =>
+    (variant ?? null) === activeVariant &&
+    current !== null &&
+    inFlight.current !== null &&
+    inFlight.current.key === entryKey(current) &&
+    inFlight.current.generation === generation.current;
+
   useRepoDownload({
     kind: DOWNLOAD_KIND.MODEL,
     repoId: current?.repoId ?? "__staged_download_idle__",
@@ -66,18 +82,21 @@ export function useStagedDownload({
     // files are still downloading), and its failure would wipe a queue still running. The chat
     // page's auto-load filters the same way.
     onComplete: (variant) => {
-      if ((variant ?? null) !== activeVariant) return;
+      if (!isOurs(variant)) return;
+      inFlight.current = null;
       const remaining = (queue ?? []).slice(1);
       advance();
       // Every entry is on disk, so the load will find its cache warm.
       if (remaining.length === 0) onReady();
     },
     onError: (variant) => {
-      if ((variant ?? null) !== activeVariant) return;
+      if (!isOurs(variant)) return;
+      inFlight.current = null;
       setQueue(null);
     },
     onCancelled: (variant) => {
-      if ((variant ?? null) !== activeVariant) return;
+      if (!isOurs(variant)) return;
+      inFlight.current = null;
       setQueue(null);
     },
   });
@@ -85,6 +104,7 @@ export function useStagedDownload({
   useEffect(() => {
     if (!current) return;
     let active = true;
+    const started = { key: entryKey(current), generation: generation.current };
     void (async () => {
       const outcome = await downloadManager.requestStart({
         kind: DOWNLOAD_KIND.MODEL,
@@ -96,9 +116,20 @@ export function useStagedDownload({
       });
       if (!active) return;
       if (outcome === "started") {
+        inFlight.current = started;
         toast.info("Downloading model", {
           description: "It'll load automatically once the download finishes.",
         });
+        return;
+      }
+      // A start that never got off the ground (network failure, rejected scoped request, worker
+      // refused): nothing will ever complete, so clear the queue instead of leaving the head in
+      // place, where the effect never re-runs and onReady never fires.
+      if (outcome === "error") {
+        toast.error("Could not start the download", {
+          description: "Check the connection, then select the model again.",
+        });
+        setQueue(null);
         return;
       }
       if (outcome === "conflict") {
@@ -124,6 +155,10 @@ export function useStagedDownload({
   }, [current, activeVariant, scopeId]);
 
   const stage = useCallback((entries: StagedDownloadEntry[]) => {
+    // A fresh plan supersedes whatever was staged, so bump the generation: a callback for the
+    // previous plan's job is no longer ours even though it shares the scope variant.
+    generation.current += 1;
+    inFlight.current = null;
     setQueue(entries.length > 0 ? entries : null);
   }, []);
 

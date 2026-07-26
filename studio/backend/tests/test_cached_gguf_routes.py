@@ -1510,3 +1510,49 @@ def test_cached_repo_task_hides_an_untrusted_video_repo_instead_of_listing_it_un
 
     monkeypatch.setattr(video_mod, "_is_trusted_video_repo", lambda repo_id: True)
     assert models_route._cached_repo_task(repo) == models_route._VIDEO_GEN_TASK
+
+
+def test_hub_cached_rows_carry_the_task_the_pickers_filter_on(monkeypatch, tmp_path):
+    """The picker's On Device rows come from the /api/hub inventory, not the models API. Without a
+    task on those rows the Images and Video pickers filtered every one of them out, and the chat
+    picker's diffusion routing (which reads the same field) never fired."""
+    from hub.schemas.inventory import CachedGgufRepo, CachedModelRepo
+    from hub.services.models import cache_inventory
+
+    assert "task" in CachedGgufRepo.model_fields
+    assert "task" in CachedModelRepo.model_fields
+
+    repo = _pipeline_repo("unsloth/Qwen-Image", tmp_path)
+    monkeypatch.setattr(
+        "routes.models._cached_repo_task", lambda repo_info: "text-to-image", raising = True
+    )
+    assert cache_inventory._cached_row_task(repo, gguf = False) == "text-to-image"
+    monkeypatch.setattr(
+        "routes.models._repo_gguf_task", lambda repo_info: "text-generation", raising = True
+    )
+    assert cache_inventory._cached_row_task(repo, gguf = True) == "text-generation"
+
+
+def test_hub_cached_row_task_never_hides_a_row_when_classification_fails(monkeypatch, tmp_path):
+    # Best-effort, like the models API: a classifier that raises leaves the row untagged rather
+    # than dropping it from the listing.
+    from hub.services.models import cache_inventory
+
+    def _boom(repo_info):
+        raise RuntimeError("unreadable")
+
+    monkeypatch.setattr("routes.models._cached_repo_task", _boom, raising = True)
+    assert cache_inventory._cached_row_task(_pipeline_repo("a/b", tmp_path), gguf = False) is None
+
+
+def test_hub_local_rows_are_tagged_with_their_task():
+    """/api/hub/local feeds the same pickers, and its rows were untagged too."""
+    import inspect
+
+    from hub.schemas.inventory import LocalModelInfo
+    from hub.services.models import local_inventory
+
+    assert "task" in LocalModelInfo.model_fields
+    src = inspect.getsource(local_inventory.list_local_models_response)
+    assert "_local_model_task" in src
+    assert 'model_copy(update = {"task"' in src

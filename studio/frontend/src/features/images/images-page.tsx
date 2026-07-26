@@ -389,23 +389,48 @@ const SETTLE_POLL_MS = 1000;
 const SETTLE_MAX_MS = 6 * 60 * 60 * 1000; // hard cap; a native-CPU batch can run for hours
 const SETTLE_MAX_FAILS = 5; // consecutive progress failures before calling the backend gone
 
-/** Wait for the generation that outlived its POST to finish. Resolves once progress reports
- *  idle (the images are on disk by then: the backend keeps it active through persistence);
- *  throws if the backend stays unreachable, so a real outage still surfaces. */
-async function settleLostGeneration(isCurrent: () => boolean): Promise<void> {
+/** Wait for the generation that outlived its POST to finish, and confirm there was one.
+ *
+ *  A rejected fetch does not say whether the request reached the backend, so idle progress is
+ *  ambiguous: the run may be over, or it may never have started. Treating idle as success made a
+ *  submission that never landed look like a completed image. So the wait needs evidence -- either
+ *  progress was observed active, or a gallery record appeared that was not there when the POST
+ *  went out -- and reports the failed submission otherwise. Throws if the backend stays
+ *  unreachable too, so a real outage still surfaces. */
+async function settleLostGeneration(
+  isCurrent: () => boolean,
+  knownIds: ReadonlySet<string>,
+): Promise<void> {
   const start = Date.now();
   let fails = 0;
+  let sawActive = false;
   while (Date.now() - start < SETTLE_MAX_MS) {
     await new Promise((r) => setTimeout(r, SETTLE_POLL_MS));
     if (!isCurrent()) return;
+    let idle = false;
     try {
       const p = await getGenerateProgress();
       fails = 0;
-      if (!p.active) return;
+      if (p.active) sawActive = true;
+      else idle = true;
     } catch {
       fails += 1;
       if (fails >= SETTLE_MAX_FAILS) throw new Error("Lost connection to the image server.");
     }
+    if (!idle) continue;
+    if (sawActive) return;
+    // Idle on the very first look: the run may already have finished (a batch shorter than one
+    // poll still persists its records first) or may never have started at all. A gallery record
+    // we had not seen is the proof; without one, the submission never landed.
+    try {
+      const page = await getGallery(0, 1);
+      if (page.images.some((image) => !knownIds.has(image.id))) return;
+    } catch {
+      fails += 1;
+      if (fails >= SETTLE_MAX_FAILS) throw new Error("Lost connection to the image server.");
+      continue;
+    }
+    throw new Error("The image generation request did not reach the server.");
   }
 }
 
@@ -2320,7 +2345,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           // exceeds). Retrying would duplicate the work, so wait the run out and read its
           // images off the gallery, which is where they are persisted anyway.
           if (!(err instanceof GenerateResponseLostError)) throw err;
-          await settleLostGeneration(() => isMounted.current);
+          // The ids known before the POST went out: a record outside them is what proves the
+          // request actually reached the backend when progress reads idle straight away.
+          await settleLostGeneration(
+            () => isMounted.current,
+            new Set(galleryCache.images.map((image) => image.id)),
+          );
           if (!isMounted.current) break;
           await loadGallery();
           setGenDone(i + 1);

@@ -11,6 +11,7 @@ import {
   type LocalInventoryRow,
   type LocalSource,
   isHiddenModelId,
+  studioPageForTask,
   useHubInventory,
 } from "@/features/hub";
 import { useMemo } from "react";
@@ -32,6 +33,7 @@ function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
     cache_path: row.cachePath ?? "",
     last_modified: row.lastModified ?? undefined,
     has_vision: row.capabilities.supportsVision,
+    task: row.task ?? null,
   };
 }
 
@@ -40,6 +42,7 @@ function toCachedModelRepo(row: CachedInventoryRow): CachedModelRepo {
     repo_id: row.repoId,
     size_bytes: row.bytes,
     last_modified: row.lastModified ?? undefined,
+    task: row.task ?? null,
   };
 }
 
@@ -52,6 +55,7 @@ function toLocalModelInfo(row: LocalInventoryRow): LocalModelInfo {
     model_id: row.modelId ?? row.repoId,
     model_format: row.modelFormat,
     updated_at: row.updatedAt,
+    task: row.task ?? null,
   };
 }
 
@@ -105,8 +109,11 @@ export function useChatPickerInventory(
             // Skip non-chat rows (e.g. a folder with only config.json is
             // classified "unknown" -> canChat false); selecting one would try to
             // load a weightless path. toLocalModelInfo drops capabilities, so
-            // this is the only place the guard can live.
-            row.capabilities.canChat &&
+            // this is the only place the guard can live. A row the backend
+            // classified as a generation task is exempt: canChat is about the
+            // chat loader, and dropping it here hid every on-device diffusion
+            // model from the Images/Video pickers that CAN load it.
+            (row.capabilities.canChat || studioPageForTask(row.task) !== undefined) &&
             !isHiddenModelId(row.modelId, row.repoId, row.path),
         )
         .map(toLocalModelInfo),

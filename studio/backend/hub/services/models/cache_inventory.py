@@ -312,6 +312,22 @@ def _is_hidden_infra_repo(*values: str | None) -> bool:
     return is_hidden_model(*values)
 
 
+def _cached_row_task(repo_info, *, gguf: bool) -> Optional[str]:
+    """Pipeline task for a cached row, from the same classifiers the models API uses.
+
+    The Images/Video pickers filter On Device rows on this and the chat picker routes a diffusion
+    pick by it, so a row that arrives without one is dropped from those lists entirely. Imported
+    lazily (routes.models imports this package) and best-effort: an unreadable repo just has no
+    task, exactly as before.
+    """
+    try:
+        from routes.models import _cached_repo_task, _repo_gguf_task
+
+        return _repo_gguf_task(repo_info) if gguf else _cached_repo_task(repo_info)
+    except Exception:  # noqa: BLE001 -- a classification failure never hides a row
+        return None
+
+
 def _scan_cached_gguf() -> list[dict]:
     """Synchronous HF-cache disk walk for GGUF repos; runs in a worker thread."""
     cache_scans = all_hf_cache_scans()
@@ -357,6 +373,7 @@ def _scan_cached_gguf() -> list[dict]:
                     "repo_id": repo_id,
                     "size_bytes": max(total_size, variant_state_size),
                     "cache_path": str(repo_info.repo_path),
+                    "task": _cached_row_task(repo_info, gguf = True),
                     "partial": partial,
                     # GGUF row-level transport is ambiguous (variants may differ);
                     # per-variant detail lives on GgufVariantDetail.
@@ -637,6 +654,7 @@ def _scan_cached_models() -> list[dict]:
                     "repo_id": repo_id,
                     "size_bytes": payload.size_bytes,
                     "cache_path": str(repo_info.repo_path),
+                    "task": _cached_row_task(repo_info, gguf = False),
                     "partial": snapshot_partial,
                     "partial_transport": (
                         hf_cache_scan.partial_transport_for(

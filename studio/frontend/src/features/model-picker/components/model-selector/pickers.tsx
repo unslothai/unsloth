@@ -2225,9 +2225,16 @@ export function HubModelPicker({
     };
     for (const c of cachedGguf) put(c.repo_id, c.task);
     for (const c of cachedModels) put(c.repo_id, c.task);
-    for (const m of lmStudioModels) put(m.model_id ?? m.id, m.task);
-    for (const m of localDirModels) put(m.model_id ?? m.id, m.task);
-    for (const m of customFolderModels) put(m.model_id ?? m.id, m.task);
+    // Both ids: a local row's click passes m.id (the load id, a filesystem path for a
+    // models_dir / LM Studio entry) while m.model_id is its HF-style name, so keying on one
+    // alone means the lookup below misses and the pick falls through to the chat loader.
+    const putLocal = (m: LocalModelInfo) => {
+      put(m.id, m.task);
+      put(m.model_id, m.task);
+    };
+    for (const m of lmStudioModels) putLocal(m);
+    for (const m of localDirModels) putLocal(m);
+    for (const m of customFolderModels) putLocal(m);
     return byId;
   }, [cachedGguf, cachedModels, lmStudioModels, localDirModels, customFolderModels]);
 

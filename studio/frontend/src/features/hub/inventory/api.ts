@@ -52,6 +52,7 @@ export interface CachedGgufRepo {
   partial?: boolean;
   partial_transport?: string | null;
   pipeline_tag?: string | null;
+  task?: string | null;
   tags?: string[];
   library_name?: string | null;
 }
@@ -70,6 +71,7 @@ export interface CachedModelRepo {
   partial?: boolean;
   partial_transport?: string | null;
   pipeline_tag?: string | null;
+  task?: string | null;
   tags?: string[];
   library_name?: string | null;
   quant_method?: string | null;
@@ -97,6 +99,7 @@ export interface LocalModelInfo {
   partial?: boolean;
   partial_transport?: string | null;
   pipeline_tag?: string | null;
+  task?: string | null;
   tags?: string[];
   library_name?: string | null;
   quant_method?: string | null;

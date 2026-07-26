@@ -756,10 +756,13 @@ def test_staged_download_callbacks_only_answer_their_own_variant():
     the staged queue and started a load whose scoped files were still downloading, and its
     failure wiped a queue that was still running."""
     src = _read("features/hub/download-manager/use-staged-download.ts")
+    # The comparison lives in the shared isOurs() guard the three callbacks run (which also binds
+    # them to the started file set; see the test below).
+    assert "(variant ?? null) === activeVariant &&" in src
     for callback in ("onComplete", "onError", "onCancelled"):
         handler = re.search(rf"{callback}: \(variant\) => \{{\n(.*?)\n    \}},", src, re.S)
         assert handler, f"{callback} does not take the variant"
-        assert "(variant ?? null) !== activeVariant" in handler.group(1), callback
+        assert "isOurs(variant)" in handler.group(1), callback
 
 
 def test_video_gallery_fetches_clips_as_their_cards_come_into_view():
@@ -786,3 +789,71 @@ def test_video_gallery_fetches_clips_as_their_cards_come_into_view():
         r"if \(!selected\) return;\s*\n\s*void \(async \(\) => \{\s*\n\s*await ensureSrc\(selected\);",
         src,
     )
+
+
+def test_on_device_rows_carry_the_task_the_pickers_filter_on():
+    """The picker's On Device rows come from the /api/hub inventory, not the models API, and the
+    task-scoped pickers drop every row whose task is unset. Without the task threaded through the
+    hub inventory and its adapter, the Images and Video pickers listed nothing on device and the
+    chat picker never routed a diffusion pick, since diffusionTaskById reads the same field."""
+    api = _read("features/hub/inventory/api.ts")
+    assert api.count("task?: string | null;") >= 3, "the hub row response types carry no task"
+    rows = _read("features/hub/inventory/types.ts")
+    assert rows.count("task?: string | null;") >= 2, "the inventory row types carry no task"
+    vm = _read("features/hub/inventory/view-models.ts")
+    assert "task: row.task ?? null," in vm and "task: model.task ?? null," in vm
+    conv = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
+    assert conv.count("task: row.task ?? null,") == 3, "a picker converter drops the task"
+    # A generation-task row is not a chat row, so the chat-only guard must not hide it from the
+    # pickers that can load it.
+    assert "row.capabilities.canChat || studioPageForTask(row.task) !== undefined" in conv
+
+
+def test_local_diffusion_routing_is_keyed_by_the_id_the_row_selects():
+    """A local row's click passes m.id (a filesystem load id), while m.model_id is its HF-style
+    name. Keying the routing map on one alone let the lookup miss, so the pick fell through to the
+    chat loader instead of navigating to Images or Video."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    block = re.search(r"const diffusionTaskById = useMemo\(.*?\n  \}, \[", src, re.S)
+    assert block, "diffusionTaskById not found"
+    body = block.group(0)
+    assert "put(m.id, m.task);" in body and "put(m.model_id, m.task);" in body
+
+
+def test_a_staged_download_that_never_starts_clears_the_queue():
+    """requestStart can answer "error" (network failure, rejected scoped request, worker refused).
+    Nothing completes after that, so leaving the head in place stranded the pick: the effect never
+    re-ran and onReady never fired."""
+    src = _read("features/hub/download-manager/use-staged-download.ts")
+    assert 'if (outcome === "error") {' in src
+    branch = src[src.index('if (outcome === "error") {') :][:400]
+    assert "setQueue(null)" in branch
+
+
+def test_staged_download_callbacks_are_bound_to_the_started_file_set():
+    """Every scoped pick in a repo shares the "@diffusion" variant, so the variant alone cannot
+    tell two file sets in that repo apart: restaging while the first job finishes let its
+    completion pass for the new pick and load a checkpoint that had not downloaded."""
+    src = _read("features/hub/download-manager/use-staged-download.ts")
+    assert "const inFlight = useRef<{ key: string; generation: number } | null>(null);" in src
+    assert "inFlight.current.key === entryKey(current)" in src
+    assert "inFlight.current.generation === generation.current" in src
+    # A fresh plan invalidates the previous job's callbacks.
+    stage = re.search(r"const stage = useCallback\(.*?\}, \[\]\);", src, re.S)
+    assert stage and "generation.current += 1;" in stage.group(0)
+    for callback in ("onComplete", "onError", "onCancelled"):
+        handler = re.search(rf"{callback}: \(variant\) => \{{\n(.*?)\n    \}},", src, re.S)
+        assert handler and "isOurs(variant)" in handler.group(1), callback
+
+
+def test_a_lost_generate_post_must_prove_it_reached_the_backend():
+    """A rejected fetch does not say whether the POST landed. Treating an immediately idle progress
+    read as success made a submission that never reached the server look like a finished image."""
+    src = _read("features/images/images-page.tsx")
+    fn = src[src.index("async function settleLostGeneration") :]
+    fn = fn[: fn.index("\n}\n")]
+    assert "knownIds" in fn and "sawActive" in fn
+    assert "!knownIds.has(image.id)" in fn
+    assert "did not reach the server" in fn
+    # And the caller snapshots the ids BEFORE the POST.
+    assert "new Set(galleryCache.images.map((image) => image.id))" in src

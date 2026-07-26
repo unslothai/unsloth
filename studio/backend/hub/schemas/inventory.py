@@ -103,6 +103,14 @@ class LocalModelInfo(BaseModel):
         None,
         description = "Whether this HF entry belongs to the current download cache.",
     )
+    task: Optional[str] = Field(
+        None,
+        description = (
+            "Inferred pipeline task. The task-scoped pickers filter On Device rows on it and the "
+            "chat picker routes a diffusion pick by it, so a row without one is dropped from "
+            "those lists."
+        ),
+    )
     base_model: Optional[str] = Field(
         None,
         description = "Base model from adapter_config.json when this is an adapter",
@@ -173,6 +181,10 @@ class CachedRepoBase(BaseModel):
     runtime: ModelRuntime = "unknown"
     format_variant: Optional[str] = None
     capabilities: LocalModelCapabilities = Field(default_factory = LocalModelCapabilities)
+    # Inferred pipeline task ("text-to-image" / "text-to-video" / a chat task / None). The
+    # task-scoped pickers filter On Device rows on it and the chat picker routes a diffusion pick
+    # by it, so a row without one is dropped from those lists entirely.
+    task: Optional[str] = None
 
 
 class CachedGgufRepo(CachedRepoBase):
