@@ -1157,9 +1157,7 @@ def test_active_generations_redacts_native_model_paths(monkeypatch):
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 4)))
     monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: SimpleNamespace())
 
-    with active_generations.ActiveGeneration(
-        threading.Event(), thread_id = "t1", model = secret_path
-    ):
+    with active_generations.ActiveGeneration(threading.Event(), thread_id = "t1", model = secret_path):
         body = asyncio.run(inf_mod.get_active_generations(request, "tester"))
 
     assert body["count"] == 1
