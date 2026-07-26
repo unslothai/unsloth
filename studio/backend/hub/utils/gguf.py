@@ -199,7 +199,7 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
 
 
 def _gguf_stem(filename: str) -> str:
-    basename = filename.rsplit("/", 1)[-1]
+    basename = filename.replace("\\", "/").rsplit("/", 1)[-1]
     return _GGUF_SPLIT_SUFFIX_RE.sub("", basename.rsplit(".", 1)[0]).strip()
 
 
@@ -232,11 +232,12 @@ def _base_quant_for_preference(label: str) -> str:
 
 
 def extract_quant_token(filename: str) -> Optional[str]:
-    stem = _gguf_stem(filename)
+    normalized = filename.replace("\\", "/")
+    stem = _gguf_stem(normalized)
     matched_text = stem
     match = _select_quant_match(stem)
-    if not match and "/" in filename:
-        parents = filename.rsplit("/", 1)[0]
+    if not match and "/" in normalized:
+        parents = normalized.rsplit("/", 1)[0]
         for segment in reversed(parents.split("/")):
             parent_match = _select_quant_match(segment)
             if parent_match:

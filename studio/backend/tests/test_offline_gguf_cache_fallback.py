@@ -1013,9 +1013,54 @@ class TestExtractQuantLabelSubdir:
         assert _extract_quant_label("Foo-BF16-Q4_K_M.gguf") == "Q4_K_M"
         assert _extract_quant_label("Foo-F16-Q8_0.gguf") == "Q8_0"
 
+    def test_variant_suffix_must_close_the_stem(self):
+        # Only a suffix that directly follows the quant AND ends the stem is a
+        # flavor. Otherwise the picker lists a label the resolver cannot find.
+        assert _extract_quant_label("m-Q6_K-MTP-v2.gguf") == "Q6_K"
+        assert _extract_quant_label("m-Q6_K-graft-MTP.gguf") == "Q6_K"
+        assert _extract_quant_label("m-Q6_K-MTPX.gguf") == "Q6_K"
+        assert _extract_quant_label("m-Q6_K-PT-PT-MTP.gguf") == "Q6_K"
+        assert _extract_quant_label("m-IQ4_XS-3.53bpw-v2.gguf") == "IQ4_XS"
+
+    def test_native_windows_path_matches_relative_path(self):
+        # llama_cpp derives hf_variant from the OS-native path it launched.
+        # Without separator handling a quant in a parent folder wins over the
+        # one in the file's own name.
+        win = (
+            "N:\\AI Models\\Qwen\\Qwen3.6-40B-NEO-CODE-HERE-2T-OT-Q6_K"
+            "\\Qwen3.6-40B-NEO-CODE-Q6_K-MTP.gguf"
+        )
+        assert _extract_quant_label(win) == "Q6_K-MTP"
+        assert _extract_quant_label("C:\\models\\snap\\m-Q4_K_M.gguf") == "Q4_K_M"
+
 
 def test_pick_best_gguf_prefers_real_quant_over_precision_infix():
     assert _pick_best_gguf(["Foo-BF16-Q4_K_M.gguf", "Foo-Q8_0.gguf"]) == "Foo-BF16-Q4_K_M.gguf"
+
+
+def test_quant_label_matches_hub_extractor():
+    """The hub picker builds the variant list, model_config resolves the pick
+    back to a file. If the two labels drift, a listed variant is unloadable."""
+    from hub.utils.gguf import extract_quant_label as hub_extract_quant_label
+
+    names = [
+        "gemma-3-4b-it-Q4_K_M.gguf",
+        "model-UD-IQ1_S.gguf",
+        "Foo-BF16-Q4_K_M.gguf",
+        "m-Q6_K-MTP.gguf",
+        "m-Q6_K-PT-MTP.gguf",
+        "m-Q6_K-MTP-v2.gguf",
+        "m-Q6_K-MTPX.gguf",
+        "m-Q6_K-MTP-00001-of-00003.gguf",
+        "m-IQ4_XS-3.53bpw.gguf",
+        "m-IQ4_XS-3.53bpw-MTP.gguf",
+        "Q6_K-MTP/model.gguf",
+        "IQ4_XS-3.53bpw/model.gguf",
+        "BF16/model-00001-of-00002.gguf",
+        "N:\\models\\snap-Q6_K\\m-Q6_K-MTP.gguf",
+    ]
+    for name in names:
+        assert _extract_quant_label(name) == hub_extract_quant_label(name), name
 
 
 class TestDownloadMmprojOfflineCacheFallback:

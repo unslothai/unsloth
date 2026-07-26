@@ -1577,6 +1577,14 @@ _GGUF_QUANT_PREFERENCE = [
     "F32",
 ]
 
+# Mirror of hub/utils/gguf.py ``_POST_QUANT_VARIANT_SUFFIX_RE``. Anchored at
+# both ends: the suffix must directly follow the quant token AND close the
+# stem, so ``-MTPX`` / ``-MTP-v2`` are not read as an MTP flavor.
+_POST_QUANT_VARIANT_SUFFIX_RE = re.compile(
+    r"-(?:(?:PT-)?MTP|[0-9]+(?:\.[0-9]+)?bpw)$",
+    re.IGNORECASE,
+)
+
 
 def _pick_best_gguf(filenames: list[str]) -> Optional[str]:
     """Pick the best GGUF file: quant levels in _GGUF_QUANT_PREFERENCE order, else first .gguf."""
@@ -1595,13 +1603,7 @@ def _pick_best_gguf(filenames: list[str]) -> Optional[str]:
         if exact is not None:
             return exact
         for label_upper, filename in by_label.items():
-            base = re.sub(
-                r"-(?:(?:PT-)?MTP|[0-9]+(?:\.[0-9]+)?bpw)$",
-                "",
-                label_upper,
-                flags = re.IGNORECASE,
-            )
-            if base == pref:
+            if _POST_QUANT_VARIANT_SUFFIX_RE.sub("", label_upper) == pref:
                 return filename
 
     return gguf_files[0]
@@ -1646,9 +1648,14 @@ def _extract_quant_label(filename: str) -> str:
     """
     import re
 
-    basename = filename.rsplit("/", 1)[-1]
+    # Callers pass both snapshot-relative posix paths and OS-native absolute
+    # paths (llama_cpp hands us the launched -m path). Without this, a Windows
+    # path has no "/" so the whole string acts as the basename and a quant in a
+    # parent folder outranks the one in the file's own name.
+    normalized = filename.replace("\\", "/")
+    basename = normalized.rsplit("/", 1)[-1]
     # Strip .gguf and any shard suffix (-00001-of-00010)
-    stem = re.sub(r"-\d{3,}-of-\d{3,}", "", basename.rsplit(".", 1)[0])
+    stem = re.sub(r"-\d{3,}-of-\d{3,}", "", basename.rsplit(".", 1)[0]).strip()
     quant_re = (
         r"(UD-)?"  # Optional UD- prefix (Ultra Discrete)
         r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"  # MXFP variants: MXFP4, MXFP4_MOE
@@ -1658,20 +1665,14 @@ def _extract_quant_label(filename: str) -> str:
         r"|Q[0-9]+_[0-9]+"  # Standard: Q8_0, Q5_1
         r"|Q[0-9]+_K"  # Short K-quant: Q6_K
         r"|BF16|F16|F32)"  # Full precision
-        # Optional bits-per-weight modifier so repos that ship multiple
-        # files at the same base quant (e.g. byteshape's IQ4_XS at 3.53,
-        # 3.97, 4.19 bpw) don't collapse into a single merged variant.
-        # Optional MTP flavor suffixes (e.g. -MTP, -PT-MTP) distinguish
-        # separate main-weight graft variants in the same folder (#7460).
-        r"(-[0-9]+(?:\.[0-9]+)?bpw|-(?:PT-)?MTP)?"
     )
     match = _select_quant_label_match(stem, quant_re)
     matched_text = stem
     # Subdir layouts like ``BF16/foo.gguf`` keep the quant in the directory,
     # not the basename. Check parent dirs too so the label matches the
     # snapshot-relative path produced elsewhere.
-    if not match and "/" in filename:
-        parents = filename.rsplit("/", 1)[0]
+    if not match and "/" in normalized:
+        parents = normalized.rsplit("/", 1)[0]
         for segment in reversed(parents.split("/")):
             m = _select_quant_label_match(segment, quant_re)
             if m:
@@ -1680,16 +1681,11 @@ def _extract_quant_label(filename: str) -> str:
                 break
     if match:
         prefix = match.group(1) or ""
-        suffix = match.group(3) or ""
-        if not suffix:
-            tail = matched_text[match.end() :]
-            suffix_match = re.search(
-                r"-(?:(?:PT-)?MTP|[0-9]+(?:\.[0-9]+)?bpw)$",
-                tail,
-                re.IGNORECASE,
-            )
-            if suffix_match:
-                suffix = suffix_match.group(0)
+        # Keep a trailing bits-per-weight or MTP-flavor suffix so files that
+        # share a base quant (byteshape's IQ4_XS at 3.53/3.97/4.19 bpw, Qwen
+        # MTP grafts) stay distinct variants instead of merging (#7460).
+        suffix_match = _POST_QUANT_VARIANT_SUFFIX_RE.match(matched_text[match.end() :])
+        suffix = suffix_match.group(0) if suffix_match else ""
         return f"{prefix}{match.group(2)}{suffix}"
     # Fallback: last hyphen-separated segment
     return stem.split("-")[-1]
