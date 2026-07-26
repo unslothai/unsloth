@@ -1349,44 +1349,42 @@ def _revision_pair(root, complete: bool):
     return old, new
 
 
-def test_snapshot_aliases_survive_a_repo_update(tmp_path):
+def test_sibling_revision_resolves_to_its_own_weights(tmp_path):
     # /v1/models advertises only the snapshot dir name, so a durable pin holds one
-    # revision hash. A later snapshot must not strand it: every revision aliases here.
-    _old, new = _revision_pair(tmp_path, complete = True)
+    # revision hash. A newer snapshot must not strand it, and the old revision must
+    # resolve to ITS OWN directory rather than be redirected onto the newest.
+    old, new = _revision_pair(tmp_path, complete = True)
 
-    aliases = resolver._public_aliases(str(new), str(new))
+    found = dict(resolver._sibling_revision_entries(str(new), "org/Repo"))
 
-    assert "rev-old" in aliases
-    assert "rev-new" in aliases
-
-
-def test_snapshot_aliases_withheld_when_the_target_is_incomplete(tmp_path):
-    # The scan resolves the repo to its newest snapshot. When that one is a half
-    # downloaded split quant, redirecting a pin naming the older complete revision
-    # onto it would break a request that works today.
-    _old, new = _revision_pair(tmp_path, complete = False)
-
-    aliases = resolver._public_aliases(str(new), str(new))
-
-    assert "rev-old" not in aliases
+    assert "rev-old" in found
+    assert found["rev-old"].load_path == str(old)
 
 
-def test_public_aliases_ignore_a_scan_folder_named_snapshots(tmp_path):
+def test_incomplete_sibling_revision_is_not_indexed(tmp_path):
+    # A half-downloaded revision cannot load, so naming it must not resolve to it.
+    old, _new = _revision_pair(tmp_path, complete = False)
+    # Point the scan at the complete one; the partial sibling is the candidate here.
+    found = dict(resolver._sibling_revision_entries(str(old), "org/Repo"))
+
+    assert "rev-new" not in found
+
+
+def test_sibling_revisions_ignore_a_scan_folder_named_snapshots(tmp_path):
     # A user scan folder called "snapshots" holds unrelated models, not revisions of
-    # one repo; aliasing the siblings would silently serve model-a as model-b.
+    # one repo; treating them as revisions would silently serve model-a as model-b.
     snaps = tmp_path / "snapshots"
     for name in ("model-a", "model-b"):
         (snaps / name).mkdir(parents = True)
         (snaps / name / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
 
-    aliases = resolver._public_aliases(str(snaps / "model-a"), str(snaps / "model-a"))
+    found = dict(resolver._sibling_revision_entries(str(snaps / "model-a"), "model-a"))
 
-    assert "model-b" not in aliases
-    assert aliases == ["model-a"]
+    assert found == {}
 
 
-def test_public_aliases_leaves_repo_ids_alone():
-    assert resolver._public_aliases("org/Repo-GGUF", "org/Repo-GGUF") == ["org/Repo-GGUF"]
+def test_sibling_revisions_skip_plain_repo_ids():
+    assert dict(resolver._sibling_revision_entries("org/Repo-GGUF", "org/Repo-GGUF")) == {}
 
 
 def test_already_loaded_by_repo_id_is_not_reswapped(monkeypatch):

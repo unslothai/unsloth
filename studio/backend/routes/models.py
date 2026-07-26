@@ -440,12 +440,19 @@ def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
 
     ``recursive`` is for HF cache snapshots, which keep split quants in per-quant
     subdirectories: a flat glob sees no ``.gguf`` there and would report the
-    snapshot as non-GGUF, hiding every sharded repo from the GGUF pickers.
+    snapshot as non-GGUF, hiding every sharded repo from the GGUF pickers. It looks
+    one level down rather than walking the tree, because that is where split quants
+    live and ``/api/models/local`` is async: an unbounded ``rglob`` per repo would
+    have to exhaust every non-GGUF snapshot before concluding there is no GGUF,
+    blocking the event loop on a large cache.
     """
     try:
-        found = path.rglob("*.gguf") if recursive else path.glob("*.gguf")
+        found = path.glob("*.gguf")
         if not any(_is_main_gguf_filename(p.name) for p in found):
-            return None
+            if not recursive:
+                return None
+            if not any(_is_main_gguf_filename(p.name) for p in path.glob("*/*.gguf")):
+                return None
         return None if _has_non_gguf_weights(path) else "gguf"
     except OSError:
         return None
@@ -2819,6 +2826,7 @@ async def get_gguf_variants(
                     ),
                     downloaded = bool(v.downloaded),
                     update_available = bool(getattr(v, "update_available", False)),
+                    partial = bool(getattr(v, "partial", False)),
                 )
                 for v in response.variants
             ],

@@ -1012,9 +1012,14 @@ export function AgentsTab() {
         }
         // Clear a prior failure once a later request (e.g. after adding a token) succeeds.
         setVariantsFailed(false);
+        // Drop partial quants: an interrupted split download still lists a quant, and
+        // naming it builds a command that resolves the shards it has and then fails on
+        // the missing ones.
         const uniqueVariants = Array.from(
           new Map(
-            info.variants.map((variant) => [variant.quant, variant]),
+            info.variants
+              .filter((variant) => !variant.partial)
+              .map((variant) => [variant.quant, variant]),
           ).values(),
         );
         setVariants(uniqueVariants);
