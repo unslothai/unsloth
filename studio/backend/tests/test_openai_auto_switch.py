@@ -289,9 +289,9 @@ def test_openai_compat_routes_bound_to_handlers_with_auth():
     for key, handler in expected.items():
         assert key in seen, f"route {key} is not registered"
         route = seen[key]
-        assert route.endpoint.__name__ == handler, (
-            f"{key} bound to {route.endpoint.__name__}, expected {handler}"
-        )
+        assert (
+            route.endpoint.__name__ == handler
+        ), f"{key} bound to {route.endpoint.__name__}, expected {handler}"
         deps = [d.call.__name__ for d in route.dependant.dependencies]
         assert "get_current_subject" in deps, f"{key} lost its auth dependency"
 
