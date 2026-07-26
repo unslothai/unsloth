@@ -325,7 +325,11 @@ class UnslothTrainer:
                 return "The Hugging Face repository is invalid or unavailable."
             if status == 429 or "ratelimit" in name:
                 return "Hugging Face rate limit reached. Try again later."
-            if isinstance(exc, (ConnectionError, TimeoutError)) or "connection" in name or "timeout" in name:
+            if (
+                isinstance(exc, (ConnectionError, TimeoutError))
+                or "connection" in name
+                or "timeout" in name
+            ):
                 return "The upload could not connect to Hugging Face. Try again later."
             return "The checkpoint upload failed."
 
@@ -355,11 +359,23 @@ class UnslothTrainer:
                     return
                 files = [path for path in checkpoint.rglob("*") if path.is_file()]
                 total = sum(path.stat().st_size for path in files)
-                emit(state = "preparing", total_bytes = total, total_files = len(files),
-                     message = "Preparing checkpoint upload", **common)
-                emit(state = "uploading", uploaded_bytes = 0, total_bytes = total,
-                     uploaded_files = 0, total_files = len(files), percentage = 0,
-                     message = f"Uploading {checkpoint.name}", **common)
+                emit(
+                    state = "preparing",
+                    total_bytes = total,
+                    total_files = len(files),
+                    message = "Preparing checkpoint upload",
+                    **common,
+                )
+                emit(
+                    state = "uploading",
+                    uploaded_bytes = 0,
+                    total_bytes = total,
+                    uploaded_files = 0,
+                    total_files = len(files),
+                    percentage = 0,
+                    message = f"Uploading {checkpoint.name}",
+                    **common,
+                )
                 try:
                     api = HfApi()
                     api.create_repo(repo_id = repository_id, repo_type = "model", exist_ok = True)
@@ -380,22 +396,48 @@ class UnslothTrainer:
                         repository_id = repository_id,
                         error_category = type(exc).__name__,
                     )
-                    emit(state = "error", total_bytes = total, total_files = len(files),
-                         message = "Checkpoint upload failed", error = safe_error, **common)
+                    emit(
+                        state = "error",
+                        total_bytes = total,
+                        total_files = len(files),
+                        message = "Checkpoint upload failed",
+                        error = safe_error,
+                        **common,
+                    )
                     return
-                emit(state = "completed", uploaded_bytes = total, total_bytes = total,
-                     uploaded_files = len(files), total_files = len(files), percentage = 100,
-                     message = f"{checkpoint.name} uploaded", **common)
+                emit(
+                    state = "completed",
+                    uploaded_bytes = total,
+                    total_bytes = total,
+                    uploaded_files = len(files),
+                    total_files = len(files),
+                    percentage = 100,
+                    message = f"{checkpoint.name} uploaded",
+                    **common,
+                )
 
         return _CheckpointUploadCallback()
 
     def _add_shared_callbacks(self, training_args):
         """Install callbacks consistently for every Transformers trainer variant."""
+        from transformers import TrainerCallback
+        from core.training.manifest import write_checkpoint_manifests
+
+        class _ManifestCallback(TrainerCallback):
+            def on_save(self, args, state, control, **kwargs):
+                # Transformers calls on_save only after trainer_state and model
+                # files have landed. The durable manifest is therefore the final
+                # checkpoint-completion marker and precedes upload/progress events.
+                write_checkpoint_manifests(args.output_dir)
+
         self.trainer.add_callback(self._create_progress_callback())
-        self.trainer.add_callback(self._create_checkpoint_upload_callback(
-            bool(training_args.get("push_to_hub", False)),
-            training_args.get("hub_model_id"),
-        ))
+        self.trainer.add_callback(_ManifestCallback())
+        self.trainer.add_callback(
+            self._create_checkpoint_upload_callback(
+                bool(training_args.get("push_to_hub", False)),
+                training_args.get("hub_model_id"),
+            )
+        )
 
     def _calculate_total_steps(self, num_samples, batch_size, grad_accum, num_epochs, max_steps):
         """Calculate total training steps from dataset size and training params."""
@@ -1503,7 +1545,7 @@ class UnslothTrainer:
 
         result_dataset = Dataset.from_list(processed_examples)
         logger.info(
-            f"CSM preprocessing complete: {len(result_dataset)} examples " f"({skipped} skipped)\n"
+            f"CSM preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         return result_dataset
 
@@ -1759,7 +1801,7 @@ class UnslothTrainer:
 
         result_dataset = Dataset.from_list(processed_examples)
         logger.info(
-            f"SNAC preprocessing complete: {len(result_dataset)} examples " f"({skipped} skipped)\n"
+            f"SNAC preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         return result_dataset
 
@@ -1977,8 +2019,7 @@ class UnslothTrainer:
 
         result_dataset = Dataset.from_list(processed_examples)
         logger.info(
-            f"BiCodec preprocessing complete: {len(result_dataset)} examples "
-            f"({skipped} skipped)\n"
+            f"BiCodec preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         # Debug: first example text (truncated)
         sample = result_dataset[0]["text"]
@@ -2188,7 +2229,7 @@ class UnslothTrainer:
 
         result_dataset = HFDataset.from_list(processed_examples)
         logger.info(
-            f"DAC preprocessing complete: {len(result_dataset)} examples " f"({skipped} skipped)\n"
+            f"DAC preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         sample = result_dataset[0]["text"]
         logger.info(f"Sample text (first 200 chars): {sample[:200]}...\n")
@@ -2425,18 +2466,34 @@ class UnslothTrainer:
                     labels.append(label)
                     try:
                         if entry.get("hf_dataset"):
-                            kwargs = {"path": entry["hf_dataset"], "split": entry.get("split") or "train"}
-                            if entry.get("subset"): kwargs["name"] = entry["subset"]
+                            kwargs = {
+                                "path": entry["hf_dataset"],
+                                "split": entry.get("split") or "train",
+                            }
+                            if entry.get("subset"):
+                                kwargs["name"] = entry["subset"]
                             loaded.append(load_dataset(**kwargs, streaming = dataset_streaming))
                         else:
                             files = self._resolve_local_files([entry["local_path"]])
-                            loaded.append(load_dataset(self._loader_for_files(files), data_files = files, split = "train"))
+                            loaded.append(
+                                load_dataset(
+                                    self._loader_for_files(files), data_files = files, split = "train"
+                                )
+                            )
                     except Exception as exc:
-                        raise ValueError(f"Failed to load training dataset '{label}': {exc}") from exc
+                        raise ValueError(
+                            f"Failed to load training dataset '{label}': {exc}"
+                        ) from exc
                 try:
-                    dataset = loaded[0] if len(loaded) == 1 else concatenate_datasets(loaded).shuffle(seed = training_seed)
+                    dataset = (
+                        loaded[0]
+                        if len(loaded) == 1
+                        else concatenate_datasets(loaded).shuffle(seed = training_seed)
+                    )
                 except Exception as exc:
-                    raise ValueError(f"Training dataset schemas cannot be reconciled for {labels}: {exc}") from exc
+                    raise ValueError(
+                        f"Training dataset schemas cannot be reconciled for {labels}: {exc}"
+                    ) from exc
             elif local_datasets:
                 # Use load_dataset() for an Arrow-backed result; in-memory
                 # Dataset.from_list() has no cache and forces num_proc=1 during

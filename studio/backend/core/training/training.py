@@ -255,6 +255,14 @@ def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
     return db_config
 
 
+def _build_training_manifest(config: dict[str, Any], expected_checkpoint_step: int = 0):
+    """Construct portable run metadata beside the DB sanitizer and share its policy."""
+    from core.training.manifest import build_manifest
+    return build_manifest(
+        _sanitize_db_config(config), expected_checkpoint_step = expected_checkpoint_step
+    )
+
+
 def _s3_dataset_name(s3_dataset: Any) -> Optional[str]:
     if not isinstance(s3_dataset, dict):
         return None
@@ -333,9 +341,9 @@ class TrainingProgress:
     eval_loss: Optional[float] = None
     peak_memory_gb: Optional[float] = None
     output_dir: Optional[str] = None
-    checkpoint_upload: dict[str, Any] = field(default_factory = lambda: {
-        "state": "idle", "message": ""
-    })
+    checkpoint_upload: dict[str, Any] = field(
+        default_factory = lambda: {"state": "idle", "message": ""}
+    )
 
 
 class _MLXTrainerAdapter:
@@ -1011,9 +1019,7 @@ class TrainingBackend:
             self.eval_step_history.clear()
             self.eval_enabled = False
             self._output_dir = (
-                config.get("output_dir")
-                if (resume_source_run_id or imported_checkpoint)
-                else None
+                config.get("output_dir") if (resume_source_run_id or imported_checkpoint) else None
             )
             self._progress.output_dir = self._output_dir
             self._resume_source_run_id = resume_source_run_id
