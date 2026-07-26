@@ -39,10 +39,26 @@ RELEASE_NOTES_MAX_CHARS = 20_000
 
 _HEADING_PATTERN = re.compile(r"^ {0,3}##\s+(?P<title>.*?)\s*$")
 _FENCE_PATTERN = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
-# CommonMark type 1 HTML blocks: contents are literal until the closing tag.
-# <details> and friends are type 6 and do contain Markdown, so they are not here.
+# CommonMark type 1 HTML blocks: contents are literal until a closing tag,
+# which the spec says need not be the one that opened the block.
 _RAW_HTML_OPEN = re.compile(r"^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)", re.IGNORECASE)
 _RAW_HTML_CLOSE = re.compile(r"</(pre|script|style|textarea)\s*>", re.IGNORECASE)
+# Type 6 blocks run to the next blank line, so `<details>` only holds Markdown
+# once a blank line has closed the block. Open and close tags both start one.
+_HTML_BLOCK_OPEN = re.compile(r"^ {0,3}</?([a-zA-Z][a-zA-Z0-9-]*)(?=[\s/>]|$)")
+_HTML_BLOCK_TAGS = frozenset("""
+address article aside base basefont blockquote body caption center col colgroup
+dd details dialog dir div dl dt fieldset figcaption figure footer form frame
+frameset h1 h2 h3 h4 h5 h6 head header hr html iframe legend li link main menu
+menuitem nav noframes ol optgroup option p param search section summary table
+tbody td tfoot th thead title tr track ul
+""".split())
+# Type 7: any other complete tag alone on a line, which also runs to a blank
+# line. It cannot interrupt a paragraph, so it only counts after a break.
+_HTML_ATTRIBUTE = r"""(?:\s+[a-zA-Z_:][a-zA-Z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)"""
+_HTML_TAG_ONLY_LINE = re.compile(
+    rf"^ {{0,3}}(?:<[a-zA-Z][a-zA-Z0-9-]*{_HTML_ATTRIBUTE}*\s*/?>|</[a-zA-Z][a-zA-Z0-9-]*\s*>)\s*$"
+)
 _COMMENT_OPEN = "<!--"
 _COMMENT_CLOSE = "-->"
 _CODE_SPAN_PATTERN = re.compile(r"(`+)(?:.*?)\1")
@@ -106,6 +122,8 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
     open_fence: str | None = None
     in_comment = False
     in_raw_html = False
+    in_html_block = False
+    after_paragraph = False
 
     def flush() -> None:
         if version is not None and heading is not None:
@@ -118,8 +136,15 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             )
 
     for line in text.splitlines():
-        fence = _FENCE_PATTERN.match(line)
-        if fence and not in_comment:
+        # Raw HTML first: its contents are literal, so a fence inside it is not
+        # a fence. Only the text after the closing tag can carry a heading.
+        if in_raw_html:
+            visible, in_raw_html = _strip_raw_html(line, in_raw_html)
+        elif in_html_block:
+            # A blank line is the only thing that ends a type 6 block.
+            in_html_block = line.strip() != ""
+            visible = ""
+        elif (fence := _FENCE_PATTERN.match(line)) and not in_comment:
             open_fence = _next_fence_state(open_fence, fence.group("marker"), fence.group("rest"))
             visible = ""
         elif open_fence:
@@ -129,8 +154,15 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             visible, in_comment = _strip_comments(line, in_comment)
             # Nor is anything inside a raw HTML block such as <pre>.
             visible, in_raw_html = _strip_raw_html(visible, in_raw_html)
+            if visible and not in_raw_html and _opens_html_block(visible, after_paragraph):
+                in_html_block = True
+                visible = ""
         # A `##` inside a fenced block is sample markdown, not a real heading.
         match = _HEADING_PATTERN.match(visible) if visible else None
+        # Only ordinary text continues a paragraph. A heading, a block or an
+        # indented code line (four spaces, outside a paragraph) ends one.
+        indented_code = not after_paragraph and line[:4] == "    "
+        after_paragraph = bool(visible.strip()) and match is None and not indented_code
         if match is None:
             if version is not None:
                 body.append(line)
@@ -349,6 +381,14 @@ def _strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
         index = opening + len(_COMMENT_OPEN)
         in_comment = True
     return "".join(visible), in_comment
+
+
+def _opens_html_block(line: str, after_paragraph: bool) -> bool:
+    """True if `line` starts a CommonMark type 6 or type 7 HTML block."""
+    match = _HTML_BLOCK_OPEN.match(line)
+    if match is not None and match.group(1).lower() in _HTML_BLOCK_TAGS:
+        return True
+    return not after_paragraph and _HTML_TAG_ONLY_LINE.match(line) is not None
 
 
 def _strip_raw_html(line: str, in_raw_html: bool) -> tuple[str, bool]:

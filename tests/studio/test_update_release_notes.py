@@ -548,3 +548,41 @@ def test_preview_skips_raw_html_blocks():
     assert "stripRawHtml" in src
     # Anchored: only a line-leading tag opens a block, matching the parser.
     assert "/^ {0,3}<(pre|script|style|textarea)" in src
+
+
+def test_fence_inside_a_raw_html_block_is_literal(changelog_module):
+    """Raw HTML contents are literal, so a stray ``` in a <pre> sample is not a
+    fence. Treating it as one left a block open and hid every later release."""
+    text = "## 2.0\n\n<pre>\n```\n</pre>\n\n## 1.0\n\n- older\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["2.0", "1.0"]
+
+
+def test_raw_html_block_closes_on_any_of_the_four_tags(changelog_module):
+    """CommonMark ends a type 1 block at the first `</pre>`, `</script>`,
+    `</style>` or `</textarea>`: the closer need not match the opener."""
+    text = '## 1.0\n\n<script>\nconst sample = "</pre>";\n## 9.9.9\n</script>\n'
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0", "9.9.9"]
+
+
+@pytest.mark.parametrize("tag", ["details", "div", "table"])
+def test_type_6_blocks_run_until_a_blank_line(changelog_module, tag):
+    """`<details>` holds Markdown only after a blank line closes the block, so
+    a heading pressed against the opening tag is not a release."""
+    packed = f"## 1.0\n\n<{tag}>\n## 9.9.9\n</{tag}>\n\n- note\n"
+    assert [e.version for e in changelog_module.parse_changelog(packed)] == ["1.0"]
+    spaced = f"## 1.0\n\n<{tag}>\n\n## 2.0\n\n- note\n"
+    assert [e.version for e in changelog_module.parse_changelog(spaced)] == ["1.0", "2.0"]
+
+
+def test_a_tag_only_line_cannot_interrupt_a_paragraph(changelog_module):
+    """Type 7 blocks do not interrupt a paragraph, so prose followed by a bare
+    tag keeps the releases below it reachable."""
+    text = "## 2.0\n\nSome prose.\n<span>\n\n## 1.0\n\n- older\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["2.0", "1.0"]
+
+
+def test_preview_joins_an_indented_continuation_line():
+    """Four spaces only start code outside a paragraph. Inside one the line is
+    a wrapped continuation, so it must not be dropped from the preview."""
+    src = PREVIEW.read_text(encoding = "utf-8")
+    assert "current === null && !paragraph && line.indent >= INDENTED_CODE_INDENT" in src

@@ -23,10 +23,27 @@ const HTML_TAG = /<\/?[a-zA-Z][^>]*>/g;
 // <https://x> and <a@b.c> are Markdown autolinks: keep the text they render.
 const AUTOLINK = /<([a-zA-Z][a-zA-Z0-9+.-]*:[^\s<>]*|[^\s<>@]+@[^\s<>@]+)>/g;
 const CODE_SPAN_INLINE = /(`+)[\s\S]*?\1/g;
-// CommonMark type 1 HTML blocks render literally. <details> is type 6 and
-// does contain Markdown, so it is deliberately absent here.
+// CommonMark type 1 HTML blocks render literally until a closing tag, which
+// the spec says need not be the one that opened the block.
 const RAW_HTML_OPEN = /^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)/i;
 const RAW_HTML_CLOSE = /<\/(pre|script|style|textarea)\s*>/i;
+// Type 6 and 7 blocks run to the next blank line, so `<details>` holds Markdown
+// only once a blank line has closed the block. Type 7 (any other complete tag
+// alone on a line) cannot interrupt a paragraph.
+const HTML_BLOCK_OPEN = /^ {0,3}<\/?([a-zA-Z][a-zA-Z0-9-]*)(?=[\s/>]|$)/;
+const HTML_ATTRIBUTE =
+  "(?:\\s+[a-zA-Z_:][a-zA-Z0-9_.:-]*(?:\\s*=\\s*(?:[^\\s\"'=<>`]+|'[^']*'|\"[^\"]*\"))?)";
+const HTML_TAG_ONLY_LINE = new RegExp(
+  `^ {0,3}(?:<[a-zA-Z][a-zA-Z0-9-]*${HTML_ATTRIBUTE}*\\s*/?>|</[a-zA-Z][a-zA-Z0-9-]*\\s*>)\\s*$`,
+);
+const HTML_BLOCK_TAGS = new Set(
+  `address article aside base basefont blockquote body caption center col colgroup
+   dd details dialog dir div dl dt fieldset figcaption figure footer form frame
+   frameset h1 h2 h3 h4 h5 h6 head header hr html iframe legend li link main menu
+   menuitem nav noframes ol optgroup option p param search section summary table
+   tbody td tfoot th thead title tr track ul`.split(/\s+/),
+);
+const HEADING_LINE = /^ {0,3}#{1,6}(?:\s|$)/;
 const COMMENT_OPEN = "<!--";
 const COMMENT_CLOSE = "-->";
 // Paired emphasis only. Underscores inside identifiers are literal, so
@@ -180,66 +197,117 @@ function stripRawHtml(line: string, startInRaw: boolean): [string, boolean] {
     : ["", true];
 }
 
+/** True if `line` starts a CommonMark type 6 or type 7 HTML block. */
+function opensHtmlBlock(line: string, afterParagraph: boolean): boolean {
+  const named = HTML_BLOCK_OPEN.exec(line);
+  if (named && HTML_BLOCK_TAGS.has((named[1] ?? "").toLowerCase())) {
+    return true;
+  }
+  return !afterParagraph && HTML_TAG_ONLY_LINE.test(line);
+}
+
+interface ScanState {
+  openFence: string | null;
+  inComment: boolean;
+  inRawHtml: boolean;
+  inHtmlBlock: boolean;
+  afterParagraph: boolean;
+}
+
+/**
+ * Text of `line` a reader would see: "" for structure and hidden blocks, null
+ * for fenced content, which is skipped so it cannot split a bullet.
+ */
+function visibleText(line: string, state: ScanState): string | null {
+  // Raw HTML first: its contents are literal, so a fence inside it is not a
+  // fence. Only the text after the closing tag is a note.
+  if (state.inRawHtml) {
+    const [after, stillInRaw] = stripRawHtml(line, true);
+    state.inRawHtml = stillInRaw;
+    return after;
+  }
+  if (state.inHtmlBlock) {
+    // A blank line is the only thing that ends a type 6 or 7 block.
+    state.inHtmlBlock = line.trim() !== "";
+    return "";
+  }
+  const fence = state.inComment ? null : FENCE.exec(line);
+  if (fence) {
+    state.openFence = nextFence(
+      state.openFence,
+      fence[1] ?? "",
+      fence[2] ?? "",
+    );
+    return "";
+  }
+  if (state.openFence !== null) {
+    return null;
+  }
+  // Commented-out notes are not rendered, so they are not previewed either.
+  const [uncommented, stillInComment] = stripCommentSpans(
+    line,
+    state.inComment,
+  );
+  state.inComment = stillInComment;
+  const [visible, stillInRaw] = stripRawHtml(uncommented, state.inRawHtml);
+  state.inRawHtml = stillInRaw;
+  if (
+    !stillInRaw &&
+    visible.trim() &&
+    opensHtmlBlock(visible, state.afterParagraph)
+  ) {
+    state.inHtmlBlock = true;
+    return "";
+  }
+  return visible;
+}
+
+/** Fence state after a ``` or ~~~ line. A closer carries nothing after it. */
+function nextFence(
+  open: string | null,
+  marker: string,
+  rest: string,
+): string | null {
+  if (open === null) {
+    return marker;
+  }
+  const closes =
+    marker[0] === open[0] && marker.length >= open.length && rest.trim() === "";
+  return closes ? null : open;
+}
+
 function contentLines(markdown: string): ContentLine[] {
   const lines: ContentLine[] = [];
-  let openFence: string | null = null;
-  let inComment = false;
-  let inRawHtml = false;
+  const state: ScanState = {
+    openFence: null,
+    inComment: false,
+    inRawHtml: false,
+    inHtmlBlock: false,
+    afterParagraph: false,
+  };
 
   for (const rawLine of markdown.split("\n")) {
-    const line = rawLine.replace(/\t/g, " ".repeat(TAB_WIDTH));
-    const fence = inComment ? null : FENCE.exec(line);
-    if (fence) {
-      const marker = fence[1] ?? "";
-      const rest = fence[2] ?? "";
-      if (openFence === null) {
-        openFence = marker;
-      } else if (
-        marker[0] === openFence[0] &&
-        marker.length >= openFence.length &&
-        rest.trim() === ""
-      ) {
-        // A closer carries nothing after it, so a ```` line with trailing
-        // text inside a ```` block is content, not the end of the block.
-        openFence = null;
-      }
-      lines.push({ text: "", indent: 0 });
+    const visible = visibleText(
+      rawLine.replace(/\t/g, " ".repeat(TAB_WIDTH)),
+      state,
+    );
+    if (visible === null) {
       continue;
     }
-    if (openFence !== null) {
-      continue;
-    }
-    // Commented-out notes are not rendered, so they are not previewed either.
-    const [uncommented, stillInComment] = stripCommentSpans(line, inComment);
-    inComment = stillInComment;
-    // Raw HTML blocks such as <pre> render literally, so their lines are not
-    // release notes.
-    const [visible, stillInRaw] = stripRawHtml(uncommented, inRawHtml);
-    inRawHtml = stillInRaw;
     if (!visible.trim()) {
+      state.afterParagraph = false;
       lines.push({ text: "", indent: 0 });
       continue;
     }
     const stripped = visible.replace(BLOCKQUOTE, "");
-    lines.push({
-      text: stripped.trim(),
-      indent: stripped.length - stripped.trimStart().length,
-    });
+    const indent = stripped.length - stripped.trimStart().length;
+    // Only ordinary text continues a paragraph. A heading, a block or an
+    // indented code line (four spaces, outside a paragraph) ends one.
+    const startsCode = !state.afterParagraph && indent >= INDENTED_CODE_INDENT;
+    state.afterParagraph = !HEADING_LINE.test(stripped) && !startsCode;
+    lines.push({ text: stripped.trim(), indent });
   }
   return lines;
-}
-
-export interface ReleaseNotesPreviewItem {
-  // Leading sentence, highlighted in the preview.
-  lead: string;
-  // Rest of the bullet, de-emphasised. Empty for single-sentence bullets.
-  rest: string;
-}
-
-export interface ReleaseNotesPreview {
-  items: ReleaseNotesPreviewItem[];
-  // Bullets past the preview limit, for a "+N more" affordance.
-  remaining: number;
 }
 
 /**
@@ -260,11 +328,6 @@ function splitLeadSentence(text: string): ReleaseNotesPreviewItem {
     match = SENTENCE_BREAK.exec(text);
   }
   return { lead: text, rest: "" };
-}
-
-interface Bullet {
-  text: string;
-  indent: number;
 }
 
 /** Bullets in document order, plus prose for changelogs written as paragraphs. */
@@ -296,8 +359,9 @@ function collectBullets(markdown: string): {
     }
 
     // An indented code block renders as code, so a "- cmd" line inside one is
-    // not a bullet. Continuation lines of an open bullet still belong to it.
-    if (current === null && line.indent >= INDENTED_CODE_INDENT) {
+    // not a bullet. Indentation cannot start code inside an open bullet or
+    // paragraph, where it is just a wrapped line.
+    if (current === null && !paragraph && line.indent >= INDENTED_CODE_INDENT) {
       continue;
     }
 
