@@ -110,7 +110,7 @@ jobs:
 
       - name: Install Playwright browsers
         run: |
-          pip install 'playwright>=1.45'
+          pip install 'playwright>=1.45' 'fastapi>=0.115,<1'
           python -m playwright install --with-deps chromium firefox webkit
 
       - name: Reset auth + boot Unsloth
