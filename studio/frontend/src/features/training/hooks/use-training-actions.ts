@@ -167,7 +167,7 @@ export function useTrainingActions() {
       runtimeStore.setStartResources(
         payload.model_name,
         payload.hf_dataset,
-        false,
+        Boolean(options?.resumeCheckpointPath),
         payload.project_name ?? "",
       );
       const response = await startTraining(payload);

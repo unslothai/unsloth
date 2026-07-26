@@ -179,7 +179,7 @@ function formatSchedulerLabel(
   }
 }
 
-export function ParamsSection(): ReactElement {
+export function ParamsSection({ disabled = false }: { disabled?: boolean }): ReactElement {
   const t = useT();
   const store = useTrainingConfigStore();
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
@@ -271,7 +271,16 @@ export function ParamsSection(): ReactElement {
         accent="orange"
         className="min-h-studio-config-column"
       >
-        <div className="flex flex-col gap-4">
+        {disabled && (
+          <div className="mb-4 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
+            Training parameters are restored from the selected checkpoint and cannot be changed while resuming. Switch to <span className="font-medium text-foreground">New training</span> to edit them.
+          </div>
+        )}
+        <div
+          className={`flex flex-col gap-4 transition-opacity ${disabled ? "pointer-events-none opacity-45" : ""}`}
+          aria-disabled={disabled}
+          inert={disabled ? true : undefined}
+        >
           <div className="flex flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               {t("studio.params.projectName")}
