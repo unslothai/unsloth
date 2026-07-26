@@ -29,7 +29,8 @@ def _qwen_scheduler():
     # The Qwen/Qwen-Image scheduler config: shift=1.0 is SKIPPED at init because
     # use_dynamic_shifting is true, base_shift = max_shift = log 3 (constant inference mu),
     # exponential time shift, terminal stretch to 0.02.
-    from diffusers import FlowMatchEulerDiscreteScheduler
+    diffusers = pytest.importorskip("diffusers")
+    FlowMatchEulerDiscreteScheduler = diffusers.FlowMatchEulerDiscreteScheduler
     return FlowMatchEulerDiscreteScheduler(
         num_train_timesteps = 1000,
         shift = 1.0,

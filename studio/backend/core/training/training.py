@@ -864,16 +864,24 @@ class TrainingBackend:
                 return False
             self._start_in_progress = True
         try:
-            return self._start_training_impl(job_id, before_spawn = before_spawn, **kwargs)
+            return self._start_training_impl(
+                job_id,
+                before_spawn = before_spawn,
+                resume_source_run_id = resume_source_run_id,
+                **kwargs,
+            )
         finally:
             with self._lock:
                 self._start_in_progress = False
 
+    # Named, not part of **kwargs: the body reads it directly, and it must not reach the
+    # worker config either (start_training's own signature keeps it out).
     def _start_training_impl(
         self,
         job_id: str,
         *,
         before_spawn = None,
+        resume_source_run_id: Optional[str] = None,
         **kwargs,
     ) -> bool:
         # Join prior pump thread — refuse to start if it won't die

@@ -550,6 +550,7 @@ def test_cast_fp8_is_idempotent_on_precast_encoder():
     the engaged cast report as failed and status show no TE quant)."""
     import torch
 
+    pytest.importorskip("diffusers")  # _cast_fp8 installs diffusers' layerwise hooks
     from core.inference.diffusion_precision import _cast_fp8
 
     target = types.SimpleNamespace(dtype = torch.bfloat16)

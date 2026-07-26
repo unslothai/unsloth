@@ -785,7 +785,12 @@ class TestLoadHubDownloadExclusion:
 
     def test_load_marker_precedes_hub_guard_and_unload(self):
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
-        gguf_branch = source[source.index("if config.is_gguf:") :]
+        # _load_model_impl has more than one `if config.is_gguf:`, so anchor on
+        # the branch that actually owns the load marker rather than the first
+        # one in the file, which belongs to an earlier check.
+        marker = source.index("enter_context(gguf_load_in_flight")
+        gguf_branch_start = source.rindex("if config.is_gguf:", 0, marker)
+        gguf_branch = source[gguf_branch_start:]
 
         # The gguf_load_in_flight marker must be entered before the hub-download
         # guard and the unload so a concurrent load can't race the download
@@ -794,7 +799,7 @@ class TestLoadHubDownloadExclusion:
         # inherited value (e.g. a carried --no-mmproj) shapes the guard's
         # require_mmproj. Anchor on the call form so the assertion pins the
         # endpoint's call site, not the function definition.
-        assert source.index("= _resolve_inherited_extra_args(") < source.index("if config.is_gguf:")
+        assert source.index("= _resolve_inherited_extra_args(") < gguf_branch_start
         assert (
             gguf_branch.index("enter_context(gguf_load_in_flight")
             < gguf_branch.index("_hub_download_blocks_gguf_load")
