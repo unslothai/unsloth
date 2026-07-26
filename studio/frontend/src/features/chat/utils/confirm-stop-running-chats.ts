@@ -5,7 +5,6 @@ import { getActiveGenerations } from "../api/chat-api";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { useStopRunningChatsDialogStore } from "../stores/stop-running-chats-dialog-store";
 import { listStoredChatThreads } from "./chat-history-storage";
-import { stopAllChatThreads } from "./stop-chat-thread";
 
 export interface StopRunningChatsDecision {
   /** False when the user chose to keep generating; the caller must not load. */
@@ -21,10 +20,9 @@ export interface StopRunningChatsDecision {
  * Gate a model load / reload on the chats still generating.
  *
  * Every chat on the local model decodes on the same llama-server, so a reload
- * ends all of them: ask first, then tell the backend it may cancel them. The
- * local stop runs too, so the UI settles at once instead of waiting for each
- * socket to close. External-provider chats are not on that server and are left
- * out of both the question and the stop.
+ * ends all of them: ask first, then tell the backend it may cancel them, and
+ * let it do so once the load is past preflight. External-provider chats are not
+ * on that server and are left out of both the question and the cancel.
  */
 export async function confirmStopRunningChatsIfNeeded(
   action = "Loading a different model",
@@ -84,7 +82,10 @@ export async function confirmStopRunningChatsIfNeeded(
     return { proceed: false, forceCancelActive: false };
   }
 
-  // Same scope as the count above: local runs only.
-  stopAllChatThreads();
+  // Deliberately no local stop here. The backend holds the cancel until the
+  // load clears preflight, so stopping now would truncate every chat even when
+  // the load then fails identifier resolution, GPU validation or the training
+  // guard and leaves the resident model untouched. force_cancel_active lets the
+  // backend end them at its own point of no return instead.
   return { proceed: true, forceCancelActive: true };
 }

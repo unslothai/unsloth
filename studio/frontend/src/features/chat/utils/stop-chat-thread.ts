@@ -41,22 +41,3 @@ export function stopChatThread(threadId: string | null | undefined): boolean {
   }
   return stopped;
 }
-
-/**
- * Stop every conversation a confirmed model reload ends, i.e. the ones decoding
- * on the local llama-server. Returns how many were stopped.
- *
- * An external-provider chat is skipped: it streams from that provider, the
- * reload cannot interrupt it, and stopping it would throw away a paid response
- * for nothing (the backend leaves those runs out of active_generations too).
- */
-export function stopAllChatThreads(): number {
-  const { runningByThreadId, localRunByThreadId } =
-    useChatRuntimeStore.getState();
-  let stopped = 0;
-  for (const threadId of Object.keys(runningByThreadId)) {
-    if (!localRunByThreadId[threadId]) continue;
-    if (stopChatThread(threadId)) stopped += 1;
-  }
-  return stopped;
-}

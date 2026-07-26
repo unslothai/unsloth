@@ -445,6 +445,85 @@ def test_unload_rechecks_active_generations_under_the_lifecycle_gate(monkeypatch
     assert not ev.is_set()
 
 
+def _run_unload(inf_mod, monkeypatch, *, loaded_gguf, requested, force, torn_down):
+    """Drive POST /unload against a backend pair with ``loaded_gguf`` resident."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from models.inference import UnloadRequest
+
+    _stub_unload_backends(
+        monkeypatch,
+        llama = SimpleNamespace(
+            is_active = True,
+            is_loaded = True,
+            model_identifier = loaded_gguf,
+            unload_model = lambda: torn_down.append("gguf"),
+        ),
+        # Nothing on the standard backend: the GGUF above is what is resident.
+        backend = SimpleNamespace(
+            get_loading_model = lambda: None,
+            active_model_name = None,
+            models = {},
+            unload_model = lambda path: torn_down.append("unsloth"),
+        ),
+    )
+    return asyncio.run(
+        inf_mod.unload_model(
+            UnloadRequest(model_path = requested, force_cancel_active = force), "tester"
+        )
+    )
+
+
+def test_forced_unload_of_a_stale_model_path_leaves_the_chats_alone(monkeypatch):
+    # A second tab swapped the model, so this tab's Eject names one that is no
+    # longer loaded. The standard backend deliberately treats a name it never
+    # loaded as a no-op and still reports success, so cancelling before the route
+    # resolves what it will unload ends every chat and leaves the resident model
+    # up: the runs are lost for nothing. Same rule /load already follows.
+    _route_gate()  # skips when the inference stack is unavailable
+    import routes.inference as inf_mod
+
+    torn_down: list[str] = []
+    ev = threading.Event()
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        response = _run_unload(
+            inf_mod,
+            monkeypatch,
+            loaded_gguf = "org/B-GGUF",  # what the other tab actually loaded
+            requested = "org/A-GGUF",  # this tab's stale idea of it
+            force = True,
+            torn_down = torn_down,
+        )
+        assert not ev.is_set()
+        assert active_generations.count() == 1
+    # The resident GGUF was never touched, so nothing was worth cancelling.
+    assert "gguf" not in torn_down
+    assert response.status == "unloaded"
+
+
+def test_forced_unload_of_the_loaded_model_still_stops_its_chats(monkeypatch):
+    # The other half of the rule: a real unload must still cancel, or the gate
+    # would be a no-op and llama-server would go down mid-stream.
+    _route_gate()  # skips when the inference stack is unavailable
+    import routes.inference as inf_mod
+
+    torn_down: list[str] = []
+    ev = threading.Event()
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        response = _run_unload(
+            inf_mod,
+            monkeypatch,
+            loaded_gguf = "org/A-GGUF",
+            requested = "org/A-GGUF",
+            force = True,
+            torn_down = torn_down,
+        )
+        assert ev.is_set()
+    assert torn_down == ["gguf"]
+    assert response.status == "unloaded"
+
+
 def _install_responses_stream_mock(monkeypatch, chunks):
     """Point the direct /v1/responses GGUF pass-through at an in-process
     llama-server. Mirrors the harness in test_responses_tool_passthrough.py."""
@@ -558,6 +637,234 @@ def test_forced_reload_stops_a_direct_responses_stream(monkeypatch):
 
     # Cancelled mid-stream: the run ends without a completed envelope.
     assert "response.completed" not in body
+    assert active_generations.count() == 0
+
+
+def _install_completions_stream_mock(monkeypatch, events):
+    """Point the /v1/completions proxy at an in-process llama-server."""
+    import json
+    from types import SimpleNamespace
+
+    import httpx
+
+    import routes.inference as inf_mod
+
+    def handler(request):
+        # One network chunk per SSE event, as llama-server sends them: the relay
+        # polls its cancel flag between upstream chunks, so a single buffered
+        # body would never exercise it.
+        async def _chunks():
+            for event in events:
+                yield f"data: {json.dumps(event)}\n\n".encode()
+            yield b"data: [DONE]\n\n"
+
+        return httpx.Response(
+            200,
+            content = _chunks(),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        inf_mod.httpx,
+        "AsyncClient",
+        lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
+    )
+    monkeypatch.setattr(
+        inf_mod,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            context_length = 4096,
+            base_url = "http://llama.test",
+            model_identifier = "org/M-GGUF",
+        ),
+    )
+    monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
+
+    async def _no_auto_switch(request, current_subject):
+        return await request.json()
+
+    monkeypatch.setattr(inf_mod, "_auto_switch_from_request_body", _no_auto_switch)
+    return inf_mod
+
+
+class _CompletionsRequest(_NeverDisconnectedRequest):
+    """Minimal stand-in for the Starlette Request /v1/completions reads."""
+
+    def __init__(self, body):
+        from types import SimpleNamespace
+
+        self._body = body
+        self.method = "POST"
+        self.url = SimpleNamespace(path = "/v1/completions")
+
+    async def json(self):
+        return self._body
+
+
+def test_completions_proxy_stream_is_visible_to_the_swap_gate(monkeypatch):
+    # /v1/completions relays straight from llama-server. Without its own
+    # registration a non-forced /unload counted zero generations and tore the
+    # server down mid-response (unlike /load, /unload runs no idle drain).
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    inf_mod = _install_completions_stream_mock(monkeypatch, [{"choices": [{"text": "33"}]}])
+    request = _CompletionsRequest(
+        {"prompt": "hi", "stream": True, "model": "org/M-GGUF", "max_tokens": 8}
+    )
+    seen = {}
+
+    async def run():
+        response = await inf_mod.openai_completions(request, "tester")
+        iterator = response.body_iterator
+        await iterator.__anext__()
+        seen["count"] = active_generations.count()
+        seen["snapshot"] = active_generations.snapshot()
+        async for _ in iterator:
+            pass
+
+    asyncio.run(run())
+
+    assert seen["count"] == 1
+    assert seen["snapshot"][0]["model"] == "org/M-GGUF"
+    # And it unregisters, or one completion would 409 every later reload.
+    assert active_generations.count() == 0
+
+
+def test_forced_reload_stops_a_completions_proxy_stream(monkeypatch):
+    # The registered event has to be the one the relay actually watches, or
+    # force_cancel_active would unload the server while it keeps decoding.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    inf_mod = _install_completions_stream_mock(
+        monkeypatch,
+        [{"choices": [{"text": "3"}]}, {"choices": [{"text": "3"}]}],
+    )
+    request = _CompletionsRequest(
+        {"prompt": "hi", "stream": True, "model": "org/M-GGUF", "max_tokens": 8}
+    )
+
+    async def run():
+        response = await inf_mod.openai_completions(request, "tester")
+        iterator = response.body_iterator
+        chunks = [await iterator.__anext__()]
+        assert active_generations.cancel_all() == 1
+        async for chunk in iterator:
+            chunks.append(chunk)
+        return b"".join(c if isinstance(c, bytes) else c.encode() for c in chunks)
+
+    body = asyncio.run(run())
+
+    # Stopped after the first event instead of relaying the rest.
+    assert body.count(b'"text"') == 1
+    assert active_generations.count() == 0
+
+
+def _anthropic_stream_args(chunks):
+    """(request, cancel_event, run_gen) for the local Anthropic stream helpers."""
+    cancel_event = threading.Event()
+
+    def run_gen():
+        def _gen():
+            for chunk in chunks:
+                if cancel_event.is_set():
+                    return
+                yield chunk
+
+        return _gen()
+
+    return _NeverDisconnectedRequest(), cancel_event, run_gen
+
+
+def test_local_anthropic_plain_stream_is_visible_to_the_swap_gate(monkeypatch):
+    # The no-tool path is what any /v1/messages client that declares no tools
+    # takes. Only the client-tool pass-through ever registered, so this one was
+    # invisible to the gate and a non-forced /unload killed it mid-response.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    import routes.inference as inf_mod
+
+    request, cancel_event, run_gen = _anthropic_stream_args(["3", "33"])
+    seen = {}
+
+    async def run():
+        response = await inf_mod._anthropic_plain_stream(
+            request, cancel_event, run_gen, "msg_1", "org/M-GGUF"
+        )
+        iterator = response.body_iterator
+        await iterator.__anext__()
+        seen["count"] = active_generations.count()
+        seen["snapshot"] = active_generations.snapshot()
+        async for _ in iterator:
+            pass
+
+    asyncio.run(run())
+
+    assert seen["count"] == 1
+    assert seen["snapshot"][0]["model"] == "org/M-GGUF"
+    assert active_generations.count() == 0
+
+
+def test_forced_reload_stops_a_local_anthropic_plain_stream(monkeypatch):
+    # The event registered has to be the one the decode loop watches.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    import routes.inference as inf_mod
+
+    request, cancel_event, run_gen = _anthropic_stream_args(["3", "33", "333"])
+
+    async def run():
+        response = await inf_mod._anthropic_plain_stream(
+            request, cancel_event, run_gen, "msg_1", "org/M-GGUF"
+        )
+        iterator = response.body_iterator
+        chunks = [await iterator.__anext__()]
+        assert active_generations.cancel_all() == 1
+        async for chunk in iterator:
+            chunks.append(chunk)
+        return "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
+
+    body = asyncio.run(run())
+
+    assert cancel_event.is_set()
+    # Cancelled mid-stream: no clean message_stop envelope.
+    assert "message_stop" not in body
+    assert active_generations.count() == 0
+
+
+def test_local_anthropic_tool_stream_is_visible_to_the_swap_gate(monkeypatch):
+    # Same gap on the server-tool path (enable_tools / Anthropic server tools).
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    import routes.inference as inf_mod
+
+    request, cancel_event, run_gen = _anthropic_stream_args(
+        [{"type": "content", "text": "3"}, {"type": "content", "text": "33"}]
+    )
+    seen = {}
+
+    async def run():
+        response = await inf_mod._anthropic_tool_stream(
+            request, cancel_event, run_gen, "msg_1", "org/M-GGUF"
+        )
+        iterator = response.body_iterator
+        await iterator.__anext__()
+        seen["count"] = active_generations.count()
+        seen["snapshot"] = active_generations.snapshot()
+        async for _ in iterator:
+            pass
+
+    asyncio.run(run())
+
+    assert seen["count"] == 1
+    assert seen["snapshot"][0]["model"] == "org/M-GGUF"
     assert active_generations.count() == 0
 
 

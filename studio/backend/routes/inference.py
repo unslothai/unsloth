@@ -4340,6 +4340,30 @@ def _raise_or_cancel_active_generations(
     return cancelled
 
 
+_UNRESOLVED_BACKEND_STATE = object()
+
+
+def _unload_evicts_standard_backend(backend, model_path: str) -> bool:
+    """Whether ``backend.unload_model(model_path)`` will really evict something.
+
+    The standard backend refuses to unload a name it never loaded ("don't unload
+    a stale model") and returns success, so /unload for a model another tab has
+    already replaced is a no-op. That must not count as a teardown: cancelling
+    the running chats for it would end them and leave the resident model up.
+
+    Mirrors the backend's own guard (case-insensitive on the active name, since
+    the load path canonicalizes casing). A backend that exposes neither field is
+    reported as a real unload, which keeps the previous behaviour.
+    """
+    active = getattr(backend, "active_model_name", _UNRESOLVED_BACKEND_STATE)
+    loaded = getattr(backend, "models", _UNRESOLVED_BACKEND_STATE)
+    if active is _UNRESOLVED_BACKEND_STATE and loaded is _UNRESOLVED_BACKEND_STATE:
+        return True
+    if isinstance(active, str) and active and active.lower() == (model_path or "").lower():
+        return True
+    return isinstance(loaded, dict) and model_path in loaded
+
+
 @studio_router.get("/active-generations")
 async def get_active_generations(
     fastapi_request: Request, current_subject: str = Depends(get_current_subject)
@@ -5711,10 +5735,16 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     # backend directly (not this route), so clearing here never fights keep-warm.
     from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
 
-    # Same gate as /load. Ahead of the "stop loading" fast paths below, which
-    # only fire for a still-loading model and so have no generations of their own.
+    # Same gate as /load, and refusal only for the same reason: a non-forced
+    # unload still fails fast here, before queueing on the lifecycle gate, but
+    # cancelling is destructive and this request has not yet resolved that it
+    # unloads anything. The matching destructive pass runs at each teardown
+    # below. Ahead of the "stop loading" fast paths, which only fire for a
+    # still-loading model and so have no generations of their own.
     _raise_or_cancel_active_generations(
-        force = request.force_cancel_active, action = "Unloading the model"
+        force = request.force_cancel_active,
+        action = "Unloading the model",
+        cancel = False,
     )
     try:
         # "Stop loading" (frontend cancelLoading -> /unload) must abort a still-loading
@@ -5764,9 +5794,11 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             # Rechecked under the gate, like /load: the middleware takes and
             # releases this same gate before a request starts inference, so a chat
             # can register while this request queues here. Checking only before the
-            # wait would tear llama-server down mid-stream.
+            # wait would tear llama-server down mid-stream. Still refusal only.
             _raise_or_cancel_active_generations(
-                force = request.force_cancel_active, action = "Unloading the model"
+                force = request.force_cancel_active,
+                action = "Unloading the model",
+                cancel = False,
             )
             # Check if the GGUF backend has this model loaded or is loading it.
             llama_backend = get_llama_cpp_backend()
@@ -5777,6 +5809,11 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
                 )
                 or not llama_backend.is_loaded
             ):
+                # Point of no return for the GGUF path: this request really does
+                # replace the running server, so now stop the chats it interrupts.
+                _raise_or_cancel_active_generations(
+                    force = request.force_cancel_active, action = "Unloading the model"
+                )
                 # A manual unload is a deliberate user action: tear down now even if a
                 # request is mid-stream (only the automatic idle loop defers to it).
                 llama_backend.unload_model()
@@ -5788,6 +5825,11 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             # a slow SSE stream paused between tokens still holds, so a sync call would block
             # the loop that drives the stream's next token and the lock release.
             backend = get_inference_backend()
+            if _unload_evicts_standard_backend(backend, request.model_path):
+                # Point of no return for the standard path, same rule as above.
+                _raise_or_cancel_active_generations(
+                    force = request.force_cancel_active, action = "Unloading the model"
+                )
             await asyncio.to_thread(backend.unload_model, request.model_path)
             note_model_unloaded()
             logger.info(f"Unloaded model: {request.model_path}")
@@ -10944,10 +10986,11 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
     prompt_text = _flatten_monitor_prompt(body.get("prompt", ""))
+    monitor_model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default")
     monitor_id = api_monitor.start(
         endpoint = request.url.path,
         method = request.method,
-        model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default"),
+        model = monitor_model,
         prompt = prompt_text,
         context_length = llama_backend.context_length,
         subject = current_subject,
@@ -10975,6 +11018,16 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             bytes_iter = None
             disconnect_event = threading.Event()
             disconnect_watcher = None
+            # This proxy relays straight from llama-server, so the swap gate has
+            # to see it: without an entry a non-forced /unload counts zero
+            # generations and tears the server down mid-response (/unload runs no
+            # idle drain, unlike /load). Sharing disconnect_event means a forced
+            # swap stops the relay through the check it already polls. Entered
+            # here, inside the body generator, so a response whose body never
+            # starts leaves nothing behind (see _responses_stream). No thread_id:
+            # public API surface, not a Studio conversation.
+            _tracker = _TrackedCancel(disconnect_event, model = monitor_model)
+            _tracker.__enter__()
             try:
                 req = client.build_request(
                     "POST", target_url, json = body, headers = {"Connection": "close"}
@@ -11051,12 +11104,17 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 yield _openai_stream_error_sse_bytes(error_chunk)
                 return
             finally:
-                await _aclose_stream_resources(
-                    watchers = (disconnect_watcher,),
-                    iterator = bytes_iter,
-                    resp = resp,
-                    client = client,
-                )
+                # Nested so a close-time failure can't skip the unregister and
+                # leave a phantom generation 409-ing every later swap.
+                try:
+                    await _aclose_stream_resources(
+                        watchers = (disconnect_watcher,),
+                        iterator = bytes_iter,
+                        resp = resp,
+                        client = client,
+                    )
+                finally:
+                    _tracker.__exit__(None, None, None)
 
         return _sse_streaming_response(_stream())
     else:
@@ -13672,134 +13730,146 @@ async def _anthropic_tool_stream(
         )
 
     async def _stream():
-        emitter = AnthropicStreamEmitter()
-        for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
-            yield line
-
-        captured_finish_reason = None
-        # Whether the response currently ends on a pending tool_use block (the
-        # client must act → stop_reason "tool_use") as opposed to final text.
-        # The server may run a tool and then keep generating, which flips this
-        # back to False — that is an end_turn (or max_tokens) response.
-        ends_on_tool_use = False
-        tool_blocks_emitted = 0
-        drop_until_tool_end = False
-        # Last drop-branch keepalive, seeded to stream start so a chatty tool busy
-        # past the stall window still gets a keepalive though its events are dropped.
-        _last_drop_keepalive = time.monotonic()
-
-        gen = run_gen()
-        _next_task = None
-        # Watcher to cancel on disconnect: the in-loop poll fires only between
-        # events, so a mid-prefill disconnect would otherwise hold the decode slot.
-        disconnect_watcher = asyncio.create_task(
-            _await_disconnect_then_cancel(request, cancel_event)
-        )
+        # The server-tool loop decodes on llama-server for its whole body, but
+        # unlike the pass-through it never registered, so a non-forced /unload saw
+        # zero generations and tore the server down mid-response (/unload runs no
+        # idle drain, unlike /load). Entered here, inside the body generator, so a
+        # response whose body never starts leaves nothing behind (see
+        # _responses_stream). No thread_id: public API surface, not a Studio
+        # conversation, same as the pass-through.
+        _tracker = _TrackedCancel(cancel_event, model = model_name)
+        _tracker.__enter__()
         try:
-            while True:
-                if cancel_event.is_set() or await request.is_disconnected():
-                    cancel_event.set()
-                    return
-                # Stall keepalive (see GGUF tool stream): silent backend segments
-                # must not leave the SSE stream idle past proxy timeouts.
-                _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
-                while True:
-                    _done_tasks, _ = await asyncio.wait(
-                        {_next_task},
-                        timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
-                    )
-                    if _done_tasks:
-                        break
-                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                event = _next_task.result()
-                # Done; drop the reference so the finally-block drain no-ops.
-                _next_task = None
-                if event is _sentinel:
-                    break
-                etype = event.get("type")
-                if etype == "heartbeat":
-                    # Tool-wrapper heartbeat -> SSE keepalive, checked BEFORE the drop
-                    # skip: a dropped tool still runs server-side and its events keep the
-                    # stall keepalive from firing, so dropping heartbeats would go silent.
-                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                    continue
-                if etype in ("tool_output", "tool_args"):
-                    # Live stdout / arg streaming have no Anthropic Messages equivalent
-                    # (the full call/result follow in tool_use / tool_result), so drop them.
-                    # They keep the stall keepalive from firing, so a chatty tool would go
-                    # silent past the ~100s proxy cap; emit a rate-limited keepalive instead.
-                    _now = time.monotonic()
-                    if _now - _last_drop_keepalive >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
-                        _last_drop_keepalive = _now
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                    continue
-                if drop_until_tool_end:
-                    # disable_parallel_tool_use: skip every event until (and
-                    # including) this dropped tool call's tool_end.
-                    if etype == "tool_end":
-                        drop_until_tool_end = False
-                    continue
-                if etype == "metadata":
-                    _fr = event.get("finish_reason")
-                    if _fr is not None:
-                        captured_finish_reason = _fr
-                # Strip leaked tool-call XML from content events first, so a
-                # content event that was purely tool XML doesn't count as text.
-                # Protected helper preserves <think> rehearsal and balanced
-                # [TOOL_CALLS] trailing prose (raw _TOOL_XML_RE.sub corrupts both).
-                if etype == "content":
-                    event = dict(event)
-                    event["text"] = _strip_tool_xml_for_display(
-                        event["text"],
-                        auto_heal_tool_calls = True,
-                        enabled_tool_names = _display_names,
-                    )
-                # disable_parallel_tool_use: keep only the first tool_use block,
-                # dropping every later tool_start and its paired tool_end (robust
-                # to empty tool-call ids — tracked by state, not id matching).
-                if etype == "tool_start":
-                    if disable_parallel_tool_use and tool_blocks_emitted >= 1:
-                        drop_until_tool_end = True
-                        continue
-                    ends_on_tool_use = True
-                elif etype == "tool_end":
-                    tool_blocks_emitted += 1
-                    # A tool_end means Unsloth executed the tool server-side, so
-                    # the response no longer ends on a pending client action.
-                    # Without this, a server tool that produces no trailing text
-                    # would be mislabeled stop_reason "tool_use", telling the
-                    # client to run a tool Unsloth already ran.
-                    ends_on_tool_use = False
-                elif etype == "content" and event.get("text"):
-                    ends_on_tool_use = False
-                for line in emitter.feed(event):
-                    yield line
-        except Exception as e:
-            logger.error("anthropic_messages stream error: %s", e)
-            # force = True so an unclassified mid-stream failure (llama-server crash,
-            # decode OOM, dropped socket) still emits an SSE error and returns, instead
-            # of a normal message_stop that masks a truncated turn as a clean finish.
-            _error_event = _anthropic_stream_error_event(e, force = True)
-            if _error_event is not None:
-                yield _error_event
-                return
-        finally:
-            await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
-            # Drain a still-running next(gen) worker before closing, so a mid-prefill
-            # disconnect releases the thread/generator/tool resources. Closing first
-            # would race into ValueError('generator already executing').
-            await _drain_pending_next_task(_next_task, cancel_event)
-            if gen is not None:
-                try:
-                    await asyncio.to_thread(gen.close)
-                except (RuntimeError, ValueError):
-                    pass
+            emitter = AnthropicStreamEmitter()
+            for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
+                yield line
 
-        stop_reason = openai_finish_to_anthropic_stop(
-            captured_finish_reason, had_tool_calls = ends_on_tool_use
-        )
-        for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):
-            yield line
+            captured_finish_reason = None
+            # Whether the response currently ends on a pending tool_use block (the
+            # client must act → stop_reason "tool_use") as opposed to final text.
+            # The server may run a tool and then keep generating, which flips this
+            # back to False — that is an end_turn (or max_tokens) response.
+            ends_on_tool_use = False
+            tool_blocks_emitted = 0
+            drop_until_tool_end = False
+            # Last drop-branch keepalive, seeded to stream start so a chatty tool busy
+            # past the stall window still gets a keepalive though its events are dropped.
+            _last_drop_keepalive = time.monotonic()
+
+            gen = run_gen()
+            _next_task = None
+            # Watcher to cancel on disconnect: the in-loop poll fires only between
+            # events, so a mid-prefill disconnect would otherwise hold the decode slot.
+            disconnect_watcher = asyncio.create_task(
+                _await_disconnect_then_cancel(request, cancel_event)
+            )
+            try:
+                while True:
+                    if cancel_event.is_set() or await request.is_disconnected():
+                        cancel_event.set()
+                        return
+                    # Stall keepalive (see GGUF tool stream): silent backend segments
+                    # must not leave the SSE stream idle past proxy timeouts.
+                    _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
+                    while True:
+                        _done_tasks, _ = await asyncio.wait(
+                            {_next_task},
+                            timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                        )
+                        if _done_tasks:
+                            break
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    event = _next_task.result()
+                    # Done; drop the reference so the finally-block drain no-ops.
+                    _next_task = None
+                    if event is _sentinel:
+                        break
+                    etype = event.get("type")
+                    if etype == "heartbeat":
+                        # Tool-wrapper heartbeat -> SSE keepalive, checked BEFORE the drop
+                        # skip: a dropped tool still runs server-side and its events keep the
+                        # stall keepalive from firing, so dropping heartbeats would go silent.
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        continue
+                    if etype in ("tool_output", "tool_args"):
+                        # Live stdout / arg streaming have no Anthropic Messages equivalent
+                        # (the full call/result follow in tool_use / tool_result), so drop them.
+                        # They keep the stall keepalive from firing, so a chatty tool would go
+                        # silent past the ~100s proxy cap; emit a rate-limited keepalive instead.
+                        _now = time.monotonic()
+                        if _now - _last_drop_keepalive >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
+                            _last_drop_keepalive = _now
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        continue
+                    if drop_until_tool_end:
+                        # disable_parallel_tool_use: skip every event until (and
+                        # including) this dropped tool call's tool_end.
+                        if etype == "tool_end":
+                            drop_until_tool_end = False
+                        continue
+                    if etype == "metadata":
+                        _fr = event.get("finish_reason")
+                        if _fr is not None:
+                            captured_finish_reason = _fr
+                    # Strip leaked tool-call XML from content events first, so a
+                    # content event that was purely tool XML doesn't count as text.
+                    # Protected helper preserves <think> rehearsal and balanced
+                    # [TOOL_CALLS] trailing prose (raw _TOOL_XML_RE.sub corrupts both).
+                    if etype == "content":
+                        event = dict(event)
+                        event["text"] = _strip_tool_xml_for_display(
+                            event["text"],
+                            auto_heal_tool_calls = True,
+                            enabled_tool_names = _display_names,
+                        )
+                    # disable_parallel_tool_use: keep only the first tool_use block,
+                    # dropping every later tool_start and its paired tool_end (robust
+                    # to empty tool-call ids — tracked by state, not id matching).
+                    if etype == "tool_start":
+                        if disable_parallel_tool_use and tool_blocks_emitted >= 1:
+                            drop_until_tool_end = True
+                            continue
+                        ends_on_tool_use = True
+                    elif etype == "tool_end":
+                        tool_blocks_emitted += 1
+                        # A tool_end means Unsloth executed the tool server-side, so
+                        # the response no longer ends on a pending client action.
+                        # Without this, a server tool that produces no trailing text
+                        # would be mislabeled stop_reason "tool_use", telling the
+                        # client to run a tool Unsloth already ran.
+                        ends_on_tool_use = False
+                    elif etype == "content" and event.get("text"):
+                        ends_on_tool_use = False
+                    for line in emitter.feed(event):
+                        yield line
+            except Exception as e:
+                logger.error("anthropic_messages stream error: %s", e)
+                # force = True so an unclassified mid-stream failure (llama-server crash,
+                # decode OOM, dropped socket) still emits an SSE error and returns, instead
+                # of a normal message_stop that masks a truncated turn as a clean finish.
+                _error_event = _anthropic_stream_error_event(e, force = True)
+                if _error_event is not None:
+                    yield _error_event
+                    return
+            finally:
+                await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+                # Drain a still-running next(gen) worker before closing, so a mid-prefill
+                # disconnect releases the thread/generator/tool resources. Closing first
+                # would race into ValueError('generator already executing').
+                await _drain_pending_next_task(_next_task, cancel_event)
+                if gen is not None:
+                    try:
+                        await asyncio.to_thread(gen.close)
+                    except (RuntimeError, ValueError):
+                        pass
+
+            stop_reason = openai_finish_to_anthropic_stop(
+                captured_finish_reason, had_tool_calls = ends_on_tool_use
+            )
+            for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):
+                yield line
+        finally:
+            _tracker.__exit__(None, None, None)
 
     return _sse_streaming_response(_stream())
 
@@ -13823,75 +13893,86 @@ async def _anthropic_plain_stream(
         input_tokens = await asyncio.to_thread(llama_backend.count_chat_tokens, openai_messages)
 
     async def _stream():
-        emitter = AnthropicStreamEmitter()
-        for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
-            yield line
-
-        captured_finish_reason = None
-
-        gen = run_gen()
-        _next_task = None
-        # Watcher to cancel on disconnect: the in-loop poll fires only between
-        # chunks, so a mid-prefill disconnect would otherwise hold the decode slot.
-        disconnect_watcher = asyncio.create_task(
-            _await_disconnect_then_cancel(request, cancel_event)
-        )
+        # Registered like the tool stream above. This is the default /v1/messages
+        # path -- any client that declares no tools takes it -- and it decodes on
+        # llama-server, so without an entry a non-forced /unload tore the server
+        # down mid-response.
+        _tracker = _TrackedCancel(cancel_event, model = model_name)
+        _tracker.__enter__()
         try:
-            while True:
-                if cancel_event.is_set() or await request.is_disconnected():
-                    cancel_event.set()
-                    return
-                # Stall keepalive (see Anthropic tool stream) each window while
-                # next(gen) runs in a worker.
-                _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
-                while True:
-                    _done_tasks, _ = await asyncio.wait(
-                        {_next_task},
-                        timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
-                    )
-                    if _done_tasks:
-                        break
-                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                cumulative = _next_task.result()
-                # Done; drop the reference so the finally-block drain no-ops.
-                _next_task = None
-                if cumulative is _sentinel:
-                    break
-                if isinstance(cumulative, dict):
-                    if cumulative.get("type") == "metadata":
-                        _fr = cumulative.get("finish_reason")
-                        if _fr is not None:
-                            captured_finish_reason = _fr
-                        for line in emitter.feed(cumulative):
-                            yield line
-                    continue
-                # Plain generator yields cumulative text strings
-                for line in emitter.feed({"type": "content", "text": cumulative}):
-                    yield line
-        except Exception as e:
-            logger.error("anthropic_messages stream error: %s", e)
-            # force = True so an unclassified mid-stream failure (llama-server crash,
-            # decode OOM, dropped socket) still emits an SSE error and returns, instead
-            # of a normal message_stop that masks a truncated turn as a clean finish.
-            _error_event = _anthropic_stream_error_event(e, force = True)
-            if _error_event is not None:
-                yield _error_event
-                return
-        finally:
-            await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
-            # Drain a still-running next(gen) worker before closing, so a mid-prefill
-            # disconnect releases the thread/generator/model resources. Closing first
-            # would race into ValueError('generator already executing').
-            await _drain_pending_next_task(_next_task, cancel_event)
-            if gen is not None:
-                try:
-                    await asyncio.to_thread(gen.close)
-                except (RuntimeError, ValueError):
-                    pass
+            emitter = AnthropicStreamEmitter()
+            for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
+                yield line
 
-        stop_reason = openai_finish_to_anthropic_stop(captured_finish_reason, had_tool_calls = False)
-        for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):
-            yield line
+            captured_finish_reason = None
+
+            gen = run_gen()
+            _next_task = None
+            # Watcher to cancel on disconnect: the in-loop poll fires only between
+            # chunks, so a mid-prefill disconnect would otherwise hold the decode slot.
+            disconnect_watcher = asyncio.create_task(
+                _await_disconnect_then_cancel(request, cancel_event)
+            )
+            try:
+                while True:
+                    if cancel_event.is_set() or await request.is_disconnected():
+                        cancel_event.set()
+                        return
+                    # Stall keepalive (see Anthropic tool stream) each window while
+                    # next(gen) runs in a worker.
+                    _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
+                    while True:
+                        _done_tasks, _ = await asyncio.wait(
+                            {_next_task},
+                            timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                        )
+                        if _done_tasks:
+                            break
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    cumulative = _next_task.result()
+                    # Done; drop the reference so the finally-block drain no-ops.
+                    _next_task = None
+                    if cumulative is _sentinel:
+                        break
+                    if isinstance(cumulative, dict):
+                        if cumulative.get("type") == "metadata":
+                            _fr = cumulative.get("finish_reason")
+                            if _fr is not None:
+                                captured_finish_reason = _fr
+                            for line in emitter.feed(cumulative):
+                                yield line
+                        continue
+                    # Plain generator yields cumulative text strings
+                    for line in emitter.feed({"type": "content", "text": cumulative}):
+                        yield line
+            except Exception as e:
+                logger.error("anthropic_messages stream error: %s", e)
+                # force = True so an unclassified mid-stream failure (llama-server crash,
+                # decode OOM, dropped socket) still emits an SSE error and returns, instead
+                # of a normal message_stop that masks a truncated turn as a clean finish.
+                _error_event = _anthropic_stream_error_event(e, force = True)
+                if _error_event is not None:
+                    yield _error_event
+                    return
+            finally:
+                await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+                # Drain a still-running next(gen) worker before closing, so a mid-prefill
+                # disconnect releases the thread/generator/model resources. Closing first
+                # would race into ValueError('generator already executing').
+                await _drain_pending_next_task(_next_task, cancel_event)
+                if gen is not None:
+                    try:
+                        await asyncio.to_thread(gen.close)
+                    except (RuntimeError, ValueError):
+                        pass
+
+            stop_reason = openai_finish_to_anthropic_stop(
+                captured_finish_reason, had_tool_calls = False
+            )
+            for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):
+                yield line
+        finally:
+            _tracker.__exit__(None, None, None)
 
     return _sse_streaming_response(_stream())
 

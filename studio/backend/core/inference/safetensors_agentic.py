@@ -59,6 +59,7 @@ from core.tool_healing import (
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     append_deferred_nudges,
+    awaiting_approval_status,
     coerce_tool_arguments,
     status_for_tool,
     tool_event_provenance,
@@ -1208,18 +1209,31 @@ def run_safetensors_tool_loop(
             start_event["awaiting_confirmation"] = needs_confirm
 
             try:
-                yield {"type": "status", "text": decision.status_text}
+                # A gated call has not started yet, so say it is waiting rather
+                # than counting up "Running" against a human (GGUF parity).
+                yield {
+                    "type": "status",
+                    "text": (
+                        awaiting_approval_status(decision.tool_name)
+                        if needs_confirm
+                        else decision.status_text
+                    ),
+                }
                 yield start_event
 
-                if (
-                    decision_slot is not None
-                    and wait_tool_decision(
+                _decision = (
+                    wait_tool_decision(
                         decision_slot,
                         approval_id,
                         cancel_event = cancel_event,
                     )
-                    == "deny"
-                ):
+                    if decision_slot is not None
+                    else None
+                )
+                if _decision is not None and _decision != "deny":
+                    # Approved: now it really is running.
+                    yield {"type": "status", "text": decision.status_text}
+                if _decision == "deny":
                     decision_slot = None
                     if provisional_match:
                         provisional_resolved = True
