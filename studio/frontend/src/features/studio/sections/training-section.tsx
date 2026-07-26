@@ -16,6 +16,7 @@ import {
   useTrainingActions,
   useTrainingConfigStore,
   validateTrainingConfig,
+  CheckpointResumePicker,
 } from "@/features/training";
 import {
   Archive04Icon,
@@ -25,7 +26,8 @@ import {
   Rocket01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useRef } from "react";
+import { useRef, useState } from "react";
+import type { CheckpointInspection } from "@/features/training/types/api";
 import { toast } from "@/lib/toast";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 import { useT } from "@/i18n";
@@ -54,6 +56,15 @@ export function TrainingSection() {
       (!store.isAudioModel && store.isDatasetAudio === true));
   const configValidation = validateTrainingConfig(store);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [resumeInspection, setResumeInspection] = useState<CheckpointInspection | null>(null);
+  const [resumeConfirmed, setResumeConfirmed] = useState(false);
+  const [resumeSelected, setResumeSelected] = useState(false);
+  const resumeBlocked = resumeSelected && (!resumeInspection || (
+    (resumeInspection.external && !resumeConfirmed) ||
+    !resumeInspection.optimizerComplete || !resumeInspection.schedulerComplete ||
+    !resumeInspection.trainerStateComplete || resumeInspection.incompatibilities.length > 0 ||
+    resumeInspection.missingDatasets.length > 0
+  ));
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -171,12 +182,18 @@ export function TrainingSection() {
           </div>
         </div>
 
+        <CheckpointResumePicker disabled={isStarting} onInspectionChange={(value, confirmed, selected) => {
+          setResumeInspection(value);
+          setResumeConfirmed(confirmed);
+          setResumeSelected(selected);
+        }} />
+
         {/* Start/Stop */}
         <Button
           data-tour="studio-start"
           className="w-full cursor-pointer bg-primary text-primary-foreground hover:bg-primary/90"
-          onClick={() => void startTrainingRun()}
-          disabled={isStarting || isIncompatible || store.isCheckingDataset || isLoadingModel || !configValidation.ok}
+          onClick={() => void startTrainingRun({ checkpointImportToken: resumeInspection?.inspectionToken })}
+          disabled={isStarting || resumeBlocked || isIncompatible || store.isCheckingDataset || isLoadingModel || !configValidation.ok}
         >
           <HugeiconsIcon icon={Rocket01Icon} className="size-4" />
           {isStarting
