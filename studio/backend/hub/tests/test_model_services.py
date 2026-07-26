@@ -117,8 +117,7 @@ class TestExtractQuantToken:
 
     def test_native_windows_separators_use_the_real_basename(self):
         assert (
-            gguf.extract_quant_token("N:\\AI Models\\snap-Q6_K\\model-Q6_K-MTP.gguf")
-            == "Q6_K-MTP"
+            gguf.extract_quant_token("N:\\AI Models\\snap-Q6_K\\model-Q6_K-MTP.gguf") == "Q6_K-MTP"
         )
         assert gguf.extract_quant_token("C:\\models\\snap-Q6_K\\model-Q4_K_M.gguf") == "Q4_K_M"
         assert gguf.extract_quant_token("C:\\models\\Q6_K\\model.gguf") == "Q6_K"
