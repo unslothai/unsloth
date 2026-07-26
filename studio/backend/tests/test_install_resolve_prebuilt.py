@@ -1115,9 +1115,7 @@ def test_vulkan_opt_in_still_routes_on_windows_x64(monkeypatch):
     # Negative control for the arm64 guard: x64 keeps its Vulkan routing.
     monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "vulkan")
     host = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
-    _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
-        host, FORK, "pin", force_cpu = False
-    )
+    _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert repo == UPSTREAM
     assert persist == "vulkan"
 
