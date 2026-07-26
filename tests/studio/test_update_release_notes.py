@@ -664,10 +664,17 @@ def test_installed_layout_prefers_the_bundled_changelog(tmp_path):
     def served() -> str:
         # cwd is outside the checkout, so this imports the installed copy.
         return subprocess.run(
-            [sys.executable, "-c",
-             "from studio.backend.utils import changelog\n"
-             "print(changelog._read_local_changelog().text)"],
-            capture_output = True, text = True, env = env, cwd = tmp_path, check = True,
+            [
+                sys.executable,
+                "-c",
+                "from studio.backend.utils import changelog\n"
+                "print(changelog._read_local_changelog().text)",
+            ],
+            capture_output = True,
+            text = True,
+            env = env,
+            cwd = tmp_path,
+            check = True,
         ).stdout
 
     assert "bundled" in served() and "stray" not in served()
@@ -678,7 +685,7 @@ def test_installed_layout_prefers_the_bundled_changelog(tmp_path):
 
 
 def test_a_section_staged_as_a_comment_reads_as_unpublished(
-    changelog_module, tmp_path, monkeypatch,
+    changelog_module, tmp_path, monkeypatch
 ):
     """Notes staged inside <!-- --> render as nothing, so the popup must say
     no notes were published rather than show an empty surface."""
