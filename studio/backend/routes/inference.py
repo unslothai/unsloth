@@ -1121,6 +1121,17 @@ def _openai_llama_admission_capacity(request: Optional[Request], llama_backend =
     return _positive_int_or_none(slots) or 1
 
 
+def _openai_llama_admission_queue_for(llama_backend):
+    """The admission queue a run on this backend holds its slot in."""
+    try:
+        if not llama_admission_config_from_env().enabled:
+            return None
+        key = str(getattr(llama_backend, "base_url", "llama-server"))
+        return get_llama_admission_queue(key)
+    except Exception:
+        return None
+
+
 def _openai_llama_admission_reserve(
     *, request: Optional[Request], llama_backend
 ) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
@@ -8406,6 +8417,21 @@ async def openai_chat_completions(
                 gen = None
                 next_task = None
                 stream_completed = False
+                # A call parked on the approval prompt is not decoding, so it
+                # gives its slot back until the user answers. Without this a few
+                # unanswered prompts hold every slot and no chat can start.
+                _parked = False
+
+                def _park_admission(on: bool):
+                    nonlocal _parked
+                    if on == _parked:
+                        return
+                    queue = _openai_llama_admission_queue_for(get_llama_cpp_backend())
+                    if queue is None:
+                        return
+                    queue.park() if on else queue.unpark()
+                    _parked = on
+
                 disconnect_watcher = asyncio.create_task(
                     _await_disconnect_then_cancel(request, cancel_event)
                 )
@@ -8465,6 +8491,13 @@ async def openai_chat_completions(
                         if event is _tool_sentinel:
                             break
 
+                        # Anything arriving after the gated tool_start means the
+                        # user answered, so take the slot back.
+                        if not (
+                            event["type"] == "tool_start" and event.get("awaiting_confirmation")
+                        ):
+                            _park_admission(False)
+
                         if event["type"] == "heartbeat":
                             # Tool-wrapper heartbeat while a server-side tool blocks; keeps SSE alive.
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
@@ -8503,6 +8536,8 @@ async def openai_chat_completions(
                                     yield chunk
                                 prev_text = ""
                                 reasoning_extractor = _new_chat_reasoning_extractor()
+                                # Yielded just before the loop blocks on the user.
+                                _park_admission(bool(event.get("awaiting_confirmation")))
                             yield f"data: {json.dumps(event)}\n\n"
                             continue
 
@@ -8586,6 +8621,8 @@ async def openai_chat_completions(
                     error_chunk = _openai_stream_error_chunk(e)
                     yield _openai_stream_error_sse(error_chunk)
                 finally:
+                    # A disconnect mid-approval must not leave a slot parked.
+                    _park_admission(False)
                     try:
                         if not stream_completed:
                             cancel_event.set()

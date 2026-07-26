@@ -2038,6 +2038,50 @@ def test_large_python_tool_call_emits_early_provisional_start(monkeypatch):
     assert any(e.get("type") == "tool_end" and e.get("tool_name") == "python" for e in events)
 
 
+def test_gated_python_call_still_streams_its_arguments(monkeypatch):
+    """A call awaiting approval still streams its code into the card.
+
+    Suppressing it left the chat completely blank for as long as the model took
+    to write the payload, which for a large file is minutes. Nothing runs before
+    the decision either way, and the code is what the user is approving.
+    """
+
+    big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
+    assert len(json.dumps({"code": big_code})) > _PROVISIONAL_ARGS_MIN_CHARS
+
+    first_stream = _streamed_structured_tool_call("python", {"code": big_code}, "call_gated")
+    final_stream = [_sse({"content": "Done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda name, arguments, **_k: "OK")
+    monkeypatch.setattr("core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: "allow")
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "write code"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            confirm_tool_calls = True,
+            permission_mode = "ask",
+            max_tool_iterations = 1,
+        )
+    )
+
+    tool_starts = [e for e in events if e.get("type") == "tool_start"]
+    provisional = [e for e in tool_starts if not e.get("arguments")]
+    assert len(provisional) == 1, tool_starts
+    assert provisional[0]["tool_call_id"] == "call_gated"
+
+    args_events = [e for e in events if e.get("type") == "tool_args"]
+    assert args_events, "gated call streamed no arguments"
+    assert "total += 119" in "".join(e["text"] for e in args_events)
+
+    # The approval prompt still fires, and it comes after the code is on screen.
+    gated = [e for e in tool_starts if e.get("awaiting_confirmation")]
+    assert gated, tool_starts
+    assert events.index(provisional[0]) < events.index(gated[0])
+
+
 def test_auto_mode_render_html_suppresses_provisional_card_under_confirm(monkeypatch):
     """render_html is no longer unconditionally safe (a networked canvas asks), so
     with confirm_tool_calls set under permission_mode="auto" its early provisional

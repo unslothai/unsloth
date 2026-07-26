@@ -98,6 +98,7 @@ from core.inference.tool_call_parser import (
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     append_deferred_nudges,
+    awaiting_approval_status,
     tool_event_provenance,
 )
 from state.tool_approvals import (
@@ -10930,6 +10931,7 @@ class LlamaCppBackend:
         from core.inference.tools import (
             build_rag_autoinject,
             execute_tool,
+            has_text_only_provisional_card,
             is_always_safe_tool,
             is_potentially_unsafe_tool_call,
         )
@@ -11353,6 +11355,11 @@ class LlamaCppBackend:
                                                 permission_mode == "auto"
                                                 and is_always_safe_tool(current_name)
                                             )
+                                            # A text-preview card still streams while
+                                            # gated: nothing runs before the decision,
+                                            # and hiding it leaves the chat blank for as
+                                            # long as the model writes the payload.
+                                            and not has_text_only_provisional_card(current_name)
                                         )
                                         # Keep small-argument tools on the normal path.
                                         _args_len = len(
@@ -11454,20 +11461,28 @@ class LlamaCppBackend:
                                         # TEXT call to a provisional card. Gated on an enabled-name
                                         # sniff + size floor so prose/small calls spawn no pane; id
                                         # matches the first call so the final tool_start reconciles.
-                                        if (
-                                            not has_structured_tc
-                                            and not _confirm_gated_iteration
-                                            and _text_args_call_start >= 0
-                                        ):
+                                        if not has_structured_tc and _text_args_call_start >= 0:
                                             if not _text_args_id:
                                                 _call_text = content_accum[_text_args_call_start:]
                                                 _sniffed = _sniff_text_tool_name(
                                                     _call_text, _enabled_tool_names
                                                 )
-                                                if _sniffed and (
-                                                    _sniffed == "render_html"
-                                                    or len(_call_text)
-                                                    >= _PROVISIONAL_ARGS_MIN_CHARS
+                                                # Same rule as the structured path: gated
+                                                # calls stream only when their card is a
+                                                # text preview.
+                                                if (
+                                                    _sniffed
+                                                    and not (
+                                                        _confirm_gated_iteration
+                                                        and not has_text_only_provisional_card(
+                                                            _sniffed
+                                                        )
+                                                    )
+                                                    and (
+                                                        _sniffed == "render_html"
+                                                        or len(_call_text)
+                                                        >= _PROVISIONAL_ARGS_MIN_CHARS
+                                                    )
                                                 ):
                                                     _text_args_id = "call_0"
                                                     _text_args_name = _sniffed
@@ -12058,18 +12073,32 @@ class LlamaCppBackend:
                     start_event["awaiting_confirmation"] = needs_confirm
 
                     try:
-                        yield {"type": "status", "text": decision.status_text}
+                        # Gated calls are not running yet, so say so: the badge
+                        # otherwise counts up "Running ..." while it waits on a
+                        # human, which reads as a hang.
+                        yield {
+                            "type": "status",
+                            "text": (
+                                awaiting_approval_status(decision.tool_name)
+                                if needs_confirm
+                                else decision.status_text
+                            ),
+                        }
                         yield start_event
 
-                        if (
-                            decision_slot is not None
-                            and wait_tool_decision(
+                        _decision = (
+                            wait_tool_decision(
                                 decision_slot,
                                 approval_id,
                                 cancel_event = cancel_event,
                             )
-                            == "deny"
-                        ):
+                            if decision_slot is not None
+                            else None
+                        )
+                        if _decision is not None and _decision != "deny":
+                            # Approved: now it really is running.
+                            yield {"type": "status", "text": decision.status_text}
+                        if _decision == "deny":
                             decision_slot = None
                             resolved_provisional_tool_call_ids.add(decision.tool_call_id)
                             yield {

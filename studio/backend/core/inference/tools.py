@@ -2454,6 +2454,23 @@ def is_always_safe_tool(name: str) -> bool:
     return name in _ALWAYS_SAFE_TOOLS
 
 
+# Tools whose provisional card is only a text preview of the arguments, so it
+# can stream while the call is still waiting for approval. render_html is
+# excluded: its card renders the payload, which is the thing being approved.
+_TEXT_PREVIEW_TOOLS = frozenset({"python", "terminal"})
+
+
+def has_text_only_provisional_card(name: str) -> bool:
+    """True when streaming this tool's arguments before approval shows only text.
+
+    A large code payload takes a minute or more to write, and suppressing the
+    card until the call completes leaves the chat blank the whole time. Nothing
+    runs before the decision either way, and you have to read the code to make
+    it.
+    """
+    return name in _TEXT_PREVIEW_TOOLS
+
+
 def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     """Whether a tool call must still pause for approval in auto mode.
 

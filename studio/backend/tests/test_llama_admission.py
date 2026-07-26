@@ -106,6 +106,51 @@ def test_fifo_capacity_one_grants_next_waiter_on_release():
     asyncio.run(_run())
 
 
+def test_parking_frees_the_slot_for_a_waiter():
+    """A holder waiting on a tool approval must not hold a decode slot.
+
+    It is not generating, and with several prompts unanswered every slot would
+    be held by a run parked on a human while llama-server sits idle.
+    """
+
+    async def _run():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+
+        first = queue.reserve(capacity = 1, config = config)
+        second = queue.reserve(capacity = 1, config = config)
+        first_lease = first.lease_nowait()
+        assert first_lease is not None
+        assert second.lease_nowait() is None
+
+        queue.park()
+        second_lease = await second.wait(0.1)
+        assert second_lease is not None, "parking did not free the slot"
+
+        # The parked holder keeps its lease, so releasing it is still correct.
+        queue.unpark()
+        first_lease.release()
+        second_lease.release()
+        assert queue.snapshot().active == 0
+
+    asyncio.run(_run())
+
+
+def test_unpark_without_park_is_a_no_op():
+    async def _run():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+        queue.unpark()
+        queue.unpark()
+
+        first = queue.reserve(capacity = 1, config = config)
+        second = queue.reserve(capacity = 1, config = config)
+        assert first.lease_nowait() is not None
+        assert second.lease_nowait() is None, "capacity leaked past the limit"
+
+    asyncio.run(_run())
+
+
 def test_queue_full_rejects_excess_waiter():
     async def _run():
         queue = get_llama_admission_queue("http://llama.test")

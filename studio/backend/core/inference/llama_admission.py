@@ -234,6 +234,10 @@ class LlamaAdmissionQueue:
         self._lock = threading.Lock()
         self._active = 0
         self._capacity = 1
+        # Holders that stopped decoding (parked on a tool approval prompt). They
+        # keep their lease but must not count against capacity, or a handful of
+        # unanswered prompts wedges every other chat.
+        self._parked = 0
         self._waiters: Deque[_Waiter] = deque()
 
     def reserve(self, *, capacity: int, config: LlamaAdmissionConfig) -> LlamaAdmissionReservation:
@@ -250,7 +254,7 @@ class LlamaAdmissionQueue:
             self._capacity = capacity
             self._prune_waiters_locked()
             self._grant_waiters_locked()
-            if self._active < self._capacity and not self._waiters:
+            if (self._active - self._parked) < self._capacity and not self._waiters:
                 self._active += 1
                 return LlamaAdmissionReservation(
                     queue = self,
@@ -278,6 +282,18 @@ class LlamaAdmissionQueue:
             if self._active > 0:
                 self._active -= 1
             self._grant_waiters_locked()
+
+    def park(self) -> None:
+        """Free this holder's slot while it waits on something outside the GPU."""
+        with self._lock:
+            self._parked += 1
+            self._grant_waiters_locked()
+
+    def unpark(self) -> None:
+        """Take the slot back. Pairs with park(); safe to call unmatched."""
+        with self._lock:
+            if self._parked > 0:
+                self._parked -= 1
 
     def cancel(self, waiter: _Waiter) -> None:
         lease_to_release = None
@@ -307,7 +323,7 @@ class LlamaAdmissionQueue:
 
     def _grant_waiters_locked(self) -> None:
         self._prune_waiters_locked()
-        while self._waiters and self._active < self._capacity:
+        while self._waiters and (self._active - self._parked) < self._capacity:
             waiter = self._waiters.popleft()
             if waiter.cancelled or waiter.future.done():
                 continue
