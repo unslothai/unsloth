@@ -7,6 +7,7 @@ import {
   ActivityIcon,
   ChevronDownIcon,
   CircleIcon,
+  PowerOffIcon,
   RefreshCwIcon,
 } from "lucide-react";
 import {
@@ -17,7 +18,13 @@ import {
   useRef,
   useState,
 } from "react";
-import { getApiMonitor, getApiMonitorEntry } from "../../chat/api/chat-api";
+import {
+  getApiMonitor,
+  getApiMonitorEntry,
+  getInferenceStatus,
+  unloadModel,
+} from "../../chat/api/chat-api";
+import { resolveInferenceCheckpointId } from "../../chat/lib/apply-inference-status-to-store";
 import type { ApiMonitorEntry, ApiMonitorResponse } from "../../chat/types/api";
 
 const API_INFERENCE_PREFIX_RE = /^\/api\/inference/;
@@ -250,6 +257,7 @@ export function ApiMonitorConsole(): ReactElement {
   const [data, setData] = useState<ApiMonitorResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [unloading, setUnloading] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [details, setDetails] = useState<Record<string, ApiMonitorEntry>>({});
   const [loadingDetails, setLoadingDetails] = useState<Set<string>>(
@@ -269,6 +277,29 @@ export function ApiMonitorConsole(): ReactElement {
       setRefreshing(false);
     }
   }, []);
+
+  // Free the VRAM the loaded model is holding. The monitor only knows the model's
+  // public id, and /unload matches on the internal one, so read that from status
+  // the same way the chat runtime does rather than putting a host path in this
+  // response. With auto-switch on the next API request loads a model again.
+  const unloadActiveModel = useCallback(async (): Promise<void> => {
+    setUnloading(true);
+    try {
+      const status = await getInferenceStatus();
+      const checkpoint = resolveInferenceCheckpointId(status);
+      if (!checkpoint) {
+        setError(null);
+        return;
+      }
+      await unloadModel({ model_path: checkpoint });
+      setError(null);
+      await loadMonitor();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to unload the model");
+    } finally {
+      setUnloading(false);
+    }
+  }, [loadMonitor]);
 
   useEffect(() => {
     let cancelled = false;
@@ -445,6 +476,19 @@ export function ApiMonitorConsole(): ReactElement {
           <div className="rounded-full border border-border px-2.5 py-1 text-xs capitalize text-muted-foreground">
             {statusLabel}
           </div>
+          {data?.active_model ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => void unloadActiveModel()}
+              disabled={unloading}
+              title="Unload the model and free its VRAM"
+            >
+              <PowerOffIcon className="size-3.5" />
+              {unloading ? "Unloading" : "Unload"}
+            </Button>
+          ) : null}
           <Button
             type="button"
             variant="ghost"

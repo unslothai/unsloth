@@ -5831,13 +5831,17 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
                 )
                 or not llama_backend.is_loaded
             ):
+                # Read the identity before the teardown clears it, so the row reads
+                # repo:QUANT like the matching load row rather than a bare path.
+                _unloaded = _llama_public_model_id(llama_backend, request.model_path)
+                _unloaded_variant = getattr(llama_backend, "hf_variant", None)
                 # A manual unload is a deliberate user action: tear down now even if a
                 # request is mid-stream (only the automatic idle loop defers to it).
                 llama_backend.unload_model()
                 note_model_unloaded()
                 api_monitor.record_lifecycle(
                     event = "unload",
-                    model = _lifecycle_model_label(request.model_path),
+                    model = _lifecycle_model_label(_unloaded, _unloaded_variant),
                     reason = "manual",
                 )
                 logger.info(f"Unloaded GGUF model: {request.model_path}")

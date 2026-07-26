@@ -91,6 +91,18 @@ def test_api_monitor_renders_download_rows():
         assert label in src
 
 
+def test_monitor_can_unload_the_loaded_model():
+    src = API_MONITOR_TSX.read_text(encoding = "utf-8")
+    assert "unloadActiveModel" in src
+    # Shown only when something is loaded, and disabled mid-unload.
+    assert "{data?.active_model ? (" in src
+    assert "disabled={unloading}" in src
+    # /unload matches on the internal id, which this response deliberately omits
+    # (it would be a host path), so it must be read from status.
+    assert "resolveInferenceCheckpointId(status)" in src
+    assert "unloadModel({ model_path: checkpoint })" in src
+
+
 def test_auto_download_toggle_is_gated_on_auto_switch():
     # Downloading a model auto-switch is not allowed to load would fetch
     # gigabytes nothing can then serve, so the row follows the enabled flag.
