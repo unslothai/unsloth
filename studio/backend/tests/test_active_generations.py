@@ -1643,8 +1643,6 @@ def test_audio_generation_unregisters_when_it_fails(monkeypatch):
         messages = [{"role": "user", "content": "hi"}],
     )
     with pytest.raises(HTTPException):
-        asyncio.run(
-            inf_mod.generate_audio(payload, request = None, current_subject = "tester")
-        )
+        asyncio.run(inf_mod.generate_audio(payload, request = None, current_subject = "tester"))
 
     assert active_generations.count() == 0
