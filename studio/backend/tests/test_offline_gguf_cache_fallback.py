@@ -1015,9 +1015,7 @@ class TestExtractQuantLabelSubdir:
 
 
 def test_pick_best_gguf_prefers_real_quant_over_precision_infix():
-    assert _pick_best_gguf(
-        ["Foo-BF16-Q4_K_M.gguf", "Foo-Q8_0.gguf"],
-    ) == "Foo-BF16-Q4_K_M.gguf"
+    assert _pick_best_gguf(["Foo-BF16-Q4_K_M.gguf", "Foo-Q8_0.gguf"]) == "Foo-BF16-Q4_K_M.gguf"
 
 
 class TestDownloadMmprojOfflineCacheFallback:
