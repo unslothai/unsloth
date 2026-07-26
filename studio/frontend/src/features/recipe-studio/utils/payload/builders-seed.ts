@@ -175,7 +175,9 @@ export function buildSeedDropProcessor(
     }
     cols =
       selectedDropColumns.length > 0
-        ? selectedDropColumns
+        ? loadedCols.length > 0
+          ? selectedDropColumns.filter((col) => loadedCols.includes(col))
+          : selectedDropColumns
         : loadedCols.length > 0
           ? loadedCols
           : ["chunk_text", "source_file"];

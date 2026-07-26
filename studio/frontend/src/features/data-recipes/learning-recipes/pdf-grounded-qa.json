@@ -73,7 +73,7 @@
       },
       {
         "column_type": "expression",
-        "name": "metadata",
+        "name": "input",
         "drop": false,
         "expr": "Evidence quote: {{ llm_structured_1.evidence_quote }}\n\nSource context: {{ chunk_text }}",
         "dtype": "str"
@@ -123,7 +123,7 @@
         "width": 400,
         "node_type": "markdown_note",
         "name": "note_3",
-        "markdown": "The structured LLM block generates a question, answer, and evidence quote from `{{ chunk_text }}`.\n\nExpression blocks then project the result into a training-ready Alpaca row:\n\n- `instruction`: generated question\n- `output`: generated answer\n- `metadata`: evidence quote and source context\n\nThe source chunk, source-file field, and nested structured intermediate are dropped only after these fields are created.",
+        "markdown": "The structured LLM block generates a question, answer, and evidence quote from `{{ chunk_text }}`.\n\nExpression blocks then project the result into a training-ready Alpaca row:\n\n- `instruction`: generated question\n- `input`: evidence quote and source context\n- `output`: generated answer\n\nThe source chunk, source-file field, and nested structured intermediate are dropped only after these fields are created.",
         "note_color": "#F3E8FF",
         "note_opacity": "35"
       },
@@ -164,7 +164,7 @@
         "width": 400
       },
       {
-        "id": "metadata",
+        "id": "input",
         "x": 1440,
         "y": 1259,
         "width": 400
@@ -208,14 +208,14 @@
       },
       {
         "from": "llm_structured_1",
-        "to": "metadata",
+        "to": "input",
         "type": "canvas",
         "source_handle": "data-out",
         "target_handle": "data-in"
       },
       {
         "from": "seed",
-        "to": "metadata",
+        "to": "input",
         "type": "canvas",
         "source_handle": "data-out",
         "target_handle": "data-in"
