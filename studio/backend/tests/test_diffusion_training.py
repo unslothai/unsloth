@@ -588,6 +588,24 @@ def test_request_model_dit_loss_knob_bounds():
             DiffusionTrainingStartRequest(**base, **bad)
 
 
+def test_request_model_rejects_lora_dropout_of_one():
+    # lora_dropout = 1.0 makes PEFT build nn.Dropout(p=1.0), which zeroes every input to the LoRA
+    # branch: the adapter output is identically the frozen base and both lora_A/lora_B get exactly
+    # zero gradient, so the run reports normal progress and saves an untrained adapter. The generic
+    # training schema already requires < 1 (TrainingStartRequest._check_lora_dropout); the diffusion
+    # schema must match instead of accepting the degenerate boundary.
+    from pydantic import ValidationError
+
+    from models.training import DiffusionTrainingStartRequest
+
+    base = {"base_model": "b", "data_dir": "d", "output_dir": "o"}
+    assert DiffusionTrainingStartRequest(**base).lora_dropout == 0.0
+    assert DiffusionTrainingStartRequest(**base, lora_dropout = 0.99).lora_dropout == 0.99
+    for bad in (1.0, 1.5, -0.1):
+        with pytest.raises(ValidationError):
+            DiffusionTrainingStartRequest(**base, lora_dropout = bad)
+
+
 def test_request_model_num_epochs_bounds():
     # The request schema mirrors DiffusionLoraConfig's 0..1000 num_epochs range.
     from pydantic import ValidationError
@@ -1107,6 +1125,27 @@ def test_diffusion_dataset_upload_rejects_oversized_image(client, dataset_roots)
         files = [("files", ("ok.png", ok, "image/png"))],
     )
     assert r2.status_code == 200, r2.text
+
+
+def test_diffusion_dataset_upload_maps_pillow_bomb_to_400(client, dataset_roots, monkeypatch):
+    # Past Pillow's hard bomb threshold (> 2 x Image.MAX_IMAGE_PIXELS) Image.open() itself raises
+    # DecompressionBombError, which derives straight from Exception -- not OSError/ValueError -- so
+    # the dimension guard's except clause missed it and the upload 500'd instead of returning the
+    # intended oversized-image 400. Shrink the limit (as Pillow's own tests do) so a small file
+    # crosses it, instead of building a 179 MP image in the test.
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 8)  # 8x8 = 64 pixels > 2 x 8
+    r = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "bomb-hard"},
+        files = [("files", ("huge.png", _png_bytes(8, 8), "image/png"))],
+    )
+    assert r.status_code == 400, r.text
+    assert "too large" in r.json()["detail"]
+    # All-or-nothing: the rejected image is not left in the dataset.
+    assert not (dataset_roots[0] / "bomb-hard" / "huge.png").exists()
 
 
 def test_diffusion_info_tolerates_non_object_jsonl(client, dataset_roots):

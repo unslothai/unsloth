@@ -752,7 +752,10 @@ class DiffusionTrainingStartRequest(BaseModel):
     gradient_accumulation_steps: int = Field(1, ge = 1, le = 256)
     lora_rank: int = Field(16, ge = 1, le = 320)
     lora_alpha: Optional[int] = Field(None, ge = 1, le = 640, description = "Defaults to lora_rank")
-    lora_dropout: float = Field(0.0, ge = 0.0, le = 1.0)
+    # Strictly below 1: PEFT turns lora_dropout into nn.Dropout(p=...), so 1.0 zeroes every input
+    # to the LoRA branch -- lora_A/lora_B receive no gradient and the run saves an untrained
+    # adapter while reporting normal progress. Matches TrainingStartRequest's [0, 1) validator.
+    lora_dropout: float = Field(0.0, ge = 0.0, lt = 1.0)
     # Mirror the remaining training-affecting knobs of DiffusionLoraConfig so a client that sets
     # them isn't silently trained with defaults. Default targets to the SDXL attention
     # projections (the trainer's DEFAULT_LORA_TARGETS) so it is never None.

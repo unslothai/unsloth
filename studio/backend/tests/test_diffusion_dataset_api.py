@@ -88,6 +88,34 @@ def test_list_images_caption_precedence(client, ds_root):
     assert recs["a.png"]["width"] == 8 and recs["a.png"]["height"] == 8
 
 
+def test_list_images_tolerates_invalid_utf8_sidecar(client, ds_root):
+    # The upload route stores .txt/.caption sidecars as raw bytes (and users hand-drop them), so a
+    # sidecar can hold non-UTF-8 text. read_text then raises UnicodeDecodeError, which is a
+    # ValueError -- NOT an OSError -- so an `except OSError` around it 500s the whole labeling grid
+    # and the user cannot open it to repair the caption. One bad sidecar must read as no caption
+    # while every other image still lists (the info summary already behaves this way).
+    folder = ds_root / "badutf8"
+    folder.mkdir()
+    _write_png(folder / "a.png")
+    _write_png(folder / "b.png")
+    (folder / "a.txt").write_bytes(b"\xff\xfe not valid utf-8")
+    (folder / "b.txt").write_text("cap b", encoding = "utf-8")
+
+    r = client.get("/api/train/diffusion/dataset/badutf8/images")
+    assert r.status_code == 200, r.text
+    recs = {rec["filename"]: rec for rec in r.json()["images"]}
+    assert set(recs) == {"a.png", "b.png"}
+    assert recs["a.png"]["caption"] in (None, "")
+    assert recs["b.png"]["caption"] == "cap b"
+
+    # The caption PUT returns the same record, so it must not 500 after writing either.
+    put = client.put(
+        "/api/train/diffusion/dataset/badutf8/caption/a.png", json = {"caption": "fixed"}
+    )
+    assert put.status_code == 200, put.text
+    assert put.json()["caption"] == "fixed"
+
+
 def test_list_images_missing_dataset_404(client, ds_root):
     assert client.get("/api/train/diffusion/dataset/nope/images").status_code == 404
 

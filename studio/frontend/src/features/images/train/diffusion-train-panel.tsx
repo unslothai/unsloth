@@ -297,6 +297,14 @@ export function DiffusionTrainPanel({
   // Track whether the user hand-picked a base precision; if not, a family change re-seeds it
   // from that family's recommended_precision.
   const precisionDirty = useRef(false);
+  // Same for the base repo: once the user picks one, only a real family change may re-seed it.
+  // `family` is a fresh object after every refreshInfo() (mergeFamilies rebuilds the list from the
+  // new info), so the seeding effect below re-runs on an unrelated dataset refresh (upload, import,
+  // caption save) too; without this the user's chosen base was silently replaced by the family
+  // default and the run started on a different model. The family the base was last seeded for is
+  // tracked by name, since the object identity is not stable.
+  const baseDirty = useRef(false);
+  const seededBaseFamily = useRef<string | null>(null);
 
   const [starting, setStarting] = useState(false);
   const [status, setStatus] = useState<DiffusionTrainingStatus | null>(null);
@@ -400,11 +408,17 @@ export function DiffusionTrainPanel({
   // user edited the numbers). Prefer the loaded base repo when it belongs to this family.
   useEffect(() => {
     if (!family) return;
+    // A NEW family invalidates any earlier base pick (another family's repo is not selectable
+    // here); a mere info refresh does not, so compare by name rather than object identity.
+    if (seededBaseFamily.current !== family.name) {
+      seededBaseFamily.current = family.name;
+      baseDirty.current = false;
+    }
     const preferLoaded =
       loadedBaseRepo && family.base_repos.includes(loadedBaseRepo)
         ? loadedBaseRepo
         : family.base_repos[0] ?? CUSTOM_BASE;
-    setBaseChoice(preferLoaded);
+    if (!baseDirty.current) setBaseChoice(preferLoaded);
     if (!settingsDirty.current) {
       setLearningRate(family.defaults.lr);
       setRank(family.defaults.rank);
@@ -1063,7 +1077,13 @@ export function DiffusionTrainPanel({
 
           <div className={fieldClass}>
             <Label className="text-xs">Base model</Label>
-            <Select value={effectiveBase} onValueChange={setBaseChoice}>
+            <Select
+              value={effectiveBase}
+              onValueChange={(v) => {
+                baseDirty.current = true; // an explicit pick survives later info refreshes
+                setBaseChoice(v);
+              }}
+            >
               <SelectTrigger className={selectClass} aria-label="Base model">
                 <SelectValue />
               </SelectTrigger>

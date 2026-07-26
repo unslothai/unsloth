@@ -1906,6 +1906,17 @@ def _validate_uploaded_training_image(path: Path, original_name: str) -> None:
     try:
         with Image.open(path) as image:
             width, height = image.size
+    except Image.DecompressionBombError:
+        # Past Pillow's own hard limit (> 2 x MAX_IMAGE_PIXELS ~ 179 MP) Image.open() raises before
+        # .size can be read. That error derives straight from Exception (not OSError/ValueError), so
+        # letting it escape 500s the upload; it is exactly the oversized image this guard rejects.
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                f"Image '{original_name}' is too large; maximum is "
+                f"{_MAX_TRAINING_IMAGE_SIDE}px per side."
+            ),
+        )
     except (OSError, UnidentifiedImageError, ValueError):
         return  # not a decodable image -> not a bomb; leave the existing contract
     if width > _MAX_TRAINING_IMAGE_SIDE or height > _MAX_TRAINING_IMAGE_SIDE:
@@ -1985,7 +1996,11 @@ def _image_record(
             try:
                 caption = sidecar.read_text(encoding = "utf-8").strip()
                 source = "sidecar"
-            except OSError:
+            except (OSError, UnicodeError):
+                # Unreadable / invalid UTF-8 sidecar (uploads store text sidecars as raw bytes):
+                # UnicodeDecodeError is a ValueError, not an OSError, so an OSError-only guard let
+                # it 500 the whole labeling grid. Read it as no caption, like the info summary's
+                # _resolve_dataset_caption does.
                 caption = None
             break
     if caption is None:
