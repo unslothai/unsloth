@@ -568,9 +568,9 @@ def test_streaming_replay_is_not_quadratic(tmp_path):
     """
     perf = _run_parse_harness(tmp_path)["perf"]
     ratio = perf["stream_cold_ms"] / max(perf["stream_cached_ms"], 1e-6)
-    assert ratio > 4, (
-        f"cached {perf['stream_cached_ms']:.1f}ms vs cold {perf['stream_cold_ms']:.1f}ms"
-    )
+    assert (
+        ratio > 4
+    ), f"cached {perf['stream_cached_ms']:.1f}ms vs cold {perf['stream_cold_ms']:.1f}ms"
 
 
 def test_chat_adapter_resume_caches_are_per_stream(tmp_path):
