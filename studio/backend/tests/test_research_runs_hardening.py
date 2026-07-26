@@ -432,8 +432,14 @@ def test_wait_for_local_model_still_honors_cancellation(monkeypatch):
 
 
 def _install_fake_client(monkeypatch, responses: list) -> list:
-    """Serve ``responses`` in order to both completion paths and record the sends."""
+    """Serve ``responses`` in order to both completion paths and record the sends. An entry that
+    is an exception is raised instead, standing in for a transport failure."""
     sent: list = []
+
+    def _serve(reply):
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
 
     class _FakeClient:
         def __init__(self, **kwargs):
@@ -450,7 +456,7 @@ def _install_fake_client(monkeypatch, responses: list) -> list:
 
         async def post(self, url, **kwargs):
             sent.append(url)
-            return responses.pop(0)
+            return _serve(responses.pop(0))
 
         async def send(
             self,
@@ -459,7 +465,7 @@ def _install_fake_client(monkeypatch, responses: list) -> list:
             stream = False,
         ):
             sent.append(request)
-            return responses.pop(0)
+            return _serve(responses.pop(0))
 
     monkeypatch.setattr(research_runs.httpx, "AsyncClient", _FakeClient)
     monkeypatch.setattr(
@@ -523,3 +529,153 @@ def test_stream_completion_retries_after_the_model_is_loaded_again(monkeypatch):
     )
     assert (report, reasoning, finish_reason) == ("report", "", "stop")
     assert len(sent) == 2
+
+
+_TRANSPORT_BLIP = "Server disconnected without sending a response."
+
+
+async def _noop_check_active(run_id: str) -> None:
+    return None
+
+
+def _stream_body() -> str:
+    chunk = json.dumps({"choices": [{"delta": {"content": "report"}, "finish_reason": "stop"}]})
+    return f"data: {chunk}\n\ndata: [DONE]\n\n"
+
+
+def _run_stream(supervisor) -> tuple:
+    return asyncio.run(
+        supervisor._stream_completion(_waiting_run(30.0), [{"role": "user"}], report_progress = False)
+    )
+
+
+def _capture_backoff(monkeypatch) -> list:
+    """Record the delays the retry loop asks for and return control immediately."""
+    delays: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def _sleep(delay, *args, **kwargs):
+        delays.append(delay)
+        return await real_sleep(0, *args, **kwargs)
+
+    monkeypatch.setattr(research_runs.asyncio, "sleep", _sleep)
+    return delays
+
+
+def test_stream_completion_retries_a_transport_error_before_any_bytes_stream(monkeypatch):
+    # A blip while the local endpoint restarts used to fail the durable run outright, and
+    # retrying a failed run deletes every source and plan step it had already gathered.
+    delays = _capture_backoff(monkeypatch)
+    sent = _install_fake_client(
+        monkeypatch,
+        [httpx.ConnectError(_TRANSPORT_BLIP), _response(200, body = _stream_body())],
+    )
+    supervisor = _make_supervisor(_noop_check_active)
+    assert _run_stream(supervisor) == ("report", "", "stop")
+    assert len(sent) == 2
+    assert delays == [1]
+
+
+def test_stream_completion_retries_a_transient_server_error(monkeypatch):
+    delays = _capture_backoff(monkeypatch)
+    sent = _install_fake_client(
+        monkeypatch,
+        [_response(503, body = "overloaded"), _response(200, body = _stream_body())],
+    )
+    supervisor = _make_supervisor(_noop_check_active)
+    assert _run_stream(supervisor) == ("report", "", "stop")
+    assert len(sent) == 2
+    assert delays == [1]
+
+
+def test_stream_completion_stops_after_three_transport_attempts(monkeypatch):
+    delays = _capture_backoff(monkeypatch)
+    sent = _install_fake_client(
+        monkeypatch, [httpx.ConnectError(_TRANSPORT_BLIP) for _ in range(4)]
+    )
+    supervisor = _make_supervisor(_noop_check_active)
+    with pytest.raises(httpx.ConnectError):
+        _run_stream(supervisor)
+    # Same attempt budget and backoff as _completion, so both paths agree.
+    assert len(sent) == 3
+    assert delays == [1, 2]
+
+
+def test_stream_completion_still_fails_fast_on_a_real_bad_request(monkeypatch):
+    delays = _capture_backoff(monkeypatch)
+    sent = _install_fake_client(monkeypatch, [_response(400, detail = "Invalid 'tools'")])
+    supervisor = _make_supervisor(_noop_check_active)
+    with pytest.raises(httpx.HTTPStatusError):
+        _run_stream(supervisor)
+    assert len(sent) == 1
+    assert delays == []
+
+
+def test_stream_completion_never_retries_once_the_report_has_streamed(monkeypatch):
+    # Re-sending after a partial stream would duplicate report text, so a mid-stream drop stays
+    # fatal: the send loop is only reachable before the body is touched.
+    delays = _capture_backoff(monkeypatch)
+    chunk = json.dumps({"choices": [{"delta": {"content": "half"}}]})
+
+    class _DropsMidStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            yield f"data: {chunk}"
+            raise httpx.ReadError("connection reset")
+
+    sent = _install_fake_client(
+        monkeypatch, [_DropsMidStream(), _response(200, body = _stream_body())]
+    )
+    supervisor = _make_supervisor(_noop_check_active)
+    with pytest.raises(httpx.ReadError):
+        _run_stream(supervisor)
+    assert len(sent) == 1
+    assert delays == []
+
+
+def test_stream_completion_model_waits_do_not_refund_transport_attempts(monkeypatch):
+    # The two budgets must add, not multiply, or a flapping endpoint would re-send forever.
+    _ready_after_first_poll(monkeypatch)
+    delays = _capture_backoff(monkeypatch)
+    sent = _install_fake_client(
+        monkeypatch,
+        [
+            _response(400, detail = _NO_MODEL),
+            httpx.ConnectError(_TRANSPORT_BLIP),
+            _response(400, detail = _NO_MODEL),
+            httpx.ConnectError(_TRANSPORT_BLIP),
+            httpx.ConnectError(_TRANSPORT_BLIP),
+        ],
+    )
+    supervisor = _make_supervisor(_noop_check_active)
+    with pytest.raises(httpx.ConnectError):
+        _run_stream(supervisor)
+    assert len(sent) == 5
+    assert [delay for delay in delays if delay >= 1] == [1, 2]
+
+
+def test_stream_completion_rechecks_the_lease_between_transport_retries(monkeypatch):
+    # A run cancelled, or a lease lost, during the backoff must not be re-sent.
+    _capture_backoff(monkeypatch)
+    checks = []
+
+    async def _check_active(run_id: str) -> None:
+        checks.append(run_id)
+        raise RunCancelled()
+
+    sent = _install_fake_client(
+        monkeypatch,
+        [httpx.ConnectError(_TRANSPORT_BLIP), _response(200, body = _stream_body())],
+    )
+    supervisor = _make_supervisor(_check_active)
+    with pytest.raises(RunCancelled):
+        _run_stream(supervisor)
+    assert len(sent) == 1
+    assert checks == ["run-1"]

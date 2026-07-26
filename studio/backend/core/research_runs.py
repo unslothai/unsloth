@@ -1434,6 +1434,7 @@ class ResearchSupervisor:
                 response: httpx.Response | None = None
                 send_task: asyncio.Task | None = None
                 model_waits = 0
+                attempt = 0
                 try:
                     while True:
                         request = client.build_request(
@@ -1442,32 +1443,52 @@ class ResearchSupervisor:
                             json = payload,
                             headers = {"Authorization": f"Bearer {token}"},
                         )
-                        send_task = asyncio.create_task(client.send(request, stream = True))
-                        while not send_task.done():
-                            await asyncio.wait({send_task}, timeout = 0.2)
-                            if self._cancel_event(run["id"]).is_set():
-                                send_task.cancel()
-                                try:
-                                    await send_task
-                                except asyncio.CancelledError:
-                                    pass
-                                await self._check_active(run["id"])
-                        response = await send_task
                         try:
+                            send_task = asyncio.create_task(client.send(request, stream = True))
+                            while not send_task.done():
+                                await asyncio.wait({send_task}, timeout = 0.2)
+                                if self._cancel_event(run["id"]).is_set():
+                                    send_task.cancel()
+                                    try:
+                                        await send_task
+                                    except asyncio.CancelledError:
+                                        pass
+                                    await self._check_active(run["id"])
+                            response = await send_task
                             response.raise_for_status()
                             break
-                        except httpx.HTTPStatusError as exc:
-                            # Nothing loaded (restart, eject): wait for a model and re-send.
-                            # Nothing has streamed yet, so this cannot duplicate report text.
-                            if not await _model_unloaded(exc.response):
+                        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                            # Only reachable before a body byte is touched: send() returns on the
+                            # headers and raise_for_status() reads nothing, and the stream is
+                            # consumed after this loop, so a re-send cannot duplicate report text.
+                            unloaded = isinstance(
+                                exc, httpx.HTTPStatusError
+                            ) and await _model_unloaded(exc.response)
+                            retryable = (
+                                not isinstance(exc, httpx.HTTPStatusError)
+                                or exc.response.status_code >= 500
+                            )
+                            if unloaded:
+                                model_waits += 1
+                                if model_waits > _MAX_MODEL_WAITS:
+                                    raise
+                            elif not retryable or attempt == 2:
                                 raise
-                            model_waits += 1
-                            if model_waits > _MAX_MODEL_WAITS:
-                                raise
-                            if not await self._wait_for_local_model(run):
-                                raise
-                            await response.aclose()
-                            response = None
+                            if response is not None:
+                                # Manual stream mode owns the connection; release it to re-send.
+                                await response.aclose()
+                                response = None
+                            if unloaded:
+                                # Nothing loaded (restart, eject): wait for a model to come back,
+                                # without spending a transport attempt.
+                                if not await self._wait_for_local_model(run):
+                                    raise
+                            else:
+                                # _completion's policy, so both paths agree; re-check the lease
+                                # and cancellation before re-sending.
+                                await asyncio.sleep(2**attempt)
+                                attempt += 1
+                                await self._check_active(run["id"])
                     async for line in self._iter_stream_lines(run["id"], response):
                         if self._cancel_event(run["id"]).is_set():
                             await self._check_active(run["id"])
