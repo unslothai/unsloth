@@ -2669,7 +2669,6 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
     if device == DeviceType.CPU:
         try:
             from core.inference.llama_cpp import LlamaCppBackend
-
             if LlamaCppBackend._is_vulkan_backend():
                 vulkan_devices = []
                 for ordinal, free_mib, total_mib in LlamaCppBackend._get_gpu_memory():
