@@ -300,11 +300,18 @@ def _sibling_revision_entries(raw_id: str, loader_id: str):
 
 
 def invalidate_index() -> None:
-    """Drop the cached scan so the next resolve sees a just-finished download,
-    rather than waiting out the TTL."""
+    """Mark the cached scan stale so the next resolve sees a just-finished
+    download, rather than waiting out the TTL.
+
+    Keeps the entries. Callers on the request path read this cache without
+    scanning, so emptying it would leave them with no evidence about any local
+    model until the rebuild lands, and a bare request for one of them would be
+    answered by whatever is resident. Only a completed download invalidates, and
+    that only ever adds models, so the retained entries stay true.
+    """
     global _scan
     with _lock:
-        _scan = (0.0, {})
+        _scan = (0.0, _scan[1])
 
 
 def _index() -> dict[str, _LocalGgufEntry]:

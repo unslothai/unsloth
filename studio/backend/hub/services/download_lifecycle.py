@@ -246,8 +246,11 @@ def finalize_worker_exit(
         # and would otherwise keep reporting the model absent and let the request be
         # served by whatever is resident.
         try:
-            from core.inference.local_model_resolver import invalidate_index
+            from core.inference.local_model_resolver import invalidate_index, warm_index_soon
             invalidate_index()
+            # Rebuild from here rather than from the first request that needs it,
+            # so the new model becomes resolvable without a scan on the request path.
+            warm_index_soon()
         except Exception:
             pass
         if transport == download_registry.TRANSPORT_HTTP:

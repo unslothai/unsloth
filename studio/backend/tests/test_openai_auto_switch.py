@@ -4199,7 +4199,7 @@ def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
         def set_job(self, key, state):
             self.state = state
 
-    resolver._scan = (1234.0, {"stale": "entry"})
+    resolver._scan = (1234.0, {"already-here": "entry"})
     assert (
         download_lifecycle.finalize_worker_exit(
             _Registry(),
@@ -4212,4 +4212,25 @@ def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
         )
         == "complete"
     )
-    assert resolver._scan == (0.0, {}), "a finished download left the scan cached"
+    stamp, entries = resolver._scan
+    assert stamp == 0.0, "a finished download left the scan looking fresh"
+    # Evidence for models already indexed has to survive, or a bare request for one
+    # of them during the rebuild is answered by whatever is resident.
+    assert entries == {"already-here": "entry"}
+
+
+def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
+    # The request path reads this cache without scanning, so emptying it leaves it
+    # with no evidence about any local model until the rebuild lands. Only a
+    # completed download invalidates, and that only adds, so the entries stay true.
+    import time
+
+    entry = resolver._LocalGgufEntry("org/old", "/srv/models/org--old", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/old": entry}))
+    resolver.invalidate_index()
+    assert resolver._scan[0] == 0.0
+    assert resolver.resolve_local_gguf("org/old", allow_scan = False) == (
+        "/srv/models/org--old",
+        "Q4_K_M",
+        "org/old",
+    )
