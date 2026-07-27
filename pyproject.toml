@@ -55,6 +55,10 @@ dependencies = [
     # Every CLI command imports studio.backend.*, which reaches structlog at
     # module level. The rest of the server stack lives in the studio extra.
     "structlog>=24.1.0",
+    # unsloth_cli/commands/start.py imports click, and unsloth_cli/__init__.py
+    # imports that, so every command needs it. typer supplied it until 0.27
+    # dropped the dependency, which left this satisfied only by chance.
+    "click>=8.0",
 ]
 
 [project.scripts]
