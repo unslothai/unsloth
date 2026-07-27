@@ -1021,7 +1021,12 @@ def test_physical_ids_never_reinterpreted_as_vulkan_ordinals(tmp_path):
         )
 
 
-def _ids_mismatch_backend(tmp_path, killed, *, downloads = None):
+def _ids_mismatch_backend(
+    tmp_path,
+    killed,
+    *,
+    downloads = None,
+):
     """A normal GGUF the route mislabeled diffusion (name hint), teardown observable."""
     gguf = tmp_path / "diffusiongemma-derivative.gguf"
     _write_minimal_gguf(gguf)

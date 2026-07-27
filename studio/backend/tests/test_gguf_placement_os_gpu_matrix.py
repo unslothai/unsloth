@@ -282,9 +282,7 @@ def test_system_gpu_payload_stays_additive_for_pre_feature_clients(tmp_path, mai
     probed = [{"index": 0, "index_kind": "vulkan", "name": "iGPU", "memory_total_gb": 64.0}]
 
     with patch.object(sys, "platform", "linux"):
-        without = _system_gpu_ids_supported(
-            main_mod, binary = binary, vulkan = False, device = "CUDA"
-        )
+        without = _system_gpu_ids_supported(main_mod, binary = binary, vulkan = False, device = "CUDA")
         with_vulkan = _system_gpu_ids_supported(
             main_mod, binary = binary, vulkan = True, device = "CUDA", vulkan_devices = probed
         )
