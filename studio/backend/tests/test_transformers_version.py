@@ -5231,6 +5231,74 @@ class TestAliasedDynamicImportFunction:
         assert self._matches(src) is False
 
 
+class TestAttributeReadOffADynamicImport:
+    """``importlib.import_module("transformers").TokenizersBackend`` really reads that export.
+
+    It is the dynamic spelling of ``import transformers`` then ``transformers.X`` and must
+    count the same. Only the bare module was recorded, because the attribute chain's root is a
+    call rather than a name, so the 5.x-only export went unseen and the checkpoint was routed
+    to 4.57.x, where reading it raises.
+    """
+
+    MARKERS = ("transformers.TokenizersBackend", "transformers.utils.output_capturing")
+
+    def setup_method(self):
+        _clear_scan_caches()
+
+    def _matches(self, src: str) -> bool:
+        import utils.transformers_version as tv
+
+        return tv._remote_auto_map_py_matches(self.MARKERS, [src])
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            "import importlib\n"
+            'b = importlib.import_module("transformers").TokenizersBackend\n',
+            '__import__("transformers").TokenizersBackend()\n',
+            "from importlib import import_module\n"
+            'import_module("transformers").TokenizersBackend()\n',
+            "from importlib import import_module as load_module\n"
+            'load_module("transformers").TokenizersBackend()\n',
+            # The whole path off the imported module counts, not just the first attribute.
+            "import importlib\n"
+            'importlib.import_module("transformers").utils.output_capturing.capture()\n',
+        ],
+    )
+    def test_attribute_off_dynamic_import_promotes(self, src):
+        assert self._matches(src) is True
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            # The bare module alone reads no 5.x-only attribute.
+            'import importlib\nm = importlib.import_module("transformers")\n',
+            # A method call is not an import, so the attribute off it proves nothing.
+            'self.loader.load("transformers").TokenizersBackend()\n',
+            # Same alias spelling, different origin.
+            "from mypkg import loader as load_module\n"
+            'load_module("transformers").TokenizersBackend()\n',
+            # Computed module name: never resolved to a literal.
+            'import importlib\nimportlib.import_module(f"transf{x}").TokenizersBackend\n',
+            # Type-only: the guard body does not run.
+            "from typing import TYPE_CHECKING\nimport importlib\n"
+            "if TYPE_CHECKING:\n"
+            '    b: importlib.import_module("transformers").TokenizersBackend\n',
+        ],
+    )
+    def test_non_import_or_dead_attribute_does_not_promote(self, src):
+        """Negative control: only an attribute really read off a real import counts."""
+        assert self._matches(src) is False
+
+    def test_attribute_off_dynamic_import_reaches_the_tier(self, tmp_path: Path):
+        _auto_map_checkpoint(
+            tmp_path,
+            "import importlib\n"
+            'b = importlib.import_module("transformers").TokenizersBackend\n',
+        )
+        assert _remote_auto_map_tier(str(tmp_path))[0] == "530"
+
+
 class TestImpossible510ScanIsSkipped:
     """The name fast path must not pay Hub I/O for an answer it cannot use.
 
@@ -5800,8 +5868,8 @@ class TestPublicReExportOf5xSymbolIsRecognized:
             (_V5_TOK_IMPORT, True, "defining submodule still matches"),
             (
                 "import importlib\nTB = importlib.import_module('transformers').TokenizersBackend\n",
-                False,
-                "attribute access is not an import of the symbol",
+                True,
+                "the dynamic import runs and the 5.x-only attribute is really read",
             ),
             # Negative controls: only 5.x-only names may promote the tier.
             ("from transformers import AutoModel\n", False, "4.57.x public name"),
@@ -5928,6 +5996,58 @@ class TestRemoteScanDownloadsAreBounded:
         monkeypatch.setattr(tv, "_hub_urlopen", lambda req, timeout = 10: _Huge())
         assert tv._read_repo_text_file("org/hostile", "modeling.py") is None
         assert asked == [tv._REMOTE_SCAN_MAX_FILE_BYTES + 1]
+
+    def test_one_enormous_config_is_not_read_into_memory(self, monkeypatch):
+        """Same bound for the remote-code configs.
+
+        They are fetched before the remote-code consent gate and outside the budget, so an
+        unbounded read of a hostile ``processor_config.json`` exhausts the worker even though
+        the ``.py`` downloads are capped.
+        """
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        asked = []
+
+        class _Huge:
+            def read(self, n = -1):
+                asked.append(n)
+                return b"#" * (n if n and n > 0 else tv._REMOTE_SCAN_MAX_FILE_BYTES * 4)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(tv, "_hub_urlopen", lambda req, timeout = 10: _Huge())
+        cfg, definitive = tv._load_repo_json_checked("org/hostile", "processor_config.json")
+        assert asked == [tv._REMOTE_SCAN_MAX_FILE_BYTES + 1]
+        # Over-cap is an unread config, never a confirmed "declares no auto_map".
+        assert cfg is None and definitive is False
+
+    def test_real_sized_config_still_parses(self, monkeypatch):
+        """Negative control: the bound must not disturb an ordinary config read."""
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        payload = json.dumps({"auto_map": {"AutoProcessor": "processing_custom.CustomProc"}})
+
+        class _Normal:
+            def read(self, n = -1):
+                raw = payload.encode()
+                return raw if (n is None or n < 0) else raw[:n]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(tv, "_hub_urlopen", lambda req, timeout = 10: _Normal())
+        cfg, definitive = tv._load_repo_json_checked("org/normal", "processor_config.json")
+        assert definitive is True
+        assert cfg == {"auto_map": {"AutoProcessor": "processing_custom.CustomProc"}}
 
     def test_real_sized_repo_is_not_truncated(self, monkeypatch):
         """Negative control. Survey of the 300 most-downloaded trust_remote_code repos:

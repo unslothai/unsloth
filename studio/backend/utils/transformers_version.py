@@ -1156,6 +1156,12 @@ def _load_repo_json_checked(
     failure, offline Hub id); a local read, a 401/403/404 and a parse error are all definitive,
     so only a read that never happened blocks caching.
 
+    The remote read stops at ``_REMOTE_SCAN_MAX_FILE_BYTES``, the bound
+    :func:`_read_repo_text_file` already puts on ``.py`` downloads. These configs are fetched
+    before the remote-code consent gate and outside :class:`_RemoteScanBudget`, so without it
+    one enormous ``processor_config.json`` could exhaust a worker. Over-cap is inconclusive
+    (``(None, False)``), never a confirmed "declares no auto_map".
+
     A local checkpoint's ``config.json`` is read straight from disk, NOT through
     ``_load_config_json``: that process-lifetime cache would serve pre-rewrite contents to the
     rescan a changed scan signature just forced (a staged checkpoint writing code first and
@@ -1189,7 +1195,16 @@ def _load_repo_json_checked(
     try:
         req = urllib.request.Request(url, headers = headers)
         with _hub_urlopen(req, timeout = 10) as resp:
-            return json.loads(resp.read().decode()), True
+            raw = resp.read(_REMOTE_SCAN_MAX_FILE_BYTES + 1)
+        if len(raw) > _REMOTE_SCAN_MAX_FILE_BYTES:
+            logger.debug(
+                "Skipping oversized remote config %s for '%s' (over %d bytes)",
+                filename,
+                model_name,
+                _REMOTE_SCAN_MAX_FILE_BYTES,
+            )
+            return None, False
+        return json.loads(raw.decode()), True
     except urllib.error.HTTPError as exc:
         # 404 = genuinely absent; 401/403 = definitively unreadable with this token.
         # Anything else (5xx, rate limit) is transient and must stay inconclusive.
@@ -1273,8 +1288,10 @@ def _parsed_dotted_imports(src: str) -> set[str] | None:
     tier, and computed or f-string names are left alone.
 
     Qualified access counts too: ``import transformers`` then ``transformers.X`` is the usual
-    spelling of a public-export marker. Aliases (including an aliased ``import_module``)
-    resolve through the file's own bindings, so a never-imported name contributes nothing.
+    spelling of a public-export marker, as is reading the attribute straight off the dynamic
+    import (``importlib.import_module("transformers").X``). Aliases (including an aliased
+    ``import_module``) resolve through the file's own bindings, so a never-imported name
+    contributes nothing.
     """
     import ast
 
@@ -1366,15 +1383,40 @@ def _parsed_dotted_imports(src: str) -> set[str] | None:
         # A leading dot is relative, skipped for the same reason as ImportFrom.
         return None if arg.value.startswith(".") else (called, arg.value)
 
-    def _attribute_chain(node) -> tuple[str, str] | None:
-        """``(root name, dotted attribute path)`` for ``a.b.c``, else ``None``."""
+    def _chain_root(node) -> tuple[object, str]:
+        """``(innermost non-attribute node, dotted attribute path)`` for ``a.b.c``."""
         parts: list[str] = []
         while isinstance(node, ast.Attribute):
             parts.append(node.attr)
             node = node.value
-        if not isinstance(node, ast.Name):
+        return node, ".".join(reversed(parts))
+
+    def _attribute_chain(node) -> tuple[str, str] | None:
+        """``(root name, dotted attribute path)`` for ``a.b.c``, else ``None``."""
+        root, attr = _chain_root(node)
+        return (root.id, attr) if isinstance(root, ast.Name) else None
+
+    def _dynamic_chain(node) -> tuple[str, str, str] | None:
+        """``(callee, module, attribute path)`` for ``import_module("pkg").a.b``, else ``None``.
+
+        The call really imports and the attribute is really read, so this is the dynamic
+        spelling of ``import pkg`` followed by ``pkg.a.b`` and has to count the same.
+        :func:`_attribute_chain` cannot see it: the chain's root is an ``ast.Call``, not an
+        ``ast.Name``, so only the bare module was recorded and a 5.x-only export read this way
+        stayed invisible, routing the checkpoint to 4.57.x where the attribute does not exist.
+        """
+        root, attr = _chain_root(node)
+        if not attr or not isinstance(root, ast.Call):
             return None
-        return node.id, ".".join(reversed(parts))
+        call = _dynamic_import_call(root)
+        if call is None:
+            return None
+        called, module = call
+        # An aliased callee must be a bare name, matching the plain-call branch below: a
+        # method call such as ``self.loader.load("pkg")`` is not an import.
+        if called in ("import_module", "__import__") or isinstance(root.func, ast.Name):
+            return called, module, attr
+        return None
 
     try:
         tree = ast.parse(src)
@@ -1408,6 +1450,14 @@ def _parsed_dotted_imports(src: str) -> set[str] | None:
             chain = _attribute_chain(node)
             if chain is not None:
                 chains.add(chain)
+            else:
+                dynamic = _dynamic_chain(node)
+                if dynamic is not None:
+                    called, module, attr = dynamic
+                    if called in ("import_module", "__import__"):
+                        names.add(f"{module}.{attr}")
+                    else:
+                        deferred.append((called, module, attr))
         elif isinstance(node, ast.Call):
             call = _dynamic_import_call(node)
             if call is not None:
@@ -1415,7 +1465,7 @@ def _parsed_dotted_imports(src: str) -> set[str] | None:
                 if called in ("import_module", "__import__"):
                     names.add(module)
                 elif isinstance(node.func, ast.Name):
-                    deferred.append((called, module))
+                    deferred.append((called, module, ""))
             # Not terminal: keep walking so a nested call or import still counts.
         stack.extend(ast.iter_child_nodes(node))
     # Resolved after the walk: a binding can sit below the use that needs it.
@@ -1423,9 +1473,9 @@ def _parsed_dotted_imports(src: str) -> set[str] | None:
         module = bound.get(root)
         if module:
             names.add(f"{module}.{attr}")
-    for called, module in deferred:
+    for called, module, attr in deferred:
         if bound.get(called) == "importlib.import_module":
-            names.add(module)
+            names.add(f"{module}.{attr}" if attr else module)
     return names
 
 
