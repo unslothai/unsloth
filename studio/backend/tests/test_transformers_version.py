@@ -5247,14 +5247,12 @@ class TestAttributeReadOffADynamicImport:
 
     def _matches(self, src: str) -> bool:
         import utils.transformers_version as tv
-
         return tv._remote_auto_map_py_matches(self.MARKERS, [src])
 
     @pytest.mark.parametrize(
         "src",
         [
-            "import importlib\n"
-            'b = importlib.import_module("transformers").TokenizersBackend\n',
+            "import importlib\n" 'b = importlib.import_module("transformers").TokenizersBackend\n',
             '__import__("transformers").TokenizersBackend()\n',
             "from importlib import import_module\n"
             'import_module("transformers").TokenizersBackend()\n',
@@ -5293,8 +5291,7 @@ class TestAttributeReadOffADynamicImport:
     def test_attribute_off_dynamic_import_reaches_the_tier(self, tmp_path: Path):
         _auto_map_checkpoint(
             tmp_path,
-            "import importlib\n"
-            'b = importlib.import_module("transformers").TokenizersBackend\n',
+            "import importlib\n" 'b = importlib.import_module("transformers").TokenizersBackend\n',
         )
         assert _remote_auto_map_tier(str(tmp_path))[0] == "530"
 
