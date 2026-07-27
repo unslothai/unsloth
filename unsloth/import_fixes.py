@@ -1601,15 +1601,25 @@ def _torchcodec_version_mismatch_hint() -> str | None:
     torch_minor = ".".join(str(p) for p in torch_release)
     codec_minor = ".".join(str(p) for p in codec_release)
     allowed = _TORCH_TORCHCODEC_MINORS.get(torch_minor)
-    if allowed is None or codec_minor in allowed:
+    if allowed is None:
+        # No lockstep row for this torch minor. Torch older than the table is
+        # out of scope, so stay silent. Torch at or past the ABI-stable floor
+        # only pairs with the open-ended line (>= 0.12), and the early return
+        # above already cleared those, so whatever reaches here is a legacy
+        # single-minor codec built for an older torch: point at the 0.12+ line.
+        if torch_release < _TORCHCODEC_ABI_STABLE_TORCH:
+            return None
+        abi_pin = ".".join(str(p) for p in _TORCHCODEC_ABI_STABLE_CODEC)
+        install_hint = f"`pip install 'torchcodec>={abi_pin}.0'`"
+    elif codec_minor in allowed:
         return None
-
-    pin = sorted(allowed)[-1]
-    upper = _torchcodec_exclusive_upper(pin)
-    install_hint = f"`pip install 'torchcodec>={pin},{upper}'`"
-    extra = _TORCH_TORCHCODEC_EXTRAS.get(torch_minor)
-    if extra is not None:
-        install_hint += f" or `pip install 'unsloth[{extra}]'`"
+    else:
+        pin = sorted(allowed)[-1]
+        upper = _torchcodec_exclusive_upper(pin)
+        install_hint = f"`pip install 'torchcodec>={pin},{upper}'`"
+        extra = _TORCH_TORCHCODEC_EXTRAS.get(torch_minor)
+        if extra is not None:
+            install_hint += f" or `pip install 'unsloth[{extra}]'`"
     return (
         f"torchcodec {torchcodec_version} is incompatible with torch {torch.__version__}; "
         f"install a matching build with {install_hint}."

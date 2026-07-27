@@ -228,6 +228,53 @@ def test_torch210_still_rejects_abi_stable_torchcodec(monkeypatch):
     assert "audio-torch210" in hint
 
 
+def test_torch_past_last_lockstep_row_rejects_legacy_torchcodec(monkeypatch):
+    """torch newer than the last lockstep row only pairs with the 0.12+ line.
+
+    torchcodec 0.11 is pinned to torch 2.11 exactly (upstream compatibility
+    table), so torch 2.12/2.13 with a pre-0.12 codec must still be reported even
+    though the matrix has no row for those torch minors.
+    """
+    import importlib.metadata
+
+    fixes = _load_import_fixes_module()
+    for torch_version in ("2.12.1+cu130", "2.13.0"):
+        for codec_version in ("0.11.1", "0.10.0"):
+            _stub_torch(monkeypatch, torch_version)
+            monkeypatch.setattr(importlib.metadata, "version", lambda _name, _v = codec_version: _v)
+            hint = fixes._torchcodec_version_mismatch_hint()
+            assert hint is not None, f"{torch_version} + torchcodec {codec_version} must warn"
+            assert "torchcodec>=0.12.0" in hint
+            # No audio-torch2xx extra exists for these minors, so none is offered.
+            assert "unsloth[audio-torch" not in hint
+
+
+def test_torch_below_the_table_stays_silent(monkeypatch):
+    """A torch minor older than the matrix keeps the original no-opinion behaviour."""
+    import importlib.metadata
+
+    fixes = _load_import_fixes_module()
+    _stub_torch(monkeypatch, "2.4.0")
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.0.3")
+    assert fixes._torchcodec_version_mismatch_hint() is None
+
+
+def test_notebook_validator_rejects_legacy_codec_past_last_lockstep_row():
+    """The mirrored notebook rule must flag the same pairing as import_fixes."""
+    nv = _load_notebook_validator_module()
+
+    cell = '!pip install --no-deps "torch==2.12.1" "torchcodec==0.11.1"'
+    findings = nv.rule_inst_004_torchcodec_torch(cell, {}, "nb.ipynb", 0)
+    assert len(findings) == 1
+    assert findings[0].rule == "R-INST-004"
+    assert findings[0].severity == "error"
+    assert "torchcodec>=0.12.0" in findings[0].hint
+
+    # Torch older than the table is still out of scope.
+    old = '!pip install --no-deps "torch==2.4.0" "torchcodec==0.0.3"'
+    assert nv.rule_inst_004_torchcodec_torch(old, {}, "nb.ipynb", 0) == []
+
+
 def test_notebook_validator_allows_abi_stable_pairing():
     """R-INST-004 is an error-severity rule: it must not fire on torch 2.11 + 0.12+."""
     nv = _load_notebook_validator_module()

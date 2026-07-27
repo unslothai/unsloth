@@ -630,7 +630,22 @@ def rule_inst_004_torchcodec_torch(
     c_minor = version_minor(codec_v)
     allowed = TORCH_TORCHCODEC.get(t_minor)
     if allowed is None:
-        return findings  # unknown torch minor — don't flag
+        if cmp_versions(torch_v, TORCHCODEC_ABI_STABLE_TORCH) < 0:
+            return findings  # torch older than the table — don't flag
+        # Torch at or past the ABI-stable floor with a pre-0.12 torchcodec: the
+        # ABI-stable branch above already returned for 0.12+, so this pin is a
+        # legacy build locked to an older torch minor and cannot load.
+        findings.append(
+            Finding(
+                rule = "R-INST-004",
+                file = file,
+                cell = cell_idx,
+                severity = "error",
+                message = f"torch=={torch_v} (minor {t_minor}) is incompatible with torchcodec=={codec_v} (minor {c_minor}); torchcodec <{TORCHCODEC_ABI_STABLE_CODEC} is built against a single older torch minor",
+                hint = f"pin `torchcodec>={TORCHCODEC_ABI_STABLE_CODEC}.0` (the ABI-stable line, which targets torch >={TORCHCODEC_ABI_STABLE_TORCH})",
+            )
+        )
+        return findings
     if c_minor not in allowed:
         findings.append(
             Finding(
