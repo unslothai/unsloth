@@ -49,3 +49,15 @@ def test_an_unload_is_not_described_as_a_reload():
     assert (
         '"unload"' in runtime[eject : eject + 120]
     ), "the eject path must ask for the unload wording"
+
+
+def test_the_tts_request_names_its_thread():
+    # The audio branch registers its run locally under the thread key, and the backend
+    # tracker reads payload.thread_id. Omitting it filed the backend entry under no
+    # thread, so the prompt counted the named local run and the unnamed backend one as
+    # two requests for a single TTS chat.
+    src = _read("features/chat/api/chat-adapter.ts")
+    call = src.index("const result = await generateAudio(")
+    assert "thread_id: resolvedThreadId" in src[call : call + 600], (
+        "the TTS payload must carry the resolved thread id"
+    )
