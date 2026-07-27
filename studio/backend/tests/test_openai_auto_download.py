@@ -1332,3 +1332,78 @@ def test_two_models_differing_only_in_case_are_not_the_same_weights(monkeypatch)
     assert inference_route._resolves_to_resident("/srv/models/Foo") is True
     same = os.path.normcase("A") == os.path.normcase("a")
     assert inference_route._resolves_to_resident("/srv/models/foo") is same
+
+
+def test_a_quant_request_is_not_satisfied_by_transformers_weights(monkeypatch):
+    # A Transformers model active from a directory that also holds GGUF exports
+    # resolves to that same directory, and the path match let admission answer an
+    # explicit quant with the safetensors weights. Only llama.cpp has a quant
+    # identity, which is why _loaded_satisfies already refuses this by name.
+    from core.inference import local_model_resolver as resolver
+
+    entry = resolver._LocalGgufEntry("alias", "/srv/models/tuned", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"alias": entry}))
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: type("L", (), {"is_loaded": False})()
+    )
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": "/srv/models/tuned"})(),
+    )
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route._reject_unservable_model("alias:Q4_K_M", _Req()))
+    assert excinfo.value.status_code == 404
+    # A bare name claims nothing about the weights, so the active model still answers.
+    assert asyncio.run(inference_route._reject_unservable_model("alias", _Req())) is None
+
+
+def test_a_timed_out_download_keeps_the_slot_while_it_is_still_running(monkeypatch):
+    # The watch window only bounds progress reporting. Releasing on the clock while
+    # the worker is alive would admit a second multi-GB download beside it.
+    monkeypatch.setattr(auto_dl, "_MAX_WATCH_S", 0.0)
+    monkeypatch.setattr(auto_dl, "_WATCH_POLL_S", 0.001)
+    monkeypatch.setattr(auto_dl, "_TIMED_OUT_POLL_S", 0.001)
+    active = auto_dl._Active(repo_id = "org/big-GGUF", variant = "Q4_K_M")
+
+    async def _drive():
+        finished = asyncio.Event()
+
+        async def _state(repo, variant):
+            return ("complete" if finished.is_set() else "running"), None
+
+        monkeypatch.setattr(auto_dl, "_job_state", _state)
+        auto_dl._active = active
+        watcher = asyncio.create_task(auto_dl._watch(active, None))
+        # Long past the deadline, and still running: the slot must not come back.
+        await asyncio.sleep(0.05)
+        held = auto_dl._active is active
+        finished.set()
+        await watcher
+        return held, auto_dl._active
+
+    held, after = asyncio.run(_drive())
+    assert held, "the slot was released while the worker was still running"
+    assert after is None, "the slot was not released once the job finished"
+
+
+def test_a_timed_out_download_stops_holding_the_slot_once_unprobeable(monkeypatch):
+    # The other direction: a probe that can no longer confirm the worker is alive
+    # must not wedge auto-download for the life of the process.
+    monkeypatch.setattr(auto_dl, "_MAX_WATCH_S", 0.0)
+    monkeypatch.setattr(auto_dl, "_WATCH_POLL_S", 0.001)
+    monkeypatch.setattr(auto_dl, "_TIMED_OUT_POLL_S", 0.001)
+    active = auto_dl._Active(repo_id = "org/big-GGUF", variant = "Q4_K_M")
+
+    async def _unknown(repo, variant):
+        return "unknown", None
+
+    monkeypatch.setattr(auto_dl, "_job_state", _unknown)
+
+    async def _drive():
+        auto_dl._active = active
+        await auto_dl._watch(active, None)
+        return auto_dl._active
+
+    assert asyncio.run(_drive()) is None

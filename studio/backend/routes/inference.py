@@ -3809,8 +3809,14 @@ def _norm_path(value: str) -> str:
     return os.path.normcase(str(value).replace("\\", "/").rstrip("/"))
 
 
-def _resolves_to_resident(load_path: Optional[str]) -> bool:
-    """Whether a resolved on-disk path is what is already loaded."""
+def _resolves_to_resident(load_path: Optional[str], *, llama_only: bool = False) -> bool:
+    """Whether a resolved on-disk path is what is already loaded.
+
+    ``llama_only`` drops the Transformers backend from the comparison. Only
+    llama.cpp carries a quant identity, so a Transformers model active from a
+    directory that also holds GGUF exports would otherwise match a request for
+    one of those quants and answer it with the safetensors weights.
+    """
     if not load_path:
         return False
     target = _norm_path(load_path)
@@ -3822,7 +3828,7 @@ def _resolves_to_resident(load_path: Optional[str]) -> bool:
         getattr(llama_backend, "model_identifier", None)
         if getattr(llama_backend, "is_loaded", False)
         else None,
-        getattr(get_inference_backend(), "active_model_name", None),
+        None if llama_only else getattr(get_inference_backend(), "active_model_name", None),
     ):
         if not candidate:
             continue
@@ -3877,12 +3883,12 @@ async def _reject_unservable_model(
         resolved = resolve_local_gguf(requested_model, allow_scan = False)
         # A manual load stores the on-disk path the resolver advertises under an alias, so
         # match on the path too.
-        if resolved is not None and _resolves_to_resident(resolved[0]):
+        if resolved is not None and _resolves_to_resident(resolved[0], llama_only = quantified):
             return
         downloaded = resolved is not None
         # /v1/models may have advertised this id off its own scan while the index is cold.
         advertised = _advertised_local_path(base)
-        if advertised is not None and _resolves_to_resident(advertised):
+        if advertised is not None and _resolves_to_resident(advertised, llama_only = quantified):
             return
         # The exact ref may miss on the quant alone, so ask about the repo too.
         here = (

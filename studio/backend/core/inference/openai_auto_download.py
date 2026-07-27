@@ -44,6 +44,9 @@ _DISK_RESERVE_BYTES = 5 * 1024**3
 _WATCH_POLL_S = 2.0
 # A stalled watcher must not pin the single-flight slot forever.
 _MAX_WATCH_S = 24 * 60 * 60
+# Past the watch window the row is already resolved, so poll only to see whether
+# the worker is still alive and still owns the slot.
+_TIMED_OUT_POLL_S = 60.0
 _RETRY_AFTER_S = 30
 _MAX_LISTED_VARIANTS = 8
 
@@ -321,11 +324,24 @@ async def _watch(active: _Active, hf_token: Optional[str]) -> None:
 
     api_monitor = monitor_module.api_monitor
     deadline = time.monotonic() + _MAX_WATCH_S
+    timed_out = False
     try:
-        while time.monotonic() < deadline:
-            await asyncio.sleep(_WATCH_POLL_S)
+        while True:
+            await asyncio.sleep(_TIMED_OUT_POLL_S if timed_out else _WATCH_POLL_S)
             state, error = await _job_state(active.repo_id, active.variant)
             if state in ("running", "cancelling", "unknown"):
+                if timed_out:
+                    # A worker still running still owns the slot: releasing it on the
+                    # clock alone would admit a second multi-GB download alongside it.
+                    # "unknown" cannot confirm it is alive, so stop holding it then,
+                    # or a broken probe would wedge auto-download for good.
+                    if state == "unknown":
+                        return
+                    continue
+                if time.monotonic() >= deadline:
+                    api_monitor.fail_open(active.monitor_id, "Download timed out")
+                    timed_out = True
+                    continue
                 # Only "running" has progress; the others are still in flight, so keep the slot.
                 if state == "running":
                     api_monitor.set_progress(
@@ -348,7 +364,6 @@ async def _watch(active: _Active, hf_token: Optional[str]) -> None:
             else:
                 api_monitor.fail_open(active.monitor_id, error or f"Download {state}")
             return
-        api_monitor.fail_open(active.monitor_id, "Download timed out")
     except asyncio.CancelledError:
         raise
     except Exception as exc:
