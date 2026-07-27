@@ -12323,9 +12323,7 @@ class LlamaCppBackend:
                         neutralize_tool_call_arguments,
                     )
 
-                    _asst_tc = neutralize_tool_call_arguments(
-                        [decision.as_assistant_tool_call()]
-                    )
+                    _asst_tc = neutralize_tool_call_arguments([decision.as_assistant_tool_call()])
                     if not assistant_appended:
                         assistant_msg["tool_calls"] = list(_asst_tc)
                         conversation.append(assistant_msg)

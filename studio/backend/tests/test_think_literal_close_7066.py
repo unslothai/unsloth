@@ -1100,9 +1100,9 @@ def test_assistant_history_neutralizes_bare_role_sentinels():
     sentinels = ("<|user|>", "<|assistant|>", "<|system|>")
     # Pin against the templates that really use them, so the two cannot drift.
     # Read as text: importing unsloth here would drag in the whole runtime.
-    templates = (
-        Path(__file__).resolve().parents[3] / "unsloth/chat_templates.py"
-    ).read_text(encoding = "utf-8")
+    templates = (Path(__file__).resolve().parents[3] / "unsloth/chat_templates.py").read_text(
+        encoding = "utf-8"
+    )
     for sentinel in sentinels:
         assert sentinel in templates, sentinel
 
