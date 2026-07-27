@@ -35,7 +35,17 @@ def _helpers() -> Optional[dict]:
     always resolved there, but ANY process that reaches the patch backend first -- the test suite,
     a worker subprocess -- got an ImportError and silently ran unpatched (every install returning
     False). So on failure, import ``unsloth`` and retry once, which is also the import order Unsloth
-    documents. A host with no accelerator still fails both attempts and stays a no-op."""
+    documents.
+
+    The retry is gated, because it is not free: importing ``unsloth`` pulls torch in behind it and
+    costs ~940 MB of RSS in a process that had neither, only to fail anyway on a host with no
+    accelerator, which is enough to matter on a small CI runner mid-generation. So it runs only when
+
+      * ``torch`` is already imported -- true of the server and of anything that patches a real
+        module, and the condition that keeps the retry from being the thing that loads torch,
+      * ``unsloth`` is installed but not yet imported (if it were, the sentinel would be set and the
+        first attempt would have worked),
+      * and the first failure was the ImportError that guard raises."""
     global _HELPERS
     if _HELPERS is not None:
         return _HELPERS or None
@@ -44,12 +54,25 @@ def _helpers() -> Optional[dict]:
         from unsloth_zoo.temporary_patches.utils import patch_function, restore_original
         return {"patch": patch_function, "restore": restore_original}
 
+    def _retry_could_help(exc: BaseException) -> bool:
+        import importlib.util
+        import sys
+
+        if not isinstance(exc, ImportError) or "unsloth" in sys.modules:
+            return False
+        if "torch" not in sys.modules:
+            return False
+        try:
+            return importlib.util.find_spec("unsloth") is not None
+        except Exception:  # noqa: BLE001 — an unimportable package cannot set the sentinel either
+            return False
+
     for attempt in (0, 1):
         try:
             _HELPERS = _load()
             return _HELPERS
-        except Exception:  # noqa: BLE001 — no unsloth_zoo / no-GPU host -> optimisation skipped
-            if attempt:
+        except Exception as exc:  # noqa: BLE001 — no unsloth_zoo / no-GPU host -> skip the patch
+            if attempt or not _retry_could_help(exc):
                 break
             try:
                 import unsloth  # noqa: F401 — sets UNSLOTH_IS_PRESENT for the retry
