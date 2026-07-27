@@ -59,7 +59,6 @@ import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { cn } from "@/lib/utils";
-import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
 import { toast } from "@/lib/toast";
 
@@ -72,7 +71,7 @@ import {
   clearVideoGallery,
   deleteGalleryVideo,
   fetchGalleryVideoExport,
-  fetchGalleryVideoObjectUrl,
+  fetchGalleryVideoSignedUrl,
   generateVideo,
   getVideoGallery,
   getVideoGenerateProgress,
@@ -125,29 +124,22 @@ const FALLBACK_RESOLUTION_PRESETS: Array<[number, number]> = [
 const FALLBACK_FRAME_STEP = 8;
 const FALLBACK_FPS = 24;
 
-// Blob budget for cached clips. A clip runs from a few MB to a few hundred MB, and the page
-// stays mounted after its first visit, so an unbounded cache pinned everything the user ever
-// scrolled past for the rest of the session. 512 MB holds a comfortable working set (the strip's
-// visible cards plus their neighbours) while capping what the webview can be made to hold; the
-// playing and on-screen clips are never evicted, and anything dropped re-fetches on scroll-back.
-const VIDEO_BLOB_BUDGET_BYTES = 512 * 1024 * 1024;
-
 // Module cache of the backend-persisted gallery, so a tab switch re-renders instantly.
-// Object URLs are revoked only on delete/eviction (not unmount), so they stay valid across
-// remounts.
+// The srcById entries are short-lived signed links, not object URLs: nothing is pinned in the
+// webview, so they survive a remount and need no budget, eviction or revoke. The clip's bytes
+// are streamed by the media element itself, which fetches ranges as it plays and drops what it
+// no longer needs -- the whole point of not blob-ing a file that runs to hundreds of MB.
 const galleryCache: {
   videos: GalleryVideo[];
   hasMore: boolean;
   selectedId: string | null;
   quant: string | null;
-  srcById: BlobUrlCache;
-  // Ids with a fetch in flight, so concurrent ensureSrc calls don't double-fetch
-  // (and leak the duplicate object URL).
+  srcById: Map<string, string>;
+  // Ids with a mint in flight, so concurrent ensureSrc calls don't double-request.
   inflight: Set<string>;
-  // Ids deleted while their MP4 was still downloading. A clip is tens to hundreds of MB, and a
-  // fetch that lands after the delete has nothing left to revoke it: the card is gone, so the
-  // blob would stay pinned for the rest of the session. Clear-all bumps the epoch instead of
-  // listing every id.
+  // Ids deleted while their link was still being minted, so a reply that lands after the delete
+  // isn't cached for a card that no longer exists. Clear-all bumps the epoch instead of listing
+  // every id.
   deleted: Set<string>;
   epoch: number;
 } = {
@@ -155,7 +147,7 @@ const galleryCache: {
   hasMore: false,
   selectedId: null,
   quant: null,
-  srcById: new BlobUrlCache(VIDEO_BLOB_BUDGET_BYTES),
+  srcById: new Map(),
   inflight: new Set(),
   deleted: new Set(),
   epoch: 0,
@@ -177,28 +169,29 @@ function exportFilename(video: GalleryVideo, format: VideoExportFormat = "mp4"):
   return `Unsloth_video_${stamp}_${video.seed}.${format}`;
 }
 
-function saveBlobUrl(href: string, filename: string) {
+function saveLink(href: string, filename: string) {
   const link = document.createElement("a");
   link.href = href;
   link.download = filename;
   link.click();
 }
 
-// MP4 saves the already-fetched original bytes; WebM / GIF are transcoded by
-// the backend on demand (501 with a readable reason when the codec is absent).
+// MP4 saves the original file straight from its signed link (same-origin, so the download
+// attribute is honoured); WebM / GIF are transcoded by the backend on demand (501 with a
+// readable reason when the codec is absent).
 async function downloadVideo(
   src: string,
   video: GalleryVideo,
   format: VideoExportFormat = "mp4",
 ) {
   if (format === "mp4") {
-    saveBlobUrl(src, exportFilename(video, format));
+    saveLink(src, exportFilename(video, format));
     return;
   }
   const blob = await fetchGalleryVideoExport(video.id, format);
   const url = URL.createObjectURL(blob);
   try {
-    saveBlobUrl(url, exportFilename(video, format));
+    saveLink(url, exportFilename(video, format));
   } finally {
     setTimeout(() => URL.revokeObjectURL(url), 10_000);
   }
@@ -581,7 +574,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     if (!active) previewRef.current?.pause();
   }, [active]);
   const [srcById, setSrcById] = useState<Record<string, string>>(() =>
-    galleryCache.srcById.toRecord(),
+    Object.fromEntries(galleryCache.srcById),
   );
   // Guards a "load more" so a fast scroll can't fire several at once.
   const loadingMore = useRef(false);
@@ -698,38 +691,23 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     }
   }, [loadedModelKey, defaultSteps, defaultGuidance]);
 
-  // Fetch (once) the object URL for a record's MP4; cached across remounts. Same
-  // auth-protected blob pattern the images gallery uses.
+  // Mint (once) a playable link for a record's MP4; cached across remounts. Unlike the images
+  // gallery this does NOT download the file: the link goes straight into the <video> element,
+  // which streams ranges as it plays, so a clip starts on its first seconds instead of after a
+  // full download and seeking works.
   const ensureSrc = useCallback(async (video: GalleryVideo) => {
     if (galleryCache.srcById.has(video.id) || galleryCache.inflight.has(video.id)) return;
     galleryCache.inflight.add(video.id);
     const epochAtStart = galleryCache.epoch;
     try {
-      const { url, bytes } = await fetchGalleryVideoObjectUrl(video.url);
-      // The record can be deleted (or the gallery cleared) while its MP4 is downloading. The
-      // delete handler revoked whatever URL existed then, so caching this one would pin a blob
-      // no card can ever release.
-      if (galleryCache.deleted.has(video.id) || galleryCache.epoch !== epochAtStart) {
-        URL.revokeObjectURL(url);
-        return;
-      }
-      galleryCache.srcById.set(video.id, url, bytes);
-      // Evict the coldest off-screen clips this one pushed over budget. On-screen cards and the
-      // clip in the player are protected, so eviction is never visible; an evicted card re-fetches
-      // if it is scrolled back to. The clip just fetched is protected too, or a single clip larger
-      // than the whole budget would evict itself and re-fetch on every pass.
-      const evicted = galleryCache.srcById.prune(
-        new Set([video.id, ...visibleIds.current, galleryCache.selectedId ?? ""]),
-      );
+      const url = await fetchGalleryVideoSignedUrl(video.id);
+      // The record can be deleted (or the gallery cleared) while the link is being minted;
+      // caching it then would leave an entry for a card that no longer exists.
+      if (galleryCache.deleted.has(video.id) || galleryCache.epoch !== epochAtStart) return;
+      galleryCache.srcById.set(video.id, url);
       // The URL is cached above either way; skip the state update after unmount
       // (matches the other async callbacks in this file).
-      if (isMounted.current) {
-        setSrcById((prev) => {
-          const next = { ...prev, [video.id]: url };
-          for (const id of evicted) delete next[id];
-          return next;
-        });
-      }
+      if (isMounted.current) setSrcById((prev) => ({ ...prev, [video.id]: url }));
     } catch {
       // Leave it without a src; the card shows a placeholder.
     } finally {
@@ -737,34 +715,23 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     }
   }, []);
 
-  // Fetching a clip pulls its whole MP4 into an object URL that lives until the page closes, so
-  // fetching a full gallery page (PAGE_SIZE records, each tens to hundreds of MB for a longer
-  // clip) up front pinned hundreds of MB -- gigabytes over a few "load more" pages -- for cards
-  // the user may never scroll to, and starved the one they were waiting on. Fetch a card as it
-  // nears the viewport instead; the tile already shows a spinner until its src lands.
+  // A card's poster frame only appears once its src lands, and each src costs a request, so a
+  // full gallery page (PAGE_SIZE records) minted up front would queue PAGE_SIZE requests ahead
+  // of the one clip the user is actually waiting on. Mint a card's link as it nears the viewport
+  // instead; the tile shows a spinner until its src lands.
   // The cards are observed from here rather than through a ref on each tile: the tile is a
   // Tooltip trigger, whose asChild clone owns that ref. Re-runs per page of records, so cards
   // appended by "load more" are picked up and removed ones are dropped with the observer.
   const stripRef = useRef<HTMLDivElement | null>(null);
-  // Ids currently intersecting the strip. The blob cache never evicts these, so pruning cannot
-  // pull a clip out from under a visible card.
-  const visibleIds = useRef<Set<string>>(new Set());
   useEffect(() => {
     const root = stripRef.current;
     if (!root || typeof IntersectionObserver === "undefined") return;
     const io = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
           const id = (entry.target as HTMLElement).dataset.clipId;
           if (!id) continue;
-          // Visibility is also the cache's recency and protection signal: an on-screen clip is
-          // never evicted, and leaving the viewport makes it a candidate again.
-          if (!entry.isIntersecting) {
-            visibleIds.current.delete(id);
-            continue;
-          }
-          visibleIds.current.add(id);
-          galleryCache.srcById.touch(id);
           const clip = videos.find((v) => v.id === id);
           if (clip) void ensureSrc(clip);
         }
@@ -836,7 +803,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
 
   // WebM/GIF go through a server-side transcode that can take a few seconds
   // (and 501s with a readable reason when the codec is missing), so wrap the
-  // helper with progress + error toasts; MP4 saves instantly.
+  // helper with progress + error toasts; MP4 hands the link to the browser.
   const handleDownload = useCallback(
     async (src: string, video: GalleryVideo, format: "mp4" | "webm" | "gif") => {
       if (format === "mp4") {
@@ -864,9 +831,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       toast.error(err instanceof Error ? err.message : "Failed to delete video");
       return;
     }
-    galleryCache.srcById.delete(id); // revokes the URL with the entry
-    visibleIds.current.delete(id);
-    // A fetch still in flight for this id must throw its blob away rather than cache it.
+    galleryCache.srcById.delete(id);
+    // A mint still in flight for this id must throw its link away rather than cache it.
     galleryCache.deleted.add(id);
     setSrcById((prev) => {
       const next = { ...prev };
@@ -884,9 +850,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       toast.error(err instanceof Error ? err.message : "Failed to clear gallery");
       return;
     }
-    galleryCache.srcById.clear(); // revokes every cached URL
-    visibleIds.current.clear();
-    // Every fetch in flight now belongs to a cleared gallery, so their blobs are discarded on
+    galleryCache.srcById.clear();
+    // Every mint in flight now belongs to a cleared gallery, so their links are discarded on
     // arrival. The epoch covers ids this page never listed too.
     galleryCache.epoch += 1;
     galleryCache.videos = [];
@@ -1044,7 +1009,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           setBusy(null);
           setGenStep(null);
           if (p.phase === "completed" && p.video) {
-            // Prepend the new clip (newest first) and load its blob.
+            // Prepend the new clip (newest first) and mint its link.
             const clip = p.video;
             setVideos((prev) => [clip, ...prev.filter((v) => v.id !== clip.id)]);
             setSelectedId(clip.id);
@@ -1876,7 +1841,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                 </div>
               </>
             ) : selected ? (
-              // The selected record's blob is still loading -- spin in place.
+              // The selected record's link has not landed yet -- spin in place.
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
                 <Spinner className="size-8" />
                 <p className="text-sm">Loading…</p>

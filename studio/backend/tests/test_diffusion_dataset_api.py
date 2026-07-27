@@ -815,3 +815,45 @@ def test_an_unreadable_sidecar_shadows_the_metadata_caption(client, ds_root):
     summary = next(d for d in info["datasets"] if d["name"] == "tombstone")
     assert summary["image_count"] == 2
     assert summary["caption_count"] == 1
+
+
+@pytest.mark.parametrize("bad", ["CON", "nul", "COM1", "lpt9", "NUL.txt", "aux.images"])
+def test_upload_rejects_windows_reserved_dataset_names(client, ds_root, bad):
+    # Reserved in every directory on Windows, with or without an extension (NUL.txt is NUL), so
+    # mkdir dies with an unhandled OSError there. Rejected on every platform, since a dataset made
+    # on Linux gets opened on Windows.
+    resp = _upload(client, bad, [("sample.png", _png_bytes())])
+    assert resp.status_code == 400, resp.text
+    assert "reserved" in resp.json()["detail"].lower()
+
+
+def test_upload_rejects_a_trailing_period_dataset_name(client, ds_root):
+    # Win32 strips a trailing period, so 'photos.' opens the existing 'photos' dataset: an upload
+    # meant for a new name would silently modify the old one.
+    assert _upload(client, "photos", [("sample.png", _png_bytes())]).status_code == 200
+    resp = _upload(client, "photos.", [("other.png", _png_bytes())])
+    assert resp.status_code == 400, resp.text
+    assert "period" in resp.json()["detail"].lower()
+    # The existing dataset was not touched.
+    assert sorted(p.name for p in (ds_root / "photos").iterdir()) == ["sample.png"]
+
+
+def test_upload_refuses_while_an_import_holds_the_same_folder(client, ds_root):
+    # The training interlock counts mutations rather than excluding them, and only imports took the
+    # per-folder lock, so an upload could add files while an import was materializing: the import's
+    # atomic promotion then failed on the non-empty folder and merged the two sets.
+    from routes.training import _dataset_import_lock
+
+    folder = ds_root / "shared-name"
+    folder.mkdir(parents = True, exist_ok = True)
+    lock = _dataset_import_lock(folder)
+    assert lock.acquire(blocking = False)
+    try:
+        resp = _upload(client, "shared-name", [("sample.png", _png_bytes())])
+        assert resp.status_code == 409, resp.text
+        assert "import" in resp.json()["detail"].lower()
+        assert not list(folder.glob("*.png"))
+    finally:
+        lock.release()
+    # Released: the same upload now goes through.
+    assert _upload(client, "shared-name", [("sample.png", _png_bytes())]).status_code == 200

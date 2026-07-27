@@ -248,17 +248,22 @@ export async function clearVideoGallery(): Promise<void> {
   if (!res.ok) throw new Error(await readFastApiError(res));
 }
 
-/** Fetch a gallery MP4 (auth-protected, so it can't be a plain <video src>) and wrap it
- *  in an object URL. Callers must revoke the URL when done. Mirrors the images gallery. */
-export async function fetchGalleryVideoObjectUrl(
-  url: string,
-): Promise<{ url: string; bytes: number }> {
-  const res = await authFetch(url);
+/** A directly playable, range-capable URL for one gallery clip.
+ *
+ *  NOT the blob treatment the images gallery uses: an MP4 is tens to hundreds of MB, so
+ *  `res.blob()` would download the whole clip before playback could start, defeat seeking, and
+ *  pin those bytes in the webview for as long as the entry is cached -- one long clip can exceed
+ *  the entire cache budget by itself. The backend's file route already streams and serves ranges;
+ *  it just cannot be a plain <video src> because it is bearer-gated, so mint a short-lived signed
+ *  link and let the element fetch only what it plays. */
+export async function fetchGalleryVideoSignedUrl(id: string): Promise<string> {
+  const res = await authFetch(
+    `/api/inference/video/gallery/${encodeURIComponent(id)}/signed-url`,
+  );
   if (!res.ok) throw new Error(await readFastApiError(res));
-  // The blob's size travels with the URL: the gallery cache is budgeted in bytes, and a clip's
-  // size varies by two orders of magnitude, so the caller cannot estimate it.
-  const blob = await res.blob();
-  return { url: URL.createObjectURL(blob), bytes: blob.size };
+  const body = (await res.json()) as { url?: string };
+  if (!body.url) throw new Error("The server returned no video link.");
+  return body.url;
 }
 
 /** Server-side transcode for the Download menu (WebM / GIF). The backend 501s

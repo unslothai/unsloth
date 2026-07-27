@@ -866,3 +866,77 @@ def test_video_load_guard_still_checks_diffusion_when_the_llm_probe_raises(clien
     assert resp.status_code == 409
     assert "training" in resp.json()["detail"].lower()
     assert video_routes is not None
+
+
+def test_signed_video_link_streams_without_a_bearer(client):
+    # A clip is tens to hundreds of MB, so the gallery cannot fetch it into a blob the way it does a
+    # PNG: that buffers the whole MP4 before playback, kills seeking, and pins the bytes for as long
+    # as the entry is cached. The signed link makes the range-capable /file route usable as a plain
+    # <video src>.
+    client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
+    )
+    video = _generate_and_wait(client, {"prompt": "a"})
+    vid = video["id"]
+
+    minted = client.get(f"/api/inference/video/gallery/{vid}/signed-url")
+    assert minted.status_code == 200, minted.text
+    url = minted.json()["url"]
+    assert url.startswith(f"/api/inference/video/gallery/{vid}/file-signed?token=")
+
+    # Served with no Authorization header at all, and byte-identical to the bearer route.
+    signed = client.get(url, headers = {})
+    assert signed.status_code == 200
+    assert signed.headers["content-type"] == "video/mp4"
+    assert signed.content == client.get(f"/api/inference/video/gallery/{vid}/file").content
+
+    # Range requests work, which is the point: the player seeks instead of downloading everything.
+    ranged = client.get(url, headers = {"Range": "bytes=0-3"})
+    assert ranged.status_code == 206
+    assert len(ranged.content) == 4
+
+
+def test_signed_video_link_rejects_tampering_and_other_ids(client):
+    client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
+    )
+    first = _generate_and_wait(client, {"prompt": "a"})["id"]
+    second = _generate_and_wait(client, {"prompt": "b"})["id"]
+    token = client.get(f"/api/inference/video/gallery/{first}/signed-url").json()["url"].split(
+        "token=", 1
+    )[1]
+
+    # The token names exactly one clip.
+    assert client.get(
+        f"/api/inference/video/gallery/{second}/file-signed?token={token}"
+    ).status_code == 401
+    # A flipped signature, a malformed token, and an expired one are all refused.
+    assert client.get(
+        f"/api/inference/video/gallery/{first}/file-signed?token={token[:-1]}x"
+    ).status_code == 401
+    assert client.get(
+        f"/api/inference/video/gallery/{first}/file-signed?token=nonsense"
+    ).status_code == 401
+    from routes import video as video_routes
+
+    expired = video_routes._sign_video_id(first)
+    payload, _sig = expired.rsplit(".", 1)
+    stale_id, _exp = payload.rsplit(".", 1)
+    import hashlib
+    import hmac
+
+    stale_payload = f"{stale_id}.1"
+    stale_sig = hmac.new(
+        video_routes._VIDEO_LINK_SECRET, stale_payload.encode(), hashlib.sha256
+    ).hexdigest()
+    assert client.get(
+        f"/api/inference/video/gallery/{first}/file-signed?token={stale_payload}.{stale_sig}"
+    ).status_code == 401
+
+
+def test_signed_url_mint_is_bearer_gated_and_404s_for_an_unknown_clip(client):
+    assert client.get(
+        "/api/inference/video/gallery/does-not-exist/signed-url"
+    ).status_code == 404

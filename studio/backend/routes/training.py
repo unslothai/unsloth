@@ -1762,8 +1762,24 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
 _DATASET_NAME_RE = None  # compiled lazily; module keeps its import block torch-free
 
 
+# Reserved in EVERY directory on Windows, with or without an extension (NUL.txt is NUL). The
+# superscript COM/LPT digits are recognised as digits by Win32 and are reserved too.
+# https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{d}" for d in "123456789¹²³"}
+    | {f"lpt{d}" for d in "123456789¹²³"}
+)
+
+
 def _clean_diffusion_dataset_name(name: str) -> str:
-    """Validate a dataset folder name: a single path component, no traversal, printable."""
+    """Validate a dataset folder name: a single path component, no traversal, printable.
+
+    Windows path rules are applied on EVERY platform, not just Windows: a dataset created on one
+    machine is opened on another, and both failures are silent or confusing. A reserved device name
+    dies in mkdir with an unhandled OSError, and a trailing period is stripped by Win32
+    normalization, so an upload to the "new" dataset 'photos.' would quietly write into the
+    existing 'photos'."""
     import re
 
     global _DATASET_NAME_RE
@@ -1776,6 +1792,23 @@ def _clean_diffusion_dataset_name(name: str) -> str:
             detail = (
                 "Dataset name must be a plain folder name (letters, numbers, dots, "
                 "dashes, spaces; no slashes), e.g. 'my-style-photos'."
+            ),
+        )
+    if cleaned.endswith("."):
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Dataset name cannot end with a period: Windows strips it, so this name would "
+                f"open the existing '{cleaned.rstrip('.')}' dataset instead of a new one."
+            ),
+        )
+    # The stem alone is checked, since NUL.txt is the NUL device too.
+    if cleaned.split(".", 1)[0].casefold() in _WINDOWS_RESERVED_NAMES:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                f"'{cleaned}' is a reserved device name on Windows and cannot be a folder. "
+                "Pick another dataset name."
             ),
         )
     return cleaned
@@ -1803,174 +1836,192 @@ async def upload_diffusion_dataset(
     # write, so a name to external-directory symlink can't make the staged upload write outside root.
     folder = _resolve_dataset_folder(name, must_exist = False)
     folder.mkdir(parents = True, exist_ok = True)
-
-    limit_bytes = get_upload_limit_bytes()
-    total_bytes = 0
-    uploaded = 0
-    allowed = _DIFFUSION_DATASET_IMAGE_EXTS | _DIFFUSION_DATASET_TEXT_EXTS
-    # Validate every filename up front so a valid image ahead of a bad one isn't left on disk when the
-    # 400 fires; the upload is all-or-nothing.
-    names: list[str] = []
-    for f in files:
-        # Normalise to a safe basename. Path.name doesn't split on a backslash on POSIX, so a Windows
-        # client sending a backslash path in the multipart filename would be stored verbatim; fold
-        # backslashes first so the true basename is taken for both separators. The read/caption/delete
-        # endpoints run the stored name through _safe_dataset_image_path, so a name still holding ".."
-        # here would list an image the grid can never preview, caption, or delete.
-        filename = Path((f.filename or "").replace("\\", "/")).name.strip().replace("\x00", "")
-        ext = Path(filename).suffix.lower()
-        if not filename or ".." in filename or ext not in allowed:
-            exts = ", ".join(sorted(allowed))
-            raise HTTPException(
-                status_code = 400,
-                detail = f"Unsupported file '{f.filename}'. Allowed: {exts}",
-            )
-        # Reject an EXACT duplicate name within THIS batch (two cat.png from different folders, or an API
-        # client repeating a part). The same-name exemption below is for SEPARATE repeat uploads, a
-        # deliberate overwrite; inside one batch the two parts are distinct files staged to the same
-        # destination on EVERY filesystem, so the later replace would silently discard the earlier one.
-        # Exact match only: a case VARIANT pair stays exempt per the stem guard.
-        fname_cf = filename.casefold()
-        if filename in names:
-            raise HTTPException(
-                status_code = 400,
-                detail = (
-                    f"Duplicate file '{filename}' appears more than once in this upload. "
-                    "Files sharing a name would overwrite each other; rename one before "
-                    "uploading."
-                ),
-            )
-        # Reject a second IMAGE sharing this stem but differing by extension (sample.png vs sample.jpg):
-        # both resolve to the same <stem>.txt sidecar (the kohya/diffusers convention the reader, editor
-        # and delete paths use), so keeping both would silently share -- and corrupt -- one caption. Check
-        # files already on disk and earlier images in THIS batch. Re-uploading the exact same name stays
-        # an overwrite; caption/text files are exempt.
-        if ext in _DIFFUSION_DATASET_IMAGE_EXTS:
-            stem = Path(filename).stem
-            # Compare stems (and the same-name guard) case-insensitively: on case-insensitive filesystems two
-            # images whose stems differ only by case resolve to the SAME <stem>.txt sidecar, so a
-            # case-sensitive check would let both corrupt one caption. A same-name case variant is exempt ONLY
-            # when its stem also differs in case (one file on case-insensitive filesystems, separate sidecars
-            # on Linux). An EXTENSION-case variant (cat.PNG vs cat.png) has equal stems, so it is rejected.
-            stem_cf = stem.casefold()
-
-            def _shares_sidecar(other_name: str) -> bool:
-                other = Path(other_name)
-                if (
-                    other_name == filename
-                    or other.suffix.lower() not in _DIFFUSION_DATASET_IMAGE_EXTS
-                    or other.stem.casefold() != stem_cf
-                ):
-                    return False
-                # A casefold-equal full name is exempt unless the stems match EXACTLY (extension-case variants
-                # collide on one sidecar on case-sensitive filesystems).
-                return other.stem == stem or other_name.casefold() != fname_cf
-
-            clash = next(
-                (p.name for p in folder.iterdir() if p.is_file() and _shares_sidecar(p.name)),
-                None,
-            )
-            if clash is None:
-                clash = next((n for n in names if _shares_sidecar(n)), None)
-            if clash is not None:
+    # Serialize against a concurrent import into the SAME folder. The training interlock counts
+    # mutations rather than excluding them, and only imports took this lock, so an upload could add
+    # files while an import was materializing: the import's atomic promotion (os.rmdir + rename)
+    # then failed on the now-non-empty folder and fell back to a per-file move, silently merging
+    # the curated set with the uploaded one, and a failure partway through that move left a mixed
+    # dataset the image_count > 0 idempotency check accepts as complete. The duplicate-stem
+    # validation below reads the folder too, so it has to be inside the lock as well.
+    _lock = _dataset_import_lock(folder)
+    if not _lock.acquire(blocking = False):
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                f"An import into '{folder.name}' is already running. Wait for it to finish, "
+                "then upload again."
+            ),
+        )
+    try:
+        limit_bytes = get_upload_limit_bytes()
+        total_bytes = 0
+        uploaded = 0
+        allowed = _DIFFUSION_DATASET_IMAGE_EXTS | _DIFFUSION_DATASET_TEXT_EXTS
+        # Validate every filename up front so a valid image ahead of a bad one isn't left on disk when the
+        # 400 fires; the upload is all-or-nothing.
+        names: list[str] = []
+        for f in files:
+            # Normalise to a safe basename. Path.name doesn't split on a backslash on POSIX, so a Windows
+            # client sending a backslash path in the multipart filename would be stored verbatim; fold
+            # backslashes first so the true basename is taken for both separators. The read/caption/delete
+            # endpoints run the stored name through _safe_dataset_image_path, so a name still holding ".."
+            # here would list an image the grid can never preview, caption, or delete.
+            filename = Path((f.filename or "").replace("\\", "/")).name.strip().replace("\x00", "")
+            ext = Path(filename).suffix.lower()
+            if not filename or ".." in filename or ext not in allowed:
+                exts = ", ".join(sorted(allowed))
+                raise HTTPException(
+                    status_code = 400,
+                    detail = f"Unsupported file '{f.filename}'. Allowed: {exts}",
+                )
+            # Reject an EXACT duplicate name within THIS batch (two cat.png from different folders, or an API
+            # client repeating a part). The same-name exemption below is for SEPARATE repeat uploads, a
+            # deliberate overwrite; inside one batch the two parts are distinct files staged to the same
+            # destination on EVERY filesystem, so the later replace would silently discard the earlier one.
+            # Exact match only: a case VARIANT pair stays exempt per the stem guard.
+            fname_cf = filename.casefold()
+            if filename in names:
                 raise HTTPException(
                     status_code = 400,
                     detail = (
-                        f"Duplicate image name '{stem}'. '{clash}' is already in this "
-                        f"dataset; two images sharing a name would share one '{stem}.txt' "
-                        f"caption. Rename one before uploading."
+                        f"Duplicate file '{filename}' appears more than once in this upload. "
+                        "Files sharing a name would overwrite each other; rename one before "
+                        "uploading."
                     ),
                 )
-        names.append(filename)
-    # Stage each file to a temp name and move it into place only once the whole batch is written, so a
-    # mid-batch failure (size limit, disk error, disconnect) leaves the dataset untouched, including
-    # any pre-existing same-name file a direct write would have truncated.
-    staged: list[tuple[Path, Path]] = []  # (temp, final)
-    committed = False
-    try:
-        for f, filename in zip(files, names):
-            dest = folder / filename
-            # A filename-independent temp name so a long (but valid) filename can't overflow NAME_MAX once the
-            # staging suffix is added.
-            tmp = folder / f".upload-{_uuid.uuid4().hex}.part"
-            staged.append((tmp, dest))
-            with open(tmp, "wb") as out:
-                while chunk := await f.read(1024 * 1024):
-                    total_bytes += len(chunk)
-                    if total_bytes > limit_bytes:
-                        raise HTTPException(
-                            status_code = 413,
-                            detail = (
-                                "Dataset upload too large. "
-                                f"Maximum is {get_upload_limit_label()} per upload; "
-                                "add the remaining images in another batch."
-                            ),
-                        )
-                    out.write(chunk)
-            # Reject a decompression bomb before commit: a small compressible PNG can pass the byte limit yet
-            # decode to huge pixels and OOM the trainer's latent cache, so bound each image's dimensions from
-            # the header (mirrors diffusion._decode_b64_image).
-            if Path(filename).suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS:
-                _validate_uploaded_training_image(tmp, filename)
-            uploaded += 1
-        # Re-check the interlock immediately before the commit: the entry guard only saw the pre-upload
-        # state, so a /diffusion/start could have reserved the training slot while we were streaming.
-        # Committing now would move images/captions underneath the trainer; a 409 here leaves the staged
-        # temps to the finally below.
-        _require_diffusion_dataset_mutable()
-        # Commit every staged file as one transaction. A plain replace loop is not atomic across files: a
-        # mid-loop failure leaves earlier destinations already overwritten while the request errors. Back
-        # up each pre-existing destination first, then on any failure drop the versions this request
-        # installed and restore every displaced original.
-        backups: list[tuple[Path, Optional[Path]]] = []  # (dest, backup path or None)
-        installed: list[Path] = []
-        try:
-            for tmp, dest in staged:
-                backup: Optional[Path] = None
-                if dest.exists():
-                    backup = folder / f".upload-backup-{_uuid.uuid4().hex}.part"
-                    dest.replace(backup)
-                backups.append((dest, backup))
-                tmp.replace(dest)  # atomic on the same filesystem
-                installed.append(dest)
-            committed = True
-        except BaseException:
-            # Roll back: drop every new version, then restore every displaced original.
-            for dest in reversed(installed):
-                try:
-                    dest.unlink(missing_ok = True)
-                except OSError:
-                    pass
-            for dest, backup in reversed(backups):
-                if backup is not None and backup.exists():
-                    try:
-                        backup.replace(dest)
-                    except OSError:
-                        pass
-            raise
-        else:
-            for _, backup in backups:
-                if backup is not None:
-                    try:
-                        backup.unlink(missing_ok = True)
-                    except OSError:
-                        pass
-    finally:
-        if not committed:
-            for tmp, _ in staged:
-                try:
-                    tmp.unlink(missing_ok = True)
-                except OSError:
-                    pass
+            # Reject a second IMAGE sharing this stem but differing by extension (sample.png vs sample.jpg):
+            # both resolve to the same <stem>.txt sidecar (the kohya/diffusers convention the reader, editor
+            # and delete paths use), so keeping both would silently share -- and corrupt -- one caption. Check
+            # files already on disk and earlier images in THIS batch. Re-uploading the exact same name stays
+            # an overwrite; caption/text files are exempt.
+            if ext in _DIFFUSION_DATASET_IMAGE_EXTS:
+                stem = Path(filename).stem
+                # Compare stems (and the same-name guard) case-insensitively: on case-insensitive filesystems two
+                # images whose stems differ only by case resolve to the SAME <stem>.txt sidecar, so a
+                # case-sensitive check would let both corrupt one caption. A same-name case variant is exempt ONLY
+                # when its stem also differs in case (one file on case-insensitive filesystems, separate sidecars
+                # on Linux). An EXTENSION-case variant (cat.PNG vs cat.png) has equal stems, so it is rejected.
+                stem_cf = stem.casefold()
 
-    summary = _diffusion_dataset_summary(folder)
-    return DiffusionDatasetUploadResponse(
-        name = cleaned,
-        path = str(folder),
-        image_count = summary.image_count,
-        caption_count = summary.caption_count,
-        uploaded = uploaded,
-    )
+                def _shares_sidecar(other_name: str) -> bool:
+                    other = Path(other_name)
+                    if (
+                        other_name == filename
+                        or other.suffix.lower() not in _DIFFUSION_DATASET_IMAGE_EXTS
+                        or other.stem.casefold() != stem_cf
+                    ):
+                        return False
+                    # A casefold-equal full name is exempt unless the stems match EXACTLY (extension-case variants
+                    # collide on one sidecar on case-sensitive filesystems).
+                    return other.stem == stem or other_name.casefold() != fname_cf
+
+                clash = next(
+                    (p.name for p in folder.iterdir() if p.is_file() and _shares_sidecar(p.name)),
+                    None,
+                )
+                if clash is None:
+                    clash = next((n for n in names if _shares_sidecar(n)), None)
+                if clash is not None:
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = (
+                            f"Duplicate image name '{stem}'. '{clash}' is already in this "
+                            f"dataset; two images sharing a name would share one '{stem}.txt' "
+                            f"caption. Rename one before uploading."
+                        ),
+                    )
+            names.append(filename)
+        # Stage each file to a temp name and move it into place only once the whole batch is written, so a
+        # mid-batch failure (size limit, disk error, disconnect) leaves the dataset untouched, including
+        # any pre-existing same-name file a direct write would have truncated.
+        staged: list[tuple[Path, Path]] = []  # (temp, final)
+        committed = False
+        try:
+            for f, filename in zip(files, names):
+                dest = folder / filename
+                # A filename-independent temp name so a long (but valid) filename can't overflow NAME_MAX once the
+                # staging suffix is added.
+                tmp = folder / f".upload-{_uuid.uuid4().hex}.part"
+                staged.append((tmp, dest))
+                with open(tmp, "wb") as out:
+                    while chunk := await f.read(1024 * 1024):
+                        total_bytes += len(chunk)
+                        if total_bytes > limit_bytes:
+                            raise HTTPException(
+                                status_code = 413,
+                                detail = (
+                                    "Dataset upload too large. "
+                                    f"Maximum is {get_upload_limit_label()} per upload; "
+                                    "add the remaining images in another batch."
+                                ),
+                            )
+                        out.write(chunk)
+                # Reject a decompression bomb before commit: a small compressible PNG can pass the byte limit yet
+                # decode to huge pixels and OOM the trainer's latent cache, so bound each image's dimensions from
+                # the header (mirrors diffusion._decode_b64_image).
+                if Path(filename).suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS:
+                    _validate_uploaded_training_image(tmp, filename)
+                uploaded += 1
+            # Re-check the interlock immediately before the commit: the entry guard only saw the pre-upload
+            # state, so a /diffusion/start could have reserved the training slot while we were streaming.
+            # Committing now would move images/captions underneath the trainer; a 409 here leaves the staged
+            # temps to the finally below.
+            _require_diffusion_dataset_mutable()
+            # Commit every staged file as one transaction. A plain replace loop is not atomic across files: a
+            # mid-loop failure leaves earlier destinations already overwritten while the request errors. Back
+            # up each pre-existing destination first, then on any failure drop the versions this request
+            # installed and restore every displaced original.
+            backups: list[tuple[Path, Optional[Path]]] = []  # (dest, backup path or None)
+            installed: list[Path] = []
+            try:
+                for tmp, dest in staged:
+                    backup: Optional[Path] = None
+                    if dest.exists():
+                        backup = folder / f".upload-backup-{_uuid.uuid4().hex}.part"
+                        dest.replace(backup)
+                    backups.append((dest, backup))
+                    tmp.replace(dest)  # atomic on the same filesystem
+                    installed.append(dest)
+                committed = True
+            except BaseException:
+                # Roll back: drop every new version, then restore every displaced original.
+                for dest in reversed(installed):
+                    try:
+                        dest.unlink(missing_ok = True)
+                    except OSError:
+                        pass
+                for dest, backup in reversed(backups):
+                    if backup is not None and backup.exists():
+                        try:
+                            backup.replace(dest)
+                        except OSError:
+                            pass
+                raise
+            else:
+                for _, backup in backups:
+                    if backup is not None:
+                        try:
+                            backup.unlink(missing_ok = True)
+                        except OSError:
+                            pass
+        finally:
+            if not committed:
+                for tmp, _ in staged:
+                    try:
+                        tmp.unlink(missing_ok = True)
+                    except OSError:
+                        pass
+
+        summary = _diffusion_dataset_summary(folder)
+        return DiffusionDatasetUploadResponse(
+            name = cleaned,
+            path = str(folder),
+            image_count = summary.image_count,
+            caption_count = summary.caption_count,
+            uploaded = uploaded,
+        )
+    finally:
+        _lock.release()
 
 
 # ── Dataset labeling (per-image caption editing) + one-click example imports ──

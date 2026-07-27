@@ -18,9 +18,13 @@ here.
 from __future__ import annotations
 
 import asyncio
+import hashlib as _hashlib
+import hmac as _hmac
+import secrets as _secrets
+import time as _time
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import ValidationError
 
 from auth.authentication import get_current_subject
@@ -334,6 +338,84 @@ async def get_gallery_video_file(
 
     # FileResponse streams from disk and serves range requests (seek without a full fetch). Immutable
     # per id, so let the browser cache it.
+    return FileResponse(
+        path,
+        media_type = "video/mp4",
+        headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+    )
+
+
+# A clip is tens to hundreds of MB, so the gallery cannot fetch it into a blob the way it does a
+# PNG: that buffers the whole MP4 before playback starts, defeats seeking, and pins the bytes in the
+# webview for as long as the entry is cached -- one long high-resolution clip can exceed the whole
+# cache budget on its own. The /file route already streams and serves ranges; it just cannot be a
+# <video src> because it is bearer-gated. Mint a short-lived HMAC link instead, the same shape the
+# OpenAI images URLs use, and leave the bearer route untouched.
+#
+# 12 hours rather than the images' 1: these links are for our own UI (not an outside client with an
+# OpenAI-shaped contract), a <video> element re-requests bytes whenever the user seeks or replays,
+# and the per-process secret means a restart invalidates every outstanding link anyway.
+_VIDEO_LINK_TTL = 12 * 3600
+_VIDEO_LINK_SECRET = _secrets.token_bytes(32)
+
+
+def _sign_video_id(video_id: str) -> str:
+    exp = int(_time.time()) + _VIDEO_LINK_TTL
+    payload = f"{video_id}.{exp}"
+    sig = _hmac.new(_VIDEO_LINK_SECRET, payload.encode(), _hashlib.sha256).hexdigest()
+    return f"{payload}.{sig}"
+
+
+def _verify_video_link_token(token: str) -> Optional[str]:
+    """The video id a valid, unexpired token names, else None. A separate secret from the image
+    links, so a token minted for one media type can never serve the other."""
+    try:
+        video_id, exp_s, sig = token.rsplit(".", 2)
+    except ValueError:
+        return None
+    expected = _hmac.new(
+        _VIDEO_LINK_SECRET, f"{video_id}.{exp_s}".encode(), _hashlib.sha256
+    ).hexdigest()
+    if not _hmac.compare_digest(sig, expected):
+        return None
+    try:
+        if int(exp_s) < int(_time.time()):
+            return None
+    except ValueError:
+        return None
+    return video_id
+
+
+@router.get("/video/gallery/{video_id}/signed-url")
+async def get_gallery_video_signed_url(
+    video_id: str, current_subject: str = Depends(get_current_subject)
+):
+    """A directly playable, range-capable link for one clip (bearer-gated to mint, HMAC to use).
+
+    Returned as a relative URL so it works behind any proxy the page itself is served through."""
+    from core.inference import video_gallery
+
+    path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Video not found.")
+    token = _sign_video_id(video_id)
+    return {"url": f"/api/inference/video/gallery/{video_id}/file-signed?token={token}"}
+
+
+@router.get("/video/gallery/{video_id}/file-signed")
+async def get_gallery_video_file_signed(video_id: str, token: str = Query(...)):
+    """Stream one gallery MP4 gated by the HMAC token instead of the bearer, so it can be a plain
+    <video src> and the browser can range-request it. Same ownership gate as the bearer route, and
+    the token names the single clip it may serve."""
+    from core.inference import video_gallery
+
+    if _verify_video_link_token(token) != video_id:
+        raise HTTPException(status_code = 401, detail = "Invalid or expired video link.")
+    path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Video not found.")
+    from fastapi.responses import FileResponse
+
     return FileResponse(
         path,
         media_type = "video/mp4",

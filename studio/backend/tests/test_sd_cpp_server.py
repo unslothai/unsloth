@@ -450,3 +450,112 @@ def test_diagnostic_tail_falls_back_to_the_last_lines():
 def test_diagnostic_tail_is_bounded():
     lines = ["error: " + "x" * 500 for _ in range(20)]
     assert len(srv._diagnostic_tail(lines)) <= 1500
+
+
+def test_readiness_refuses_a_port_held_by_another_process(patched):
+    # _find_free_port picks an ephemeral port, closes the socket, and sd-server binds it only after
+    # loading the model -- minutes for a big checkpoint. Another local process can take it in that
+    # window, and /v1/models is a stock OpenAI route that llama.cpp's server also answers 200 on, so
+    # readiness would pass and every generation would go to an unrelated listener.
+    import types
+
+    popen = _FakePopen(lines = ["loading model"])
+    patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
+    s = _server_with(popen, _FakeClient(get = lambda url: _Resp(200, {"model": {}})))
+
+    fake_psutil = types.SimpleNamespace(
+        CONN_LISTEN = "LISTEN",
+        net_connections = lambda kind = "inet": [
+            types.SimpleNamespace(
+                laddr = types.SimpleNamespace(port = s.port),
+                status = "LISTEN",
+                pid = popen.pid + 1000,  # somebody else
+            )
+        ],
+        Process = lambda pid: types.SimpleNamespace(parent = lambda: None),
+    )
+    patched.setitem(__import__("sys").modules, "psutil", fake_psutil)
+    assert s._port_is_ours() is False
+
+
+def test_readiness_accepts_our_own_child_and_its_descendants(patched):
+    import types
+
+    popen = _FakePopen()
+    s = _server_with(popen, _FakeClient(get = lambda url: _Resp(200, {})))
+
+    def _conns(owner_pid):
+        return [
+            types.SimpleNamespace(
+                laddr = types.SimpleNamespace(port = s.port), status = "LISTEN", pid = owner_pid
+            )
+        ]
+
+    # The spawned pid itself.
+    patched.setitem(
+        __import__("sys").modules,
+        "psutil",
+        types.SimpleNamespace(
+            CONN_LISTEN = "LISTEN",
+            net_connections = lambda kind = "inet": _conns(popen.pid),
+            Process = lambda pid: types.SimpleNamespace(parent = lambda: None),
+        ),
+    )
+    assert s._port_is_ours() is True
+
+    # A grandchild (wrapper script / shell) still counts as ours.
+    child_pid = popen.pid + 7
+
+    def _process(pid):
+        if pid == child_pid:
+            return types.SimpleNamespace(
+                parent = lambda: types.SimpleNamespace(pid = popen.pid, parent = lambda: None)
+            )
+        return types.SimpleNamespace(parent = lambda: None)
+
+    patched.setitem(
+        __import__("sys").modules,
+        "psutil",
+        types.SimpleNamespace(
+            CONN_LISTEN = "LISTEN",
+            net_connections = lambda kind = "inet": _conns(child_pid),
+            Process = _process,
+        ),
+    )
+    assert s._port_is_ours() is True
+
+
+def test_readiness_check_is_best_effort(patched):
+    # No psutil, an unreadable owner pid, or a raising lookup must never fail a healthy start.
+    import types
+
+    popen = _FakePopen()
+    s = _server_with(popen, _FakeClient(get = lambda url: _Resp(200, {})))
+
+    patched.setitem(__import__("sys").modules, "psutil", None)
+    assert s._port_is_ours() is True
+
+    def _boom(kind = "inet"):
+        raise PermissionError("not allowed")
+
+    patched.setitem(
+        __import__("sys").modules,
+        "psutil",
+        types.SimpleNamespace(CONN_LISTEN = "LISTEN", net_connections = _boom),
+    )
+    assert s._port_is_ours() is True
+
+    # Owner pid not visible (common for another user's process): unknown, so keep going.
+    patched.setitem(
+        __import__("sys").modules,
+        "psutil",
+        types.SimpleNamespace(
+            CONN_LISTEN = "LISTEN",
+            net_connections = lambda kind = "inet": [
+                types.SimpleNamespace(
+                    laddr = types.SimpleNamespace(port = s.port), status = "LISTEN", pid = None
+                )
+            ],
+        ),
+    )
+    assert s._port_is_ours() is True

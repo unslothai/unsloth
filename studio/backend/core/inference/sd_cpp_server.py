@@ -115,6 +115,27 @@ def _diagnostic_tail(
 _CANCEL_GRACE_S = 5.0
 
 
+def _has_ancestor(pid: int, ancestor_pid: int, *, max_depth: int = 8) -> bool:
+    """True if ``ancestor_pid`` is ``pid``'s parent (or grandparent, ...).
+
+    The listening socket can be held by a child of the process we spawned (a wrapper script, or a
+    shell on Windows), so an exact pid match alone would reject our own server. Depth-capped so a
+    pid-reuse cycle cannot loop."""
+    try:
+        import psutil
+
+        proc = psutil.Process(pid)
+        for _ in range(max_depth):
+            proc = proc.parent()
+            if proc is None:
+                return False
+            if proc.pid == ancestor_pid:
+                return True
+    except Exception:  # noqa: BLE001 -- gone / no permission: treat as unknown
+        return False
+    return False
+
+
 class SdCppServer:
     """A resident ``sd-server`` subprocess plus the HTTP client that drives it."""
 
@@ -283,13 +304,57 @@ class SdCppServer:
                 logger.error("sd-server exited early during load (code %s)", code)
                 return False
             try:
-                if self._client.get(url, timeout = 2.0).status_code == 200:
+                if self._client.get(url, timeout = 2.0).status_code == 200 and self._port_is_ours():
                     return True
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException):
                 pass
             time.sleep(interval)
         logger.error("sd-server readiness timed out after %ss", timeout)
         return False
+
+    def _port_is_ours(self) -> bool:
+        """True unless the 200 at ``/v1/models`` demonstrably came from someone else's process.
+
+        ``_find_free_port`` binds an ephemeral port, reads it and closes the socket, and sd-server
+        binds it only AFTER loading the model -- minutes for a multi-gigabyte checkpoint. Another
+        local process can take the port inside that window, and ``/v1/models`` is a stock
+        OpenAI-compatible route that llama.cpp's own server (and a second Studio) answers 200 on,
+        so readiness would pass and every generation would be posted to an unrelated listener.
+
+        Verifying the listener really belongs to our child closes that. Best-effort by design:
+        psutil is optional, and reading another process' connections needs privileges on some
+        platforms, so anything short of a definite "that port belongs to a DIFFERENT pid" keeps
+        today's behaviour rather than failing a healthy start."""
+        proc = self._process
+        if proc is None or proc.pid is None:
+            return True
+        try:
+            import psutil
+        except Exception:  # noqa: BLE001 -- optional dependency
+            return True
+        try:
+            for conn in psutil.net_connections(kind = "inet"):
+                laddr = getattr(conn, "laddr", None)
+                if not laddr or getattr(laddr, "port", None) != self.port:
+                    continue
+                if conn.status != psutil.CONN_LISTEN:
+                    continue
+                owner = conn.pid
+                if owner is None:
+                    continue  # not visible to us; do not punish a healthy start
+                if owner == proc.pid or _has_ancestor(owner, proc.pid):
+                    return True
+                logger.error(
+                    "sd-server readiness port %s is held by pid %s, not our child %s; "
+                    "refusing to use it",
+                    self.port,
+                    owner,
+                    proc.pid,
+                )
+                return False
+        except Exception as exc:  # noqa: BLE001 -- permissions / platform quirks
+            logger.debug("sd-server port ownership check unavailable: %s", exc)
+        return True
 
     def _drain_stdout(self, proc: subprocess.Popen) -> None:
         """Drain stdout so the pipe never deadlocks; keep a tail for diagnostics and
