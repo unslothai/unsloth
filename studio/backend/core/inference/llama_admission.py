@@ -272,9 +272,8 @@ class LlamaAdmissionQueue:
             # ticket has already been promised the next slot, and without counting those
             # here a stream of new arrivals took it first, forever.
             if (
-                (self._active - self._parked + len(self._unpark_tickets)) < self._capacity
-                and not self._waiters
-            ):
+                self._active - self._parked + len(self._unpark_tickets)
+            ) < self._capacity and not self._waiters:
                 self._active += 1
                 return LlamaAdmissionReservation(
                     queue = self,
