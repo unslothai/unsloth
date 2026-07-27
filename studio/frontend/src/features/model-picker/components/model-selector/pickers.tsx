@@ -720,6 +720,7 @@ function GgufVariantExpander({
   onSelect,
   gpuGb,
   systemRamGb,
+  budgetKnown = false,
   hfToken,
   parentOptionKey,
   onNavigatePastStart,
@@ -735,6 +736,7 @@ function GgufVariantExpander({
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   gpuGb?: number;
   systemRamGb?: number;
+  budgetKnown?: boolean;
   /** HF token threaded into the variant fetch so private/gated repos resolve
    *  their GGUF variants (and update badges). */
   hfToken?: string;
@@ -854,8 +856,9 @@ function GgufVariantExpander({
 
   const getGgufFit = useCallback(
     (sizeBytes: number): "fits" | "tight" | "oom" => {
-      // No device budget at all: can't classify, so don't show OOM badges.
-      if (totalBudgetGb <= 0) return "fits";
+      // Preserve permissive behavior only when no budget was measured. A known
+      // zero Vulkan budget means every non-empty variant is OOM.
+      if (totalBudgetGb <= 0) return budgetKnown ? "oom" : "fits";
       const gb = sizeBytes / 1024 ** 3;
       if (gb <= 0 || gb <= gpuBudgetGb) return "fits";
       // No-GPU / unified-memory hosts (Mac) have only the RAM budget, so the tier
@@ -864,13 +867,17 @@ function GgufVariantExpander({
       if (gb <= totalBudgetGb) return "tight";
       return "oom";
     },
-    [gpuBudgetGb, totalBudgetGb],
+    [budgetKnown, gpuBudgetGb, totalBudgetGb],
   );
 
   // If the recommended variant is OOM, pick the largest fitting one;
   // if all are OOM, recommend the smallest.
   const effectiveRecommended = useMemo(() => {
-    if (!variants || variants.length === 0 || totalBudgetGb <= 0) {
+    if (
+      !variants ||
+      variants.length === 0 ||
+      (totalBudgetGb <= 0 && !budgetKnown)
+    ) {
       return defaultVariant;
     }
     const defaultV = variants.find((v) => v.quant === defaultVariant);
@@ -885,7 +892,7 @@ function GgufVariantExpander({
     // All OOM -- recommend smallest (most likely to partially run)
     const sorted = [...variants].sort((a, b) => a.size_bytes - b.size_bytes);
     return sorted[0]?.quant ?? defaultVariant;
-  }, [variants, defaultVariant, totalBudgetGb, getGgufFit]);
+  }, [variants, defaultVariant, totalBudgetGb, budgetKnown, getGgufFit]);
 
   const sortedVariants = useMemo(() => {
     if (!variants) return variants;
@@ -1906,6 +1913,7 @@ export function HubModelPicker({
           r.estimatedSizeBytes ??
           (params ? estimateQuantBytes(params) : undefined);
         const hasDeviceBudget =
+          inferenceGpu.budgetKnown ||
           inferenceGpu.memoryTotalGb > 0 ||
           inferenceGpu.systemRamAvailableGb > 0;
         const exceeds =
@@ -1915,6 +1923,7 @@ export function HubModelPicker({
             sizeBytes,
             gpuGb: inferenceGpu.memoryTotalGb,
             systemRamGb: inferenceGpu.systemRamAvailableGb,
+            budgetKnown: inferenceGpu.budgetKnown,
           });
         map.set(r.id, {
           meta,
@@ -2912,6 +2921,7 @@ export function HubModelPicker({
             onNavigatePastEnd={() => hubModelList.moveFocus(optionKey, "next")}
             gpuGb={inferenceGpu.available ? inferenceGpu.memoryTotalGb : undefined}
             systemRamGb={inferenceGpu.systemRamAvailableGb || undefined}
+            budgetKnown={inferenceGpu.budgetKnown}
             variantActions={{
               onUpdate: (quant, expectedBytes) =>
                 updateGgufVariant(c.repo_id, quant, expectedBytes),
@@ -3703,6 +3713,7 @@ export function HubModelPicker({
                                   systemRamGb={
                                     inferenceGpu.systemRamAvailableGb || undefined
                                   }
+                                  budgetKnown={inferenceGpu.budgetKnown}
                                 />
                               )}
                           </div>
@@ -3828,6 +3839,7 @@ export function HubModelPicker({
                                 systemRamGb={
                                   inferenceGpu.systemRamAvailableGb || undefined
                                 }
+                                budgetKnown={inferenceGpu.budgetKnown}
                               />
                             )}
                           </div>
@@ -3943,6 +3955,7 @@ export function HubModelPicker({
                                 systemRamGb={
                                   inferenceGpu.systemRamAvailableGb || undefined
                                 }
+                                budgetKnown={inferenceGpu.budgetKnown}
                               />
                             )}
                           </div>
@@ -4041,6 +4054,7 @@ export function HubModelPicker({
                                 systemRamGb={
                                   inferenceGpu.systemRamAvailableGb || undefined
                                 }
+                                budgetKnown={inferenceGpu.budgetKnown}
                                 variantActions={{
                                   onDelete: async (quant) => {
                                     await deleteCachedModel(
@@ -4158,6 +4172,7 @@ export function HubModelPicker({
                               systemRamGb={
                                 inferenceGpu.systemRamAvailableGb || undefined
                               }
+                              budgetKnown={inferenceGpu.budgetKnown}
                               variantActions={{
                                 onDelete: async (quant) => {
                                   await deleteCachedModel(
@@ -4271,6 +4286,7 @@ export function HubModelPicker({
                                 systemRamGb={
                                   inferenceGpu.systemRamAvailableGb || undefined
                                 }
+                                budgetKnown={inferenceGpu.budgetKnown}
                                 variantActions={{
                                   onDelete: async (quant) => {
                                     await deleteCachedModel(
@@ -4353,6 +4369,7 @@ function FineTunedRows({
   setExpandedGguf: Dispatch<SetStateAction<string | null>>;
   gpu: {
     available: boolean;
+    budgetKnown: boolean;
     memoryTotalGb: number;
     systemRamAvailableGb: number;
   };
@@ -4489,6 +4506,7 @@ function FineTunedRows({
                 }
                 gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                 systemRamGb={gpu.systemRamAvailableGb || undefined}
+                budgetKnown={gpu.budgetKnown}
                 sourceOverride={isExportedGguf ? "exported" : undefined}
                 variantActions={{
                   deleteTitle: "Delete exported GGUF variant?",

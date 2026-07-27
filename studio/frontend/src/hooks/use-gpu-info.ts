@@ -10,6 +10,7 @@ import {
 
 export interface GpuInfo {
   available: boolean;
+  budgetKnown: boolean;
   name: string;
   memoryTotalGb: number;
   cpuCore: number;
@@ -33,6 +34,7 @@ export interface SystemGpuDevice {
 
 const DEFAULT_GPU: GpuInfo = {
   available: false,
+  budgetKnown: false,
   name: "Unknown",
   memoryTotalGb: 0,
   cpuCore: 0,
@@ -81,7 +83,7 @@ function toGpuInfo(
       : data?.gpu;
   const devices = gpuData?.devices ?? [];
   if (!gpuData?.available || !devices.length) {
-    return { ...DEFAULT_GPU, ...base };
+    return { ...DEFAULT_GPU, ...base, budgetKnown: data !== null };
   }
   return {
     ...base,
@@ -91,6 +93,7 @@ function toGpuInfo(
       ? 0
       : base.systemRamAvailableGb,
     available: true,
+    budgetKnown: true,
     name: devices[0]?.name ?? "Unknown",
     memoryTotalGb: aggregateGpuMemoryTotalGb(devices),
   };
