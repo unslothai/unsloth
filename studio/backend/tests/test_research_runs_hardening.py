@@ -279,8 +279,7 @@ def test_decision_inputs_fit_question_and_complete_plan_steps():
     plan = {
         "title": "Research plan",
         "steps": [
-            {"title": f"Step {index}", "query": "evidence " + "x" * 300}
-            for index in range(12)
+            {"title": f"Step {index}", "query": "evidence " + "x" * 300} for index in range(12)
         ],
     }
     total = 4_096

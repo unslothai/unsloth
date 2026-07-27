@@ -587,10 +587,7 @@ def _fit_source_catalog(catalog: str, max_chars: int) -> str:
 
 
 def _fit_decision_inputs(
-    question: str,
-    plan: dict,
-    system_chars: int,
-    total_budget: int | None,
+    question: str, plan: dict, system_chars: int, total_budget: int | None
 ) -> tuple[str, str]:
     """Fit the decision question and plan while keeping the plan valid JSON."""
     full_plan = json.dumps(plan, ensure_ascii = False)
