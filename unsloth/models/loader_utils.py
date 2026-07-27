@@ -1139,7 +1139,9 @@ def _resolve_hub_repo_local_dir(
     *,
     token = None,
     cache_dir = None,
-    local_files_only = False,
+    # Default closed: a "resolve local dir" helper must not download. False here
+    # means five filenames each retried with backoff before it gives up.
+    local_files_only = True,
     filenames = (
         "tokenizer_config.json",
         "config.json",
@@ -1184,7 +1186,7 @@ def _resolve_hub_repo_cached_file(
     *,
     token = None,
     cache_dir = None,
-    local_files_only = False,
+    local_files_only = True,
 ):
     """Return a cached file path under a Hub snapshot, or None if absent."""
     local_dir = _resolve_hub_repo_local_dir(

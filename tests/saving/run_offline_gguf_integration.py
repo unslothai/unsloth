@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """Download real Gemma weights and run offline integration tests for #7481.
 
 Example:
@@ -11,10 +14,13 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO = "unsloth/gemma-3-270m-it-bnb-4bit"
-CACHE_ROOT = Path(os.environ.get("HF_HOME", "/tmp/hf_offline_test_cache"))
+CACHE_ROOT = Path(
+    os.environ.get("HF_HOME") or os.path.join(tempfile.gettempdir(), "hf_offline_test_cache")
+)
 
 
 def download():

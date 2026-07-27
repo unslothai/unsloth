@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """Offline GGUF export must not probe the Hub for VLM tokenizer metadata (issue #7481).
 
 Regression for ``PreTrainedTokenizerFast.from_pretrained`` on a repo id calling
@@ -177,9 +180,11 @@ def test_has_tokenizer_model_offline_skips_model_info(tmp_path, monkeypatch):
 
     tok = SimpleNamespace(name_or_path = _REPO)
 
+    # A raising side_effect proves nothing: _has_tokenizer_model wraps the call
+    # in `except Exception: return False`, so it passes with the fix reverted.
     with patch("huggingface_hub.HfApi.model_info") as model_info:
-        model_info.side_effect = AssertionError("model_info must not run offline")
         assert _has_tokenizer_model(tok, token = None) is False
+    assert model_info.call_count == 0
 
 
 def test_has_tokenizer_model_probes_cache_before_model_info(tmp_path, monkeypatch):
@@ -214,5 +219,5 @@ def test_has_tokenizer_model_local_files_only_skips_model_info(tmp_path, monkeyp
     )
 
     with patch("huggingface_hub.HfApi.model_info") as model_info:
-        model_info.side_effect = AssertionError("model_info must not run with local_files_only")
         assert _has_tokenizer_model(tok, token = None) is False
+    assert model_info.call_count == 0

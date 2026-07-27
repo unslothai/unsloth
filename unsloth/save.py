@@ -54,7 +54,6 @@ import re
 from transformers.models.llama.modeling_llama import logger
 from .models.loader_utils import (
     get_model_name,
-    _env_says_offline,
     _resolve_hub_repo_cached_file,
     _tokenizer_wants_local_only,
 )
@@ -3839,7 +3838,6 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
 
 from .models.loader_utils import (
     get_model_name,
-    _env_says_offline,
     _resolve_hub_repo_cached_file,
     _tokenizer_wants_local_only,
 )
