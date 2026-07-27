@@ -80,7 +80,7 @@ class _Scan(NamedTuple):
 
     legacy: bool  # enough evidence to trust keys from the codepage reading
     readable: bool  # the file could be read at all
-    saw_non_utf8: bool  # some line is bytes UTF-8 cannot decode
+    saw_non_ascii: bool  # some line carries bytes whose reading depends on encoding
     utf8_keys: set  # keys from lines UTF-8 could read
     legacy_keys: set  # keys only the codepage reading yields
 
@@ -150,8 +150,9 @@ class JsonlWriter:
             self._count_seen_keys = scan.utf8_keys
             if scan.legacy:
                 self._count_seen_keys |= scan.legacy_keys
-            if scan.saw_non_utf8 or not scan.readable:
-                # The file holds bytes UTF-8 cannot read, or we could not look.
+            if scan.saw_non_ascii or not scan.readable:
+                # The file holds bytes whose meaning depends on the encoding, or
+                # we could not look.
                 # It is never converted: the encoding that wrote it cannot be
                 # recovered from its bytes, and guessing mojibakes the records.
                 # Appending UTF-8 would add a second encoding, so append pure
@@ -189,7 +190,7 @@ class JsonlWriter:
         """
         legacy_votes = 0
         utf8_votes = 0
-        saw_non_utf8 = False
+        saw_non_ascii = False
         utf8_keys: set[str] = set()
         legacy_keys: set[str] = set()
         try:
@@ -197,14 +198,14 @@ class JsonlWriter:
                 for raw in handle:
                     line = raw.strip()
                     reading = _read_line(line, self._codepage)
-                    if reading.as_utf8 is None:
-                        saw_non_utf8 = True
-                    if line.isascii():
-                        pass  # identical either way, so it casts no vote
-                    elif reading.as_utf8 is None and reading.as_legacy is not None:
-                        legacy_votes += 1
-                    elif reading.as_utf8 is not None:
-                        utf8_votes += 1
+                    # An ASCII line reads the same under every encoding, so it
+                    # neither votes nor constrains what may be appended.
+                    if not line.isascii():
+                        saw_non_ascii = True
+                        if reading.as_utf8 is None and reading.as_legacy is not None:
+                            legacy_votes += 1
+                        elif reading.as_utf8 is not None:
+                            utf8_votes += 1
                     # Keys are kept apart so a damaged line in a healthy shard
                     # does not mark its record seen and block the retry that
                     # would replace it.
@@ -221,7 +222,7 @@ class JsonlWriter:
         return _Scan(
             legacy_votes > 1 and legacy_votes > utf8_votes,
             True,
-            saw_non_utf8,
+            saw_non_ascii,
             utf8_keys,
             legacy_keys,
         )

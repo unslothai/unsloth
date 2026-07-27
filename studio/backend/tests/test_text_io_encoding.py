@@ -285,6 +285,33 @@ def test_a_moved_shard_is_not_rewritten_by_guesswork(
     assert [row["author"] for row in rows] == [word, word, "Grüße"]
 
 
+def test_an_all_ambiguous_shard_still_gets_ascii_appends(tmp_path: Path) -> None:
+    """Every line valid under both readings still means the append must not pick one."""
+    path = tmp_path / "out.jsonl"
+    ambiguous = "Р°"  # cp1251 D0 B0, also valid UTF-8 for "а"
+    path.write_bytes(
+        b"".join(
+            json.dumps({"id": i, "a": ambiguous}, ensure_ascii = False).encode("cp1251") + b"\n"
+            for i in range(3)
+        )
+    )
+    before = path.read_bytes()
+
+    writer = _load_state_store("cp1251").JsonlWriter(path)
+    try:
+        assert writer.write({"id": 9, "a": "世界"}) is True
+    finally:
+        writer.close()
+
+    blob = path.read_bytes()
+    assert blob.startswith(before)
+    # ASCII, so the appended record survives whichever reading is chosen.
+    assert blob[len(before) :].isascii()
+    for codec in ("cp1251", "utf-8"):
+        rows = [json.loads(x) for x in blob.decode(codec).splitlines() if x.strip()]
+        assert rows[-1]["a"] == "世界"
+
+
 def test_a_damaged_line_in_an_ascii_shard_does_not_block_its_retry(tmp_path: Path) -> None:
     """With no non-ASCII records to outvote it, one damaged line is still damage."""
     path = tmp_path / "out.jsonl"
