@@ -463,7 +463,7 @@ def _read_marker_value(marker: Path) -> Optional[str]:
         if not marker.exists():
             return None
         value = marker.read_text(encoding = "utf-8").strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     return value if value in VALID_TRANSPORTS else None
 

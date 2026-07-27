@@ -1078,7 +1078,9 @@ def install_lock(lock_path: Path) -> Iterator[None]:
             except FileExistsError:
                 stale = False
                 try:
-                    raw = lock_path.read_text(encoding = "utf-8").strip()
+                    # errors="replace" so an undecodable lock reaches the int()
+                    # below and is treated as a corrupt PID, not retried forever.
+                    raw = lock_path.read_text(encoding = "utf-8", errors = "replace").strip()
                 except FileNotFoundError:
                     # Lock vanished between our open and read -- retry
                     continue
@@ -2070,7 +2072,7 @@ def load_prebuilt_metadata(ops: ModuleOps, install_dir: Path) -> dict[str, Any] 
         return None
     try:
         payload = json.loads(path.read_text(encoding = "utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
 
