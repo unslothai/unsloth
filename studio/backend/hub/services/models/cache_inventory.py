@@ -586,8 +586,7 @@ def _weightful_snapshot_path(repo_path: Path) -> Optional[Path]:
     non-GGUF resolvers' complete-revision predicate)."""
     return _newest_snapshot_where(
         repo_path,
-        lambda names: "config.json" in names
-        and any(n.endswith(".safetensors") for n in names),
+        lambda names: "config.json" in names and any(n.endswith(".safetensors") for n in names),
     )
 
 

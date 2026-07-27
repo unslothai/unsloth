@@ -5168,9 +5168,7 @@ async def _load_model_impl(
         # (which performs no offline-mode check). GGUF sizing already reads
         # the cached file under its own local-only handling.
         _guard_identifier = (
-            config.path
-            if request.local_files_only and not config.is_gguf
-            else model_identifier
+            config.path if request.local_files_only and not config.is_gguf else model_identifier
         )
         await asyncio.to_thread(
             _guard_chat_load_against_training,
