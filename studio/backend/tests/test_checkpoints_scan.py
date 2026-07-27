@@ -254,3 +254,50 @@ def test_scan_checkpoints_prefers_exact_history_match_over_newer_suffix(tmp_path
     models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
 
     assert models[0][2]["base_model"] == "correct/base"
+
+
+def test_scan_checkpoints_discovers_interrupted_run_without_history(tmp_path, monkeypatch):
+    outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
+    run_dir = outputs_dir / "copied-training-run"
+    older = run_dir / "checkpoint-20"
+    newer = run_dir / "checkpoint-100"
+    older.mkdir(parents = True)
+    newer.mkdir()
+    (older / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/old", "peft_type": "LORA", "r": 8})
+    )
+    (newer / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/model", "peft_type": "LORA", "r": 16})
+    )
+    (newer / "trainer_state.json").write_text(
+        json.dumps({"log_history": [{"loss": 0.25}]})
+    )
+    monkeypatch.setattr(
+        checkpoints_module,
+        "get_connection",
+        lambda: (_ for _ in ()).throw(RuntimeError("history unavailable")),
+    )
+
+    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
+
+    assert len(models) == 1
+    name, checkpoints, metadata = models[0]
+    assert name == "copied-training-run"
+    assert [checkpoint[0] for checkpoint in checkpoints] == ["checkpoint-100", "checkpoint-20"]
+    assert checkpoints[0][2] == 0.25
+    assert metadata == {
+        "base_model": "org/model",
+        "peft_type": "LORA",
+        "lora_rank": 16,
+    }
+
+
+def test_scan_checkpoints_ignores_non_model_checkpoint_folders(tmp_path, monkeypatch):
+    outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
+    incomplete = outputs_dir / "empty-training-run" / "checkpoint-10"
+    incomplete.mkdir(parents = True)
+    (incomplete / "trainer_state.json").write_text("{}")
+
+    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
+
+    assert models == []
