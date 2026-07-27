@@ -14,14 +14,15 @@ import {
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
 import { openLink } from "@/lib/open-link";
-import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
+import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
 import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Block, type BlockProps, Streamdown, defaultUrlTransform, type UrlTransform } from "streamdown";
+import { Block, type BlockProps, Streamdown } from "streamdown";
 import { createCodePlugin } from "./code-plugin";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
@@ -368,22 +369,6 @@ function useRafCoalescedText(text: string, isStreaming: boolean): string {
   return text;
 }
 
-const safeImageUrl: UrlTransform = (url, _key, node) => {
-  // Only images are restricted; links/other nodes use the default transform.
-  if (node.tagName !== "img") return defaultUrlTransform(url, _key, node);
-
-  // Strip ASCII controls first: browsers drop them mid-parse, so a value like
-  // "\t//attacker.com" would otherwise slip past the guards below.
-  // eslint-disable-next-line no-control-regex
-  const normalized = url.replace(/[\x00-\x1f\x7f]/g, "").trim();
-  const lower = normalized.toLowerCase();
-
-  if (lower.startsWith("data:") || lower.startsWith("blob:")) return normalized;
-  if (/^[/\\]{2}/.test(normalized)) return null; // protocol-relative: // \\ /\ \/
-  if (/^[a-zA-Z][a-zA-Z0-9+\-.]*:/.test(normalized)) return null; // scheme prefix (colon later in path is fine)
-  return normalized; // relative -> same-origin
-};
-
 const MarkdownTextImpl = () => {
   const { text, status } = useMessagePartText();
   const displayText = useRafCoalescedText(text, status.type === "running");
@@ -404,7 +389,7 @@ const MarkdownTextImpl = () => {
         isAnimating={status.type === "running"}
         plugins={{ code, math, mermaid }}
         components={STREAMDOWN_COMPONENTS}
-        urlTransform={safeImageUrl}
+        urlTransform={safeMarkdownUrl}
         controls={{
           code: false,
           mermaid: {

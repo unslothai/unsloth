@@ -199,7 +199,9 @@ def _indexed_shard_paths(
                 inconclusive = True  # transient: an index that might exist could not be read
                 continue
             try:
-                weight_map = (json.loads(open(index_path).read()) or {}).get("weight_map") or {}
+                weight_map = (json.loads(open(index_path, encoding = "utf-8").read()) or {}).get(
+                    "weight_map"
+                ) or {}
                 for shard in weight_map.values():
                     shard_norm = _normalize_repo_path(str(shard))
                     # weight_map paths are relative to the index file's directory.
@@ -326,7 +328,7 @@ def _st_load_roots(snapshot: Path) -> list:
     roots = [snapshot]
     try:
         import json
-        modules = json.loads((snapshot / "modules.json").read_text())
+        modules = json.loads((snapshot / "modules.json").read_text(encoding = "utf-8"))
     except (OSError, ValueError):
         return roots  # no / invalid modules.json -> snapshot root is the only load root
     for module in modules or ():

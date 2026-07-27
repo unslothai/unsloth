@@ -147,9 +147,15 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     )
     from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir, lmstudio_model_dirs
     from utils.hf_cache_settings import known_hf_hub_caches
+    from core.inference.model_ids import public_model_id
 
     index: dict[str, _LocalGgufEntry] = {}
     seen_hf: set[str] = set()
+
+    try:
+        active_root = str(Path(_resolve_hf_cache_dir()).resolve())
+    except Exception:
+        active_root = None
 
     def _scan_hf_once(directory) -> list:
         if directory is None:
@@ -162,7 +168,13 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             if rp in seen_hf:
                 return []
             seen_hf.add(rp)
-            return _scan_hf_cache(directory)
+            # Only the active cache loads by repo id. Say so, or an inactive repo is
+            # indexed under an id it cannot load by, and its snapshot basename (what
+            # /v1/models advertises once loaded by path) is never a key at all.
+            # No format classification here: nothing on this path reads model_format,
+            # and its recursive walk would duplicate the one _local_gguf_entry already
+            # does per snapshot, on the request path.
+            return _scan_hf_cache(directory, active_cache = rp == active_root, classify_format = False)
         except Exception as exc:  # a missing/malformed root must skip, never crash the index
             logger.debug("auto-switch: skipping HF cache dir %r: %s", directory, exc)
             return []
@@ -220,10 +232,59 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             continue
         # Index every alias (including the path) so a client can resolve by any of
         # them, even though only the non-path loader_id is advertised.
-        for key in (raw_id, getattr(info, "model_id", None), getattr(info, "display_name", None)):
+        for key in (
+            raw_id,
+            getattr(info, "model_id", None),
+            getattr(info, "display_name", None),
+            public_model_id(raw_id),
+        ):
             if key:
                 index.setdefault(key.strip().lower(), entry)
+        # Other revisions of the same repo resolve to their own weights, so a pin on
+        # one keeps working after Hugging Face writes a newer snapshot.
+        for name, sibling_entry in _sibling_revision_entries(raw_id, loader_id):
+            index.setdefault(name.strip().lower(), sibling_entry)
     return index
+
+
+def _sibling_revision_entries(raw_id: str, loader_id: str):
+    """Yield ``(revision_name, entry)`` for the repo's OTHER cached revisions.
+
+    An inactive-cache repo carries its snapshot path as the id, and /v1/models
+    advertises only that directory's basename once loaded, so anything durable
+    pinned to it (a subagent config) holds one revision hash. Hugging Face writes a
+    new snapshot dir on every update, and the scan emits a single entry per repo
+    pointed at the newest one, so that pin would otherwise stop resolving and drop
+    through to whatever model is loaded.
+
+    Each revision gets an entry for its OWN directory rather than an alias onto the
+    scanned one: aliasing would redirect a pin that names an older complete revision
+    onto a newer half-downloaded snapshot and break a request that works today.
+    Incomplete revisions are skipped for the same reason.
+
+    Sibling names are only revisions inside a real cache repo
+    (``<root>/models--org--name/snapshots/<rev>``). A scan folder that merely happens
+    to be called ``snapshots`` holds unrelated models, and treating those as
+    revisions would silently serve one model in place of another.
+    """
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    snapshots = Path(raw_id).parent
+    if snapshots.name != "snapshots" or not snapshots.parent.name.startswith("models--"):
+        return
+    from routes.models import snapshot_variants_all_complete
+
+    try:
+        siblings = [p for p in snapshots.iterdir() if p.is_dir() and p.name != Path(raw_id).name]
+    except OSError:
+        return
+    for sibling in siblings:
+        if not snapshot_variants_all_complete(str(sibling)):
+            continue
+        entry = _local_gguf_entry(loader_id, SimpleNamespace(path = str(sibling)))
+        if entry is not None:
+            yield sibling.name, entry
 
 
 def _index() -> dict[str, _LocalGgufEntry]:

@@ -20,7 +20,7 @@ class StateStore:
         self._data: Dict[str, Any] = {}
         if self.path.exists():
             try:
-                with self.path.open() as f:
+                with self.path.open(encoding = "utf-8") as f:
                     self._data = json.load(f)
             except Exception:
                 self._data = {}
@@ -51,7 +51,7 @@ class StateStore:
 
     def _flush(self) -> None:
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        with tmp.open("w") as f:
+        with tmp.open("w", encoding = "utf-8") as f:
             json.dump(self._data, f, indent = 2, default = str)
         os.replace(tmp, self.path)
 
@@ -63,12 +63,14 @@ class JsonlWriter:
         self.path = Path(path)
         self.path.parent.mkdir(parents = True, exist_ok = True)
         self._lock = threading.Lock()
-        self._fh = self.path.open("a", buffering = 1)
+        self._fh = self.path.open("a", buffering = 1, encoding = "utf-8")
         self._count_seen_keys: set[str] = set()
         # Preload seen keys for dedup across resumes
         if self.path.exists() and self.path.stat().st_size > 0:
             try:
-                with self.path.open() as f:
+                # No guess is safe for a file an older build wrote in the
+                # operator's locale, so read past whatever will not decode.
+                with self.path.open(encoding = "utf-8", errors = "replace") as f:
                     for line in f:
                         try:
                             obj = json.loads(line)

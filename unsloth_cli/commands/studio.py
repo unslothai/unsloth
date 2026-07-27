@@ -335,7 +335,7 @@ def _iter_editable_studio_source_roots(venv_dir: Path):
             for finder in sp.glob("__editable___*_finder.py"):
                 try:
                     src = finder.read_text(encoding = "utf-8")
-                except OSError:
+                except (OSError, UnicodeDecodeError):
                     continue
                 # Tolerate single- or multi-line dict literals; [^}]* still
                 # rejects nested dicts, which the setuptools template never
@@ -719,7 +719,7 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
             # credential after a later reset-password deletes auth.db. Mirrors
             # backend clear_bootstrap_password().
             try:
-                stale_path.write_text("")
+                stale_path.write_text("", encoding = "utf-8")
                 cleared = True
             except OSError:
                 cleared = False
@@ -2406,7 +2406,7 @@ def stop():
         typer.echo("No running Unsloth server found (no PID file).")
         raise typer.Exit(0)
 
-    pid_text = _PID_FILE.read_text().strip()
+    pid_text = _PID_FILE.read_text(encoding = "utf-8").strip()
     if not pid_text.isdigit():
         typer.echo(f"Invalid PID file contents: {pid_text}")
         _PID_FILE.unlink(missing_ok = True)
@@ -2863,7 +2863,7 @@ def reset_password():
             path.unlink(missing_ok = True)
         except OSError:
             try:
-                path.write_text("")
+                path.write_text("", encoding = "utf-8")
             except OSError as exc:
                 typer.echo(
                     f"Error: could not remove or clear {path.name} ({exc}); delete "
