@@ -377,7 +377,9 @@ def test_slots_fall_back_to_one_without_kv_unified():
     clamp = src.find("supports_kv_unified")
     assert clamp != -1, "load_model must check for --kv-unified before honouring the slots"
     block = src[clamp : clamp + 700]
-    assert "n_parallel > 1" in src[clamp - 300 : clamp], "only an explicit multi-slot load is clamped"
+    assert (
+        "n_parallel > 1" in src[clamp - 300 : clamp]
+    ), "only an explicit multi-slot load is clamped"
     assert "n_parallel = 1" in block
 
 
