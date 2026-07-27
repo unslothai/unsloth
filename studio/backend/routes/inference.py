@@ -4129,8 +4129,7 @@ def _guard_chat_load_against_training(
             if not requested_gpu_ids:
                 gpu_memory = LlamaCppBackend._vulkan_auto_gpu_memory(gpu_memory)
             vulkan_free_vram_gb = {
-                index: free_mib / 1024.0
-                for index, free_mib, _total_mib in gpu_memory
+                index: free_mib / 1024.0 for index, free_mib, _total_mib in gpu_memory
             }
         elif is_vulkan_backend and diffusion_kind is None:
             # Until the header is available, the model may use either the Vulkan

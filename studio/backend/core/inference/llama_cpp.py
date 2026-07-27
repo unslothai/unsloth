@@ -3549,9 +3549,7 @@ class LlamaCppBackend:
             return []
 
     @staticmethod
-    def _vulkan_auto_gpu_memory(
-        gpus: list[tuple[int, int, int]],
-    ) -> list[tuple[int, int, int]]:
+    def _vulkan_auto_gpu_memory(gpus: list[tuple[int, int, int]]) -> list[tuple[int, int, int]]:
         """Prefer discrete devices for automatic Vulkan placement."""
         discrete = [gpu for gpu in gpus if gpu[2] > 0]
         return discrete or gpus
@@ -6981,11 +6979,7 @@ class LlamaCppBackend:
                     # per-GPU headroom (correct when the GPU is already partly used).
                     # Pass binary so a Vulkan build probes ggml's Vulkan ordinals.
                     _gpu_mem = self._get_gpu_memory(binary)
-                    if (
-                        is_vulkan_backend
-                        and not gpu_ids
-                        and gpu_memory_mode != "manual"
-                    ):
+                    if is_vulkan_backend and not gpu_ids and gpu_memory_mode != "manual":
                         _gpu_mem = self._vulkan_auto_gpu_memory(_gpu_mem)
                     gpus = [(idx, free) for idx, free, _t in _gpu_mem]
                     # Restrict the fit (and thus the layer plan + pin env) to the
