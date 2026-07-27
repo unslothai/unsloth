@@ -47,12 +47,11 @@ def _offline_env(monkeypatch):
 
 def _resolve_snapshot(cache_dir: Path) -> Path:
     from huggingface_hub import hf_hub_download
-
     path = hf_hub_download(
         REPO,
         "tokenizer_config.json",
-        cache_dir=str(cache_dir),
-        local_files_only=True,
+        cache_dir = str(cache_dir),
+        local_files_only = True,
     )
     return Path(path).parent
 
@@ -78,7 +77,7 @@ def test_real_cached_tokenizer_loads_from_snapshot_not_repo_id(monkeypatch):
     from transformers import PreTrainedTokenizerFast
 
     snap = _resolve_snapshot(CACHE_ROOT / "hub")
-    tok = PreTrainedTokenizerFast.from_pretrained(str(snap), local_files_only=True)
+    tok = PreTrainedTokenizerFast.from_pretrained(str(snap), local_files_only = True)
     assert tok.vocab_size > 0
 
     # Repo-id path is what triggered model_info() offline in #7481; snapshot path is the fix.
@@ -89,7 +88,7 @@ def test_real_cached_tokenizer_loads_from_snapshot_not_repo_id(monkeypatch):
 @pytest.mark.integration
 @pytest.mark.skipif(
     os.environ.get("UNSLOTH_INTEGRATION_IMPORT") != "1",
-    reason="full unsloth import needs GPU host; set UNSLOTH_INTEGRATION_IMPORT=1 to enable",
+    reason = "full unsloth import needs GPU host; set UNSLOTH_INTEGRATION_IMPORT=1 to enable",
 )
 def test_real_cached_unsloth_helpers_offline(monkeypatch):
     _require_cached_repo()
@@ -103,8 +102,8 @@ def test_real_cached_unsloth_helpers_offline(monkeypatch):
 
     tok = _load_pretrained_tokenizer_fast(
         REPO,
-        local_files_only=True,
-        cache_dir=str(CACHE_ROOT / "hub"),
+        local_files_only = True,
+        cache_dir = str(CACHE_ROOT / "hub"),
     )
     assert tok.vocab_size > 0
-    assert _has_tokenizer_model(SimpleNamespace(name_or_path=REPO, tokenizer=None)) is True
+    assert _has_tokenizer_model(SimpleNamespace(name_or_path = REPO, tokenizer = None)) is True

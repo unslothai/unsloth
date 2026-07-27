@@ -21,7 +21,7 @@ def download():
     from huggingface_hub import snapshot_download
 
     os.environ.setdefault("HF_HOME", str(CACHE_ROOT))
-    path = snapshot_download(REPO, cache_dir=str(CACHE_ROOT / "hub"))
+    path = snapshot_download(REPO, cache_dir = str(CACHE_ROOT / "hub"))
     print("cached at", path)
 
 
@@ -35,14 +35,14 @@ def run_tests():
         "tests/saving/test_offline_gguf_real_cache_integration.py",
         "-q",
     ]
-    raise SystemExit(subprocess.call(cmd, cwd=str(Path(__file__).resolve().parents[2])))
+    raise SystemExit(subprocess.call(cmd, cwd = str(Path(__file__).resolve().parents[2])))
 
 
 def main():
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--download-only", action="store_true")
+    parser.add_argument("--download-only", action = "store_true")
     args = parser.parse_args()
     download()
     if not args.download_only:
