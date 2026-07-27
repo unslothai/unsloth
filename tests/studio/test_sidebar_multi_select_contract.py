@@ -83,7 +83,7 @@ def test_escape_leaves_a_dismissed_dialog_to_keep_the_batch():
     # Escape dismisses the top layer; taking it here as well would make keyboard
     # cancel the one path that loses the batch that Cancel and the backdrop keep.
     hook = _hook()
-    assert "const DIALOG_LAYER_SELECTOR = '[role=\"dialog\"], [role=\"alertdialog\"]';" in hook
+    assert 'const DIALOG_LAYER_SELECTOR = \'[role="dialog"], [role="alertdialog"]\';' in hook
     block = _between(hook, "const onKeyDown = (event: KeyboardEvent)", "window.addEventListener")
     assert 'if (event.key !== "Escape") return;' in block
     assert "if (target?.closest(DIALOG_LAYER_SELECTOR)) return;" in block
@@ -186,9 +186,7 @@ def test_bulk_delete_clears_only_the_batch_it_captured():
     sidebar = _sidebar()
     chats = _between(sidebar, 'if (target.kind === "chats-bulk")', 'if (target.kind === "chat")')
     runs = _between(sidebar, 'if (target.kind === "runs-bulk")', "if (target.run.status ===")
-    assert (
-        "chatRecentsSelection.deselectIds(target.items.map((item) => item.id));" in chats
-    )
+    assert "chatRecentsSelection.deselectIds(target.items.map((item) => item.id));" in chats
     assert "runRecentsSelection.deselectIds(target.runs.map((run) => run.id));" in runs
     assert "clearSelection()" not in chats
     assert "clearSelection()" not in runs
