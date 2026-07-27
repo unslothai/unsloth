@@ -63,6 +63,46 @@ def test_remove_empty_variant_dirs_never_touches_populated_folder(tmp_path):
     assert len(list((snap / "UD-IQ1_M").iterdir())) == 2
 
 
+def test_remove_empty_variant_dirs_matches_pre_7460_base_quant(tmp_path):
+    # An interrupted split download of Q6_K-MTP leaves a folder that a key stored
+    # before #7460 (Q6_K) no longer names, so the delete left it behind and the
+    # listing kept showing a phantom 0-byte cleanable row.
+    snap = tmp_path / "snapshots" / "rev0"
+    (snap / "Q6_K-MTP").mkdir(parents = True)
+    repo = SimpleNamespace(repo_path = str(tmp_path))
+
+    removed, failures = deletion._remove_empty_variant_dirs([repo], "Q6_K")
+
+    assert (removed, failures) == (1, [])
+    assert not (snap / "Q6_K-MTP").exists()
+
+
+def test_remove_empty_variant_dirs_rejects_ambiguous_base_quant(tmp_path):
+    snap = tmp_path / "snapshots" / "rev0"
+    (snap / "Q6_K-MTP").mkdir(parents = True)
+    (snap / "Q6_K-PT-MTP").mkdir(parents = True)
+    repo = SimpleNamespace(repo_path = str(tmp_path))
+
+    removed, failures = deletion._remove_empty_variant_dirs([repo], "Q6_K")
+
+    assert (removed, failures) == (0, [])
+    assert (snap / "Q6_K-MTP").is_dir()
+    assert (snap / "Q6_K-PT-MTP").is_dir()
+
+
+def test_remove_empty_variant_dirs_exact_folder_wins_over_flavored(tmp_path):
+    snap = tmp_path / "snapshots" / "rev0"
+    (snap / "Q6_K").mkdir(parents = True)
+    (snap / "Q6_K-MTP").mkdir(parents = True)
+    repo = SimpleNamespace(repo_path = str(tmp_path))
+
+    removed, failures = deletion._remove_empty_variant_dirs([repo], "Q6_K")
+
+    assert (removed, failures) == (1, [])
+    assert not (snap / "Q6_K").exists()
+    assert (snap / "Q6_K-MTP").is_dir()
+
+
 def test_remove_empty_variant_dirs_surfaces_real_failure(tmp_path, monkeypatch):
     _make_snapshot(tmp_path)
     repo = SimpleNamespace(repo_path = str(tmp_path))

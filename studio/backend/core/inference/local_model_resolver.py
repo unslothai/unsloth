@@ -272,6 +272,16 @@ def resolve_local_gguf(requested: str) -> Optional[tuple[str, Optional[str], str
         for v in entry.variants:
             if v.lower() == wanted:
                 return entry.load_path, v, entry.loader_id
+        # A client config pinned repo:Q6_K before #7460 relabeled the file
+        # Q6_K-MTP. Without this the pin silently stops routing and the request
+        # is answered by whatever model is resident. Lone flavor only.
+        from hub.utils.gguf import compatible_base_quant_label
+
+        compatible = compatible_base_quant_label(wanted, entry.variants)
+        if compatible is not None:
+            for v in entry.variants:
+                if v.lower() == compatible:
+                    return entry.load_path, v, entry.loader_id
         return None
     except Exception:
         # Best-effort: any resolver failure falls through to the loaded model,

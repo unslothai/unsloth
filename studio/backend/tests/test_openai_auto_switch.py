@@ -289,9 +289,9 @@ def test_openai_compat_routes_bound_to_handlers_with_auth():
     for key, handler in expected.items():
         assert key in seen, f"route {key} is not registered"
         route = seen[key]
-        assert (
-            route.endpoint.__name__ == handler
-        ), f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        assert route.endpoint.__name__ == handler, (
+            f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        )
         deps = [d.call.__name__ for d in route.dependant.dependencies]
         assert "get_current_subject" in deps, f"{key} lost its auth dependency"
 
@@ -365,6 +365,48 @@ def test_resolver_matches_and_splits_variant(monkeypatch):
     assert resolver.resolve_local_gguf("unsloth/B-GGUF:Q8_0") is None
     assert resolver.resolve_local_gguf("totally/unknown") is None
     assert resolver.resolve_local_gguf("") is None
+
+
+def test_resolver_matches_pre_7460_base_quant(monkeypatch):
+    # A client config pinned repo:Q6_K before #7460 relabeled the file Q6_K-MTP.
+    # Unresolved, auto-switch no-ops and the request is silently answered by
+    # whatever model happens to be resident.
+    monkeypatch.setattr(
+        resolver,
+        "_build_index",
+        lambda: {"unsloth/b-gguf": _entry("unsloth/B-GGUF", "Q6_K-MTP")},
+    )
+    resolver._scan = (0.0, {})
+
+    assert resolver.resolve_local_gguf("unsloth/B-GGUF:Q6_K") == (
+        "unsloth/B-GGUF",
+        "Q6_K-MTP",
+        "unsloth/B-GGUF",
+    )
+
+
+def test_resolver_rejects_ambiguous_base_quant(monkeypatch):
+    # Two flavors share the base quant, so Q6_K cannot name one of them. Falling
+    # through is better than serving a quant the caller did not ask for.
+    monkeypatch.setattr(
+        resolver,
+        "_build_index",
+        lambda: {"unsloth/b-gguf": _entry("unsloth/B-GGUF", "Q6_K-MTP", "Q6_K-PT-MTP")},
+    )
+    resolver._scan = (0.0, {})
+
+    assert resolver.resolve_local_gguf("unsloth/B-GGUF:Q6_K") is None
+
+
+def test_resolver_exact_variant_wins_over_flavored_sibling(monkeypatch):
+    monkeypatch.setattr(
+        resolver,
+        "_build_index",
+        lambda: {"unsloth/b-gguf": _entry("unsloth/B-GGUF", "Q6_K-MTP", "Q6_K")},
+    )
+    resolver._scan = (0.0, {})
+
+    assert resolver.resolve_local_gguf("unsloth/B-GGUF:Q6_K")[1] == "Q6_K"
 
 
 def test_resolver_failsafe_on_internal_error(monkeypatch):

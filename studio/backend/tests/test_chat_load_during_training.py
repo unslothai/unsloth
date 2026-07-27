@@ -940,6 +940,41 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(gb, 12.0, places = 6)  # 10 GB variant + 2 GB companions
         self.assertTrue(comp.call_args.kwargs["include_mmproj"])
 
+    def _remote_gb(self, stored_variant, quants):
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = stored_variant,
+        )
+        variants = [SimpleNamespace(quant = q, size_bytes = size) for q, size in quants]
+        with (
+            patch.object(mc, "list_gguf_variants", return_value = (variants, False)),
+            patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
+        ):
+            return self.route._estimate_gguf_required_gb(cfg)
+
+    def test_remote_matches_pre_7460_base_quant(self):
+        # An unsized variant default-denies, so a key stored before #7460 turned
+        # every chat load during a training run into a memory-worded 409.
+        gb = self._remote_gb("Q6_K", [("Q6_K-MTP", 10 * 1024**3)])
+        self.assertAlmostEqual(gb, 10.0, places = 6)
+
+    def test_remote_rejects_ambiguous_base_quant(self):
+        self.assertIsNone(
+            self._remote_gb(
+                "Q6_K",
+                [("Q6_K-MTP", 10 * 1024**3), ("Q6_K-PT-MTP", 20 * 1024**3)],
+            )
+        )
+
+    def test_remote_exact_variant_wins_over_flavored_sibling(self):
+        gb = self._remote_gb("Q6_K", [("Q6_K-MTP", 20 * 1024**3), ("Q6_K", 10 * 1024**3)])
+        self.assertAlmostEqual(gb, 10.0, places = 6)
+
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc
         cfg = SimpleNamespace(

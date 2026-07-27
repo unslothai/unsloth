@@ -3839,10 +3839,16 @@ def _patch_variant_delete_side_effects(monkeypatch, hub_cache = None):
     )
     # The repo under test lives in this cache; make it the active one so the
     # delete scopes to it (default target root is the active hub cache).
+    # cache_home/source are read by known_hf_cache_homes on the branch that
+    # looks for repo partials, which only runs when nothing matched.
     if hub_cache is not None:
         monkeypatch.setattr(
             "utils.hf_cache_settings.get_hf_cache_paths",
-            lambda: SimpleNamespace(hub_cache = hub_cache),
+            lambda: SimpleNamespace(
+                hub_cache = hub_cache,
+                cache_home = hub_cache,
+                source = "settings",
+            ),
         )
 
 
@@ -4089,6 +4095,108 @@ def test_delete_variant_surfaces_locked_file_as_conflict(monkeypatch, tmp_path):
         deletion._delete_cached_model_blocking("Org/Repo-GGUF", "Q4_K_M", None)
 
     assert exc_info.value.status_code == 409
+
+
+def _delete_variant_with_cached_mains(monkeypatch, tmp_path, filenames, variant):
+    """Delete *variant* against a cache holding *filenames* as completed mains."""
+    repo_dir = tmp_path / "models--Org--Repo-GGUF"
+    repo = _build_variant_cache_repo(
+        repo_dir,
+        blob_specs = {f"blob{i}": b"x" * (100 + i) for i in range(len(filenames))},
+        snapshot_links = [("rev1", name, f"blob{i}") for i, name in enumerate(filenames)],
+    )
+    monkeypatch.setattr(
+        deletion.cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [repo])],
+    )
+    _patch_variant_delete_side_effects(monkeypatch, tmp_path)
+    return repo_dir, lambda: deletion._delete_cached_model_blocking("Org/Repo-GGUF", variant, None)
+
+
+def test_delete_variant_matches_pre_7460_base_quant(monkeypatch, tmp_path):
+    # The offline/state listing hands back the key the manifest was filed under,
+    # so a delete can arrive as Q6_K while the cached file is Q6_K-MTP. The exact
+    # predicate reclaimed nothing and the multi-GB GGUF stayed on disk.
+    repo_dir, delete = _delete_variant_with_cached_mains(
+        monkeypatch,
+        tmp_path,
+        ["model-Q6_K-MTP.gguf"],
+        "Q6_K",
+    )
+
+    assert delete()["status"] == "deleted"
+    assert not (repo_dir / "snapshots" / "rev1" / "model-Q6_K-MTP.gguf").exists()
+    assert not (repo_dir / "blobs" / "blob0").exists()
+
+
+def test_delete_variant_rejects_ambiguous_base_quant(monkeypatch, tmp_path):
+    # Two flavors share the base quant, so which one Q6_K meant is unknowable:
+    # 404 rather than delete the wrong multi-GB file.
+    repo_dir, delete = _delete_variant_with_cached_mains(
+        monkeypatch,
+        tmp_path,
+        ["model-Q6_K-MTP.gguf", "model-Q6_K-PT-MTP.gguf"],
+        "Q6_K",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        delete()
+
+    assert exc_info.value.status_code == 404
+    snap = repo_dir / "snapshots" / "rev1"
+    assert (snap / "model-Q6_K-MTP.gguf").exists()
+    assert (snap / "model-Q6_K-PT-MTP.gguf").exists()
+
+
+def test_delete_variant_exact_label_wins_over_flavored_sibling(monkeypatch, tmp_path):
+    # The fallback only runs when the exact key matches nothing, so a repo that
+    # ships both spellings deletes the one that was asked for.
+    repo_dir, delete = _delete_variant_with_cached_mains(
+        monkeypatch,
+        tmp_path,
+        ["model-Q6_K.gguf", "model-Q6_K-MTP.gguf"],
+        "Q6_K",
+    )
+
+    assert delete()["status"] == "deleted"
+    snap = repo_dir / "snapshots" / "rev1"
+    assert not (snap / "model-Q6_K.gguf").exists()
+    assert (snap / "model-Q6_K-MTP.gguf").exists()
+
+
+@pytest.mark.parametrize(
+    "loaded_variant, delete_variant",
+    [
+        ("Q6_K", "Q6_K-MTP"),  # loaded from a pre-#7460 key, listing shows the flavor
+        ("Q6_K-MTP", "Q6_K"),  # the reverse, from a stale client key
+    ],
+)
+def test_loaded_variant_guard_blocks_pre_7460_base_quant(loaded_variant, delete_variant):
+    # Both spellings can name the file llama-server has open. Failing this guard
+    # unlinks the running model's weights instead of asking for an unload.
+    assert deletion._loaded_repo_variant_blocks_delete(
+        "Org/Repo-GGUF",
+        "Org/Repo-GGUF",
+        delete_variant,
+        loaded_variant,
+    )
+
+
+@pytest.mark.parametrize(
+    "loaded_variant, delete_variant",
+    [
+        ("Q6_K-MTP", "Q6_K-PT-MTP"),  # distinct flavors, distinct files
+        ("Q6_K-MTP", "Q8_0"),
+    ],
+)
+def test_loaded_variant_guard_allows_unrelated_variant(loaded_variant, delete_variant):
+    assert not deletion._loaded_repo_variant_blocks_delete(
+        "Org/Repo-GGUF",
+        "Org/Repo-GGUF",
+        delete_variant,
+        loaded_variant,
+    )
 
 
 def test_download_snapshot_writes_manifest_for_xet(monkeypatch, tmp_path):

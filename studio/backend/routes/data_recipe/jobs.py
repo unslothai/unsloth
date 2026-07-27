@@ -158,7 +158,16 @@ def _ensure_selected_local_model_loaded(
         return
 
     target, gguf_variant = selection
-    variant_matches = not gguf_variant or active_variant == gguf_variant
+    # A recipe saved before #7460 stores the base quant (Q6_K) while the model it
+    # just loaded reports the flavor the file carries (Q6_K-MTP), so an exact
+    # compare blocks the run permanently: the stored key never changes.
+    from hub.utils.gguf import compatible_base_quant_label
+
+    variant_matches = (
+        not gguf_variant
+        or active_variant == gguf_variant
+        or compatible_base_quant_label(gguf_variant, (active_variant,)) is not None
+    )
     if active_model.lower() != target.lower() or not variant_matches:
         selected = f"{target} ({gguf_variant})" if gguf_variant else target
         active = f"{active_model} ({active_variant})" if active_variant else active_model

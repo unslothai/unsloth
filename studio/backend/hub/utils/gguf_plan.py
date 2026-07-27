@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import Iterable, Optional, Sequence
 
 from hub.utils.download_manifest import ExpectedFile
 from hub.utils.gguf import (
@@ -77,19 +77,23 @@ def is_main_gguf_variant_path(path: str, variant: str) -> bool:
     )
 
 
-def main_gguf_variant_labels(expected_files: Sequence[ExpectedFile]) -> list[str]:
-    """Quant labels of the main GGUFs in a manifest or plan, i.e. the candidates
+def main_gguf_variant_labels_for_paths(paths: Iterable[str]) -> list[str]:
+    """Quant labels of the main GGUFs among *paths*, i.e. the candidates
     ``is_main_gguf_variant_path`` would accept for some variant. Feeds
     ``compatible_base_quant_label`` when a stored key predates #7460."""
     labels: list[str] = []
-    for file in expected_files:
-        path = file.path
+    for path in paths:
         if not is_gguf_filename(path) or is_companion_gguf_path(path):
             continue
         label = extract_quant_label(path)
         if not is_big_endian_gguf_path(path, label):
             labels.append(label)
     return labels
+
+
+def main_gguf_variant_labels(expected_files: Sequence[ExpectedFile]) -> list[str]:
+    """``main_gguf_variant_labels_for_paths`` over a manifest or plan."""
+    return main_gguf_variant_labels_for_paths(file.path for file in expected_files)
 
 
 def _gguf_rfilename(sibling) -> Optional[str]:

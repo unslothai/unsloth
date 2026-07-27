@@ -3882,9 +3882,18 @@ def _estimate_gguf_required_gb(
             from utils.models.model_config import list_gguf_variants
 
             variants, has_vision = list_gguf_variants(repo, hf_token = hf_token)
-            main_bytes = next(
-                (v.size_bytes for v in variants if v.quant.lower() == variant.lower()), None
-            )
+            key = variant.lower()
+            main_bytes = next((v.size_bytes for v in variants if v.quant.lower() == key), None)
+            if main_bytes is None:
+                # A key stored before #7460 holds the base quant, and an unsized
+                # variant default-denies below: the chat load is refused for the
+                # whole training run with a memory reason rather than a name one.
+                from hub.utils.gguf import compatible_base_quant_label
+                compatible = compatible_base_quant_label(variant, [v.quant for v in variants])
+                if compatible is not None:
+                    main_bytes = next(
+                        (v.size_bytes for v in variants if v.quant.lower() == compatible), None
+                    )
             if main_bytes is None:
                 return None
             companions = _remote_gguf_companion_bytes(

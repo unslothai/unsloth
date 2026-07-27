@@ -16,7 +16,12 @@ from loggers import get_logger
 from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
-from hub.utils.gguf import extract_quant_label, extract_quant_token
+from hub.utils.gguf import (
+    compatible_base_quant_label,
+    extract_quant_label,
+    extract_quant_token,
+)
+from hub.utils.gguf_plan import main_gguf_variant_labels_for_paths
 from hub.utils.hf_cache_state import (
     INCOMPLETE_SUFFIX,
     iter_repo_cache_dirs,
@@ -100,6 +105,27 @@ def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path
     return matches
 
 
+def _cached_variant_match_key(target_repos: list, variant: str) -> str:
+    """*variant* as the cached files label themselves now, lowercased.
+
+    Keys stored before #7460 hold the base quant (``Q6_K``) where the cached file
+    now labels itself ``Q6_K-MTP``, so the exact predicate below matches nothing
+    and the delete silently reclaims none of it. Exact wins when it matches; else
+    the lone cached flavor sharing the base quant, and the original key when two
+    flavors leave the intent ambiguous. Only the file predicates take this key:
+    manifests and cancel markers stay filed under the key the caller passed.
+    """
+    key = variant.lower()
+    labels = main_gguf_variant_labels_for_paths(
+        name
+        for target_repo in target_repos
+        for _snap, _blob, name in _repo_file_matches(target_repo, _is_main_gguf_filename)
+    )
+    if any(label.lower() == key for label in labels):
+        return key
+    return compatible_base_quant_label(variant, labels) or key
+
+
 def _has_remaining_main_gguf(target_repo) -> bool:
     return any(
         _path_exists_or_symlink(snap)
@@ -115,8 +141,7 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
     quant label names the folder); only empty dirs go, so siblings are safe.
     Returns (count removed, removal failures other than a concurrent refill)."""
     variant_key = (extract_quant_token(variant) or variant).lower()
-    removed = 0
-    failures: list[str] = []
+    candidates: list[tuple[Path, str]] = []
     for target_repo in target_repos:
         repo_path = getattr(target_repo, "repo_path", None)
         if not repo_path:
@@ -137,22 +162,34 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
                 try:
                     if sub.is_symlink() or not sub.is_dir():
                         continue
-                    folder_quant = extract_quant_token(sub.name)
-                    matches = (
-                        folder_quant is not None and folder_quant.lower() == variant_key
-                    ) or sub.name.lower() == variant.lower()
-                    if not matches or any(sub.iterdir()):
-                        continue
                 except OSError:
                     continue
-                try:
-                    sub.rmdir()
-                    removed += 1
-                except OSError as e:
-                    # A concurrent download refilling the dir (ENOTEMPTY) is not a
-                    # failure; a read-only cache or locked dir is, so surface it.
-                    if e.errno != errno.ENOTEMPTY:
-                        failures.append(f"{sub.name}: {e}")
+                candidates.append((sub, extract_quant_token(sub.name) or sub.name))
+
+    keys = {variant_key, variant.lower()}
+    if not any(label.lower() in keys for _sub, label in candidates):
+        # Pre-#7460 keys hold the base quant, so an interrupted Q6_K-MTP split
+        # download leaves a folder this key no longer names. Lone flavor only.
+        compatible = compatible_base_quant_label(variant, [name for _sub, name in candidates])
+        if compatible is not None:
+            keys.add(compatible)
+
+    removed = 0
+    failures: list[str] = []
+    for sub, label in candidates:
+        try:
+            if label.lower() not in keys or any(sub.iterdir()):
+                continue
+        except OSError:
+            continue
+        try:
+            sub.rmdir()
+            removed += 1
+        except OSError as e:
+            # A concurrent download refilling the dir (ENOTEMPTY) is not a
+            # failure; a read-only cache or locked dir is, so surface it.
+            if e.errno != errno.ENOTEMPTY:
+                failures.append(f"{sub.name}: {e}")
     return removed, failures
 
 
@@ -194,13 +231,15 @@ def _delete_gguf_variant_from_repos(
     deleted_bytes = 0
     deleted_blobs = 0
     completed_hashes: set[str] = set()
+    match_key = _cached_variant_match_key(target_repos, variant)
 
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
         matched = _repo_file_matches(
             target_repo,
-            lambda name: _is_main_gguf_filename(name)
-            and extract_quant_label(name).lower() == variant.lower(),
+            lambda name: (
+                _is_main_gguf_filename(name) and extract_quant_label(name).lower() == match_key
+            ),
         )
 
         for snap, _blob, name in matched:
@@ -217,8 +256,10 @@ def _delete_gguf_variant_from_repos(
                 target_repo,
                 # Companions: mmproj and the MTP drafter -- downloaded with
                 # every variant, so the last variant's delete reclaims them.
-                lambda name: _is_gguf_filename(name)
-                and (_is_mmproj_filename(name) or _is_mtp_drafter_path(name)),
+                lambda name: (
+                    _is_gguf_filename(name)
+                    and (_is_mmproj_filename(name) or _is_mtp_drafter_path(name))
+                ),
             )
             for snap, _blob, name in companion_matches:
                 try:
@@ -355,7 +396,6 @@ def reclaim_replaced_gguf_variant(
     removed_snapshots = 0
     deleted_blobs = 0
     deleted_bytes = 0
-    variant_key = variant.lower()
 
     try:
         cache_scans = cache_inventory.all_hf_cache_scans()
@@ -415,14 +455,18 @@ def reclaim_replaced_gguf_variant(
         for repo_info in candidate_repos
         if str(getattr(repo_info, "repo_id", "")) in matched_repo_ids
     ]
+    # The worker passes the key its job was filed under, so a pre-#7460 resume
+    # reclaims against Q6_K while the replaced file is labelled Q6_K-MTP.
+    variant_key = _cached_variant_match_key(target_repos, variant)
 
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
         stale_matches: list[tuple[Path, Optional[Path], str]] = []
         matches = _repo_file_matches(
             target_repo,
-            lambda name: _is_main_gguf_filename(name)
-            and extract_quant_label(name).lower() == variant_key,
+            lambda name: (
+                _is_main_gguf_filename(name) and extract_quant_label(name).lower() == variant_key
+            ),
         )
         for snap, blob, name in matches:
             # Prune only a file we can identify as a real, stale cache blob. A
@@ -539,7 +583,16 @@ def _loaded_repo_variant_blocks_delete(
         return True
     if not loaded_variant:
         return True
-    return loaded_variant.lower() == delete_variant.lower()
+    if loaded_variant.lower() == delete_variant.lower():
+        return True
+    # A model loaded from a pre-#7460 key reports the base quant (Q6_K) while
+    # this delete carries the flavored label the listing shows (Q6_K-MTP), or
+    # the reverse. Either spelling can name the file llama-server has open, so
+    # block instead of unlinking it out from under a running process.
+    return (
+        compatible_base_quant_label(loaded_variant, (delete_variant,)) is not None
+        or compatible_base_quant_label(delete_variant, (loaded_variant,)) is not None
+    )
 
 
 _LOAD_STATE_UNVERIFIABLE_DETAIL = (

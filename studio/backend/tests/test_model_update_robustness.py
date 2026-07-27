@@ -713,6 +713,93 @@ def test_reclaim_replaced_gguf_variant_prunes_old_revision_only(monkeypatch, tmp
     assert invalidated == [True]
 
 
+def _reclaim_repo_with_stale_mains(monkeypatch, tmp_path, filenames):
+    """One superseded revision holding *filenames*, plus a current revision."""
+    repo_path = tmp_path / "models--org--repo-GGUF"
+    stale_files = []
+    for index, name in enumerate(filenames):
+        snap = repo_path / "snapshots" / ("a" * 40) / name
+        blob = repo_path / "blobs" / f"OLDsha{index}"
+        snap.parent.mkdir(parents = True, exist_ok = True)
+        blob.parent.mkdir(parents = True, exist_ok = True)
+        blob.write_bytes(b"old-blob")
+        snap.symlink_to(blob)
+        stale_files.append(
+            SimpleNamespace(file_name = name, file_path = str(snap), blob_path = str(blob))
+        )
+
+    repo_info = SimpleNamespace(
+        repo_id = "org/repo-GGUF",
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [SimpleNamespace(files = stale_files)],
+    )
+    monkeypatch.setattr(CI, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo_info])])
+    monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: None)
+    return repo_path
+
+
+def test_reclaim_replaced_gguf_variant_matches_pre_7460_base_quant(monkeypatch, tmp_path):
+    # The worker reclaims under the key its job was filed under. A pre-#7460
+    # resume carries Q6_K while the file it replaced is labelled Q6_K-MTP, so the
+    # superseded blob was never unlinked and the space was never freed.
+    repo_path = _reclaim_repo_with_stale_mains(
+        monkeypatch,
+        tmp_path,
+        ["model-Q6_K-MTP.gguf"],
+    )
+
+    result = D.reclaim_replaced_gguf_variant(
+        "org/repo-GGUF",
+        "Q6_K",
+        frozenset({"NEWsha"}),
+        hub_cache = tmp_path,
+    )
+
+    assert result["removed_snapshots"] == 1
+    assert result["deleted_blobs"] == 1
+    assert not (repo_path / "blobs" / "OLDsha0").exists()
+
+
+def test_reclaim_replaced_gguf_variant_rejects_ambiguous_base_quant(monkeypatch, tmp_path):
+    repo_path = _reclaim_repo_with_stale_mains(
+        monkeypatch,
+        tmp_path,
+        ["model-Q6_K-MTP.gguf", "model-Q6_K-PT-MTP.gguf"],
+    )
+
+    result = D.reclaim_replaced_gguf_variant(
+        "org/repo-GGUF",
+        "Q6_K",
+        frozenset({"NEWsha"}),
+        hub_cache = tmp_path,
+    )
+
+    assert result["removed_snapshots"] == 0
+    assert result["deleted_blobs"] == 0
+    assert (repo_path / "blobs" / "OLDsha0").exists()
+    assert (repo_path / "blobs" / "OLDsha1").exists()
+
+
+def test_reclaim_replaced_gguf_variant_exact_label_wins_over_flavored(monkeypatch, tmp_path):
+    repo_path = _reclaim_repo_with_stale_mains(
+        monkeypatch,
+        tmp_path,
+        ["model-Q6_K.gguf", "model-Q6_K-MTP.gguf"],
+    )
+
+    result = D.reclaim_replaced_gguf_variant(
+        "org/repo-GGUF",
+        "Q6_K",
+        frozenset({"NEWsha"}),
+        hub_cache = tmp_path,
+    )
+
+    assert result["removed_snapshots"] == 1
+    assert not (repo_path / "blobs" / "OLDsha0").exists()
+    assert (repo_path / "blobs" / "OLDsha1").exists()
+
+
 def test_reclaim_replaced_gguf_variant_keeps_no_symlink_current_file(monkeypatch, tmp_path):
     """No-symlink cache (Windows without Developer Mode): the moved GGUF lives
     directly in snapshots/ and blobs/ is empty, so scan_cache_dir reports
