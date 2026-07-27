@@ -254,9 +254,9 @@ def test_a_root_pin_is_checked_even_when_a_dependency_names_it_first(monkeypatch
     assert json.loads(capsys.readouterr().out)["module"] == "huggingface-hub"
 
 
-def test_a_record_without_its_package_is_reported_missing(monkeypatch, capsys, tmp_path):
-    """An interrupted replace can delete the package and leave its RECORD, so a
-    readable file list is not proof the modules are there."""
+def test_a_record_without_its_files_is_reported_missing(monkeypatch, capsys, tmp_path):
+    """An interrupted replace can recreate the package directory and stop
+    part-way through filling it, so the directory existing proves nothing."""
     studio = importlib.import_module("unsloth_cli.commands.studio")
     backend = tmp_path / "backend"
     requirements = backend / "requirements"
@@ -270,7 +270,12 @@ def test_a_record_without_its_package_is_reported_missing(monkeypatch, capsys, t
     installed = SimpleNamespace(
         version = "25.1.0",
         requires = None,
-        files = ["structlog/__init__.py", "structlog-25.1.0.dist-info/RECORD"],
+        files = [
+            "structlog/__init__.py",
+            "structlog/processors.py",
+            "structlog/__pycache__/__init__.cpython-311.pyc",
+            "structlog-25.1.0.dist-info/RECORD",
+        ],
         locate_file = lambda name: site_packages / name,
     )
     monkeypatch.setattr(
@@ -283,6 +288,13 @@ def test_a_record_without_its_package_is_reported_missing(monkeypatch, capsys, t
         studio.desktop_runtime_check(_json_output = True)
     assert json.loads(capsys.readouterr().out)["module"] == "structlog"
 
+    # The directory back but still a file short is the interrupted replace.
     (site_packages / "structlog").mkdir()
+    (site_packages / "structlog" / "__init__.py").touch()
+    with pytest.raises(typer.Exit):
+        studio.desktop_runtime_check(_json_output = True)
+    assert json.loads(capsys.readouterr().out)["module"] == "structlog"
+
+    (site_packages / "structlog" / "processors.py").touch()
     studio.desktop_runtime_check(_json_output = True)
     assert json.loads(capsys.readouterr().out) == {"runtime_ready": True}

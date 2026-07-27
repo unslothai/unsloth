@@ -297,21 +297,24 @@ def _studio_requirement_roots(run_mod):
     return roots
 
 
-def _recorded_packages_missing(installed) -> bool:
-    """Whether RECORD lists top-level packages the venv no longer has.
+def _recorded_files_missing(installed) -> bool:
+    """Whether RECORD lists files the venv no longer has.
 
-    An interrupted replace removes the package and can leave its RECORD, so
-    reading one is not proof the modules are there. Stats the top-level names
-    only: a handful per distribution, and the failure is never partial.
+    An interrupted replace can recreate a package directory and stop part-way
+    through filling it, so the directory existing proves nothing. 6656 files
+    across studio.txt's closure cost 158ms, against a probe that imports the
+    backend, and __pycache__ is skipped because deleting it is not damage.
     """
-    packages = set()
     for recorded in installed.files or ():
-        top = PurePosixPath(str(recorded)).parts[0]
+        parts = PurePosixPath(str(recorded)).parts
         # .dist-info is the metadata itself; .data and ../ land outside the tree.
-        if top == ".." or top.endswith((".dist-info", ".data")):
+        if parts[0] == ".." or parts[0].endswith((".dist-info", ".data")):
             continue
-        packages.add(top)
-    return any(not installed.locate_file(name).exists() for name in packages)
+        if "__pycache__" in parts or parts[-1].endswith(".pyc"):
+            continue
+        if not installed.locate_file(recorded).exists():
+            return True
+    return False
 
 
 def _missing_studio_requirement(run_mod):
@@ -335,7 +338,7 @@ def _missing_studio_requirement(run_mod):
             return requirement.name
         # Metadata outlives the package: wheels store METADATA first, so a killed
         # unpack leaves a version behind. RECORD is last, so its absence marks it.
-        if installed.files is None or _recorded_packages_missing(installed):
+        if installed.files is None or _recorded_files_missing(installed):
             return requirement.name
         # Only studio.txt pins are enforced: install_python_stack uses --no-deps,
         # so transitive bounds read unsatisfied in venvs that work. A prerelease

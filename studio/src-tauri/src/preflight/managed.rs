@@ -308,6 +308,11 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> bool {
 /// stuck printing grow this buffer for the whole timeout.
 const PROBE_TAIL_BYTES: usize = 64 * 1024;
 
+/// Budget for a whole probe, the drain included. A descendant that inherited
+/// stdout keeps the pipe open after the leader exits, so a drain outside the
+/// timeout would wedge preflight for good.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Drained while the wait runs: the backend import can print more than the pipe
 /// holds, and waiting first deadlocks, timing out a healthy install into repair.
 fn drain_probe_tail(mut stdout: tokio::process::ChildStdout) -> tokio::task::JoinHandle<Vec<u8>> {
@@ -381,9 +386,10 @@ async fn probe_cli_runtime(bin: &Path) -> Result<(), String> {
         return Err(RUNTIME_PROBE_FAILED.to_string());
     };
 
-    let reader = drain_probe_tail(stdout);
+    let mut reader = drain_probe_tail(stdout);
+    let deadline = tokio::time::Instant::now() + PROBE_TIMEOUT;
 
-    let status = match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
+    let status = match tokio::time::timeout_at(deadline, child.wait()).await {
         Ok(Ok(status)) => status,
         _ => {
             let _ = child.kill().await;
@@ -397,8 +403,17 @@ async fn probe_cli_runtime(bin: &Path) -> Result<(), String> {
         }
     };
 
-    let Ok(output) = reader.await else {
-        return Err(RUNTIME_PROBE_FAILED.to_string());
+    let output = match tokio::time::timeout_at(deadline, &mut reader).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(_)) => return Err(RUNTIME_PROBE_FAILED.to_string()),
+        Err(_) => {
+            reader.abort();
+            info!(
+                "Managed runtime probe left stdout open in {}ms",
+                started.elapsed().as_millis()
+            );
+            return Err(RUNTIME_PROBE_TIMEOUT.to_string());
+        }
     };
     let payload = String::from_utf8_lossy(&output)
         .lines()
@@ -467,9 +482,10 @@ async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
         return None;
     };
 
-    let reader = drain_probe_tail(stdout);
+    let mut reader = drain_probe_tail(stdout);
+    let deadline = tokio::time::Instant::now() + PROBE_TIMEOUT;
 
-    match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
+    match tokio::time::timeout_at(deadline, child.wait()).await {
         Ok(Ok(status)) if status.success() => {}
         Err(_) => {
             let _ = child.kill().await;
@@ -491,7 +507,8 @@ async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
         }
     }
 
-    let Ok(output) = reader.await else {
+    let Ok(Ok(output)) = tokio::time::timeout_at(deadline, &mut reader).await else {
+        reader.abort();
         return None;
     };
 

@@ -419,6 +419,20 @@ fn poll_spawned_backend_exit(state: &BackendState, generation: u64) -> BackendEx
     })
 }
 
+fn current_backend_generation(state: &BackendState) -> u64 {
+    match state.lock() {
+        Ok(guard) => guard.generation,
+        Err(poisoned) => poisoned.into_inner().generation,
+    }
+}
+
+/// Cleanup can take seconds terminating descendants, and a start in that window
+/// already owns the backend. The frontend sets "Server stopped unexpectedly" on
+/// this event unconditionally, so a healthy replacement would be shown as failed.
+fn exit_is_reportable(intentional: bool, exited: u64, current: u64) -> bool {
+    !intentional && exited == current
+}
+
 fn monitor_spawned_backend_exit(
     app: AppHandle,
     state: BackendState,
@@ -451,9 +465,12 @@ fn monitor_spawned_backend_exit(
                     exit.intentional,
                     None,
                 );
-                if !exit.intentional {
+                let current = current_backend_generation(&state);
+                if exit_is_reportable(exit.intentional, generation, current) {
                     error!("Backend process exited unexpectedly (crash detected)");
                     let _ = app.emit("server-crashed", ());
+                } else if generation != current {
+                    info!("Backend {} was replaced during cleanup", generation);
                 }
                 return;
             }
@@ -534,6 +551,13 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_backend_replaced_during_cleanup_is_not_reported_as_a_crash() {
+        assert!(exit_is_reportable(false, 7, 7));
+        assert!(!exit_is_reportable(false, 7, 8));
+        assert!(!exit_is_reportable(true, 7, 7));
+    }
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
