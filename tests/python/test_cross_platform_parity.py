@@ -25,17 +25,11 @@ class TestNoTorchBackendAutoInInstallSh:
         for i, line in enumerate(lines):
             if fallback_start is None and "GPU detection failed" in line:
                 fallback_start = i
-            elif (
-                fallback_start is not None
-                and fallback_end is None
-                and line.strip() == "fi"
-            ):
+            elif fallback_start is not None and fallback_end is None and line.strip() == "fi":
                 fallback_end = i
                 break
         fallback_range = (
-            range(fallback_start or 0, (fallback_end or 0) + 1)
-            if fallback_start
-            else range(0)
+            range(fallback_start or 0, (fallback_end or 0) + 1) if fallback_start else range(0)
         )
 
         matches = [
@@ -255,22 +249,42 @@ class TestTorchIndexOverrideParity:
 
 
 class TestGfx211AllowlistParity:
-    """The gfx per-arch 2.11-floor leaves (gfx120X-all / gfx1151 / gfx1150) must be the
-    SAME set in every installer and its stale/mismatch check. When they diverged, a
-    pinned gfx110X-all / gfx90a / gfx908 wheel (<2.11) was force-reinstalled every update."""
+    """The gfx per-arch 2.11-floor leaves must be the SAME set in every installer
+    and its stale/mismatch check. When they diverged, a pinned gfx110X-all /
+    gfx90a / gfx908 wheel (<2.11) was force-reinstalled every update.
 
-    EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150"}
+    Each test extracts the set each installer actually holds and compares it
+    against EXPECTED, rather than matching one hardcoded ordering. Order and
+    spacing are free; membership is not. The earlier literal-string form had to
+    be edited in four places whenever a leaf was added, which is how adding
+    gfx1152 (Krackan Point) turned this class red without any installer
+    actually disagreeing with another."""
+
+    EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152"}
+
+    @staticmethod
+    def _leaves(blob: str) -> set[str]:
+        """The gfx leaves named in an allowlist literal, quoting-agnostic."""
+        return set(re.findall(r"gfx[0-9a-z-]+", blob.lower()))
 
     def test_install_sh_allowlist(self):
         text = INSTALL_SH.read_text(encoding = "utf-8").lower()
-        # install.sh: the TORCH_CONSTRAINT case (rocm7.2|gfx120x-all|gfx1151|gfx1150).
-        m = re.search(r"rocm7\.2\|gfx120x-all\|gfx1151\|gfx1150", text)
+        # install.sh: the TORCH_CONSTRAINT case (rocm7.2|gfx...|gfx...).
+        m = re.search(r"^\s*(rocm7\.2\|[a-z0-9|.\-]*)\)", text, re.MULTILINE)
         assert m, "install.sh gfx-2.11 allowlist case not found / changed"
+        assert self._leaves(m.group(1)) == self.EXPECTED, (
+            f"install.sh gfx-2.11 allowlist is {sorted(self._leaves(m.group(1)))}, "
+            f"expected {sorted(self.EXPECTED)}"
+        )
 
     def test_install_ps1_allowlist(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8").lower()
-        m = re.search(r"@\('gfx120x-all',\s*'gfx1151',\s*'gfx1150'\)", text)
+        m = re.search(r"\$_pingfx211\s*=\s*@\(([^)]*)\)", text)
         assert m, "install.ps1 $_pinGfx211 allowlist not found / changed"
+        assert self._leaves(m.group(1)) == self.EXPECTED, (
+            f"install.ps1 $_pinGfx211 is {sorted(self._leaves(m.group(1)))}, "
+            f"expected {sorted(self.EXPECTED)}"
+        )
 
     def test_setup_ps1_defines_single_allowlist_helper(self):
         # setup.ps1 must define the allowlist once (Test-RocmGfx211Leaf) and reuse it, so
@@ -279,9 +293,12 @@ class TestGfx211AllowlistParity:
         assert (
             "function Test-RocmGfx211Leaf" in text
         ), "setup.ps1 should define a single Test-RocmGfx211Leaf allowlist helper"
-        assert re.search(
-            r"@\('gfx120x-all',\s*'gfx1151',\s*'gfx1150'\)", text.lower()
-        ), "Test-RocmGfx211Leaf should hold the gfx-2.11 allowlist"
+        m = re.search(r"function test-rocmgfx211leaf[\s\S]{0,400}?@\(([^)]*)\)", text.lower())
+        assert m, "Test-RocmGfx211Leaf should hold the gfx-2.11 allowlist"
+        assert self._leaves(m.group(1)) == self.EXPECTED, (
+            f"Test-RocmGfx211Leaf holds {sorted(self._leaves(m.group(1)))}, "
+            f"expected {sorted(self.EXPECTED)}"
+        )
         assert "$_pinGfx211 = Test-RocmGfx211Leaf" in text, (
             "setup.ps1 install-spec path should reuse Test-RocmGfx211Leaf, not "
             "re-hardcode the allowlist (they must not diverge)"
@@ -289,9 +306,12 @@ class TestGfx211AllowlistParity:
 
     def test_stack_py_allowlist(self):
         text = STACK_PY.read_text(encoding = "utf-8").lower()
-        assert (
-            '"gfx120x-all", "gfx1151", "gfx1150"' in text
-        ), "install_python_stack.py _ROCM_GFX_TORCH211_LEAVES not found / changed"
+        m = re.search(r"_rocm_gfx_torch211_leaves[^=]*=\s*frozenset\(\s*\{([^}]*)\}", text)
+        assert m, "install_python_stack.py _ROCM_GFX_TORCH211_LEAVES not found / changed"
+        assert self._leaves(m.group(1)) == self.EXPECTED, (
+            f"_ROCM_GFX_TORCH211_LEAVES is {sorted(self._leaves(m.group(1)))}, "
+            f"expected {sorted(self.EXPECTED)}"
+        )
 
 
 class TestCudaLeafDigitParity:
@@ -357,30 +377,30 @@ class TestCudaLeafDigitParity:
 
 class TestKnown211SetParity:
     """The KNOWN-2.11 rocm/gfx set must be identical across all four installers:
-    exactly {rocm7.2} plus the gfx allowlist {gfx120x-all, gfx1151, gfx1150}.
+    exactly {rocm7.2} plus TestGfx211AllowlistParity.EXPECTED.
     rocm7.3 / torch 2.12 do not exist, so no side may floor them speculatively."""
 
     def test_install_sh_known_211_leaf_is_rocm72_and_gfx_allowlist(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        # The 2.11 floor case matches exactly rocm7.2 + the three gfx leaves.
-        assert re.search(
-            r"rocm7\.2\|gfx120x-all\|gfx1151\|gfx1150\)", text
-        ), "install.sh 2.11 floor must be exactly rocm7.2|gfx120x-all|gfx1151|gfx1150"
+        # The 2.11 floor case matches exactly rocm7.2 + the gfx allowlist, in
+        # any order: it is the same set as TestGfx211AllowlistParity.EXPECTED,
+        # asserted here so the rocm-version half cannot drift on its own.
+        m = re.search(r"^\s*(rocm7\.2\|[a-zA-Z0-9|.\-]*)\)", text, re.MULTILINE)
+        assert m, "install.sh 2.11 floor case (rocm7.2|gfx...) not found / changed"
+        alternatives = set(m.group(1).lower().split("|"))
+        assert alternatives == {"rocm7.2"} | TestGfx211AllowlistParity.EXPECTED, (
+            f"install.sh 2.11 floor is {sorted(alternatives)}, expected "
+            f"{sorted({'rocm7.2'} | TestGfx211AllowlistParity.EXPECTED)}"
+        )
         # No speculative rocm7.3 anywhere.
-        assert (
-            "rocm7.3" not in text
-        ), "install.sh must not reference a non-existent rocm7.3"
+        assert "rocm7.3" not in text, "install.sh must not reference a non-existent rocm7.3"
 
     def test_python_known_211_versions_is_only_rocm72(self):
         text = STACK_PY.read_text(encoding = "utf-8")
         assert "_ROCM_KNOWN_TORCH211_VERSIONS" in text
         # The frozenset literal is exactly {(7, 2)}.
-        m = re.search(
-            r"_ROCM_KNOWN_TORCH211_VERSIONS[^=]*=\s*frozenset\(\{([^}]*)\}\)", text
-        )
-        assert (
-            m is not None
-        ), "install_python_stack.py must define _ROCM_KNOWN_TORCH211_VERSIONS"
+        m = re.search(r"_ROCM_KNOWN_TORCH211_VERSIONS[^=]*=\s*frozenset\(\{([^}]*)\}\)", text)
+        assert m is not None, "install_python_stack.py must define _ROCM_KNOWN_TORCH211_VERSIONS"
         assert "(7, 2)" in m.group(1)
         assert "7, 3" not in m.group(1) and "7, 1" not in m.group(1)
 
@@ -389,8 +409,7 @@ class TestKnown211SetParity:
         assert "Test-RocmKnown211Version" in text
         # The predicate is Major -eq 7 -and Minor -eq 2 (only rocm7.2).
         assert re.search(
-            r"Test-RocmKnown211Version[\s\S]{0,400}\$Major -eq 7 -and \$Minor -eq 2",
-            text,
+            r"Test-RocmKnown211Version[\s\S]{0,400}\$Major -eq 7 -and \$Minor -eq 2", text
         ), "setup.ps1 Test-RocmKnown211Version must accept only rocm7.2"
 
     def test_install_ps1_pin_floor_is_only_rocm72(self):
@@ -551,8 +570,7 @@ class TestPinnedIndexClearsUvEnvParity:
     def test_install_sh_clears_uv_index_vars(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
         assert (
-            "env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL"
-            in text
+            "env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL" in text
         ), "install.sh run_install_cmd must clear the uv index vars for --default-index installs"
 
     def test_install_ps1_clears_uv_index_vars(self):
@@ -572,18 +590,14 @@ class TestPinnedIndexClearsUvEnvParity:
             "installs via _install_env_for_cmd (parity with install.sh #6898)"
         )
         for var in self.UV_VARS:
-            assert (
-                var in text
-            ), f"install_python_stack.py must clear {var} for pinned installs"
+            assert var in text, f"install_python_stack.py must clear {var} for pinned installs"
 
     def test_all_installers_clear_uv_torch_backend(self):
         """uv's torch backend redirects torch resolution to its own per-backend
         index even against an explicit pin, so every installer's pinned-install
         scrub must clear UV_TORCH_BACKEND too."""
         sh = INSTALL_SH.read_text(encoding = "utf-8")
-        assert (
-            "-u UV_TORCH_BACKEND" in sh
-        ), "install.sh pinned scrub must clear UV_TORCH_BACKEND"
+        assert "-u UV_TORCH_BACKEND" in sh, "install.sh pinned scrub must clear UV_TORCH_BACKEND"
         for path in (INSTALL_PS1, SETUP_PS1):
             text = path.read_text(encoding = "utf-8")
             assert (
@@ -714,9 +728,7 @@ class TestPinnedIndexClearsUvEnvParity:
         ), "setup.ps1's CPU branch must install via the spec variables"
         # The ceilings mirror the Python repair spec exactly.
         stack = STACK_PY.read_text(encoding = "utf-8")
-        spec_block = re.search(
-            r"_CUDA_TORCH_PKG_SPEC[^(]*\(\s*(.*?)\)", stack, re.DOTALL
-        )
+        spec_block = re.search(r"_CUDA_TORCH_PKG_SPEC[^(]*\(\s*(.*?)\)", stack, re.DOTALL)
         assert spec_block and '"torch>=2.4,<2.12.0"' in spec_block.group(1), (
             "_CPU_TORCH_PKG_SPEC (via _CUDA_TORCH_PKG_SPEC) must keep the torch<2.12 "
             "ceiling the setup.ps1 pinned CPU branch mirrors"
@@ -750,23 +762,17 @@ class TestIndexPathSlashTrimParity:
     def test_helper_defined_in_all_installers(self):
         assert "def _trim_index_path_slashes(" in STACK_PY.read_text(encoding = "utf-8")
         assert "_trim_index_path_slashes()" in INSTALL_SH.read_text(encoding = "utf-8")
-        assert "function Trim-IndexPathSlashes" in INSTALL_PS1.read_text(
-            encoding = "utf-8"
-        )
+        assert "function Trim-IndexPathSlashes" in INSTALL_PS1.read_text(encoding = "utf-8")
         assert "function Trim-IndexPathSlashes" in SETUP_PS1.read_text(encoding = "utf-8")
 
     def test_helper_wired_into_override_in_all_installers(self):
         assert "_trim_index_path_slashes(url)" in STACK_PY.read_text(encoding = "utf-8")
-        assert '_url=$(_trim_index_path_slashes "$_url")' in INSTALL_SH.read_text(
+        assert '_url=$(_trim_index_path_slashes "$_url")' in INSTALL_SH.read_text(encoding = "utf-8")
+        assert "Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL" in INSTALL_PS1.read_text(
             encoding = "utf-8"
         )
-        assert (
-            "Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL"
-            in INSTALL_PS1.read_text(encoding = "utf-8")
-        )
-        assert (
-            "Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL"
-            in SETUP_PS1.read_text(encoding = "utf-8")
+        assert "Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL" in SETUP_PS1.read_text(
+            encoding = "utf-8"
         )
 
 
@@ -778,16 +784,12 @@ class TestInstallOutputRedactionParity:
     def test_helper_defined_in_all_installers(self):
         assert "def _redact_install_output(" in STACK_PY.read_text(encoding = "utf-8")
         assert "_redact_install_output()" in INSTALL_SH.read_text(encoding = "utf-8")
-        assert "function Redact-InstallOutput" in INSTALL_PS1.read_text(
-            encoding = "utf-8"
-        )
+        assert "function Redact-InstallOutput" in INSTALL_PS1.read_text(encoding = "utf-8")
         assert "function Redact-InstallOutput" in SETUP_PS1.read_text(encoding = "utf-8")
 
     def test_helper_wired_into_failure_print(self):
         # install.sh dumps the captured log through the redactor on failure.
-        assert '_redact_install_output "$_log"' in INSTALL_SH.read_text(
-            encoding = "utf-8"
-        )
+        assert '_redact_install_output "$_log"' in INSTALL_SH.read_text(encoding = "utf-8")
         # Both ps1 installers redact the captured $output before Write-Host on non-zero exit.
         assert (
             "Write-Host (Redact-InstallOutput $output) -ForegroundColor Red"

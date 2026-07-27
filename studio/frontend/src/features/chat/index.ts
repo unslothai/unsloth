@@ -3,20 +3,41 @@
 
 export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
 export {
+  addScanFolder,
+  browseFolders,
   deleteChatAttachment,
+  deleteFineTunedModel,
   fetchChatAttachmentBlob,
+  fetchGgufStagedMetadata,
+  getCachedModelPath,
   getInferenceStatus,
+  listCachedGguf,
   listChatAttachments,
   listGgufVariants,
   listLocalModels,
+  listModels,
+  listRecommendedFolders,
+  listScanFolders,
   loadModel,
+  notifyChatHistoryUpdated,
+  removeScanFolder,
+  revealCachedModel,
+  type BrowseFoldersResponse,
+  type CachedGgufRepo,
+  type CachedModelRepo,
   type ChatAttachmentPage,
   type ChatAttachmentRecord,
   type LocalModelInfo,
+  type ScanFolderInfo,
 } from "./api/chat-api";
-export type { GgufVariantDetail } from "./types/api";
+export type {
+  BackendModelDetails,
+  GgufVariantDetail,
+  InferenceStatusResponse,
+} from "./types/api";
 export {
   ChatSettingsPanel,
+  ParamSlider,
   defaultInferenceParams,
   type InferenceParams,
   type Preset,
@@ -25,6 +46,11 @@ export { useChatRuntimeStore } from "./stores/chat-runtime-store";
 export {
   CHAT_RAG_CAPTION_KEY,
   CHAT_RAG_OCR_KEY,
+  normalizeSpeculativeType,
+  readPersistedSpeculativeType,
+  readPersistedGpuMemoryMode,
+  reconcilePersistedGpuIds,
+  GPU_LAYERS_AUTO,
 } from "./stores/chat-runtime-store";
 export {
   preferFullToolOutput,
@@ -34,6 +60,7 @@ export {
 export { PermissionModeDropdown } from "./permission-mode-select";
 export { useChatSearchStore } from "./stores/chat-search-store";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
+export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
 export {
   PLUS_MENU_ORDER,
@@ -46,9 +73,11 @@ export {
 } from "./hooks/use-chat-model-runtime";
 export {
   customProviderDisplayName,
+  isCustomProviderType,
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+export { ApiProviderLogo } from "./api-provider-logo";
 export { useExternalProvidersStore } from "./stores/external-providers-store";
 export { ChatSearchDialog } from "./components/chat-search-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
@@ -57,13 +86,18 @@ export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { listStoredChatThreads } from "./utils/chat-history-storage";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
 export { ArtifactCard } from "./artifacts/artifact-card";
+export { ResearchMessage } from "./components/research-message";
+export {
+  ResearchActivityPanel,
+  ResearchActivitySheet,
+} from "./components/research-activity-panel";
 export {
   useChatArtifactsStore,
   useSelectedChatArtifact,
 } from "./artifacts/store";
 export {
-  downloadChatExport,
   downloadArchivedChatExport,
+  downloadChatExport,
 } from "./utils/export-chat-history";
 export {
   clearNewChatDraft,
@@ -96,3 +130,25 @@ export {
   updateChatProjectInstructions,
   useChatProjects,
 } from "./hooks/use-chat-projects";
+export { subscribeDictationLevel } from "./adapters/dictation-level";
+export {
+  StudioDictationAdapter,
+  cancelActiveStudioDictation,
+  isStudioDictationAvailable,
+  notifyStudioDictationUnavailable,
+} from "./adapters/studio-dictation-adapter";
+export {
+  StudioModelDictationAdapter,
+  fetchSttStatus,
+  loadSttModel,
+  startSttDownload,
+  unloadSttModel,
+  validateSttModel,
+  type SttDownloadStatus,
+} from "./adapters/studio-model-dictation-adapter";
+export {
+  StudioSpeechSynthesisAdapter,
+  createConfiguredUtterance,
+  curateSystemVoices,
+  generateStudioTtsAudio,
+} from "./adapters/studio-speech-synthesis-adapter";

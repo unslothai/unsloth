@@ -9,10 +9,14 @@ No GPU, network, or subprocesses are required.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import logging
 import sys
 import threading
 import types as _types
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -28,7 +32,12 @@ _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
 _structlog_stub = _types.ModuleType("structlog")
+# routes/inference.py binds structlog.get_logger at import time, and setdefault
+# keeps a bare stub an earlier test left behind: repair it rather than rely on order.
+_structlog_stub.get_logger = lambda *_args, **_kwargs: logging.getLogger("structlog_stub")
 sys.modules.setdefault("structlog", _structlog_stub)
+if not hasattr(sys.modules["structlog"], "get_logger"):
+    sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
 try:
     import httpx  # noqa: F401
@@ -103,6 +112,10 @@ def _build_cache(
 @pytest.fixture
 def hf_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: _types.SimpleNamespace(hub_cache = tmp_path),
+    )
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     return tmp_path
@@ -116,7 +129,78 @@ def _fail_get_paths_info(*_args, **_kwargs):
     raise AssertionError("cached reuse must return before the sizing preflight")
 
 
+def _load_route_module(name: str, relative_path: str):
+    """Import a route module under a private name so patches can't leak."""
+    spec = importlib.util.spec_from_file_location(name, Path(_BACKEND_DIR) / relative_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+async def _inline_to_thread(func, /, *args, **kwargs):
+    return func(*args, **kwargs)
+
+
+async def _no_gguf_gpu_ids(*_args, **_kwargs):
+    return None
+
+
 class TestLoadReusesCachedCopy:
+    def test_download_uses_selected_cache_for_lookup_preflight_and_write(
+        self, tmp_path, monkeypatch
+    ):
+        backend = LlamaCppBackend()
+        selected = tmp_path / "selected" / "hub"
+        startup = tmp_path / "startup" / "hub"
+        monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(startup))
+        monkeypatch.setattr(
+            "utils.hf_cache_settings.get_hf_cache_paths",
+            lambda: _types.SimpleNamespace(hub_cache = selected),
+        )
+        seen = {"lookups": [], "disk": [], "downloads": []}
+
+        def cached_lookup(
+            repo_id,
+            filename,
+            *,
+            cache_dir = None,
+            **_kwargs,
+        ):
+            seen["lookups"].append((repo_id, filename, cache_dir))
+            return None
+
+        def disk_usage(path):
+            seen["disk"].append(str(path))
+            return _types.SimpleNamespace(free = 1024)
+
+        def download(repo_id, filename, _token, **kwargs):
+            seen["downloads"].append((repo_id, filename, kwargs.get("cache_dir")))
+            return str(selected / filename)
+
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
+            patch(
+                "huggingface_hub.get_paths_info",
+                lambda _repo, paths, **_kwargs: [
+                    _types.SimpleNamespace(path = path, size = 4) for path in paths
+                ],
+            ),
+            patch("huggingface_hub.try_to_load_from_cache", cached_lookup),
+            patch("core.inference.llama_cpp.shutil.disk_usage", disk_usage),
+            patch(
+                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
+                download,
+            ),
+        ):
+            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+
+        assert out == str(selected / MAIN)
+        assert seen == {
+            "lookups": [(REPO, MAIN, str(selected))],
+            "disk": [str(selected)],
+            "downloads": [(REPO, MAIN, str(selected))],
+        }
+
     def test_online_reuse_after_revision_bump(self, hf_cache):
         """A new repo revision does not replace a complete cached model."""
         backend = LlamaCppBackend()
@@ -125,10 +209,7 @@ class TestLoadReusesCachedCopy:
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
             patch("huggingface_hub.get_paths_info", _fail_get_paths_info),
-            patch(
-                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
-                _fail_download,
-            ),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
         ):
             out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
 
@@ -154,10 +235,7 @@ class TestLoadReusesCachedCopy:
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
             patch("huggingface_hub.get_paths_info", fake_get_paths_info),
-            patch(
-                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
-                _fail_download,
-            ),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
         ):
             out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
 
@@ -172,10 +250,7 @@ class TestLoadReusesCachedCopy:
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
             patch("huggingface_hub.get_paths_info", lambda *_a, **_k: []),
-            patch(
-                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
-                _fail_download,
-            ),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
         ):
             out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
 
@@ -208,10 +283,7 @@ class TestLoadReusesCachedCopy:
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
             patch("huggingface_hub.get_paths_info", fake_get_paths_info),
             patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
-            patch(
-                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
-                fake_download,
-            ),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
         ):
             out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
 
@@ -244,15 +316,10 @@ class TestLoadReusesCachedCopy:
             return f"/fake/{repo_id}/{filename}"
 
         with (
-            patch(
-                "huggingface_hub.list_repo_files", lambda *_a, **_k: [shard1, shard2]
-            ),
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [shard1, shard2]),
             patch("huggingface_hub.get_paths_info", fake_get_paths_info),
             patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
-            patch(
-                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
-                fake_download,
-            ),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
         ):
             out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
 
@@ -268,10 +335,7 @@ class TestLoadReusesCachedCopy:
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
             patch("huggingface_hub.get_paths_info", _fail_get_paths_info),
-            patch(
-                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
-                _fail_download,
-            ),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
         ):
             out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
 
@@ -295,18 +359,13 @@ class TestLoadReusesCachedCopy:
             paths,
             token = None,
         ):
-            return [
-                _types.SimpleNamespace(path = p, size = 1) for p in paths if p is not None
-            ]
+            return [_types.SimpleNamespace(path = p, size = 1) for p in paths if p is not None]
 
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
             patch("huggingface_hub.get_paths_info", fake_get_paths_info),
             patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
-            patch(
-                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
-                fake_download,
-            ),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
         ):
             out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
 
@@ -334,18 +393,13 @@ class TestLoadReusesCachedCopy:
             paths,
             token = None,
         ):
-            return [
-                _types.SimpleNamespace(path = p, size = 1) for p in paths if p is not None
-            ]
+            return [_types.SimpleNamespace(path = p, size = 1) for p in paths if p is not None]
 
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
             patch("huggingface_hub.get_paths_info", fake_get_paths_info),
             patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
-            patch(
-                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
-                fake_download,
-            ),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
         ):
             out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT, force = True)
 
@@ -359,14 +413,9 @@ class TestLoadReusesCachedCopy:
         snap = _build_cache(hf_cache, REPO, {shard1: 4, shard2: 4})
 
         with (
-            patch(
-                "huggingface_hub.list_repo_files", lambda *_a, **_k: [shard1, shard2]
-            ),
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [shard1, shard2]),
             patch("huggingface_hub.get_paths_info", _fail_get_paths_info),
-            patch(
-                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
-                _fail_download,
-            ),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
         ):
             out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
 
@@ -394,20 +443,13 @@ class TestLoadReusesCachedCopy:
             paths,
             token = None,
         ):
-            return [
-                _types.SimpleNamespace(path = p, size = 4) for p in paths if p is not None
-            ]
+            return [_types.SimpleNamespace(path = p, size = 4) for p in paths if p is not None]
 
         with (
-            patch(
-                "huggingface_hub.list_repo_files", lambda *_a, **_k: [shard1, shard2]
-            ),
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [shard1, shard2]),
             patch("huggingface_hub.get_paths_info", fake_get_paths_info),
             patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
-            patch(
-                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
-                fake_download,
-            ),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
         ):
             out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
 
@@ -427,10 +469,7 @@ class TestLoadReusesCachedCopy:
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
             patch("huggingface_hub.get_paths_info", _fail_get_paths_info),
-            patch(
-                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
-                _fail_download,
-            ),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
         ):
             out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
 
@@ -455,18 +494,13 @@ class TestLoadReusesCachedCopy:
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
             patch("huggingface_hub.get_paths_info", fake_get_paths_info),
             patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
-            patch(
-                "shutil.disk_usage", lambda *_a, **_k: _types.SimpleNamespace(free = 10)
-            ),
+            patch("shutil.disk_usage", lambda *_a, **_k: _types.SimpleNamespace(free = 10)),
             patch.object(
                 backend,
                 "_find_smallest_fitting_variant",
                 lambda *_a, **_k: (fallback, 4, []),
             ),
-            patch(
-                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
-                _fail_download,
-            ),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
         ):
             out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
 
@@ -512,10 +546,7 @@ class TestLoadReusesCachedCopy:
         with (
             patch("huggingface_hub.list_repo_files", _fail_download),
             patch("hub.utils.download_registry.get_models_registry", lambda: registry),
-            patch(
-                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
-                _fail_download,
-            ),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
         ):
             out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
 
@@ -565,9 +596,7 @@ class TestCachedGgufForLoadProbe:
         assert cached_gguf_for_load(REPO, VARIANT, require_mmproj = True) is None
 
         (snap / "mmproj-F16.gguf").write_bytes(b"mmproj")
-        assert cached_gguf_for_load(REPO, VARIANT, require_mmproj = True) == str(
-            snap / MAIN
-        )
+        assert cached_gguf_for_load(REPO, VARIANT, require_mmproj = True) == str(snap / MAIN)
 
     def test_required_mmproj_scans_past_newer_main_only_snapshot(self, hf_cache):
         import os
@@ -582,9 +611,7 @@ class TestCachedGgufForLoadProbe:
         os.utime(old, (1_000_000, 1_000_000))
         os.utime(new, (2_000_000, 2_000_000))
 
-        assert cached_gguf_for_load(REPO, VARIANT, require_mmproj = True) == str(
-            old / MAIN
-        )
+        assert cached_gguf_for_load(REPO, VARIANT, require_mmproj = True) == str(old / MAIN)
 
 
 class TestLoadHubDownloadExclusion:
@@ -615,9 +642,7 @@ class TestLoadHubDownloadExclusion:
 
         body = DownloadModelRequest(repo_id = REPO, gguf_variant = VARIANT)
         with (
-            patch.object(
-                dl, "resolve_cached_repo_id_case", lambda repo_id, repo_type: repo_id
-            ),
+            patch.object(dl, "resolve_cached_repo_id_case", lambda repo_id, repo_type: repo_id),
             gguf_load_in_flight(REPO),
         ):
             with pytest.raises(HTTPException) as exc_info:
@@ -653,11 +678,7 @@ class TestLoadHubDownloadExclusion:
         body = DownloadModelRequest(repo_id = REPO, gguf_variant = VARIANT)
         try:
             with (
-                patch.object(
-                    dl,
-                    "resolve_cached_repo_id_case",
-                    lambda repo_id, repo_type: repo_id,
-                ),
+                patch.object(dl, "resolve_cached_repo_id_case", lambda repo_id, repo_type: repo_id),
                 patch.object(dl.gguf_variants, "gguf_variant_blob_hashes", mark_load),
                 patch.object(dl, "_registry", registry),
             ):
@@ -711,9 +732,7 @@ class TestLoadHubDownloadExclusion:
             patch("hub.utils.download_registry.get_models_registry", lambda: registry),
             patch(
                 "core.inference.llama_cpp.cached_gguf_for_load",
-                side_effect = AssertionError(
-                    "same-variant jobs must block before cache reuse"
-                ),
+                side_effect = AssertionError("same-variant jobs must block before cache reuse"),
             ),
         ):
             assert _hub_download_blocks_gguf_load(REPO, VARIANT) is True
@@ -790,25 +809,143 @@ class TestLoadHubDownloadExclusion:
         asyncio.run(scenario())
 
     def test_load_marker_precedes_hub_guard_and_unload(self):
-        source = (
-            Path(__file__).resolve().parent.parent / "routes" / "inference.py"
-        ).read_text()
-        gguf_branch = source[source.index("if config.is_gguf:") :]
+        source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+            encoding = "utf-8"
+        )
+        # _load_model_impl has more than one `if config.is_gguf:`, so anchor on
+        # the branch that actually owns the load marker rather than the first
+        # one in the file, which belongs to an earlier check.
+        marker = source.index("enter_context(gguf_load_in_flight")
+        gguf_branch_start = source.rindex("if config.is_gguf:", 0, marker)
+        gguf_branch = source[gguf_branch_start:]
 
         # The gguf_load_in_flight marker must be entered before the hub-download
         # guard and the unload so a concurrent load can't race the download
-        # manager. The llama_extra_args inheritance that used to sit between the
-        # marker and the guard now runs in _guard_chat_load_against_training, ahead
-        # of the GGUF branch, so it is no longer a landmark inside this slice.
+        # manager. The llama_extra_args inheritance moved out of the branch into
+        # _resolve_inherited_extra_args, which must still run BEFORE it: the
+        # inherited value (e.g. a carried --no-mmproj) shapes the guard's
+        # require_mmproj. Anchor on the call form so the assertion pins the
+        # endpoint's call site, not the function definition.
+        assert source.index("= _resolve_inherited_extra_args(") < gguf_branch_start
         assert (
             gguf_branch.index("enter_context(gguf_load_in_flight")
             < gguf_branch.index("_hub_download_blocks_gguf_load")
             < gguf_branch.index("unsloth_backend.unload_model")
         )
         llama_source = (
-            Path(__file__).resolve().parent.parent
-            / "core"
-            / "inference"
-            / "llama_cpp.py"
-        ).read_text()
+            Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+        ).read_text(encoding = "utf-8")
         assert "@_with_gguf_load_marker\n    def load_model(" in llama_source
+
+    def _capture_hub_guard_require_mmproj(
+        self,
+        stored_extra_args,
+        request_extra_args = None,
+    ):
+        """Drive /load's GGUF path and return the hub guard's require_mmproj.
+
+        The guard reports a conflicting download, so the 409 is the observation
+        point and no llama-server ever starts.
+        """
+        import core.inference.llama_cpp as llama_cpp_module
+
+        from fastapi import HTTPException
+        from models.inference import LoadRequest
+
+        route = _load_route_module(
+            "inference_route_module_for_inherited_extra_args_test",
+            "routes/inference.py",
+        )
+        captured = {}
+
+        def _fake_blocks(
+            repo,
+            variant,
+            *,
+            require_mmproj,
+            hf_token = None,
+        ):
+            captured["repo"] = repo
+            captured["variant"] = variant
+            captured["require_mmproj"] = require_mmproj
+            return True
+
+        # A vision GGUF: require_mmproj is True unless the extras say --no-mmproj.
+        config = SimpleNamespace(
+            is_gguf = True,
+            is_lora = False,
+            is_vision = True,
+            is_audio = False,
+            audio_type = None,
+            has_audio_input = False,
+            gguf_hf_repo = REPO,
+            gguf_variant = VARIANT,
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            identifier = REPO,
+            display_name = REPO,
+        )
+        # Pass-through extras the running backend recorded for the last load.
+        llama_backend = SimpleNamespace(
+            is_loaded = False,
+            extra_args = list(stored_extra_args),
+            extra_args_source = (REPO, VARIANT),
+            hf_variant = VARIANT,
+            model_identifier = REPO,
+        )
+        request = LoadRequest(
+            model_path = REPO,
+            gguf_variant = VARIANT,
+            llama_extra_args = request_extra_args,
+        )
+
+        with (
+            patch.object(
+                route,
+                "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: config),
+            ),
+            patch.object(route, "get_llama_cpp_backend", lambda: llama_backend),
+            patch.object(
+                route,
+                "get_inference_backend",
+                lambda: SimpleNamespace(active_model_name = None),
+            ),
+            patch.object(route, "_resolve_gguf_gpu_ids_for_request", _no_gguf_gpu_ids),
+            patch.object(route, "_guard_chat_load_against_training", return_value = None),
+            patch.object(route, "_effective_load_in_4bit", return_value = False),
+            patch.object(route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(llama_cpp_module, "_hub_download_blocks_gguf_load", _fake_blocks),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(
+                    route._load_model_impl(
+                        request,
+                        SimpleNamespace(
+                            app = SimpleNamespace(
+                                state = SimpleNamespace(llama_parallel_slots = 1),
+                            ),
+                        ),
+                        current_subject = "test-user",
+                    )
+                )
+
+        assert exc_info.value.status_code == 409
+        assert captured["repo"] == REPO
+        return captured["require_mmproj"]
+
+    def test_inherited_extra_args_shape_hub_guard_require_mmproj(self):
+        # Inheritance must resolve before the hub-download guard: an inherited
+        # --no-mmproj decides require_mmproj, so resolving later rejects a load
+        # over a download the effective arguments disable (#7251).
+        assert self._capture_hub_guard_require_mmproj(["--no-mmproj"]) is False
+        # Control: nothing to inherit, so a vision GGUF still needs its mmproj.
+        assert self._capture_hub_guard_require_mmproj([]) is True
+        # An explicit request list wins over the stored one, both ways.
+        assert (
+            self._capture_hub_guard_require_mmproj([], request_extra_args = ["--no-mmproj"]) is False
+        )
+        assert (
+            self._capture_hub_guard_require_mmproj(["--no-mmproj"], request_extra_args = []) is True
+        )

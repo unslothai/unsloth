@@ -134,9 +134,7 @@ def captured_popen(monkeypatch):
 
 
 @_POSIX_ONLY
-def test_python_sandboxed_uses_sandbox_preexec_and_safe_env(
-    captured_popen, monkeypatch
-):
+def test_python_sandboxed_uses_sandbox_preexec_and_safe_env(captured_popen, monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "secret-abc")
     _python_exec("print(1)", None, 5, "t", disable_sandbox = False)
     assert captured_popen["kwargs"]["preexec_fn"] is tools._sandbox_preexec
@@ -414,9 +412,7 @@ def test_bypass_env_keeps_noncredential_proxy_and_index_urls(monkeypatch, tmp_pa
     # internal-index networks); only credentialed values are dropped.
     monkeypatch.setenv("HTTP_PROXY", "http://proxy.corp.example:8080")
     monkeypatch.setenv("PIP_INDEX_URL", "https://pypi.corp.example/simple")
-    monkeypatch.setenv(
-        "PIP_EXTRA_INDEX_URL", "https://user:token@pypi.example.invalid/simple"
-    )
+    monkeypatch.setenv("PIP_EXTRA_INDEX_URL", "https://user:token@pypi.example.invalid/simple")
     env = _build_bypass_env(str(tmp_path))
     assert env["HTTP_PROXY"] == "http://proxy.corp.example:8080"
     assert env["PIP_INDEX_URL"] == "https://pypi.corp.example/simple"
@@ -486,9 +482,7 @@ def test_connection_string_noncredential_values_are_not_flagged(value):
 def test_connection_string_value_stripped_even_with_benign_name(monkeypatch, tmp_path):
     # NAME dodges the classifier, but the VALUE is a credentialed conn string.
     monkeypatch.setenv("APP_DB", "Server=tcp:db;Database=app;User ID=u;Password=p@ss;")
-    monkeypatch.setenv(
-        "SQLCONNSTR_DB", "DefaultEndpointsProtocol=https;AccountKey=abc=="
-    )
+    monkeypatch.setenv("SQLCONNSTR_DB", "DefaultEndpointsProtocol=https;AccountKey=abc==")
     env = _build_bypass_env(str(tmp_path))
     assert "APP_DB" not in env  # value-based catch
     assert "SQLCONNSTR_DB" not in env  # name-based catch
@@ -631,9 +625,7 @@ def test_bash_bypass_does_not_source_bash_env(monkeypatch, tmp_path):
     startup = tmp_path / "startup.sh"
     startup.write_text("export RECOVERED=leaked\n")
     monkeypatch.setenv("BASH_ENV", str(startup))
-    out = _bash_exec(
-        "echo R=$RECOVERED", None, 30, "bash-env-test", disable_sandbox = True
-    )
+    out = _bash_exec("echo R=$RECOVERED", None, 30, "bash-env-test", disable_sandbox = True)
     assert "R=leaked" not in out  # BASH_ENV dropped -> startup not sourced
     assert "R=" in out
 
@@ -671,9 +663,9 @@ def test_bypass_env_does_not_add_unset_windows_profile_vars(monkeypatch, tmp_pat
 
 @_POSIX_ONLY
 def test_bypass_exec_hardens_parent_proc_env(monkeypatch, captured_popen):
-    # Stripping the child env is not enough: a same-UID child can read the
-    # parent's /proc environ. The exec paths must invoke the parent hardening
-    # when (and only when) the sandbox is disabled.
+    # Stripping the child env is not enough: a same-UID child can read the parent's
+    # /proc environ. Both exec paths harden the parent in bypass mode (fail closed)
+    # and in sandboxed mode too (best-effort backstop for a classifier miss).
     calls = {"n": 0}
 
     def fake_harden():
@@ -688,7 +680,7 @@ def test_bypass_exec_hardens_parent_proc_env(monkeypatch, captured_popen):
     calls["n"] = 0
     _python_exec("print(1)", None, 5, "t", disable_sandbox = False)
     _bash_exec("echo hi", None, 5, "t", disable_sandbox = False)
-    assert calls["n"] == 0  # never hardened on the sandboxed path
+    assert calls["n"] == 2  # sandboxed path now hardens too (best-effort)
 
 
 def test_bypass_exec_fails_closed_when_hardening_fails(monkeypatch, captured_popen):

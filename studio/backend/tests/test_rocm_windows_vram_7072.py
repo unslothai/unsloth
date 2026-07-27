@@ -92,9 +92,7 @@ def _subprocess_run(*, adapter_output = "__NONE__\n", util_output = "12.0\n"):
             out = util_output
         else:
             out = "-1\n"
-        return subprocess.CompletedProcess(
-            args = cmd, returncode = 0, stdout = out, stderr = ""
-        )
+        return subprocess.CompletedProcess(args = cmd, returncode = 0, stdout = out, stderr = "")
 
     return fake_run
 
@@ -126,13 +124,9 @@ DEVICES = [("AMD Radeon PRO W7900", 48 * GB), ("AMD Radeon PRO W7500", 8 * GB)]
 # System tab (get_visible_gpu_utilization) -- the reporter's screenshot
 # ----------------------------------------------------------------------------- #
 def test_system_tab_shows_per_gpu_used(win_rocm, monkeypatch):
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(DEVICES, free_equals_total = True)
-    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(DEVICES, free_equals_total = True))
     monkeypatch.setattr(
-        hw.subprocess,
-        "run",
-        _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS)),
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS))
     )
 
     devices = hw.get_visible_gpu_utilization()["devices"]
@@ -146,20 +140,14 @@ def test_system_tab_shows_per_gpu_used(win_rocm, monkeypatch):
     assert by_idx[1]["vram_used_gb"] is None
     assert by_idx[1]["vram_utilization_pct"] is None
     assert all(
-        d["vram_used_gb"] <= d["vram_total_gb"]
-        for d in devices
-        if d["vram_used_gb"] is not None
+        d["vram_used_gb"] <= d["vram_total_gb"] for d in devices if d["vram_used_gb"] is not None
     )
 
 
 def test_gpu_utilization_does_not_collapse(win_rocm, monkeypatch):
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(DEVICES, free_equals_total = True)
-    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(DEVICES, free_equals_total = True))
     monkeypatch.setattr(
-        hw.subprocess,
-        "run",
-        _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS)),
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS))
     )
 
     result = hw.get_gpu_utilization()
@@ -170,12 +158,8 @@ def test_gpu_utilization_does_not_collapse(win_rocm, monkeypatch):
 
 
 def test_localized_counter_reports_unknown_not_zero(win_rocm, monkeypatch):
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(DEVICES, free_equals_total = True)
-    )
-    monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = "__NONE__\n")
-    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(DEVICES, free_equals_total = True))
+    monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output = "__NONE__\n"))
 
     devices = hw.get_visible_gpu_utilization()["devices"]
     assert len(devices) == 2  # both still shown with correct totals
@@ -213,19 +197,12 @@ def test_mem_get_info_guard_scopes_to_windows_rocm(monkeypatch):
 # Per-adapter attribution helpers (pure unit)
 # ----------------------------------------------------------------------------- #
 def test_match_adapter_pairs_and_clamps():
-    assert hw._match_adapter_used_to_devices(
-        [40 * GB, 0.5 * GB], [48 * GB, 8 * GB]
-    ) == [
+    assert hw._match_adapter_used_to_devices([40 * GB, 0.5 * GB], [48 * GB, 8 * GB]) == [
         40 * GB,
         0.5 * GB,
     ]
-    assert hw._match_adapter_used_to_devices([100 * GB], [48 * GB]) == [
-        48 * GB
-    ]  # clamp
-    assert hw._match_adapter_used_to_devices([40 * GB], [48 * GB, 8 * GB]) == [
-        40 * GB,
-        None,
-    ]
+    assert hw._match_adapter_used_to_devices([100 * GB], [48 * GB]) == [48 * GB]  # clamp
+    assert hw._match_adapter_used_to_devices([40 * GB], [48 * GB, 8 * GB]) == [40 * GB, None]
 
 
 def test_match_adapter_reports_unknown_when_more_active_than_visible():
@@ -250,9 +227,7 @@ def test_match_adapter_reports_unknown_for_placeholder_fallback():
     # Order of the counters must not matter.
     assert hw._match_adapter_used_to_devices([10 * MiB, 50 * MiB], [8 * GB]) == [None]
     # Two idle visible GPUs plus a placeholder: all three counters below the floor.
-    assert hw._match_adapter_used_to_devices(
-        [50 * MiB, 10 * MiB, 5 * MiB], [48 * GB, 8 * GB]
-    ) == [
+    assert hw._match_adapter_used_to_devices([50 * MiB, 10 * MiB, 5 * MiB], [48 * GB, 8 * GB]) == [
         None,
         None,
     ]
@@ -261,47 +236,28 @@ def test_match_adapter_reports_unknown_for_placeholder_fallback():
 def test_match_adapter_reports_unknown_when_usage_not_capacity_ordered():
     # 8 GiB card at 7 GiB beside a 48 GiB card at 5 GiB: the bigger usage still fits
     # the smaller card, so both pairings are feasible -> unknown.
-    assert hw._match_adapter_used_to_devices([7 * GB, 5 * GB], [8 * GB, 48 * GB]) == [
-        None,
-        None,
-    ]
+    assert hw._match_adapter_used_to_devices([7 * GB, 5 * GB], [8 * GB, 48 * GB]) == [None, None]
     # Device order must not matter (same physical situation, ordinals flipped).
-    assert hw._match_adapter_used_to_devices([7 * GB, 5 * GB], [48 * GB, 8 * GB]) == [
-        None,
-        None,
-    ]
+    assert hw._match_adapter_used_to_devices([7 * GB, 5 * GB], [48 * GB, 8 * GB]) == [None, None]
     # Same-capacity cards with unequal usage are equally unattributable.
-    assert hw._match_adapter_used_to_devices([12 * GB, 8 * GB], [24 * GB, 24 * GB]) == [
-        None,
-        None,
-    ]
+    assert hw._match_adapter_used_to_devices([12 * GB, 8 * GB], [24 * GB, 24 * GB]) == [None, None]
     # A single usage that fits both cards can sit on either -> unknown.
-    assert hw._match_adapter_used_to_devices([5 * GB], [48 * GB, 8 * GB]) == [
-        None,
-        None,
-    ]
+    assert hw._match_adapter_used_to_devices([5 * GB], [48 * GB, 8 * GB]) == [None, None]
     # But a capacity-forced assignment (usage exceeds the smaller card) is kept:
     # 40 GiB can only be the 48 GiB card, so it is not fabrication.
-    assert hw._match_adapter_used_to_devices([40 * GB], [48 * GB, 8 * GB]) == [
-        40 * GB,
-        None,
-    ]
+    assert hw._match_adapter_used_to_devices([40 * GB], [48 * GB, 8 * GB]) == [40 * GB, None]
 
 
 def test_match_adapter_reports_unknown_when_hidden_usage_fits_visible_card():
     # A survivor that merely *fits* a visible card must not be pinned onto it. Two
     # cards (48/8 GiB) at 40 GiB / 10 MiB beside a hidden 6 GiB adapter: the 6 GiB
     # fits the idle 8 GiB card but isn't forced -> Unknown; only 40 GiB is forced.
-    assert hw._match_adapter_used_to_devices(
-        [40 * GB, 10 * MiB, 6 * GB], [48 * GB, 8 * GB]
-    ) == [
+    assert hw._match_adapter_used_to_devices([40 * GB, 10 * MiB, 6 * GB], [48 * GB, 8 * GB]) == [
         40 * GB,
         None,
     ]
     # Counter order must not matter.
-    assert hw._match_adapter_used_to_devices(
-        [6 * GB, 40 * GB, 10 * MiB], [48 * GB, 8 * GB]
-    ) == [
+    assert hw._match_adapter_used_to_devices([6 * GB, 40 * GB, 10 * MiB], [48 * GB, 8 * GB]) == [
         40 * GB,
         None,
     ]
@@ -351,10 +307,7 @@ def test_match_adapter_capacity_forced_matrix():
     assert m([48 * GB, 3 * MiB, 3 * MiB], [24 * GB, 8 * GB]) == [None, None]
     # -- more active adapters than visible cards -> all unknown --------------- #
     assert m([40 * GB, 7 * GB, 6 * GB, 3 * MiB], [48 * GB, 8 * GB]) == [None, None]
-    assert m([40 * GB, 7 * GB, 6 * GB, 3 * MiB, 3 * MiB], [48 * GB, 8 * GB]) == [
-        None,
-        None,
-    ]
+    assert m([40 * GB, 7 * GB, 6 * GB, 3 * MiB, 3 * MiB], [48 * GB, 8 * GB]) == [None, None]
     # -- every counter below the noise floor (placeholder fallback) -> unknown - #
     assert m([50 * MiB, 10 * MiB], [8 * GB]) == [None]
     assert m([50 * MiB, 10 * MiB, 5 * MiB], [48 * GB, 8 * GB]) == [None, None]
@@ -366,16 +319,12 @@ def test_match_adapter_capacity_forced_matrix():
 def test_perf_counter_parser_and_sentinel(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(
-        hw.subprocess,
-        "run",
-        _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS)),
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS))
     )
     parsed = hw._rocm_windows_perf_counter_vram_by_adapter()
     assert parsed is not None and len(parsed) == 3
     assert parsed[0][0].startswith("luid_")
-    monkeypatch.setattr(
-        hw.subprocess, "run", _subprocess_run(adapter_output = "__NONE__\n")
-    )
+    monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output = "__NONE__\n"))
     assert hw._rocm_windows_perf_counter_vram_by_adapter() is None
 
 
@@ -387,12 +336,8 @@ def test_unified_memory_adopts_torch_total_even_when_used_unknown():
     GTT pool) is authoritative. The correction must still adopt the larger total;
     used stays at amd-smi's figure when torch's is unknown."""
     metrics = {"vram_total_gb": 8.0, "vram_used_gb": 2.0, "vram_utilization_pct": 25.0}
-    hw._apply_unified_memory_correction(
-        metrics, {"total_gb": 124.0, "used_gb": None, "index": 0}
-    )
-    assert (
-        metrics["vram_total_gb"] == 124.0
-    )  # full unified pool, not the 8 GB carve-out
+    hw._apply_unified_memory_correction(metrics, {"total_gb": 124.0, "used_gb": None, "index": 0})
+    assert metrics["vram_total_gb"] == 124.0  # full unified pool, not the 8 GB carve-out
     assert metrics["vram_used_gb"] == 2.0  # amd-smi used preserved (torch's was None)
     assert metrics["vram_utilization_pct"] == pytest.approx(round(2.0 / 124.0 * 100, 1))
 
@@ -401,26 +346,16 @@ def test_unified_memory_overwrites_used_when_torch_used_known():
     """When torch reports both a larger total and a known used, both are adopted
     and utilization is recomputed against the corrected total (unchanged path)."""
     metrics = {"vram_total_gb": 8.0, "vram_used_gb": 2.0, "vram_utilization_pct": 25.0}
-    hw._apply_unified_memory_correction(
-        metrics, {"total_gb": 124.0, "used_gb": 40.0, "index": 0}
-    )
+    hw._apply_unified_memory_correction(metrics, {"total_gb": 124.0, "used_gb": 40.0, "index": 0})
     assert metrics["vram_total_gb"] == 124.0
     assert metrics["vram_used_gb"] == 40.0
-    assert metrics["vram_utilization_pct"] == pytest.approx(
-        round(40.0 / 124.0 * 100, 1)
-    )
+    assert metrics["vram_utilization_pct"] == pytest.approx(round(40.0 / 124.0 * 100, 1))
 
 
 def test_unified_memory_no_op_when_torch_total_not_larger():
     """A discrete GPU where torch total does not exceed amd-smi's is left untouched."""
-    metrics = {
-        "vram_total_gb": 48.0,
-        "vram_used_gb": 10.0,
-        "vram_utilization_pct": 20.8,
-    }
-    hw._apply_unified_memory_correction(
-        metrics, {"total_gb": 48.0, "used_gb": None, "index": 0}
-    )
+    metrics = {"vram_total_gb": 48.0, "vram_used_gb": 10.0, "vram_utilization_pct": 20.8}
+    hw._apply_unified_memory_correction(metrics, {"total_gb": 48.0, "used_gb": None, "index": 0})
     assert metrics["vram_total_gb"] == 48.0
     assert metrics["vram_used_gb"] == 10.0
     assert metrics["vram_utilization_pct"] == 20.8

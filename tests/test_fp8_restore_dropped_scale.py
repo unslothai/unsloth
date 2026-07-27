@@ -104,9 +104,7 @@ def test_restore_dequantizes_orphaned_scale():
         restored, skipped = _restore_dropped_fp8_scales(model, d, local_files_only = True)
 
     assert restored == 1
-    expected = (raw.to(torch.float32) * _expand(scale, (2, 2), (4, 4))).to(
-        torch.bfloat16
-    )
+    expected = (raw.to(torch.float32) * _expand(scale, (2, 2), (4, 4))).to(torch.bfloat16)
     assert torch.equal(model.layer.weight.data, expected)
 
 
@@ -194,9 +192,7 @@ def test_non_block_divisible_shape():
         restored, skipped = _restore_dropped_fp8_scales(model, d, local_files_only = True)
 
     assert restored == 1
-    expected = (raw.to(torch.float32) * _expand(scale, (2, 2), (3, 4))).to(
-        torch.bfloat16
-    )
+    expected = (raw.to(torch.float32) * _expand(scale, (2, 2), (3, 4))).to(torch.bfloat16)
     assert torch.equal(model.layer.weight.data, expected)
 
 
@@ -218,9 +214,7 @@ def test_transposed_scale_layout():
         restored, _ = _restore_dropped_fp8_scales(model, d, local_files_only = True)
 
     assert restored == 1
-    expected = (raw.to(torch.float32) * _expand(scale_correct, (2, 2), (4, 2))).to(
-        torch.bfloat16
-    )
+    expected = (raw.to(torch.float32) * _expand(scale_correct, (2, 2), (4, 2))).to(torch.bfloat16)
     assert torch.equal(model.layer.weight.data, expected)
 
 
@@ -238,17 +232,12 @@ def test_single_file_checkpoint_without_index():
 
     with tempfile.TemporaryDirectory() as d:
         _write_checkpoint(
-            d,
-            {"layer.weight_scale_inv": scale},
-            filename = "model.safetensors",
-            include_index = False,
+            d, {"layer.weight_scale_inv": scale}, filename = "model.safetensors", include_index = False
         )
         restored, _ = _restore_dropped_fp8_scales(model, d, local_files_only = True)
 
     assert restored == 1
-    expected = (raw.to(torch.float32) * _expand(scale, (2, 2), (4, 4))).to(
-        torch.bfloat16
-    )
+    expected = (raw.to(torch.float32) * _expand(scale, (2, 2), (4, 4))).to(torch.bfloat16)
     assert torch.equal(model.layer.weight.data, expected)
 
 
@@ -284,9 +273,7 @@ def test_text_only_prefix_mapping():
     model.config = _fp8_config((2, 2))
     model.anchor = _fp8_anchor()
     model.model = nn.Module()
-    model.model.gate_proj = _bf16_linear(
-        2, 2, raw
-    )  # module lacks the language_model prefix
+    model.model.gate_proj = _bf16_linear(2, 2, raw)  # module lacks the language_model prefix
 
     with tempfile.TemporaryDirectory() as d:
         # checkpoint key carries the language_model wrapper the text-only load stripped
@@ -294,9 +281,7 @@ def test_text_only_prefix_mapping():
         restored, _ = _restore_dropped_fp8_scales(model, d, local_files_only = True)
 
     assert restored == 1
-    expected = (raw.to(torch.float32) * _expand(scale, (2, 2), (2, 2))).to(
-        torch.bfloat16
-    )
+    expected = (raw.to(torch.float32) * _expand(scale, (2, 2), (2, 2))).to(torch.bfloat16)
     assert torch.equal(model.model.gate_proj.weight.data, expected)
 
 
@@ -312,9 +297,7 @@ def test_skips_variant_load():
     model.layer = _bf16_linear(4, 4, raw)
     with tempfile.TemporaryDirectory() as d:
         _write_checkpoint(d, {"layer.weight_scale_inv": scale})
-        result = _restore_dropped_fp8_scales(
-            model, d, local_files_only = True, variant = "fp8"
-        )
+        result = _restore_dropped_fp8_scales(model, d, local_files_only = True, variant = "fp8")
     assert result == (0, 0)
     assert torch.equal(model.layer.weight.data, raw)  # untouched
 
@@ -337,9 +320,7 @@ def test_vlm_language_model_model_alias():
         _write_checkpoint(d, {"language_model.model.gate_proj.weight_scale_inv": scale})
         restored, _ = _restore_dropped_fp8_scales(model, d, local_files_only = True)
     assert restored == 1
-    expected = (raw.to(torch.float32) * _expand(scale, (2, 2), (2, 2))).to(
-        torch.bfloat16
-    )
+    expected = (raw.to(torch.float32) * _expand(scale, (2, 2), (2, 2))).to(torch.bfloat16)
     assert torch.equal(model.model.language_model.gate_proj.weight.data, expected)
 
 
@@ -370,9 +351,7 @@ def test_noop_when_not_block_fp8():
     """A non-fp8 (or non-block) quantization config is ignored."""
     scale = torch.rand(2, 2)
     model = nn.Module()
-    model.config = SimpleNamespace(
-        quantization_config = {"quant_method": "compressed-tensors"}
-    )
+    model.config = SimpleNamespace(quantization_config = {"quant_method": "compressed-tensors"})
     model.layer = nn.Linear(4, 4, bias = False)
     with tempfile.TemporaryDirectory() as d:
         _write_checkpoint(d, {"layer.weight_scale_inv": scale})

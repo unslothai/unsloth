@@ -28,6 +28,7 @@ from hub.schemas.inventory import (
     CachedModelsResponse,
     DeleteCachedModelResponse,
     GgufVariantsResponse,
+    HiddenModelsResponse,
     LocalModelListResponse,
     ModelsFolderResponse,
     RecommendedFoldersResponse,
@@ -136,9 +137,7 @@ async def cancel_download_model(
 @router.get("/download-status", response_model = DownloadJobStatus)
 async def get_download_status(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
-    gguf_variant: str = Query(
-        "", description = "Quantization variant (empty for safetensors)"
-    ),
+    gguf_variant: str = Query("", description = "Quantization variant (empty for safetensors)"),
     current_subject: str = Depends(get_current_subject),
 ):
     return await downloads.get_download_status_response(repo_id, gguf_variant)
@@ -155,9 +154,7 @@ async def get_active_downloads(
 @router.get("/transport-status", response_model = TransportStatusResponse)
 async def get_model_transport_status(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
-    gguf_variant: str = Query(
-        "", description = "Quantization variant (empty for safetensors)"
-    ),
+    gguf_variant: str = Query("", description = "Quantization variant (empty for safetensors)"),
     hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
@@ -218,6 +215,16 @@ async def list_cached_models(
     return await cache_inventory.list_cached_models_response(hf_token)
 
 
+@router.get("/hidden-models", response_model = HiddenModelsResponse)
+async def list_hidden_models(current_subject: str = Depends(get_current_subject)):
+    import asyncio
+
+    from routes.models import hidden_model_matchers
+
+    needles, exact_ids, exact_paths = await asyncio.to_thread(hidden_model_matchers)
+    return HiddenModelsResponse(needles = needles, exact_ids = exact_ids, exact_paths = exact_paths)
+
+
 @router.delete(
     "/delete-cached",
     response_model = DeleteCachedModelResponse,
@@ -226,7 +233,8 @@ async def list_cached_models(
 async def delete_cached_model(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
+    cache_path: Optional[str] = Body(None),
     hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    return await deletion.delete_cached_model_response(repo_id, variant, hf_token)
+    return await deletion.delete_cached_model_response(repo_id, variant, hf_token, cache_path)

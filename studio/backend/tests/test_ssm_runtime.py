@@ -85,9 +85,7 @@ def test_non_ssm_models_not_detected(name):
 
 def test_probe_lora_uses_base_not_adapter_name():
     # A plain-Llama LoRA whose adapter id contains an SSM substring is not SSM.
-    probe = ssm_runtime.ssm_probe_identifier(
-        "user/falcon-h1-lora", "meta-llama/Llama-3-8B"
-    )
+    probe = ssm_runtime.ssm_probe_identifier("user/falcon-h1-lora", "meta-llama/Llama-3-8B")
     assert probe == "meta-llama/Llama-3-8B"
     assert ssm_runtime.model_is_ssm(probe) is False
 
@@ -98,10 +96,7 @@ def test_probe_lora_on_ssm_base_detected():
 
 
 def test_probe_plain_hf_id_unchanged():
-    assert (
-        ssm_runtime.ssm_probe_identifier("nvidia/Nemotron-H-8B")
-        == "nvidia/Nemotron-H-8B"
-    )
+    assert ssm_runtime.ssm_probe_identifier("nvidia/Nemotron-H-8B") == "nvidia/Nemotron-H-8B"
 
 
 def test_probe_local_path_uses_basename(tmp_path):
@@ -124,12 +119,8 @@ def test_probe_local_ssm_checkpoint_basename_detected(tmp_path):
 
 def test_noop_for_non_ssm_model(monkeypatch):
     calls = []
-    monkeypatch.setattr(
-        ssm_runtime, "_install_kernel", lambda **k: calls.append(k) or True
-    )
-    ssm_runtime.ensure_ssm_runtime(
-        "unsloth/Llama-3.2-1B-Instruct", run = lambda *a, **k: _Result()
-    )
+    monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: calls.append(k) or True)
+    ssm_runtime.ensure_ssm_runtime("unsloth/Llama-3.2-1B-Instruct", run = lambda *a, **k: _Result())
     assert calls == []  # nothing installed for a plain transformer
 
 
@@ -174,9 +165,7 @@ def test_causal_only_install_failure_is_not_fatal(monkeypatch):
 def test_ssm_causal_failure_nonfatal_when_mamba_ok(monkeypatch):
     # causal-conv1d is best-effort even for a true SSM model; only mamba-ssm is fatal.
     monkeypatch.setattr(
-        ssm_runtime,
-        "_install_kernel",
-        lambda *, import_name, **_: import_name == "mamba_ssm",
+        ssm_runtime, "_install_kernel", lambda *, import_name, **_: import_name == "mamba_ssm"
     )
     ssm_runtime.ensure_ssm_runtime("unsloth/NVIDIA-Nemotron-3-Nano-4B")  # no raise
 
@@ -184,9 +173,7 @@ def test_ssm_causal_failure_nonfatal_when_mamba_ok(monkeypatch):
 def test_install_kernel_idempotent_when_present(monkeypatch):
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: True)
     called = []
-    monkeypatch.setattr(
-        ssm_runtime, "url_exists", lambda u: called.append("url") or True
-    )
+    monkeypatch.setattr(ssm_runtime, "url_exists", lambda u: called.append("url") or True)
     ok = ssm_runtime._install_kernel(
         import_name = "mamba_ssm",
         display_name = "mamba-ssm",
@@ -205,9 +192,7 @@ def test_install_kernel_uses_prebuilt_wheel(monkeypatch):
     # not importable before install, importable after the wheel lands
     states = iter([False, True])
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: next(states))
-    monkeypatch.setattr(
-        ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30: {"x": "y"}
-    )
+    monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30: {"x": "y"})
     seen = {}
     monkeypatch.setattr(
         ssm_runtime,
@@ -265,9 +250,7 @@ def test_install_kernel_falls_back_to_source(monkeypatch):
 
 def test_is_importable_invalidates_caches(monkeypatch):
     calls = []
-    monkeypatch.setattr(
-        ssm_runtime.importlib, "invalidate_caches", lambda: calls.append(1)
-    )
+    monkeypatch.setattr(ssm_runtime.importlib, "invalidate_caches", lambda: calls.append(1))
     assert ssm_runtime._is_importable("sys") is True
     assert calls  # caches invalidated before attempting the import
 
@@ -316,9 +299,7 @@ def test_ssm_model_on_windows_still_installs_mamba(monkeypatch):
         lambda *, import_name, **_: installed.append(import_name) or True,
     )
     ssm_runtime.ensure_ssm_runtime("unsloth/NVIDIA-Nemotron-3-Nano-4B")
-    assert installed == [
-        "mamba_ssm"
-    ]  # causal-conv1d skipped, mamba-ssm still attempted
+    assert installed == ["mamba_ssm"]  # causal-conv1d skipped, mamba-ssm still attempted
 
 
 def test_wheel_installed_but_not_importable_falls_back_to_source(monkeypatch):
@@ -354,9 +335,7 @@ def test_hip_source_build_requires_hipcc(monkeypatch):
         ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30: {"hip_version": "6.2"}
     )
     monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: None)
-    monkeypatch.setattr(
-        ssm_runtime.shutil, "which", lambda name: None
-    )  # no uv, no hipcc
+    monkeypatch.setattr(ssm_runtime.shutil, "which", lambda name: None)  # no uv, no hipcc
     ran = []
     ok = ssm_runtime._install_kernel(
         import_name = "causal_conv1d",
@@ -401,9 +380,7 @@ def test_hip_uv_source_build_uses_no_cache(monkeypatch):
         ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30: {"hip_version": "6.2"}
     )
     monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: None)
-    monkeypatch.setattr(
-        ssm_runtime.shutil, "which", lambda name: "/usr/bin/" + name
-    )  # uv + hipcc
+    monkeypatch.setattr(ssm_runtime.shutil, "which", lambda name: "/usr/bin/" + name)  # uv + hipcc
     monkeypatch.setattr(ssm_runtime, "_hipcc_gcc_install_dir", lambda: None)
     cmds = []
     ssm_runtime._install_kernel(
@@ -424,13 +401,13 @@ def test_hip_uv_source_build_uses_no_cache(monkeypatch):
 
 
 def test_inference_worker_calls_ensure_ssm_runtime():
-    src = (_BACKEND / "core" / "inference" / "worker.py").read_text()
+    src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
     assert "from utils.ssm_runtime import ensure_ssm_runtime" in src
     assert "ensure_ssm_runtime(" in src
 
 
 def test_inference_worker_skips_ssm_on_mlx_and_checks_lora_base():
-    src = (_BACKEND / "core" / "inference" / "worker.py").read_text()
+    src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
     # MLX (Apple Silicon) must not try to build CUDA/ROCm SSM kernels.
     assert 'getattr(backend, "device", None) != "mlx"' in src
     # A LoRA load must also check its base model, not just the adapter id.
@@ -440,12 +417,12 @@ def test_inference_worker_skips_ssm_on_mlx_and_checks_lora_base():
 def test_inference_worker_resolves_remote_lora_base_pre_import():
     # A remote LoRA's base (from the Hub adapter_config.json) must be resolved before the
     # transformers import so its SSM kernels are pre-installed, not too late in _handle_load.
-    src = (_BACKEND / "core" / "inference" / "worker.py").read_text()
+    src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
     assert "_remote_lora_base" in src
 
 
 def test_inference_worker_tiers_on_base_and_gates_lora_base_only():
-    src = (_BACKEND / "core" / "inference" / "worker.py").read_text()
+    src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
     # Tier activation runs on the resolved base, not the raw adapter id (remote-LoRA fix).
     assert "_activate_transformers_version(_base" in src
     # The gate only adds a genuine LoRA base, never a full fine-tune's recorded (unloaded) base.
@@ -455,7 +432,7 @@ def test_inference_worker_tiers_on_base_and_gates_lora_base_only():
 def test_inference_worker_probes_base_for_ssm_kernels():
     # Both the pre-import path and _handle_load must derive SSM targets from a real model id
     # via ssm_probe_identifier, not the raw adapter id / local checkpoint path.
-    src = (_BACKEND / "core" / "inference" / "worker.py").read_text()
+    src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
     assert src.count("ssm_probe_identifier(") >= 2
 
 
@@ -487,9 +464,7 @@ def test_pre_import_gate_is_transformers_free():
         with patch.object(fs, "_fetch_security_status", return_value = None):
             fs.evaluate_file_security("nvidia/Nemotron-H-8B", load_subdirs = ())
         with patch.object(
-            consent,
-            "_load_remote_code_configs",
-            return_value = [{"model_type": "nemotron_h"}],
+            consent, "_load_remote_code_configs", return_value = [{"model_type": "nemotron_h"}]
         ):
             from utils.security import evaluate_remote_code_consent_for_targets
             evaluate_remote_code_consent_for_targets(
@@ -501,9 +476,7 @@ def test_pre_import_gate_is_transformers_free():
     finally:
         # Drop anything the gate imported, then rebind the original module objects so later
         # tests see the same instances they captured at import time.
-        for m in [
-            m for m in list(_sys.modules) if _is_gated_module(m) and m not in _saved
-        ]:
+        for m in [m for m in list(_sys.modules) if _is_gated_module(m) and m not in _saved]:
             _sys.modules.pop(m, None)
         _sys.modules.update(_saved)
 
@@ -511,7 +484,7 @@ def test_pre_import_gate_is_transformers_free():
 def test_pre_import_gate_skips_subdir_computation():
     # The worker's pre-import preflight must call the gate with compute_subdirs=False so it
     # never imports model_config/transformers before the SSM kernels are installed.
-    src = (_BACKEND / "core" / "inference" / "worker.py").read_text()
+    src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
     assert "compute_subdirs = False" in src
 
 
@@ -533,7 +506,7 @@ def test_security_gates_run_before_ssm_install():
     # The SSM install is name-based and can source-build native packages, so a malware /
     # blocked-code model must be refused first -- in both the pre-import path and _handle_load.
     import ast
-    tree = ast.parse((_BACKEND / "core" / "inference" / "worker.py").read_text())
+    tree = ast.parse((_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8"))
     for fn in ("run_inference_process", "_handle_load"):
         gates = _call_linenos(tree, fn, "_run_security_gates")
         ssm = _call_linenos(tree, fn, "_ensure_ssm_kernels")
@@ -554,9 +527,7 @@ def test_constants_match_training_worker():
     assert set(ssm_runtime.SSM_MODEL_SUBSTRINGS) == set(tw._SSM_MODEL_SUBSTRINGS)
     assert ssm_runtime.MAMBA_SSM_PACKAGE_VERSION == tw._MAMBA_SSM_PACKAGE_VERSION
     assert ssm_runtime.MAMBA_SSM_RELEASE_TAG == tw._MAMBA_SSM_RELEASE_TAG
-    assert (
-        ssm_runtime.CAUSAL_CONV1D_PACKAGE_VERSION == tw._CAUSAL_CONV1D_PACKAGE_VERSION
-    )
+    assert ssm_runtime.CAUSAL_CONV1D_PACKAGE_VERSION == tw._CAUSAL_CONV1D_PACKAGE_VERSION
     assert ssm_runtime.CAUSAL_CONV1D_RELEASE_TAG == tw._CAUSAL_CONV1D_RELEASE_TAG
 
     # detection must agree with the training worker across SSM + non-SSM names
@@ -570,6 +541,6 @@ def test_constants_match_training_worker():
         "unsloth/Llama-3.2-1B-Instruct",
         "unsloth/Qwen2.5-7B",
     ):
-        assert ssm_runtime.model_wants_causal_conv1d(
+        assert ssm_runtime.model_wants_causal_conv1d(name) == tw._model_wants_causal_conv1d(
             name
-        ) == tw._model_wants_causal_conv1d(name), name
+        ), name

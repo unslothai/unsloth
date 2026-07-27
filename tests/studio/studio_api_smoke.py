@@ -133,9 +133,7 @@ try:
         acao = r.headers.get("Access-Control-Allow-Origin", "")
         acac = r.headers.get("Access-Control-Allow-Credentials", "")
         if acao == "*" and acac.lower() == "true":
-            fail(
-                f"CORS: wildcard origin + credentials=true (acao={acao!r}, acac={acac!r})"
-            )
+            fail(f"CORS: wildcard origin + credentials=true (acao={acao!r}, acac={acac!r})")
         else:
             ok(f"CORS preflight acao={acao!r} acac={acac!r}")
 except Exception as exc:
@@ -144,7 +142,7 @@ except Exception as exc:
 # GET / cross-origin must NOT leak the bootstrap password in the served HTML.
 boot_path = AUTH_DIR / ".bootstrap_password"
 if boot_path.exists():
-    bootstrap_pw = boot_path.read_text().strip()
+    bootstrap_pw = boot_path.read_text(encoding = "utf-8").strip()
     if bootstrap_pw:
         req = urllib.request.Request(
             f"{BASE}/",

@@ -40,7 +40,7 @@ export function HfTokenIndicator({ showLabel = false }: HfTokenIndicatorProps = 
             onClick={() => openDialog("general")}
             aria-label={ariaLabel}
             className={cn(
-              "hub-menu-trigger field-soft inline-flex h-9 w-full items-center justify-between gap-2 rounded-[12px] py-0 pl-1.5 pr-3 text-[12.5px] font-medium text-foreground transition-colors",
+              "hub-menu-trigger field-soft inline-flex h-9 w-full items-center justify-between gap-2 rounded-[12px] py-0 pl-1.5 pr-3 text-ui-12p5 font-medium text-foreground transition-colors",
               "focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0",
             )}
           >
@@ -64,7 +64,7 @@ export function HfTokenIndicator({ showLabel = false }: HfTokenIndicatorProps = 
             </span>
             <span
               className={cn(
-                "shrink-0 text-[11px] font-normal tabular-nums",
+                "shrink-0 text-ui-11 font-normal tabular-nums",
                 hasToken ? "text-verified" : "text-muted-foreground/70",
               )}
             >
@@ -89,7 +89,7 @@ export function HfTokenIndicator({ showLabel = false }: HfTokenIndicatorProps = 
           className={cn(
             // Solid circle reads optically larger than the flat HTTP/Xet box, so
             // keep it 22px to sit within the row rather than bulging above it.
-            "inline-flex h-[22px] w-[22px] items-center justify-center rounded-full text-[11.5px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            "inline-flex h-[22px] w-[22px] items-center justify-center rounded-full text-ui-11p5 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             hasToken
               ? "hub-tag-soft text-muted-foreground hover:text-foreground/80"
               : "bg-destructive text-destructive-foreground hover:bg-destructive/90",

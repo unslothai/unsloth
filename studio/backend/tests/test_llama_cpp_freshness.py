@@ -189,9 +189,7 @@ def test_latest_published_release_returns_none_on_network_failure(monkeypatch):
     assert fr.latest_published_release("unslothai/llama.cpp") is None
 
 
-def test_latest_published_release_keeps_old_cache_on_transient_failure(
-    monkeypatch, tmp_path
-):
+def test_latest_published_release_keeps_old_cache_on_transient_failure(monkeypatch, tmp_path):
     # Disk entry older than TTL + network fail -> return cached value.
     cache_dir = tmp_path / ".freshness"
     cache_dir.mkdir()
@@ -205,9 +203,7 @@ def test_latest_published_release_keeps_old_cache_on_transient_failure(
 # check_prebuilt_freshness end-to-end.
 
 
-def test_check_prebuilt_freshness_reports_stale_when_old_and_behind(
-    monkeypatch, tmp_path
-):
+def test_check_prebuilt_freshness_reports_stale_when_old_and_behind(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     _write_marker(
         install_dir,
@@ -217,9 +213,7 @@ def test_check_prebuilt_freshness_reports_stale_when_old_and_behind(
         .replace("+00:00", "Z"),
     )
     bin_path = _fake_binary(install_dir, layout = "root")
-    monkeypatch.setattr(
-        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300"
-    )
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["has_marker"] is True
     assert info["stale"] is True
@@ -239,9 +233,7 @@ def test_check_prebuilt_freshness_not_stale_when_tag_matches(monkeypatch, tmp_pa
         .replace("+00:00", "Z"),
     )
     bin_path = _fake_binary(install_dir, layout = "root")
-    monkeypatch.setattr(
-        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300"
-    )
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["stale"] is False
     assert info["installed_tag"] == "b9300"
@@ -259,9 +251,7 @@ def test_check_prebuilt_freshness_not_stale_within_threshold(monkeypatch, tmp_pa
         .replace("+00:00", "Z"),
     )
     bin_path = _fake_binary(install_dir, layout = "root")
-    monkeypatch.setattr(
-        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300"
-    )
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["stale"] is False
     assert info["age_days"] == 1
@@ -274,9 +264,7 @@ def test_check_prebuilt_freshness_fails_open_without_marker(tmp_path):
     assert info["stale"] is False
 
 
-def test_check_prebuilt_freshness_fails_open_when_github_unreachable(
-    monkeypatch, tmp_path
-):
+def test_check_prebuilt_freshness_fails_open_when_github_unreachable(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     _write_marker(
         install_dir,
@@ -293,15 +281,11 @@ def test_check_prebuilt_freshness_fails_open_when_github_unreachable(
     assert info["latest_tag"] is None
 
 
-def test_check_prebuilt_freshness_handles_unparseable_install_timestamp(
-    monkeypatch, tmp_path
-):
+def test_check_prebuilt_freshness_handles_unparseable_install_timestamp(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     _write_marker(install_dir, tag = "b9190", installed_at_utc = "not-a-date")
     bin_path = _fake_binary(install_dir, layout = "root")
-    monkeypatch.setattr(
-        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300"
-    )
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["stale"] is False
     assert info["age_days"] is None
@@ -317,9 +301,7 @@ def test_check_prebuilt_freshness_respects_custom_threshold(monkeypatch, tmp_pat
         .replace("+00:00", "Z"),
     )
     bin_path = _fake_binary(install_dir, layout = "root")
-    monkeypatch.setattr(
-        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300"
-    )
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path), threshold_days = 1)
     assert info["stale"] is True
 
@@ -328,9 +310,7 @@ def test_check_prebuilt_freshness_respects_custom_threshold(monkeypatch, tmp_pat
 
 
 def test_format_stale_warning_contains_actionable_command():
-    msg = fr.format_stale_warning(
-        {"installed_tag": "b9190", "latest_tag": "b9300", "age_days": 5}
-    )
+    msg = fr.format_stale_warning({"installed_tag": "b9190", "latest_tag": "b9300", "age_days": 5})
     assert "b9190" in msg
     assert "b9300" in msg
     assert "5 days" in msg
@@ -338,9 +318,7 @@ def test_format_stale_warning_contains_actionable_command():
 
 
 def test_format_stale_warning_singular_day():
-    msg = fr.format_stale_warning(
-        {"installed_tag": "b9190", "latest_tag": "b9300", "age_days": 1}
-    )
+    msg = fr.format_stale_warning({"installed_tag": "b9190", "latest_tag": "b9300", "age_days": 1})
     assert "1 day" in msg
     assert "1 days" not in msg
 
@@ -351,9 +329,7 @@ def test_format_stale_warning_singular_day():
 def test_parse_base_build():
     assert fr.parse_base_build("b9596") == 9596
     assert fr.parse_base_build(" b9596 ") == 9596
-    assert (
-        fr.parse_base_build("b9596-mix-e6f2453") == 9596
-    )  # mix suffix doesn't defeat it
+    assert fr.parse_base_build("b9596-mix-e6f2453") == 9596  # mix suffix doesn't defeat it
     assert fr.parse_base_build("9596") is None
     assert fr.parse_base_build("master-abc") is None
     assert fr.parse_base_build("") is None
@@ -411,9 +387,7 @@ def test_check_prebuilt_freshness_downgrade_guard(monkeypatch, tmp_path):
         .replace("+00:00", "Z"),
     )
     bin_path = _fake_binary(install_dir, layout = "root")
-    monkeypatch.setattr(
-        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518"
-    )
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["behind"] is False
     assert info["stale"] is False
@@ -457,9 +431,7 @@ def test_fetch_latest_release_tag_uses_publish_time(monkeypatch):
             "published_at": "2026-06-12T00:00:00Z",
         },
     ]
-    monkeypatch.setattr(
-        urllib.request, "urlopen", lambda req, timeout = 5.0: _Resp(payload)
-    )
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = 5.0: _Resp(payload))
     assert fr._fetch_latest_release_tag("unslothai/llama.cpp") == "b9596-mix-e6f2453"
 
 
@@ -471,9 +443,7 @@ def _seed_disk_cache(tmp_path: Path, latest_tag: str) -> Path:
     cache_dir = tmp_path / ".freshness"
     cache_dir.mkdir(exist_ok = True)
     cache_file = cache_dir / "unslothai__llama.cpp.json"
-    cache_file.write_text(
-        json.dumps({"fetched_at": time.time(), "latest_tag": latest_tag})
-    )
+    cache_file.write_text(json.dumps({"fetched_at": time.time(), "latest_tag": latest_tag}))
     return cache_file
 
 
@@ -498,9 +468,7 @@ def test_reset_caches_drop_disk_on_missing_dir_is_noop(tmp_path):
     fr.reset_caches(drop_disk = True)  # must not raise
 
 
-def test_drop_disk_lets_banner_fail_open_after_same_base_mix_swap(
-    monkeypatch, tmp_path
-):
+def test_drop_disk_lets_banner_fail_open_after_same_base_mix_swap(monkeypatch, tmp_path):
     # P2 #2: the disk cache holds a still-fresh same-base mix (b9596-mix-aaa)
     # from before an update to a *different* same-base mix (b9596-mix-bbb).
     # The post-install path drops the disk cache; if the forced refresh is then
@@ -582,10 +550,7 @@ def test_update_size_unsloth_prebuilt_exact_match(monkeypatch):
             }
         },
     )
-    assert (
-        fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp")
-        == 123_456_789
-    )
+    assert fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp") == 123_456_789
 
 
 def test_update_size_macos_fork_asset_suffix_fallback(monkeypatch):
@@ -599,10 +564,7 @@ def test_update_size_macos_fork_asset_suffix_fallback(monkeypatch):
         monkeypatch,
         {"unslothai/llama.cpp": {"llama-b9300-bin-macos-arm64.tar.gz": 55_000_000}},
     )
-    assert (
-        fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp")
-        == 55_000_000
-    )
+    assert fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp") == 55_000_000
 
 
 def test_update_size_upstream_ubuntu_uses_binary_repo(monkeypatch):
@@ -623,10 +585,7 @@ def test_update_size_upstream_ubuntu_uses_binary_repo(monkeypatch):
             },
         },
     )
-    assert (
-        fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp")
-        == 42_000_000
-    )
+    assert fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp") == 42_000_000
 
 
 def test_update_size_upstream_windows_uses_binary_repo(monkeypatch):
@@ -640,10 +599,7 @@ def test_update_size_upstream_windows_uses_binary_repo(monkeypatch):
         monkeypatch,
         {"ggml-org/llama.cpp": {"llama-b9673-bin-win-cpu-x64.zip": 33_000_000}},
     )
-    assert (
-        fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp")
-        == 33_000_000
-    )
+    assert fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp") == 33_000_000
 
 
 def test_update_size_no_matching_asset_fails_open(monkeypatch):
@@ -674,7 +630,4 @@ def test_update_size_missing_inputs_fail_open(monkeypatch):
         )
         is None
     )
-    assert (
-        fr.update_download_size_bytes({"asset": None}, "b9300", "unslothai/llama.cpp")
-        is None
-    )
+    assert fr.update_download_size_bytes({"asset": None}, "b9300", "unslothai/llama.cpp") is None

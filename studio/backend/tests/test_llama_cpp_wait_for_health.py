@@ -171,9 +171,7 @@ class TestCrashLogTail:
 
         records: list = []
         fake_logger = mock.Mock()
-        fake_logger.error = mock.Mock(
-            side_effect = lambda msg, *a, **k: records.append(msg)
-        )
+        fake_logger.error = mock.Mock(side_effect = lambda msg, *a, **k: records.append(msg))
         monkeypatch.setattr(_llama_mod, "logger", fake_logger)
         return records
 
@@ -218,10 +216,7 @@ class TestRetryLogFilenameUnique:
 
     def test_log_name_includes_attempt_index(self):
         src = (
-            Path(__file__).resolve().parent.parent
-            / "core"
-            / "inference"
-            / "llama_cpp.py"
+            Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
         ).read_text(encoding = "utf-8")
         assert "-try{_spawn_attempt}.log" in src
 

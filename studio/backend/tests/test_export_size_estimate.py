@@ -42,11 +42,7 @@ class TestExportSizeEndpoint(unittest.TestCase):
     def _call(self, model: str = "unsloth/Qwen3.6-35B-A3B"):
         with (
             patch.object(self.models_route, "is_local_path", return_value = False),
-            patch.object(
-                self.models_route,
-                "resolve_cached_repo_id_case",
-                side_effect = lambda m: m,
-            ),
+            patch.object(self.models_route, "resolve_cached_repo_id_case", side_effect = lambda m: m),
         ):
             return asyncio.run(
                 self.models_route.get_export_size(
@@ -129,11 +125,7 @@ class TestExportSizeEndpoint(unittest.TestCase):
     def test_token_is_forwarded_to_sizer(self):
         with (
             patch.object(self.models_route, "is_local_path", return_value = False),
-            patch.object(
-                self.models_route,
-                "resolve_cached_repo_id_case",
-                side_effect = lambda m: m,
-            ),
+            patch.object(self.models_route, "resolve_cached_repo_id_case", side_effect = lambda m: m),
             patch(
                 "utils.hardware.hardware.estimate_fp16_model_size_bytes",
                 return_value = (_QWEN35_FP16_BYTES, "safetensors"),
@@ -152,12 +144,8 @@ class TestExportSizeEndpoint(unittest.TestCase):
         # Unsafe local paths must not be scanned -> unavailable.
         with (
             patch.object(self.models_route, "is_local_path", return_value = True),
-            patch.object(
-                self.models_route, "_is_sizable_local_path", return_value = False
-            ),
-            patch(
-                "utils.hardware.hardware.estimate_fp16_model_size_bytes"
-            ) as mock_sizer,
+            patch.object(self.models_route, "_is_sizable_local_path", return_value = False),
+            patch("utils.hardware.hardware.estimate_fp16_model_size_bytes") as mock_sizer,
         ):
             resp = asyncio.run(
                 self.models_route.get_export_size(
@@ -171,9 +159,7 @@ class TestExportSizeEndpoint(unittest.TestCase):
     def test_sizable_local_path_is_sized(self):
         with (
             patch.object(self.models_route, "is_local_path", return_value = True),
-            patch.object(
-                self.models_route, "_is_sizable_local_path", return_value = True
-            ),
+            patch.object(self.models_route, "_is_sizable_local_path", return_value = True),
             patch(
                 "utils.hardware.hardware._resolve_model_identifier_for_gpu_estimate",
                 side_effect = lambda m, **_kw: m,
@@ -200,17 +186,13 @@ class TestExportSizeEndpoint(unittest.TestCase):
         with (
             patch.object(self.models_route, "is_local_path", return_value = True),
             patch.object(
-                self.models_route,
-                "_is_sizable_local_path",
-                side_effect = lambda p: p == adapter,
+                self.models_route, "_is_sizable_local_path", side_effect = lambda p: p == adapter
             ),
             patch(
                 "utils.hardware.hardware._resolve_model_identifier_for_gpu_estimate",
                 return_value = "/",
             ),
-            patch(
-                "utils.hardware.hardware.estimate_fp16_model_size_bytes"
-            ) as mock_sizer,
+            patch("utils.hardware.hardware.estimate_fp16_model_size_bytes") as mock_sizer,
         ):
             resp = asyncio.run(
                 self.models_route.get_export_size(

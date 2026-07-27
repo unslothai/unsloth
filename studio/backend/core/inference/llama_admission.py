@@ -81,9 +81,7 @@ def _bool_env(name: str, default: bool) -> bool:
     return default
 
 
-def _optional_positive_float_env(
-    name: str, default: Optional[float]
-) -> Optional[float]:
+def _optional_positive_float_env(name: str, default: Optional[float]) -> Optional[float]:
     value = os.environ.get(name)
     if value is None or not value.strip():
         return default
@@ -238,9 +236,7 @@ class LlamaAdmissionQueue:
         self._capacity = 1
         self._waiters: Deque[_Waiter] = deque()
 
-    def reserve(
-        self, *, capacity: int, config: LlamaAdmissionConfig
-    ) -> LlamaAdmissionReservation:
+    def reserve(self, *, capacity: int, config: LlamaAdmissionConfig) -> LlamaAdmissionReservation:
         capacity = max(1, int(capacity or 1))
         if not config.enabled:
             return LlamaAdmissionReservation(
@@ -336,9 +332,7 @@ class LlamaAdmissionQueue:
 
     def _prune_waiters_locked(self) -> None:
         self._waiters = deque(
-            waiter
-            for waiter in self._waiters
-            if not waiter.cancelled and not waiter.future.done()
+            waiter for waiter in self._waiters if not waiter.cancelled and not waiter.future.done()
         )
 
     def _snapshot_locked(self) -> LlamaAdmissionSnapshot:

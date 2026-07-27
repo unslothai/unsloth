@@ -111,7 +111,7 @@ def _load_sidecar(cwd):
     """Return the persisted ``source -> healed target`` map, or {} on any error
     (missing/corrupt/foreign sidecar degrades to in-process-only behaviour)."""
     try:
-        with open(_sidecar_path(cwd)) as fh:
+        with open(_sidecar_path(cwd), encoding = "utf-8") as fh:
             data = json.load(fh)
     except Exception:  # noqa: BLE001 - a bad sidecar must never break user code
         return {}
@@ -131,7 +131,7 @@ def _record_sidecar(cwd, source, target):
             return
         data[source] = target
         tmp = _sidecar_path(cwd) + ".tmp"
-        with open(tmp, "w") as fh:
+        with open(tmp, "w", encoding = "utf-8") as fh:
             json.dump(data, fh)
         os.replace(tmp, _sidecar_path(cwd))
     except Exception:  # noqa: BLE001 - persistence is best effort only
@@ -225,9 +225,7 @@ def _remap(path, notify = True):
     for prefix in _PREFIXES + _CONDITIONAL_PREFIXES:
         # Heal only while the real prefix directory is absent, so a genuine host
         # mount / user directory at that prefix is never shadowed.
-        if (text == prefix or text.startswith(prefix + "/")) and not os.path.exists(
-            prefix
-        ):
+        if (text == prefix or text.startswith(prefix + "/")) and not os.path.exists(prefix):
             return _map_onto_cwd(prefix, text, notify = notify)
     return path
 

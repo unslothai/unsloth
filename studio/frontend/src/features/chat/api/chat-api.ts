@@ -33,6 +33,7 @@ import type {
 } from "../types/api";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
+export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
 
 /**
  * Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a
@@ -49,9 +50,31 @@ export class StreamInterruptedError extends Error {
   }
 }
 
+/**
+ * Thrown when a reasoning model consumes its output budget before emitting any
+ * standard content. Keeping this distinct from a dropped connection lets the
+ * chat UI explain why a completed stream contains only a thinking panel.
+ */
+export class GenerationLengthError extends Error {
+  constructor() {
+    super(
+      "The model reached the Max Tokens limit before producing a final answer. " +
+        "Increase Max Tokens or disable thinking, then retry.",
+    );
+    this.name = "GenerationLengthError";
+  }
+}
+
 export function notifyChatHistoryUpdated(): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
+  }
+}
+
+function notifyChatProjectsUpdated(): void {
+  notifyChatHistoryUpdated();
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(CHAT_PROJECTS_UPDATED_EVENT));
   }
 }
 
@@ -235,6 +258,7 @@ export async function resolveToolConfirmation(
 
 export interface CachedGgufRepo {
   repo_id: string;
+  load_id?: string | null;
   size_bytes: number;
   cache_path: string;
   /** Epoch seconds of the newest downloaded quant; sorts Downloaded
@@ -324,6 +348,9 @@ export interface LocalModelInfo {
   // Backend-detected weights format ("gguf" when known), so the UI can
   // classify scanned folders whose name lacks a -GGUF suffix.
   model_format?: string | null;
+  // Set when a cached snapshot holds an incomplete download, so consumers can skip
+  // weights that cannot load yet.
+  partial?: boolean;
   updated_at?: number | null;
 }
 
@@ -344,24 +371,28 @@ export async function listLocalModels(
 export async function listCachedGguf(
   signal?: AbortSignal,
 ): Promise<CachedGgufRepo[]> {
-  const response = await authFetch("/api/models/cached-gguf", { signal });
+  const response = await authFetch("/api/hub/cached-gguf", { signal });
   const data = await parseJsonOrThrow<{ cached: CachedGgufRepo[] }>(response);
   return data.cached;
 }
 
 export interface CachedModelRepo {
   repo_id: string;
+  load_id?: string | null;
   size_bytes: number;
   /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
    * newest-first. Optional for older-backend compatibility. */
   last_modified?: number;
+  /** Owning cache dir; sent so a delete targets this copy, not the active
+   * cache. Optional for older-backend compatibility. */
+  cache_path?: string | null;
 }
 
 export async function listCachedModels(
   hfToken?: string | null,
   signal?: AbortSignal,
 ): Promise<CachedModelRepo[]> {
-  const response = await authFetch("/api/models/cached-models", {
+  const response = await authFetch("/api/hub/cached-models", {
     headers: hubTokenHeader(hfToken),
     signal,
   });
@@ -369,14 +400,33 @@ export async function listCachedModels(
   return data.cached;
 }
 
-export async function deleteCachedModel(
+export interface CachedModelPath {
+  path: string;
+  is_dir: boolean;
+}
+
+/** Absolute on-disk path of a cached repo or one of its GGUF variants. */
+export async function getCachedModelPath(
+  repoId: string,
+  variant?: string,
+): Promise<CachedModelPath> {
+  const params = new URLSearchParams({ repo_id: repoId });
+  if (variant) params.set("variant", variant);
+  const response = await authFetch(
+    `/api/models/cached-model-path?${params.toString()}`,
+  );
+  return parseJsonOrThrow<CachedModelPath>(response);
+}
+
+/** Reveal a cached repo (or one GGUF variant's file) in the OS file manager. */
+export async function revealCachedModel(
   repoId: string,
   variant?: string,
 ): Promise<void> {
   const payload: Record<string, string> = { repo_id: repoId };
   if (variant) payload.variant = variant;
-  const response = await authFetch("/api/models/delete-cached", {
-    method: "DELETE",
+  const response = await authFetch("/api/models/reveal-cached-model", {
+    method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
@@ -644,7 +694,7 @@ export async function saveChatProject(
     body: JSON.stringify(project),
   });
   const saved = await parseJsonOrThrow<ProjectRecord>(response);
-  notifyChatHistoryUpdated();
+  notifyChatProjectsUpdated();
   return saved;
 }
 
@@ -661,7 +711,7 @@ export async function updateChatProject(
     },
   );
   const project = await parseJsonOrThrow<ProjectRecord>(response);
-  notifyChatHistoryUpdated();
+  notifyChatProjectsUpdated();
   return project;
 }
 
@@ -677,7 +727,7 @@ export async function deleteChatProject(
     { method: "DELETE" },
   );
   await parseJsonOrThrow<ProjectRecord>(response);
-  notifyChatHistoryUpdated();
+  notifyChatProjectsUpdated();
 }
 
 export async function listChatMessages(
@@ -893,8 +943,19 @@ export async function browseFolders(
 export async function listGgufVariants(
   repoId: string,
   hfToken?: string,
+  options?: {
+    preferLocalCache?: boolean;
+    localPath?: string | null;
+  },
 ): Promise<GgufVariantsResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
+  if (options?.preferLocalCache) {
+    params.set("prefer_local_cache", "true");
+  }
+  const localPath = options?.localPath?.trim();
+  if (localPath) {
+    params.set("local_path", localPath);
+  }
   const response = await authFetch(`/api/models/gguf-variants?${params}`, {
     headers: hubTokenHeader(hfToken),
   });
@@ -939,6 +1000,61 @@ function parseSseEvent(rawEvent: string): string[] {
   return dataLines;
 }
 
+function hasNonWhitespaceText(value: unknown): boolean {
+  if (typeof value === "string") {
+    return value.trim().length > 0;
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => hasNonWhitespaceText(item));
+  }
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return ["thinking", "text", "content", "reasoning", "summary"].some(
+    (key) => key in record && hasNonWhitespaceText(record[key]),
+  );
+}
+
+function classifyStructuredDeltaContent(content: unknown): {
+  hasAssistantContent: boolean;
+  hasReasoningContent: boolean;
+} {
+  if (typeof content === "string") {
+    return {
+      hasAssistantContent: hasNonWhitespaceText(content),
+      hasReasoningContent: false,
+    };
+  }
+  if (!Array.isArray(content)) {
+    return {
+      hasAssistantContent: false,
+      hasReasoningContent: false,
+    };
+  }
+
+  let hasAssistantContent = false;
+  let hasReasoningContent = false;
+  for (const part of content) {
+    if (typeof part === "string") {
+      hasAssistantContent ||= hasNonWhitespaceText(part);
+      continue;
+    }
+    if (!part || typeof part !== "object") {
+      continue;
+    }
+    const record = part as Record<string, unknown>;
+    if (record.type === "thinking" || record.type === "reasoning") {
+      hasReasoningContent ||= hasNonWhitespaceText(record);
+    } else if (record.type === "text" || record.type === "output_text") {
+      const text =
+        typeof record.text === "string" ? record.text : record.content;
+      hasAssistantContent ||= hasNonWhitespaceText(text);
+    }
+  }
+  return { hasAssistantContent, hasReasoningContent };
+}
+
 export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
@@ -966,6 +1082,19 @@ export async function* streamChatCompletions(
   // EOF without `[DONE]` or a finish_reason chunk means the stream was cut
   // mid-generation: surface as interrupted, not silent success.
   let sawTerminalSignal = false;
+  let terminalFinishReason: string | null = null;
+  let sawAssistantContent = false;
+  let sawReasoningContent = false;
+
+  const throwIfReasoningOnlyLength = () => {
+    if (
+      terminalFinishReason === "length" &&
+      sawReasoningContent &&
+      !sawAssistantContent
+    ) {
+      throw new GenerationLengthError();
+    }
+  };
 
   try {
     while (true) {
@@ -975,6 +1104,7 @@ export async function* streamChatCompletions(
         if (!sawTerminalSignal) {
           throw new StreamInterruptedError();
         }
+        throwIfReasoningOnlyLength();
         break;
       }
 
@@ -996,6 +1126,7 @@ export async function* streamChatCompletions(
         if (dataText === "[DONE]") {
           completed = true;
           sawTerminalSignal = true;
+          throwIfReasoningOnlyLength();
           return;
         }
 
@@ -1051,11 +1182,31 @@ export async function* streamChatCompletions(
         }
         // finish_reason is a valid terminal signal for providers that close
         // the stream without an explicit [DONE] sentinel.
-        const finishReason = (
+        const parsedChoices = (
           parsed as {
-            choices?: Array<{ finish_reason?: string | null }>;
+            choices?: Array<{
+              delta?: Record<string, unknown>;
+              finish_reason?: string | null;
+            }>;
           }
-        ).choices?.[0]?.finish_reason;
+        ).choices;
+        for (const choice of parsedChoices ?? []) {
+          const delta = choice.delta;
+          if (delta) {
+            const contentState = classifyStructuredDeltaContent(delta.content);
+            sawAssistantContent ||= contentState.hasAssistantContent;
+            sawReasoningContent ||= contentState.hasReasoningContent;
+            const reasoning =
+              delta.reasoning_content ??
+              delta.reasoning ??
+              delta.reasoning_details;
+            sawReasoningContent ||= hasNonWhitespaceText(reasoning);
+          }
+          if (choice.finish_reason) {
+            terminalFinishReason = choice.finish_reason;
+          }
+        }
+        const finishReason = parsedChoices?.[0]?.finish_reason;
         if (finishReason) {
           sawTerminalSignal = true;
         }

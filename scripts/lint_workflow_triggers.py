@@ -29,9 +29,7 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:
-    print(
-        "ERROR: PyYAML is required. Install with 'pip install pyyaml'", file = sys.stderr
-    )
+    print("ERROR: PyYAML is required. Install with 'pip install pyyaml'", file = sys.stderr)
     sys.exit(2)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -54,14 +52,14 @@ def _normalise_on(on_field):
 
 def _load_workflow(path: Path):
     try:
-        return yaml.safe_load(path.read_text())
+        return yaml.safe_load(path.read_text(encoding = "utf-8"))
     except Exception as exc:
         print(f"ERROR: failed to parse {path}: {exc}", file = sys.stderr)
         sys.exit(2)
 
 
 def _extract_cache_keys(path: Path) -> list[str]:
-    text = path.read_text()
+    text = path.read_text(encoding = "utf-8")
     keys: list[str] = []
     for m in re.finditer(r"(?:^|\n)\s*key:\s*([^\n]+)", text):
         keys.append(m.group(1).strip())
@@ -106,7 +104,7 @@ def main() -> int:
 
         for t in RESTRICTED_TRIGGERS:
             if t in triggers:
-                text = path.read_text()
+                text = path.read_text(encoding = "utf-8")
                 if "lint:workflow_triggers-allow-workflow_run" not in text:
                     findings.append(
                         f"{path.name}: RESTRICTED trigger '{t}' requires an "
@@ -135,9 +133,7 @@ def main() -> int:
                 )
 
     if findings:
-        print(
-            "Workflow trigger lint failed with the following issues:", file = sys.stderr
-        )
+        print("Workflow trigger lint failed with the following issues:", file = sys.stderr)
         for f in findings:
             print(f"  - {f}", file = sys.stderr)
         return 1

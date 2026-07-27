@@ -22,7 +22,7 @@ def test_shared_submenu_uses_its_layout_width_on_mobile():
 
 def test_shared_submenu_never_exceeds_the_compact_viewport():
     source = DROPDOWN_MENU.read_text(encoding = "utf-8")
-    assert "max-w-[calc(100vw-2rem)]" in source
+    assert "max-w-[calc(100vw-32px)]" in source
 
 
 def test_consumers_do_not_duplicate_compact_offset_logic():

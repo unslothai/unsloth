@@ -94,9 +94,7 @@ def _read_masked_posix(prompt: str, out: TextIO) -> str:
             # on a pasted non-UTF-8 password or yield a lone surrogate that later
             # crashes pbkdf2. os.read + incremental decoder maps bad bytes to
             # U+FFFD and continues.
-            decoder = codecs.getincrementaldecoder(sys.stdin.encoding or "utf-8")(
-                "replace"
-            )
+            decoder = codecs.getincrementaldecoder(sys.stdin.encoding or "utf-8")("replace")
             submitted = False
             while not submitted:
                 raw = os.read(fd, 1)
@@ -178,9 +176,7 @@ def read_masked(prompt: str, out: TextIO | None = None) -> str:
     return _read_masked_posix(prompt, out)
 
 
-def prompt_new_password(
-    verify_current: Callable[[str], bool], out: TextIO | None = None
-) -> str:
+def prompt_new_password(verify_current: Callable[[str], bool], out: TextIO | None = None) -> str:
     """Prompt for a new admin password until a valid, confirmed one is given.
 
     ``verify_current`` returns True when the candidate equals the current stored
@@ -192,15 +188,15 @@ def prompt_new_password(
     while True:
         password = read_masked("New password: ", out)
         if len(password) < MIN_PASSWORD_LENGTH:
-            out.write(
-                f"Password must be at least {MIN_PASSWORD_LENGTH} characters. Try again.\n"
-            )
+            out.write(f"Password must be at least {MIN_PASSWORD_LENGTH} characters. Try again.\n")
+            out.flush()
+            continue
+        if any(ch.isspace() for ch in password):
+            out.write("Password cannot contain spaces. Try again.\n")
             out.flush()
             continue
         if verify_current(password):
-            out.write(
-                "New password must differ from the current password. Try again.\n"
-            )
+            out.write("New password must differ from the current password. Try again.\n")
             out.flush()
             continue
         confirmation = read_masked("Confirm new password: ", out)
@@ -211,9 +207,7 @@ def prompt_new_password(
         return password
 
 
-def resolve_supplied_password(
-    cli_value: "str | None", out: TextIO | None = None
-) -> "str | None":
+def resolve_supplied_password(cli_value: "str | None", out: TextIO | None = None) -> "str | None":
     """Resolve a non-interactive initial admin password, or None if unset.
 
     Precedence: an explicit ``--password`` (literal ``-`` reads a line from
@@ -238,13 +232,13 @@ def resolve_supplied_password(
     return os.environ.get(SUPPLIED_PASSWORD_ENV) or None
 
 
-def validate_new_password(
-    candidate: str, verify_current: Callable[[str], bool]
-) -> "str | None":
+def validate_new_password(candidate: str, verify_current: Callable[[str], bool]) -> "str | None":
     """Error message if ``candidate`` is unacceptable (too short or equal to the
     current password), else None. Same policy as the interactive loop."""
     if len(candidate) < MIN_PASSWORD_LENGTH:
         return f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+    if any(ch.isspace() for ch in candidate):
+        return "Password cannot contain spaces."
     if verify_current(candidate):
         return "New password must differ from the current password."
     return None

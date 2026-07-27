@@ -103,7 +103,7 @@ def _is_wsl() -> bool:
     if sys.platform == "win32":
         return False
     try:
-        return "microsoft" in Path("/proc/version").read_text().lower()
+        return "microsoft" in Path("/proc/version").read_text(encoding = "utf-8").lower()
     except Exception:
         return False
 
@@ -124,7 +124,7 @@ def _wsl_automount_root() -> str:
         import configparser
 
         parser = configparser.ConfigParser(inline_comment_prefixes = ("#", ";"))
-        parser.read("/etc/wsl.conf")
+        parser.read("/etc/wsl.conf", encoding = "utf-8")
         root = parser.get("automount", "root", fallback = "").strip().strip("\"'")
     except Exception:
         return default
@@ -277,14 +277,8 @@ def _memo_drop(memo_key: tuple[str, str]) -> None:
 
 
 def _hf_hub_cache_dir() -> Path:
-    try:
-        from huggingface_hub.constants import HF_HUB_CACHE
-        return Path(HF_HUB_CACHE)
-    except Exception as exc:
-        logger.debug(
-            "Could not read huggingface_hub HF_HUB_CACHE, using default: %s", exc
-        )
-        return Path.home() / ".cache" / "huggingface" / "hub"
+    from utils.hf_cache_settings import get_hf_cache_paths
+    return get_hf_cache_paths().hub_cache
 
 
 def _hf_hub_cache_dirs() -> list[Path]:
@@ -302,7 +296,10 @@ def _hf_hub_cache_dirs() -> list[Path]:
         seen.add(key)
         roots.append(resolved)
 
-    _add(_hf_hub_cache_dir())
+    from utils.hf_cache_settings import known_hf_hub_caches
+
+    for configured in known_hf_hub_caches():
+        _add(configured)
     try:
         _add(legacy_hf_cache_dir())
         _add(hf_default_cache_dir())
@@ -410,9 +407,7 @@ def resolve_dataset_path(path_value: str) -> Path:
                 return path
             except ValueError:
                 continue
-        raise ValueError(
-            f"dataset path must be relative or under a dataset root: {raw!r}"
-        )
+        raise ValueError(f"dataset path must be relative or under a dataset root: {raw!r}")
 
     parts = [part for part in Path(normalized).parts if part not in ("", ".")]
     if parts[:2] == ["assets", "datasets"]:

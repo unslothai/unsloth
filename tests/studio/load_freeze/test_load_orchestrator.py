@@ -89,9 +89,7 @@ class _UvicornServerThread:
 
         self.host = host
         self.port = port
-        cfg = uvicorn.Config(
-            app, host = host, port = port, log_level = "warning", access_log = False
-        )
+        cfg = uvicorn.Config(app, host = host, port = port, log_level = "warning", access_log = False)
         self._server = uvicorn.Server(cfg)
         self._server.install_signal_handlers = lambda: None  # type: ignore[assignment]
         self._thread: threading.Thread | None = None
@@ -193,9 +191,7 @@ def test_buggy_route_blocks_event_loop():
         app = _build_app(backend, wrap_in_thread = False)
         port = _free_port()
         with _UvicornServerThread(app, port = port) as uv:
-            max_lat, probe_t, _ = _drive_concurrent_probe_and_health(
-                f"http://127.0.0.1:{uv.port}"
-            )
+            max_lat, probe_t, _ = _drive_concurrent_probe_and_health(f"http://127.0.0.1:{uv.port}")
     assert probe_t >= 0.5
     assert max_lat >= 0.4, f"expected >=0.4s stall, got {max_lat:.3f}s"
 
@@ -394,9 +390,7 @@ def test_50_concurrent_probes_complete_without_deadlock():
             with ThreadPoolExecutor(max_workers = 50) as pool:
                 futs = [
                     pool.submit(
-                        lambda: httpx.get(
-                            f"http://127.0.0.1:{uv.port}/probe", timeout = 30.0
-                        )
+                        lambda: httpx.get(f"http://127.0.0.1:{uv.port}/probe", timeout = 30.0)
                     )
                     for _ in range(50)
                 ]
@@ -447,7 +441,7 @@ def test_load_model_caches_audio_type_inside_serial_load_lock():
     """Audio-type detection must run inside load_model under _serial_load_lock,
     else a concurrent /load can replace the backend mid-probe (review on #5669)."""
     f = _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
-    text = f.read_text()
+    text = f.read_text(encoding = "utf-8")
     assert (
         "with self._serial_load_lock" in text
     ), "LlamaCppBackend.load_model must hold self._serial_load_lock"
@@ -468,7 +462,7 @@ def test_routes_inference_reads_cached_audio_type_not_calls_detect():
     """routes/inference.py must read cached _audio_type/_is_audio, not call
     detect_audio_type / init_audio_codec directly (both moved into load_model)."""
     f = _REPO_ROOT / "studio" / "backend" / "routes" / "inference.py"
-    text = f.read_text()
+    text = f.read_text(encoding = "utf-8")
     assert "llama_backend.detect_audio_type(" not in text, (
         "routes/inference.py should not call detect_audio_type directly; "
         "load_model already cached it under the lock."
@@ -491,7 +485,7 @@ def test_no_other_async_route_calls_detect_audio_type_unwrapped():
     # function helper is excluded below.
     pattern = re.compile(r"\b\w+\.detect_audio_type\s*\(")
     for path in routes_dir.rglob("*.py"):
-        for i, line in enumerate(path.read_text().splitlines(), start = 1):
+        for i, line in enumerate(path.read_text(encoding = "utf-8").splitlines(), start = 1):
             m = pattern.search(line)
             if not m:
                 continue

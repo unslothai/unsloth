@@ -50,9 +50,7 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
         return _DummyModelConfig()
 
     monkeypatch.setattr(models_route, "is_local_path", lambda _: False)
-    monkeypatch.setattr(
-        models_route, "resolve_cached_repo_id_case", lambda _: "Org/Model"
-    )
+    monkeypatch.setattr(models_route, "resolve_cached_repo_id_case", lambda _: "Org/Model")
     monkeypatch.setattr(models_route, "load_model_defaults", _record_load)
     monkeypatch.setattr(models_route, "is_vision_model", _record_vision)
     monkeypatch.setattr(models_route, "is_embedding_model", _record_embedding)
@@ -81,14 +79,12 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
     assert calls["from_identifier"] == "Org/Model"
 
 
-def test_repo_in_any_hf_cache_matches_case_variant_in_legacy_cache(
-    tmp_path, monkeypatch
-):
+def test_repo_in_any_hf_cache_matches_case_variant_in_legacy_cache(tmp_path, monkeypatch):
     # A case-variant in a legacy/default cache must read as present (case resolution only
     # covers the active cache; discard deletes case-insensitively, so detection must too,
     # else a decline deletes a pre-existing user repo).
     import utils.paths as paths_pkg
-    import huggingface_hub.constants as hf_constants
+    import hub.utils.paths as hub_paths
 
     active = tmp_path / "active"
     legacy = tmp_path / "legacy"
@@ -100,9 +96,12 @@ def test_repo_in_any_hf_cache_matches_case_variant_in_legacy_cache(
 
     # No active-cache variant; case resolution is a no-op here.
     monkeypatch.setattr(paths_pkg, "resolve_cached_repo_id_case", lambda name: name)
-    monkeypatch.setattr(paths_pkg, "legacy_hf_cache_dir", lambda: legacy)
-    monkeypatch.setattr(paths_pkg, "hf_default_cache_dir", lambda: default)
-    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(active))
+    monkeypatch.setattr(hub_paths, "legacy_hf_cache_dir", lambda: legacy)
+    monkeypatch.setattr(hub_paths, "hf_default_cache_dir", lambda: default)
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.known_hf_hub_caches",
+        lambda: [active],
+    )
 
     assert models_route._repo_in_any_hf_cache("unsloth/foo") is True
     # Absent from every cache -> reported absent.

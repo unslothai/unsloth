@@ -46,6 +46,68 @@ def test_dir_model_format_gguf_only(tmp_path):
     assert models_route._dir_model_format(d) == "gguf"
 
 
+def test_dir_model_format_mmproj_only_is_not_gguf(tmp_path):
+    # A lone vision adapter has nothing servable: the variant selector drops mmproj.
+    d = tmp_path / "model"
+    _touch(d / "mmproj-F16.gguf")
+    assert models_route._dir_model_format(d) is None
+
+
+def test_dir_model_format_mmproj_beside_weights_is_still_gguf(tmp_path):
+    d = tmp_path / "model"
+    _touch(d / "mmproj-F16.gguf")
+    _touch(d / "model-Q4_K_M.gguf")
+    assert models_route._dir_model_format(d) == "gguf"
+
+
+def test_dir_model_format_recursive_sees_split_quant_subdirs(tmp_path):
+    # HF cache snapshots keep split quants in per-quant subdirs. A flat glob reports
+    # no GGUF there, which would hide every sharded repo from the GGUF pickers.
+    d = tmp_path / "snapshot"
+    _touch(d / "UD-Q4_K_XL" / "model-00001-of-00002.gguf")
+    assert models_route._dir_model_format(d) is None
+    assert models_route._dir_model_format(d, recursive = True) == "gguf"
+
+
+def test_dir_model_format_recursive_ignores_mmproj_only_subdirs(tmp_path):
+    d = tmp_path / "snapshot"
+    _touch(d / "mmproj" / "mmproj-F16.gguf")
+    assert models_route._dir_model_format(d, recursive = True) is None
+
+
+def test_scan_models_dir_mmproj_only_folder_is_not_gguf(tmp_path):
+    # Same rule as _dir_model_format, applied by the parallel ./models scanner.
+    _touch(tmp_path / "vision" / "mmproj-F16.gguf")
+    _touch(tmp_path / "real" / "model-Q4_K_M.gguf")
+    formats = {m.display_name: m.model_format for m in models_route._scan_models_dir(tmp_path)}
+    assert formats["vision"] is None
+    assert formats["real"] == "gguf"
+
+
+def test_scan_models_dir_skips_standalone_mmproj_file(tmp_path):
+    # A loose mmproj-*.gguf is a vision adapter with no weights to serve, so it must
+    # not be offered as a model the way a loose primary GGUF is.
+    _touch(tmp_path / "mmproj-F16.gguf")
+    _touch(tmp_path / "model-Q4_K_M.gguf")
+    names = {m.display_name for m in models_route._scan_models_dir(tmp_path)}
+    assert names == {"model-Q4_K_M"}
+
+
+def test_scan_lmstudio_dir_skips_standalone_mmproj_file(tmp_path):
+    _touch(tmp_path / "mmproj-F16.gguf")
+    _touch(tmp_path / "model-Q4_K_M.gguf")
+    names = {m.display_name for m in models_route._scan_lmstudio_dir(tmp_path)}
+    assert names == {"model-Q4_K_M"}
+
+
+def test_scan_lmstudio_dir_skips_mmproj_under_publisher(tmp_path):
+    # LM Studio's publisher/model.gguf layout classifies on a separate branch.
+    _touch(tmp_path / "Publisher" / "mmproj-F16.gguf")
+    _touch(tmp_path / "Publisher" / "model-Q4_K_M.gguf")
+    names = {m.display_name for m in models_route._scan_lmstudio_dir(tmp_path)}
+    assert names == {"model-Q4_K_M"}
+
+
 def test_dir_model_format_gguf_with_config_is_still_gguf(tmp_path):
     # A config.json alongside the .gguf must not flip it to non-GGUF.
     d = tmp_path / "model"
@@ -97,9 +159,7 @@ def test_scan_models_dir_classifies_gguf_with_config(tmp_path):
     # A standalone .gguf file is GGUF.
     _touch(root / "loose.gguf")
 
-    fmt = {
-        Path(m.path).name: m.model_format for m in models_route._scan_models_dir(root)
-    }
+    fmt = {Path(m.path).name: m.model_format for m in models_route._scan_models_dir(root)}
 
     assert fmt["gguf_repo"] == "gguf"
     assert fmt["st_repo"] is None

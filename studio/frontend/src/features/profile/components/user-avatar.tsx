@@ -21,7 +21,7 @@ const SIZE: Record<"sm" | "md" | "lg", string> = {
   sm: "size-9 text-xs",
   md: "size-11 text-sm",
   /** ~10% larger than `size-24` / `text-2xl` for the edit-profile dialog. */
-  lg: "size-[106px] text-[1.65rem]",
+  lg: "size-[106px] text-[calc(1.65rem*var(--ui-font-scale,1))]",
 };
 
 // Percentage radius keeps the rounded-rectangle proportional across sizes.

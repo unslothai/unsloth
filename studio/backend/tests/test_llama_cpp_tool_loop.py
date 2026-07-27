@@ -14,6 +14,7 @@ import contextlib
 import copy
 import json
 import sys
+import threading
 from pathlib import Path
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -37,7 +38,30 @@ def _done() -> str:
     return "data: [DONE]\n"
 
 
-def _make_backend(monkeypatch, streams: list[list[str]], payloads: list[dict]):
+def _finish(reason: str) -> str:
+    return (
+        "data: "
+        + json.dumps(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": reason,
+                    }
+                ]
+            }
+        )
+        + "\n"
+    )
+
+
+def _make_backend(
+    monkeypatch,
+    streams: list[object],
+    payloads: list[dict],
+    urls: list[str] | None = None,
+):
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
     backend._process = object()
     backend._healthy = True
@@ -59,7 +83,12 @@ def _make_backend(monkeypatch, streams: list[list[str]], payloads: list[dict]):
         first_token_deadline = None,
     ):
         payloads.append(copy.deepcopy(payload))
-        yield type("FakeResponse", (), {"status_code": 200, "chunks": streams.pop(0)})()
+        if urls is not None:
+            urls.append(_url)
+        stream = streams.pop(0)
+        if isinstance(stream, BaseException):
+            raise stream
+        yield type("FakeResponse", (), {"status_code": 200, "chunks": stream})()
 
     def fake_iter_text_cancellable(
         response,
@@ -70,7 +99,25 @@ def _make_backend(monkeypatch, streams: list[list[str]], payloads: list[dict]):
 
     monkeypatch.setattr(backend, "_stream_with_retry", fake_stream_with_retry)
     monkeypatch.setattr(backend, "_iter_text_cancellable", fake_iter_text_cancellable)
+    monkeypatch.setattr(backend, "_maybe_recover_from_mtp_crash", lambda *_a, **_k: False)
     return backend
+
+
+def _patch_successful_respawn(
+    monkeypatch,
+    backend,
+    port: int | None = None,
+) -> list[bool]:
+    calls: list[bool] = []
+
+    def fake_respawn():
+        calls.append(True)
+        if port is not None:
+            backend._port = port
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
+    return calls
 
 
 def _tool_names(payload: dict) -> list[str]:
@@ -210,17 +257,12 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
             },
         )
     ]
-    assert any(
-        e.get("type") == "tool_end" and e.get("tool_name") == "render_html"
-        for e in events
-    )
+    assert any(e.get("type") == "tool_end" and e.get("tool_name") == "render_html" for e in events)
 
     # The second llama-server request should include the assistant preface
     # plus the structured tool call, preserving OpenAI-compatible ordering.
     assert len(payloads) == 2
-    assistant_messages = [
-        m for m in payloads[1]["messages"] if m.get("role") == "assistant"
-    ]
+    assistant_messages = [m for m in payloads[1]["messages"] if m.get("role") == "assistant"]
     assert assistant_messages[-1]["content"] == "Here is the canvas.\n\n"
     assert assistant_messages[-1]["tool_calls"][0]["id"] == tool_call_id
     assert assistant_messages[-1]["tool_calls"][0]["function"]["name"] == "render_html"
@@ -251,17 +293,12 @@ def test_streamed_reasoning_answer_emits_backend_summary(monkeypatch):
     assert content_texts[0] == "<think>I am thinking."
     assert content_texts[1] == "<think>I am thinking. Still thinking."
     # The final event closes the block and appends the answer.
-    assert (
-        content_texts[-1]
-        == "<think>I am thinking. Still thinking.</think>Final answer."
-    )
+    assert content_texts[-1] == "<think>I am thinking. Still thinking.</think>Final answer."
 
     summary_index = next(
         i for i, event in enumerate(events) if event["type"] == "reasoning_summary"
     )
-    final_content_index = max(
-        i for i, event in enumerate(events) if event["type"] == "content"
-    )
+    final_content_index = max(i for i, event in enumerate(events) if event["type"] == "content")
     assert summary_index < final_content_index
     assert events[summary_index]["duration_ms"] == 62000
 
@@ -309,9 +346,8 @@ def test_reasoning_streams_incrementally_with_tools(monkeypatch):
 def test_reasoning_only_reply_matches_no_tool_path_with_tools(monkeypatch):
     # A reasoning-only turn (whole answer in reasoning_content, no content, no
     # tool) with a tool active streams the reasoning live, then resolves to the
-    # bare reasoning text -- identical to the no-tool generate_chat_completion
-    # path -- so the non-streaming drain still returns it as `content`, not an
-    # empty answer.
+    # same text on the visible channel. The final cumulative snapshot stays
+    # append-only so route suffix extraction cannot drop that fallback.
     stream = [
         _sse({"reasoning_content": "The capital of France is Paris."}),
         _done(),
@@ -331,8 +367,49 @@ def test_reasoning_only_reply_matches_no_tool_path_with_tools(monkeypatch):
     content_texts = [e["text"] for e in events if e["type"] == "content"]
     # Reasoning streamed live during BUFFERING (the fix).
     assert content_texts[0] == "<think>The capital of France is Paris."
-    # Resolves to bare reasoning, matching the no-tool sibling.
-    assert content_texts[-1] == "The capital of France is Paris."
+    assert content_texts[-1] == (
+        "<think>The capital of France is Paris.</think>The capital of France is Paris."
+    )
+
+
+def _assert_reasoning_only_raw_consumer_gets_one_balanced_think_block(monkeypatch, with_tools):
+    stream = [
+        _sse({"reasoning_content": "The capital of France is Paris."}),
+        _done(),
+    ]
+    backend = _make_backend(monkeypatch, [stream], [])
+
+    if with_tools:
+        items = list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "capital of France?"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                max_tool_iterations = 1,
+                promote_reasoning_only = False,
+            )
+        )
+        cumulatives = [item["text"] for item in items if item.get("type") == "content"]
+    else:
+        items = list(
+            backend.generate_chat_completion(
+                messages = [{"role": "user", "content": "capital of France?"}],
+                promote_reasoning_only = False,
+            )
+        )
+        cumulatives = [item for item in items if isinstance(item, str)]
+
+    assert cumulatives[-1] == "<think>The capital of France is Paris.</think>"
+    assert all(
+        current.startswith(previous) for previous, current in zip([""] + cumulatives, cumulatives)
+    )
+
+
+def test_reasoning_only_raw_consumer_without_tools_gets_one_balanced_think_block(monkeypatch):
+    _assert_reasoning_only_raw_consumer_gets_one_balanced_think_block(monkeypatch, False)
+
+
+def test_reasoning_only_raw_consumer_with_tools_gets_one_balanced_think_block(monkeypatch):
+    _assert_reasoning_only_raw_consumer_gets_one_balanced_think_block(monkeypatch, True)
 
 
 def test_reasoning_before_structured_tool_closes_think_block(monkeypatch):
@@ -364,12 +441,8 @@ def test_reasoning_before_structured_tool_closes_think_block(monkeypatch):
         )
     )
 
-    tool_start_index = next(
-        i for i, e in enumerate(events) if e["type"] == "tool_start"
-    )
-    content_before_tool = [
-        e["text"] for e in events[:tool_start_index] if e["type"] == "content"
-    ]
+    tool_start_index = next(i for i, e in enumerate(events) if e["type"] == "tool_start")
+    content_before_tool = [e["text"] for e in events[:tool_start_index] if e["type"] == "content"]
     # Reasoning streamed live, then closed before the tool -- balanced block.
     assert content_before_tool[0] == "<think>Let me search."
     assert content_before_tool[-1] == "<think>Let me search.</think>"
@@ -406,8 +479,8 @@ def _replay_route_reasoning_extractor(cumulatives: list[str]) -> tuple[str, str]
 def test_reasoning_only_route_output_matches_no_tool_path(monkeypatch):
     # Parity contract: a reasoning-only reply must reach the client identically
     # whether tools are on or off. Both generators stream <think> live then
-    # resolve to the bare reasoning text; the route's suffix-diff + extractor
-    # must therefore produce the same (visible, reasoning) split for both.
+    # append a balanced close plus visible fallback; the route's suffix-diff +
+    # extractor must therefore produce the same split for both.
     stream = [
         _sse({"reasoning_content": "The capital"}),
         _sse({"reasoning_content": " of France is Paris."}),
@@ -444,8 +517,35 @@ def test_reasoning_only_route_output_matches_no_tool_path(monkeypatch):
     no_tool_out = _replay_route_reasoning_extractor(no_tool_cumulatives)
     assert tool_out == no_tool_out
     # Pin the shared contract so a change to either path shows up here.
-    _visible, reasoning = tool_out
+    visible, reasoning = tool_out
+    assert visible == "The capital of France is Paris."
     assert reasoning == "The capital of France is Paris."
+
+
+def test_length_truncated_reasoning_stays_append_only_without_visible_promotion(monkeypatch):
+    stream = [
+        _sse({"reasoning_content": "The proof begins by assuming finitely many primes."}),
+        _finish("length"),
+        _done(),
+    ]
+    backend = _make_backend(monkeypatch, [stream], [])
+
+    items = list(
+        backend.generate_chat_completion(
+            messages = [{"role": "user", "content": "Prove infinitely many primes"}],
+            max_tokens = 16,
+        )
+    )
+    cumulatives = [item for item in items if isinstance(item, str)]
+
+    assert all(
+        current.startswith(previous) for previous, current in zip([""] + cumulatives, cumulatives)
+    )
+    assert cumulatives[-1] == ("<think>The proof begins by assuming finitely many primes.</think>")
+    visible, reasoning = _replay_route_reasoning_extractor(cumulatives)
+    assert visible == ""
+    assert reasoning == "The proof begins by assuming finitely many primes."
+    assert items[-1]["finish_reason"] == "length"
 
 
 def test_reasoning_before_bare_json_tool_closes_think_block(monkeypatch):
@@ -477,12 +577,8 @@ def test_reasoning_before_bare_json_tool_closes_think_block(monkeypatch):
         )
     )
 
-    tool_start_index = next(
-        i for i, e in enumerate(events) if e["type"] == "tool_start"
-    )
-    content_before_tool = [
-        e["text"] for e in events[:tool_start_index] if e["type"] == "content"
-    ]
+    tool_start_index = next(i for i, e in enumerate(events) if e["type"] == "tool_start")
+    content_before_tool = [e["text"] for e in events[:tool_start_index] if e["type"] == "content"]
     assert content_before_tool[0] == "<think>Searching now."
     assert content_before_tool[-1] == "<think>Searching now.</think>"
     # The bare-JSON call text was drained, never surfaced as content.
@@ -527,8 +623,7 @@ def test_consumed_tool_final_pass_emits_latest_reasoning_summary(monkeypatch):
     final_content_index = next(
         i
         for i, event in enumerate(events)
-        if event.get("type") == "content"
-        and "Final from tool." in event.get("text", "")
+        if event.get("type") == "content" and "Final from tool." in event.get("text", "")
     )
     assert final_summary_index < final_content_index
 
@@ -584,9 +679,7 @@ def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
     ]
     final_stream = [_sse({"content": "Short note."}), _done()]
     payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch, [first_stream, repeat_stream, final_stream], payloads
-    )
+    backend = _make_backend(monkeypatch, [first_stream, repeat_stream, final_stream], payloads)
 
     calls: list[tuple[str, dict]] = []
 
@@ -695,16 +788,11 @@ def test_render_html_success_drops_tool_schema_before_final_pass(monkeypatch):
 
     assert len(payloads) == 2
     assert "tools" not in payloads[1]
-    assert any(
-        event.get("type") == "content" and event.get("text") == "Done."
-        for event in events
-    )
+    assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
     final_user_messages = [
         m.get("content", "") for m in payloads[1]["messages"] if m.get("role") == "user"
     ]
-    assert not any(
-        "used all available tool calls" in message for message in final_user_messages
-    )
+    assert not any("used all available tool calls" in message for message in final_user_messages)
 
 
 def test_non_consecutive_duplicate_web_search_is_internal_noop(monkeypatch):
@@ -785,9 +873,7 @@ def test_non_consecutive_duplicate_web_search_is_internal_noop(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [
-                {"role": "user", "content": "search gpus in 2026 prices and use python"}
-            ],
+            messages = [{"role": "user", "content": "search gpus in 2026 prices and use python"}],
             tools = tools,
             max_tool_iterations = 3,
         )
@@ -902,9 +988,7 @@ def test_duplicate_web_search_noop_allows_distinct_followup_tool(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [
-                {"role": "user", "content": "search gpus in 2026 prices and use python"}
-            ],
+            messages = [{"role": "user", "content": "search gpus in 2026 prices and use python"}],
             tools = tools,
             max_tool_iterations = 4,
         )
@@ -1020,14 +1104,13 @@ def test_repeated_duplicate_noop_transitions_to_final_pass(monkeypatch):
     )
 
     assert calls == [("web_search", {"query": "gpu prices 2026"})]
-    assert [
-        event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
-    ] == ["call_search_1"]
+    assert [event.get("tool_call_id") for event in events if event.get("type") == "tool_end"] == [
+        "call_search_1"
+    ]
     assert len(payloads) == 4
     assert "tools" not in payloads[-1]
     assert any(
-        event.get("type") == "content"
-        and event.get("text") == "Final answer from first search."
+        event.get("type") == "content" and event.get("text") == "Final answer from first search."
         for event in events
     )
 
@@ -1081,9 +1164,9 @@ def test_same_turn_duplicate_web_search_is_internal_noop(monkeypatch):
     )
 
     assert calls == [("web_search", {"query": "gpu prices 2026"})]
-    assert [
-        event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
-    ] == ["call_search_1"]
+    assert [event.get("tool_call_id") for event in events if event.get("type") == "tool_end"] == [
+        "call_search_1"
+    ]
     assert not [
         event
         for event in events
@@ -1104,28 +1187,19 @@ def test_same_turn_duplicate_does_not_drop_later_parallel_call(monkeypatch):
                         "index": 0,
                         "id": "call_a1",
                         "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": json.dumps({"query": "a"}),
-                        },
+                        "function": {"name": "web_search", "arguments": json.dumps({"query": "a"})},
                     },
                     {
                         "index": 1,
                         "id": "call_a2",
                         "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": json.dumps({"query": "a"}),
-                        },
+                        "function": {"name": "web_search", "arguments": json.dumps({"query": "a"})},
                     },
                     {
                         "index": 2,
                         "id": "call_b",
                         "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": json.dumps({"query": "b"}),
-                        },
+                        "function": {"name": "web_search", "arguments": json.dumps({"query": "b"})},
                     },
                 ]
             }
@@ -1175,9 +1249,7 @@ def test_same_turn_duplicate_does_not_drop_later_parallel_call(monkeypatch):
     assert "previous tool request" not in after[2]["content"].lower()
 
 
-def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(
-    monkeypatch,
-):
+def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(monkeypatch):
     same_turn_render_calls = [
         _sse(
             {
@@ -1207,9 +1279,7 @@ def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(
     ]
     final_stream = [_sse({"content": "Final answer."}), _done()]
     payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch, [same_turn_render_calls, final_stream], payloads
-    )
+    backend = _make_backend(monkeypatch, [same_turn_render_calls, final_stream], payloads)
 
     calls: list[tuple[str, dict]] = []
 
@@ -1286,9 +1356,7 @@ def test_disabled_tool_call_is_internal_noop(monkeypatch):
         )
     )
 
-    assert not [
-        event for event in events if event.get("type") in {"tool_start", "tool_end"}
-    ]
+    assert not [event for event in events if event.get("type") in {"tool_start", "tool_end"}]
     assert len(payloads) == 2
     disabled_nudges = [
         message
@@ -1371,8 +1439,7 @@ def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
     assert len(payloads) == 2
     assert len(calls) == 1
     assert any(
-        event.get("type") == "content"
-        and event.get("text") == "I will now use render_html again."
+        event.get("type") == "content" and event.get("text") == "I will now use render_html again."
         for event in events
     )
 
@@ -1417,9 +1484,7 @@ def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
         )
     )
 
-    content_texts = [
-        event.get("text", "") for event in events if event.get("type") == "content"
-    ]
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
     assert content_texts == ["I will use render_html now."]
     assert len(payloads) == _MAX_REPROMPTS + 1
 
@@ -1463,9 +1528,7 @@ def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
         )
     )
 
-    content_texts = [
-        event.get("text", "") for event in events if event.get("type") == "content"
-    ]
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
     assert content_texts == [
         "I will use render_html now.",
         "No tool is needed. Final answer: use a red square.",
@@ -1507,9 +1570,7 @@ def test_internal_reprompt_disabled_when_auto_heal_disabled(monkeypatch):
         )
     )
 
-    content_texts = [
-        event.get("text", "") for event in events if event.get("type") == "content"
-    ]
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
     assert content_texts == ["I will use render_html now."]
     assert len(payloads) == 1
 
@@ -1551,9 +1612,7 @@ def test_internal_reprompt_disabled_when_nudge_tool_calls_false(monkeypatch):
         )
     )
 
-    content_texts = [
-        event.get("text", "") for event in events if event.get("type") == "content"
-    ]
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
     assert content_texts == ["I will use render_html now."]
     assert len(payloads) == 1
 
@@ -1600,10 +1659,7 @@ def test_textual_mistral_marker_not_leaked_when_inline_with_preface(monkeypatch)
     # Textual Mistral ``[TOOL_CALLS]`` inline with visible preface: the DRAINING flush must use the
     # shared parser patterns (which know ``[TOOL_CALLS]``); the legacy set leaked the marker to clients.
     streams = [
-        [
-            _sse({"content": 'Let me search. [TOOL_CALLS]web_search{"query":"cats"}'}),
-            _done(),
-        ],
+        [_sse({"content": 'Let me search. [TOOL_CALLS]web_search{"query":"cats"}'}), _done()],
         [_sse({"content": "done"}), _done()],
     ]
     payloads: list[dict] = []
@@ -1777,9 +1833,7 @@ def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
     )
 
     assert len(calls) == 1
-    content_texts = [
-        event.get("text", "") for event in events if event.get("type") == "content"
-    ]
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
     assert content_texts == ["I will use render_html now.", "Final note after tool."]
     assert len(payloads) == 3
 
@@ -1799,16 +1853,12 @@ def test_confirm_tool_calls_allow_executes_gguf_tool(monkeypatch):
         return "OK"
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-    monkeypatch.setattr(
-        "core.inference.llama_cpp.new_approval_id", lambda: "approval-1"
-    )
+    monkeypatch.setattr("core.inference.llama_cpp.new_approval_id", lambda: "approval-1")
     monkeypatch.setattr(
         "core.inference.llama_cpp.begin_tool_decision",
         lambda *_a, **_k: object(),
     )
-    monkeypatch.setattr(
-        "core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: "allow"
-    )
+    monkeypatch.setattr("core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: "allow")
 
     events = list(
         backend.generate_chat_completion_with_tools(
@@ -1816,6 +1866,8 @@ def test_confirm_tool_calls_allow_executes_gguf_tool(monkeypatch):
             tools = [{"type": "function", "function": {"name": "python"}}],
             max_tool_iterations = 1,
             confirm_tool_calls = True,
+            # Unset defaults to "auto", which would not prompt this safe print(1).
+            permission_mode = "ask",
             session_id = "sess",
         )
     )
@@ -1825,10 +1877,7 @@ def test_confirm_tool_calls_allow_executes_gguf_tool(monkeypatch):
     assert starts[0]["approval_id"]
     assert starts[0]["awaiting_confirmation"] is True
     assert calls == [("python", {"code": "print(1)"})]
-    assert any(
-        event.get("type") == "tool_end" and event.get("result") == "OK"
-        for event in events
-    )
+    assert any(event.get("type") == "tool_end" and event.get("result") == "OK" for event in events)
 
 
 def test_confirm_tool_calls_close_after_prompt_cleans_gguf_slot(monkeypatch):
@@ -1851,6 +1900,8 @@ def test_confirm_tool_calls_close_after_prompt_cleans_gguf_slot(monkeypatch):
         tools = [{"type": "function", "function": {"name": "python"}}],
         max_tool_iterations = 1,
         confirm_tool_calls = True,
+        # Unset defaults to "auto", which would not prompt this safe print(1).
+        permission_mode = "ask",
         session_id = "sess",
     )
     try:
@@ -1884,15 +1935,15 @@ def test_confirm_tool_calls_skips_gguf_rag_autoinject(monkeypatch):
             tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
             max_tool_iterations = 1,
             confirm_tool_calls = True,
+            # "ask" gates every call so autoinject waits; unset defaults to
+            # "auto", where this safe retrieval never gates.
+            permission_mode = "ask",
             session_id = "sess",
             rag_scope = {"thread_id": "t1"},
         )
     )
 
-    assert any(
-        event.get("type") == "content" and event.get("text") == "Done."
-        for event in events
-    )
+    assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
 
 
 def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypatch):
@@ -1915,9 +1966,7 @@ def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypat
     approvals = iter(["approval-1", "approval-2"])
 
     monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
-    monkeypatch.setattr(
-        "core.inference.llama_cpp.new_approval_id", lambda: next(approvals)
-    )
+    monkeypatch.setattr("core.inference.llama_cpp.new_approval_id", lambda: next(approvals))
     monkeypatch.setattr(
         "core.inference.llama_cpp.begin_tool_decision",
         lambda *_a, **_k: object(),
@@ -1933,6 +1982,8 @@ def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypat
             tools = [{"type": "function", "function": {"name": "python"}}],
             max_tool_iterations = 2,
             confirm_tool_calls = True,
+            # Unset defaults to "auto", which would not prompt this safe print(1).
+            permission_mode = "ask",
             session_id = "sess",
         )
     )
@@ -1954,9 +2005,7 @@ def _streamed_structured_tool_call(
     deltas (id + name on the first delta), mirroring how llama-server streams a
     large tool-call argument such as a full HTML/code file."""
     args_json = json.dumps(arguments)
-    fragments = [args_json[i : i + frag] for i in range(0, len(args_json), frag)] or [
-        ""
-    ]
+    fragments = [args_json[i : i + frag] for i in range(0, len(args_json), frag)] or [""]
     chunks = [
         _sse(
             {
@@ -1972,9 +2021,7 @@ def _streamed_structured_tool_call(
         )
     ]
     for fragment in fragments[1:]:
-        chunks.append(
-            _sse({"tool_calls": [{"index": 0, "function": {"arguments": fragment}}]})
-        )
+        chunks.append(_sse({"tool_calls": [{"index": 0, "function": {"arguments": fragment}}]}))
     chunks.append(_done())
     return chunks
 
@@ -1989,9 +2036,7 @@ def test_large_python_tool_call_emits_early_provisional_start(monkeypatch):
     args_json = json.dumps({"code": big_code})
     assert len(args_json) > _PROVISIONAL_ARGS_MIN_CHARS
 
-    first_stream = _streamed_structured_tool_call(
-        "python", {"code": big_code}, "call_py_big"
-    )
+    first_stream = _streamed_structured_tool_call("python", {"code": big_code}, "call_py_big")
     final_stream = [_sse({"content": "Done."}), _done()]
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
@@ -2028,9 +2073,7 @@ def test_large_python_tool_call_emits_early_provisional_start(monkeypatch):
     assert events.index(provisional[0]) < events.index(real[0])
 
     assert calls == [("python", {"code": big_code})]
-    assert any(
-        e.get("type") == "tool_end" and e.get("tool_name") == "python" for e in events
-    )
+    assert any(e.get("type") == "tool_end" and e.get("tool_name") == "python" for e in events)
 
 
 def test_auto_mode_render_html_suppresses_provisional_card_under_confirm(monkeypatch):
@@ -2044,9 +2087,7 @@ def test_auto_mode_render_html_suppresses_provisional_card_under_confirm(monkeyp
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
 
-    monkeypatch.setattr(
-        "core.inference.tools.execute_tool", lambda name, arguments, **_k: "OK"
-    )
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda name, arguments, **_k: "OK")
 
     events = list(
         backend.generate_chat_completion_with_tools(
@@ -2072,9 +2113,7 @@ def test_small_python_tool_call_has_no_provisional_start(monkeypatch):
     """A small tool-call argument finishes streaming instantly, so it keeps the
     existing behavior of a single (real) tool_start with no provisional card."""
 
-    first_stream = _structured_tool_call(
-        "python", {"code": "print(1)"}, "call_py_small"
-    )
+    first_stream = _structured_tool_call("python", {"code": "print(1)"}, "call_py_small")
     final_stream = [_sse({"content": "Done."}), _done()]
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
@@ -2101,9 +2140,7 @@ def _streamed_parallel_tool_calls(specs, frag: int = 24) -> list[str]:
     chunks: list[str] = []
     for index, (tool_name, arguments, call_id) in enumerate(specs):
         args_json = json.dumps(arguments)
-        fragments = [
-            args_json[i : i + frag] for i in range(0, len(args_json), frag)
-        ] or [""]
+        fragments = [args_json[i : i + frag] for i in range(0, len(args_json), frag)] or [""]
         chunks.append(
             _sse(
                 {
@@ -2120,13 +2157,7 @@ def _streamed_parallel_tool_calls(specs, frag: int = 24) -> list[str]:
         )
         for fragment in fragments[1:]:
             chunks.append(
-                _sse(
-                    {
-                        "tool_calls": [
-                            {"index": index, "function": {"arguments": fragment}}
-                        ]
-                    }
-                )
+                _sse({"tool_calls": [{"index": index, "function": {"arguments": fragment}}]})
             )
     chunks.append(_done())
     return chunks
@@ -2171,9 +2202,7 @@ def test_parallel_large_tool_calls_each_emit_provisional_start(monkeypatch):
         )
     )
 
-    provisional = [
-        e for e in events if e.get("type") == "tool_start" and not e.get("arguments")
-    ]
+    provisional = [e for e in events if e.get("type") == "tool_start" and not e.get("arguments")]
     assert sorted(e["tool_call_id"] for e in provisional) == ["call_py", "call_term"]
     assert all(e["provenance"].get("provisional") is True for e in provisional)
     # Both calls actually executed (parallel tool use is enabled by default).
@@ -2218,17 +2247,13 @@ def test_parallel_disabled_suppresses_provisional_for_later_calls(monkeypatch):
         )
     )
 
-    provisional = [
-        e for e in events if e.get("type") == "tool_start" and not e.get("arguments")
-    ]
+    provisional = [e for e in events if e.get("type") == "tool_start" and not e.get("arguments")]
     assert [e["tool_call_id"] for e in provisional] == ["call_py"]
     # Only the first call executes when parallel use is disabled.
     assert calls == [("python", {"code": big_code})]
     # The lone provisional is closed exactly once (no dangling card).
     closing = [
-        e
-        for e in events
-        if e.get("type") == "tool_end" and e.get("tool_call_id") == "call_py"
+        e for e in events if e.get("type") == "tool_end" and e.get("tool_call_id") == "call_py"
     ]
     assert len(closing) == 1
 
@@ -2240,9 +2265,7 @@ def test_connect_error_during_tool_call_closes_provisional_card(monkeypatch):
     import httpx
 
     big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
-    fragments = _streamed_structured_tool_call(
-        "python", {"code": big_code}, "call_py_err"
-    )
+    fragments = _streamed_structured_tool_call("python", {"code": big_code}, "call_py_err")
     # Drop the trailing [DONE]; raise a connection error after the fragments
     # stream (and after the provisional card has been emitted).
     fragments = fragments[:-1]
@@ -2254,7 +2277,13 @@ def test_connect_error_during_tool_call_closes_provisional_card(monkeypatch):
 
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, [raising_stream()], payloads)
+    respawn_calls: list[bool] = []
 
+    monkeypatch.setattr(
+        backend,
+        "_respawn_if_dead",
+        lambda: respawn_calls.append(True) or True,
+    )
     monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "OK")
 
     collected: list[dict] = []
@@ -2272,9 +2301,7 @@ def test_connect_error_during_tool_call_closes_provisional_card(monkeypatch):
         assert "Lost connection" in str(exc)
 
     assert raised
-    provisional = [
-        e for e in collected if e.get("type") == "tool_start" and not e.get("arguments")
-    ]
+    provisional = [e for e in collected if e.get("type") == "tool_start" and not e.get("arguments")]
     assert len(provisional) == 1
     assert provisional[0]["tool_call_id"] == "call_py_err"
     # The provisional card is closed before the error propagates.
@@ -2287,6 +2314,271 @@ def test_connect_error_during_tool_call_closes_provisional_card(monkeypatch):
     # The closing card is marked as an error, not an empty success, so the UI
     # renders it as failed.
     assert "Error" in (closing[0].get("result") or "")
+    assert respawn_calls == []
+
+
+def test_connect_error_before_tool_stream_respawns_and_retries(monkeypatch):
+    """A dead server before the first tool-loop response is opened is safe to retry."""
+    import httpx
+
+    payloads: list[dict] = []
+    urls: list[str] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            httpx.ConnectError("server is down"),
+            [_sse({"content": "Recovered."}), _done()],
+        ],
+        payloads,
+        urls,
+    )
+    respawn_calls = _patch_successful_respawn(monkeypatch, backend, port = 49999)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "hello"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert respawn_calls == [True]
+    assert len(payloads) == 2
+    assert payloads[0] == payloads[1]
+    assert urls == [
+        "http://127.0.0.1:48847/v1/chat/completions",
+        "http://127.0.0.1:49999/v1/chat/completions",
+    ]
+    assert any(e.get("type") == "content" and e.get("text") == "Recovered." for e in events)
+
+
+def test_connect_error_after_tool_result_recovers_both_generation_paths(monkeypatch):
+    """Recover either post-tool generation path without rerunning the tool."""
+    import httpx
+    for max_tool_iterations, final_text in (
+        (2, "The result is 1."),
+        (1, "Final answer."),
+    ):
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch,
+            [
+                _structured_tool_call("python", {"code": "print(1)"}, "call_once"),
+                httpx.ConnectError("server died between turns"),
+                [_sse({"content": final_text}), _done()],
+            ],
+            payloads,
+        )
+        respawn_calls = _patch_successful_respawn(monkeypatch, backend)
+        tool_calls: list[tuple[str, dict]] = []
+
+        def fake_execute_tool(name, arguments, **_kwargs):
+            tool_calls.append((name, arguments))
+            return "1"
+
+        monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+        events = list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "print one"}],
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                max_tool_iterations = max_tool_iterations,
+            )
+        )
+
+        assert respawn_calls == [True]
+        assert tool_calls == [("python", {"code": "print(1)"})]
+        assert len(payloads) == 3
+        assert payloads[1] == payloads[2]
+        assert any(e.get("type") == "content" and e.get("text") == final_text for e in events)
+
+
+def test_connect_error_retry_is_bounded(monkeypatch):
+    """A failed retry surfaces the error without another respawn attempt."""
+    import httpx
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            httpx.ConnectError("server is down"),
+            httpx.ConnectError("replacement is also down"),
+        ],
+        payloads,
+    )
+    respawn_calls = _patch_successful_respawn(monkeypatch, backend)
+
+    raised = False
+    try:
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "hello"}],
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                max_tool_iterations = 1,
+            )
+        )
+    except RuntimeError as exc:
+        raised = True
+        assert "Lost connection" in str(exc)
+
+    assert raised
+    assert respawn_calls == [True]
+    assert len(payloads) == 2
+
+
+def test_pre_header_transport_errors_also_respawn(monkeypatch):
+    """A child that dies during prefill already accepted the socket, so it does
+    not surface as ConnectError. Nothing has streamed yet, so replay is safe."""
+    import httpx
+    for exc in (
+        httpx.RemoteProtocolError("server disconnected without sending a response"),
+        httpx.ReadError("connection reset by peer"),
+        httpx.WriteError("broken pipe"),
+    ):
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch, [exc, [_sse({"content": "Recovered."}), _done()]], payloads
+        )
+        respawn_calls = _patch_successful_respawn(monkeypatch, backend)
+
+        events = list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "hello"}],
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                max_tool_iterations = 1,
+            )
+        )
+
+        assert respawn_calls == [True], type(exc).__name__
+        assert len(payloads) == 2, type(exc).__name__
+        assert any(e.get("type") == "content" and e.get("text") == "Recovered." for e in events)
+
+
+def test_a_not_yet_reaped_child_does_not_burn_the_retry(monkeypatch):
+    """A closing server can beat its own exit status, so poll() briefly reports it
+    alive. Without a grace wait _respawn_if_dead hands back the stale _healthy and the
+    single retry is spent on the corpse rather than on a replacement."""
+    import httpx
+
+    class _Dying:
+        # reapable only from the 4th poll, mimicking teardown lagging the socket close
+        def __init__(self):
+            self.polls = 0
+            self.returncode = None
+
+        def poll(self):
+            self.polls += 1
+            if self.polls > 3:
+                self.returncode = -9
+                return -9
+            return None
+
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [], payloads)
+    backend._process = _Dying()
+    backend._healthy = True
+    backend._respawn_lock = threading.RLock()
+    backend._lock = threading.RLock()
+    backend._mtp_runtime_fallback_lock = threading.Lock()
+    backend._serial_load_lock = threading.RLock()
+    backend._cancel_event = threading.Event()
+    backend._unload_epoch = 0
+    backend._mtp_runtime_fallback_in_progress = False
+    backend._mtp_runtime_fallback_active = False
+    backend._last_load_kwargs = {"gguf_path": "/m.gguf"}
+    backend._model_identifier = "m"
+    dying = backend._process
+    loads: list[dict] = []
+
+    @contextlib.contextmanager
+    def dead_until_respawned(
+        _c,
+        _url,
+        payload,
+        _ce,
+        headers = None,
+        first_token_deadline = None,
+    ):
+        payloads.append(copy.deepcopy(payload))
+        if backend._process is dying:
+            raise httpx.ReadError("connection reset while shutting down")
+        yield type(
+            "FakeResponse",
+            (),
+            {"status_code": 200, "chunks": [_sse({"content": "Recovered."}), _done()]},
+        )()
+
+    def fake_load(**kwargs):
+        loads.append(kwargs)
+        backend._process = type("Live", (), {"poll": lambda self: None, "returncode": None})()
+        backend._healthy = True
+        return True
+
+    monkeypatch.setattr(backend, "_stream_with_retry", dead_until_respawned)
+    monkeypatch.setattr(backend, "load_model", fake_load)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "hello"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert len(loads) == 1
+    assert any(e.get("type") == "content" and e.get("text") == "Recovered." for e in events)
+
+
+def test_prefill_timeout_is_not_retried(monkeypatch):
+    """A slow-but-alive server must not have its first-token budget spent twice."""
+    import httpx
+    for exc in (httpx.ReadTimeout("no first token"), httpx.PoolTimeout("pool")):
+        payloads: list[dict] = []
+        backend = _make_backend(monkeypatch, [exc], payloads)
+        respawn_calls = _patch_successful_respawn(monkeypatch, backend)
+
+        raised = False
+        try:
+            list(
+                backend.generate_chat_completion_with_tools(
+                    messages = [{"role": "user", "content": "hello"}],
+                    tools = [{"type": "function", "function": {"name": "python"}}],
+                    max_tool_iterations = 1,
+                )
+            )
+        except httpx.TimeoutException:
+            raised = True
+
+        assert raised, type(exc).__name__
+        assert respawn_calls == [], type(exc).__name__
+        assert len(payloads) == 1, type(exc).__name__
+
+
+def test_mtp_crash_recovery_wins_over_respawn(monkeypatch):
+    """An MTP crash reloads without MTP, so never respawn the same config on top."""
+    import httpx
+    for max_tool_iterations in (2, 1):
+        payloads: list[dict] = []
+        backend = _make_backend(monkeypatch, [httpx.ConnectError("mtp crash")], payloads)
+        monkeypatch.setattr(backend, "_maybe_recover_from_mtp_crash", lambda *_a, **_k: True)
+        respawn_calls = _patch_successful_respawn(monkeypatch, backend)
+
+        raised = False
+        try:
+            list(
+                backend.generate_chat_completion_with_tools(
+                    messages = [{"role": "user", "content": "hello"}],
+                    tools = [{"type": "function", "function": {"name": "python"}}],
+                    max_tool_iterations = max_tool_iterations,
+                )
+            )
+        except RuntimeError as exc:
+            raised = True
+            assert "Lost connection" in str(exc)
+
+        assert raised
+        assert respawn_calls == []
+        assert len(payloads) == 1
 
 
 def test_empty_tool_call_id_does_not_emit_provisional_card(monkeypatch):
@@ -2321,9 +2613,7 @@ def test_empty_tool_call_id_does_not_emit_provisional_card(monkeypatch):
     )
 
     # No provisional card (empty-args tool_start) was surfaced for the empty id.
-    provisional = [
-        e for e in events if e.get("type") == "tool_start" and not e.get("arguments")
-    ]
+    provisional = [e for e in events if e.get("type") == "tool_start" and not e.get("arguments")]
     assert provisional == []
     # The real call still executes despite the missing id.
     assert calls == [("python", {"code": big_code})]
@@ -2387,7 +2677,7 @@ def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call(monkeypat
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda n, a, **_k: (calls.append((n, a)) or "x"),
+        lambda n, a, **_k: calls.append((n, a)) or "x",
     )
 
     events = list(
@@ -2429,9 +2719,7 @@ def test_incomplete_bare_json_truncation_is_not_leaked(monkeypatch):
     assert all('{"name"' not in t for t in content_texts), content_texts
 
 
-def test_gguf_truncated_ordinary_json_with_name_key_is_shown_not_suppressed(
-    monkeypatch,
-):
+def test_gguf_truncated_ordinary_json_with_name_key_is_shown_not_suppressed(monkeypatch):
     """A truncated markerless object whose "name" is NOT an enabled tool (a person
     record cut off mid-stream, ``{"name":"Alice","age":``) must still be shown. The
     end-of-stream ``_is_bare_tc`` heuristic routed any ``{...,"name",...}`` fragment
@@ -2446,7 +2734,7 @@ def test_gguf_truncated_ordinary_json_with_name_key_is_shown_not_suppressed(
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda n, a, **_k: (calls.append((n, a)) or "x"),
+        lambda n, a, **_k: calls.append((n, a)) or "x",
     )
 
     events = list(
@@ -2473,7 +2761,7 @@ def test_gguf_truncated_disabled_name_json_is_preserved_when_tools_active(monkey
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda n, a, **_k: (calls.append((n, a)) or "x"),
+        lambda n, a, **_k: calls.append((n, a)) or "x",
     )
 
     events = list(
@@ -2522,9 +2810,7 @@ def test_gguf_oversized_disabled_name_json_is_preserved(monkeypatch):
     cap = 16384
     big = "A" * (cap + 5000)
     answer = '{"name":"Alice","parameters":{"bio":"' + big  # never closes
-    first_stream = [
-        _sse({"content": answer[i : i + 2000]}) for i in range(0, len(answer), 2000)
-    ]
+    first_stream = [_sse({"content": answer[i : i + 2000]}) for i in range(0, len(answer), 2000)]
     first_stream.append(_done())
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, [first_stream], payloads)
@@ -2532,7 +2818,7 @@ def test_gguf_oversized_disabled_name_json_is_preserved(monkeypatch):
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda n, a, **_k: (calls.append((n, a)) or "x"),
+        lambda n, a, **_k: calls.append((n, a)) or "x",
     )
 
     events = list(
@@ -2715,7 +3001,7 @@ def test_gguf_initial_buffer_flush_holds_split_rehearsal_name(monkeypatch):
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
     events = list(
@@ -2752,7 +3038,7 @@ def test_gguf_rehearsal_name_after_prose_in_streaming_is_not_leaked(monkeypatch)
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
     events = list(
@@ -2785,7 +3071,7 @@ def test_gguf_plain_answer_ending_with_tool_name_word_is_preserved(monkeypatch):
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
     events = list(
@@ -2820,7 +3106,7 @@ def test_gguf_long_tool_name_split_rehearsal_is_not_capped_and_executes(monkeypa
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda n, a, **_k: (calls.append((n, a)) or "result"),
+        lambda n, a, **_k: calls.append((n, a)) or "result",
     )
 
     events = list(
@@ -2854,7 +3140,7 @@ def test_gguf_streaming_keeps_bare_args_before_think_block(monkeypatch):
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
     events = list(
@@ -2868,10 +3154,7 @@ def test_gguf_streaming_keeps_bare_args_before_think_block(monkeypatch):
     assert calls == [], calls
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
     assert content_texts, events
-    assert (
-        content_texts[-1]
-        == "Please pass foo[ARGS] <think>pause</think> to the template."
-    )
+    assert content_texts[-1] == "Please pass foo[ARGS] <think>pause</think> to the template."
 
 
 def test_gguf_inactive_name_args_in_prose_is_not_drained(monkeypatch):
@@ -2889,7 +3172,7 @@ def test_gguf_inactive_name_args_in_prose_is_not_drained(monkeypatch):
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
     events = list(
@@ -2906,14 +3189,10 @@ def test_gguf_inactive_name_args_in_prose_is_not_drained(monkeypatch):
     assert not any(e.get("type") in ("tool_start", "tool_end") for e in events), events
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
     # The inactive ``foo[ARGS]{...}`` is prose: the name-gated strip keeps the whole sentence.
-    assert any(
-        'foo[ARGS]{"x":1} is just syntax.' in t for t in content_texts
-    ), content_texts
+    assert any('foo[ARGS]{"x":1} is just syntax.' in t for t in content_texts), content_texts
 
 
-def test_gguf_inactive_rehearsal_before_active_call_executes_and_keeps_prose(
-    monkeypatch,
-):
+def test_gguf_inactive_rehearsal_before_active_call_executes_and_keeps_prose(monkeypatch):
     """BUG X (#5704): an inactive ``foo[ARGS]{...}`` before a real ``web_search[ARGS]{...}``
     in one delta must NOT swallow the real call; web_search executes while the inactive
     rehearsal stays visible as prose."""
@@ -2927,7 +3206,7 @@ def test_gguf_inactive_rehearsal_before_active_call_executes_and_keeps_prose(
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
     events = list(
@@ -2969,9 +3248,7 @@ def test_gguf_rehearsal_prefix_and_tail_hold_recognise_spent_one_shot():
     assert not _is_rehearsal_prefix("render_html", active_only)
     assert _is_rehearsal_prefix("render_html", original)
     assert _held_rehearsal_tail_len("answer render_html", active_only) == 0
-    assert _held_rehearsal_tail_len("answer render_html", original) == len(
-        "render_html"
-    )
+    assert _held_rehearsal_tail_len("answer render_html", original) == len("render_html")
 
 
 def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
@@ -2980,9 +3257,7 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
     cap = 16384
     big = "A" * (cap + 5000)
     full = '{"name":"python","parameters":{"code":"' + big + '"}}'
-    first_stream = [
-        _sse({"content": full[i : i + 2000]}) for i in range(0, len(full), 2000)
-    ]
+    first_stream = [_sse({"content": full[i : i + 2000]}) for i in range(0, len(full), 2000)]
     first_stream.append(_done())
     final_stream = [_sse({"content": "done"}), _done()]
     payloads: list[dict] = []
@@ -2991,7 +3266,7 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "OK"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "OK",
     )
 
     events = list(
@@ -3003,9 +3278,7 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
     )
 
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
-    assert not any(
-        t.lstrip().startswith('{"name') for t in content_texts
-    ), content_texts[:1]
+    assert not any(t.lstrip().startswith('{"name') for t in content_texts), content_texts[:1]
     assert calls and calls[0][0] == "python"
     assert len(calls[0][1].get("code", "")) > cap
 
@@ -3047,8 +3320,7 @@ def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
 
     n = _MAX_TOOL_CALLS_PER_TURN + 4
     blocks = "".join(
-        '<tool_call>{"name":"t%d","arguments":{"i":%d}}</tool_call>' % (i, i)
-        for i in range(n)
+        '<tool_call>{"name":"t%d","arguments":{"i":%d}}</tool_call>' % (i, i) for i in range(n)
     )
     first_stream = [_sse({"content": blocks}), _done()]
     final_stream = [_sse({"content": "done"}), _done()]
@@ -3058,15 +3330,13 @@ def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "OK"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "OK",
     )
 
     list(
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": "go"}],
-            tools = [
-                {"type": "function", "function": {"name": f"t{i}"}} for i in range(n)
-            ],
+            tools = [{"type": "function", "function": {"name": f"t{i}"}} for i in range(n)],
             max_tool_iterations = 1,
         )
     )
@@ -3078,9 +3348,7 @@ def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
 
 def test_gguf_textual_fallback_collapses_duplicate_tool_calls(monkeypatch):
     """Exact-duplicate textual calls in one turn collapse to a single execution."""
-    blocks = (
-        '<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>' * 5
-    )
+    blocks = '<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>' * 5
     first_stream = [_sse({"content": blocks}), _done()]
     final_stream = [_sse({"content": "done"}), _done()]
     payloads: list[dict] = []
@@ -3089,7 +3357,7 @@ def test_gguf_textual_fallback_collapses_duplicate_tool_calls(monkeypatch):
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "OK"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "OK",
     )
 
     list(
@@ -3103,9 +3371,7 @@ def test_gguf_textual_fallback_collapses_duplicate_tool_calls(monkeypatch):
     assert len(calls) == 1, [c[0] for c in calls]
 
 
-def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled(
-    monkeypatch,
-):
+def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled(monkeypatch):
     """Auto-Heal OFF keeps a truncated enabled-name fragment visible; ON suppresses it (strip gated on auto_heal_tool_calls)."""
 
     trunc = '{"name":"web_search","parameters":{"query":"weather'
@@ -3116,7 +3382,7 @@ def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disable
         calls: list[tuple[str, dict]] = []
         monkeypatch.setattr(
             "core.inference.tools.execute_tool",
-            lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+            lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
         )
         events = list(
             backend.generate_chat_completion_with_tools(
@@ -3126,9 +3392,7 @@ def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disable
                 auto_heal_tool_calls = auto_heal,
             )
         )
-        contents = "".join(
-            e.get("text", "") for e in events if e.get("type") == "content"
-        )
+        contents = "".join(e.get("text", "") for e in events if e.get("type") == "content")
         return calls, contents
 
     calls_off, contents_off = _run(False)
@@ -3145,8 +3409,7 @@ def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
     # More tool-call streams than the budget: if re-prompt slots leaked into the budget (the bug) the
     # loop would run 2+3=5 rounds; honouring it stops after 2, then a tool-less final-answer pass.
     streams = [
-        _structured_tool_call("web_search", {"query": f"q{i}"}, f"call_{i}")
-        for i in range(6)
+        _structured_tool_call("web_search", {"query": f"q{i}"}, f"call_{i}") for i in range(6)
     ]
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, streams, payloads)
@@ -3154,7 +3417,7 @@ def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        lambda name, arguments, **_k: (calls.append((name, arguments)) or "result"),
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "result",
     )
 
     list(
@@ -3171,8 +3434,7 @@ def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
     # The final pass is the budget-exhausted nudge and carries no tools.
     assert _tool_names(payloads[2]) == [], _tool_names(payloads[2])
     assert any(
-        m.get("role") == "user"
-        and "used all available tool calls" in m.get("content", "")
+        m.get("role") == "user" and "used all available tool calls" in m.get("content", "")
         for m in payloads[2]["messages"]
     ), payloads[2]["messages"]
 
@@ -3258,9 +3520,7 @@ def test_structured_tool_args_stream_to_provisional_card(monkeypatch):
 
     # The streamed display path must not perturb execution or the model view.
     assert executed == [("python", {"code": code})]
-    assistant_messages = [
-        m for m in payloads[1]["messages"] if m.get("role") == "assistant"
-    ]
+    assistant_messages = [m for m in payloads[1]["messages"] if m.get("role") == "assistant"]
     tc = assistant_messages[-1]["tool_calls"][0]
     assert tc["id"] == call_id
     # Controller re-serializes args (normalized JSON); parsed payload unchanged.
@@ -3320,9 +3580,7 @@ def test_ordinary_json_answer_streams_no_tool_args(monkeypatch):
     """A large ordinary JSON answer (no enabled tool name) must not spawn a
     provisional card or tool_args events; it stays a normal content answer."""
 
-    answer = json.dumps(
-        {"result": "fine", "data": ["x" * 40] * 12, "note": "not a tool call"}
-    )
+    answer = json.dumps({"result": "fine", "data": ["x" * 40] * 12, "note": "not a tool call"})
     chunks = [answer[i : i + 64] for i in range(0, len(answer), 64)]
     stream = [_sse({"content": chunk}) for chunk in chunks] + [_done()]
     payloads: list[dict] = []

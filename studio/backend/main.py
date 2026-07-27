@@ -40,7 +40,7 @@ if sys.platform == "win32":
 
 _SYSTEM_GPU_CACHE_TTL_SECONDS = 10.0
 _system_gpu_cache_lock = threading.Lock()
-_system_gpu_cache: Optional[tuple[float, dict[str, Any]]] = None
+_system_gpu_cache: Optional[tuple[float, tuple[dict[str, Any], dict[str, Any]]]] = None
 
 # ── Windows AMD ROCm DLL injection ──────────────────────────────────────────
 # Python 3.8+ ignores PATH for extension modules; register ROCm bin dirs with
@@ -74,9 +74,7 @@ if sys.platform == "win32":
 
         try:
             if os.path.isdir(_default_root):
-                for _ver in sorted(
-                    os.listdir(_default_root), key = _ver_key, reverse = True
-                ):
+                for _ver in sorted(os.listdir(_default_root), key = _ver_key, reverse = True):
                     _bin = os.path.join(_default_root, _ver, "bin")
                     if os.path.isdir(_bin):
                         candidates.append(_bin)
@@ -135,9 +133,7 @@ if sys.platform == "win32":
 
                 _all_vers_main: list[str] = []
                 for _pkg_dir in _bnb_spec.submodule_search_locations:
-                    for _dll in _glob.glob(
-                        os.path.join(_pkg_dir, "libbitsandbytes_rocm*.dll")
-                    ):
+                    for _dll in _glob.glob(os.path.join(_pkg_dir, "libbitsandbytes_rocm*.dll")):
                         _found_rocm_bnb = True
                         _km = _re_bnb.search(
                             r"libbitsandbytes_rocm(\d+)\.dll", os.path.basename(_dll)
@@ -155,9 +151,7 @@ if sys.platform == "win32":
         # (HIP SDK on a CUDA/CPU box) must not force a ROCm backend onto a
         # non-ROCm bitsandbytes, which raises at import. DLL unparsable -> "72".
         if _found_rocm_bnb:
-            _bnb_rocm_ver_final = (
-                _bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"
-            )
+            _bnb_rocm_ver_final = _bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"
             os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver_final
             os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"
             _logging.getLogger(__name__).info(
@@ -208,9 +202,7 @@ try:
     configure_cpu_threads()
 except ValueError as exc:
     _raw = os.environ.get("UNSLOTH_CPU_THREADS")
-    raise SystemExit(
-        f"Error: Invalid UNSLOTH_CPU_THREADS value {_raw!r}: {exc}"
-    ) from None
+    raise SystemExit(f"Error: Invalid UNSLOTH_CPU_THREADS value {_raw!r}: {exc}") from None
 
 # Anaconda/conda-forge Python: seed platform._sys_version_cache before any
 # library import triggers attrs -> rich -> structlog -> platform crash.
@@ -263,7 +255,9 @@ def _read_studio_install_id() -> str:
     Carries no install-path info (matters when Unsloth runs -H 0.0.0.0)."""
     try:
         token = (
-            (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id").read_text().strip()
+            (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id")
+            .read_text(encoding = "utf-8")
+            .strip()
         )
     except (OSError, ValueError):
         return ""
@@ -299,6 +293,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
+from starlette.middleware.gzip import GZipMiddleware
 from pathlib import Path
 from datetime import datetime
 
@@ -314,16 +309,19 @@ from routes import (
     models_router,
     providers_router,
     rag_router,
+    research_runs_router,
     training_history_router,
     training_router,
 )
 from routes.llama import router as llama_router
+from routes.whisper import router as whisper_router
 from routes.preview import router as preview_router
 from hub.routes import (
     inventory_router as hub_inventory_router,
     datasets_router as hub_datasets_router,
     token_router as hub_token_router,
 )
+from picker.routes import templates_router as picker_templates_router
 from hub.schemas.downloads import TransportCapabilities
 from hub.utils.download_registry import (
     get_download_transport_capabilities,
@@ -359,14 +357,12 @@ def get_unsloth_version() -> str:
     except PackageNotFoundError:
         pass
 
-    version_file = (
-        _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
-    )
+    version_file = _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
     try:
         for line in version_file.read_text(encoding = "utf-8").splitlines():
             if line.startswith("__version__ = "):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
     return "dev"
 
@@ -447,7 +443,11 @@ def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
         import structlog as _structlog
 
         _log = _structlog.get_logger(__name__)
-        if _caps.get("found") and not _caps.get("supports_mtp"):
+        if (
+            _caps.get("found")
+            and not _caps.get("supports_mtp")
+            and not _caps.get("mtp_probe_inconclusive")
+        ):
             _msg = (
                 "llama.cpp prebuilt lacks MTP support "
                 "(--spec-type mtp/draft-mtp). Run `unsloth studio update`. "
@@ -461,9 +461,7 @@ def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
             print(f"WARNING: {_msg}", flush = True)
     except Exception as _probe_exc:
         import structlog as _structlog
-        _structlog.get_logger(__name__).debug(
-            "llama.cpp startup probes failed: %s", _probe_exc
-        )
+        _structlog.get_logger(__name__).debug("llama.cpp startup probes failed: %s", _probe_exc)
 
 
 def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
@@ -556,14 +554,15 @@ async def lifespan(app: FastAPI):
         from storage.rag_db import reconcile_orphaned_ingestion_jobs
         reconcile_orphaned_ingestion_jobs()
     except Exception as exc:
-        _lifespan_log.warning(
-            "reconcile_orphaned_ingestion_jobs failed at startup: %s", exc
-        )
+        _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
     _start_helper_precache_if_enabled()
-    threading.Thread(
-        target = _warm_rag_embedder, daemon = True, name = "rag-embedder-warm"
-    ).start()
+    threading.Thread(target = _warm_rag_embedder, daemon = True, name = "rag-embedder-warm").start()
+
+    from core.research_runs import ResearchSupervisor
+
+    app.state.research_supervisor = ResearchSupervisor(app)
+    app.state.research_supervisor.start()
 
     # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
     from core.inference.llama_keepwarm import idle_unload_loop, sweep_slot_save_dir
@@ -614,6 +613,10 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
+    _research_supervisor = getattr(app.state, "research_supervisor", None)
+    if _research_supervisor is not None:
+        await _research_supervisor.stop()
+
     from core.inference.llama_http import aclose as _close_llama_http
 
     await _close_llama_http()
@@ -659,6 +662,24 @@ logger = LogConfig.setup_logging(
 app.add_middleware(LoggingMiddleware)
 
 
+class ResearchPortMiddleware:
+    """Capture the bound port without replacing the ASGI receive channel."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            request_app = scope.get("app")
+            supervisor = getattr(getattr(request_app, "state", None), "research_supervisor", None)
+            if supervisor is not None:
+                supervisor.note_server_port(scope.get("server"))
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(ResearchPortMiddleware)
+
+
 # img/media-src allow any https origin so HF model-card assets render (mirrors
 # tauri.conf.json); scripts/frames/connect-src stay same-origin + HF.
 from starlette.datastructures import MutableHeaders  # noqa: E402
@@ -700,9 +721,7 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
             "https://*.googleusercontent.com wss://*.googleusercontent.com"
         )
     else:
-        connect_src = (
-            "'self' https://huggingface.co https://datasets-server.huggingface.co"
-        )
+        connect_src = "'self' https://huggingface.co https://datasets-server.huggingface.co"
 
     return (
         "default-src 'self'; "
@@ -773,6 +792,8 @@ app.add_middleware(SecurityHeadersMiddleware)
 # headroom; non-upload routes keep the default body cap.
 import json as _json_for_413  # noqa: E402
 from utils.upload_limits import (  # noqa: E402
+    STT_AUDIO_JSON_MAX_BYTES,
+    STT_AUDIO_RAW_MAX_BYTES,
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
     default_request_body_limit_bytes,
     upload_request_limit_bytes,
@@ -783,6 +804,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/v1/completions",
     "/p/",
     "/api/inference",
+    "/api/picker",
     "/api/data-recipe",
     "/api/datasets",
     "/api/hub",
@@ -810,6 +832,14 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
     return default_request_body_limit_bytes()
 
 
+def _get_request_body_max_bytes(path: str) -> int:
+    if path.startswith("/api/inference/audio/transcribe/raw"):
+        return STT_AUDIO_RAW_MAX_BYTES
+    if path.startswith("/api/inference/audio/transcribe"):
+        return STT_AUDIO_JSON_MAX_BYTES
+    return default_request_body_limit_bytes()
+
+
 async def _send_411(send) -> None:
     payload = _json_for_413.dumps(
         {"detail": "Content-Length required for upload requests."},
@@ -829,11 +859,7 @@ async def _send_411(send) -> None:
 
 async def _send_413(send, total_bytes: int, max_bytes: int) -> None:
     payload = _json_for_413.dumps(
-        {
-            "detail": (
-                f"Request body too large ({total_bytes:,} bytes; max {max_bytes:,})."
-            )
-        },
+        {"detail": (f"Request body too large ({total_bytes:,} bytes; max {max_bytes:,}).")},
     ).encode("utf-8")
     await send(
         {
@@ -856,12 +882,14 @@ class MaxBodyMiddleware:
         app,
         max_bytes_getter,
         protected_prefixes: tuple,
+        request_max_bytes_getter = None,
         upload_passthrough_prefixes: tuple = (),
         upload_passthrough_max_bytes_getter = None,
     ):
         self.app = app
         self.max_bytes_getter = max_bytes_getter
         self.protected_prefixes = protected_prefixes
+        self.request_max_bytes_getter = request_max_bytes_getter
         self.upload_passthrough_prefixes = upload_passthrough_prefixes
         self.upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter
 
@@ -878,6 +906,14 @@ class MaxBodyMiddleware:
         except Exception:
             return int(self.max_bytes_getter())
 
+    def _request_max_bytes(self, path: str) -> int:
+        if self.request_max_bytes_getter is None:
+            return int(self.max_bytes_getter())
+        try:
+            return int(self.request_max_bytes_getter(path))
+        except Exception:
+            return int(self.max_bytes_getter())
+
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             await self.app(scope, receive, send)
@@ -890,7 +926,7 @@ class MaxBodyMiddleware:
             await self.app(scope, receive, send)
             return
 
-        max_bytes = int(self.max_bytes_getter())
+        max_bytes = self._request_max_bytes(path)
         declared = None
         for name, value in scope.get("headers", []):
             if name == b"content-length":
@@ -955,6 +991,7 @@ app.add_middleware(
     MaxBodyMiddleware,
     max_bytes_getter = default_request_body_limit_bytes,
     protected_prefixes = _BODY_PROTECTED_PREFIXES,
+    request_max_bytes_getter = _get_request_body_max_bytes,
     upload_passthrough_prefixes = _BODY_UPLOAD_PASSTHROUGH_PREFIXES,
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
 )
@@ -998,6 +1035,7 @@ app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
+app.include_router(research_runs_router, prefix = "/api/chat/research-runs", tags = ["research-runs"])
 app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
 # Unsloth-only inference endpoints (cancel, etc.) are NOT exposed on the /v1
 # OpenAI-compat prefix below.
@@ -1013,13 +1051,13 @@ app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
+app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
-app.include_router(
-    training_history_router, prefix = "/api/train", tags = ["training-history"]
-)
+app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
+app.include_router(picker_templates_router, prefix = "/api/picker", tags = ["picker"])
 app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
 
 # Re-wrap client-error responses on the /v1/* surface into OpenAI/Anthropic
@@ -1075,9 +1113,7 @@ async def health_check(request: Request):
         from auth.authentication import get_current_subject as _gcs
         from fastapi.security import HTTPAuthorizationCredentials
 
-        creds = HTTPAuthorizationCredentials(
-            scheme = "Bearer", credentials = auth.split(" ", 1)[1]
-        )
+        creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = auth.split(" ", 1)[1])
         # Must await: a bare coroutine is truthy and would skip the auth check
         subject = await _gcs(creds)
     except HTTPException:
@@ -1119,16 +1155,12 @@ def studio_update_status(_current_subject: str = Depends(get_current_subject)):
     "/api/studio/download-transport-capabilities",
     response_model = TransportCapabilities,
 )
-def studio_download_transport_capabilities(
-    _current_subject: str = Depends(get_current_subject),
-):
+def studio_download_transport_capabilities(_current_subject: str = Depends(get_current_subject)):
     return asdict(get_download_transport_capabilities())
 
 
 @app.post("/api/shutdown")
-async def shutdown_server(
-    request: Request, current_subject: str = Depends(get_current_subject)
-):
+async def shutdown_server(request: Request, current_subject: str = Depends(get_current_subject)):
     """Gracefully shut down the Unsloth Studio server.
 
     Called by the frontend quit dialog so users can stop the server from the UI
@@ -1150,10 +1182,14 @@ async def shutdown_server(
     return {"status": "shutting_down"}
 
 
-def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
-    """Return merged GPU visibility/utilization with bounded live-probe churn."""
+def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return training and inference GPU info with bounded live-probe churn."""
     import time
-    from utils.hardware import get_backend_visible_gpu_info, get_visible_gpu_utilization
+    from utils.hardware import (
+        get_backend_visible_gpu_info,
+        get_visible_gpu_utilization,
+        get_vulkan_inference_gpu_info,
+    )
 
     global _system_gpu_cache
     now = time.monotonic()
@@ -1164,10 +1200,7 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
                 return cached_gpu_info
 
         try:
-            visibility_info = get_backend_visible_gpu_info() or {
-                "available": False,
-                "devices": [],
-            }
+            visibility_info = get_backend_visible_gpu_info() or {"available": False, "devices": []}
         except Exception as e:
             logger.debug(f"Failed to get GPU visibility info: {e}")
             visibility_info = {"available": False, "devices": []}
@@ -1178,7 +1211,20 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             logger.debug(f"Failed to get GPU utilization info: {e}")
             utilization_info = {"devices": []}
 
-        util_devices = {d.get("index"): d for d in utilization_info.get("devices", [])}
+        # Device indices are backend-specific. Never overlay CUDA/ROCm metrics
+        # onto compact Vulkan ordinals merely because both happen to start at 0.
+        visibility_backend = visibility_info.get("backend")
+        utilization_backend = utilization_info.get("backend")
+        metrics_match = (
+            not visibility_backend
+            or not utilization_backend
+            or visibility_backend == utilization_backend
+        )
+        util_devices = (
+            {d.get("index"): d for d in utilization_info.get("devices", [])}
+            if metrics_match
+            else {}
+        )
         enriched_devices = []
 
         for dev in visibility_info.get("devices", []):
@@ -1188,16 +1234,19 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             total_vram = util.get("vram_total_gb") or dev.get("memory_total_gb") or 0
             # Keep None (usage unknown, e.g. Windows ROCm perf counter) so the UI
             # shows unknown, not a fabricated 0 used / full free.
-            used_vram = util.get("vram_used_gb")
+            used_vram = util.get("vram_used_gb", dev.get("vram_used_gb"))
+            reported_free_vram = util.get("vram_free_gb", dev.get("vram_free_gb"))
 
             enriched_dev = dict(dev)
             enriched_dev["vram_used_gb"] = used_vram
             enriched_dev["vram_free_gb"] = (
                 round(total_vram - used_vram, 2)
                 if total_vram and used_vram is not None
-                else None
+                else reported_free_vram
             )
-            enriched_dev["vram_utilization_pct"] = util.get("vram_utilization_pct")
+            enriched_dev["vram_utilization_pct"] = util.get(
+                "vram_utilization_pct", dev.get("vram_utilization_pct")
+            )
             enriched_devices.append(enriched_dev)
 
         # Whether GGUF loads accept an explicit gpu_ids pick: /load and
@@ -1208,19 +1257,42 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             from core.inference.llama_cpp import LlamaCppBackend
             from utils.hardware import DeviceType, get_device
             gpu_ids_supported = (
-                get_device() != DeviceType.XPU
-                and not LlamaCppBackend._is_vulkan_backend()
+                get_device() != DeviceType.XPU and not LlamaCppBackend._is_vulkan_backend()
             )
         except Exception as e:
             logger.debug(f"Could not resolve gpu_ids support: {e}")
             gpu_ids_supported = True
+        # Preserve backend/index metadata from the visibility probe. In
+        # particular, a CPU training host can expose a Vulkan inference GPU and
+        # the UI must label that device as Vulkan rather than falling back to the
+        # top-level CPU training backend.
         gpu_info = {
+            **visibility_info,
             "available": visibility_info.get("available", False),
             "devices": enriched_devices,
             "gguf_gpu_ids_supported": gpu_ids_supported,
         }
-        _system_gpu_cache = (time.monotonic(), gpu_info)
-        return gpu_info
+
+        # Keep inference placement separate on train-capable hosts where a
+        # forced Vulkan llama.cpp bundle can enumerate a different device set.
+        # If Vulkan is installed but its probe fails, retain the unavailable
+        # Vulkan shape instead of budgeting training GPUs that llama.cpp cannot use.
+        if visibility_info.get("backend") == "vulkan":
+            inference_gpu_info = gpu_info
+        else:
+            vulkan_info = get_vulkan_inference_gpu_info()
+            inference_gpu_info = (
+                {
+                    **vulkan_info,
+                    "gguf_gpu_ids_supported": False,
+                }
+                if vulkan_info is not None
+                else gpu_info
+            )
+
+        combined_info = (gpu_info, inference_gpu_info)
+        _system_gpu_cache = (time.monotonic(), combined_info)
+        return combined_info
 
 
 @app.get("/api/system")
@@ -1241,7 +1313,7 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
 
     logger = logging.getLogger(__name__)
 
-    gpu_info = _get_cached_system_gpu_info(logger)
+    gpu_info, inference_gpu_info = _get_cached_system_gpu_info(logger)
 
     memory = psutil.virtual_memory()
 
@@ -1308,6 +1380,7 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
             "percent_used": disk.percent if disk else 0,
         },
         "gpu": gpu_info,
+        "inference_gpu": inference_gpu_info,
         "ml_packages": ml_packages,
         # Export capability + torch-aware reason. See /api/system/hardware.
         **export_capability(),
@@ -1321,8 +1394,7 @@ async def get_gpu_visibility(current_subject: str = Depends(get_current_subject)
 
 @app.get("/api/system/hardware")
 def get_hardware_info(
-    include_details: bool = Query(False),
-    current_subject: str = Depends(get_current_subject),
+    include_details: bool = Query(False), current_subject: str = Depends(get_current_subject)
 ):
     """Return GPU name, total VRAM, and key ML package versions.
 
@@ -1548,6 +1620,34 @@ def _should_inject_bootstrap(request: Request) -> bool:
     return _is_local_bootstrap_request(request)
 
 
+_IMMUTABLE_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
+
+
+class ImmutableStaticFiles(StaticFiles):
+    """Serve Vite's content-hashed assets without browser revalidation."""
+
+    def file_response(
+        self,
+        full_path,
+        stat_result,
+        scope,
+        status_code = 200,
+    ):
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        response.headers["Cache-Control"] = _IMMUTABLE_ASSET_CACHE_CONTROL
+        return response
+
+
+class _AssetGZipMiddleware(GZipMiddleware):
+    """Serve range requests uncompressed; gzip + 206 mislabels Content-Range."""
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and any(key == b"range" for key, _ in scope["headers"]):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
 def setup_frontend(app: FastAPI, build_path: Path):
     """Mount frontend static files (optional)"""
     if not build_path.exists():
@@ -1555,7 +1655,12 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
     assets_dir = build_path / "assets"
     if assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory = assets_dir), name = "assets")
+        assets_app = _AssetGZipMiddleware(
+            ImmutableStaticFiles(directory = assets_dir),
+            minimum_size = 1024,
+            compresslevel = 6,
+        )
+        app.mount("/assets", assets_app, name = "assets")
 
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import socket
 import sys
 import threading
 import time
@@ -92,9 +93,7 @@ def test_load_request_accepts_tensor_parallel():
 
 def test_load_request_round_trips_json_key():
     # The frontend sends the snake_case key verbatim.
-    req = LoadRequest.model_validate(
-        {"model_path": "owner/repo", "tensor_parallel": True}
-    )
+    req = LoadRequest.model_validate({"model_path": "owner/repo", "tensor_parallel": True})
     assert req.tensor_parallel is True
     assert req.model_dump()["tensor_parallel"] is True
 
@@ -268,9 +267,7 @@ def test_proportional_tensor_split_is_emitted_in_tensor_mode():
     # --tensor-split earlier in the source from the user's per-GPU shares.
     ts = src.find('"--tensor-split"', gate)
     nxt_else = src.find("self._tensor_parallel = False")
-    assert (
-        0 <= gate < ts < nxt_else
-    ), "--tensor-split must be emitted under `if tensor_parallel:`"
+    assert 0 <= gate < ts < nxt_else, "--tensor-split must be emitted under `if tensor_parallel:`"
     assert "tp_tensor_split" in src[gate:nxt_else]
 
 
@@ -305,9 +302,7 @@ def test_probe_mtp_decode_returns_false_on_crash(monkeypatch):
             self.status_code = code
 
     backend._process = None  # liveness check skipped; exercise the HTTP result
-    monkeypatch.setattr(
-        llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(200), raising = False
-    )
+    monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(200), raising = False)
     assert backend._probe_mtp_decode(timeout = 1.0) is True
 
     def _drop(*a, **k):
@@ -316,16 +311,12 @@ def test_probe_mtp_decode_returns_false_on_crash(monkeypatch):
     monkeypatch.setattr(llama_cpp_module.httpx, "post", _drop, raising = False)
     assert backend._probe_mtp_decode(timeout = 1.0) is False
 
-    monkeypatch.setattr(
-        llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(500), raising = False
-    )
+    monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(500), raising = False)
     assert backend._probe_mtp_decode(timeout = 1.0) is False
 
     # 200 but the server aborted right after (poll() returns an exit code).
     backend._process = _FakeProcess()
-    monkeypatch.setattr(
-        llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(200), raising = False
-    )
+    monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(200), raising = False)
     assert backend._probe_mtp_decode(timeout = 1.0) is False
 
 
@@ -452,9 +443,7 @@ def test_runtime_recovery_strips_user_mtp_extra_args(monkeypatch):
     # A user --spec-type draft-mtp in extra_args must be neutralised on the reload
     # (append a last-wins --spec-default) so MTP can't re-engage and loop.
     b = _recovery_backend()
-    b._last_load_kwargs = dict(
-        b._last_load_kwargs, extra_args = ["--spec-type", "draft-mtp"]
-    )
+    b._last_load_kwargs = dict(b._last_load_kwargs, extra_args = ["--spec-type", "draft-mtp"])
     done = threading.Event()
     captured = {}
 
@@ -538,6 +527,358 @@ def test_runtime_recovery_is_single_flight(monkeypatch):
     # Second failure while the first reload is in flight is a no-op.
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is False
     release.set()
+
+
+def test_single_flight_claim_is_released_when_the_reload_cannot_start(monkeypatch):
+    # Only the reload thread's finally clears the claim, so if starting it raises the
+    # claim must not latch: nothing else resets it, and _respawn_if_dead then refuses
+    # forever, for every later model.
+    b = _recovery_backend()
+
+    class _NoThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(llama_cpp_module.threading, "Thread", _NoThread)
+
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is False
+    assert b._mtp_runtime_fallback_in_progress is False
+
+
+def test_load_kwargs_are_read_once_before_the_claim(monkeypatch):
+    # Gate and snapshot must share one read: reading twice lets an unload null
+    # _last_load_kwargs in between, so dict(None) raises after the claim and strands
+    # the flag with no thread alive to clear it.
+    b = _recovery_backend()
+
+    class _CountingKwargs:  # data descriptor, so it wins over the instance dict
+        def __init__(self, value):
+            self.value = value
+            self.reads = 0
+
+        def __get__(self, obj, owner):
+            if obj is None:
+                return self
+            self.reads += 1
+            return self.value
+
+        def __set__(self, obj, value):
+            self.value = value
+
+    counter = _CountingKwargs({"model_identifier": "owner/repo"})
+    monkeypatch.setattr(type(b), "_last_load_kwargs", counter, raising = False)
+
+    class _UnstartedThread:  # keep the reload off-thread so only sync reads count
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_module.threading, "Thread", _UnstartedThread)
+
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert counter.reads == 1, f"read {counter.reads} times; an unload can race the claim"
+
+
+def test_respawn_defers_to_an_inflight_mtp_reload(monkeypatch):
+    # "Already recovering" must not read as "not an MTP crash": respawning replays the
+    # crashing MTP kwargs and aborts the in-flight no-MTP reload on its "newer load" check.
+    b = _recovery_backend()
+    b._mtp_runtime_fallback_in_progress = True
+    loads: list[dict] = []
+    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+
+    assert b._respawn_if_dead() is False
+    assert loads == []
+
+    # Once that reload finishes, an ordinary respawn works again.
+    b._mtp_runtime_fallback_in_progress = False
+    b._process.returncode = -9  # only the respawn path logs it
+    assert b._respawn_if_dead() is True
+    assert [kw.get("speculative_type") for kw in loads] == ["auto"]
+
+
+def test_respawn_does_not_wait_out_the_grace_on_a_replacement(monkeypatch):
+    # Callers losing the same child queue on _respawn_lock and wake holding the healthy
+    # REPLACEMENT. Unable to tell it from their own child, each burns the reap grace, and
+    # that sleep is held under the lock, so N callers cost N grace periods.
+    class _LiveProcess(_FakeProcess):
+        returncode = None
+
+        def __init__(self):
+            self.polls = 0
+
+        def poll(self):  # never reapable, so the grace loop runs to its deadline
+            self.polls += 1
+            return None
+
+    workers = 4
+    b = _recovery_backend()
+    b._healthy = True
+    b._process.returncode = -9  # only the respawn path logs it
+    live = _LiveProcess()
+    loads: list[dict] = []
+    guard = threading.Lock()
+    all_in_flight = threading.Event()
+
+    # Subclass this instance, not the class: a descriptor on LlamaCppBackend would
+    # redirect _process for every other live backend, including atexit-registered ones.
+    state = {"proc": b._process, "readers": set()}
+
+    class _Tracked(type(b)):
+        @property
+        def _process(self):
+            """Reports when every worker has taken its pre-lock look at the child."""
+            with guard:
+                state["readers"].add(threading.get_ident())
+                everyone = len(state["readers"]) >= workers
+            if everyone:
+                all_in_flight.set()
+            return state["proc"]
+
+        @_process.setter
+        def _process(self, value):
+            state["proc"] = value
+
+    b.__class__ = _Tracked
+
+    def _load(**kwargs):
+        # A real load_model takes seconds, so every caller that lost this child is in
+        # flight before the replacement appears; waiting reproduces that ordering. The
+        # timeout keeps the pre-fix build, where losers cannot read until the lock is
+        # free, from hanging instead of failing.
+        all_in_flight.wait(timeout = 2)
+        with guard:
+            loads.append(kwargs)
+        b._process = live
+        b._healthy = True  # the real load_model marks the new server healthy
+        return True
+
+    monkeypatch.setattr(b, "load_model", _load)
+    results: list[bool] = []
+
+    def _respawn():
+        outcome = b._respawn_if_dead()
+        with guard:
+            results.append(outcome)
+
+    threads = [threading.Thread(target = _respawn) for _ in range(workers)]
+    started = time.monotonic()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout = 30)
+    elapsed = time.monotonic() - started
+
+    assert results == [True] * workers, results
+    assert len(loads) == 1, f"{len(loads)} reloads, expected one"
+    # The grace loop is the only poll() of a live process, so any count means a queued
+    # caller charged the wait to a server that never failed.
+    assert live.polls == 0, "queued caller waited out the grace on a healthy server"
+    assert elapsed < llama_cpp_module._RESPAWN_REAP_GRACE_S * (workers - 1)
+
+
+class _DyingChild(_FakeProcess):
+    """Alive for the first polls, then reapable: what a terminate() looks like."""
+
+    def __init__(
+        self,
+        code = -15,
+        alive_polls = 2,
+        on_death = None,
+    ):
+        self.polls = 0
+        self.returncode = None
+        self._code = code
+        self._alive_polls = alive_polls
+        self._on_death = on_death
+
+    def poll(self):
+        self.polls += 1
+        if self.polls <= self._alive_polls:
+            return None
+        if self.returncode is None:
+            self.returncode = self._code
+            if self._on_death is not None:
+                self._on_death()
+        return self._code
+
+
+def test_respawn_does_not_resurrect_a_deliberate_unload(monkeypatch):
+    # unload_model() sets _cancel_event before killing, so a request that loses the
+    # connection can watch that deliberate exit through the grace loop and call it a
+    # crash, with _last_load_kwargs still populated (unload clears it after the kill).
+    b = _recovery_backend()
+    b._healthy = True
+    b._process = _DyingChild()
+    b._cancel_event.set()
+    loads: list[dict] = []
+    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+
+    assert b._respawn_if_dead() is False
+    assert loads == [], "resurrected a model the user unloaded"
+
+
+def test_respawn_rechecks_the_cancel_flag_after_the_grace_wait(monkeypatch):
+    # The unload can also begin while we are already sleeping in the grace loop.
+    b = _recovery_backend()
+    b._healthy = True
+    b._process = _DyingChild(on_death = b._cancel_event.set)
+    loads: list[dict] = []
+    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+
+    assert b._respawn_if_dead() is False
+    assert loads == [], "checked the cancel flag only before the wait"
+
+
+def test_respawn_does_not_revert_a_newer_load(monkeypatch):
+    # A model switch landing while we wait must win; replaying the old kwargs would
+    # swap the user's new model back out.
+    b = _recovery_backend()
+    b._healthy = True
+    replacement = _DyingChild(alive_polls = 10**6)
+    b._process = _DyingChild(on_death = lambda: setattr(b, "_process", replacement))
+    loads: list[dict] = []
+    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+
+    b._respawn_if_dead()
+    assert loads == [], "replayed stale kwargs over a newer load"
+    assert b._process is replacement
+
+
+def test_respawn_still_recovers_an_ordinary_crash(monkeypatch):
+    # Guard rail: none of the above may disable the recovery this path exists for.
+    b = _recovery_backend()
+    b._healthy = True
+    b._process = _DyingChild(code = -9)
+    loads: list[dict] = []
+    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+
+    assert b._respawn_if_dead() is True
+    assert len(loads) == 1
+
+
+class _NeverReapable(_FakeProcess):
+    """A child that stays unreapable, so only the port can tell alive from dead."""
+
+    returncode = None
+
+    def poll(self):
+        return None
+
+
+def test_a_transient_error_against_a_live_server_costs_nothing(monkeypatch):
+    # The reap grace must not be charged to a server that never died: the sleep is
+    # held under _respawn_lock, so a full grace per caller serialises into N seconds
+    # of added latency on an install that is working fine.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(16)
+    try:
+        b = _recovery_backend()
+        b._healthy = True
+        b._process = _NeverReapable()
+        b._port = listener.getsockname()[1]
+        loads: list[dict] = []
+        monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+
+        started = time.monotonic()
+        assert b._respawn_if_dead() is True
+        elapsed = time.monotonic() - started
+
+        assert loads == [], "a live server must not be reloaded"
+        assert (
+            elapsed < llama_cpp_module._RESPAWN_REAP_GRACE_S / 2
+        ), f"waited {elapsed:.2f}s on a server that is still accepting"
+    finally:
+        listener.close()
+
+
+def test_a_closed_port_still_waits_for_the_child_to_be_reapable(monkeypatch):
+    # The other half: no listener means the server really is gone, so the grace
+    # still runs and the reap-race fix is preserved.
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    dead_port = probe.getsockname()[1]
+    probe.close()
+
+    b = _recovery_backend()
+    b._healthy = True
+    b._process = _DyingChild(code = -9)
+    b._port = dead_port
+    loads: list[dict] = []
+    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+
+    assert b._respawn_if_dead() is True
+    assert len(loads) == 1
+
+
+def test_socket_fast_path_honours_a_pending_unload(monkeypatch):
+    # unload_model() sets _cancel_event before it kills, so the child is still
+    # accepting when the probe runs. Reporting it healthy aims the retry at a server
+    # that is deliberately going away.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+    try:
+        b = _recovery_backend()
+        b._healthy = True
+        b._process = _NeverReapable()
+        b._port = listener.getsockname()[1]
+        b._cancel_event.set()
+        loads: list[dict] = []
+        monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+
+        assert b._respawn_if_dead() is False
+        assert loads == []
+    finally:
+        listener.close()
+
+
+def test_an_unload_landing_during_the_reload_is_undone(monkeypatch):
+    # The cancel check cannot live under _serial_load_lock alone: unload_model never
+    # takes that lock, so it can land entirely between the check and load_model and
+    # the captured kwargs then restart a model the user stopped. load_model clears
+    # _cancel_event on the way in, so _unload_epoch is the surviving evidence.
+    b = _recovery_backend()
+    b._healthy = True
+    b._process = _FakeProcess()
+    b._process.returncode = -9
+    loads: list[dict] = []
+    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+
+    unloads: list[int] = []
+    real_unload = b.unload_model
+    monkeypatch.setattr(b, "unload_model", lambda: unloads.append(1) or real_unload())
+
+    # The warning marks the window: after the snapshot, before the reload.
+    real_warning = llama_cpp_module.logger.warning
+    fired: list[int] = []
+
+    def racing_warning(*args, **kwargs):
+        if not fired:
+            fired.append(1)
+            real_unload()
+        return real_warning(*args, **kwargs)
+
+    monkeypatch.setattr(llama_cpp_module.logger, "warning", racing_warning)
+
+    assert b._respawn_if_dead() is False
+    assert unloads, "the racing unload was not honoured"
+
+
+def test_socket_probe_is_false_without_a_port():
+    # Unloaded backends have no port; the probe must not raise, and the caller
+    # then falls back to the poll-based grace.
+    b = _recovery_backend()
+    b._port = None
+    assert b._server_socket_is_open() is False
 
 
 def test_runtime_recovery_rechecks_cancel_before_reload():
@@ -703,15 +1044,11 @@ def test_fit_context_budget_frac_override_is_tighter():
     pool_mib = 24 * 1024  # tight enough that KV capping bites
 
     fit_default = backend._fit_context_to_vram(131072, pool_mib, model_size, "f16")
-    fit_tp = backend._fit_context_to_vram(
-        131072, pool_mib, model_size, "f16", budget_frac = 0.80
-    )
+    fit_tp = backend._fit_context_to_vram(131072, pool_mib, model_size, "f16", budget_frac = 0.80)
     assert fit_tp < 131072, "expected the context to be capped at this VRAM tier"
     assert fit_tp <= fit_default, "a tighter budget must not allow MORE context"
     # Omitting the override must reproduce the default budget exactly.
-    assert (
-        backend._fit_context_to_vram(131072, pool_mib, model_size, "f16") == fit_default
-    )
+    assert backend._fit_context_to_vram(131072, pool_mib, model_size, "f16") == fit_default
 
 
 # ── unsupported-arch load failure -> clean message ───────────────────
@@ -751,9 +1088,7 @@ def _plan(
     mtp = False,
 ):
     b = _kv_seeded_backend()
-    return b, b._plan_tensor_parallel(
-        gpus, int(model_gb * _GB), target, mtp_engaged = mtp
-    )
+    return b, b._plan_tensor_parallel(gpus, int(model_gb * _GB), target, mtp_engaged = mtp)
 
 
 def _kv_budget_b(model_gb, gpus = _ASYM):
@@ -832,9 +1167,7 @@ def test_tp_plan_max_available_ctx_reports_native_not_explicit_ctx():
     # An explicit small ctx caps effective_ctx but the UI ceiling
     # (max_available_ctx) must reflect the native/hardware cap, not the request.
     b = _kv_seeded_backend()
-    ec, mac, _gi, _ts = b._plan_tensor_parallel(
-        _ASYM, int(50 * _GB), 8192, max_target_ctx = 131072
-    )
+    ec, mac, _gi, _ts = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 8192, max_target_ctx = 131072)
     _, native_mac, *_ = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072)
     assert ec == 8192  # explicit request honored for the load
     assert mac == native_mac > ec  # ceiling reflects the hardware cap
@@ -885,9 +1218,7 @@ def test_tp_plan_soft_overhead_reserved_against_budget():
     # the replicated context compute, so the real footprint stays within the pool.
     b = _kv_seeded_backend()
     soft = 2 * _GB
-    ec, *_r = b._plan_tensor_parallel(
-        _ASYM, int(50 * _GB), 131072, soft_overhead_bytes = soft
-    )
+    ec, *_r = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072, soft_overhead_bytes = soft)
     cc = len(_ASYM) * b._compute_buffer_ctx_bytes(ec, None, None)
     assert b._estimate_kv_cache_bytes(ec) + cc + soft <= _kv_budget_b(50)
 
@@ -914,10 +1245,7 @@ def test_tp_plan_weighted_split_keeps_small_gpu_within_budget():
     # card was placed over its budget; the cc term is what pulls it back.
     old_adj = [int(free_by_idx[i] * _CTX_FIT_VRAM_FRACTION - reserve) for i in gi]
     old_small_placed = split_content_mib * old_adj[1] / sum(old_adj)
-    assert (
-        old_small_placed + reserve + cc_per_dev
-        > free_by_idx[1] * _CTX_FIT_VRAM_FRACTION
-    )
+    assert old_small_placed + reserve + cc_per_dev > free_by_idx[1] * _CTX_FIT_VRAM_FRACTION
 
 
 def test_tp_plan_no_kv_metadata_floors_context():
@@ -948,9 +1276,7 @@ def test_tp_plan_drops_gpu_below_buffer_reserve():
     # split (and gpu_indices reflects only the usable device).
     b = _kv_seeded_backend()
     reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
-    ec, mac, gi, ts = b._plan_tensor_parallel(
-        [(0, 48000), (1, reserve - 1)], int(8 * _GB), 8192
-    )
+    ec, mac, gi, ts = b._plan_tensor_parallel([(0, 48000), (1, reserve - 1)], int(8 * _GB), 8192)
     assert gi == [0]
     assert ts is None
 
@@ -970,9 +1296,7 @@ class _RecordingLoader:
         self.calls: list[tuple] = []
 
     async def __call__(self, tensor_parallel, extra_args):
-        self.calls.append(
-            (tensor_parallel, list(extra_args) if extra_args else extra_args)
-        )
+        self.calls.append((tensor_parallel, list(extra_args) if extra_args else extra_args))
         if resolve_tensor_parallel(extra_args, tensor_parallel):
             raise RuntimeError("llama-server failed to start")
         return True
@@ -981,9 +1305,7 @@ class _RecordingLoader:
 def test_tensor_fallback_retries_layer_on_crash():
     loader = _RecordingLoader()
     ok = asyncio.run(
-        load_with_tensor_fallback(
-            loader, requested_tensor = True, extra_args = None, label = "m"
-        )
+        load_with_tensor_fallback(loader, requested_tensor = True, extra_args = None, label = "m")
     )
     assert ok is True
     # tensor first (crashes), then layer split.
@@ -998,9 +1320,7 @@ def test_tensor_fallback_no_retry_on_success():
         return True
 
     ok = asyncio.run(
-        load_with_tensor_fallback(
-            _ok, requested_tensor = True, extra_args = None, label = "m"
-        )
+        load_with_tensor_fallback(_ok, requested_tensor = True, extra_args = None, label = "m")
     )
     assert ok is True
     assert calls == [True]  # no fallback when the tensor load succeeds
@@ -1034,9 +1354,7 @@ def test_tensor_fallback_returns_false_when_both_attempts_fail():
         return False
 
     ok = asyncio.run(
-        load_with_tensor_fallback(
-            _always_false, requested_tensor = True, extra_args = None, label = "m"
-        )
+        load_with_tensor_fallback(_always_false, requested_tensor = True, extra_args = None, label = "m")
     )
     assert ok is False
     assert calls == [True, False]  # tried tensor, then layer split
@@ -1079,9 +1397,7 @@ def test_tensor_fallback_strips_split_mode_from_extras_on_retry(extras):
     # other flags, else tensor is re-enabled and relaunches the crash.
     loader = _RecordingLoader()
     ok = asyncio.run(
-        load_with_tensor_fallback(
-            loader, requested_tensor = False, extra_args = extras, label = "m"
-        )
+        load_with_tensor_fallback(loader, requested_tensor = False, extra_args = extras, label = "m")
     )
     assert ok is True
     assert len(loader.calls) == 2
@@ -1146,16 +1462,10 @@ def test_tensor_caps_context_to_total_vram_budget():
     assert with_total < without  # total cap tightens the chosen context
 
     MIB = 1024 * 1024
-    reserve = (
-        LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
-    )  # flat (no vocab dims)
+    reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB  # flat (no vocab dims)
     pool_usable = sum(f - (1.0 - _CTX_FIT_VRAM_FRACTION) * totals[i] for i, f in gpus)
-    foot_total = (model + b._estimate_kv_cache_bytes(with_total, None)) / MIB + len(
-        gpus
-    ) * reserve
-    foot_free = (model + b._estimate_kv_cache_bytes(without, None)) / MIB + len(
-        gpus
-    ) * reserve
+    foot_total = (model + b._estimate_kv_cache_bytes(with_total, None)) / MIB + len(gpus) * reserve
+    foot_free = (model + b._estimate_kv_cache_bytes(without, None)) / MIB + len(gpus) * reserve
     assert foot_total <= pool_usable + 2  # fix: fits the total-based budget
     assert foot_free > pool_usable  # old behavior over-spent the cushion
 
@@ -1169,18 +1479,12 @@ def test_tensor_unknown_total_keeps_fraction_cushion():
     MIB = 1024 * 1024
     reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
     model = int(18 * _GB)
-    ec_zero, *_ = b._plan_tensor_parallel(
-        gpus, model, 131072, total_by_idx = {0: 0, 1: 0}
-    )
+    ec_zero, *_ = b._plan_tensor_parallel(gpus, model, 131072, total_by_idx = {0: 0, 1: 0})
     ec_none, *_ = b._plan_tensor_parallel(gpus, model, 131072)
     assert ec_zero == ec_none  # total 0 == total absent: both use free*frac
     pool_free = sum(f for _, f in gpus)
-    foot = (model + b._estimate_kv_cache_bytes(ec_zero, None)) / MIB + len(
-        gpus
-    ) * reserve
-    assert (
-        foot <= pool_free * _CTX_FIT_VRAM_FRACTION + 2
-    )  # within free*frac, not raw free
+    foot = (model + b._estimate_kv_cache_bytes(ec_zero, None)) / MIB + len(gpus) * reserve
+    assert foot <= pool_free * _CTX_FIT_VRAM_FRACTION + 2  # within free*frac, not raw free
 
 
 def test_tensor_reserve_scales_with_ubatch():
@@ -1230,9 +1534,7 @@ def test_tensor_admission_drops_gpu_below_usable_budget():
     b = _kv_seeded_backend()
     gpus = [(0, 6000), (1, 40000)]
     totals = {0: 81920, 1: 81920}
-    _ec, _mac, gi, ts = b._plan_tensor_parallel(
-        gpus, int(8 * _GB), 8192, total_by_idx = totals
-    )
+    _ec, _mac, gi, ts = b._plan_tensor_parallel(gpus, int(8 * _GB), 8192, total_by_idx = totals)
     assert gi == [1] and ts is None  # GPU 0 excluded on usable budget
     _ec2, _mac2, gi_raw, _ts2 = b._plan_tensor_parallel(gpus, int(8 * _GB), 8192)
     assert gi_raw == [0, 1]  # raw free would have admitted both
@@ -1283,12 +1585,6 @@ def test_load_model_restores_quantized_kv_on_tensor_downgrade():
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
     assert "_tensor_dropped_cache_type_kv=cache_type_kv" in compact  # captured pre-null
     # Restore is shared in one closure, called at every tensor->layer downgrade.
-    assert (
-        "cache_type_kv=_tensor_dropped_cache_type_kv" in compact
-    )  # restored in the closure
-    assert (
-        "def_restore_after_tensor_downgrade():" in compact
-    )  # one shared restore helper
-    assert (
-        compact.count("_restore_after_tensor_downgrade()") >= 3
-    )  # called at each downgrade
+    assert "cache_type_kv=_tensor_dropped_cache_type_kv" in compact  # restored in the closure
+    assert "def_restore_after_tensor_downgrade():" in compact  # one shared restore helper
+    assert compact.count("_restore_after_tensor_downgrade()") >= 3  # called at each downgrade

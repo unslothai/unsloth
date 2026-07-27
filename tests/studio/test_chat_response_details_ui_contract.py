@@ -11,26 +11,23 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 THREAD_TSX = REPO / "studio/frontend/src/components/assistant-ui/thread.tsx"
 DETAILS_TSX = (
-    REPO
-    / "studio/frontend/src/components/assistant-ui/message-response-details-sheet.tsx"
+    REPO / "studio/frontend/src/components/assistant-ui/message-response-details-sheet.tsx"
 )
 REASONING_TSX = REPO / "studio/frontend/src/components/assistant-ui/reasoning.tsx"
 ADAPTER_TS = REPO / "studio/frontend/src/features/chat/api/chat-adapter.ts"
-CHAT_PREFS_TS = (
-    REPO / "studio/frontend/src/features/chat/stores/chat-preferences-store.ts"
-)
+CHAT_PREFS_TS = REPO / "studio/frontend/src/features/chat/stores/chat-preferences-store.ts"
 CHAT_TAB_TSX = REPO / "studio/frontend/src/features/settings/tabs/chat-tab.tsx"
 
 
 def test_assistant_more_menu_exposes_response_details_action():
-    src = THREAD_TSX.read_text()
+    src = THREAD_TSX.read_text(encoding = "utf-8")
     assert "MessageResponseDetailsSheet" in src
     assert "See response details" in src
     assert "setDetailsOpen(true)" in src
 
 
 def test_response_details_sheet_uses_unsloth_sheet_and_key_sections():
-    src = DETAILS_TSX.read_text()
+    src = DETAILS_TSX.read_text(encoding = "utf-8")
     assert "SheetContent" in src
     assert "Response details" in src
     assert "MessageResponseModelBadge" in src
@@ -48,20 +45,19 @@ def test_response_details_sheet_uses_unsloth_sheet_and_key_sections():
 
 
 def test_response_model_badge_is_user_configurable_and_rendered_once_per_message():
-    prefs_src = CHAT_PREFS_TS.read_text()
-    chat_tab_src = CHAT_TAB_TSX.read_text()
-    thread_src = THREAD_TSX.read_text()
-    reasoning_src = REASONING_TSX.read_text()
+    prefs_src = CHAT_PREFS_TS.read_text(encoding = "utf-8")
+    chat_tab_src = CHAT_TAB_TSX.read_text(encoding = "utf-8")
+    thread_src = THREAD_TSX.read_text(encoding = "utf-8")
+    reasoning_src = REASONING_TSX.read_text(encoding = "utf-8")
 
     assert "showResponseModel: boolean" in prefs_src
     assert "showResponseModel: false" in prefs_src
     assert "showResponseModel: saved?.showResponseModel ?? false" in prefs_src
     assert "Show response model" in chat_tab_src
     assert "setShowResponseModel" in chat_tab_src
-    details_src = DETAILS_TSX.read_text()
+    details_src = DETAILS_TSX.read_text(encoding = "utf-8")
     assert (
-        "aui-response-model-badge pointer-events-none relative inline-flex min-h-5"
-        in details_src
+        "aui-response-model-badge pointer-events-none relative inline-flex min-h-5" in details_src
     )
     assert "cursor-text select-text" in details_src
     assert "leading-5" in details_src
@@ -79,8 +75,33 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     assert 'className="min-w-0 flex-1"' in reasoning_src
 
 
+def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
+    src = REASONING_TSX.read_text(encoding = "utf-8")
+
+    assert "const [retainStreamingHeight, setRetainStreamingHeight]" in src
+    assert "setRetainStreamingHeight(false)" in src
+    assert "setRetainStreamingHeight(isReasoningStreaming)" in src
+    assert "isReasoningStreaming ? 0 : ANIMATION_DURATION" in src
+    assert "streaming={isReasoningStreaming || retainStreamingHeight}" in src
+
+
+def test_reasoning_clears_manual_open_on_a_new_stream():
+    """A hand-opened block must not stay pinned open when the stream restarts.
+
+    isOpen is `(streaming && !dismissed) || manualOpen` and manualOpen is only
+    settable while idle, so the new-stream reset has to clear it too.
+    """
+    src = REASONING_TSX.read_text(encoding = "utf-8")
+
+    marker = "setDismissedWhileStreaming(false)"
+    start = src.find(marker)
+    assert start != -1, "new-stream reset effect is missing"
+    effect = src[src.rfind("useEffect(() => {", 0, start) : src.find("});", start)]
+    assert "setManualOpen(false)" in effect
+
+
 def test_response_details_metadata_is_persisted_without_backend_schema_change():
-    src = ADAPTER_TS.read_text()
+    src = ADAPTER_TS.read_text(encoding = "utf-8")
     assert "interface ResponseDetailsMetadata" in src
     assert "buildResponseDetails" in src
     assert "responseDetails: buildResponseDetails(finishedAt)" in src

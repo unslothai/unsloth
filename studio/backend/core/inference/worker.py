@@ -40,9 +40,7 @@ def _ensure_backend_on_path() -> None:
         sys.path.insert(0, _BACKEND_PATH)
 
 
-def _activate_transformers_version(
-    model_name: str, hf_token: str | None = None
-) -> None:
+def _activate_transformers_version(model_name: str, hf_token: str | None = None) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
     _ensure_backend_on_path()
 
@@ -153,7 +151,7 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     import json
 
     try:
-        with open(adapter_cfg_path) as f:
+        with open(adapter_cfg_path, encoding = "utf-8") as f:
             adapter_cfg = json.load(f)
         training_method = adapter_cfg.get("unsloth_training_method")
         if training_method == "lora" and load_in_4bit:
@@ -186,9 +184,7 @@ def _ensure_ssm_kernels(targets: list, resp_queue: Any) -> bool:
     try:
         from utils.ssm_runtime import ensure_ssm_runtime
     except Exception as exc:
-        logger.debug(
-            "ssm_runtime unavailable (%s); skipping SSM kernel pre-install", exc
-        )
+        logger.debug("ssm_runtime unavailable (%s); skipping SSM kernel pre-install", exc)
         return True
 
     _ssm_status = lambda m: _send_response(resp_queue, {"type": "status", "message": m})
@@ -308,13 +304,10 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 )
 
         trust_remote_code = config.get("trust_remote_code", False)
-        if not trust_remote_code and _needs_nemotron_trust(
-            config["model_name"], hf_token = hf_token
-        ):
+        if not trust_remote_code and _needs_nemotron_trust(config["model_name"], hf_token = hf_token):
             trust_remote_code = True
             logger.info(
-                "Auto-enabled trust_remote_code for Nemotron model: %s",
-                config["model_name"],
+                "Auto-enabled trust_remote_code for Nemotron model: %s", config["model_name"]
             )
 
         # Authoritative gates over the model + the LoRA base resolved via mc. Must run before
@@ -339,9 +332,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             from utils.ssm_runtime import ssm_probe_identifier
 
             _ssm_base = (
-                str(mc.base_model)
-                if (mc.is_lora and getattr(mc, "base_model", None))
-                else None
+                str(mc.base_model) if (mc.is_lora and getattr(mc, "base_model", None)) else None
             )
             ssm_targets = [ssm_probe_identifier(config["model_name"], _ssm_base)]
             if not _ensure_ssm_kernels(ssm_targets, resp_queue):
@@ -360,12 +351,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
 
         heartbeat_stop = start_watchdog(
             repo_ids = watch_repos,
-            on_stall = lambda msg: _send_response(
-                resp_queue, {"type": "stall", "message": msg}
-            ),
-            on_heartbeat = lambda msg: _send_response(
-                resp_queue, {"type": "status", "message": msg}
-            ),
+            on_stall = lambda msg: _send_response(resp_queue, {"type": "stall", "message": msg}),
+            on_heartbeat = lambda msg: _send_response(resp_queue, {"type": "status", "message": msg}),
             xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
         try:
@@ -399,9 +386,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             }
             _bm = getattr(backend, "models", {}) or {}
             _entry = (
-                _bm.get(mc.identifier)
-                or _bm.get(getattr(backend, "active_model_name", None))
-                or {}
+                _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}
             )
             try:
                 _context_length = _entry.get("context_length")
@@ -674,9 +659,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any) -> None:
         )
 
 
-def _handle_generate_audio_input(
-    backend, cmd: dict, resp_queue: Any, cancel_event
-) -> None:
+def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle audio input generation (ASR/Whisper) — streams text tokens back."""
     request_id = cmd.get("request_id", "")
 
@@ -711,9 +694,7 @@ def _handle_generate_audio_input(
 
         for text_chunk in generator:
             if cancel_event.is_set():
-                logger.info(
-                    "Audio input generation cancelled for request %s", request_id
-                )
+                logger.info("Audio input generation cancelled for request %s", request_id)
                 break
 
             _send_response(
@@ -796,9 +777,7 @@ def run_inference_process(
             than run — the cancel survives the queue handoff.
     """
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    os.environ["PYTHONWARNINGS"] = (
-        "ignore"  # Suppress warnings at C-level before imports
-    )
+    os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
 
     if config.get("disable_xet"):
         os.environ["HF_HUB_DISABLE_XET"] = "1"
@@ -815,7 +794,7 @@ def run_inference_process(
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
-    apply_gpu_ids(config.get("resolved_gpu_ids"))
+    apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
     model_name = config["model_name"]
 
@@ -838,10 +817,7 @@ def run_inference_process(
                 exc,
             )
         try:
-            from core.inference.mlx_inference import (
-                MLXInferenceBackend,
-                _init_mlx_distributed,
-            )
+            from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
 
             backend = MLXInferenceBackend()
             if config.get("mlx_distributed"):
@@ -985,7 +961,7 @@ def run_inference_process(
     if _local_adapter_cfg.is_file():
         try:
             _lora_base = (
-                _json.loads(_local_adapter_cfg.read_text()).get(
+                _json.loads(_local_adapter_cfg.read_text(encoding = "utf-8")).get(
                     "base_model_name_or_path"
                 )
                 or None
@@ -1021,9 +997,9 @@ def run_inference_process(
     _gate_targets = [model_name]
     if _lora_base:
         _gate_targets.append(_lora_base)
-    _trust_remote_code = config.get(
-        "trust_remote_code", False
-    ) or _needs_nemotron_trust(model_name, hf_token = _hf_token)
+    _trust_remote_code = config.get("trust_remote_code", False) or _needs_nemotron_trust(
+        model_name, hf_token = _hf_token
+    )
     if not _run_security_gates(
         _gate_targets,
         trust_remote_code = _trust_remote_code,
@@ -1213,9 +1189,7 @@ def run_inference_process(
                 )
 
         except Exception as exc:
-            logger.error(
-                "Error handling command '%s': %s", cmd_type, exc, exc_info = True
-            )
+            logger.error("Error handling command '%s': %s", cmd_type, exc, exc_info = True)
             _send_response(
                 resp_queue,
                 {

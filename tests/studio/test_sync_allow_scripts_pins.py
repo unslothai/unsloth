@@ -41,10 +41,7 @@ LOCK = {
     "": {"name": "fixture"},
     "node_modules/@biomejs/biome": {"version": "1.9.9", "hasInstallScript": True},
     "node_modules/msw": {"version": "2.15.0", "hasInstallScript": True},
-    "node_modules/vite/node_modules/fsevents": {
-        "version": "2.3.3",
-        "hasInstallScript": True,
-    },
+    "node_modules/vite/node_modules/fsevents": {"version": "2.3.3", "hasInstallScript": True},
     "node_modules/clean": {"version": "3.0.0"},
 }
 
@@ -107,10 +104,7 @@ def test_stale_pin_fails_check_and_fix_repairs():
 
 def test_multi_version_disjunction():
     lock = dict(LOCK)
-    lock["node_modules/x/node_modules/msw"] = {
-        "version": "2.14.3",
-        "hasInstallScript": True,
-    }
+    lock["node_modules/x/node_modules/msw"] = {"version": "2.14.3", "hasInstallScript": True}
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
         write_fixture(tmp, {"msw@2.14.3": True}, lock)

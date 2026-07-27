@@ -85,6 +85,14 @@ def test_arg_parser_secure_polarity_and_not_secure_alias():
     assert parser.parse_args(["--not-secure", "--secure"]).secure is True
 
 
+def test_arg_parser_dns_pinning_opt_out_defaults_off():
+    import run
+
+    parser = run._build_arg_parser()
+    assert parser.parse_args([]).disable_dns_pinning is False
+    assert parser.parse_args(["--disable-dns-pinning"]).disable_dns_pinning is True
+
+
 def test_run_server_accepts_enable_tools_kwarg():
     import inspect
 
@@ -143,9 +151,7 @@ def test_startup_output_emits_tool_notice_on_network_bind(capsys, monkeypatch):
     monkeypatch.setattr(run, "_print_cloudflare_line", lambda *a, **k: None)
     monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
 
-    run._emit_startup_output(
-        "0.0.0.0", 8000, "0.0.0.0", secure = False, enable_tools = None
-    )
+    run._emit_startup_output("0.0.0.0", 8000, "0.0.0.0", secure = False, enable_tools = None)
     out = capsys.readouterr().out
     assert "Server-side tools" in out
     assert "network-reachable" in out
@@ -155,9 +161,7 @@ def test_startup_output_emits_disabled_notice(capsys, monkeypatch):
     import run
 
     monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
-    run._emit_startup_output(
-        "127.0.0.1", 8000, "127.0.0.1", secure = False, enable_tools = False
-    )
+    run._emit_startup_output("127.0.0.1", 8000, "127.0.0.1", secure = False, enable_tools = False)
     out = capsys.readouterr().out
     assert "Server-side tools are DISABLED" in out
 

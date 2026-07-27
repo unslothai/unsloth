@@ -44,11 +44,7 @@ class StoredApproval:
 
 
 def cache_disabled() -> bool:
-    return os.environ.get("UNSLOTH_TRC_APPROVAL_CACHE_DISABLE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    return os.environ.get("UNSLOTH_TRC_APPROVAL_CACHE_DISABLE", "").lower() in ("1", "true", "yes")
 
 
 def _store_path():
@@ -56,11 +52,9 @@ def _store_path():
 
 
 def _env_offline() -> bool:
-    return os.environ.get("HF_HUB_OFFLINE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
+    return os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes") or os.environ.get(
+        "TRANSFORMERS_OFFLINE", ""
+    ).lower() in ("1", "true", "yes")
 
 
 def approval_target_key(targets) -> str:
@@ -75,7 +69,7 @@ def approval_target_key(targets) -> str:
 def _load() -> dict:
     """Parsed store, or an empty skeleton on any error (fail-safe = re-prompt)."""
     try:
-        with open(_store_path()) as f:
+        with open(_store_path(), encoding = "utf-8") as f:
             data = json.load(f)
         # Validate the shape, not just the version: a hand-edited ``subjects`` that is not a
         # dict (e.g. ``[]``) would otherwise crash lookup/record instead of failing safe.
@@ -98,7 +92,7 @@ def _save(data: dict) -> None:
     storage_roots.ensure_dir(path.parent)
     tmp = path.parent / f".{path.name}.tmp-{os.getpid()}"
     try:
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding = "utf-8") as f:
             json.dump(data, f, indent = 2)
         try:
             os.chmod(tmp, 0o600)
@@ -123,9 +117,7 @@ def _file_lock():
     path = _store_path()
     try:
         storage_roots.ensure_dir(path.parent)
-        fd = os.open(
-            str(path.parent / f"{path.name}.lock"), os.O_CREAT | os.O_RDWR, 0o600
-        )
+        fd = os.open(str(path.parent / f"{path.name}.lock"), os.O_CREAT | os.O_RDWR, 0o600)
     except Exception:
         yield
         return

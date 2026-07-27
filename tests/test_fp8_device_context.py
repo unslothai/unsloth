@@ -68,10 +68,7 @@ class _LaunchVisitor(ast.NodeVisitor):
 
     @staticmethod
     def _triton_launch_name(node: ast.Call) -> str | None:
-        if (
-            isinstance(node.func, ast.Name)
-            and node.func.id == "triton_quantize_fp8_block"
-        ):
+        if isinstance(node.func, ast.Name) and node.func.id == "triton_quantize_fp8_block":
             return node.func.id
         if not isinstance(node.func, ast.Subscript):
             return None
@@ -81,13 +78,10 @@ class _LaunchVisitor(ast.NodeVisitor):
 
 
 def _load_device_context_helper(fake_torch: _FakeTorch):
-    source = FP8_SOURCE.read_text()
+    source = FP8_SOURCE.read_text(encoding = "utf-8")
     tree = ast.parse(source)
     for node in tree.body:
-        if (
-            isinstance(node, ast.FunctionDef)
-            and node.name == "_fp8_triton_device_context"
-        ):
+        if isinstance(node, ast.FunctionDef) and node.name == "_fp8_triton_device_context":
             namespace = {"torch": fake_torch, "nullcontext": nullcontext}
             exec(ast.get_source_segment(source, node), namespace)
             return namespace["_fp8_triton_device_context"]
@@ -150,10 +144,8 @@ def test_fp8_device_context_is_noop_for_non_cuda_tensor() -> None:
 
 
 def test_fp8_triton_launches_enter_tensor_device_context() -> None:
-    tree = ast.parse(FP8_SOURCE.read_text())
-    function_names = {
-        node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
-    }
+    tree = ast.parse(FP8_SOURCE.read_text(encoding = "utf-8"))
+    function_names = {node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
     assert "_fp8_triton_device_context" in function_names
 
     visitor = _LaunchVisitor()
@@ -178,27 +170,19 @@ def _require_two_cuda_devices():
     return torch
 
 
-def test_weight_dequant_block_runs_on_tensor_device_when_current_device_differs() -> (
-    None
-):
+def test_weight_dequant_block_runs_on_tensor_device_when_current_device_differs() -> None:
     torch = _require_two_cuda_devices()
     from unsloth.kernels.fp8 import weight_dequant_block
 
     previous_device = torch.cuda.current_device()
     try:
         torch.cuda.set_device(0)
-        x = torch.arange(256 * 256, device = "cuda:1", dtype = torch.float32).reshape(
-            256, 256
-        )
-        scales = torch.tensor(
-            [[1.0, 2.0], [3.0, 4.0]], device = "cuda:1", dtype = torch.float32
-        )
+        x = torch.arange(256 * 256, device = "cuda:1", dtype = torch.float32).reshape(256, 256)
+        scales = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device = "cuda:1", dtype = torch.float32)
 
         actual = weight_dequant_block(x, scales, block_size = 128, dtype = torch.float32)
 
-        expanded_scales = scales.repeat_interleave(128, dim = 0).repeat_interleave(
-            128, dim = 1
-        )
+        expanded_scales = scales.repeat_interleave(128, dim = 0).repeat_interleave(128, dim = 1)
         expected = x * expanded_scales
 
         assert actual.device == x.device
@@ -231,9 +215,7 @@ def test_act_quant_runs_on_tensor_device_when_current_device_differs() -> None:
         torch.cuda.set_device(previous_device)
 
 
-def test_w8a8_block_fp8_matmul_triton_runs_on_tensor_device_when_current_device_differs() -> (
-    None
-):
+def test_w8a8_block_fp8_matmul_triton_runs_on_tensor_device_when_current_device_differs() -> None:
     torch = _require_two_cuda_devices()
     if not hasattr(torch, "float8_e4m3fn"):
         pytest.skip("requires torch.float8_e4m3fn")
@@ -245,12 +227,8 @@ def test_w8a8_block_fp8_matmul_triton_runs_on_tensor_device_when_current_device_
     previous_device = torch.cuda.current_device()
     try:
         torch.cuda.set_device(0)
-        A = torch.ones((128, 128), device = "cuda:1", dtype = torch.float32).to(
-            torch.float8_e4m3fn
-        )
-        B = torch.ones((128, 128), device = "cuda:1", dtype = torch.float32).to(
-            torch.float8_e4m3fn
-        )
+        A = torch.ones((128, 128), device = "cuda:1", dtype = torch.float32).to(torch.float8_e4m3fn)
+        B = torch.ones((128, 128), device = "cuda:1", dtype = torch.float32).to(torch.float8_e4m3fn)
         As = torch.ones((128, 1), device = "cuda:1", dtype = torch.float32)
         Bs = torch.ones((1, 1), device = "cuda:1", dtype = torch.float32)
 

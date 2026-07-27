@@ -32,15 +32,14 @@ def _load_has_downloaded_model():
     """Return the real ``_dir_has_downloaded_model`` (plus its ``_safe_is_dir``
     and ``_is_weight_bin`` deps, and the ``_WEIGHT_BIN_PREFIXES`` constant the
     latter reads) without importing the heavy module."""
-    tree = ast.parse(_models_src.read_text())
+    tree = ast.parse(_models_src.read_text(encoding = "utf-8"))
     wanted = {"_safe_is_dir", "_dir_has_downloaded_model", "_is_weight_bin"}
     body = []
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in wanted:
             body.append(node)
         elif isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id == "_WEIGHT_BIN_PREFIXES"
-            for t in node.targets
+            isinstance(t, ast.Name) and t.id == "_WEIGHT_BIN_PREFIXES" for t in node.targets
         ):
             body.append(node)
     got = {n.name for n in body if isinstance(n, ast.FunctionDef)}

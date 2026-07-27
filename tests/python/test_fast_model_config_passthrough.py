@@ -12,7 +12,7 @@ LLAMA_PATH = REPO_ROOT / "unsloth" / "models" / "llama.py"
 
 
 def _source(path):
-    return path.read_text()
+    return path.read_text(encoding = "utf-8")
 
 
 def _class_method(tree, class_name, method_name):
@@ -29,8 +29,7 @@ def _assigns_from_kwargs_pop(method, target_name, key_name):
         if not isinstance(node, ast.Assign):
             continue
         if not any(
-            isinstance(target, ast.Name) and target.id == target_name
-            for target in node.targets
+            isinstance(target, ast.Name) and target.id == target_name for target in node.targets
         ):
             continue
         value = node.value
@@ -51,9 +50,7 @@ def _assigns_from_kwargs_pop(method, target_name, key_name):
 
 def _calls_name(method, name):
     return any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == name
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == name
         for node in ast.walk(method)
     )
 
@@ -133,9 +130,7 @@ def test_fast_model_uses_user_config_num_labels_for_task_model_selection():
 def test_fast_model_captures_user_config_num_labels_before_text_only_switch():
     source = _source(LOADER_PATH)
 
-    fallback = source.index(
-        "task_config_attrs = _get_user_task_config_attrs(user_config)"
-    )
+    fallback = source.index("task_config_attrs = _get_user_task_config_attrs(user_config)")
     text_only_switch = source.index("model_config = text_config")
 
     assert fallback < text_only_switch

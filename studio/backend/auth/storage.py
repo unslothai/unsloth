@@ -44,7 +44,7 @@ def generate_bootstrap_password() -> str:
 
     # Persisted from a previous run?
     if _BOOTSTRAP_PW_PATH.is_file():
-        _bootstrap_password = _BOOTSTRAP_PW_PATH.read_text().strip()
+        _bootstrap_password = _BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8").strip()
         if _bootstrap_password:
             return _bootstrap_password
 
@@ -57,7 +57,7 @@ def generate_bootstrap_password() -> str:
 
     # Persist so the same passphrase survives restarts until password change.
     ensure_dir(_BOOTSTRAP_PW_PATH.parent)
-    _BOOTSTRAP_PW_PATH.write_text(_bootstrap_password)
+    _BOOTSTRAP_PW_PATH.write_text(_bootstrap_password, encoding = "utf-8")
     try:
         os.chmod(_BOOTSTRAP_PW_PATH, 0o600)
     except OSError:
@@ -76,7 +76,7 @@ def _load_bootstrap_password() -> Optional[str]:
     global _bootstrap_password
     _bootstrap_password = None
     if _BOOTSTRAP_PW_PATH.is_file():
-        bootstrap_password = _BOOTSTRAP_PW_PATH.read_text().strip()
+        bootstrap_password = _BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8").strip()
         if bootstrap_password:
             _bootstrap_password = bootstrap_password
     return _bootstrap_password
@@ -99,7 +99,7 @@ def clear_bootstrap_password() -> None:
             # stale plaintext can't be re-seeded by generate_bootstrap_password()
             # if a later reset-password deletes auth.db and re-validates it.
             try:
-                _BOOTSTRAP_PW_PATH.write_text("")
+                _BOOTSTRAP_PW_PATH.write_text("", encoding = "utf-8")
                 cleared = True
             except OSError:
                 cleared = False
@@ -195,13 +195,9 @@ def get_connection() -> sqlite3.Connection:
         );
         """
     )
-    api_key_columns = {
-        row["name"] for row in conn.execute("PRAGMA table_info(api_keys)")
-    }
+    api_key_columns = {row["name"] for row in conn.execute("PRAGMA table_info(api_keys)")}
     if "is_internal" not in api_key_columns:
-        conn.execute(
-            "ALTER TABLE api_keys ADD COLUMN is_internal INTEGER NOT NULL DEFAULT 0"
-        )
+        conn.execute("ALTER TABLE api_keys ADD COLUMN is_internal INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS app_secrets (
@@ -215,13 +211,9 @@ def get_connection() -> sqlite3.Connection:
         conn.execute(
             "ALTER TABLE auth_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
         )
-    refresh_columns = {
-        row["name"] for row in conn.execute("PRAGMA table_info(refresh_tokens)")
-    }
+    refresh_columns = {row["name"] for row in conn.execute("PRAGMA table_info(refresh_tokens)")}
     if "is_desktop" not in refresh_columns:
-        conn.execute(
-            "ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0"
-        )
+        conn.execute("ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0")
     conn.commit()
     return conn
 

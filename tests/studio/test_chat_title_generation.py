@@ -41,7 +41,7 @@ def _balanced_block(src: str, anchor: str) -> str:
 
 def test_title_model_prompt_targets_conversation_topic():
     block = _source_until(
-        RUNTIME_TSX.read_text(),
+        RUNTIME_TSX.read_text(encoding = "utf-8"),
         "async function generateTitleWithModel",
         "\nconst inflightTitleByKey",
     )
@@ -54,7 +54,7 @@ def test_title_model_prompt_targets_conversation_topic():
 
 def test_title_model_payload_includes_optional_assistant_reply():
     block = _source_until(
-        RUNTIME_TSX.read_text(),
+        RUNTIME_TSX.read_text(encoding = "utf-8"),
         "async function generateTitleWithModel",
         "\nconst inflightTitleByKey",
     )
@@ -71,13 +71,11 @@ def test_title_model_payload_includes_optional_assistant_reply():
 
 def test_generate_title_passes_first_assistant_reply_after_first_user():
     block = _balanced_block(
-        RUNTIME_TSX.read_text(),
+        RUNTIME_TSX.read_text(encoding = "utf-8"),
         "async generateTitle(remoteId",
     )
 
-    assert (
-        'const firstUserIndex = messages.findIndex((m) => m.role === "user");' in block
-    )
+    assert 'const firstUserIndex = messages.findIndex((m) => m.role === "user");' in block
     assert '.find((m, i) => m.role === "assistant" && i > firstUserIndex)' in block
     assert "const assistantText = extractTextParts(firstAssistant);" in block
     assert "generateTitleWithModel({" in block
@@ -86,13 +84,9 @@ def test_generate_title_passes_first_assistant_reply_after_first_user():
 
 
 def test_tool_call_only_first_assistant_still_uses_first_user_message():
-    source = RUNTIME_TSX.read_text()
-    extract_block = " ".join(
-        _balanced_block(source, "function extractTextParts").split()
-    )
-    generate_block = " ".join(
-        _balanced_block(source, "async generateTitle(remoteId").split()
-    )
+    source = RUNTIME_TSX.read_text(encoding = "utf-8")
+    extract_block = " ".join(_balanced_block(source, "function extractTextParts").split())
+    generate_block = " ".join(_balanced_block(source, "async generateTitle(remoteId").split())
 
     assert (
         '.filter((p): p is Extract<typeof p, { type: "text" }> => p.type === "text")'
@@ -110,7 +104,7 @@ def test_tool_call_only_first_assistant_still_uses_first_user_message():
 
 def test_auto_title_disabled_uses_deterministic_user_text_fallback():
     block = _balanced_block(
-        RUNTIME_TSX.read_text(),
+        RUNTIME_TSX.read_text(encoding = "utf-8"),
         "async generateTitle(remoteId",
     )
     auto_title_off = _balanced_block(block, "if (!autoTitle)")
@@ -120,7 +114,7 @@ def test_auto_title_disabled_uses_deterministic_user_text_fallback():
 
 
 def test_model_failure_still_falls_back_to_user_text():
-    source = RUNTIME_TSX.read_text()
+    source = RUNTIME_TSX.read_text(encoding = "utf-8")
     model_block = _source_until(
         source,
         "async function generateTitleWithModel",
@@ -136,7 +130,7 @@ def test_model_failure_still_falls_back_to_user_text():
 
 def test_title_normalizer_still_enforces_output_constraints():
     block = _source_until(
-        RUNTIME_TSX.read_text(),
+        RUNTIME_TSX.read_text(encoding = "utf-8"),
         "async function generateTitleWithModel",
         "\nconst inflightTitleByKey",
     )

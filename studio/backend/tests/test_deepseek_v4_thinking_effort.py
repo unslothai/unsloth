@@ -108,9 +108,7 @@ def test_synthetic_high_scoped_to_deepseek_v4():
     """The same ['max']-only template under a non-deepseek id keeps ['max']."""
     from core.inference.llama_cpp import detect_reasoning_flags
 
-    flags = detect_reasoning_flags(
-        NON_DEEPSEEK_MAX_ONLY_TEMPLATE, "vendor/OtherHybrid-GGUF"
-    )
+    flags = detect_reasoning_flags(NON_DEEPSEEK_MAX_ONLY_TEMPLATE, "vendor/OtherHybrid-GGUF")
     assert flags["reasoning_effort_levels"] == ["max"]
 
 
@@ -147,9 +145,7 @@ def test_none_state_renders_non_thinking():
     """UI 'None' -> enable_thinking=false -> closed </think>, no preamble."""
     kwargs = _kwargs_for(_flags(), enable_thinking = False, reasoning_effort = None)
     assert kwargs == {"enable_thinking": False}
-    out = _render(
-        DEEPSEEK_V4_TEMPLATE, messages = [{"role": "user", "content": "hi"}], **kwargs
-    )
+    out = _render(DEEPSEEK_V4_TEMPLATE, messages = [{"role": "user", "content": "hi"}], **kwargs)
     assert out.endswith("</think>")
     assert "Absolute maximum" not in out
 
@@ -158,9 +154,7 @@ def test_high_state_renders_plain_thinking():
     """UI 'High' -> et=true, effort=high -> open <think>, no max preamble."""
     kwargs = _kwargs_for(_flags(), enable_thinking = True, reasoning_effort = "high")
     assert kwargs == {"enable_thinking": True, "reasoning_effort": "high"}
-    out = _render(
-        DEEPSEEK_V4_TEMPLATE, messages = [{"role": "user", "content": "hi"}], **kwargs
-    )
+    out = _render(DEEPSEEK_V4_TEMPLATE, messages = [{"role": "user", "content": "hi"}], **kwargs)
     assert out.endswith("<think>")
     assert "Absolute maximum" not in out
 
@@ -169,9 +163,7 @@ def test_max_state_injects_max_preamble():
     """UI 'Max' -> et=true, effort=max -> open <think> plus the max preamble."""
     kwargs = _kwargs_for(_flags(), enable_thinking = True, reasoning_effort = "max")
     assert kwargs == {"enable_thinking": True, "reasoning_effort": "max"}
-    out = _render(
-        DEEPSEEK_V4_TEMPLATE, messages = [{"role": "user", "content": "hi"}], **kwargs
-    )
+    out = _render(DEEPSEEK_V4_TEMPLATE, messages = [{"role": "user", "content": "hi"}], **kwargs)
     assert out.endswith("<think>")
     assert "Absolute maximum" in out
 
@@ -181,8 +173,6 @@ def test_high_effort_alone_enables_thinking():
     gets thinking on, so the newly exposed High mode renders correctly."""
     kwargs = _kwargs_for(_flags(), enable_thinking = None, reasoning_effort = "high")
     assert kwargs == {"enable_thinking": True, "reasoning_effort": "high"}
-    out = _render(
-        DEEPSEEK_V4_TEMPLATE, messages = [{"role": "user", "content": "hi"}], **kwargs
-    )
+    out = _render(DEEPSEEK_V4_TEMPLATE, messages = [{"role": "user", "content": "hi"}], **kwargs)
     assert out.endswith("<think>")
     assert "Absolute maximum" not in out

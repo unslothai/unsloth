@@ -80,6 +80,7 @@ class TestCanonicalGcnArchName:
         [
             ("gfx1150", True),  # Strix Point
             ("gfx1151", True),  # Strix Halo
+            ("gfx1152", True),  # Krackan Point (Radeon 860M/840M)
             ("gfx1100", False),  # Navi 31 (RX 7900 XTX) — discrete
             ("gfx906", False),  # MI50 — discrete server GPU
             ("gfx1201", False),  # RX 9070 XT — discrete
@@ -163,18 +164,25 @@ class TestDeviceNameFallback:
             "AMD Radeon 8060S",
             "Radeon 8050S Graphics",  # cut-down Strix Halo SKU
             "AMD Radeon 8050S",
+            # gfx1151 Gorgon Halo (Ryzen AI Max 400 refresh)
+            "Radeon 8065S Graphics",  # Ryzen AI Max+ 495
+            "AMD Radeon 8065S",
+            # gfx1152 Krackan Point (Ryzen AI 7 350 / AI 5 340)
+            "Radeon 860M",
+            "AMD Radeon 860M Graphics",
+            "Radeon 840M",
+            "AMD Radeon 840M Graphics",
             # case variants
             "RADEON 8060S GRAPHICS",
             "radeon 8050s",
+            "RADEON 860M",
         ],
     )
     def test_unified_memory_detected(self, device_name: str) -> None:
         props = _props(name = device_name)
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == "", f"expected empty gcn_arch, got {gcn!r}"
-        assert (
-            is_unified is True
-        ), f"device {device_name!r} should be classified as unified-memory"
+        assert is_unified is True, f"device {device_name!r} should be classified as unified-memory"
 
     # --- discrete devices that must NOT be mis-classified ---
 

@@ -106,9 +106,7 @@ def request_tool_decision(
 ):
     """Register and wait in one call (when the slot is not needed early)."""
     slot = begin_tool_decision(session_id, approval_id)
-    return wait_tool_decision(
-        slot, approval_id, cancel_event = cancel_event, timeout = timeout
-    )
+    return wait_tool_decision(slot, approval_id, cancel_event = cancel_event, timeout = timeout)
 
 
 def resolve_tool_decision(

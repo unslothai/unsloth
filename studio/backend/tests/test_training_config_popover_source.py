@@ -17,9 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_STUDIO_FRONTEND = (
-    Path(__file__).resolve().parents[2] / "frontend" / "src" / "features" / "studio"
-)
+_STUDIO_FRONTEND = Path(__file__).resolve().parents[2] / "frontend" / "src" / "features" / "studio"
 
 
 def _read(rel: str) -> str:
@@ -107,5 +105,6 @@ def test_shared_mapper_matches_backend_config_keys():
         "lora_dropout",
         "use_rslora",
         "use_loftq",
+        "use_dora",
     ):
         assert key in src, f"run-config mapper lost backend key {key}"

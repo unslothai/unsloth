@@ -141,9 +141,7 @@ class ExportOrchestrator:
         """True if the in-flight (or most recent) run was cancelled by the user."""
         return self._cancel_requested
 
-    def _record_op_finished(
-        self, success: bool, message: str, output_path: Optional[str]
-    ) -> None:
+    def _record_op_finished(self, success: bool, message: str, output_path: Optional[str]) -> None:
         """Snapshot the just-finished op so status pollers can recover its outcome.
 
         Called from each op's ``finally`` (with ``_active_op_kind`` still set) BEFORE
@@ -152,11 +150,7 @@ class ExportOrchestrator:
         """
         with self._op_lock:
             self._op_seq += 1
-            status = (
-                "cancelled"
-                if self._cancel_requested
-                else ("success" if success else "error")
-            )
+            status = "cancelled" if self._cancel_requested else ("success" if success else "error")
             self._last_op = {
                 "seq": self._op_seq,
                 "kind": self._active_op_kind,
@@ -226,9 +220,7 @@ class ExportOrchestrator:
         # Inside an active op an INSTALL reservation is about to abort on the
         # is_export_active check, but a lazy REPAIR has no such check and can be
         # rebuilding the sidecar right now, so it must always refuse the spawn.
-        if _swap_kind == "repair" or (
-            _swap_kind is not None and not self._export_active
-        ):
+        if _swap_kind == "repair" or (_swap_kind is not None and not self._export_active):
             from utils.transformers_version import SidecarSwapInProgress
             raise SidecarSwapInProgress(
                 "A transformers installation is replacing the latest sidecar; "
@@ -238,16 +230,20 @@ class ExportOrchestrator:
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,
         )
+        from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
 
-        from .worker import run_export_process
+        cache_env = get_hf_cache_paths().child_env({})
 
-        with native_path_secret_removed_for_child_start():
+        with (
+            child_environment_for_spawn(cache_env),
+            native_path_secret_removed_for_child_start(),
+        ):
             self._cmd_queue = _CTX.Queue()
             self._resp_queue = _CTX.Queue()
 
             self._proc = _CTX.Process(
                 target = run_without_native_path_secret,
-                args = (run_export_process,),
+                args = ("core.export.worker", "run_export_process", cache_env),
                 kwargs = {
                     "cmd_queue": self._cmd_queue,
                     "resp_queue": self._resp_queue,
@@ -405,9 +401,7 @@ class ExportOrchestrator:
                 expected_type,
             )
 
-        raise RuntimeError(
-            f"Timeout waiting for '{expected_type}' response after {timeout}s"
-        )
+        raise RuntimeError(f"Timeout waiting for '{expected_type}' response after {timeout}s")
 
     def _drain_queue(self) -> list:
         """Drain all pending responses."""
@@ -485,9 +479,7 @@ class ExportOrchestrator:
                 elif self._proc is not None:
                     self._shutdown_subprocess(timeout = 2)
 
-                logger.info(
-                    "Spawning fresh export subprocess for '%s'", checkpoint_path
-                )
+                logger.info("Spawning fresh export subprocess for '%s'", checkpoint_path)
                 try:
                     self._spawn_subprocess(sub_config)
                 except Exception:
@@ -514,10 +506,7 @@ class ExportOrchestrator:
                     self.is_vision = resp.get("is_vision", False)
                     self.is_peft = resp.get("is_peft", False)
                     logger.info("Checkpoint '%s' loaded in subprocess", checkpoint_path)
-                    op_success, op_message = (
-                        True,
-                        resp.get("message", "Loaded successfully"),
-                    )
+                    op_success, op_message = True, resp.get("message", "Loaded successfully")
                     return True, op_message
                 else:
                     error = resp.get("message", "Failed to load checkpoint")
@@ -624,9 +613,7 @@ class ExportOrchestrator:
             },
         )
 
-    def _run_export(
-        self, export_type: str, params: dict
-    ) -> Tuple[bool, str, Optional[str]]:
+    def _run_export(self, export_type: str, params: dict) -> Tuple[bool, str, Optional[str]]:
         """Send an export command and wait for the result.
 
         Returns ``(success, message, output_path)``. ``output_path`` is the on-disk
@@ -713,9 +700,7 @@ class ExportOrchestrator:
                 self._active_op_kind = None
                 self._export_active = False
 
-    def scan_checkpoints(
-        self, outputs_dir: str = str(outputs_root())
-    ) -> List[Tuple[str, list]]:
+    def scan_checkpoints(self, outputs_dir: str = str(outputs_root())) -> List[Tuple[str, list]]:
         """Scan for checkpoints — runs locally, no ML imports."""
         from utils.models.checkpoints import scan_checkpoints
         return scan_checkpoints(outputs_dir = outputs_dir)

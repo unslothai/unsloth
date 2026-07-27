@@ -12,6 +12,7 @@ at import) resolves from a clean process.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -43,6 +44,15 @@ _ARCHES = {
 _CHILD = """
 import json, sys
 sys.path.insert(0, {tests!r})
+# Import bitsandbytes under the real torch first. unsloth_zoo pulls it in, and it
+# picks a compute backend at import: once the spoof reports an AMD GPU, it loads
+# its ROCm/CUDA ops, which a CPU-only torch cannot satisfy (no libhipblas, no
+# torch._C._cuda_getCurrentRawStream) and the child dies before printing RESULT.
+# Nothing here tests bitsandbytes, so let it see the honest hardware.
+try:
+    import bitsandbytes  # noqa: F401
+except Exception:
+    pass
 import _zoo_rocm_spoof as spoof
 arches = {arches!r}
 spoof.apply(arches[0])
@@ -60,11 +70,13 @@ print("RESULT " + json.dumps({{"device_type": device_type, "targets": targets}})
 @pytest.fixture(scope = "module")
 def routed():
     code = _CHILD.format(tests = str(_TESTS_DIR), arches = list(_ARCHES))
-    proc = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True)
+    # get_device_type() returns "mlx" before it ever looks at torch on Darwin arm64
+    # with mlx installed, so the spoof would be ignored. Force the GPU path to keep
+    # the assertion live there instead of skipping it.
+    env = {**os.environ, "UNSLOTH_FORCE_GPU_PATH": "1"}
+    proc = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, env = env)
     line = next((l for l in proc.stdout.splitlines() if l.startswith("RESULT ")), None)
-    assert (
-        line
-    ), f"child produced no result.\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    assert line, f"child produced no result.\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     return json.loads(line[len("RESULT ") :])
 
 

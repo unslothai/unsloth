@@ -129,7 +129,7 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
     if not trainer_state.exists():
         return None
     try:
-        with open(trainer_state) as f:
+        with open(trainer_state, encoding = "utf-8") as f:
             state = json.load(f)
         log_history = state.get("log_history", [])
         if log_history:
@@ -174,18 +174,18 @@ def scan_checkpoints(
             metadata: dict = {}
             try:
                 if adapter_config.exists():
-                    cfg = json.loads(adapter_config.read_text())
+                    cfg = json.loads(adapter_config.read_text(encoding = "utf-8"))
                     metadata["base_model"] = cfg.get("base_model_name_or_path")
                     metadata["peft_type"] = cfg.get("peft_type")
                     metadata["lora_rank"] = cfg.get("r")
                 elif config_file.exists():
-                    cfg = json.loads(config_file.read_text())
+                    cfg = json.loads(config_file.read_text(encoding = "utf-8"))
                     metadata["base_model"] = cfg.get("_name_or_path")
 
                 # Detect BNB quantization from config.json
                 if config_file.exists():
                     if "cfg" not in dir():
-                        cfg = json.loads(config_file.read_text())
+                        cfg = json.loads(config_file.read_text(encoding = "utf-8"))
                     quant_cfg = cfg.get("quantization_config")
                     if (
                         isinstance(quant_cfg, dict)
@@ -206,9 +206,7 @@ def scan_checkpoints(
                 if name_part:
                     idx = name_part.find("_")
                     if idx > 0:
-                        metadata["base_model"] = (
-                            name_part[:idx] + "/" + name_part[idx + 1 :]
-                        )
+                        metadata["base_model"] = name_part[:idx] + "/" + name_part[idx + 1 :]
                     else:
                         metadata["base_model"] = name_part
 
@@ -245,9 +243,7 @@ def scan_checkpoints(
                 )
 
             models.append((item.name, checkpoints, metadata))
-            logger.debug(
-                f"Found model: {item.name} with {len(checkpoints)} checkpoint(s)"
-            )
+            logger.debug(f"Found model: {item.name} with {len(checkpoints)} checkpoint(s)")
 
         # Sort by modification time (newest first)
         models.sort(key = lambda x: Path(x[1][0][1]).stat().st_mtime, reverse = True)

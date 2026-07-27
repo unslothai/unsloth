@@ -20,10 +20,7 @@ def _parse_function_param_defaults(source: str, func_name: str) -> dict:
     """
     tree = ast.parse(source)
     for node in ast.walk(tree):
-        if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == func_name
-        ):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func_name:
             result = {}
             all_args = node.args.args
             defaults = node.args.defaults
@@ -67,11 +64,9 @@ def test_run_server_default_host_is_loopback():
     0.0.0.0 exposes the service on all interfaces; loopback is the
     least-permissive default. Users needing network access pass -H 0.0.0.0.
     """
-    source = _RUN_PY.read_text()
+    source = _RUN_PY.read_text(encoding = "utf-8")
     defaults = _parse_function_param_defaults(source, "run_server")
-    assert (
-        "host" in defaults
-    ), "run_server() must have a 'host' parameter with a default"
+    assert "host" in defaults, "run_server() must have a 'host' parameter with a default"
     host_default = defaults["host"]
     assert host_default == "127.0.0.1", (
         f"run_server() host default must be '127.0.0.1' (loopback) "
@@ -86,11 +81,9 @@ def test_argparse_default_host_is_loopback():
     When run.py is invoked directly (python run.py), the argparse default
     must match the function default so direct execution is equally safe.
     """
-    source = _RUN_PY.read_text()
+    source = _RUN_PY.read_text(encoding = "utf-8")
     host_default = _parse_argparse_add_argument_default(source, "--host")
-    assert (
-        host_default is not None
-    ), "Could not find add_argument('--host', ...) in run.py"
+    assert host_default is not None, "Could not find add_argument('--host', ...) in run.py"
     assert (
         host_default == "127.0.0.1"
     ), f"run.py argparse --host default must be '127.0.0.1', got '{host_default}'"

@@ -113,12 +113,20 @@ def patch_hub_gguf(monkeypatch):
             gguf_files = {"model-Q4_K_M.gguf": 1000},
         )
         monkeypatch.setattr(
+            "utils.hf_cache_settings.get_hf_cache_paths",
+            lambda: SimpleNamespace(hub_cache = tmp_path),
+        )
+        monkeypatch.setattr(
             GV,
             "list_gguf_variants",
             lambda r, hf_token = None: (_variants(), False, [remote_sibling]),
             raising = True,
         )
-        monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id: [snap])
+        monkeypatch.setattr(
+            GV,
+            "iter_hf_cache_snapshots",
+            lambda _repo_id, root = None: [snap],
+        )
         monkeypatch.setattr(
             CI,
             "all_hf_cache_scans",
@@ -167,9 +175,7 @@ def test_variant_update_check_missing_remote_blob_id_is_not_phantom_update(
     assert q4.update_available is False
 
 
-def test_variant_update_check_detects_update_from_existing_siblings(
-    tmp_path, patch_hub_gguf
-):
+def test_variant_update_check_detects_update_from_existing_siblings(tmp_path, patch_hub_gguf):
     repo = "unsloth/gemma-3-4b-it-GGUF"
     patch_hub_gguf.apply(
         tmp_path,
@@ -219,6 +225,10 @@ def test_variant_update_check_detects_companion_only_update(
             companion_path: 100,
         },
     )
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = tmp_path),
+    )
     siblings = [
         patch_hub_gguf.sibling("model-Q4_K_M.gguf", 1000, "mainsha"),
         patch_hub_gguf.sibling(companion_path, 100, "new-companion"),
@@ -229,7 +239,11 @@ def test_variant_update_check_detects_companion_only_update(
         lambda r, hf_token = None: (_variants(), has_vision, siblings),
         raising = True,
     )
-    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id: [snap])
+    monkeypatch.setattr(
+        GV,
+        "iter_hf_cache_snapshots",
+        lambda _repo_id, root = None: [snap],
+    )
     monkeypatch.setattr(
         CI,
         "all_hf_cache_scans",
@@ -267,9 +281,7 @@ def test_variant_update_check_detects_companion_only_update(
     assert q4.update_available is True
 
 
-def test_variant_update_check_accepts_lfs_dict_and_blob_id_fallback(
-    tmp_path, patch_hub_gguf
-):
+def test_variant_update_check_accepts_lfs_dict_and_blob_id_fallback(tmp_path, patch_hub_gguf):
     repo = "unsloth/gemma-3-4b-it-GGUF"
     patch_hub_gguf.apply(
         tmp_path,
@@ -283,9 +295,7 @@ def test_variant_update_check_accepts_lfs_dict_and_blob_id_fallback(
         ),
     )
     resp = _call(GV.get_gguf_variants_response(repo))
-    assert (
-        next(v for v in resp.variants if v.quant == "Q4_K_M").update_available is False
-    )
+    assert next(v for v in resp.variants if v.quant == "Q4_K_M").update_available is False
 
     patch_hub_gguf.apply(
         tmp_path,
@@ -299,15 +309,106 @@ def test_variant_update_check_accepts_lfs_dict_and_blob_id_fallback(
         ),
     )
     resp = _call(GV.get_gguf_variants_response(repo))
-    assert (
-        next(v for v in resp.variants if v.quant == "Q4_K_M").update_available is False
-    )
+    assert next(v for v in resp.variants if v.quant == "Q4_K_M").update_available is False
 
 
 def test_cached_model_scan_keeps_local_safetensors_repo(monkeypatch, tmp_path):
     repo_path = tmp_path / "models--Org--SafeTensorRepo"
     repo = SimpleNamespace(
         repo_id = "Org/SafeTensorRepo",
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [
+            SimpleNamespace(
+                files = [
+                    SimpleNamespace(
+                        file_name = "config.json",
+                        size_on_disk = 10,
+                        blob_path = None,
+                    ),
+                    SimpleNamespace(
+                        file_name = "model.safetensors",
+                        size_on_disk = 100,
+                        blob_path = str(repo_path / "blobs" / "modelsha"),
+                        blob_last_modified = 3_000.0,
+                    ),
+                ]
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        CI,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [repo])],
+    )
+    monkeypatch.setattr(
+        CI.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda *args, **kwargs: False,
+    )
+
+    rows = CI._scan_cached_models()
+
+    assert len(rows) == 1
+    assert rows[0]["repo_id"] == "Org/SafeTensorRepo"
+    assert rows[0]["model_format"] == "safetensors"
+    assert rows[0]["size_bytes"] == 100
+    assert rows[0]["last_modified"] == 3_000.0
+
+
+def test_cached_gguf_scan_keeps_download_timestamp(monkeypatch, tmp_path):
+    repo_path = tmp_path / "models--Org--GgufRepo"
+    repo = SimpleNamespace(
+        repo_id = "Org/GgufRepo",
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [
+            SimpleNamespace(
+                files = [
+                    SimpleNamespace(
+                        file_name = "model-Q4_K_M.gguf",
+                        size_on_disk = 100,
+                        blob_path = None,
+                        blob_last_modified = 5_000.0,
+                    ),
+                ]
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        CI,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [repo])],
+    )
+    monkeypatch.setattr(
+        CI.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        CI,
+        "_gguf_variant_state_summary",
+        lambda _repo_id, **_kwargs: (False, 0),
+    )
+
+    rows = CI._scan_cached_gguf()
+
+    assert len(rows) == 1
+    assert rows[0]["repo_id"] == "Org/GgufRepo"
+    assert rows[0]["model_format"] == "gguf"
+    assert rows[0]["size_bytes"] == 100
+    assert rows[0]["last_modified"] == 5_000.0
+
+
+def test_cached_model_scan_hides_custom_whisper_repo(monkeypatch, tmp_path):
+    repo_path = tmp_path / "models--Org--CustomWhisper"
+    snapshot = repo_path / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text(
+        '{"model_type": "whisper", "architectures": ["WhisperForConditionalGeneration"]}'
+    )
+    repo = SimpleNamespace(
+        repo_id = "Org/CustomWhisper",
         repo_type = "model",
         repo_path = repo_path,
         revisions = [
@@ -333,17 +434,17 @@ def test_cached_model_scan_keeps_local_safetensors_repo(monkeypatch, tmp_path):
         lambda: [SimpleNamespace(repos = [repo])],
     )
     monkeypatch.setattr(
+        CI,
+        "_cached_model_snapshot_path",
+        lambda _repo_path: snapshot,
+    )
+    monkeypatch.setattr(
         CI.hf_cache_scan,
         "is_snapshot_partial",
         lambda *args, **kwargs: False,
     )
 
-    rows = CI._scan_cached_models()
-
-    assert len(rows) == 1
-    assert rows[0]["repo_id"] == "Org/SafeTensorRepo"
-    assert rows[0]["model_format"] == "safetensors"
-    assert rows[0]["size_bytes"] == 100
+    assert CI._scan_cached_models() == []
 
 
 # ── hf_hub_download_with_xet_fallback force_download bypass (X2/F2) ───
@@ -360,9 +461,7 @@ def test_force_download_is_forwarded_through_the_shim(monkeypatch):
         seen.append(kwargs.get("force_download"))
         return "/downloaded/path"
 
-    monkeypatch.setattr(
-        X, "_shared_hf_hub_download_with_xet_fallback", fake_shared, raising = True
-    )
+    monkeypatch.setattr(X, "_shared_hf_hub_download_with_xet_fallback", fake_shared, raising = True)
 
     X.hf_hub_download_with_xet_fallback(
         "unsloth/repo", "model.gguf", token = None, force_download = False
@@ -370,10 +469,7 @@ def test_force_download_is_forwarded_through_the_shim(monkeypatch):
     X.hf_hub_download_with_xet_fallback(
         "unsloth/repo", "model.gguf", token = None, force_download = True
     )
-    assert seen == [
-        False,
-        True,
-    ]  # the shim forwards force_download to the shared helper unchanged
+    assert seen == [False, True]  # the shim forwards force_download to the shared helper unchanged
 
 
 # ── multi-revision GGUF blob comparison and update reclaim ──
@@ -387,10 +483,7 @@ def test_force_download_is_forwarded_through_the_shim(monkeypatch):
 
 def _rev(*files):
     return SimpleNamespace(
-        files = [
-            SimpleNamespace(file_name = name, blob_path = f"/blobs/{blob}")
-            for name, blob in files
-        ]
+        files = [SimpleNamespace(file_name = name, blob_path = f"/blobs/{blob}") for name, blob in files]
     )
 
 
@@ -404,9 +497,7 @@ def test_repo_gguf_blob_map_collects_all_revision_blobs():
             _rev(("lfm2-350m-q4_k_m.gguf", "NEWsha")),
         ],
     )
-    assert CI._repo_gguf_blob_map(repo_info) == {
-        "lfm2-350m-q4_k_m.gguf": {"OLDsha", "NEWsha"}
-    }
+    assert CI._repo_gguf_blob_map(repo_info) == {"lfm2-350m-q4_k_m.gguf": {"OLDsha", "NEWsha"}}
 
 
 # ── no-symlink (Windows without Developer Mode) GGUF update detection ──
@@ -511,10 +602,7 @@ def test_no_symlink_cache_matching_remote_size_reports_no_update():
     requirement = _requirement(("model-Q4_K_M.gguf", 4096, "REMOTEsha256"))
 
     assert (
-        GV._variant_update_available_from_requirement(
-            local_blobs, requirement, "Q4_K_M"
-        )
-        is False
+        GV._variant_update_available_from_requirement(local_blobs, requirement, "Q4_K_M") is False
     )
 
 
@@ -523,12 +611,7 @@ def test_no_symlink_cache_with_different_remote_size_still_reports_update():
     local_blobs = {"model-Q4_K_M.gguf": {CI.local_size_identity(4096)}}
     requirement = _requirement(("model-Q4_K_M.gguf", 8192, "REMOTEsha256"))
 
-    assert (
-        GV._variant_update_available_from_requirement(
-            local_blobs, requirement, "Q4_K_M"
-        )
-        is True
-    )
+    assert GV._variant_update_available_from_requirement(local_blobs, requirement, "Q4_K_M") is True
 
 
 def test_symlinked_cache_with_stale_blob_still_reports_update():
@@ -537,12 +620,7 @@ def test_symlinked_cache_with_stale_blob_still_reports_update():
     local_blobs = {"model-Q4_K_M.gguf": {"OLDsha"}}
     requirement = _requirement(("model-Q4_K_M.gguf", 4096, "NEWsha"))
 
-    assert (
-        GV._variant_update_available_from_requirement(
-            local_blobs, requirement, "Q4_K_M"
-        )
-        is True
-    )
+    assert GV._variant_update_available_from_requirement(local_blobs, requirement, "Q4_K_M") is True
 
 
 def test_symlinked_cache_with_current_blob_reports_no_update():
@@ -551,10 +629,7 @@ def test_symlinked_cache_with_current_blob_reports_no_update():
     requirement = _requirement(("model-Q4_K_M.gguf", 4096, "NEWsha"))
 
     assert (
-        GV._variant_update_available_from_requirement(
-            local_blobs, requirement, "Q4_K_M"
-        )
-        is False
+        GV._variant_update_available_from_requirement(local_blobs, requirement, "Q4_K_M") is False
     )
 
 
@@ -616,11 +691,14 @@ def test_reclaim_replaced_gguf_variant_prunes_old_revision_only(monkeypatch, tmp
         lambda: [SimpleNamespace(repos = [repo_info])],
     )
     invalidated = []
-    monkeypatch.setattr(
-        CI, "invalidate_hf_cache_scans", lambda: invalidated.append(True)
-    )
+    monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: invalidated.append(True))
 
-    result = D.reclaim_replaced_gguf_variant(repo_id, "Q4_K_M", frozenset({"NEWsha"}))
+    result = D.reclaim_replaced_gguf_variant(
+        repo_id,
+        "Q4_K_M",
+        frozenset({"NEWsha"}),
+        hub_cache = tmp_path,
+    )
 
     assert result["removed_snapshots"] == 1
     assert result["deleted_blobs"] == 1
@@ -635,9 +713,7 @@ def test_reclaim_replaced_gguf_variant_prunes_old_revision_only(monkeypatch, tmp
     assert invalidated == [True]
 
 
-def test_reclaim_replaced_gguf_variant_keeps_no_symlink_current_file(
-    monkeypatch, tmp_path
-):
+def test_reclaim_replaced_gguf_variant_keeps_no_symlink_current_file(monkeypatch, tmp_path):
     """No-symlink cache (Windows without Developer Mode): the moved GGUF lives
     directly in snapshots/ and blobs/ is empty, so scan_cache_dir reports
     blob_path == the snapshot file and its name is the FILENAME, not an etag.
@@ -660,23 +736,94 @@ def test_reclaim_replaced_gguf_variant_keeps_no_symlink_current_file(
                     SimpleNamespace(
                         file_name = "model-Q4_K_M.gguf",
                         file_path = str(snap),
-                        blob_path = str(
-                            snap
-                        ),  # no-symlink: blob_path == the snapshot file
+                        blob_path = str(snap),  # no-symlink: blob_path == the snapshot file
                     )
                 ]
             )
         ],
     )
-    monkeypatch.setattr(
-        CI, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo_info])]
-    )
+    monkeypatch.setattr(CI, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo_info])])
     monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: None)
 
     result = D.reclaim_replaced_gguf_variant(
-        repo_id, "Q4_K_M", frozenset({"REMOTEsha256"})
+        repo_id,
+        "Q4_K_M",
+        frozenset({"REMOTEsha256"}),
+        hub_cache = tmp_path,
     )
 
     assert snap.exists() is True  # the current file must survive
     assert result["removed_snapshots"] == 0
     assert result["deleted_blobs"] == 0
+
+
+def test_reclaim_replaced_gguf_variant_only_mutates_worker_cache(monkeypatch, tmp_path):
+    repo_id = "org/repo-GGUF"
+    cache_a = tmp_path / "cache-a"
+    cache_b = tmp_path / "cache-b"
+
+    def cached_repo(cache_dir, revision):
+        repo_path = cache_dir / "models--org--repo-GGUF"
+        snap = repo_path / "snapshots" / revision / "model-Q4_K_M.gguf"
+        blob = repo_path / "blobs" / "OLDsha"
+        snap.parent.mkdir(parents = True, exist_ok = True)
+        blob.parent.mkdir(parents = True, exist_ok = True)
+        blob.write_bytes(b"old")
+        snap.symlink_to(blob)
+        return (
+            SimpleNamespace(
+                repo_id = repo_id,
+                repo_type = "model",
+                repo_path = repo_path,
+                revisions = [
+                    SimpleNamespace(
+                        files = [
+                            SimpleNamespace(
+                                file_name = snap.name,
+                                file_path = str(snap),
+                                blob_path = str(blob),
+                            )
+                        ]
+                    )
+                ],
+            ),
+            snap,
+            blob,
+        )
+
+    repo_a, snap_a, blob_a = cached_repo(cache_a, "a" * 40)
+    repo_b, snap_b, blob_b = cached_repo(cache_b, "b" * 40)
+    monkeypatch.setattr(
+        CI,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [repo_a]), SimpleNamespace(repos = [repo_b])],
+    )
+    monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: None)
+
+    result = D.reclaim_replaced_gguf_variant(
+        repo_id,
+        "Q4_K_M",
+        frozenset({"NEWsha"}),
+        hub_cache = cache_b,
+    )
+
+    assert result["removed_snapshots"] == 1
+    assert snap_b.exists() is False
+    assert blob_b.exists() is False
+    assert snap_a.exists() is True
+    assert blob_a.exists() is True
+
+
+def _mmproj_repo(*file_names: str):
+    return SimpleNamespace(
+        revisions = [SimpleNamespace(files = [SimpleNamespace(file_name = n) for n in file_names])]
+    )
+
+
+def test_repo_has_mmproj_requires_gguf_projector():
+    # A non-GGUF sidecar whose name merely contains "mmproj" must NOT mark the
+    # repo vision-capable; the runtime's projector detection is GGUF-only.
+    assert CI._repo_has_mmproj(_mmproj_repo("model-Q4_K_M.gguf", "mmproj_config.json")) is False
+    assert CI._repo_has_mmproj(_mmproj_repo("model-Q4_K_M.gguf", "README-mmproj.md")) is False
+    # A real GGUF projector still marks the repo vision-capable.
+    assert CI._repo_has_mmproj(_mmproj_repo("model-Q4_K_M.gguf", "mmproj-F16.gguf")) is True

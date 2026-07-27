@@ -14,15 +14,9 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DATA_COLLATORS = (
-    REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "data_collators.py"
-)
-CHAT_TEMPLATES = (
-    REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "chat_templates.py"
-)
-FORMAT_CONVERSION = (
-    REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "format_conversion.py"
-)
+DATA_COLLATORS = REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "data_collators.py"
+CHAT_TEMPLATES = REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "chat_templates.py"
+FORMAT_CONVERSION = REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "format_conversion.py"
 
 
 def _has_uv() -> bool:
@@ -59,9 +53,7 @@ def no_torch_venv(request, tmp_path_factory):
         [str(venv_python), "-c", "import torch"],
         capture_output = True,
     )
-    assert (
-        check.returncode != 0
-    ), f"torch should NOT be importable in fresh {py_version} venv"
+    assert check.returncode != 0, f"torch should NOT be importable in fresh {py_version} venv"
 
     return str(venv_python)
 
@@ -156,7 +148,7 @@ class TestDataCollatorsNoTorchVenv:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             print("OK: exec succeeded")
         """)
         result = subprocess.run(
@@ -176,7 +168,7 @@ class TestDataCollatorsNoTorchVenv:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             obj = DataCollatorSpeechSeq2SeqWithPadding(processor=None)
             assert obj.processor is None, "processor should be None"
             print("OK: DataCollatorSpeechSeq2SeqWithPadding instantiated")
@@ -198,7 +190,7 @@ class TestDataCollatorsNoTorchVenv:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             obj = DeepSeekOCRDataCollator(processor=None)
             assert obj.processor is None, "processor should be None"
             assert obj.max_length == 2048, "default max_length should be 2048"
@@ -210,9 +202,7 @@ class TestDataCollatorsNoTorchVenv:
             capture_output = True,
             timeout = 30,
         )
-        assert (
-            result.returncode == 0
-        ), f"DeepSeekOCRDataCollator failed:\n{result.stderr.decode()}"
+        assert result.returncode == 0, f"DeepSeekOCRDataCollator failed:\n{result.stderr.decode()}"
         assert b"OK: DeepSeekOCRDataCollator instantiated" in result.stdout
 
     def test_dataclass_vlm_collator_instantiable(self, no_torch_venv):
@@ -222,7 +212,7 @@ class TestDataCollatorsNoTorchVenv:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             obj = VLMDataCollator(processor=None)
             assert obj.processor is None
             assert obj.mask_input_tokens is True, "default mask_input_tokens should be True"
@@ -233,9 +223,7 @@ class TestDataCollatorsNoTorchVenv:
             capture_output = True,
             timeout = 30,
         )
-        assert (
-            result.returncode == 0
-        ), f"VLMDataCollator failed:\n{result.stderr.decode()}"
+        assert result.returncode == 0, f"VLMDataCollator failed:\n{result.stderr.decode()}"
         assert b"OK: VLMDataCollator instantiated" in result.stdout
 
 
@@ -271,7 +259,7 @@ class TestChatTemplatesNoTorchVenv:
             sys.modules['iterable'] = iterable
 
             # Read and transform the source: replace relative imports with absolute
-            source = open({str(CHAT_TEMPLATES)!r}).read()
+            source = open({str(CHAT_TEMPLATES)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
@@ -317,7 +305,7 @@ class TestChatTemplatesNoTorchVenv:
             sys.modules['iterable'] = iterable
 
             ns = {{}}
-            source = open({str(CHAT_TEMPLATES)!r}).read()
+            source = open({str(CHAT_TEMPLATES)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
@@ -414,7 +402,7 @@ class TestFormatConversionNoTorchVenv:
             sys.modules['utils.hardware'] = hardware_mod
 
             # Read and exec format_conversion.py
-            source = open({str(FORMAT_CONVERSION)!r}).read()
+            source = open({str(FORMAT_CONVERSION)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .iterable import', 'from iterable import')
             ns = {{'__name__': '__test__'}}
@@ -475,7 +463,7 @@ class TestFormatConversionNoTorchVenv:
             sys.modules['utils'] = utils_mod
             sys.modules['utils.hardware'] = hardware_mod
 
-            source = open({str(FORMAT_CONVERSION)!r}).read()
+            source = open({str(FORMAT_CONVERSION)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .iterable import', 'from iterable import')
             ns = {{'__name__': '__test__'}}
@@ -529,19 +517,16 @@ class TestNegativeControls:
                 loggers = types.ModuleType('loggers')
                 loggers.get_logger = lambda n: None
                 sys.modules['loggers'] = loggers
-                exec(open({temp_file!r}).read())
+                exec(open({temp_file!r}, encoding = "utf-8").read())
             """)
             result = subprocess.run(
                 [no_torch_venv, "-c", code],
                 capture_output = True,
                 timeout = 30,
             )
+            assert result.returncode != 0, "Expected failure when 'import torch' is prepended"
             assert (
-                result.returncode != 0
-            ), "Expected failure when 'import torch' is prepended"
-            assert (
-                b"ModuleNotFoundError" in result.stderr
-                or b"ImportError" in result.stderr
+                b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
             ), f"Expected ImportError, got:\n{result.stderr.decode()}"
         finally:
             os.unlink(temp_file)
@@ -581,6 +566,4 @@ class TestNegativeControls:
             timeout = 30,
         )
         assert result.returncode != 0, "import torch should fail in no-torch venv"
-        assert (
-            b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
-        )
+        assert b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr

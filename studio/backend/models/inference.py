@@ -18,6 +18,8 @@ from pydantic import (
     model_validator,
 )
 
+from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+
 
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
@@ -26,9 +28,7 @@ class LoadRequest(BaseModel):
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
-    hf_token: Optional[str] = Field(
-        None, description = "HuggingFace token for gated models"
-    )
+    hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated models")
     max_seq_length: int = Field(
         0,
         ge = 0,
@@ -55,20 +55,38 @@ class LoadRequest(BaseModel):
 
     @field_validator("chat_template_override")
     @classmethod
-    def normalize_blank_chat_template_override(
-        cls, value: Optional[str]
-    ) -> Optional[str]:
-        if value is not None and value.strip() == "":
+    def normalize_blank_chat_template_override(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
             return None
+        # Char count is a lower bound on UTF-8 byte length: reject an oversized
+        # template before spending work encoding it.
+        if len(value) > MAX_CHAT_TEMPLATE_BYTES:
+            raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
+        if value.strip() == "":
+            return None
+        if len(value.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
+            raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
         return value
 
     cache_type_kv: Optional[str] = Field(
         None,
-        description = "KV cache data type for both K and V (e.g. 'f16', 'bf16', 'q8_0', 'q4_1', 'q5_1')",
+        description = (
+            "KV cache data type for both K and V "
+            "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
+        ),
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. For GGUF models the picked devices are pinned via CUDA/HIP_VISIBLE_DEVICES.",
+        description = (
+            "GPU placement pool, for example [0, 1]. Omit or pass [] to use "
+            "automatic selection. CUDA/ROCm and Intel XPU values are physical "
+            "GPU indices; Vulkan values are ggml device ordinals. Explicit "
+            "physical IDs are unsupported when the parent visibility mask uses "
+            "non-numeric or subdevice entries, including CUDA_VISIBLE_DEVICES "
+            "with UUID/MIG entries and ZE_AFFINITY_MASK with subdevice tokens "
+            "(for example '0.0,0.1') or FLAT-hierarchy tile handles. For GGUF "
+            "models the fitter may pin the smallest subset of this pool that fits."
+        ),
     )
     speculative_type: Optional[str] = Field(
         None,
@@ -150,9 +168,7 @@ class LoadRequest(BaseModel):
 
     @field_validator("tensor_split")
     @classmethod
-    def _reject_degenerate_tensor_split(
-        cls, value: Optional[List[float]]
-    ) -> Optional[List[float]]:
+    def _reject_degenerate_tensor_split(cls, value: Optional[List[float]]) -> Optional[List[float]]:
         # A negative / non-finite / all-zero split is silently dropped at launch
         # (stored as None) yet still compared raw in the reload dedupe, so an
         # identical Apply reloads forever. Reject it up front; [] = no split.
@@ -183,6 +199,32 @@ class UnloadRequest(BaseModel):
     model_path: str = Field(..., description = "Model identifier to unload")
 
 
+class TranscribeRequest(BaseModel):
+    """Speech-to-text request for the dictation STT sidecar."""
+
+    audio: str = Field(..., description = "Base64-encoded audio (any common format)")
+    model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
+    language: Optional[str] = Field(None, description = "BCP-47 language, or 'auto'/None to detect")
+    fast: bool = Field(
+        False,
+        description = "Use low-latency single-candidate decoding for dictation",
+    )
+    engine: Optional[str] = Field(
+        None,
+        description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
+    )
+
+
+class SttLoadRequest(BaseModel):
+    """Warm the STT sidecar with a model without transcribing."""
+
+    model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
+    engine: Optional[str] = Field(
+        None,
+        description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
+    )
+
+
 class ValidateModelRequest(BaseModel):
     """Check whether an identifier resolves to a ModelConfig; does NOT load weights."""
 
@@ -190,9 +232,7 @@ class ValidateModelRequest(BaseModel):
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
-    hf_token: Optional[str] = Field(
-        None, description = "HuggingFace token for gated models"
-    )
+    hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated models")
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
@@ -214,14 +254,20 @@ class ValidateModelRequest(BaseModel):
         description = "Also read the native context length from the local GGUF header. "
         "Opt-in so the normal load preflight doesn't pay for a cache scan it doesn't need.",
     )
+    include_chat_template: bool = Field(
+        False,
+        description = "Also read the embedded chat template from the local GGUF header, so a "
+        "native (picked / drag-drop) file's default template can be shown before it is loaded. "
+        "Opt-in and, like include_context_length, a metadata-only probe that skips the training "
+        "guard. Only the leased file's own embedded template is read, never sibling sidecars.",
+    )
 
 
 class TransformersUpgradeInfo(BaseModel):
     """A model architecture no installed transformers ships, but a newer release does."""
 
     model_type: str = Field(
-        ...,
-        description = "config.json model_type unknown to every installed transformers",
+        ..., description = "config.json model_type unknown to every installed transformers"
     )
     pypi_version: Optional[str] = Field(
         None, description = "Latest transformers release on PyPI at check time"
@@ -247,9 +293,7 @@ class ValidateModelResponse(BaseModel):
     valid: bool = Field(..., description = "Whether the model identifier looks valid")
     message: str = Field(..., description = "Human-readable validation message")
     identifier: Optional[str] = Field(None, description = "Resolved model identifier")
-    display_name: Optional[str] = Field(
-        None, description = "Display name derived from identifier"
-    )
+    display_name: Optional[str] = Field(None, description = "Display name derived from identifier")
     is_gguf: bool = Field(False, description = "Whether this is a GGUF model (llama.cpp)")
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     is_vision: bool = Field(False, description = "Whether this is a vision-capable model")
@@ -276,6 +320,11 @@ class ValidateModelResponse(BaseModel):
         None,
         description = "MoE expert-layer count (the manual --n-cpu-moe ceiling), read from the GGUF "
         "header alongside context_length; 0 for dense models, None when not read.",
+    )
+    chat_template: Optional[str] = Field(
+        None,
+        description = "Embedded GGUF chat template, read from the header when include_chat_template "
+        "is set (native lease-backed picks); None for non-GGUF, over-cap, or not-read templates.",
     )
     # Additive fields; the consuming consent dialog ships in a follow-up frontend PR.
     requires_transformers_upgrade: bool = Field(
@@ -330,16 +379,10 @@ class GenerateRequest(BaseModel):
     top_p: float = Field(0.95, ge = 0.0, le = 1.0, description = "Top-p sampling")
     top_k: int = Field(20, ge = -1, le = 100, description = "Top-k sampling")
     min_p: float = Field(0.0, ge = 0.0, le = 1.0, description = "Min-p sampling")
-    max_new_tokens: int = Field(
-        2048, ge = 1, le = 4096, description = "Maximum tokens to generate"
-    )
-    repetition_penalty: float = Field(
-        1.0, ge = 1.0, le = 2.0, description = "Repetition penalty"
-    )
+    max_new_tokens: int = Field(2048, ge = 1, le = 4096, description = "Maximum tokens to generate")
+    repetition_penalty: float = Field(1.0, ge = 1.0, le = 2.0, description = "Repetition penalty")
     presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
-    image_base64: Optional[str] = Field(
-        None, description = "Base64 encoded image for vision models"
-    )
+    image_base64: Optional[str] = Field(None, description = "Base64 encoded image for vision models")
 
 
 class LoadResponse(BaseModel):
@@ -350,19 +393,13 @@ class LoadResponse(BaseModel):
     display_name: str = Field(..., description = "Display name of the model")
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
-    is_gguf: bool = Field(
-        False, description = "Whether model is a GGUF model (llama.cpp)"
-    )
+    is_gguf: bool = Field(False, description = "Whether model is a GGUF model (llama.cpp)")
     is_diffusion: bool = Field(
         False, description = "Whether model is a block-diffusion model (DiffusionGemma)"
     )
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
-    audio_type: Optional[str] = Field(
-        None, description = "Audio codec type: snac, csm, bicodec, dac"
-    )
-    has_audio_input: bool = Field(
-        False, description = "Whether model accepts audio input (ASR)"
-    )
+    audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
+    has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
     inference: dict = Field(
         ..., description = "Inference parameters (temperature, top_p, top_k, min_p)"
     )
@@ -384,11 +421,11 @@ class LoadResponse(BaseModel):
         False,
         description = "Whether model supports thinking/reasoning mode (enable_thinking or reasoning_effort)",
     )
-    reasoning_style: Literal[
-        "enable_thinking", "reasoning_effort", "enable_thinking_effort"
-    ] = Field(
-        "enable_thinking",
-        description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (low|medium|high), or 'enable_thinking_effort' (on/off gate plus an effort level, e.g. GLM-5.2 high|max)",
+    reasoning_style: Literal["enable_thinking", "reasoning_effort", "enable_thinking_effort"] = (
+        Field(
+            "enable_thinking",
+            description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (low|medium|high), or 'enable_thinking_effort' (on/off gate plus an effort level, e.g. GLM-5.2 high|max)",
+        )
     )
     reasoning_effort_levels: List[str] = Field(
         default_factory = list,
@@ -408,7 +445,10 @@ class LoadResponse(BaseModel):
     )
     cache_type_kv: Optional[str] = Field(
         None,
-        description = "KV cache data type for K and V (e.g. 'f16', 'bf16', 'q8_0')",
+        description = (
+            "KV cache data type for K and V "
+            "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
+        ),
     )
     chat_template: Optional[str] = Field(
         None,
@@ -460,7 +500,14 @@ class LoadResponse(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
+        description = "Effective GPU indices the model is using after fit-time narrowing, or None for automatic selection.",
+    )
+    requested_gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = (
+            "GPU placement pool requested by the user before fit-time narrowing, "
+            "or None for automatic selection."
+        ),
     )
 
 
@@ -496,9 +543,7 @@ class LoadProgressResponse(BaseModel):
         0,
         description = "Total bytes across all GGUF shards for the active model.",
     )
-    fraction: float = Field(
-        0.0, description = "bytes_loaded / bytes_total, clamped to 0..1."
-    )
+    fraction: float = Field(0.0, description = "bytes_loaded / bytes_total, clamped to 0..1.")
 
 
 class InferenceStatusResponse(BaseModel):
@@ -511,34 +556,17 @@ class InferenceStatusResponse(BaseModel):
         None,
         description = "Loadable identifier for the active model.",
     )
-    is_vision: bool = Field(
-        False, description = "Whether the active model is a vision model"
-    )
-    is_gguf: bool = Field(
-        False, description = "Whether the active model is a GGUF model (llama.cpp)"
-    )
+    is_vision: bool = Field(False, description = "Whether the active model is a vision model")
+    is_gguf: bool = Field(False, description = "Whether the active model is a GGUF model (llama.cpp)")
     is_diffusion: bool = Field(
-        False,
-        description = "Whether the active model is a block-diffusion model (DiffusionGemma)",
+        False, description = "Whether the active model is a block-diffusion model (DiffusionGemma)"
     )
-    gguf_variant: Optional[str] = Field(
-        None, description = "GGUF quantization variant (e.g. Q4_K_M)"
-    )
-    is_audio: bool = Field(
-        False, description = "Whether the active model is a TTS audio model"
-    )
-    audio_type: Optional[str] = Field(
-        None, description = "Audio codec type: snac, csm, bicodec, dac"
-    )
-    has_audio_input: bool = Field(
-        False, description = "Whether model accepts audio input (ASR)"
-    )
-    loading: List[str] = Field(
-        default_factory = list, description = "Models currently being loaded"
-    )
-    loaded: List[str] = Field(
-        default_factory = list, description = "Models currently loaded"
-    )
+    gguf_variant: Optional[str] = Field(None, description = "GGUF quantization variant (e.g. Q4_K_M)")
+    is_audio: bool = Field(False, description = "Whether the active model is a TTS audio model")
+    audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
+    has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
+    loading: List[str] = Field(default_factory = list, description = "Models currently being loaded")
+    loaded: List[str] = Field(default_factory = list, description = "Models currently loaded")
     inference: Optional[Dict[str, Any]] = Field(
         None, description = "Recommended inference parameters for the active model"
     )
@@ -549,11 +577,11 @@ class InferenceStatusResponse(BaseModel):
     supports_reasoning: bool = Field(
         False, description = "Whether the active model supports reasoning/thinking mode"
     )
-    reasoning_style: Literal[
-        "enable_thinking", "reasoning_effort", "enable_thinking_effort"
-    ] = Field(
-        "enable_thinking",
-        description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (low|medium|high), or 'enable_thinking_effort' (on/off gate plus an effort level, e.g. GLM-5.2 high|max)",
+    reasoning_style: Literal["enable_thinking", "reasoning_effort", "enable_thinking_effort"] = (
+        Field(
+            "enable_thinking",
+            description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (low|medium|high), or 'enable_thinking_effort' (on/off gate plus an effort level, e.g. GLM-5.2 high|max)",
+        )
     )
     reasoning_effort_levels: List[str] = Field(
         default_factory = list,
@@ -569,9 +597,7 @@ class InferenceStatusResponse(BaseModel):
     supports_tools: bool = Field(
         False, description = "Whether the active model supports tool calling"
     )
-    context_length: Optional[int] = Field(
-        None, description = "Context length of the active model"
-    )
+    context_length: Optional[int] = Field(None, description = "Context length of the active model")
     max_context_length: Optional[int] = Field(
         None,
         description = "Maximum context length currently available for the active model",
@@ -582,7 +608,11 @@ class InferenceStatusResponse(BaseModel):
     )
     cache_type_kv: Optional[str] = Field(
         None,
-        description = "KV cache quantization dtype (e.g. 'q8_0'), or None for default",
+        description = (
+            "KV cache quantization dtype "
+            "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32'), "
+            "or None for default"
+        ),
     )
     chat_template: Optional[str] = Field(
         None, description = "Model's default chat template (Jinja2 source), if any"
@@ -645,7 +675,14 @@ class InferenceStatusResponse(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
+        description = "Effective GPU indices the model is using after fit-time narrowing, or None for automatic selection.",
+    )
+    requested_gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = (
+            "GPU placement pool requested by the user before fit-time narrowing, "
+            "or None for automatic selection."
+        ),
     )
     llama_cpp_supports_mtp: bool = Field(
         True,
@@ -882,11 +919,11 @@ class ThinkingConfig(BaseModel):
 
 
 # Recognized permission_mode values. The field accepts a plain string rather than
-# a Literal so an unrecognized value from a newer UI/client degrades to the
-# safest gate ("ask") instead of a 422; the tool loops apply the same unknown ->
-# ask fallback, so normalizing here keeps that forward-compat path reachable at
-# the API boundary. None stays unset ("behaves as 'ask'" without self-enabling
-# the confirm gate).
+# a Literal so an unrecognized value from a newer UI/client degrades to the safest
+# gate ("ask") instead of a 422. None stays unset at the request boundary: the tool
+# loops normalize it to the product default "auto", while the route's confirm-gate
+# derivation keeps an unset mode lenient (a non-streaming request cannot prompt, so
+# it runs) to keep non-streaming clients and health checks working.
 _KNOWN_PERMISSION_MODES = ("ask", "auto", "off", "full")
 
 
@@ -968,9 +1005,7 @@ class ChatCompletionRequest(BaseModel):
     parallel_tool_calls: Optional[bool] = Field(
         None, description = "Whether to enable parallel function calling during tool use."
     )
-    seed: Optional[int] = Field(
-        None, description = "Best-effort deterministic sampling seed."
-    )
+    seed: Optional[int] = Field(None, description = "Best-effort deterministic sampling seed.")
     stream_options: Optional[dict] = Field(
         None,
         description = 'Streaming options, e.g. {"include_usage": true} to emit a final usage chunk.',
@@ -978,9 +1013,7 @@ class ChatCompletionRequest(BaseModel):
 
     # ── Unsloth extensions (ignored by standard OpenAI clients) ──
     top_k: int = Field(20, ge = -1, le = 100, description = "[x-unsloth] Top-k sampling")
-    min_p: float = Field(
-        0.01, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold"
-    )
+    min_p: float = Field(0.01, ge = 0.0, le = 1.0, description = "[x-unsloth] Min-p sampling threshold")
     repetition_penalty: float = Field(
         1.0, ge = 1.0, le = 2.0, description = "[x-unsloth] Repetition penalty"
     )
@@ -1053,11 +1086,13 @@ class ChatCompletionRequest(BaseModel):
             "[x-unsloth] Permission level for local tool calls. 'ask' pauses every "
             "call for approval; 'ask'/'auto' enable the confirmation gate on their "
             "own (needs a streaming request to deliver prompts). 'auto' ('Approve for "
-            "me') only pauses calls detected as potentially unsafe (state-mutating "
-            "terminal/python/MCP calls); read-only calls run immediately, and the "
-            "sandbox stays on. 'full' is equivalent to bypass_permissions=true (no "
-            "confirmation, no sandbox). Unset behaves as 'ask'. An unrecognized value "
-            "(e.g. from a newer client) is treated as 'ask'."
+            "me') only pauses calls detected as high risk (credential reads, privilege "
+            "escalation, destructive/persistence, network exfil); ordinary calls run "
+            "immediately, and the sandbox stays on. 'full' is equivalent to "
+            "bypass_permissions=true (no confirmation, no sandbox). Unset defaults to "
+            "'auto' for the per-call gate; a non-streaming request without an explicit "
+            "mode cannot prompt and runs the loop. An unrecognized value (e.g. from a "
+            "newer client) is treated as 'ask'."
         ),
     )
     auto_heal_tool_calls: Optional[bool] = Field(
@@ -1292,9 +1327,7 @@ class ChatCompletionRequest(BaseModel):
                     if not tc_id:
                         continue
                     function = tc.get("function")
-                    function_name = (
-                        function.get("name") if isinstance(function, dict) else None
-                    )
+                    function_name = function.get("name") if isinstance(function, dict) else None
                     if msg.name and function_name == msg.name:
                         name_match = (tc_id, asst_idx, tc_idx)
                         break
@@ -1345,6 +1378,21 @@ class ChatCompletionRequest(BaseModel):
         elif self.permission_mode == "off":
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
+        elif (
+            self.permission_mode is None
+            and self.confirm_tool_calls is True
+            and not (self.provider_id or self.provider_type)
+        ):
+            # An explicit confirm_tool_calls=True with no mode opted into the
+            # pre-permission-mode contract of gating every call, so resolve it to
+            # "ask" rather than let the loop apply the "auto" default, which would
+            # silently weaken that opt-in to high-risk calls only. Unlike the "ask"
+            # branch below this only sets permission_mode, which is inert unless
+            # Unsloth's own tool loop runs, so it needs no enable_tools/mcp gate --
+            # deliberate, since a process-wide --enable-tools policy can force the
+            # loop when the request sets neither flag. A bare unset request
+            # (confirm_tool_calls is None) still defaults to auto.
+            self.permission_mode = "ask"
         elif (
             self.permission_mode == "ask"
             and self.confirm_tool_calls is None
@@ -1451,9 +1499,7 @@ class ChoiceDelta(BaseModel):
     tool_calls: Optional[list[dict]] = None
 
 
-OpenAIFinishReason = Literal[
-    "stop", "length", "tool_calls", "content_filter", "function_call"
-]
+OpenAIFinishReason = Literal["stop", "length", "tool_calls", "content_filter", "function_call"]
 
 
 class ChunkChoice(BaseModel):
@@ -1609,17 +1655,13 @@ class ResponsesFunctionCallInputItem(BaseModel):
     """
 
     type: Literal["function_call"]
-    id: Optional[str] = Field(
-        None, description = "Item id assigned by the server (e.g. fc_...)"
-    )
+    id: Optional[str] = Field(None, description = "Item id assigned by the server (e.g. fc_...)")
     call_id: str = Field(
         ...,
         description = "Correlation id matching a function_call_output on the next turn.",
     )
     name: str
-    arguments: str = Field(
-        ..., description = "JSON string of the arguments the model produced."
-    )
+    arguments: str = Field(..., description = "JSON string of the arguments the model produced.")
     status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
 
 
@@ -1706,9 +1748,7 @@ class ResponsesRequest(BaseModel):
         default = [],
         description = "Input text or list of messages / function_call / function_call_output items",
     )
-    instructions: Optional[str] = Field(
-        None, description = "System / developer instructions"
-    )
+    instructions: Optional[str] = Field(None, description = "System / developer instructions")
     temperature: Optional[float] = Field(None, ge = 0.0, le = 2.0)
     top_p: Optional[float] = Field(None, ge = 0.0, le = 1.0)
     max_output_tokens: Optional[int] = Field(None, ge = 1)
@@ -1796,9 +1836,7 @@ class ResponsesOutputFunctionCall(BaseModel):
     id: str = Field(default_factory = lambda: f"fc_{uuid.uuid4().hex[:12]}")
     call_id: str
     name: str
-    arguments: str = Field(
-        ..., description = "JSON string of the arguments the model produced."
-    )
+    arguments: str = Field(..., description = "JSON string of the arguments the model produced.")
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
 
 
@@ -1940,16 +1978,12 @@ def _merge_anthropic_system(system: Any, additions: list[str]) -> Any:
     if not additions:
         return system
 
-    addition_blocks = [
-        {"type": "text", "text": text} for text in additions if text.strip()
-    ]
+    addition_blocks = [{"type": "text", "text": text} for text in additions if text.strip()]
     if not addition_blocks:
         return system
 
     if system is None:
-        return (
-            addition_blocks[0]["text"] if len(addition_blocks) == 1 else addition_blocks
-        )
+        return addition_blocks[0]["text"] if len(addition_blocks) == 1 else addition_blocks
     if isinstance(system, str):
         return "\n\n".join([system, *[block["text"] for block in addition_blocks]])
     if isinstance(system, list):
@@ -1986,20 +2020,13 @@ class AnthropicMessage(BaseModel):
         if isinstance(content, list):
             for block in content:
                 btype = (
-                    block.get("type")
-                    if isinstance(block, dict)
-                    else getattr(block, "type", None)
+                    block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
                 )
                 # Guard the value: a non-string type is unsupported too, and a
                 # membership test on an unhashable value would raise TypeError
                 # (escaping as a 500 instead of a clean 400).
-                if (
-                    not isinstance(btype, str)
-                    or btype not in _KNOWN_ANTHROPIC_BLOCK_TYPES
-                ):
-                    raise ValueError(
-                        f"unsupported content block type {btype!r} in a user message"
-                    )
+                if not isinstance(btype, str) or btype not in _KNOWN_ANTHROPIC_BLOCK_TYPES:
+                    raise ValueError(f"unsupported content block type {btype!r} in a user message")
         return data
 
 
@@ -2049,7 +2076,7 @@ class AnthropicMessagesRequest(BaseModel):
     )
     permission_mode: Optional[str] = Field(
         None,
-        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' only pauses calls detected as potentially unsafe, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset behaves as 'ask'; an unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
+        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' ('Approve for me') only pauses calls detected as high risk, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset defaults to 'auto' for the per-call gate; a non-streaming request without an explicit mode runs the loop. An unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
@@ -2089,9 +2116,7 @@ class AnthropicMessagesRequest(BaseModel):
 
         normalized = dict(data)
         normalized["messages"] = normalized_messages
-        normalized["system"] = _merge_anthropic_system(
-            normalized.get("system"), system_additions
-        )
+        normalized["system"] = _merge_anthropic_system(normalized.get("system"), system_additions)
         return normalized
 
     @field_validator("permission_mode", mode = "before")
@@ -2138,9 +2163,7 @@ class AnthropicResponseToolUseBlock(BaseModel):
     input: dict
 
 
-AnthropicResponseBlock = Union[
-    AnthropicResponseTextBlock, AnthropicResponseToolUseBlock
-]
+AnthropicResponseBlock = Union[AnthropicResponseTextBlock, AnthropicResponseToolUseBlock]
 
 
 class AnthropicMessagesResponse(BaseModel):

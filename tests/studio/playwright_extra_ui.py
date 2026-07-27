@@ -36,6 +36,9 @@ ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright_extra")
 ART = Path(ART_DIR)
 ART.mkdir(parents = True, exist_ok = True)
 STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
+# The Voice-picker media-access crash is specific to headless Chromium on macos-14; only there do we
+# downgrade a renderer crash to a warning. Linux/Windows strict smoke jobs keep hard crash coverage.
+MACOS_RUNNER = os.environ.get("RUNNER_OS", "").lower() == "macos" or sys.platform == "darwin"
 # Longer turn timeout: gemma-3-270m CPU inference is 3-5x slower on macos-14 runners.
 TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
@@ -69,6 +72,18 @@ def soft_fail(m: str) -> None:
 def runtime_warn(m: str) -> None:
     """Warn about a runtime-coupled assertion (Compare-pane streaming) that STRICT does not gate."""
     info(f"WARN (runtime): {m}")
+
+
+def page_crashed(pg, exc: Exception) -> bool:
+    """True when the browser/page/context died (a macos-14 renderer crash) rather than a live-page
+    assertion failing -- so the caller can downgrade CI-environment flakiness to a runtime warning."""
+    try:
+        if pg.is_closed():
+            return True
+    except Exception:
+        return True
+    msg = str(exc).lower()
+    return "has been closed" in msg or "target closed" in msg or "crash" in msg
 
 
 with sync_playwright() as p:
@@ -127,9 +142,7 @@ with sync_playwright() as p:
     form_err: Exception | None = None
     for _form_attempt in range(3):
         try:
-            page.goto(
-                f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000
-            )
+            page.goto(f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000)
             try:
                 page.wait_for_load_state("networkidle", timeout = 30_000)
             except Exception:
@@ -277,20 +290,14 @@ with sync_playwright() as p:
     step("Compare tab: send to two panes")
     # Compare lives in the composer "Tools and attachments" menu.
     compare_opened = False
-    plus_btn = page.get_by_role(
-        "button", name = re.compile(r"Tools and attachments", re.I)
-    ).first
+    plus_btn = page.get_by_role("button", name = re.compile(r"Tools and attachments", re.I)).first
     if plus_btn.count() > 0:
         plus_btn.click(force = True)
         page.wait_for_timeout(400)
-        compare_item = page.get_by_role(
-            "menuitem", name = re.compile(r"Compare chat", re.I)
-        ).first
+        compare_item = page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)).first
         if compare_item.count() == 0:
             # Fallback: Compare chat may be under the "More" submenu.
-            more_trigger = page.get_by_role(
-                "menuitem", name = re.compile(r"^More$", re.I)
-            ).first
+            more_trigger = page.get_by_role("menuitem", name = re.compile(r"^More$", re.I)).first
             if more_trigger.count() > 0:
                 more_trigger.hover()
                 page.wait_for_timeout(400)
@@ -365,9 +372,7 @@ with sync_playwright() as p:
                         arg = ok_count_before + 4,
                         timeout = 60_000,
                     )
-                    info(
-                        "OK Compare: 4 total new assistant bubbles after second prompt"
-                    )
+                    info("OK Compare: 4 total new assistant bubbles after second prompt")
                 except Exception as exc:
                     runtime_warn(
                         f"Compare: 4 bubbles didn't appear (panes likely "
@@ -388,9 +393,7 @@ with sync_playwright() as p:
     page.wait_for_timeout(1500)
     shoot("05-recipes-list")
     # Template cards render as <button> elements.
-    templates = page.locator("main button").filter(
-        has_not_text = re.compile(r"^(\+|Create)")
-    )
+    templates = page.locator("main button").filter(has_not_text = re.compile(r"^(\+|Create)"))
     n_templates = templates.count()
     info(f"recipe templates visible: {n_templates}")
     if n_templates == 0:
@@ -424,9 +427,7 @@ with sync_playwright() as p:
         if "/export" not in page.url:
             soft_fail(f"chat-only mode should keep /export reachable; url={page.url}")
         else:
-            unavailable = page.get_by_text(
-                re.compile(r"Export unavailable", re.I)
-            ).first
+            unavailable = page.get_by_text(re.compile(r"Export unavailable", re.I)).first
             if unavailable.count() == 0:
                 soft_fail("chat-only /export did not show the export unavailable gate")
             else:
@@ -473,16 +474,12 @@ with sync_playwright() as p:
     shoot("08-studio")
     if chat_only:
         if "/studio" in page.url:
-            soft_fail(
-                f"chat-only mode should redirect /studio -> /chat; url={page.url}"
-            )
+            soft_fail(f"chat-only mode should redirect /studio -> /chat; url={page.url}")
         else:
             info(f"OK chat-only redirected /studio -> {page.url}")
     else:
         for tab_name in ("Configure", "Current run", "History"):
-            tab = page.get_by_role(
-                "tab", name = re.compile(rf"^\s*{tab_name}\s*$", re.I)
-            ).first
+            tab = page.get_by_role("tab", name = re.compile(rf"^\s*{tab_name}\s*$", re.I)).first
             if tab.count() == 0:
                 soft_fail(f"tab '{tab_name}' not found in /studio")
             else:
@@ -500,6 +497,14 @@ with sync_playwright() as p:
     step("Settings dialog: cycle through tabs")
     page.goto(f"{BASE}/chat")
     composer.wait_for(state = "visible", timeout = 60_000)
+    dictate = page.get_by_role("button", name = "Dictate").first
+    if dictate.count() == 0:
+        fail("Chat Dictate button not found")
+    elif dictate.get_attribute("type") != "button":
+        fail("Chat Dictate control must use type=button, not submit the composer")
+    else:
+        info("OK Chat Dictate control is type=button")
+
     page.keyboard.press("Control+,")
     page.wait_for_timeout(800)
     settings = page.get_by_role("dialog").first
@@ -519,6 +524,7 @@ with sync_playwright() as p:
             "Appearance",
             "Chat",
             "Developer",
+            "Voice",
             "About",
         )
         seen_tabs = []
@@ -543,14 +549,62 @@ with sync_playwright() as p:
                     info(f"OK Settings tab '{tab_name}' body length={body_text}")
                     seen_tabs.append(tab_name)
                 else:
-                    soft_fail(
-                        f"Settings tab '{tab_name}' body suspiciously short: {body_text}"
-                    )
+                    soft_fail(f"Settings tab '{tab_name}' body suspiciously short: {body_text}")
             except Exception as exc:
                 soft_fail(f"Settings tab '{tab_name}' click failed: {exc!r}")
-        shoot("10-settings-tabs-visited")
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(300)
+        step("Voice model picker: real mouse-wheel scrolling")
+        voice_tab = page.get_by_role(
+            "button", name = re.compile(r"^\s*Voice(?:\s+New)?\s*$", re.I)
+        ).first
+        if voice_tab.count() == 0:
+            fail("Voice settings tab not found")
+        else:
+            # The dictation-engine dropdown touches a media-access path that can crash headless
+            # Chromium on macos-14 (CheckMediaAccessPermission). A resulting TargetClosedError is CI
+            # flakiness there, not a product bug, so on macOS a crash is a runtime warning + page
+            # recovery; on Linux/Windows a crash and any live-page failure stay a hard fail.
+            try:
+                voice_tab.click()
+                page.get_by_label("Dictation engine").click()
+                page.get_by_role("option", name = "Local transcription").click()
+                page.get_by_label("Speech recognition model").click()
+                page.get_by_placeholder("Search model").fill("whisper")
+                results = page.get_by_test_id("stt-model-results")
+                page.wait_for_function(
+                    """() => {
+                        const node = document.querySelector('[data-testid="stt-model-results"]');
+                        return !!node && node.scrollHeight > node.clientHeight;
+                    }""",
+                    timeout = 30_000,
+                )
+                results.hover()
+                page.mouse.wheel(0, 700)
+                page.wait_for_function(
+                    """() => {
+                        const node = document.querySelector('[data-testid="stt-model-results"]');
+                        return !!node && node.scrollTop > 0;
+                    }""",
+                    timeout = 5_000,
+                )
+                info("OK Voice model picker mouse wheel changed scrollTop")
+            except Exception as exc:
+                if page_crashed(page, exc) and MACOS_RUNNER:
+                    runtime_warn(f"Voice model picker aborted (browser/page unstable): {exc!r}")
+                    page = recover_or_replace_page(
+                        page,
+                        ctx,
+                        default_timeout_ms = 60_000,
+                        info = lambda m: info(f"recovery: {m}"),
+                    )
+                else:
+                    fail(f"Voice model picker did not wheel-scroll: {exc!r}")
+        # When the crash closed the context/browser (not just the page), recover_or_replace_page
+        # cannot mint a replacement and hands back the closed page; skip the cosmetic teardown rather
+        # than re-raise TargetClosedError on it. is_closed() is a local check and never raises.
+        if not page.is_closed():
+            shoot("10-settings-tabs-visited")
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(300)
         info(f"visited Settings tabs: {seen_tabs}")
         if not seen_tabs:
             soft_fail("no Settings tabs were visitable")
@@ -569,4 +623,7 @@ with sync_playwright() as p:
         sys.exit(1)
     info("PASS extra UI flow")
     _watchdog.cancel()
-    browser.close()
+    try:
+        browser.close()
+    except Exception:
+        pass  # a crashed browser may already be gone; never fail teardown after PASS

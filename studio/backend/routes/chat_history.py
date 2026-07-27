@@ -7,7 +7,7 @@ Chat history API routes backed by studio.db.
 
 from typing import Annotated, Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
@@ -15,6 +15,7 @@ from loggers import get_logger
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatMessageConflictError,
+    ChatMessageProtectedError,
     CorruptSettingsError,
     clear_chat_history,
     count_chat_threads,
@@ -160,11 +161,26 @@ class ChatInferenceSettings(BaseModel):
     fastMode: Optional[bool] = None
 
 
+class ChatPresetLoadConfig(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    customContextLength: Optional[int] = Field(default = None, gt = 0)
+    maxSeqLength: Optional[float] = None
+    kvCacheDtype: Optional[str] = None
+    speculativeType: Optional[str] = None
+    specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
+    tensorParallel: Optional[bool] = None
+    gpuMemoryMode: Optional[Literal["manual"]] = None
+    gpuLayers: Optional[int] = None
+    nCpuMoe: Optional[int] = Field(default = None, ge = 0)
+
+
 class ChatPreset(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     name: str
     params: ChatInferenceSettings
+    loadConfig: Optional[ChatPresetLoadConfig] = None
 
 
 class ChatSettingsPayload(BaseModel):
@@ -173,9 +189,7 @@ class ChatSettingsPayload(BaseModel):
     inferenceParams: Optional[ChatInferenceSettings] = None
     customPresets: Optional[list[ChatPreset]] = None
     activePreset: Optional[str] = None
-    activePresetSource: Optional[Literal["builtin-default", "custom", "modified"]] = (
-        None
-    )
+    activePresetSource: Optional[Literal["builtin-default", "custom", "modified"]] = None
     autoTitle: Optional[bool] = None
     reasoningEffort: Optional[
         Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
@@ -235,9 +249,7 @@ async def list_threads(
 
 
 @router.post("/threads", response_model = ChatThread)
-async def save_thread(
-    payload: ChatThread, current_subject: str = Depends(get_current_subject)
-):
+async def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_subject)):
     if payload.projectId and get_chat_project(payload.projectId) is None:
         raise HTTPException(
             status_code = 404,
@@ -247,9 +259,7 @@ async def save_thread(
 
 
 @router.get("/threads/{thread_id}", response_model = ChatThread)
-async def get_thread(
-    thread_id: str, current_subject: str = Depends(get_current_subject)
-):
+async def get_thread(thread_id: str, current_subject: str = Depends(get_current_subject)):
     thread = get_chat_thread(thread_id)
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
@@ -263,14 +273,7 @@ async def patch_thread(
     current_subject: str = Depends(get_current_subject),
 ):
     patch = payload.model_dump(exclude_unset = True)
-    for field in (
-        "title",
-        "modelType",
-        "modelId",
-        "archived",
-        "createdAt",
-        "updatedAt",
-    ):
+    for field in ("title", "modelType", "modelId", "archived", "createdAt", "updatedAt"):
         if field in patch and patch[field] is None:
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
     if patch.get("projectId") and get_chat_project(patch["projectId"]) is None:
@@ -287,10 +290,45 @@ async def patch_thread(
     return ChatThread(**thread)
 
 
+def _cancel_active_research(request: Request, thread_ids: list[str]) -> None:
+    """Signal any active research runs on these threads to stop before their rows are deleted.
+
+    Deleting a thread cascade-deletes its research_runs row, but the worker only notices at its
+    next lease check, so it can keep doing model/web/RAG work (up to a tool timeout) for a run
+    that no longer exists. Best-effort: cancellation bookkeeping must never break the deletion.
+    """
+    if not thread_ids:
+        return
+    try:
+        from storage import research_runs_db
+    except Exception:  # noqa: BLE001 - research storage optional/unavailable
+        return
+    supervisor = getattr(request.app.state, "research_supervisor", None)
+    for thread_id in thread_ids:
+        try:
+            active = research_runs_db.list_active(thread_id)
+        except Exception:  # noqa: BLE001
+            continue
+        for run in active:
+            try:
+                status = research_runs_db.request_cancel(run["id"])
+                if supervisor is not None and status == "cancelling":
+                    supervisor.cancel(run["id"])
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "chat_history.cancel_active_research_failed run_id=%s",
+                    run.get("id"),
+                    exc_info = True,
+                )
+
+
 @router.delete("/threads")
 async def delete_threads(
-    payload: ChatDeleteRequest, current_subject: str = Depends(get_current_subject)
+    payload: ChatDeleteRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
 ):
+    _cancel_active_research(request, payload.ids)
     delete_chat_threads(payload.ids)
     return {"status": "deleted"}
 
@@ -321,9 +359,7 @@ def _decode_attachment_base64(payload: str) -> bytes:
     try:
         return base64.b64decode(normalized, altchars = altchars, validate = True)
     except Exception as exc:  # noqa: BLE001 - corrupt stored payload
-        raise HTTPException(
-            status_code = 422, detail = "Attachment data is corrupt"
-        ) from exc
+        raise HTTPException(status_code = 422, detail = "Attachment data is corrupt") from exc
 
 
 _AUDIO_FORMAT_MEDIA_TYPES = {
@@ -406,9 +442,7 @@ def get_attachment_file(
         if isinstance(text, str) and text:
             texts.append(text)
     if texts:
-        return Response(
-            content = "\n".join(texts), media_type = "text/plain; charset=utf-8"
-        )
+        return Response(content = "\n".join(texts), media_type = "text/plain; charset=utf-8")
     raise HTTPException(status_code = 404, detail = "Attachment has no stored content")
 
 
@@ -419,15 +453,24 @@ def delete_attachment(
     current_subject: str = Depends(get_current_subject),
 ) -> dict:
     """Remove one attachment from its chat message."""
-    if not delete_chat_attachment(message_id, attachment_id):
+    try:
+        deleted = delete_chat_attachment(message_id, attachment_id)
+    except ChatMessageProtectedError as exc:
+        raise log_and_http_error(
+            exc,
+            409,
+            safe_curated_detail(exc),
+            event = "chat_history.delete_attachment_conflict",
+            log = logger,
+        ) from exc
+    if not deleted:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
     return {"ok": True}
 
 
 @router.get("/projects", response_model = ChatProjectListResponse)
 async def list_projects(
-    include_archived: bool = Query(False),
-    current_subject: str = Depends(get_current_subject),
+    include_archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
 ):
     return ChatProjectListResponse(
         projects = [
@@ -438,16 +481,12 @@ async def list_projects(
 
 
 @router.post("/projects", response_model = ChatProject)
-async def save_project(
-    payload: ChatProject, current_subject: str = Depends(get_current_subject)
-):
+async def save_project(payload: ChatProject, current_subject: str = Depends(get_current_subject)):
     return ChatProject(**upsert_chat_project(payload.model_dump()))
 
 
 @router.get("/projects/{project_id}", response_model = ChatProject)
-async def get_project(
-    project_id: str, current_subject: str = Depends(get_current_subject)
-):
+async def get_project(project_id: str, current_subject: str = Depends(get_current_subject)):
     project = ensure_chat_project_workspace(project_id)
     if project is None:
         raise HTTPException(
@@ -481,9 +520,13 @@ async def patch_project(
 @router.delete("/projects/{project_id}", response_model = ChatProject)
 async def delete_project(
     project_id: str,
+    request: Request,
     delete_files: bool = Query(False),
     current_subject: str = Depends(get_current_subject),
 ):
+    _cancel_active_research(
+        request, [thread["id"] for thread in list_chat_threads(project_id = project_id)]
+    )
     project = delete_chat_project(project_id, delete_files = delete_files)
     if project is None:
         raise HTTPException(
@@ -518,16 +561,12 @@ async def delete_project(
             finally:
                 conn.close()
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
-        logger.warning(
-            "failed to delete RAG sources for project %s", project_id, exc_info = True
-        )
+        logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
     return ChatProject(**project)
 
 
 @router.get("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
-async def get_thread_messages(
-    thread_id: str, current_subject: str = Depends(get_current_subject)
-):
+async def get_thread_messages(thread_id: str, current_subject: str = Depends(get_current_subject)):
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     return ChatMessageListResponse(
@@ -537,8 +576,7 @@ async def get_thread_messages(
 
 @router.post("/messages:batch", response_model = ChatMessagesBatchResponse)
 async def batch_thread_messages(
-    payload: ChatMessagesBatchRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: ChatMessagesBatchRequest, current_subject: str = Depends(get_current_subject)
 ):
     """One round-trip per sidebar/search rebuild instead of N. Unknown thread ids return empty lists."""
     by_thread: dict[str, list[ChatMessage]] = {tid: [] for tid in payload.threadIds}
@@ -576,7 +614,7 @@ def save_thread_message(
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     try:
         return ChatMessage(**upsert_chat_message(payload.model_dump()))
-    except ChatMessageConflictError as exc:
+    except (ChatMessageConflictError, ChatMessageProtectedError) as exc:
         raise log_and_http_error(
             exc,
             409,
@@ -592,14 +630,10 @@ def replace_thread_messages(
     payload: ChatMessageSyncRequest,
     current_subject: str = Depends(get_current_subject),
 ):
-    mismatched_ids = [
-        message.id for message in payload.messages if message.threadId != thread_id
-    ]
+    mismatched_ids = [message.id for message in payload.messages if message.threadId != thread_id]
     if mismatched_ids:
         preview = ", ".join(mismatched_ids[:5])
-        suffix = (
-            "" if len(mismatched_ids) <= 5 else f" (+{len(mismatched_ids) - 5} more)"
-        )
+        suffix = "" if len(mismatched_ids) <= 5 else f" (+{len(mismatched_ids) - 5} more)"
         raise HTTPException(
             status_code = 400,
             detail = f"Message threadId mismatch: {preview}{suffix}",
@@ -618,7 +652,7 @@ def replace_thread_messages(
                 )
             ]
         )
-    except ChatMessageConflictError as exc:
+    except (ChatMessageConflictError, ChatMessageProtectedError) as exc:
         raise log_and_http_error(
             exc,
             409,
@@ -644,8 +678,7 @@ async def get_import_ledger(current_subject: str = Depends(get_current_subject))
 
 @router.post("/import-ledger", response_model = ChatImportLedgerRecordResponse)
 async def record_import_ledger(
-    payload: ChatImportLedgerRecordRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: ChatImportLedgerRecordRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Mark each legacy thread id as imported. Idempotent."""
     accepted, inserted = upsert_chat_legacy_imports(payload.threadIds)
@@ -653,7 +686,8 @@ async def record_import_ledger(
 
 
 @router.delete("")
-async def clear_history(current_subject: str = Depends(get_current_subject)):
+async def clear_history(request: Request, current_subject: str = Depends(get_current_subject)):
+    _cancel_active_research(request, [thread["id"] for thread in list_chat_threads()])
     clear_chat_history()
     return {"status": "deleted"}
 
@@ -744,12 +778,8 @@ async def fork_thread(
     # and surface the same warning regardless of provider so the UI can
     # show a consistent "sandbox starts fresh" toast.
     warning: Optional[str] = None
-    if source.get("openaiCodeExecContainerId") or source.get(
-        "anthropicCodeExecContainerId"
-    ):
-        warning = (
-            "Sandbox starts fresh in fork; files from parent are not carried over."
-        )
+    if source.get("openaiCodeExecContainerId") or source.get("anthropicCodeExecContainerId"):
+        warning = "Sandbox starts fresh in fork; files from parent are not carried over."
     return ChatForkResponse(
         thread = ChatThread(**forked),
         messages = [ChatMessage(**m) for m in messages],

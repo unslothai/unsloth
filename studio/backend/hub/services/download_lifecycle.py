@@ -11,7 +11,7 @@ import sys
 import time
 import threading
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
 
 from fastapi import HTTPException
 
@@ -44,12 +44,8 @@ def resolve_effective_use_xet(use_xet: bool) -> bool:
 
 
 def resolve_transport(use_xet: bool) -> str:
-    transport = (
-        download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
-    )
-    unavailable_reason = download_registry.download_transport_unavailable_reason(
-        transport
-    )
+    transport = download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
+    unavailable_reason = download_registry.download_transport_unavailable_reason(transport)
     if unavailable_reason is not None:
         raise HTTPException(status_code = 400, detail = unavailable_reason)
     return transport
@@ -61,6 +57,7 @@ def spawn_worker(
     *,
     use_xet: bool,
     protected_blob_hashes: Optional[frozenset[str]] = None,
+    cache_env: Optional[Mapping[str, str]] = None,
 ) -> subprocess.Popen:
     """Spawn the download worker.
 
@@ -71,10 +68,12 @@ def spawn_worker(
     shared ``.incomplete`` (e.g. bundled mmproj) is never deleted.
     """
     cwd = backend_dir()
-    mode = (
-        download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
-    )
-    env = os.environ.copy()
+    mode = download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    env = get_hf_cache_paths().child_env()
+    if cache_env is not None:
+        env.update(cache_env)
     if protected_blob_hashes:
         env["UNSLOTH_PROTECTED_BLOB_HASHES"] = ",".join(sorted(protected_blob_hashes))
     else:
@@ -101,9 +100,7 @@ def spawn_worker(
     if hf_token:
         env["HF_TOKEN"] = hf_token
     existing_path = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{cwd}{os.pathsep}{existing_path}" if existing_path else str(cwd)
-    )
+    env["PYTHONPATH"] = f"{cwd}{os.pathsep}{existing_path}" if existing_path else str(cwd)
     return subprocess.Popen(
         [
             sys.executable,
@@ -238,6 +235,7 @@ def finalize_worker_exit(
         (stderr_data or b"").decode("utf-8", "replace").strip(),
         hf_token = hf_token,
     )
+    metadata = registry.get_job_metadata(key)
     state = classify_exit(rc, cancel_requested = cancel_requested)
     if state == "complete":
         registry.set_job(key, "complete")
@@ -250,9 +248,7 @@ def finalize_worker_exit(
                     f"{label}: {stderr_text}"
                 )
             else:
-                logger.info(
-                    f"{log_prefix} worker diagnostics for {label}: {stderr_text}"
-                )
+                logger.info(f"{log_prefix} worker diagnostics for {label}: {stderr_text}")
         logger.info(f"{log_prefix} complete: {label}")
         # Defensive cleanup: the canonical clear is at download-start; this
         # catches the rare case where that failed but the download succeeded.
@@ -262,13 +258,13 @@ def finalize_worker_exit(
                     repo_type,
                     repo_id,
                     download_registry.variant_from_key(key),
+                    hub_cache = metadata.hub_cache if metadata is not None else None,
                 )
             except Exception as exc:
                 logger.debug(f"clear_cancel_marker failed for {repo_id} (rc=0): {exc}")
     elif state == "cancelled":
         # Read metadata before the terminal set_job so a concurrent eviction
         # can't drop it; the job key is the fallback variant label.
-        metadata = registry.get_job_metadata(key)
         registry.set_job(key, "cancelled")
         logger.info(f"{log_prefix} cancelled: {label} (rc={rc})")
         download_registry.persist_cancel_marker(
@@ -278,6 +274,7 @@ def finalize_worker_exit(
             if metadata is not None and metadata.variant
             else download_registry.variant_from_key(key),
             cancel_marker_transport or transport,
+            hub_cache = metadata.hub_cache if metadata is not None else None,
             logger = logger,
         )
     else:
@@ -309,12 +306,11 @@ def _set_retry_failure_state(
         download_registry.persist_cancel_marker(
             repo_type,
             repo_id,
-            metadata.variant
-            if metadata is not None and metadata.variant
-            else fallback_variant,
+            metadata.variant if metadata is not None and metadata.variant else fallback_variant,
             metadata.transport
             if metadata is not None and metadata.transport
             else fallback_transport,
+            hub_cache = metadata.hub_cache if metadata is not None else None,
             logger = logger,
         )
     return state
@@ -345,9 +341,7 @@ def _try_http_retry(
     """
     original_metadata = registry.get_job_metadata(key)
     if original_metadata is None:
-        logger.debug(
-            "%s XET retry skipped for %s; metadata unavailable", log_prefix, label
-        )
+        logger.debug("%s XET retry skipped for %s; metadata unavailable", log_prefix, label)
         _set_retry_failure_state(
             registry,
             key,
@@ -385,6 +379,7 @@ def _try_http_retry(
             repo_type,
             repo_id,
             progress_blob_hashes,
+            root = Path(original_metadata.hub_cache) if original_metadata.hub_cache else None,
         )
         if progress_blob_hashes
         else 0
@@ -417,6 +412,8 @@ def _try_http_retry(
             generation = generation,
             replace_active = True,
             cancel_marker_transport = original_metadata.transport,
+            hub_cache = original_metadata.hub_cache,
+            xet_cache = original_metadata.xet_cache,
         )
         if claimed:
             break
@@ -460,11 +457,24 @@ def _try_http_retry(
         label,
     )
     try:
+        cache_env = (
+            {
+                "HF_HUB_CACHE": original_metadata.hub_cache,
+                "HF_XET_CACHE": original_metadata.xet_cache,
+            }
+            if original_metadata.hub_cache and original_metadata.xet_cache
+            else None
+        )
+        spawn_kwargs = {
+            "use_xet": False,
+            "protected_blob_hashes": peer_hashes or None,
+        }
+        if cache_env is not None:
+            spawn_kwargs["cache_env"] = cache_env
         proc = spawn_worker(
             args,
             hf_token,
-            use_xet = False,
-            protected_blob_hashes = peer_hashes or None,
+            **spawn_kwargs,
         )
     except Exception as exc:
         scrubbed = download_registry.scrub_secrets(str(exc), hf_token = hf_token)
@@ -594,15 +604,11 @@ def register_worker(
             try:
                 kill_and_reap_process(proc, label = label, logger = logger)
             except Exception:
-                logger.exception(
-                    "failed to reap worker after watcher crash for %s", key
-                )
+                logger.exception("failed to reap worker after watcher crash for %s", key)
             try:
                 registry.drop_process(key, proc)
             except Exception:
-                logger.exception(
-                    "failed to drop worker after watcher crash for %s", key
-                )
+                logger.exception("failed to drop worker after watcher crash for %s", key)
             try:
                 registry.set_job(key, "error", "download watcher crashed")
             except Exception:
@@ -736,18 +742,13 @@ def idle_status(
 
 
 def active_download_refs(
-    registry: download_registry.DownloadRegistry,
-    repo_id: Optional[str],
-    *,
-    with_variant: bool,
+    registry: download_registry.DownloadRegistry, repo_id: Optional[str], *, with_variant: bool
 ) -> list[ActiveDownload]:
     downloads: list[ActiveDownload] = []
     for ref in registry.active_job_refs(repo_id):
         metadata = ref.metadata
         if with_variant:
-            ref_repo_id = (
-                metadata.repo_id if metadata is not None else ref.key.split("::", 1)[0]
-            )
+            ref_repo_id = metadata.repo_id if metadata is not None else ref.key.split("::", 1)[0]
             if metadata is not None:
                 variant = metadata.variant
             else:

@@ -26,9 +26,7 @@ def _calls_name(tree: ast.AST, name: str) -> int:
     return sum(
         1
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == name
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == name
     )
 
 
@@ -101,7 +99,9 @@ def test_wait_for_server_shutdown_join_is_bounded():
         for node in ast.walk(wait_func)
     )
 
-    assert bounded_join, "the join must pass a timeout so a stalled uvicorn shutdown cannot hang the terminal"
+    assert (
+        bounded_join
+    ), "the join must pass a timeout so a stalled uvicorn shutdown cannot hang the terminal"
 
 
 def test_direct_backend_entrypoint_waits_before_returning_to_shell():
@@ -117,8 +117,7 @@ def test_signal_handler_restores_default_handlers_for_force_quit():
     handler = _function(tree, "_signal_handler")
 
     restores_default = any(
-        isinstance(node, ast.Attribute) and node.attr == "SIG_DFL"
-        for node in ast.walk(handler)
+        isinstance(node, ast.Attribute) and node.attr == "SIG_DFL" for node in ast.walk(handler)
     )
 
     assert (

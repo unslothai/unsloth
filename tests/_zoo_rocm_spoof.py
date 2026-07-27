@@ -25,6 +25,7 @@ _PROFILES: dict[str, tuple[str, tuple[int, int], str]] = {
     "gfx1101": ("AMD Radeon RX 7800 XT", (11, 0), "6.4.43483"),
     "gfx1102": ("AMD Radeon RX 7600", (11, 0), "7.2.1"),
     "gfx1150": ("AMD Radeon 890M", (11, 5), "7.2.1"),  # RDNA3.5 APU
+    "gfx1152": ("AMD Radeon 860M", (11, 5), "7.2.1"),
     "gfx1151": ("AMD Radeon 8060S", (11, 5), "7.2.1"),
     "gfx1200": ("AMD Radeon RX 9060 XT", (12, 0), "7.2.1"),  # RDNA4
     "gfx1201": ("AMD Radeon RX 9070 XT", (12, 0), "7.2.1"),
@@ -36,9 +37,7 @@ def _cuda_spoof():
     torch.cuda machinery instead of duplicating it."""
     if "_zoo_aggressive_cuda_spoof" in sys.modules:
         return sys.modules["_zoo_aggressive_cuda_spoof"]
-    path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "_zoo_aggressive_cuda_spoof.py"
-    )
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_zoo_aggressive_cuda_spoof.py")
     spec = importlib.util.spec_from_file_location("_zoo_aggressive_cuda_spoof", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -75,7 +74,7 @@ def apply(gfx: str = "gfx1100", device_count: int = 1) -> None:
     _p.total_memory = 16 * 1024**3
     _p.multi_processor_count = 40
     _p.warp_size = 32  # RDNA wavefront (CDNA is 64)
-    _p.is_integrated = gfx in ("gfx1150", "gfx1151")
+    _p.is_integrated = gfx in ("gfx1150", "gfx1151", "gfx1152")
     _p.is_multi_gpu_board = False
     torch.cuda.get_device_properties = lambda *a, **k: _p
 
@@ -83,8 +82,4 @@ def apply(gfx: str = "gfx1100", device_count: int = 1) -> None:
 if __name__ == "__main__":
     apply()
     import torch
-    print(
-        "ROCm spoof applied:",
-        torch.version.hip,
-        torch.cuda.get_device_properties(0).gcnArchName,
-    )
+    print("ROCm spoof applied:", torch.version.hip, torch.cuda.get_device_properties(0).gcnArchName)

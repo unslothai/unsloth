@@ -110,9 +110,7 @@ def _install_custom_code_tokenizer(monkeypatch):
             )
         return _JinjaTokenizer(_NATIVE_TEMPLATE)
 
-    monkeypatch.setattr(
-        AutoTokenizer, "from_pretrained", staticmethod(fake_from_pretrained)
-    )
+    monkeypatch.setattr(AutoTokenizer, "from_pretrained", staticmethod(fake_from_pretrained))
     return calls
 
 
@@ -140,9 +138,7 @@ def test_native_reload_passes_stored_trust_remote_code(monkeypatch):
         tools = _TOOLS,
     )
 
-    assert (
-        out is not None
-    ), "native fallback should render the tools prompt with consent"
+    assert out is not None, "native fallback should render the tools prompt with consent"
     assert "[AVAILABLE_TOOLS]" in out
     assert "get_weather" in out
     assert calls["trust_remote_code"] is True  # the stored consent was threaded through
@@ -174,7 +170,9 @@ def test_backend_model_info_persists_trust_remote_code():
     """Both backends must store ``trust_remote_code`` on their per-model info dict so
     ``render_native_template`` can source the consent value. Guards against the read
     landing on a key ``load_model`` never sets (which would silently no-op the fix)."""
-    inf = (Path(_BACKEND_DIR) / "core" / "inference" / "inference.py").read_text()
-    mlx = (Path(_BACKEND_DIR) / "core" / "inference" / "mlx_inference.py").read_text()
+    inf = (Path(_BACKEND_DIR) / "core" / "inference" / "inference.py").read_text(encoding = "utf-8")
+    mlx = (Path(_BACKEND_DIR) / "core" / "inference" / "mlx_inference.py").read_text(
+        encoding = "utf-8"
+    )
     assert '"trust_remote_code": trust_remote_code,' in inf
     assert '"trust_remote_code": trust_remote_code,' in mlx

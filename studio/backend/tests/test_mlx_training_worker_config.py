@@ -45,12 +45,8 @@ def _load_worker_module():
             setattr(wheel_utils, name, lambda *_args, **_kwargs: None)
         sys.modules["utils.wheel_utils"] = wheel_utils
 
-        worker_path = (
-            Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
-        )
-        spec = importlib.util.spec_from_file_location(
-            "mlx_training_worker_under_test", worker_path
-        )
+        worker_path = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
+        spec = importlib.util.spec_from_file_location("mlx_training_worker_under_test", worker_path)
         module = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
         spec.loader.exec_module(module)
@@ -90,9 +86,9 @@ def test_mlx_studio_rejects_unknown_scheduler():
 
 
 def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():
-    source = (
-        Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
-    ).read_text()
+    source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
+        encoding = "utf-8"
+    )
 
     assert "tokenizer = tokenizer" in source
     assert "processor = tokenizer if is_vlm else None" not in source
@@ -102,13 +98,12 @@ def test_mlx_wandb_run_config_excludes_subject_and_secrets():
     # The MLX W&B run config uploads the whole config minus a sensitive set. The owner's
     # subject (authenticated username / API-key id) must be filtered alongside the secrets,
     # otherwise it lands in W&B run config even though DB history already strips it.
-    source = (
-        Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
-    ).read_text()
+    source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
+        encoding = "utf-8"
+    )
 
     assert (
-        '_wandb_sensitive = {"hf_token", "wandb_token", "s3_config", "subject"}'
-        in source
+        '_wandb_sensitive = {"hf_token", "wandb_token", "s3_config", "subject"}' in source
     ), "MLX W&B run config must exclude subject and the token/s3 secrets"
 
 
@@ -165,9 +160,7 @@ def test_mlx_vlm_resized_image_layout_probes_processor_contract():
         == "chw"
     )
     assert (
-        _mlx_vlm_resized_image_layout(
-            types.SimpleNamespace(image_processor = HwcImageProcessor())
-        )
+        _mlx_vlm_resized_image_layout(types.SimpleNamespace(image_processor = HwcImageProcessor()))
         is None
     )
 
@@ -186,9 +179,7 @@ def test_mlx_vlm_layout_probe_copies_image_processor():
 
     image_processor = StatefulImageProcessor()
 
-    layout = _mlx_vlm_resized_image_layout(
-        types.SimpleNamespace(image_processor = image_processor)
-    )
+    layout = _mlx_vlm_resized_image_layout(types.SimpleNamespace(image_processor = image_processor))
 
     assert layout == "chw"
     assert image_processor.calls == 0

@@ -36,8 +36,7 @@ from typing import Any, Callable
 if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.environ:
     try:
         if os.path.exists("/dev/dxg") and any(
-            os.path.exists(_p + "/librocdxg.so")
-            for _p in ("/opt/rocm/lib", "/opt/rocm/lib64")
+            os.path.exists(_p + "/librocdxg.so") for _p in ("/opt/rocm/lib", "/opt/rocm/lib64")
         ):
             os.environ["HSA_ENABLE_DXG_DETECTION"] = "1"
     except Exception:
@@ -56,9 +55,7 @@ from utils.wheel_utils import (
 )
 
 
-def _output_dir_from_resume_checkpoint(
-    resume_from_checkpoint: str | None,
-) -> str | None:
+def _output_dir_from_resume_checkpoint(resume_from_checkpoint: str | None) -> str | None:
     if not resume_from_checkpoint:
         return None
     path = Path(resume_from_checkpoint)
@@ -93,6 +90,79 @@ _FAST_PATH_HOOKS_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS"
 # run_training_process() and isn't GC'd mid-run.
 _WINDOWS_ROCM_GROUPED_MM_LIB = None
 
+
+def _install_grouped_mm_cpu_fallback(torch_mod, logger, label):
+    """Register a Python mm/bmm fallback for torch._grouped_mm and return the Library.
+
+    RDNA4 (gfx1200/gfx1201) ships a null HIP _grouped_mm kernel on ROCm <= 7.12
+    (fixed in 7.13; ROCm/TheRock #5284). JitDecomp dispatches _grouped_mm to the
+    null kernel and crashes; overriding the CUDA dispatch key bypasses it. Shared
+    by the Windows and Linux ROCm guards. Keep the returned Library referenced so
+    the registration outlives the caller.
+    """
+    import warnings as _warnings
+
+    _gm_lib = torch_mod.library.Library("aten", "IMPL")
+
+    def _grouped_mm_safe_impl(
+        self,
+        mat2,
+        offs = None,
+        bias = None,
+        out_dtype = None,
+    ):
+        """Python mm/bmm fallback for _grouped_mm on gfx120X (null HIP kernel, ROCm <= 7.12)."""
+        _t = torch_mod
+        if offs is None:
+            # No offsets: 2-D -> mm, 3-D batched -> bmm (unconditional mm broke 3-D MoE).
+            if self.dim() == 3 and mat2.dim() == 3:
+                result = _t.bmm(self.contiguous(), mat2.contiguous())
+            elif self.dim() == 3 and mat2.dim() == 2:
+                result = _t.matmul(self.contiguous(), mat2.contiguous())
+            elif self.dim() == 2 and mat2.dim() == 3:
+                result = _t.matmul(self.contiguous(), mat2.contiguous())
+            else:
+                result = _t.mm(self.contiguous(), mat2.contiguous())
+        else:
+            # Grouped: offs[i] is the exclusive end-row of group i.
+            offs_list = offs.tolist()
+            pieces = []
+            prev = 0
+            for idx, end in enumerate(offs_list):
+                end = int(end)
+                a_part = self[prev:end].contiguous()
+                b_part = mat2[idx].contiguous() if mat2.dim() == 3 else mat2.contiguous()
+                pieces.append(_t.mm(a_part, b_part))
+                prev = end
+            # Include trailing rows not covered by offs.
+            if prev < self.shape[0]:
+                a_tail = self[prev:].contiguous()
+                b_tail = mat2[-1].contiguous() if mat2.dim() == 3 else mat2.contiguous()
+                pieces.append(_t.mm(a_tail, b_tail))
+            result = (
+                _t.cat(pieces, dim = 0)
+                if pieces
+                else _t.zeros(0, mat2.shape[-1], device = self.device, dtype = self.dtype)
+            )
+        if bias is not None:
+            result = result + bias
+        if out_dtype is not None:
+            result = result.to(out_dtype)
+        elif result.dtype != self.dtype:
+            result = result.to(self.dtype)
+        return result
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore")
+        _gm_lib.impl("_grouped_mm", _grouped_mm_safe_impl, "CUDA")
+    logger.info(
+        "%s: patched _grouped_mm CUDA dispatch (null HIP kernel on gfx120X, "
+        "ROCm <= 7.12 -- bypassed with Python mm fallback)",
+        label,
+    )
+    return _gm_lib
+
+
 # Subprocesses don't inherit os.add_dll_directory registrations. Replicate
 # main.py's Windows ROCm DLL setup so the first `import torch` finds
 # amdhip64.dll. Handles retained at module scope so they aren't GC'd.
@@ -121,9 +191,7 @@ if sys.platform == "win32":
 
         try:
             if os.path.isdir(_default_root):
-                for _ver in sorted(
-                    os.listdir(_default_root), key = _ver_key, reverse = True
-                ):
+                for _ver in sorted(os.listdir(_default_root), key = _ver_key, reverse = True):
                     _bin = os.path.join(_default_root, _ver, "bin")
                     if os.path.isdir(_bin):
                         _candidates.append(_bin)
@@ -264,9 +332,7 @@ def _install_package_wheel_first(
                 "(this may take several minutes)..."
             )
         else:
-            pypi_status_message = (
-                f"Installing {display_name} from PyPI for faster training..."
-            )
+            pypi_status_message = f"Installing {display_name} from PyPI for faster training..."
 
     _send_status(event_queue, pypi_status_message)
 
@@ -351,8 +417,7 @@ def _install_package_wheel_first(
         )
         _send_status(
             event_queue,
-            f"{display_name} installation timed out after "
-            f"{_run_kwargs.get('timeout')}s",
+            f"{display_name} installation timed out after " f"{_run_kwargs.get('timeout')}s",
         )
         return False
 
@@ -470,9 +535,7 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
     if os.getenv(_FLA_SKIP_ENV) == "1":
         return False
     if sys.platform == "win32":
-        logger.info(
-            "Skipping flash-linear-attention install: no prebuilt wheel for Windows"
-        )
+        logger.info("Skipping flash-linear-attention install: no prebuilt wheel for Windows")
         return False
     if sys.version_info < _FLA_MIN_PYTHON:
         logger.info(
@@ -547,9 +610,7 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
         )
     except _sp.TimeoutExpired:
         logger.warning("flash-linear-attention install timed out; continuing")
-        _send_status(
-            event_queue, "flash-linear-attention install timed out; continuing"
-        )
+        _send_status(event_queue, "flash-linear-attention install timed out; continuing")
         return False
 
     if result.returncode != 0:
@@ -703,8 +764,8 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     - ``gcn_arch``: canonical arch string (e.g. ``"gfx1151"``) when a known
       attribute is present, else ``""``.
     - ``is_unified``: ``True`` for AMD APUs with a shared GPU/system-RAM pool
-      (gfx1150 Strix Point, gfx1151 Strix Halo) — these need a lower
-      ``set_per_process_memory_fraction`` cap to leave OS headroom.
+      (gfx1150 Strix Point, gfx1151 Strix Halo, gfx1152 Krackan Point) — these
+      need a lower ``set_per_process_memory_fraction`` cap to leave OS headroom.
 
     Classification priority:
     1. ``props.is_integrated`` truthy (hipDeviceProp_t.integrated -- the
@@ -714,8 +775,10 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     3. Device-name substring match (last resort when all arch attrs absent;
        AMD SDK / Radeon wheels may not populate them):
          - gfx1150 Strix Point: ``Radeon 890M``, ``Radeon 880M``
-         - gfx1151 Strix Halo:  ``Radeon 8060S`` (Ryzen AI MAX+ 395),
-                                ``Radeon 8050S`` (cut-down SKU)
+         - gfx1151 Strix Halo / Gorgon Halo:  ``Radeon 8065S`` (Ryzen AI
+                                Max+ 495), ``Radeon 8060S`` (Ryzen AI MAX+
+                                395), ``Radeon 8050S`` (cut-down SKU)
+         - gfx1152 Krackan Point: ``Radeon 860M``, ``Radeon 840M``
     """
     gcn_arch = ""
     for _attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
@@ -735,15 +798,22 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
         return gcn_arch, True
 
     if gcn_arch:
-        return gcn_arch, gcn_arch in {"gfx1150", "gfx1151"}
+        # gfx1152 is Krackan Point, the third RDNA 3.5 APU: same shared
+        # GPU/system-RAM pool as Strix Point (gfx1150) and Strix Halo (gfx1151).
+        return gcn_arch, gcn_arch in {"gfx1150", "gfx1151", "gfx1152"}
 
-    # Arch attrs absent — fall back to device-name matching.
+    # Arch attrs absent — fall back to device-name matching. Only reached under
+    # _hw.IS_ROCM, so the NVIDIA GeForce 840M cannot collide with the Krackan
+    # markers here.
     dev_lower = (getattr(props, "name", "") or "").lower()
     is_unified = (
         "890m" in dev_lower
         or "880m" in dev_lower
+        or "8065s" in dev_lower
         or "8060s" in dev_lower
         or "8050s" in dev_lower
+        or "860m" in dev_lower
+        or "840m" in dev_lower
     )
     return gcn_arch, is_unified
 
@@ -786,9 +856,7 @@ def _run_pip(cmd: list[str], event_queue: Any, label: str) -> bool:
         _send_status(event_queue, f"{label} install timed out; continuing")
         return False
     if result.returncode != 0:
-        logger.warning(
-            "%s install failed (continuing without it):\n%s", label, result.stdout
-        )
+        logger.warning("%s install failed (continuing without it):\n%s", label, result.stdout)
         _send_status(event_queue, f"{label} install failed; continuing")
         return False
     return True
@@ -889,9 +957,7 @@ def _ensure_tilelang_backend(event_queue: Any, model_name: str) -> None:
 # UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the substring path.
 
 
-def _rebind_in_already_imported_modules(
-    *, attr_name: str, old_obj: Any, new_obj: Any
-) -> int:
+def _rebind_in_already_imported_modules(*, attr_name: str, old_obj: Any, new_obj: Any) -> int:
     """Rebind `attr_name -> new_obj` in every module that imported `old_obj`.
 
     `from X import Y` creates a local binding that reassigning X.Y won't reach.
@@ -964,9 +1030,7 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
                 try:
                     ok = bool(install_fn(event_queue))
                 except Exception as exc:
-                    logger.warning(
-                        "%s install raised: %s; falling back to torch", gate_name, exc
-                    )
+                    logger.warning("%s install raised: %s; falling back to torch", gate_name, exc)
                     ok = False
                 logger.info("%s hook done; available=%s", gate_name, ok)
             # post_available_fn handles "gate already True but ancillary kernel broken"
@@ -975,9 +1039,7 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
                 try:
                     post_available_fn(event_queue)
                 except Exception as exc:
-                    logger.warning(
-                        "%s post-available step raised: %s; continuing", gate_name, exc
-                    )
+                    logger.warning("%s post-available step raised: %s; continuing", gate_name, exc)
             state["installed"] = True
             return ok
 
@@ -988,9 +1050,7 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
     def _fla_install(eq: Any) -> bool:
         # FLA alone ~2.35x; +tilelang adds ~26%. tilelang is GDN-only (Qwen3.5 family).
         if not _ensure_flash_linear_attention_unconditional(eq):
-            logger.info(
-                "FLA install did not produce an importable runtime; skipping TileLang"
-            )
+            logger.info("FLA install did not produce an importable runtime; skipping TileLang")
             return False
         if _model_wants_tilelang(model_name):
             _ensure_tilelang_backend_unconditional(eq)
@@ -1005,10 +1065,7 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
         # FLA imports; repair tilelang if missing or on the broken tvm-ffi list.
         if not _model_wants_tilelang(model_name):
             return
-        if (
-            _installed_tvm_ffi_version() not in _TVM_FFI_BROKEN_VERSIONS
-            and _tilelang_importable()
-        ):
+        if _installed_tvm_ffi_version() not in _TVM_FFI_BROKEN_VERSIONS and _tilelang_importable():
             return
         _ensure_tilelang_backend_unconditional(eq)
 
@@ -1024,9 +1081,7 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
             pypi_version = _CAUSAL_CONV1D_PACKAGE_VERSION,
             filename_prefix = "causal_conv1d",
             release_tag = _CAUSAL_CONV1D_RELEASE_TAG,
-            release_base_url = (
-                "https://github.com/Dao-AILab/causal-conv1d/releases/download"
-            ),
+            release_base_url = ("https://github.com/Dao-AILab/causal-conv1d/releases/download"),
         )
         return bool(ok)
 
@@ -1046,9 +1101,7 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
         rebound = _rebind_in_already_imported_modules(
             attr_name = gate_name, old_obj = original, new_obj = wrapped
         )
-        logger.info(
-            "Installed fast-path hook on %s (rebound %d modules)", gate_name, rebound
-        )
+        logger.info("Installed fast-path hook on %s (rebound %d modules)", gate_name, rebound)
 
 
 def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
@@ -1082,9 +1135,7 @@ def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -
         _send_status(event_queue, "Continuing without flash-attn")
 
 
-def _activate_transformers_version(
-    model_name: str, hf_token: str | None = None
-) -> None:
+def _activate_transformers_version(model_name: str, hf_token: str | None = None) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
     # Ensure backend is on path for utils imports
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
@@ -1096,9 +1147,7 @@ def _activate_transformers_version(
     activate_transformers_for_subprocess(model_name, hf_token)
 
 
-def _activate_transformers_version_or_warn(
-    model_name: str, hf_token: str | None = None
-) -> None:
+def _activate_transformers_version_or_warn(model_name: str, hf_token: str | None = None) -> None:
     """Activate the required transformers version for the MLX fast-path.
 
     Unlike the non-MLX path (which treats activation failure as fatal and
@@ -1229,10 +1278,7 @@ def _resize_mlx_vlm_images(
     image_layout = None,
 ):
     if isinstance(value, list):
-        return [
-            _resize_mlx_vlm_image(image, resize, image_layout = image_layout)
-            for image in value
-        ]
+        return [_resize_mlx_vlm_image(image, resize, image_layout = image_layout) for image in value]
     return _resize_mlx_vlm_image(value, resize, image_layout = image_layout)
 
 
@@ -1508,6 +1554,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
         message = "LoftQ is not supported for MLX training yet."
         _send("error", error = message)
         raise NotImplementedError(message)
+    if config.get("use_dora"):
+        message = "DoRA is not supported for MLX training yet."
+        _send("error", error = message)
+        raise NotImplementedError(message)
     if config.get("is_embedding"):
         message = "Embedding model training is not supported for MLX training yet."
         _send("error", error = message)
@@ -1518,9 +1568,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         raise NotImplementedError(message)
 
     optim_name = _normalize_mlx_studio_optimizer(config.get("optim", "adamw_8bit"))
-    lr_scheduler_type = _normalize_mlx_studio_scheduler(
-        config.get("lr_scheduler_type", "linear")
-    )
+    lr_scheduler_type = _normalize_mlx_studio_scheduler(config.get("lr_scheduler_type", "linear"))
 
     # ── 1. Load model ──
     # Force text-only for non-image datasets even on vision-capable models
@@ -1554,9 +1602,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         from utils.models.model_config import get_base_model_from_lora_identifier
 
         # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
-        _base = get_base_model_from_lora_identifier(
-            model_name, config.get("hf_token") or None
-        )
+        _base = get_base_model_from_lora_identifier(model_name, config.get("hf_token") or None)
         if _base:
             malware_targets.append(_base)
     except Exception as exc:
@@ -1565,9 +1611,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     for target in dict.fromkeys(malware_targets):
         _fs = evaluate_file_security(
-            target,
-            hf_token = hf_token,
-            load_subdirs = security_load_subdirs(target, hf_token),
+            target, hf_token = hf_token, load_subdirs = security_load_subdirs(target, hf_token)
         )
         if _fs.blocked:
             _send(
@@ -1682,15 +1726,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
         finetune_language = config.get("finetune_language_layers", True)
         finetune_attention = config.get("finetune_attention_modules", True)
         finetune_mlp = config.get("finetune_mlp_modules", True)
-        finetune_vision = (
-            config.get("finetune_vision_layers", False) if is_vlm else False
-        )
+        finetune_vision = config.get("finetune_vision_layers", False) if is_vlm else False
 
-        if (
-            (finetune_attention or finetune_mlp)
-            and not finetune_language
-            and not finetune_vision
-        ):
+        if (finetune_attention or finetune_mlp) and not finetune_language and not finetune_vision:
             finetune_language = True
 
         peft_kwargs["finetune_language_layers"] = finetune_language
@@ -1723,9 +1761,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
         if len(file_paths) == 1:
             p = Path(file_paths[0])
-            if p.is_dir() and (
-                (p / "dataset_info.json").exists() or (p / "state.json").exists()
-            ):
+            if p.is_dir() and ((p / "dataset_info.json").exists() or (p / "state.json").exists()):
                 return load_from_disk(str(p))
         all_files = _resolve_mlx_local_dataset_files(file_paths)
         if not all_files:
@@ -1814,9 +1850,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 )
             else:
                 errors = vlm_info.get("errors", [])
-                raise ValueError(
-                    f"VLM dataset format conversion failed: {'; '.join(errors)}"
-                )
+                raise ValueError(f"VLM dataset format conversion failed: {'; '.join(errors)}")
             if eval_dataset is not None:
                 ev_info = format_and_template_dataset(
                     eval_dataset,
@@ -1895,8 +1929,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # Resolve to ~/.unsloth/studio/outputs/ so the export page finds it
     from utils.paths import ensure_dir
 
-    output_dir = _resolve_mlx_output_dir(config, model_name)
+    # Resume must land in the original run dir even when config lacks output_dir.
+    resume_dir = config.get("output_dir", "") or _output_dir_from_resume_checkpoint(
+        resume_from_checkpoint
+    )
+    output_dir = _resolve_mlx_output_dir(
+        {**config, "output_dir": resume_dir} if resume_dir else config, model_name
+    )
     ensure_dir(Path(output_dir))
+    _emit_output_dir(event_queue, output_dir)
 
     # ── 6. Create trainer ──
     eval_steps_val = config.get("eval_steps", 0) or 0
@@ -2087,11 +2128,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                         "train/tokens_per_sec": tok_s,
                         "train/peak_gb": peak_gb,
                         "train/num_tokens": num_tokens,
-                        **(
-                            {"train/grad_norm": grad_norm}
-                            if grad_norm is not None
-                            else {}
-                        ),
+                        **({"train/grad_norm": grad_norm} if grad_norm is not None else {}),
                     },
                     step = step,
                 )
@@ -2114,9 +2151,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send("progress", step = step, eval_loss = eval_loss)
         if wandb_run is not None:
             try:
-                wandb_run.log(
-                    {"eval/loss": eval_loss, "eval/perplexity": perplexity}, step = step
-                )
+                wandb_run.log({"eval/loss": eval_loss, "eval/perplexity": perplexity}, step = step)
             except Exception:
                 pass
         if tb_writer is not None:
@@ -2127,6 +2162,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 pass
 
     trainer.add_eval_callback(_on_eval)
+
+    _opt_ref = [None]
+    _orig_build_optimizer = getattr(trainer, "_build_optimizer", None)
+
+    if callable(_orig_build_optimizer):
+
+        def _capture_optimizer(total_steps):
+            _opt_ref[0] = _orig_build_optimizer(total_steps)
+            return _opt_ref[0]
+
+        trainer._build_optimizer = _capture_optimizer
 
     # ── 11. Run training ──
     gc.collect()
@@ -2143,31 +2189,58 @@ def _run_mlx_training(event_queue, stop_queue, config):
         trainer.save_model = _save_model
 
     # ── 12. Save and finalize ──
-    if trainer.stop_requested:
-        if not _stop_save[0]:
-            # Cancel (save=False): skip saving.
-            _send("complete", output_dir = None, status_message = "Training cancelled")
+    def _finish_tracking() -> None:
+        # Runs on every save/finalize exit so TB/W&B never leak on early return.
+        if tb_writer is not None:
+            try:
+                tb_writer.close()
+            except Exception:
+                pass
+        if wandb_run is not None:
+            try:
+                wandb_run.finish()
+            except Exception:
+                pass
+
+    def _stop_checkpoint_ok() -> bool:
+        if _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir):
+            return True
+        _send(
+            "error",
+            error = (
+                "Failed to save a resumable checkpoint after stop. "
+                "Model files were saved, but this run cannot be resumed."
+            ),
+            # A user stop finalizes as 'stopped'; keep this failure's error status so history explains it.
+            keep_error_status = True,
+            # Older checkpoints are stale; resuming would roll back past this stop.
+            resume_blocked = True,
+        )
+        return False
+
+    try:
+        if trainer.stop_requested:
+            if not _stop_save[0]:
+                # Cancel (save=False): skip saving.
+                _send("complete", output_dir = None, status_message = "Training cancelled")
+            else:
+                _send("status", status_message = "Saving stopped model...")
+                mx.synchronize()
+                trainer.save_model(output_dir)
+                # Stop-and-save promises a resumable checkpoint, not just model files.
+                if not _stop_checkpoint_ok():
+                    return
+                _send("complete", output_dir = output_dir, status_message = "Training stopped")
         else:
-            _send("status", status_message = "Saving stopped model...")
+            _send("status", status_message = "Saving model...")
             mx.synchronize()
             trainer.save_model(output_dir)
-            _send("complete", output_dir = output_dir, status_message = "Training stopped")
-    else:
-        _send("status", status_message = "Saving model...")
-        mx.synchronize()
-        trainer.save_model(output_dir)
-        _send("complete", output_dir = output_dir, status_message = "Training completed")
-
-    if tb_writer is not None:
-        try:
-            tb_writer.close()
-        except Exception:
-            pass
-    if wandb_run is not None:
-        try:
-            wandb_run.finish()
-        except Exception:
-            pass
+            # A save-stop can race the natural final save; it made the same promise.
+            if trainer.stop_requested and _stop_save[0] and not _stop_checkpoint_ok():
+                return
+            _send("complete", output_dir = output_dir, status_message = "Training completed")
+    finally:
+        _finish_tracking()
 
 
 def _is_current_process_apple_silicon() -> bool:
@@ -2197,9 +2270,7 @@ def run_mlx_training_process(
 
     if not transformers_activated:
         # Must precede detect_hardware(): its MLX stack check imports mlx_lm, hence transformers.
-        _activate_transformers_version_or_warn(
-            model_name, config.get("hf_token") or None
-        )
+        _activate_transformers_version_or_warn(model_name, config.get("hf_token") or None)
 
     from utils.hardware import hardware as _hw
 
@@ -2313,7 +2384,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
-    apply_gpu_ids(config.get("resolved_gpu_ids"))
+    apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
     model_name = config["model_name"]
 
@@ -2323,19 +2394,14 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
-    from .training import (
-        is_apple_silicon_training_platform,
-        should_use_mlx_training_backend,
-    )
+    from .training import is_apple_silicon_training_platform, should_use_mlx_training_backend
 
     mlx_backend_requested = is_apple_silicon_training_platform()
 
     mlx_transformers_activated = False
     if mlx_backend_requested and _is_current_process_apple_silicon():
         # Must precede detect_hardware(): its MLX stack check imports mlx_lm, hence transformers.
-        _activate_transformers_version_or_warn(
-            model_name, config.get("hf_token") or None
-        )
+        _activate_transformers_version_or_warn(model_name, config.get("hf_token") or None)
         mlx_transformers_activated = True
 
     from utils.hardware import hardware as _hw
@@ -2396,9 +2462,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         from utils.models.model_config import get_base_model_from_lora_identifier
 
         # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
-        _base = get_base_model_from_lora_identifier(
-            model_name, config.get("hf_token") or None
-        )
+        _base = get_base_model_from_lora_identifier(model_name, config.get("hf_token") or None)
         if _base:
             malware_targets.append(_base)
     except Exception as exc:
@@ -2602,9 +2666,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             if os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe")):
                 import shutil as _shutil
                 if not _shutil.which("hipinfo.exe"):
-                    os.environ["PATH"] = (
-                        _scripts_dir + os.pathsep + os.environ.get("PATH", "")
-                    )
+                    os.environ["PATH"] = _scripts_dir + os.pathsep + os.environ.get("PATH", "")
 
             # BNB picks a rocm DLL from torch.version.hip, but AMD's Windows BNB
             # wheel may ship a DLL whose suffix doesn't match. Detect the actual
@@ -2645,9 +2707,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 # so later import fixes can still redetect or opt out. DLL
                 # with unparsable name -> seeded value or "72".
                 if _found_rocm_bnb:
-                    _bnb_rocm_ver = (
-                        _bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"
-                    )
+                    _bnb_rocm_ver = _bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"
                     os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver
                     os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"
                     logger.info(
@@ -2670,9 +2730,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             # the rocm version embedded in torch.__version__ when version.hip is
             # unset (AMD SDK / Radeon wheels).
             def _hip_ver_at_least(major: int, minor: int) -> bool:
-                _hip_str = getattr(
-                    getattr(_torch_for_rocm, "version", None), "hip", None
-                )
+                _hip_str = getattr(getattr(_torch_for_rocm, "version", None), "hip", None)
                 if not _hip_str:
                     # Try the standard "+rocmX.Y.Z" embedded version first.
                     _ver_match = re.search(r"rocm(\d+)\.(\d+)", _build_version_for_rocm)
@@ -2720,82 +2778,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             # so 7.13+ uses the real GPU kernel.
             if not _hip_ver_at_least(7, 13):
                 try:
-                    import warnings as _warnings
-
-                    _gm_lib = _torch_for_rocm.library.Library("aten", "IMPL")
-
-                    def _grouped_mm_safe_impl(
-                        self,
-                        mat2,
-                        offs = None,
-                        bias = None,
-                        out_dtype = None,
-                    ):
-                        """Python mm/bmm fallback for _grouped_mm on gfx1200 (null HIP kernel, ROCm ≤ 7.12)."""
-                        _t = _torch_for_rocm
-                        if offs is None:
-                            # No offsets: 2-D -> mm, 3-D batched -> bmm
-                            # (unconditional mm broke 3-D MoE).
-                            if self.dim() == 3 and mat2.dim() == 3:
-                                result = _t.bmm(self.contiguous(), mat2.contiguous())
-                            elif self.dim() == 3 and mat2.dim() == 2:
-                                # Broadcast 2-D mat2 across the batch dim.
-                                result = _t.matmul(self.contiguous(), mat2.contiguous())
-                            elif self.dim() == 2 and mat2.dim() == 3:
-                                # Broadcast 2-D self across batch via matmul.
-                                result = _t.matmul(self.contiguous(), mat2.contiguous())
-                            else:
-                                result = _t.mm(self.contiguous(), mat2.contiguous())
-                        else:
-                            # Grouped: offs[i] is the exclusive end-row of group i.
-                            offs_list = offs.tolist()
-                            pieces = []
-                            prev = 0
-                            for idx, end in enumerate(offs_list):
-                                end = int(end)
-                                a_part = self[prev:end].contiguous()
-                                if mat2.dim() == 3:
-                                    b_part = mat2[idx].contiguous()
-                                else:
-                                    b_part = mat2.contiguous()
-                                pieces.append(_t.mm(a_part, b_part))
-                                prev = end
-                            # Include trailing rows not covered by offs.
-                            if prev < self.shape[0]:
-                                a_tail = self[prev:].contiguous()
-                                b_tail = (
-                                    mat2[-1].contiguous()
-                                    if mat2.dim() == 3
-                                    else mat2.contiguous()
-                                )
-                                pieces.append(_t.mm(a_tail, b_tail))
-                            result = (
-                                _t.cat(pieces, dim = 0)
-                                if pieces
-                                else _t.zeros(
-                                    0,
-                                    mat2.shape[-1],
-                                    device = self.device,
-                                    dtype = self.dtype,
-                                )
-                            )
-                        if bias is not None:
-                            result = result + bias
-                        if out_dtype is not None:
-                            result = result.to(out_dtype)
-                        elif result.dtype != self.dtype:
-                            result = result.to(self.dtype)
-                        return result
-
-                    with _warnings.catch_warnings():
-                        _warnings.simplefilter("ignore")
-                        _gm_lib.impl("_grouped_mm", _grouped_mm_safe_impl, "CUDA")
-
-                    _WINDOWS_ROCM_GROUPED_MM_LIB = _gm_lib  # prevent GC
-                    logger.info(
-                        "Windows ROCm: patched _grouped_mm CUDA dispatch "
-                        "(null HIP kernel on gfx1200, ROCm ≤ 7.12 — "
-                        "bypassed with Python mm fallback)"
+                    _WINDOWS_ROCM_GROUPED_MM_LIB = _install_grouped_mm_cpu_fallback(
+                        _torch_for_rocm, logger, "Windows ROCm"
                     )
                 except Exception as _patch_exc:
                     logger.warning(
@@ -2809,11 +2793,49 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "skipping Python fallback (AMD fixed gfx1200 null kernel in ROCm 7.13)"
                 )
 
+    # ── 1f-linux. Linux ROCm RDNA4 _grouped_mm null kernel ──
+    # The win32 guard above misses Linux: RDNA4 (gfx1200/gfx1201) hits the same null
+    # HIP _grouped_mm kernel at ROCm <= 7.12 (fixed 7.13, ROCm/TheRock #5284). Gate on
+    # arch + HIP < 7.13 so NVIDIA/CUDA and non-RDNA4 AMD are untouched; no-op if fixed.
+    if sys.platform.startswith("linux") and _hw.IS_ROCM:
+        try:
+            _torch_lin = sys.modules.get("torch")
+            if _torch_lin is not None and _torch_lin.cuda.is_available():
+                # Prefer torch.version.hip, else rocmX.Y from torch.__version__ (AMD
+                # SDK / Radeon wheels leave version.hip unset). Unknown version on a
+                # gfx120X build -> assume affected unless it is a post-fix rocmsdk wheel.
+                _hip_str = str(getattr(getattr(_torch_lin, "version", None), "hip", "") or "")
+                _ver = getattr(_torch_lin, "__version__", "").lower()
+                _m = re.match(r"(\d+)\.(\d+)", _hip_str) or re.search(r"rocm(\d+)\.(\d+)", _ver)
+                if _m:
+                    _hip_lt_713 = (int(_m.group(1)), int(_m.group(2))) < (7, 13)
+                else:
+                    _hip_lt_713 = "rocmsdk" not in _ver
+                # Scan every visible GPU (device_map="balanced" can place layers on a
+                # later RDNA4 card, so device 0 is not enough). Match gfx120X by arch,
+                # or by RX 9000 / R9700 name when the wheel omits gcnArchName.
+                _rdna4 = False
+                for _i in range(_torch_lin.cuda.device_count()):
+                    _props = _torch_lin.cuda.get_device_properties(_i)
+                    _lin_arch, _ = _rocm_classify_unified_memory(_props)
+                    _lin_name = (getattr(_props, "name", "") or "").lower()
+                    if _lin_arch.lower() in ("gfx1200", "gfx1201") or (
+                        not _lin_arch and re.search(r"rx\s*90[0-9]0|r9700", _lin_name)
+                    ):
+                        _rdna4 = True
+                        break
+                if _rdna4 and _hip_lt_713:
+                    _WINDOWS_ROCM_GROUPED_MM_LIB = _install_grouped_mm_cpu_fallback(
+                        _torch_lin, logger, "Linux ROCm gfx120X"
+                    )
+        except Exception as _gm_lin_exc:
+            logger.warning("Linux ROCm gfx120X: could not patch _grouped_mm: %s", _gm_lin_exc)
+
     # ── 1g. ROCm OOM guard ──
     # On ROCm, exhausting VRAM can hang the HIP driver instead of raising.
     # set_per_process_memory_fraction caps the allocator so PyTorch raises
     # OutOfMemoryError first (NVIDIA already has a graceful OOM path).
-    # Unified-memory APUs (gfx1150/gfx1151) share GPU+system RAM, so use 0.80
+    # Unified-memory APUs (gfx1150/gfx1151/gfx1152) share GPU+system RAM, so use 0.80
     # vs 0.90 for discrete. Classify via gcnArchName, else device-name markers.
     # Non-fatal: skipped if torch is not importable.
     if _hw.IS_ROCM:
@@ -2938,11 +2960,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     def _on_progress(progress: TrainingProgress):
         has_train_loss = progress.step > 0 and progress.loss is not None
         has_eval_loss = progress.eval_loss is not None
-        if (
-            (progress.step == 0 and progress.total_steps > 0)
-            or has_train_loss
-            or has_eval_loss
-        ):
+        if (progress.step == 0 and progress.total_steps > 0) or has_train_loss or has_eval_loss:
             event_queue.put(
                 {
                     "type": "progress",
@@ -3053,15 +3071,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
         if dataset is None or trainer.should_stop:
             if trainer.should_stop:
-                event_queue.put(
-                    {"type": "complete", "output_dir": None, "ts": time.time()}
-                )
+                event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             else:
                 event_queue.put(
                     {
                         "type": "error",
-                        "error": trainer.training_progress.error
-                        or "Failed to load dataset",
+                        "error": trainer.training_progress.error or "Failed to load dataset",
                         "stack": "",
                         "ts": time.time(),
                     }
@@ -3082,9 +3097,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         desc = getattr(bar, "desc", "") or ""
                         if total > 0 and n > 0 and desc:
                             pct = min(int(n * 100 / total), 100)
-                            _send_status(
-                                event_queue, f"{desc.strip()} {pct}% ({n:,}/{total:,})"
-                            )
+                            _send_status(event_queue, f"{desc.strip()} {pct}% ({n:,}/{total:,})")
                     except (AttributeError, ReferenceError):
                         pass
                 _tqdm_stop.wait(3)
@@ -3140,9 +3153,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             event_queue.put({"type": "model_load_completed", "ts": time.time()})
         if not success or trainer.should_stop:
             if trainer.should_stop:
-                event_queue.put(
-                    {"type": "complete", "output_dir": None, "ts": time.time()}
-                )
+                event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             else:
                 error_msg = trainer.training_progress.error or "Failed to load model"
                 event_queue.put(
@@ -3183,11 +3194,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 lora_r = config.get("lora_r", 128),
                 lora_alpha = config.get("lora_alpha", 32),
                 lora_dropout = config.get("lora_dropout", 0.0),
-                use_gradient_checkpointing = config.get(
-                    "gradient_checkpointing", "unsloth"
-                ),
+                use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 use_rslora = config.get("use_rslora", False),
                 use_loftq = config.get("use_loftq", False),
+                use_dora = config.get("use_dora", False),
             )
         elif use_lora:
             _send_status(event_queue, "Configuring LoRA adapters...")
@@ -3195,19 +3205,16 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 use_lora = True,
                 finetune_vision_layers = config.get("finetune_vision_layers", True),
                 finetune_language_layers = config.get("finetune_language_layers", True),
-                finetune_attention_modules = config.get(
-                    "finetune_attention_modules", True
-                ),
+                finetune_attention_modules = config.get("finetune_attention_modules", True),
                 finetune_mlp_modules = config.get("finetune_mlp_modules", True),
                 target_modules = config.get("target_modules"),
                 lora_r = config.get("lora_r", 16),
                 lora_alpha = config.get("lora_alpha", 16),
                 lora_dropout = config.get("lora_dropout", 0.0),
-                use_gradient_checkpointing = config.get(
-                    "gradient_checkpointing", "unsloth"
-                ),
+                use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 use_rslora = config.get("use_rslora", False),
                 use_loftq = config.get("use_loftq", False),
+                use_dora = config.get("use_dora", False),
             )
         else:
             _send_status(event_queue, "Preparing model for full finetuning...")
@@ -3215,15 +3222,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
         if not success or trainer.should_stop:
             if trainer.should_stop:
-                event_queue.put(
-                    {"type": "complete", "output_dir": None, "ts": time.time()}
-                )
+                event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             else:
                 event_queue.put(
                     {
                         "type": "error",
-                        "error": trainer.training_progress.error
-                        or "Failed to prepare model",
+                        "error": trainer.training_progress.error or "Failed to prepare model",
                         "stack": "",
                         "ts": time.time(),
                     }
@@ -3275,6 +3279,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
+        _emit_output_dir(event_queue, output_dir)
 
         tensorboard_dir = config.get("tensorboard_dir")
         if config.get("enable_tensorboard", False):
@@ -3282,9 +3287,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             ensure_dir(Path(tensorboard_dir))
 
         # Start training directly — no inner thread, we ARE the subprocess.
-        dataset_display = (
-            config.get("hf_dataset", "") or config.get("uploaded_file", "") or ""
-        )
+        dataset_display = config.get("hf_dataset", "") or config.get("uploaded_file", "") or ""
         _send_status(
             event_queue,
             f'Training "{model_name}"'
@@ -3308,9 +3311,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             weight_decay = config.get("weight_decay", 0.001),
             random_seed = config.get("random_seed", 3407),
             packing = config.get("packing", False),
-            train_on_completions = False
-            if is_cpt
-            else config.get("train_on_completions", False),
+            train_on_completions = False if is_cpt else config.get("train_on_completions", False),
             enable_wandb = config.get("enable_wandb", False),
             wandb_project = config.get("wandb_project", "unsloth-training"),
             wandb_token = config.get("wandb_token"),
@@ -3396,6 +3397,61 @@ def _send_status(event_queue: Any, message: str) -> None:
             "ts": time.time(),
         }
     )
+
+
+def _emit_output_dir(event_queue: Any, output_dir: str) -> None:
+    try:
+        event_queue.put({"type": "output_dir", "output_dir": output_dir, "ts": time.time()})
+    except Exception:
+        pass
+
+
+def _mlx_has_checkpoint_at_step(output_dir, step: int) -> bool:
+    if step <= 0:
+        return False
+    from core.training.resume import is_resume_checkpoint_valid
+    return is_resume_checkpoint_valid(
+        Path(output_dir) / f"checkpoint-{step}", expected_step = step, backend = "mlx"
+    )
+
+
+def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
+    """Write a full resume checkpoint for a stopped MLX run.
+
+    Returns True when a checkpoint for the current training step exists.
+    """
+    step = int(getattr(trainer, "_global_step", 0) or 0)
+    # A periodic save or a resumed run may already cover the current step.
+    if _mlx_has_checkpoint_at_step(output_dir, step):
+        return True
+    if step <= 0 or optimizer is None:
+        return False
+    ckpt_dir = Path(output_dir) / f"checkpoint-{step}"
+    if ckpt_dir.is_symlink():
+        # Refuse a symlinked dir: it could redirect writes outside output_dir.
+        logger.error("Refusing to write MLX stop checkpoint through symlink: %s", ckpt_dir)
+        return False
+    try:
+        ckpt_dir.mkdir(parents = True, exist_ok = True)
+        from unsloth_zoo.mlx.utils import (
+            save_optimizer_state,
+            save_trainable_adapters,
+            save_trainer_state,
+        )
+
+        save_trainable_adapters(trainer.model, str(ckpt_dir))
+        save_optimizer_state(optimizer, str(ckpt_dir))
+        save_trainer_state(
+            {
+                "global_step": step,
+                "train_loss_history": list(getattr(trainer, "_train_loss_history", [])),
+            },
+            str(ckpt_dir),
+        )
+        logger.info("Saved stop checkpoint to %s", ckpt_dir)
+    except Exception:
+        logger.exception("Failed to write stop checkpoint under %s", output_dir)
+    return _mlx_has_checkpoint_at_step(output_dir, step)
 
 
 def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> None:
@@ -3495,9 +3551,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
 
         for target in dict.fromkeys(malware_targets):
             _fs = evaluate_file_security(
-                target,
-                hf_token = hf_token,
-                load_subdirs = security_load_subdirs(target, hf_token),
+                target, hf_token = hf_token, load_subdirs = security_load_subdirs(target, hf_token)
             )
             if _fs.blocked:
                 event_queue.put(
@@ -3518,9 +3572,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
 
             consent_targets = [model_name]
             try:
-                from utils.models.model_config import (
-                    get_base_model_from_lora_identifier,
-                )
+                from utils.models.model_config import get_base_model_from_lora_identifier
                 _cbase = get_base_model_from_lora_identifier(model_name, hf_token)
                 if _cbase:
                     consent_targets.append(_cbase)
@@ -3591,6 +3643,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 use_gradient_checkpointing = gradient_checkpointing,
                 random_state = config.get("random_seed", 3407),
                 use_rslora = config.get("use_rslora", False),
+                use_dora = config.get("use_dora", False),
                 loftq_config = {"loftq_bits": 4, "loftq_iter": 1}
                 if config.get("use_loftq")
                 else None,
@@ -3647,9 +3700,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                     if candidates:
                         all_files.extend(str(c) for c in candidates)
                         continue
-                    raise ValueError(
-                        f"No supported data files in directory: {file_path_obj}"
-                    )
+                    raise ValueError(f"No supported data files in directory: {file_path_obj}")
                 else:
                     all_files.append(file_path)
 
@@ -3768,6 +3819,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             config.get("project_name"),
         )
     output_dir = str(resolve_output_dir(output_dir))
+    _emit_output_dir(event_queue, output_dir)
 
     num_epochs = config.get("num_epochs", 2)
     batch_size = config.get("batch_size", 256)

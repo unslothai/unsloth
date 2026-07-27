@@ -84,9 +84,7 @@ def _is_model_directory(d: Path) -> bool:
         return False
 
     try:
-        has_config = (d / "config.json").exists() or (
-            d / "adapter_config.json"
-        ).exists()
+        has_config = (d / "config.json").exists() or (d / "adapter_config.json").exists()
         if not has_config:
             return False
         return any(_is_weight_file(f) for f in d.iterdir() if f.is_file())
@@ -152,7 +150,9 @@ def _prefer_complete_larger(
     return candidate_size_bytes > existing_size_bytes
 
 
-def _gguf_variant_state_summary(repo_id: str) -> tuple[bool, int]:
+def _gguf_variant_state_summary(
+    repo_id: str, *, hub_cache: Optional[str | Path] = None
+) -> tuple[bool, int]:
     """Whether GGUF variant-scoped state exists and its expected size; a cancelled/in-progress variant may have only manifests/markers/`.incomplete` blobs, which inventory needs to avoid a generic fallback row."""
     from hub.utils import download_manifest
 
@@ -161,10 +161,16 @@ def _gguf_variant_state_summary(repo_id: str) -> tuple[bool, int]:
     for variant, _path in download_manifest.iter_variant_manifests(
         "model",
         repo_id,
+        hub_cache = hub_cache,
     ):
         key = variant.lower()
         variant_keys.add(key)
-        manifest = download_manifest.read_manifest("model", repo_id, variant)
+        manifest = download_manifest.read_manifest(
+            "model",
+            repo_id,
+            variant,
+            hub_cache = hub_cache,
+        )
         if manifest is None:
             continue
         size_by_variant[key] = max(
@@ -174,6 +180,7 @@ def _gguf_variant_state_summary(repo_id: str) -> tuple[bool, int]:
     for variant, _path in download_manifest.iter_variant_markers(
         "model",
         repo_id,
+        hub_cache = hub_cache,
     ):
         variant_keys.add(variant.lower())
     return bool(variant_keys), sum(size_by_variant.values())
@@ -195,9 +202,7 @@ def _apply_format_aware_partial(
             continue
         # GGUF row-level transport is ambiguous (variants may differ); per-variant
         # detail lives on GgufVariantDetail.partial_transport via the variants endpoint.
-        partial_transport = (
-            None if row.model_format == "gguf" else snapshot_partial_transport
-        )
+        partial_transport = None if row.model_format == "gguf" else snapshot_partial_transport
         rewritten.append(
             row.model_copy(
                 update = {
@@ -221,9 +226,7 @@ def _weight_basename(name: str) -> str:
 
 def _is_adapter_weight_name(name: str) -> bool:
     lower = _weight_basename(name)
-    return lower.startswith("adapter_model") and lower.endswith(
-        (".safetensors", ".bin")
-    )
+    return lower.startswith("adapter_model") and lower.endswith((".safetensors", ".bin"))
 
 
 def _is_transformers_safetensors_weight_name(name: str) -> bool:
@@ -273,9 +276,7 @@ def _classify_non_gguf_model_format(
     has_checkpoint_weights: bool,
     trusted_hf_cache_repo: bool = False,
 ) -> Optional[ModelFormat]:
-    if has_safetensors and (
-        has_config or (trusted_hf_cache_repo and has_transformers_safetensors)
-    ):
+    if has_safetensors and (has_config or (trusted_hf_cache_repo and has_transformers_safetensors)):
         return "safetensors"
     if has_adapter_config and has_adapter_weights:
         return "adapter"
@@ -286,9 +287,7 @@ def _classify_non_gguf_model_format(
 
 def _is_main_gguf_filename(name: str) -> bool:
     return (
-        _is_gguf_filename(name)
-        and not _is_mmproj_filename(name)
-        and not _is_mtp_drafter_path(name)
+        _is_gguf_filename(name) and not _is_mmproj_filename(name) and not _is_mtp_drafter_path(name)
     )
 
 
@@ -442,8 +441,13 @@ def _local_model_info(
     base_model_source: Optional[str] = None,
     adapter_type: Optional[str] = None,
     training_method: Optional[str] = None,
+    active_cache: Optional[bool] = None,
 ) -> LocalModelInfo:
-    load_id = model_id if source == "hf_cache" and model_id else str(load_path)
+    load_id = (
+        model_id
+        if source == "hf_cache" and model_id and active_cache is not False
+        else str(load_path)
+    )
     semantic_id = model_id or str(load_path)
     return LocalModelInfo(
         id = load_id,
@@ -455,8 +459,8 @@ def _local_model_info(
         ),
         load_id = load_id,
         model_id = model_id,
-        display_name = display_name
-        or (scan_path.stem if scan_path.is_file() else scan_path.name),
+        active_cache = active_cache if source == "hf_cache" else None,
+        display_name = display_name or (scan_path.stem if scan_path.is_file() else scan_path.name),
         path = str(load_path),
         size_bytes = max(0, int(size_bytes or 0)),
         source = source,
@@ -487,6 +491,7 @@ def _classify_local_path(
     model_id: Optional[str] = None,
     updated_at: Optional[float] = None,
     partial: bool = False,
+    active_cache: Optional[bool] = None,
 ) -> list[LocalModelInfo]:
     load_path = load_path or scan_path
     files = (
@@ -523,6 +528,7 @@ def _classify_local_path(
                 requires_variant = scan_path.is_dir(),
                 format_variant = variant,
                 size_bytes = gguf_size_bytes,
+                active_cache = active_cache,
             )
         )
 
@@ -531,17 +537,12 @@ def _classify_local_path(
         (scan_path / "adapter_config.json").is_file() if scan_path.is_dir() else False
     )
     adapter_config = _read_adapter_config(scan_path) if has_adapter_config else {}
-    adapter_base_model = _clean_optional_string(
-        adapter_config.get("base_model_name_or_path")
-    )
+    adapter_base_model = _clean_optional_string(adapter_config.get("base_model_name_or_path"))
     adapter_type = _clean_optional_string(adapter_config.get("peft_type"))
-    training_method = _clean_optional_string(
-        adapter_config.get("unsloth_training_method")
-    )
+    training_method = _clean_optional_string(adapter_config.get("unsloth_training_method"))
     has_adapter_weights = any(_is_adapter_weight_file(f) for f in files)
     has_safetensors = any(
-        f.suffix.lower() == ".safetensors" and not _is_adapter_weight_file(f)
-        for f in files
+        f.suffix.lower() == ".safetensors" and not _is_adapter_weight_file(f) for f in files
     )
     has_transformers_safetensors = any(
         _is_transformers_safetensors_weight_file(f) and not _is_adapter_weight_file(f)
@@ -570,9 +571,7 @@ def _classify_local_path(
                 if f.suffix.lower() == ".safetensors" and not _is_adapter_weight_file(f)
             )
         else:
-            size_bytes = _sum_file_sizes(
-                f for f in files if _is_checkpoint_weight_file(f)
-            )
+            size_bytes = _sum_file_sizes(f for f in files if _is_checkpoint_weight_file(f))
         rows.append(
             _local_model_info(
                 scan_path = scan_path,
@@ -592,6 +591,7 @@ def _classify_local_path(
                 ),
                 adapter_type = adapter_type if model_format == "adapter" else None,
                 training_method = training_method if model_format == "adapter" else None,
+                active_cache = active_cache,
             )
         )
     elif not rows:
@@ -610,6 +610,7 @@ def _classify_local_path(
                 updated_at = updated_at,
                 partial = partial or trusted_hf_cache_repo,
                 size_bytes = size_bytes,
+                active_cache = active_cache,
             )
         )
 

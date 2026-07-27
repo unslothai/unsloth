@@ -12,9 +12,7 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-STORAGE_ROOTS = (
-    REPO_ROOT / "studio" / "backend" / "utils" / "paths" / "storage_roots.py"
-)
+STORAGE_ROOTS = REPO_ROOT / "studio" / "backend" / "utils" / "paths" / "storage_roots.py"
 LLAMA_CPP = REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
 
 
@@ -66,18 +64,15 @@ def test_kill_orphan_catches_oserror_from_studio_root():
     """Cleanup must not crash when studio_root() raises. _kill_orphaned_servers
     resolves the install root through the shared _resolved_studio_root_and_is_legacy()
     classifier, which swallows (ImportError, OSError, ValueError) on the probe."""
-    src = LLAMA_CPP.read_text()
+    src = LLAMA_CPP.read_text(encoding = "utf-8")
     # Cleanup delegates to the shared classifier rather than importing studio_root inline.
-    assert (
-        "LlamaCppBackend._resolved_studio_root_and_is_legacy()"
-        in _method_body(src, "_kill_orphaned_servers")
+    assert "LlamaCppBackend._resolved_studio_root_and_is_legacy()" in _method_body(
+        src, "_kill_orphaned_servers"
     ), "_kill_orphaned_servers must resolve the root via _resolved_studio_root_and_is_legacy()"
     # The shared classifier catches both the resolve() failure and the outer studio_root() probe.
     classifier = _method_body(src, "_resolved_studio_root_and_is_legacy")
     assert "studio_root as _sr" in classifier, "classifier must probe studio_root()"
-    assert (
-        "except (OSError, ValueError):" in classifier
-    ), "inner resolve() probe must be guarded"
+    assert "except (OSError, ValueError):" in classifier, "inner resolve() probe must be guarded"
     assert "except (ImportError, OSError, ValueError):" in classifier, (
         "_resolved_studio_root_and_is_legacy must catch (ImportError, OSError, ValueError) "
         "from studio_root()"
@@ -90,7 +85,7 @@ def _exec_search_roots_block(
     """Run _find_llama_server_binary's search_roots derivation -- plus the shared
     _resolved_studio_root_and_is_legacy() classifier it delegates to -- with a
     controlled studio_root() and resolve(), without importing the heavy module."""
-    src = LLAMA_CPP.read_text()
+    src = LLAMA_CPP.read_text(encoding = "utf-8")
     # Shared root classifier (holds the defensive try/except for studio_root()).
     # End the slice at the next sibling def/decorator at the same indent rather
     # than the literal "@staticmethod" string, so a future docstring mentioning a
@@ -143,18 +138,14 @@ def test_search_roots_keeps_custom_when_resolve_fails(tmp_path):
     home.mkdir()
     custom = tmp_path / "custom_studio"
     custom.mkdir()
-    roots = _exec_search_roots_block(
-        home = home, studio_root_value = custom, resolve_raises = True
-    )
+    roots = _exec_search_roots_block(home = home, studio_root_value = custom, resolve_raises = True)
     # On resolve() failure, the inner except falls back to direct equality;
     # custom != legacy_studio so the custom root must remain in search_roots.
-    assert (
-        custom / "llama.cpp" in roots
-    ), f"custom root dropped on resolve() failure: {roots}"
+    assert custom / "llama.cpp" in roots, f"custom root dropped on resolve() failure: {roots}"
     # custom-mode discovery excludes the legacy tree to match _kill_orphaned_servers.
     assert (
-        (home / ".unsloth" / "llama.cpp") not in roots
-    ), f"legacy llama path must not appear in custom-mode search_roots: {roots}"
+        home / ".unsloth" / "llama.cpp"
+    ) not in roots, f"legacy llama path must not appear in custom-mode search_roots: {roots}"
 
 
 def test_search_roots_default_mode_uses_legacy_only(tmp_path):
@@ -162,8 +153,6 @@ def test_search_roots_default_mode_uses_legacy_only(tmp_path):
     home.mkdir()
     legacy = home / ".unsloth" / "studio"
     legacy.mkdir(parents = True)
-    roots = _exec_search_roots_block(
-        home = home, studio_root_value = legacy, resolve_raises = False
-    )
+    roots = _exec_search_roots_block(home = home, studio_root_value = legacy, resolve_raises = False)
     # Default mode: only legacy_llama.
     assert roots == [home / ".unsloth" / "llama.cpp"]

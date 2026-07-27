@@ -2,10 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getAuthToken } from "@/features/auth";
-import {
-  loadRememberedLoadSettings,
-  rememberedLoadSettingsKey,
-} from "@/components/assistant-ui/model-selector/remembered-load-settings";
+import { resolveInitialConfig } from "@/features/model-picker";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
@@ -46,7 +43,7 @@ import {
   type PendingImageEditReference,
   type RagAutoInject,
   GPU_LAYERS_AUTO,
-  loadedGpuMemoryFieldsUnlessStaged,
+  loadedGpuMemoryFields,
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
@@ -77,6 +74,8 @@ import {
   getStoredChatThread,
   getStoredChatProject,
   listStoredChatThreads,
+  listStoredChatMessages,
+  saveStoredChatMessage,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
 import {
@@ -92,6 +91,7 @@ import {
 import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
   generateAudio,
+  GenerationLengthError,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
@@ -108,6 +108,16 @@ import {
   encryptProviderApiKey,
   isProviderKeyRotationError,
 } from "./providers-api";
+import {
+  beginExternalResearchFollow,
+  ingestResearchUpdate,
+  useResearchRunStore,
+} from "../stores/research-run-store";
+import {
+  cancelResearchRun,
+  createResearchRun,
+  followResearchRun,
+} from "./research-api";
 
 // Small models (<=9B) answer from memory instead of calling search, so "auto"
 // forces retrieval for them and leaves it to larger ones.
@@ -1355,6 +1365,29 @@ async function resolveProjectInstructions(
   return project.instructions?.trim() ?? "";
 }
 
+async function resolveChatInstructions(
+  threadId: string | undefined,
+  systemPrompt: unknown,
+  systemVariables: unknown,
+): Promise<string> {
+  const safeSystemPrompt =
+    typeof systemPrompt === "string"
+      ? resolveSystemPromptVariables(
+          systemPrompt,
+          typeof systemVariables === "string" ? systemVariables : "",
+        )
+      : "";
+  const projectInstructions = await resolveProjectInstructions(threadId);
+  return [
+    projectInstructions
+      ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
+      : "",
+    safeSystemPrompt.trim(),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 async function resolveProjectId(
   threadId: string | undefined,
 ): Promise<string | null> {
@@ -1407,6 +1440,7 @@ const GGUF_KNOWN_QUANT_RE =
 
 type AutoLoadCandidate = {
   id: string;
+  loadId?: string | null;
   kind: LastLocalModelKind;
   ggufVariant: string | null;
   maxSeqLength: number;
@@ -1533,68 +1567,60 @@ async function autoLoadSmallestModel(): Promise<{
       return false;
     }
     const currentStore = useChatRuntimeStore.getState();
-    // Blobs are saved for GGUF picks only (the sheet gates on it), so don't
-    // let a legacy non-GGUF blob feed a stale context/spec choice into a
-    // safetensors auto-load.
-    const remembered =
-      candidate.kind === "gguf"
-        ? loadRememberedLoadSettings(
-            rememberedLoadSettingsKey({
-              id: candidate.id,
-              ggufVariant: candidate.ggufVariant,
-            }),
-          )
-        : null;
+    const modelPath = candidate.loadId ?? candidate.id;
+    const { config } = resolveInitialConfig(candidate.id, candidate.ggufVariant);
     const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
       modelId: candidate.id,
       ggufVariant: candidate.ggufVariant,
       isGguf: candidate.kind === "gguf",
-      customContextLength: remembered?.contextLength ?? null,
+      customContextLength: config.customContextLength,
       ggufContextLength: null,
       currentCheckpoint: currentStore.params.checkpoint,
       activeGgufVariant: currentStore.activeGgufVariant,
-      maxSeqLength: candidate.maxSeqLength,
+      maxSeqLength: config.maxSeqLength ?? candidate.maxSeqLength,
       presetSource: currentStore.activePresetSource,
     });
-    // The GPU knobs are per-model, so read them from the same remembered
-    // settings that fed effectiveMaxSeqLength -- on a background auto-load the
-    // live store holds session defaults, not the saved Manual mode / layer pin /
-    // GPU pick. Absent fields fall back like applyRememberedLoadSettings: the
-    // mode to the store (a persisted standing preference), the per-model knobs to
-    // their defaults. The saved GPU pick is reconciled against the GPUs present
-    // now, like the interactive restore.
+    // The GPU knobs are per-model, so read them from the same per-model config
+    // that fed effectiveMaxSeqLength -- on a background auto-load the live store
+    // holds session defaults, not the saved Manual mode / layer pin / GPU pick.
+    // Absent fields fall back like the interactive restore: the mode to the store
+    // (a persisted standing preference), the per-model knobs to their defaults.
+    // The saved GPU pick is reconciled against the GPUs present now.
     const effectiveGpuMemoryMode =
-      remembered?.gpuMemoryMode ?? currentStore.gpuMemoryMode;
-    const effectiveGpuLayers = remembered?.gpuLayers ?? GPU_LAYERS_AUTO;
-    const effectiveNCpuMoe = remembered?.nCpuMoe ?? 0;
-    if (remembered?.selectedGpuIds != null) {
+      config.gpuMemoryMode ?? currentStore.gpuMemoryMode;
+    const effectiveGpuLayers = config.gpuLayers ?? GPU_LAYERS_AUTO;
+    const effectiveNCpuMoe = config.nCpuMoe ?? 0;
+    if (config.selectedGpuIds != null) {
       // Warm the device cache first: on a cold cache the reconcile passes the
       // saved pick through unvalidated, and a stale cross-host pick then fails
       // the load with the picker hidden.
       await ensureGpuDeviceCache();
     }
     const effectiveGpuIds =
-      remembered?.selectedGpuIds !== undefined
-        ? reconcilePersistedGpuIds(remembered.selectedGpuIds)
+      config.selectedGpuIds !== undefined
+        ? reconcilePersistedGpuIds(config.selectedGpuIds)
         : null;
     // Under Manual GPU memory + Auto layers, llama.cpp's --fit owns context
     // sizing, so send 0 (or the pinned length). GGUF-only; a no-op otherwise.
-    // The context pin is per-model too, so it comes from remembered settings,
-    // not the live store.
+    // The context pin is per-model too, so it comes from the saved config, not
+    // the live store.
     const fitMaxSeqLength = resolveFitMaxSeqLength(
       candidate.kind === "gguf",
       effectiveGpuMemoryMode,
       effectiveGpuLayers,
-      remembered?.contextLength ?? null,
+      config.customContextLength ?? null,
       effectiveMaxSeqLength,
     );
     const effectiveSpeculativeType =
-      remembered?.speculativeType ?? specSettings.speculativeType;
+      config.speculativeType ?? specSettings.speculativeType;
     const effectiveSpecDraftNMax =
-      remembered?.specDraftNMax ?? specSettings.specDraftNMax;
+      config.specDraftNMax ?? specSettings.specDraftNMax;
+    const effectiveChatTemplateOverride = config.chatTemplateOverride?.trim()
+      ? config.chatTemplateOverride
+      : null;
     if (
       !(await canAutoLoad({
-        model_path: candidate.id,
+        model_path: modelPath,
         max_seq_length: fitMaxSeqLength,
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
@@ -1614,17 +1640,18 @@ async function autoLoadSmallestModel(): Promise<{
     }
     loadAttempts += 1;
     const loadResp = await loadModel({
-      model_path: candidate.id,
+      model_path: modelPath,
       hf_token: hfToken,
       max_seq_length: fitMaxSeqLength,
       load_in_4bit: true,
       is_lora: false,
       gguf_variant: candidate.ggufVariant,
       trust_remote_code: trustRemoteCode,
-      cache_type_kv: remembered?.kvCacheDtype ?? null,
+      chat_template_override: effectiveChatTemplateOverride,
+      cache_type_kv: config.kvCacheDtype,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
-      tensor_parallel: remembered?.tensorParallel ?? false,
+      tensor_parallel: config.tensorParallel,
       // GGUF-only: the safetensors fallback loads via HF auto-placement (no
       // explicit pins). The split ratio is deliberately never remembered
       // (positionally bound to an exact GPU set), so auto-load leaves llama.cpp's
@@ -1638,25 +1665,34 @@ async function autoLoadSmallestModel(): Promise<{
           }
         : {}),
     });
-    saveSpeculativeType(effectiveSpeculativeType);
+    // Only persist the global preference when the value came from the global
+    // settings. A per-model config's choice must stay load-local, or autoloading
+    // a remembered model on startup would rewrite the global default.
+    if (config.speculativeType == null) {
+      saveSpeculativeType(effectiveSpeculativeType);
+    }
     // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
     persistGpuMemoryModeOnLoad(loadResp, effectiveGpuMemoryMode);
+    const loadedModelId = loadResp.model || modelPath;
     useChatRuntimeStore
       .getState()
-      .setCheckpoint(candidate.id, candidate.ggufVariant ?? undefined);
+      .setCheckpoint(loadedModelId, candidate.ggufVariant ?? undefined);
     const store = useChatRuntimeStore.getState();
     store.setModelRequiresTrustRemoteCode(
       loadResp.requires_trust_remote_code ?? false,
     );
     store.setParams({
       ...store.params,
+      ...(candidate.kind === "gguf"
+        ? {}
+        : { maxSeqLength: effectiveMaxSeqLength }),
       maxTokens:
         candidate.kind === "gguf"
           ? loadResp.context_length ?? 131072
           : effectiveMaxSeqLength,
     });
     const autoModel: ChatModelSummary = {
-      id: candidate.id,
+      id: loadedModelId,
       name: loadResp.display_name ?? candidate.id,
       isVision: loadResp.is_vision ?? false,
       isLora: loadResp.is_lora ?? false,
@@ -1665,7 +1701,7 @@ async function autoLoadSmallestModel(): Promise<{
       audioType: loadResp.audio_type ?? null,
       hasAudioInput: loadResp.has_audio_input ?? false,
     };
-    if (!store.models.some((m) => m.id === candidate.id)) {
+    if (!store.models.some((m) => m.id === loadedModelId)) {
       store.setModels([...store.models, autoModel]);
     }
     if (candidate.kind === "gguf") {
@@ -1676,7 +1712,7 @@ async function autoLoadSmallestModel(): Promise<{
       const keepCustomCtx = resolveManualAutoCtxPin(
         effectiveGpuMemoryMode,
         effectiveGpuLayers,
-        remembered?.contextLength ?? null,
+        config.customContextLength ?? null,
       );
       useChatRuntimeStore.setState({
         ggufContextLength: loadResp.context_length ?? 131072,
@@ -1694,13 +1730,14 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
-        ...loadedGpuMemoryFieldsUnlessStaged(loadResp, {
-          customContextLength: keepCustomCtx,
-        }),
+        ...loadedGpuMemoryFields(loadResp),
         loadedCustomContextLength: keepCustomCtx,
         defaultChatTemplate: loadResp.chat_template ?? null,
-        chatTemplateOverride: null,
-        loadedChatTemplateOverride: null,
+        chatTemplateOverride: effectiveChatTemplateOverride,
+        loadedChatTemplateOverride: effectiveChatTemplateOverride,
+        // Retain the saved requested context so re-saving the config keeps the
+        // override; null stays null (auto/VRAM-fit).
+        customContextLength: config.customContextLength,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
         loadedIsDiffusion: loadResp.is_diffusion ?? false,
         ...resolveLoadedSpeculativeSettings(loadResp),
@@ -1720,10 +1757,11 @@ async function autoLoadSmallestModel(): Promise<{
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
         // GGUF load left, matching the interactive/status sibling load paths.
-        ...loadedGpuMemoryFieldsUnlessStaged(loadResp),
+        ...loadedGpuMemoryFields(loadResp),
         defaultChatTemplate: loadResp.chat_template ?? null,
-        chatTemplateOverride: null,
-        loadedChatTemplateOverride: null,
+        chatTemplateOverride: effectiveChatTemplateOverride,
+        loadedChatTemplateOverride: effectiveChatTemplateOverride,
+        customContextLength: null,
         ...resolveLoadedSpeculativeSettings(loadResp),
         loadedIsMultimodal: isMultimodalResponse(loadResp),
         loadedIsDiffusion: loadResp.is_diffusion ?? false,
@@ -1750,7 +1788,10 @@ async function autoLoadSmallestModel(): Promise<{
         const repo = findCachedRepo(ggufRepos, lastLoaded.id);
         if (repo && lastLoaded.ggufVariant) {
           try {
-            const variants = await listGgufVariants(repo.repo_id);
+            const variants = await listGgufVariants(repo.repo_id, undefined, {
+              preferLocalCache: true,
+              localPath: repo.cache_path,
+            });
             const variant = variants.variants.find(
               (entry) =>
                 entry.downloaded &&
@@ -1767,6 +1808,7 @@ async function autoLoadSmallestModel(): Promise<{
               if (
                 await loadAutoLoadCandidate({
                   id: repo.repo_id,
+                  loadId: repo.load_id,
                   kind: "gguf",
                   ggufVariant: variant.quant,
                   maxSeqLength: 0,
@@ -1795,6 +1837,7 @@ async function autoLoadSmallestModel(): Promise<{
             if (
               await loadAutoLoadCandidate({
                 id: repo.repo_id,
+                loadId: repo.load_id,
                 kind: "model",
                 ggufVariant: null,
                 maxSeqLength: store.params.maxSeqLength,
@@ -1824,7 +1867,10 @@ async function autoLoadSmallestModel(): Promise<{
       for (const repo of sorted) {
         if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
         try {
-          const variants = await listGgufVariants(repo.repo_id);
+          const variants = await listGgufVariants(repo.repo_id, undefined, {
+            preferLocalCache: true,
+            localPath: repo.cache_path,
+          });
           const downloaded = variants.variants
             .filter((v) => v.downloaded && isAutoLoadableGgufVariant(v))
             .sort((a, b) => a.size_bytes - b.size_bytes);
@@ -1840,6 +1886,7 @@ async function autoLoadSmallestModel(): Promise<{
             if (
               await loadAutoLoadCandidate({
                 id: repo.repo_id,
+                loadId: repo.load_id,
                 kind: "gguf",
                 ggufVariant: variant.quant,
                 maxSeqLength: 0,
@@ -1874,6 +1921,7 @@ async function autoLoadSmallestModel(): Promise<{
           if (
             await loadAutoLoadCandidate({
               id: repo.repo_id,
+              loadId: repo.load_id,
               kind: "model",
               ggufVariant: null,
               maxSeqLength: 4096,
@@ -1988,7 +2036,7 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
-        ...loadedGpuMemoryFieldsUnlessStaged(loadResp),
+        ...loadedGpuMemoryFields(loadResp),
         // Drives the GPU Memory controls' diffusion gate; set alongside the
         // GPU fields on every load path so the gate can't read stale.
         loadedIsDiffusion: loadResp.is_diffusion ?? false,
@@ -2027,13 +2075,248 @@ export function createOpenAIStreamAdapter(
   options: OpenAIStreamAdapterOptions = {},
 ): ChatModelAdapter {
   return {
-    async *run({ messages, abortSignal, unstable_threadId }) {
+    async *run({
+      messages,
+      abortSignal,
+      unstable_threadId,
+      unstable_assistantMessageId,
+    }) {
       await useChatRuntimeStore.getState().hydratePersistedSettings();
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable even if the user
       // switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const threadAlreadyResearched = Boolean(
+        resolvedThreadId &&
+          useResearchRunStore.getState().claimedThreadIds[resolvedThreadId],
+      );
+      if (runtime.deepResearchEnabled && threadAlreadyResearched) {
+        runtime.setDeepResearchEnabled(false);
+        runtime = useChatRuntimeStore.getState();
+      }
+      if (
+        runtime.deepResearchEnabled &&
+        !options.pairId &&
+        (options.modelType === undefined || options.modelType === "base")
+      ) {
+        if (runtime.modelLoading) {
+          toast.info("Waiting for model to finish loading…");
+          await waitForModelReady(abortSignal);
+        }
+        if (!useChatRuntimeStore.getState().params.checkpoint) {
+          const { loaded, blockedByTrustRemoteCode } =
+            await autoLoadSmallestModel();
+          if (!loaded) {
+            toast.error(
+              blockedByTrustRemoteCode
+                ? "This model needs custom code approval"
+                : "No model loaded",
+              {
+                description: blockedByTrustRemoteCode
+                  ? "Select it from the top bar to review and approve its custom code, or pick another model."
+                  : "Pick a model in the top bar, then retry.",
+              },
+            );
+            throw new Error("Load a model first.");
+          }
+        }
+        runtime = useChatRuntimeStore.getState();
+        if (!resolvedThreadId) throw new Error("Research requires a saved chat.");
+        if (!unstable_assistantMessageId) {
+          throw new Error(
+            "Deep research could not bind its assistant message. Please retry the send.",
+          );
+        }
+        const userMessage = [...messages].reverse().find((m) => m.role === "user");
+        if (!userMessage) throw new Error("Research requires a user message.");
+        const userMessageIndex = messages.indexOf(userMessage);
+        const userMessageParentId =
+          userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null;
+        const { params } = runtime;
+        const model = params.checkpoint.trim();
+        if (!model || parseExternalModelId(model)) {
+          throw new Error("Deep research requires a selected local model.");
+        }
+        const inferenceRequest: {
+          model: string;
+          temperature?: number;
+          topP?: number;
+          maxTokens?: number;
+          enableThinking?: boolean;
+          reasoningEffort?: string;
+        } = { model };
+        if (
+          Number.isFinite(params.temperature) &&
+          params.temperature >= 0 &&
+          params.temperature <= 2
+        ) {
+          inferenceRequest.temperature = params.temperature;
+        }
+        if (Number.isFinite(params.topP) && params.topP > 0 && params.topP <= 1) {
+          inferenceRequest.topP = params.topP;
+        }
+        if (Number.isFinite(params.maxTokens) && params.maxTokens > 0) {
+          inferenceRequest.maxTokens = Math.min(8192, Math.floor(params.maxTokens));
+        }
+        const reasoningRequested =
+          runtime.reasoningAlwaysOn ||
+          (runtime.reasoningEnabled && runtime.reasoningEffort !== "none");
+        if (
+          runtime.reasoningStyle === "enable_thinking" ||
+          runtime.reasoningStyle === "enable_thinking_effort"
+        ) {
+          inferenceRequest.enableThinking = reasoningRequested;
+        }
+        if (
+          reasoningRequested &&
+          (runtime.reasoningStyle === "reasoning_effort" ||
+            runtime.reasoningStyle === "enable_thinking_effort")
+        ) {
+          // Clamp like normal chat does. reasoningEffort is one shared persisted setting and
+          // the load paths refresh reasoningEffortLevels without re-clamping it, so a level
+          // this model lacks is dropped by llama.cpp and the run falls back to the default.
+          inferenceRequest.reasoningEffort = clampReasoningEffortToLevels(
+            runtime.reasoningEffort,
+            runtime.reasoningEffortLevels,
+          );
+        }
+        const researchProjectId = await resolveProjectId(resolvedThreadId);
+        const projectRagEnabled = researchProjectId
+          ? await projectHasSources(researchProjectId)
+          : false;
+        const researchInstructions = await resolveChatInstructions(
+          resolvedThreadId,
+          params.systemPrompt,
+          params.systemVariables,
+        );
+        const ragScope =
+          runtime.ragEnabled || projectRagEnabled
+            ? runtime.ragEnabled && runtime.ragSource.type === "kb"
+              ? {
+                  kb_id: runtime.ragSource.kbId,
+                   default_top_k: runtime.ragTopK,
+                   mode: runtime.ragMode,
+                   autoinject: runtime.ragAutoInject,
+                   autoinject_min_score: runtime.ragAutoInjectMinScore,
+                }
+              : {
+                  ...(runtime.ragEnabled
+                    ? { thread_id: resolvedThreadId }
+                    : {}),
+                  ...(projectRagEnabled && researchProjectId
+                    ? { project_id: researchProjectId }
+                    : {}),
+                   default_top_k: runtime.ragTopK,
+                   mode: runtime.ragMode,
+                   autoinject: runtime.ragAutoInject,
+                   autoinject_min_score: runtime.ragAutoInjectMinScore,
+                }
+            : undefined;
+
+        const threadKey = resolvedThreadId;
+        runtime.setThreadRunning(threadKey, true);
+        let report = "";
+        let releaseResearchFollow: (() => void) | null = null;
+        const researchFollowController = new AbortController();
+        const detachResearchFollow = () => {
+          researchFollowController.abort({ detach: true });
+        };
+        const forwardAdapterAbort = () => {
+          researchFollowController.abort(abortSignal.reason);
+        };
+        abortSignal.addEventListener("abort", forwardAdapterAbort, { once: true });
+        try {
+          // The normal history adapter persists messages after model execution,
+          // but research validates the user message before it can start.
+          const storedUserMessage = (await listStoredChatMessages(resolvedThreadId)).find(
+            (message) => message.id === userMessage.id,
+          );
+          await saveStoredChatMessage({
+            id: userMessage.id,
+            threadId: resolvedThreadId,
+            parentId: storedUserMessage?.parentId ?? userMessageParentId,
+            role: "user",
+            content: userMessage.content,
+            ...(userMessage.attachments?.length
+              ? { attachments: userMessage.attachments }
+              : {}),
+            createdAt: userMessage.createdAt?.getTime?.() ?? Date.now(),
+          });
+          const createdRun = await createResearchRun({
+            threadId: resolvedThreadId,
+            userMessageId: userMessage.id,
+            assistantMessageId: unstable_assistantMessageId,
+            inferenceRequest,
+            ...(researchInstructions ? { instructions: researchInstructions } : {}),
+            ...(ragScope ? { ragScope } : {}),
+            websitePolicy: {
+              allowedDomains: [...runtime.researchWebsitePolicy.allowedDomains],
+              blockedDomains: [...runtime.researchWebsitePolicy.blockedDomains],
+            },
+          });
+          releaseResearchFollow = beginExternalResearchFollow(
+            createdRun,
+            detachResearchFollow,
+          );
+          runtime.setDeepResearchEnabled(false);
+          if (abortSignal.aborted) {
+            const detached = Boolean(
+              (abortSignal.reason as { detach?: boolean } | undefined)?.detach,
+            );
+            if (!detached) {
+              try {
+                ingestResearchUpdate(await cancelResearchRun(createdRun.id));
+              } catch {
+                // The durable run remains visible and can be stopped again after recovery.
+              }
+            }
+            return;
+          }
+          for await (const update of followResearchRun(createdRun.id, {
+            initialRun: createdRun,
+            signal: researchFollowController.signal,
+            replayFrom: 0,
+          })) {
+            const run = update.run;
+            ingestResearchUpdate(run, update.event);
+            // The activity store coalesces these high-frequency events. Yielding them
+            // through assistant-ui would replace the whole hidden message content per
+            // token, making long planning turns progressively more expensive.
+            if (
+              update.event?.event === "reasoning.updated" ||
+              update.event?.event === "report.updated"
+            ) {
+              continue;
+            }
+            if (run.status === "completed" && typeof run.report === "string") {
+              report = run.report;
+            } else if (typeof run.report === "string") {
+              report = run.report;
+            }
+            yield {
+              content: [{ type: "text" as const, text: report }],
+              metadata: {
+                custom: {
+                  researchRunId: run.id,
+                  researchRun: run,
+                  serverManaged: true,
+                  serverRevision: run.lastEventSeq,
+                },
+              },
+            };
+          }
+        } catch (error) {
+          if (!abortSignal.aborted && !researchFollowController.signal.aborted) {
+            throw error;
+          }
+        } finally {
+          abortSignal.removeEventListener("abort", forwardAdapterAbort);
+          releaseResearchFollow?.();
+          runtime.setThreadRunning(threadKey, false);
+        }
+        return;
+      }
       const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
       const toolConfirmationScopeId = resolvedThreadId
         ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
@@ -2305,25 +2588,11 @@ export function createOpenAIStreamAdapter(
         );
       }
 
-      const safeSystemPrompt =
-        typeof params.systemPrompt === "string"
-          ? resolveSystemPromptVariables(
-              params.systemPrompt,
-              typeof params.systemVariables === "string"
-                ? params.systemVariables
-                : "",
-            )
-          : "";
-      const projectInstructions =
-        await resolveProjectInstructions(resolvedThreadId);
-      const combinedSystemPrompt = [
-        projectInstructions
-          ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
-          : "",
-        safeSystemPrompt.trim(),
-      ]
-        .filter(Boolean)
-        .join("\n\n");
+      const combinedSystemPrompt = await resolveChatInstructions(
+        resolvedThreadId,
+        params.systemPrompt,
+        params.systemVariables,
+      );
       if (combinedSystemPrompt) {
         outboundMessages.unshift({
           role: "system",
@@ -3159,12 +3428,15 @@ export function createOpenAIStreamAdapter(
             // Permission level for local tool calls is sent for every local
             // chat, not only when a tool pill is on: a process policy
             // (unsloth run --enable-tools) can open the tool loop with no pill,
-            // and the backend must still see the selected gate. ask/auto request
-            // the confirm gate ("auto" only pauses calls flagged unsafe); off
-            // and full never prompt, full also drops the sandbox.
+            // and the backend must still see the selected gate. "auto" OMITS
+            // confirm_tool_calls: an explicit true would make the backend treat
+            // every auto request as needing a stream and defeat the safe-only
+            // no-stream exception. "ask" sends true; off/full send false (full
+            // also drops the sandbox).
             permission_mode: permissionMode,
-            confirm_tool_calls:
-              permissionMode === "ask" || permissionMode === "auto",
+            ...(permissionMode === "auto"
+              ? {}
+              : { confirm_tool_calls: permissionMode === "ask" }),
             bypass_permissions: bypassPermissions,
             ...(supportsTools &&
             (toolsEnabled ||
@@ -4081,7 +4353,15 @@ export function createOpenAIStreamAdapter(
         );
         if (!abortSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (err instanceof StreamInterruptedError) {
+          if (err instanceof GenerationLengthError) {
+            toast.error("Response ran out of tokens", {
+              description:
+                "The model used the full Max Tokens budget while thinking " +
+                "and did not produce a final answer. Increase Max Tokens in " +
+                "chat Settings or turn off thinking, then retry.",
+              duration: 8000,
+            });
+          } else if (err instanceof StreamInterruptedError) {
             // Connection dropped mid-turn: surface it explicitly (the rethrow
             // below also marks the message with an inline error + Retry).
             toast.error("Response interrupted", {

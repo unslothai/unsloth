@@ -111,10 +111,7 @@ def _patch_index_mixed(weight_map, readable_index, failing_index):
 
 @pytest.mark.parametrize("level", ["unsafe", "suspicious", "malicious"])
 def test_blocks_each_blocking_level(level):
-    status = {
-        "scansDone": True,
-        "filesWithIssues": [{"path": "pytorch_model.bin", "level": level}],
-    }
+    status = {"scansDone": True, "filesWithIssues": [{"path": "pytorch_model.bin", "level": level}]}
     with _patch_status(status):
         d = evaluate_file_security("evil/repo")
     assert d.blocked is True
@@ -135,10 +132,7 @@ def test_ignores_safe_only():
 
 def test_blocks_unsafe_even_when_scans_not_done():
     # scansDone is often False for clean repos; an already-flagged file must still block.
-    status = {
-        "scansDone": False,
-        "filesWithIssues": [{"path": "x.pkl", "level": "unsafe"}],
-    }
+    status = {"scansDone": False, "filesWithIssues": [{"path": "x.pkl", "level": "unsafe"}]}
     with _patch_status(status):
         d = evaluate_file_security("evil/repo")
     assert d.blocked is True
@@ -165,12 +159,27 @@ def test_fail_open_scans_done_no_issues():
 
 def test_skips_local_path():
     # A local path has no Hub scan; must not even call model_info.
-    with patch(
-        "huggingface_hub.model_info", side_effect = AssertionError("should not be called")
-    ):
+    with patch("huggingface_hub.model_info", side_effect = AssertionError("should not be called")):
         d = evaluate_file_security("/tmp/some/local/model")
     assert d.blocked is False
     assert "local" in d.reason
+
+
+def test_scans_inactive_hf_cache_snapshot_path(tmp_path):
+    # An inactive HF cache loads by snapshot path; the gate must recover the repo id +
+    # commit from models--org--repo/snapshots/<rev> and scan that exact commit, not exempt
+    # it and not fall back to the default branch (an older commit may hold a dropped pickle).
+    snapshot = tmp_path / "models--evil--repo" / "snapshots" / "deadbeef"
+    snapshot.mkdir(parents = True)
+    status = {
+        "scansDone": True,
+        "filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}],
+    }
+    with _patch_status(status) as model_info:
+        d = evaluate_file_security(str(snapshot))
+    assert d.blocked is True
+    assert model_info.call_args.args[0] == "evil/repo"
+    assert model_info.call_args.kwargs["revision"] == "deadbeef"
 
 
 def test_remote_gguf_named_repo_is_still_scanned():
@@ -188,9 +197,7 @@ def test_remote_gguf_named_repo_is_still_scanned():
 
 def test_skips_local_gguf_file():
     # A local .gguf path is caught by is_local_path -- no Hub call.
-    with patch(
-        "huggingface_hub.model_info", side_effect = AssertionError("should not be called")
-    ):
+    with patch("huggingface_hub.model_info", side_effect = AssertionError("should not be called")):
         d = evaluate_file_security("/tmp/models/model.gguf")
     assert d.blocked is False
     assert "local" in d.reason
@@ -219,10 +226,7 @@ def test_malformed_entries_are_ignored():
 
 
 def test_response_payload_shape():
-    status = {
-        "scansDone": True,
-        "filesWithIssues": [{"path": "a.pkl", "level": "malicious"}],
-    }
+    status = {"scansDone": True, "filesWithIssues": [{"path": "a.pkl", "level": "malicious"}]}
     with _patch_status(status):
         payload = evaluate_file_security("evil/repo").response_payload()
     assert set(payload) == {"unsafe_files", "security_blocked", "reason"}
@@ -238,9 +242,7 @@ def test_flagged_safetensors_does_not_block():
     # picklescan tripping on a sibling pickle) is not an RCE vector and must not block.
     status = {
         "scansDone": False,
-        "filesWithIssues": [
-            {"path": "model-00001-of-00004.safetensors", "level": "unsafe"}
-        ],
+        "filesWithIssues": [{"path": "model-00001-of-00004.safetensors", "level": "unsafe"}],
     }
     with _patch_status(status):
         d = evaluate_file_security("nvidia/some-model")
@@ -387,10 +389,7 @@ def test_eicar_shaped_root_files_block():
 
 def test_unknown_future_level_fails_closed():
     # Hub schema drift: an unrecognized non-"safe" level (e.g. "infected") on a root pickle must block.
-    status = {
-        "scansDone": True,
-        "filesWithIssues": [{"path": "weights.bin", "level": "infected"}],
-    }
+    status = {"scansDone": True, "filesWithIssues": [{"path": "weights.bin", "level": "infected"}]}
     with _patch_status(status):
         d = evaluate_file_security("evil/repo")
     assert d.blocked is True
@@ -510,9 +509,7 @@ def test_spark_tts_llm_alias_scans_real_repo():
     cap, seen = _patch_status_capture(status)
     with cap, patch("utils.paths.is_local_path", return_value = False), _patch_no_index():
         d = evaluate_file_security("Spark-TTS-0.5B/LLM", load_subdirs = ())
-    assert (
-        seen["repo"] == "unsloth/Spark-TTS-0.5B"
-    )  # scanned the real repo, not the alias
+    assert seen["repo"] == "unsloth/Spark-TTS-0.5B"  # scanned the real repo, not the alias
     assert d.model_name == "unsloth/Spark-TTS-0.5B"
     assert d.blocked is True
     assert d.unsafe_files == [{"path": "LLM/pytorch_model.bin", "level": "unsafe"}]
@@ -546,13 +543,9 @@ def test_security_load_subdirs_yaml_fallback(monkeypatch):
     from utils.security import security_load_subdirs
 
     monkeypatch.setattr(mc, "detect_audio_type", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        mc, "load_model_defaults", lambda *_a, **_k: {"audio_type": "bicodec"}
-    )
+    monkeypatch.setattr(mc, "load_model_defaults", lambda *_a, **_k: {"audio_type": "bicodec"})
     assert security_load_subdirs("unsloth/Spark-TTS-0.5B") == ("LLM",)
 
     # A non-bicodec default contributes no subdir.
-    monkeypatch.setattr(
-        mc, "load_model_defaults", lambda *_a, **_k: {"audio_type": None}
-    )
+    monkeypatch.setattr(mc, "load_model_defaults", lambda *_a, **_k: {"audio_type": None})
     assert security_load_subdirs("unsloth/Llama-3.2-1B") == ()

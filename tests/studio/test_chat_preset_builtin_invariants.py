@@ -17,9 +17,7 @@ def _source_path(relative_path: str) -> Path:
     return WORKDIR / "unsloth_repo" / relative_path
 
 
-PRESET_POLICY = _source_path(
-    "studio/frontend/src/features/chat/presets/preset-policy.ts"
-)
+PRESET_POLICY = _source_path("studio/frontend/src/features/chat/presets/preset-policy.ts")
 RUNTIME_TYPES = _source_path("studio/frontend/src/features/chat/types/runtime.ts")
 TEMP = WORKDIR / "temp" / "chat_preset_builtin_invariants"
 
@@ -42,13 +40,15 @@ def _require_node():
 def _ensure_harness():
     TEMP.mkdir(parents = True, exist_ok = True)
     (TEMP / "register.mjs").write_text(
-        "import { register } from 'node:module';\nregister('./loader.mjs', import.meta.url);\n"
+        "import { register } from 'node:module';\nregister('./loader.mjs', import.meta.url);\n",
+        encoding = "utf-8",
     )
     (TEMP / "loader.mjs").write_text(
         "export function resolve(specifier, context, next) {\n"
         "  if (specifier.endsWith('/types/runtime')) return next(specifier + '.ts', context);\n"
         "  return next(specifier, context);\n"
-        "}\n"
+        "}\n",
+        encoding = "utf-8",
     )
 
 
@@ -56,7 +56,7 @@ def _run(script: str):
     _require_node()
     _ensure_harness()
     script_path = TEMP / "run.mts"
-    script_path.write_text(script)
+    script_path.write_text(script, encoding = "utf-8")
     env = dict(os.environ, NODE_NO_WARNINGS = "1")
     result = subprocess.run(
         [

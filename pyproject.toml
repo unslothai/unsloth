@@ -25,7 +25,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "unsloth_zoo>=2026.7.4",
+    "unsloth_zoo>=2026.7.6",
     "wheel>=0.42.0",
     "packaging",
     "torch>=2.4.0,<2.12.0",
@@ -48,10 +48,13 @@ dependencies = [
     "diffusers",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
-    "typer",
+    "typer>=0.12.0",
     "pydantic",
     "pyyaml",
     "nest-asyncio",
+    # Every CLI command imports studio.backend.*, which reaches structlog at
+    # module level. The rest of the server stack lives in the studio extra.
+    "structlog>=24.1.0",
 ]
 
 [project.scripts]
@@ -64,10 +67,12 @@ version = {attr = "unsloth.models._utils.__version__"}
 include-package-data = true
 
 [tool.setuptools.package-data]
+unsloth_cli = ["codex_fallback_prompt.md", "pi_subagent.ts"]
 studio = [
     "*.sh",
     "*.ps1",
     "*.bat",
+    "node_prebuilt_pins.json",
     "frontend/dist/**/*",
     "frontend/*.json",
     "frontend/*.ts",
@@ -77,6 +82,8 @@ studio = [
     "frontend/.git*",
     "backend/requirements/**/*",
     "backend/plugins/**/*",
+    "backend/assets/**/*.jinja",
+    "backend/assets/**/*.html",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
 ]
@@ -86,12 +93,39 @@ include = ["unsloth*", "unsloth_cli*", "studio", "studio.backend*"]
 exclude = ["images*", "tests*", "*.node_modules", "*.node_modules.*"]
 
 [project.optional-dependencies]
+# Studio's server stack. Mirrors studio/backend/requirements/studio.txt;
+# test_studio_extra_matches_requirements.py catches drift.
+studio = [
+    "typer",
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "packaging",
+    "matplotlib==3.10.9",
+    "pandas",
+    "nest_asyncio",
+    "datasets==4.3.0",
+    "pyjwt",
+    "huggingface-hub==0.36.2",
+    "structlog>=24.1.0",
+    "diceware",
+    "ddgs",
+    "cryptography>=42.0.0",
+    "boto3>=1.34.0",
+    "httpx>=0.27.0",
+    "fastmcp>=3.0.2",
+    "sqlite-vec==0.1.9",
+    "pymupdf==1.27.2.3",
+    "pymupdf4llm==0.3.4",
+    "python-docx==1.2.0",
+]
+
 triton = [
     "triton>=3.0.0 ; ('linux' in sys_platform)",
     "triton-windows ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 huggingface = [
-    "unsloth_zoo>=2026.7.4",
+    "unsloth_zoo>=2026.7.6",
     "wheel>=0.42.0",
     "packaging",
     "torchvision",
@@ -110,13 +144,13 @@ huggingface = [
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
     "sentence-transformers",
-    "typer",
+    "typer>=0.12.0",
     "pydantic",
     "pyyaml",
     "nest-asyncio",
 ]
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.7.4",
+    "unsloth_zoo>=2026.7.6",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -513,7 +547,7 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.7.4",
+    "unsloth_zoo>=2026.7.6",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
@@ -529,7 +563,7 @@ colab-new = [
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[triton]",
     "sentence-transformers",
-    "typer",
+    "typer>=0.12.0",
     "pydantic",
     "pyyaml",
     "nest-asyncio",
@@ -781,6 +815,7 @@ repository = "https://github.com/unslothai/unsloth"
 
 [tool.ruff]
 target-version = "py311"
+line-length = 100
 force-exclude = true
 extend-exclude = [
     "*chat_templates.py",
@@ -812,4 +847,5 @@ ignore = [
 # Narrow the default test discovery so `pytest` from the repo root
 # does NOT pick up the GPU-heavy tests under tests/python, tests/qlora,
 # etc. The CI security job runs `pytest tests/security` explicitly.
+pythonpath = ["."]
 testpaths = ["tests/security"]

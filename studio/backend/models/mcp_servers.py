@@ -53,7 +53,5 @@ class McpServerImportRequest(BaseModel):
 
 class McpServerImportResult(BaseModel):
     created: list[McpServerResponse] = Field(default_factory = list)
-    skipped: list[str] = Field(
-        default_factory = list
-    )  # display names skipped as duplicates
+    skipped: list[str] = Field(default_factory = list)  # display names skipped as duplicates
     errors: list[str] = Field(default_factory = list)

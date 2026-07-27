@@ -14,7 +14,7 @@ CHAT_TEMPLATES_PATH = os.path.join(
 
 
 def _extract_template(name):
-    src = open(CHAT_TEMPLATES_PATH).read()
+    src = open(CHAT_TEMPLATES_PATH, encoding = "utf-8").read()
     pattern = rf'{re.escape(name)}\s*=\s*\\\n"""(.*?)"""'
     m = re.search(pattern, src, flags = re.DOTALL)
     assert m, f"Could not extract {name} from chat_templates.py"
@@ -23,9 +23,7 @@ def _extract_template(name):
 
 def _env():
     env = Environment(undefined = StrictUndefined, trim_blocks = False, lstrip_blocks = False)
-    env.globals["raise_exception"] = lambda msg: (_ for _ in ()).throw(
-        TemplateError(msg)
-    )
+    env.globals["raise_exception"] = lambda msg: (_ for _ in ()).throw(TemplateError(msg))
     return env
 
 

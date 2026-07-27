@@ -57,6 +57,29 @@ def test_replace_thread_messages_rejects_body_thread_mismatch(monkeypatch):
     assert called is False
 
 
+def test_replace_thread_messages_reports_protected_research_turn(monkeypatch):
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _thread_id: {"id": "thread-1"})
+
+    def reject_prune(*_args, **_kwargs):
+        raise chat_history.ChatMessageProtectedError(
+            "Research prompts and responses cannot be deleted from their original thread"
+        )
+
+    monkeypatch.setattr(chat_history, "sync_chat_messages", reject_prune)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            chat_history.replace_thread_messages(
+                "thread-1",
+                chat_history.ChatMessageSyncRequest(messages = [], pruneMissing = True),
+                current_subject = "test-user",
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "Research prompts and responses" in str(exc_info.value.detail)
+
+
 # ---------------------------------------------------------------------------
 # /api/chat/settings
 # ---------------------------------------------------------------------------
@@ -91,6 +114,28 @@ def test_chat_settings_payload_accepts_fast_mode_presets():
     assert dumped["customPresets"][0]["params"]["fastMode"] is True
 
 
+def test_chat_settings_payload_accepts_preset_load_config():
+    payload = chat_history.ChatSettingsPayload.model_validate(
+        {
+            "customPresets": [
+                {
+                    "name": "GGUF preset",
+                    "params": {"temperature": 0.7, "maxTokens": 512},
+                    "loadConfig": {
+                        "customContextLength": 256,
+                        "kvCacheDtype": "q8_0",
+                        "tensorParallel": False,
+                    },
+                },
+            ],
+        }
+    )
+
+    dumped = payload.model_dump(exclude_unset = True)
+    assert dumped["customPresets"][0]["loadConfig"]["customContextLength"] == 256
+    assert dumped["customPresets"][0]["loadConfig"]["kvCacheDtype"] == "q8_0"
+
+
 def test_chat_settings_payload_accepts_nudge_tool_calls():
     # extra="forbid" 400s PUT /api/chat/settings on unknown keys, so the
     # frontend's persisted nudgeToolCalls needs a payload field (like
@@ -120,17 +165,14 @@ def test_chat_inference_settings_covers_frontend_persisted_fields():
         pytest.skip("frontend runtime.ts not present")
 
     with open(runtime_ts, encoding = "utf-8") as fh:
-        block = re.search(
-            r"interface InferenceParams \{(.*?)\n\}", fh.read(), re.DOTALL
-        )
+        block = re.search(r"interface InferenceParams \{(.*?)\n\}", fh.read(), re.DOTALL)
     assert block, "InferenceParams interface not found in runtime.ts"
     persisted = set(re.findall(r"^\s*(\w+)\??:", block.group(1), re.M)) - {"checkpoint"}
 
     backend = set(chat_history.ChatInferenceSettings.model_fields)
-    assert persisted == backend, (
-        f"schema drift: frontend-only {persisted - backend}, "
-        f"backend-only {backend - persisted}"
-    )
+    assert (
+        persisted == backend
+    ), f"schema drift: frontend-only {persisted - backend}, backend-only {backend - persisted}"
 
 
 # ---------------------------------------------------------------------------
@@ -208,9 +250,7 @@ def test_fork_thread_404_when_source_missing(monkeypatch):
 
 
 def test_fork_thread_404_when_branch_message_missing(monkeypatch):
-    monkeypatch.setattr(
-        chat_history, "get_chat_thread", lambda _id: {"id": _id, "title": "T"}
-    )
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: {"id": _id, "title": "T"})
     monkeypatch.setattr(chat_history, "get_chat_message", lambda _t, _m: None)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(

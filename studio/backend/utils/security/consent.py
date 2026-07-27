@@ -51,9 +51,7 @@ class RemoteCodeDecision:
     max_severity: Optional[str]
     findings_summary: str
     reason: str
-    findings: list = field(
-        default_factory = list
-    )  # structured [{severity,file,check,evidence}]
+    findings: list = field(default_factory = list)  # structured [{severity,file,check,evidence}]
     approvable: bool = True  # False only for CRITICAL (user cannot override)
 
     def response_payload(self) -> dict:
@@ -63,9 +61,7 @@ class RemoteCodeDecision:
         """
         return {
             "error_kind": (
-                "remote_code_consent_required"
-                if self.approvable
-                else "remote_code_blocked"
+                "remote_code_consent_required" if self.approvable else "remote_code_blocked"
             ),
             "model_name": self.model_name,
             "has_remote_code": self.has_remote_code,
@@ -85,9 +81,7 @@ class RemoteCodeDecision:
 _REMOTE_CODE_CONFIG_FILES = REMOTE_CODE_CONFIG_FILES
 
 
-def _config_has_auto_map(
-    model_name: str, hf_token: Optional[str] = None
-) -> Optional[bool]:
+def _config_has_auto_map(model_name: str, hf_token: Optional[str] = None) -> Optional[bool]:
     """Whether any config (model/tokenizer/processor) declares an ``auto_map`` the load
     would execute. Reads raw JSON with ``hf_token``; returns None when a config is
     unreadable (transient/auth) so the caller treats it as "unknown" and scans, False
@@ -130,9 +124,7 @@ def _is_direct_gguf_file_ref(model_name: str) -> bool:
     return name.count("/") >= 2
 
 
-def _load_remote_code_configs(
-    model_name: str, hf_token: Optional[str] = None
-) -> Optional[list]:
+def _load_remote_code_configs(model_name: str, hf_token: Optional[str] = None) -> Optional[list]:
     """Read every config that can declare ``auto_map`` (model/tokenizer/processor) as
     raw dicts. Returns the configs present (``[]`` when all 404, a definitive "no
     auto_map"), or None when one is unreadable (transient/auth) so the caller scans.
@@ -150,23 +142,29 @@ def _load_remote_code_configs(
             for name in _REMOTE_CODE_CONFIG_FILES:
                 p = root / name
                 if p.is_file():
-                    configs.append(json.loads(p.read_text()))
+                    configs.append(json.loads(p.read_text(encoding = "utf-8")))
             return configs
 
         from huggingface_hub import hf_hub_download
         from huggingface_hub.utils import EntryNotFoundError
+        from utils.hf_cache_settings import active_hf_hub_cache
 
         configs = []
         for name in _REMOTE_CODE_CONFIG_FILES:
             try:
-                p = hf_hub_download(repo_id = model_name, filename = name, token = hf_token)
+                p = hf_hub_download(
+                    repo_id = model_name,
+                    filename = name,
+                    token = hf_token,
+                    cache_dir = active_hf_hub_cache(),
+                )
             except EntryNotFoundError:
                 continue  # genuine 404 -> truly absent
             except Exception:
                 # Transient/auth failure is not "absent" -> fail closed to "unknown" so
                 # the caller scans (a tokenizer/processor-only auto_map must not slip by).
                 return None
-            configs.append(json.loads(Path(p).read_text()))
+            configs.append(json.loads(Path(p).read_text(encoding = "utf-8")))
         # Every config was read or a genuine 404 -> an empty list is a definitive
         # "no auto_map", not "unknown".
         return configs
@@ -250,10 +248,7 @@ def evaluate_remote_code_consent_for_targets(
 
         _ak = remote_code_approvals.approval_target_key(targets)
         _stored = remote_code_approvals.lookup(subject, _ak)
-        if (
-            _stored is not None
-            and _stored.scanner_version == remote_code_approvals.SCANNER_VERSION
-        ):
+        if _stored is not None and _stored.scanner_version == remote_code_approvals.SCANNER_VERSION:
             _sha = remote_code_approvals.resolve_combined_sha(targets, hf_token)
             if _sha is None or _sha == _stored.commit_sha:
                 approved_fingerprint = approved_fingerprint or _stored.fingerprint
@@ -295,13 +290,7 @@ def evaluate_remote_code_consent_for_targets(
 
     if not has_remote_code:
         return RemoteCodeDecision(
-            primary,
-            False,
-            False,
-            None,
-            None,
-            "",
-            "no auto_map; trust_remote_code is a no-op",
+            primary, False, False, None, None, "", "no auto_map; trust_remote_code is a no-op"
         )
 
     if not combined:
@@ -323,9 +312,7 @@ def evaluate_remote_code_consent_for_targets(
     # CRITICAL is never approvable; a fingerprint pins approval for lower severities only.
     approvable = sev != CRITICAL
     approved = (
-        approvable
-        and approved_fingerprint is not None
-        and approved_fingerprint == fingerprint
+        approvable and approved_fingerprint is not None and approved_fingerprint == fingerprint
     )
 
     if sev == CRITICAL:

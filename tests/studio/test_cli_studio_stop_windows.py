@@ -17,9 +17,7 @@ from pathlib import Path
 
 import pytest
 
-_STUDIO_CMD_PY = (
-    Path(__file__).resolve().parents[2] / "unsloth_cli" / "commands" / "studio.py"
-)
+_STUDIO_CMD_PY = Path(__file__).resolve().parents[2] / "unsloth_cli" / "commands" / "studio.py"
 _SOURCE = _STUDIO_CMD_PY.read_text(encoding = "utf-8")
 
 
@@ -27,10 +25,7 @@ def _func_source(name: str) -> str:
     """Return the source of a top-level function `name` in studio.py."""
     tree = ast.parse(_SOURCE)
     for node in ast.walk(tree):
-        if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == name
-        ):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
             return ast.get_source_segment(_SOURCE, node)
     raise AssertionError(f"function {name!r} not found in studio.py")
 
@@ -40,9 +35,7 @@ def _load_pid_alive(platform: str, fake_run = None):
     branch on any host without importing unsloth_cli."""
     src = _func_source("_pid_alive")
     fake_sys = types.SimpleNamespace(platform = platform)
-    fake_sub = (
-        types.SimpleNamespace(run = fake_run) if fake_run is not None else subprocess
-    )
+    fake_sub = types.SimpleNamespace(run = fake_run) if fake_run is not None else subprocess
     ns = {"os": os, "sys": fake_sys, "subprocess": fake_sub}
     exec(src, ns)
     return ns["_pid_alive"]

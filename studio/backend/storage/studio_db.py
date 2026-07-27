@@ -132,9 +132,7 @@ def _delete_project_workspace(project: dict) -> None:
     try:
         root_resolved = root.resolve(strict = False)
     except (OSError, RuntimeError, ValueError):
-        logger.warning(
-            "Skipping project workspace delete for invalid path %r", root_path
-        )
+        logger.warning("Skipping project workspace delete for invalid path %r", root_path)
         return
 
     project_id = str(project["id"])
@@ -194,15 +192,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             error_message TEXT,
             duration_seconds REAL,
             loss_sparkline TEXT,
-            display_name TEXT
+            display_name TEXT,
+            resume_blocked INTEGER NOT NULL DEFAULT 0
         )
         """
     )
-    existing_cols = {
-        row[1] for row in conn.execute("PRAGMA table_info(training_runs)").fetchall()
-    }
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(training_runs)").fetchall()}
     if "display_name" not in existing_cols:
         conn.execute("ALTER TABLE training_runs ADD COLUMN display_name TEXT")
+    if "resume_blocked" not in existing_cols:
+        conn.execute(
+            "ALTER TABLE training_runs ADD COLUMN resume_blocked INTEGER NOT NULL DEFAULT 0"
+        )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS training_metrics (
@@ -220,9 +221,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)"
-    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)")
     # Windows: COLLATE NOCASE so C:\Models and c:\models dedup. Elsewhere keep
     # case-sensitive BINARY so /Models and /models stay distinct.
     collation = "COLLATE NOCASE" if platform.system() == "Windows" else ""
@@ -282,13 +281,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     if "project_id" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN project_id TEXT")
     if "openai_code_exec_container_id" not in chat_thread_cols:
-        conn.execute(
-            "ALTER TABLE chat_threads ADD COLUMN openai_code_exec_container_id TEXT"
-        )
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN openai_code_exec_container_id TEXT")
     if "anthropic_code_exec_container_id" not in chat_thread_cols:
-        conn.execute(
-            "ALTER TABLE chat_threads ADD COLUMN anthropic_code_exec_container_id TEXT"
-        )
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN anthropic_code_exec_container_id TEXT")
     if "forked_from_thread_id" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN forked_from_thread_id TEXT")
     if "forked_from_message_id" not in chat_thread_cols:
@@ -344,19 +339,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(tombstone_schema)
     else:
         tombstone_columns = {
-            row[1]
-            for row in conn.execute("PRAGMA table_info(chat_attachment_tombstones)")
+            row[1] for row in conn.execute("PRAGMA table_info(chat_attachment_tombstones)")
         }
         tombstone_fk_targets = {
-            row[2]
-            for row in conn.execute(
-                "PRAGMA foreign_key_list(chat_attachment_tombstones)"
-            )
+            row[2] for row in conn.execute("PRAGMA foreign_key_list(chat_attachment_tombstones)")
         }
-        if (
-            "thread_id" not in tombstone_columns
-            or "chat_threads" not in tombstone_fk_targets
-        ):
+        if "thread_id" not in tombstone_columns or "chat_threads" not in tombstone_fk_targets:
             # The first implementation cascaded through chat_messages, which
             # erased deletion knowledge during pruneMissing. Rebuild once,
             # retaining every tombstone whose owning thread still exists.
@@ -419,8 +407,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     inventory_state_columns = {
-        row[1]
-        for row in conn.execute("PRAGMA table_info(chat_attachment_inventory_state)")
+        row[1] for row in conn.execute("PRAGMA table_info(chat_attachment_inventory_state)")
     }
     if "inventory_version" not in inventory_state_columns:
         conn.execute(
@@ -471,9 +458,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_threads_model_type_created_at ON chat_threads(model_type, created_at)"
     )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_chat_threads_pair_id ON chat_threads(pair_id)"
-    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_threads_pair_id ON chat_threads(pair_id)")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_threads_project_id ON chat_threads(project_id)"
     )
@@ -548,6 +533,181 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_prompt_lists_created_at ON prompt_lists(created_at)"
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_runs (
+            id TEXT NOT NULL PRIMARY KEY,
+            owner_subject TEXT NOT NULL,
+            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            user_message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+            assistant_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'planning', 'awaiting_approval', 'queued', 'running', 'paused',
+                'cancelling', 'cancelled', 'completed', 'failed'
+            )),
+            plan_json TEXT,
+            plan_revision INTEGER NOT NULL DEFAULT 0,
+            plan_hash TEXT,
+            config_json TEXT NOT NULL,
+            cancel_requested INTEGER NOT NULL DEFAULT 0,
+            lease_owner TEXT,
+            lease_expires_at INTEGER,
+            heartbeat_at INTEGER,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            error_message TEXT,
+            report_text TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            next_event_seq INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+    research_run_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(research_runs)").fetchall()
+    }
+    if "report_text" not in research_run_cols:
+        conn.execute("ALTER TABLE research_runs ADD COLUMN report_text TEXT")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_thread_claims (
+            owner_subject TEXT NOT NULL,
+            thread_id TEXT NOT NULL PRIMARY KEY REFERENCES chat_threads(id) ON DELETE CASCADE,
+            created_at INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    claim_pk = [
+        row[1]
+        for row in sorted(
+            conn.execute("PRAGMA table_info(research_thread_claims)").fetchall(),
+            key = lambda row: int(row[5] or 0),
+        )
+        if int(row[5] or 0) > 0
+    ]
+    if claim_pk != ["thread_id"]:
+        # Rebuild the claims table (legacy owner_subject+thread_id PK -> thread_id PK) atomically.
+        # Without an explicit transaction the RENAME/CREATE/INSERT/DROP run in autocommit, so an
+        # interruption after CREATE orphaned the rows in _legacy and never re-triggered.
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "ALTER TABLE research_thread_claims RENAME TO research_thread_claims_legacy"
+            )
+            conn.execute(
+                """
+                CREATE TABLE research_thread_claims (
+                    owner_subject TEXT NOT NULL,
+                    thread_id TEXT NOT NULL PRIMARY KEY REFERENCES chat_threads(id) ON DELETE CASCADE,
+                    created_at INTEGER NOT NULL
+                ) WITHOUT ROWID
+                """
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO research_thread_claims
+                   (owner_subject, thread_id, created_at)
+                   SELECT owner_subject, thread_id, created_at
+                   FROM research_thread_claims_legacy
+                   ORDER BY created_at, owner_subject"""
+            )
+            conn.execute("DROP TABLE research_thread_claims_legacy")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    conn.execute(
+        """INSERT OR IGNORE INTO research_thread_claims
+           (owner_subject, thread_id, created_at)
+           SELECT owner_subject, thread_id, created_at
+           FROM research_runs ORDER BY created_at, id"""
+    )
+    conn.execute(
+        """UPDATE research_runs
+           SET status='failed', error_message='Superseded by the global thread research claim',
+               lease_owner=NULL, lease_expires_at=NULL, completed_at=COALESCE(completed_at, updated_at)
+           WHERE status IN ('planning','awaiting_approval','queued','running','paused','cancelling')
+             AND EXISTS (
+                 SELECT 1 FROM research_thread_claims c
+                 WHERE c.thread_id=research_runs.thread_id
+                   AND c.owner_subject<>research_runs.owner_subject
+             )"""
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_plan_steps (
+            run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            query TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            result_json TEXT,
+            started_at INTEGER,
+            completed_at INTEGER,
+            PRIMARY KEY(run_id, position)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+            step_position INTEGER,
+            url TEXT NOT NULL,
+            title TEXT,
+            snippet TEXT,
+            fetched_at INTEGER NOT NULL,
+            UNIQUE(run_id, url)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_document_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+            step_position INTEGER,
+            source_key TEXT NOT NULL,
+            document_id TEXT,
+            chunk_id TEXT,
+            filename TEXT NOT NULL,
+            page INTEGER,
+            score REAL,
+            snippet TEXT,
+            fetched_at INTEGER NOT NULL,
+            UNIQUE(run_id, source_key)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_events (
+            run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+            seq INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            data_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(run_id, seq)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_research_runs_owner_thread_status "
+        "ON research_runs(owner_subject, thread_id, status)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_research_runs_lease "
+        "ON research_runs(status, lease_expires_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_research_sources_run ON research_sources(run_id, id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_research_document_sources_run "
+        "ON research_document_sources(run_id, id)"
+    )
     inventory_state = conn.execute(
         """
         SELECT inventory_version, dirty
@@ -555,10 +715,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         WHERE singleton = 1
         """
     ).fetchone()
+    # Positional read: works for raw tuple or sqlite3.Row (no row_factory precondition).
     if (
         inventory_state is None
-        or inventory_state["inventory_version"] != _CHAT_ATTACHMENT_INVENTORY_VERSION
-        or inventory_state["dirty"]
+        or inventory_state[0] != _CHAT_ATTACHMENT_INVENTORY_VERSION
+        or inventory_state[1]
     ):
         _rebuild_chat_attachment_inventory(conn)
         _mark_chat_attachment_inventory_clean(conn)
@@ -578,9 +739,7 @@ def _prompt_entry_from_row(row: sqlite3.Row) -> dict:
 def list_prompt_entries() -> list[dict]:
     conn = get_connection()
     try:
-        rows = conn.execute(
-            "SELECT * FROM prompt_entries ORDER BY created_at DESC"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM prompt_entries ORDER BY created_at DESC").fetchall()
         return [_prompt_entry_from_row(r) for r in rows]
     finally:
         conn.close()
@@ -635,10 +794,7 @@ def bulk_upsert_prompt_entries(entries: list[dict]) -> int:
                 text = excluded.text,
                 updated_at = excluded.updated_at
             """,
-            [
-                (e["id"], e["name"], e["text"], e["createdAt"], e["updatedAt"])
-                for e in entries
-            ],
+            [(e["id"], e["name"], e["text"], e["createdAt"], e["updatedAt"]) for e in entries],
         )
         conn.commit()
         return len(entries)
@@ -659,9 +815,7 @@ def _prompt_list_from_row(row: sqlite3.Row) -> dict:
 def list_prompt_lists_db() -> list[dict]:
     conn = get_connection()
     try:
-        rows = conn.execute(
-            "SELECT * FROM prompt_lists ORDER BY created_at DESC"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM prompt_lists ORDER BY created_at DESC").fetchall()
         return [_prompt_list_from_row(r) for r in rows]
     finally:
         conn.close()
@@ -747,6 +901,7 @@ def get_connection() -> sqlite3.Connection:
             if not _schema_ready:
                 try:
                     _ensure_schema(conn)
+                    conn.commit()
                     _schema_ready = True
                 except Exception:
                     conn.close()
@@ -761,16 +916,43 @@ def create_run(
     config_json: str,
     started_at: str,
     total_steps: Optional[int],
+    *,
+    output_dir: Optional[str] = None,
+    cancel_requested: bool = False,
+    resumed_from_run_id: Optional[str] = None,
 ) -> None:
     conn = get_connection()
     try:
         conn.execute(
             """
-            INSERT INTO training_runs (id, model_name, dataset_name, config_json, started_at, total_steps)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO training_runs (
+                id, model_name, dataset_name, config_json, started_at, total_steps,
+                output_dir, resume_blocked
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (id, model_name, dataset_name, config_json, started_at, total_steps),
+            (
+                id,
+                model_name,
+                dataset_name,
+                config_json,
+                started_at,
+                total_steps,
+                None if cancel_requested else output_dir,
+                int(cancel_requested),
+            ),
         )
+        if resumed_from_run_id:
+            claimed = conn.execute(
+                """
+                UPDATE training_runs SET resume_blocked = 1
+                WHERE id = ? AND status IN ('stopped', 'error')
+                  AND output_dir = ? AND resume_blocked = 0
+                """,
+                (resumed_from_run_id, output_dir),
+            )
+            if claimed.rowcount != 1:
+                raise RuntimeError("Resume source is no longer available")
         conn.commit()
     finally:
         conn.close()
@@ -813,6 +995,8 @@ def finish_run(
     loss_sparkline: Optional[str] = None,
     output_dir: Optional[str] = None,
     error_message: Optional[str] = None,
+    clear_output_dir: bool = False,
+    resume_blocked: bool = False,
 ) -> None:
     conn = get_connection()
     try:
@@ -820,9 +1004,16 @@ def finish_run(
             """
             UPDATE training_runs
             SET status = ?, ended_at = ?, final_step = ?, final_loss = ?,
-                duration_seconds = ?, loss_sparkline = ?, output_dir = ?,
-                error_message = ?
-            WHERE id = ?
+                duration_seconds = ?, loss_sparkline = ?,
+                output_dir = CASE
+                    WHEN resume_blocked = 1 OR ? = 1 THEN NULL
+                    WHEN ? IS NOT NULL THEN ?
+                    WHEN ? IN ('error', 'stopped') THEN output_dir
+                    ELSE NULL
+                END,
+                error_message = ?,
+                resume_blocked = CASE WHEN resume_blocked = 1 OR ? = 1 THEN 1 ELSE ? END
+            WHERE id = ? AND status = 'running'
             """,
             (
                 status,
@@ -831,8 +1022,13 @@ def finish_run(
                 final_loss,
                 duration_seconds,
                 loss_sparkline,
+                int(clear_output_dir),
                 output_dir,
+                output_dir,
+                status,
                 error_message,
+                int(clear_output_dir),
+                int(resume_blocked),
                 id,
             ),
         )
@@ -892,6 +1088,38 @@ def update_run_display_name(id: str, display_name: Optional[str]) -> None:
         conn.close()
 
 
+def update_run_output_dir(id: str, output_dir: Optional[str]) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            UPDATE training_runs SET output_dir = ?
+            WHERE id = ? AND status = 'running' AND resume_blocked = 0
+            """,
+            (output_dir, id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_run_cancel_requested(id: str) -> bool:
+    """Clear resume/export state only while the exact run is still active."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            UPDATE training_runs SET output_dir = NULL, resume_blocked = 1
+            WHERE id = ? AND status = 'running'
+            """,
+            (id,),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
 def list_runs(limit: int = 50, offset: int = 0) -> dict:
     conn = get_connection()
     try:
@@ -901,15 +1129,15 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
             SELECT r.id, r.status, r.model_name, r.dataset_name, r.started_at,
                    r.ended_at, r.total_steps, r.final_step, r.final_loss,
                    r.output_dir, r.duration_seconds, r.error_message,
-                   r.loss_sparkline, r.display_name, r.config_json,
+                   r.loss_sparkline, r.display_name, r.config_json, r.resume_blocked,
                    CASE
-                       WHEN r.status = 'stopped'
+                       WHEN r.status IN ('stopped', 'error')
                             AND r.output_dir IS NOT NULL
                             AND EXISTS (
                                 SELECT 1
                                 FROM training_runs newer
                                 WHERE newer.output_dir = r.output_dir
-                                  AND newer.status IN ('stopped', 'completed')
+                                  AND newer.status IN ('stopped', 'completed', 'error', 'running')
                                   AND newer.started_at > r.started_at
                             )
                        THEN 1 ELSE 0
@@ -923,17 +1151,13 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
         runs = []
         for row in rows:
             run = dict(row)
-            run["project_name"] = _extract_project_name_from_config_json(
-                run.get("config_json")
-            )
+            run["project_name"] = _extract_project_name_from_config_json(run.get("config_json"))
             sparkline = run.get("loss_sparkline")
             if sparkline:
                 try:
                     run["loss_sparkline"] = json.loads(sparkline)
                 except (json.JSONDecodeError, TypeError):
-                    logger.debug(
-                        "Failed to parse loss_sparkline for run %s", run.get("id")
-                    )
+                    logger.debug("Failed to parse loss_sparkline for run %s", run.get("id"))
                     run["loss_sparkline"] = None
             runs.append(run)
         return {"runs": runs, "total": total}
@@ -948,13 +1172,13 @@ def get_run(id: str) -> Optional[dict]:
             """
             SELECT r.*,
                    CASE
-                       WHEN r.status = 'stopped'
+                       WHEN r.status IN ('stopped', 'error')
                             AND r.output_dir IS NOT NULL
                             AND EXISTS (
                                 SELECT 1
                                 FROM training_runs newer
                                 WHERE newer.output_dir = r.output_dir
-                                  AND newer.status IN ('stopped', 'completed')
+                                  AND newer.status IN ('stopped', 'completed', 'error', 'running')
                                   AND newer.started_at > r.started_at
                             )
                        THEN 1 ELSE 0
@@ -967,9 +1191,7 @@ def get_run(id: str) -> Optional[dict]:
         if row is None:
             return None
         run = dict(row)
-        run["project_name"] = _extract_project_name_from_config_json(
-            run.get("config_json")
-        )
+        run["project_name"] = _extract_project_name_from_config_json(run.get("config_json"))
         sparkline = run.get("loss_sparkline")
         if sparkline:
             try:
@@ -991,12 +1213,12 @@ def get_resumable_run_by_output_dir(output_dir: str) -> Optional[dict]:
                    0 AS resumed_later
             FROM training_runs r
             WHERE r.output_dir = ?
-              AND r.status = 'stopped'
+              AND r.status IN ('stopped', 'error')
               AND NOT EXISTS (
                   SELECT 1
                   FROM training_runs newer
                   WHERE newer.output_dir = r.output_dir
-                    AND newer.status IN ('stopped', 'completed')
+                    AND newer.status IN ('stopped', 'completed', 'error', 'running')
                     AND newer.started_at > r.started_at
               )
             ORDER BY r.started_at DESC
@@ -1012,9 +1234,7 @@ def get_resumable_run_by_output_dir(output_dir: str) -> Optional[dict]:
             try:
                 run["loss_sparkline"] = json.loads(sparkline)
             except (json.JSONDecodeError, TypeError):
-                logger.debug(
-                    "Failed to parse loss_sparkline for output_dir %s", output_dir
-                )
+                logger.debug("Failed to parse loss_sparkline for output_dir %s", output_dir)
                 run["loss_sparkline"] = None
         return run
     finally:
@@ -1101,8 +1321,12 @@ def cleanup_orphaned_runs() -> None:
         conn.execute(
             """
             UPDATE training_runs
-            SET status = 'error',
-                error_message = 'Server restarted during training',
+            SET status = CASE WHEN resume_blocked = 1 THEN 'stopped' ELSE 'error' END,
+                error_message = CASE
+                    WHEN resume_blocked = 1 THEN NULL
+                    ELSE 'Server restarted during training'
+                END,
+                output_dir = CASE WHEN resume_blocked = 1 THEN NULL ELSE output_dir END,
                 ended_at = ?
             WHERE status = 'running'
             """,
@@ -1298,9 +1522,7 @@ def upsert_chat_thread(thread: dict) -> dict:
                 thread.get("projectId"),
                 1 if thread.get("archived") else 0,
                 int(thread["createdAt"]),
-                int(thread["updatedAt"])
-                if thread.get("updatedAt") is not None
-                else None,
+                int(thread["updatedAt"]) if thread.get("updatedAt") is not None else None,
                 thread.get("openaiCodeExecContainerId"),
                 thread.get("anthropicCodeExecContainerId"),
                 thread.get("forkedFromThreadId"),
@@ -1578,6 +1800,10 @@ class ChatMessageConflictError(RuntimeError):
     """Raised when a chat message id already belongs to another thread."""
 
 
+class ChatMessageProtectedError(RuntimeError):
+    """Raised when pruning would remove a message owned by a durable feature."""
+
+
 class CorruptSettingsError(RuntimeError):
     """Raised when a partial settings patch would overwrite corrupt settings."""
 
@@ -1594,9 +1820,7 @@ def _parse_chat_setting_json(key: str, value_json: str) -> tuple[bool, Any]:
         return False, None
 
 
-def _load_chat_settings_for_merge(
-    conn: sqlite3.Connection,
-) -> tuple[dict[str, Any], set[str]]:
+def _load_chat_settings_for_merge(conn: sqlite3.Connection) -> tuple[dict[str, Any], set[str]]:
     rows = conn.execute("SELECT key, value_json FROM chat_settings").fetchall()
     current: dict[str, Any] = {}
     corrupt: set[str] = set()
@@ -1687,6 +1911,60 @@ def _recompute_chat_thread_updated_at(conn: sqlite3.Connection, thread_id: str) 
     )
 
 
+def _research_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
+    return {
+        str(message_id)
+        for row in conn.execute(
+            "SELECT user_message_id, assistant_message_id FROM research_runs WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchall()
+        for message_id in row
+        if message_id is not None
+    }
+
+
+def _research_message_would_change(conn: sqlite3.Connection, thread_id: str, message: dict) -> bool:
+    row = conn.execute(
+        "SELECT parent_id, role, content_json, metadata_json, attachments_json, created_at "
+        "FROM chat_messages WHERE thread_id = ? AND id = ?",
+        (thread_id, str(message["id"])),
+    ).fetchone()
+    if row is None:
+        return False
+
+    def canon(value: object) -> str | None:
+        return json.dumps(value, sort_keys = True) if value is not None else None
+
+    # created_at is compared too: without it a client could re-upsert a protected message with an
+    # unchanged body but a different timestamp and silently reorder the server-managed research
+    # prompt/response pair. Absent createdAt defaults to the stored value (a no-op re-sync).
+    return (
+        canon(message.get("content", [])) != canon(json.loads(row["content_json"] or "[]"))
+        or canon(message.get("metadata"))
+        != canon(json.loads(row["metadata_json"]) if row["metadata_json"] else None)
+        or canon(message.get("attachments"))
+        != canon(json.loads(row["attachments_json"]) if row["attachments_json"] else None)
+        or (message.get("parentId") or None) != (row["parent_id"] or None)
+        or str(message.get("role")) != str(row["role"])
+        or int(message.get("createdAt", row["created_at"])) != int(row["created_at"])
+    )
+
+
+def _guard_research_messages(
+    conn: sqlite3.Connection, thread_id: str, messages: list[dict]
+) -> None:
+    protected = _research_message_ids(conn, thread_id)
+    if not protected:
+        return
+    for message in messages:
+        if str(message["id"]) in protected and _research_message_would_change(
+            conn, thread_id, message
+        ):
+            raise ChatMessageProtectedError(
+                "Research prompts and responses are server-managed and cannot be edited"
+            )
+
+
 _CONTENT_PART_ID_PREFIX = "content-part-sha256-"
 _URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
@@ -1765,10 +2043,7 @@ def _reconcile_chat_message_uploads(message: dict, tombstones: set[str]) -> dict
         reconciled["attachments"] = [
             attachment
             for attachment in attachments
-            if not (
-                isinstance(attachment, dict)
-                and str(attachment.get("id") or "") in tombstones
-            )
+            if not (isinstance(attachment, dict) and str(attachment.get("id") or "") in tombstones)
         ]
 
     content = message.get("content")
@@ -1776,16 +2051,12 @@ def _reconcile_chat_message_uploads(message: dict, tombstones: set[str]) -> dict
         reconciled["content"] = [
             part
             for part in content
-            if not (
-                isinstance(part, dict) and (_content_part_id(part) or "") in tombstones
-            )
+            if not (isinstance(part, dict) and (_content_part_id(part) or "") in tombstones)
         ]
     return reconciled
 
 
-def _chat_attachment_metadata_text(
-    value, fallback: Optional[str] = None
-) -> Optional[str]:
+def _chat_attachment_metadata_text(value, fallback: Optional[str] = None) -> Optional[str]:
     """Keep untyped legacy/import metadata safe for SQLite binding."""
     if value is None:
         return fallback
@@ -1824,13 +2095,9 @@ def _chat_attachment_inventory_entries(
         entries.append(
             {
                 "id": attachment_id,
-                "name": _chat_attachment_metadata_text(
-                    attachment.get("name"), "attachment"
-                ),
+                "name": _chat_attachment_metadata_text(attachment.get("name"), "attachment"),
                 "type": _chat_attachment_metadata_text(attachment.get("type")),
-                "contentType": _chat_attachment_metadata_text(
-                    attachment.get("contentType")
-                ),
+                "contentType": _chat_attachment_metadata_text(attachment.get("contentType")),
                 "sizeBytes": _chat_attachment_size_bytes(attachment),
             }
         )
@@ -1844,9 +2111,7 @@ def _replace_chat_attachment_inventory(
     content_json: Optional[str],
     tombstones: Optional[set[str]] = None,
 ) -> None:
-    conn.execute(
-        "DELETE FROM chat_attachment_inventory WHERE message_id = ?", (message_id,)
-    )
+    conn.execute("DELETE FROM chat_attachment_inventory WHERE message_id = ?", (message_id,))
     entries = _chat_attachment_inventory_entries(
         attachments_json,
         content_json,
@@ -1954,11 +2219,13 @@ def _ensure_chat_attachment_inventory_current(conn: sqlite3.Connection) -> None:
         raise
 
 
-def upsert_chat_message(message: dict) -> dict:
+def upsert_chat_message(message: dict, *, allow_research_update: bool = False) -> dict:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
+        if not allow_research_update:
+            _guard_research_messages(conn, message["threadId"], [message])
         _raise_if_chat_message_thread_conflicts(
             conn,
             message["threadId"],
@@ -2031,11 +2298,15 @@ def sync_chat_messages(
     thread_id: str,
     messages: list[dict],
     prune_missing: bool = False,
+    *,
+    allow_research_update: bool = False,
 ) -> list[dict]:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
+        if not allow_research_update:
+            _guard_research_messages(conn, thread_id, messages)
         _raise_if_chat_message_thread_conflicts(
             conn,
             thread_id,
@@ -2047,16 +2318,13 @@ def sync_chat_messages(
             [m["id"] for m in messages],
         )
         reconciled_messages = [
-            _reconcile_chat_message_uploads(m, tombstones.get(m["id"], set()))
-            for m in messages
+            _reconcile_chat_message_uploads(m, tombstones.get(m["id"], set())) for m in messages
         ]
         serialized_messages = [
             (
                 m,
                 json.dumps(m.get("content", [])),
-                json.dumps(m.get("attachments"))
-                if m.get("attachments") is not None
-                else None,
+                json.dumps(m.get("attachments")) if m.get("attachments") is not None else None,
             )
             for m in reconciled_messages
         ]
@@ -2082,9 +2350,7 @@ def sync_chat_messages(
                     m["role"],
                     content_json,
                     attachments_json,
-                    json.dumps(m.get("metadata"))
-                    if m.get("metadata") is not None
-                    else None,
+                    json.dumps(m.get("metadata")) if m.get("metadata") is not None else None,
                     int(m["createdAt"]),
                 )
                 for m, content_json, attachments_json in serialized_messages
@@ -2107,6 +2373,10 @@ def sync_chat_messages(
                 ).fetchall()
             }
             missing_ids = sorted(existing_ids - retained_ids)
+            if set(missing_ids) & _research_message_ids(conn, thread_id):
+                raise ChatMessageProtectedError(
+                    "Research prompts and responses cannot be deleted from their original thread"
+                )
             for start in range(0, len(missing_ids), _SQLITE_IN_CHUNK_SIZE):
                 chunk = missing_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
                 placeholders = ",".join("?" for _ in chunk)
@@ -2124,7 +2394,7 @@ def sync_chat_messages(
         _mark_chat_attachment_inventory_clean(conn)
         conn.commit()
         return list_chat_messages(thread_id)
-    except ChatMessageConflictError:
+    except (ChatMessageConflictError, ChatMessageProtectedError):
         conn.rollback()
         raise
     except sqlite3.Error:
@@ -2133,6 +2403,55 @@ def sync_chat_messages(
         raise
     finally:
         conn.close()
+
+
+_RESEARCH_LINK_KEYS = {
+    "researchRunId",
+    "researchRun",
+    "researchStatus",
+    "researchPlanRevision",
+    "serverManaged",
+}
+
+
+def _detach_research_message_json(
+    content_json: str, metadata_json: str | None
+) -> tuple[str, str | None]:
+    content = _json_loads(content_json, [])
+    metadata = _json_loads(metadata_json, None)
+    custom = metadata.get("custom") if isinstance(metadata, dict) else None
+    linked = (
+        isinstance(metadata, dict)
+        and any(key in metadata for key in _RESEARCH_LINK_KEYS)
+        or isinstance(custom, dict)
+        and any(key in custom for key in _RESEARCH_LINK_KEYS)
+        or isinstance(content, list)
+        and any(
+            isinstance(part, dict) and any(key in part for key in _RESEARCH_LINK_KEYS)
+            for part in content
+        )
+    )
+    if not linked:
+        return content_json, metadata_json
+
+    if isinstance(content, list):
+        content = [
+            {key: value for key, value in part.items() if key not in _RESEARCH_LINK_KEYS}
+            if isinstance(part, dict)
+            else part
+            for part in content
+        ]
+    if isinstance(metadata, dict):
+        metadata = {key: value for key, value in metadata.items() if key not in _RESEARCH_LINK_KEYS}
+        custom = metadata.get("custom")
+        if isinstance(custom, dict):
+            metadata["custom"] = {
+                key: value for key, value in custom.items() if key not in _RESEARCH_LINK_KEYS
+            }
+    return (
+        json.dumps(content, ensure_ascii = False),
+        json.dumps(metadata, ensure_ascii = False) if metadata is not None else None,
+    )
 
 
 def fork_chat_thread(
@@ -2208,6 +2527,23 @@ def fork_chat_thread(
                 branch_message_id,
             ),
         )
+        fork_messages = []
+        for row in ancestry:
+            content_json, metadata_json = _detach_research_message_json(
+                row["content_json"], row["metadata_json"]
+            )
+            fork_messages.append(
+                (
+                    id_map[row["id"]],
+                    new_thread_id,
+                    id_map.get(row["parent_id"]) if row["parent_id"] else None,
+                    row["role"],
+                    content_json,
+                    row["attachments_json"],
+                    metadata_json,
+                    int(row["created_at"]),
+                )
+            )
         conn.executemany(
             """
             INSERT INTO chat_messages
@@ -2215,19 +2551,7 @@ def fork_chat_thread(
                  metadata_json, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [
-                (
-                    id_map[row["id"]],
-                    new_thread_id,
-                    id_map.get(row["parent_id"]) if row["parent_id"] else None,
-                    row["role"],
-                    row["content_json"],
-                    row["attachments_json"],
-                    row["metadata_json"],
-                    int(row["created_at"]),
-                )
-                for row in ancestry
-            ],
+            fork_messages,
         )
         for row in ancestry:
             _replace_chat_attachment_inventory(
@@ -2454,10 +2778,7 @@ def get_chat_attachment(message_id: str, attachment_id: str) -> Optional[dict]:
     attachments = _json_loads(row["attachments_json"], None)
     if isinstance(attachments, list):
         for attachment in attachments:
-            if (
-                isinstance(attachment, dict)
-                and str(attachment.get("id") or "") == attachment_id
-            ):
+            if isinstance(attachment, dict) and str(attachment.get("id") or "") == attachment_id:
                 return attachment
     if attachment_id.startswith(_CONTENT_PART_ID_PREFIX):
         for attachment in _content_part_attachments(row["content_json"]):
@@ -2508,6 +2829,11 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         if row is None:
             conn.rollback()
             return False
+        if str(message_id) in _research_message_ids(conn, str(row["thread_id"])):
+            conn.rollback()
+            raise ChatMessageProtectedError(
+                "Research prompts and responses are server-managed and cannot be edited"
+            )
 
         attachments = _json_loads(row["attachments_json"], None)
         updated_attachments_json = row["attachments_json"]
@@ -2528,15 +2854,11 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         content = _json_loads(row["content_json"], None)
         updated_content_json = row["content_json"]
         deleted_content = False
-        if attachment_id.startswith(_CONTENT_PART_ID_PREFIX) and isinstance(
-            content, list
-        ):
+        if attachment_id.startswith(_CONTENT_PART_ID_PREFIX) and isinstance(content, list):
             remaining_content = [
                 part
                 for part in content
-                if not (
-                    isinstance(part, dict) and _content_part_id(part) == attachment_id
-                )
+                if not (isinstance(part, dict) and _content_part_id(part) == attachment_id)
             ]
             deleted_content = len(remaining_content) != len(content)
             if deleted_content:
@@ -2605,9 +2927,7 @@ def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
 def get_app_setting(key: str, fallback = None):
     conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT value_json FROM app_settings WHERE key = ?", (key,)
-        ).fetchone()
+        row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
         if row is None:
             return fallback
         return _json_loads(row["value_json"], fallback)
@@ -2632,9 +2952,7 @@ def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
             [(key, json.dumps(value), now) for key, value in settings.items()],
         )
         conn.commit()
-        rows = conn.execute(
-            "SELECT key, value_json FROM app_settings ORDER BY key"
-        ).fetchall()
+        rows = conn.execute("SELECT key, value_json FROM app_settings ORDER BY key").fetchall()
         return {row["key"]: _json_loads(row["value_json"], None) for row in rows}
     finally:
         conn.close()
@@ -2649,9 +2967,7 @@ def upsert_app_setting_map_entry(
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT value_json FROM app_settings WHERE key = ?", (key,)
-        ).fetchone()
+        row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
         current = _json_loads(row["value_json"], {}) if row else {}
         if not isinstance(current, dict):
             current = {}
@@ -2682,9 +2998,7 @@ def upsert_app_setting_map_entry(
 def list_chat_settings() -> dict[str, Any]:
     conn = get_connection()
     try:
-        rows = conn.execute(
-            "SELECT key, value_json FROM chat_settings ORDER BY key"
-        ).fetchall()
+        rows = conn.execute("SELECT key, value_json FROM chat_settings ORDER BY key").fetchall()
         settings: dict[str, Any] = {}
         for row in rows:
             settings[row["key"]] = _json_loads(row["value_json"], None)
@@ -2715,9 +3029,7 @@ def upsert_chat_settings(settings: dict[str, Any]) -> dict[str, Any]:
         conn.close()
 
 
-def _deep_merge_settings(
-    current: dict[str, Any], updates: dict[str, Any]
-) -> dict[str, Any]:
+def _deep_merge_settings(current: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
     merged = dict(current)
     for key, value in updates.items():
         current_value = merged.get(key)
@@ -2738,9 +3050,7 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
         conn.execute("BEGIN IMMEDIATE")
         current, corrupt = _load_chat_settings_for_merge(conn)
         unsafe_partial_keys = [
-            key
-            for key, value in updates.items()
-            if key in corrupt and isinstance(value, dict)
+            key for key, value in updates.items() if key in corrupt and isinstance(value, dict)
         ]
         if unsafe_partial_keys:
             conn.commit()
@@ -2781,9 +3091,7 @@ def list_chat_legacy_imports() -> list[str]:
     """Return the legacy_thread_id of every thread already imported."""
     conn = get_connection()
     try:
-        rows = conn.execute(
-            "SELECT legacy_thread_id FROM chat_legacy_imports"
-        ).fetchall()
+        rows = conn.execute("SELECT legacy_thread_id FROM chat_legacy_imports").fetchall()
         return [row[0] for row in rows]
     finally:
         conn.close()

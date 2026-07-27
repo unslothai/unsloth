@@ -346,16 +346,13 @@ class TestSourcePatternsSh:
 
     @pytest.fixture(autouse = True)
     def _load_source(self):
-        self.content = SETUP_SH.read_text()
+        self.content = SETUP_SH.read_text(encoding = "utf-8")
 
     def test_has_default_pr_force(self):
         assert '_DEFAULT_LLAMA_PR_FORCE=""' in self.content
 
     def test_has_default_source(self):
-        assert (
-            '_DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"'
-            in self.content
-        )
+        assert '_DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"' in self.content
 
     def test_has_pr_force_env_read(self):
         assert "UNSLOTH_LLAMA_PR_FORCE" in self.content
@@ -407,9 +404,7 @@ class TestSourcePatternsSh:
         lines = self.content.splitlines()
         for i, line in enumerate(lines, 1):
             if "git clone" in line and "ggml-org/llama.cpp.git" in line:
-                pytest.fail(
-                    f"Line {i} has hardcoded ggml-org clone URL: {line.strip()}"
-                )
+                pytest.fail(f"Line {i} has hardcoded ggml-org clone URL: {line.strip()}")
 
 
 class TestSourcePatternsPs1:
@@ -417,16 +412,13 @@ class TestSourcePatternsPs1:
 
     @pytest.fixture(autouse = True)
     def _load_source(self):
-        self.content = SETUP_PS1.read_text()
+        self.content = SETUP_PS1.read_text(encoding = "utf-8")
 
     def test_has_default_pr_force(self):
         assert '$DefaultLlamaPrForce = ""' in self.content
 
     def test_has_default_source(self):
-        assert (
-            '$DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"'
-            in self.content
-        )
+        assert '$DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"' in self.content
 
     def test_has_pr_force_env_read(self):
         assert "$env:UNSLOTH_LLAMA_PR_FORCE" in self.content
@@ -438,10 +430,7 @@ class TestSourcePatternsPs1:
     def test_release_repo_override_removed(self):
         # No env-based release-repo override; every host now routes to the fork
         # (the CPU-only ggml-org fallback was removed), mirroring setup.sh.
-        assert (
-            "$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO)"
-            not in self.content
-        )
+        assert "$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO)" not in self.content
         assert '$HelperReleaseRepo = "unslothai/llama.cpp"' in self.content
         assert "$HelperReleaseRepo = if (" not in self.content
 
@@ -461,9 +450,7 @@ class TestSourcePatternsPs1:
 
     def test_clone_urls_parameterized_pr_path(self):
         """PR clone path uses $LlamaSource.git, not hardcoded URL."""
-        pr_idx = self.content.index(
-            "if ($LlamaPr) {\n", self.content.index("Cloning llama.cpp")
-        )
+        pr_idx = self.content.index("if ($LlamaPr) {\n", self.content.index("Cloning llama.cpp"))
         else_idx = self.content.index("} else {", pr_idx)
         pr_block = self.content[pr_idx:else_idx]
         assert '"$LlamaSource.git"' in pr_block
@@ -481,9 +468,7 @@ class TestSourcePatternsPs1:
         lines = self.content.splitlines()
         for i, line in enumerate(lines, 1):
             if "git clone" in line and "ggml-org/llama.cpp.git" in line:
-                pytest.fail(
-                    f"Line {i} has hardcoded ggml-org clone URL: {line.strip()}"
-                )
+                pytest.fail(f"Line {i} has hardcoded ggml-org clone URL: {line.strip()}")
 
 
 @requires_pwsh

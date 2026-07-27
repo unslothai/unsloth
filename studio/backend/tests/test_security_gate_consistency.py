@@ -27,9 +27,7 @@ def _iter_caller_files():
 
 def _passes_token(call: ast.Call) -> bool:
     """True if the call passes an hf_token (keyword, or the 2nd positional slot)."""
-    if any(
-        kw.arg in ("hf_token", "token") for kw in call.keywords if kw.arg is not None
-    ):
+    if any(kw.arg in ("hf_token", "token") for kw in call.keywords if kw.arg is not None):
         return True
     return len(call.args) >= 2
 
@@ -45,16 +43,14 @@ def test_capability_probes_thread_the_hf_token():
     offenders = []
     for path in _iter_caller_files():
         try:
-            tree = ast.parse(path.read_text())
+            tree = ast.parse(path.read_text(encoding = "utf-8"))
         except SyntaxError:
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and _call_name(node) in _PROBE_FUNCS:
                 if not _passes_token(node):
                     rel = path.relative_to(_BACKEND)
-                    offenders.append(
-                        f"{rel}:{node.lineno} {_call_name(node)}() drops the hf_token"
-                    )
+                    offenders.append(f"{rel}:{node.lineno} {_call_name(node)}() drops the hf_token")
     assert not offenders, (
         "A capability probe must pass the hf_token so gated/private models classify "
         "correctly:\n  " + "\n  ".join(offenders)
@@ -64,7 +60,7 @@ def test_capability_probes_thread_the_hf_token():
 def test_gguf_trust_remote_code_reported_inert_not_from_yaml():
     """GGUF never executes auto_map, so requires_trust_remote_code is reported via the
     resolver or False, never the raw YAML bool() (the round-6 regression)."""
-    src = (_BACKEND / "routes" / "inference.py").read_text()
+    src = (_BACKEND / "routes" / "inference.py").read_text(encoding = "utf-8")
     assert "requires_trust_remote_code = bool(" not in src, (
         "Report requires_trust_remote_code via _resolve_loaded_trust_remote_code "
         "(non-GGUF) or set it False (GGUF); never bool(inference_config.get(...))."
@@ -74,7 +70,7 @@ def test_gguf_trust_remote_code_reported_inert_not_from_yaml():
 def test_capability_detection_caches_are_token_aware():
     """Every capability cache is keyed by (model, token_fingerprint) so an unauthenticated
     miss cannot poison a later authenticated lookup (the audio-cache regression)."""
-    src = (_BACKEND / "utils" / "models" / "model_config.py").read_text()
+    src = (_BACKEND / "utils" / "models" / "model_config.py").read_text(encoding = "utf-8")
     offenders = []
     for line in src.splitlines():
         stripped = line.strip()
@@ -97,13 +93,9 @@ def test_malware_and_consent_gates_cover_the_lora_base():
     ]
     offenders = []
     for rel in gated_workers:
-        src = (_BACKEND / rel).read_text()
-        runs_gate = (
-            "evaluate_file_security(" in src or "evaluate_remote_code_consent" in src
-        )
-        resolves_base = (
-            "get_base_model_from_lora_identifier(" in src or "base_model" in src
-        )
+        src = (_BACKEND / rel).read_text(encoding = "utf-8")
+        runs_gate = "evaluate_file_security(" in src or "evaluate_remote_code_consent" in src
+        resolves_base = "get_base_model_from_lora_identifier(" in src or "base_model" in src
         if runs_gate and not resolves_base:
             offenders.append(f"{rel} runs a load gate but never resolves the LoRA base")
     assert not offenders, "\n".join(offenders)
@@ -115,7 +107,7 @@ def test_rag_embedding_path_runs_the_malware_gate():
     or a flagged repo loads unscanned (bypassing the normal model-load protections)."""
     offenders = []
     for rel in ("routes/settings.py", "core/rag/embeddings.py"):
-        if "evaluate_file_security(" not in (_BACKEND / rel).read_text():
+        if "evaluate_file_security(" not in (_BACKEND / rel).read_text(encoding = "utf-8"):
             offenders.append(
                 f"{rel} loads/persists an embedding model without evaluate_file_security"
             )

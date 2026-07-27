@@ -17,19 +17,13 @@ ModelRuntime = Literal["llama_cpp", "transformers", "adapter", "unknown"]
 class GgufVariantDetail(BaseModel):
     """A single GGUF quantization variant in a HuggingFace repo."""
 
-    filename: str = Field(
-        ..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')"
-    )
-    quant: str = Field(
-        ..., description = "Quantization label or internal GGUF variant key"
-    )
+    filename: str = Field(..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
+    quant: str = Field(..., description = "Quantization label or internal GGUF variant key")
     display_label: Optional[str] = Field(
         None, description = "Optional user-facing label when quant is an internal key"
     )
     size_bytes: int = Field(0, description = "File size in bytes")
-    download_size_bytes: int = Field(
-        0, description = "Total bytes needed to download this variant"
-    )
+    download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )
@@ -105,6 +99,10 @@ class LocalModelInfo(BaseModel):
         None,
         description = "HF repo id for cached models, e.g. org/model",
     )
+    active_cache: Optional[bool] = Field(
+        None,
+        description = "Whether this HF entry belongs to the current download cache.",
+    )
     base_model: Optional[str] = Field(
         None,
         description = "Base model from adapter_config.json when this is an adapter",
@@ -141,9 +139,7 @@ class LocalModelInfo(BaseModel):
 class LocalModelListResponse(BaseModel):
     """Response schema for listing local/cached models."""
 
-    models_dir: str = Field(
-        ..., description = "Directory scanned for custom local models"
-    )
+    models_dir: str = Field(..., description = "Directory scanned for custom local models")
     hf_cache_dir: Optional[str] = Field(
         None,
         description = "HF cache root that was scanned",
@@ -168,6 +164,7 @@ class CachedRepoBase(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    last_modified: Optional[float] = None
     partial: bool = False
     partial_transport: Optional[str] = None
     inventory_id: Optional[str] = None
@@ -195,6 +192,12 @@ class CachedModelRepo(CachedRepoBase):
 
 class CachedModelsResponse(BaseModel):
     cached: List[CachedModelRepo] = Field(default_factory = list)
+
+
+class HiddenModelsResponse(BaseModel):
+    needles: List[str] = Field(default_factory = list)
+    exact_ids: List[str] = Field(default_factory = list)
+    exact_paths: List[str] = Field(default_factory = list)
 
 
 class AddScanFolderRequest(BaseModel):

@@ -4,7 +4,10 @@
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useMonitorOverlayStore } from "@/features/settings";
-import { useSystemInfo } from "@/hooks/use-system";
+import {
+  aggregateGpuMemoryTotalGb,
+  useSystemInfo,
+} from "@/hooks/use-system";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { CpuIcon, GripVerticalIcon, XIcon } from "lucide-react";
@@ -65,11 +68,20 @@ export function FloatingMonitor() {
   const ramUsed = Math.max(0, ramTotal - ramAvailable);
   const ramPercent = clampPercent(systemInfo.memory?.percent_used ?? 0);
 
-  const devices = systemInfo.gpu?.devices ?? [];
-  const vramTotal = devices.reduce(
-    (sum, device) => sum + (device.memory_total_gb ?? 0),
-    0,
-  );
+  const displayedGpu = systemInfo.gpu?.available
+    ? systemInfo.gpu
+    : (systemInfo.inference_gpu ?? systemInfo.gpu);
+  const separateInferenceGpu =
+    systemInfo.gpu?.available &&
+    systemInfo.inference_gpu &&
+    systemInfo.inference_gpu.backend !== systemInfo.gpu.backend
+      ? systemInfo.inference_gpu
+      : null;
+  const inferenceVramTotal = separateInferenceGpu
+    ? aggregateGpuMemoryTotalGb(separateInferenceGpu.devices)
+    : 0;
+  const devices = displayedGpu?.devices ?? [];
+  const vramTotal = aggregateGpuMemoryTotalGb(devices);
   // null usage = unknown (e.g. Windows ROCm perf counter): treating it as 0
   // fabricates a 0-used readout, so the aggregate is unknown if any device is.
   const vramUsageKnown =
@@ -83,7 +95,7 @@ export function FloatingMonitor() {
   );
   const unknownLabel = t("settings.resources.environment.unknown");
 
-  const hasGpu = (systemInfo.gpu?.available ?? false) && devices.length > 0;
+  const hasGpu = (displayedGpu?.available ?? false) && devices.length > 0;
 
   return (
     <AnimatePresence>
@@ -139,7 +151,7 @@ export function FloatingMonitor() {
               className="space-y-3 overflow-hidden"
             >
               <div className="space-y-1">
-                <div className="flex justify-between text-[11px] font-medium font-mono">
+                <div className="flex justify-between text-ui-11 font-medium font-mono">
                   <span>{t("settings.resources.liveMonitor.ram")}</span>
                   <span
                     className={cn("tabular-nums", usageTextClass(ramPercent))}
@@ -159,7 +171,7 @@ export function FloatingMonitor() {
 
               {hasGpu && (
                 <div className="space-y-1">
-                  <div className="flex justify-between text-[11px] font-medium font-mono">
+                  <div className="flex justify-between text-ui-11 font-medium font-mono">
                     <span className="truncate flex-1 pr-2">
                       {t("settings.resources.liveMonitor.vram")}{" "}
                       {devices.length > 1
@@ -186,6 +198,19 @@ export function FloatingMonitor() {
                     className="mt-1 h-1.5 rounded-full bg-muted"
                     indicatorClassName={usageIndicatorClass(vramPercent)}
                   />
+                </div>
+              )}
+              {separateInferenceGpu && (
+                <div className="flex justify-between gap-2 text-ui-11 font-mono">
+                  <span className="text-muted-foreground">GGUF inference</span>
+                  <span className="uppercase text-foreground">
+                    {separateInferenceGpu.backend ?? "GPU"}
+                    {separateInferenceGpu.available
+                      ? inferenceVramTotal
+                        ? ` · ${formatGiB(inferenceVramTotal)}`
+                        : ""
+                      : " · unavailable"}
+                  </span>
                 </div>
               )}
             </motion.div>

@@ -37,6 +37,7 @@ import yaml
 
 
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.hf_cache_settings import active_hf_hub_cache, get_hf_cache_paths
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
@@ -51,27 +52,20 @@ def _env_offline() -> bool:
     """True if an HF offline env var is truthy (canonical strip+lower parse, on/true/yes/1)."""
     return (
         os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
-        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower()
-        in _OFFLINE_TRUE_VALUES
+        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
     )
 
 
 # ── Model size extraction ────────────────────────────────────
 import re as _re
 
-_MODEL_SIZE_RE = _re.compile(
-    r"(?:^|[-_/])(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE
-)
+_MODEL_SIZE_RE = _re.compile(r"(?:^|[-_/])(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE)
 # MoE active-parameter pattern: "A3B", "A3.5B", etc.
-_ACTIVE_SIZE_RE = _re.compile(
-    r"(?:^|[-_/])a(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE
-)
+_ACTIVE_SIZE_RE = _re.compile(r"(?:^|[-_/])a(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE)
 # Gemma 3n/4 effective-parameter pattern: "E2B", "E4B" -- the runtime
 # footprint (MatFormer + per-layer embeddings), which is the size that
 # matters for size-gated policies like sub-3B speculative-decoding fallback.
-_EFFECTIVE_SIZE_RE = _re.compile(
-    r"(?:^|[-_/])e(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE
-)
+_EFFECTIVE_SIZE_RE = _re.compile(r"(?:^|[-_/])e(\d+\.?\d*)\s*([bm])(?:$|[-_/])", _re.IGNORECASE)
 
 
 def extract_model_size_b(model_id: str) -> float | None:
@@ -500,6 +494,7 @@ def load_model_config(
             trust_remote_code = trust_remote_code,
             token = token,
             local_files_only = local_files_only,
+            cache_dir = active_hf_hub_cache(),
         )
 
     if not use_auth:
@@ -510,6 +505,7 @@ def load_model_config(
                 trust_remote_code = trust_remote_code,
                 token = None,
                 local_files_only = local_files_only,
+                cache_dir = active_hf_hub_cache(),
             )
 
     # Default auth (cached tokens)
@@ -517,6 +513,7 @@ def load_model_config(
         model_name,
         trust_remote_code = trust_remote_code,
         local_files_only = local_files_only,
+        cache_dir = active_hf_hub_cache(),
     )
 
 
@@ -610,9 +607,7 @@ def _is_vlm(config) -> bool:
     return (
         explicit_vision
         or any(x in _VLM_CLASS_NAMES for x in architectures)
-        or any(
-            isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures
-        )
+        or any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
         or model_type in _VLM_MODEL_TYPES
     )
 
@@ -633,9 +628,10 @@ def _raw_config_has_vision_config(
                     filename = "config.json",
                     token = hf_token,
                     local_files_only = local_files_only,
+                    cache_dir = active_hf_hub_cache(),
                 )
             )
-        config = json.loads(config_path.read_text())
+        config = json.loads(config_path.read_text(encoding = "utf-8"))
         architectures = config.get("architectures") or []
         model_type = config.get("model_type")
         explicit_vision = (
@@ -650,10 +646,7 @@ def _raw_config_has_vision_config(
         return (
             explicit_vision
             or any(isinstance(x, str) and x in _VLM_CLASS_NAMES for x in architectures)
-            or any(
-                isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES)
-                for x in architectures
-            )
+            or any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
             or model_type in _VLM_MODEL_TYPES
         )
     except Exception as exc:
@@ -748,9 +741,7 @@ except Exception as exc:
 )
 
 
-def _is_vision_model_subprocess(
-    model_name: str, hf_token: Optional[str] = None
-) -> Optional[bool]:
+def _is_vision_model_subprocess(model_name: str, hf_token: Optional[str] = None) -> Optional[bool]:
     """Run is_vision_model in a subprocess with transformers 5.x.
 
     Spawns a clean subprocess with .venv_t5/ on sys.path so AutoConfig
@@ -764,10 +755,7 @@ def _is_vision_model_subprocess(
     # other tiers keep the 5.5 sidecar.
     sidecar_dir = _VENV_T5_DIR
     try:
-        from utils.transformers_version import (
-            _VENV_T5_LATEST_DIR,
-            get_transformers_tier,
-        )
+        from utils.transformers_version import _VENV_T5_LATEST_DIR, get_transformers_tier
         if get_transformers_tier(model_name, hf_token, probe = False) == "latest":
             sidecar_dir = _VENV_T5_LATEST_DIR
     except Exception:
@@ -787,7 +775,7 @@ def _is_vision_model_subprocess(
             capture_output = True,
             text = True,
             timeout = 60,
-            env = child_env_without_native_path_secret(),
+            env = get_hf_cache_paths().child_env(child_env_without_native_path_secret()),
             **_windows_hidden_subprocess_kwargs(),
         )
 
@@ -896,9 +884,7 @@ def is_vision_model(
 
     # Compute outside the lock so long-running detection isn't serialized across
     # models. Two concurrent calls may both run, but produce the same result.
-    result = _is_vision_model_uncached(
-        resolved_name, hf_token, local_files_only = effective_offline
-    )
+    result = _is_vision_model_uncached(resolved_name, hf_token, local_files_only = effective_offline)
     # Only cache definitive results; None is a transient failure, retry later.
     if result is not None:
         with _vision_cache_lock:
@@ -1011,9 +997,7 @@ _AUDIO_TOKEN_PATTERNS = {
         and "<|text_start|>" in tokens
         and "<|text_end|>" in tokens
     ),
-    "snac": lambda tokens: (
-        sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000
-    ),
+    "snac": lambda tokens: (sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000),
 }
 
 
@@ -1099,7 +1083,7 @@ def _detect_audio_from_tokenizer(
                     ]:
                         tok_file = snapshot / tok_path
                         if tok_file.exists():
-                            tok_config = json.loads(tok_file.read_text())
+                            tok_config = json.loads(tok_file.read_text(encoding = "utf-8"))
                             read_any = True
                             result = _check_token_patterns(tok_config)
                             if result:
@@ -1270,6 +1254,77 @@ def _iter_gguf_files(directory: Path, recursive: bool = False):
             yield f
 
 
+_GGUF_SPLIT_FILE_RE = re.compile(
+    r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$",
+    re.IGNORECASE,
+)
+
+
+def _colocated_first_split_shard(path: Path) -> tuple[Optional[Path], bool]:
+    """Return shard 1 and whether every shard is beside *path*."""
+    match = _GGUF_SPLIT_FILE_RE.match(path.name)
+    if match is None:
+        return None, False
+
+    prefix = match.group("prefix").casefold()
+    total_text = match.group("total")
+    total = int(total_text)
+    if total < 1:
+        return None, False
+
+    first: Optional[Path] = None
+    indices: set[int] = set()
+    try:
+        siblings = path.parent.iterdir()
+        for sibling in siblings:
+            sibling_match = _GGUF_SPLIT_FILE_RE.match(sibling.name)
+            if (
+                sibling_match is None
+                or sibling_match.group("prefix").casefold() != prefix
+                or sibling_match.group("total") != total_text
+            ):
+                continue
+            try:
+                if not sibling.is_file():
+                    continue
+            except OSError:
+                continue
+            index = int(sibling_match.group("index"))
+            if not 1 <= index <= total:
+                continue
+            indices.add(index)
+            if index == 1:
+                first = sibling
+    except OSError:
+        return None, False
+
+    return first, first is not None and len(indices) == total
+
+
+def _local_gguf_load_path(path: Path) -> Path:
+    """Choose a loadable local path while preserving complete symlink sets."""
+    if _GGUF_SPLIT_FILE_RE.match(path.name) is None:
+        return path.absolute()
+
+    first, complete = _colocated_first_split_shard(path)
+    if complete and first is not None:
+        return first.absolute()
+
+    try:
+        is_symlink = path.is_symlink()
+    except OSError:
+        is_symlink = False
+    if is_symlink:
+        try:
+            target = path.resolve()
+        except OSError:
+            return (first or path).absolute()
+        target_first, _ = _colocated_first_split_shard(target)
+        return (target_first or target).absolute()
+
+    return (first or path).absolute()
+
+
 def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
     """Find the mmproj GGUF for a model.
 
@@ -1418,9 +1473,7 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
             if not (name.startswith("mtp-") and name.endswith(".gguf")):
                 continue
             stem = name[len("mtp-") : -len(".gguf")]
-            if not stem or (
-                weight_name is not None and not weight_name.startswith(stem)
-            ):
+            if not stem or (weight_name is not None and not weight_name.startswith(stem)):
                 continue
             try:
                 if f.is_file():
@@ -1448,11 +1501,7 @@ def detect_gguf_model(path: str) -> Optional[str]:
         # (...-MTP.gguf) doesn't match the predicate's mtp- prefix.
         rel = f"{p.parent.name}/{p.name}"
         quant = _extract_quant_label(rel)
-        if (
-            _is_mmproj(p.name)
-            or _is_mtp_drafter(rel)
-            or _is_big_endian_gguf_path(rel, quant)
-        ):
+        if _is_mmproj(p.name) or _is_mtp_drafter(rel) or _is_big_endian_gguf_path(rel, quant):
             return None
         # Extension is authoritative: don't gate on is_file()/exists(), which
         # can fail in the Windows lock window after llama-server is killed.
@@ -1461,7 +1510,7 @@ def detect_gguf_model(path: str) -> Optional[str]:
         except OSError:
             is_dir = False  # stat() unavailable in the lock window
         if not is_dir:
-            return str(p.absolute())  # absolute() keeps symlink names readable
+            return str(_local_gguf_load_path(p))
         # Directory named "*.gguf": fall through to the dir scan below.
 
     # Case 2: directory containing .gguf files (skip mmproj / MTP drafter)
@@ -1479,7 +1528,7 @@ def detect_gguf_model(path: str) -> Optional[str]:
             gguf_files.append(f)
         gguf_files.sort(key = lambda f: f.stat().st_size, reverse = True)
         if gguf_files:
-            return str(gguf_files[0].resolve())
+            return str(_local_gguf_load_path(gguf_files[0]))
 
     return None
 
@@ -1670,19 +1719,20 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     return str(gguf_dir)
 
 
-def _iter_hf_cache_snapshots(repo_id: str):
+def _iter_hf_cache_snapshots(repo_id: str, cache_dir: Optional[str | Path] = None):
     """Yield HF cache snapshot dirs for *repo_id*, newest first.
 
     Empty if HF_HUB_CACHE is missing, the repo isn't cached, or has no
     snapshots. Repo name match is case-insensitive to handle casing drift
     between download time and lookup.
     """
-    try:
-        from huggingface_hub import constants as hf_constants
-    except Exception:
-        return
-
-    cache_dir = Path(hf_constants.HF_HUB_CACHE)
+    if cache_dir is None:
+        try:
+            from utils.hf_cache_settings import get_hf_cache_paths
+            cache_dir = get_hf_cache_paths().hub_cache
+        except Exception:
+            return
+    cache_dir = Path(cache_dir)
     target = f"models--{repo_id.replace('/', '--')}".lower()
     repo_dirs: list[Path] = []
     try:
@@ -1721,9 +1771,7 @@ def _iter_hf_cache_snapshots(repo_id: str):
     yield from (snap_dir for _, snap_dir in snap_dirs_with_mtime)
 
 
-def _list_gguf_variants_from_hf_cache(
-    repo_id: str,
-) -> Optional[tuple[list[GgufVariantInfo], bool]]:
+def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
     """Variants from the local HF cache snapshot, or None if not cached.
 
     A newer snapshot can hold only a companion file (for example a vision
@@ -1908,7 +1956,7 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     For sharded GGUFs (multiple files sharing a quant label), returns the
     first shard (sorted by name), which is what ``llama-server -m`` expects.
 
-    Returns the resolved absolute path, or ``None`` if no match.
+    Returns the absolute path, or ``None`` if no match.
     """
     p = _resolve_gguf_dir(Path(directory))
     if p is None:
@@ -1929,7 +1977,7 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
         matches.append(f)
     matches.sort()
     if matches:
-        return str(matches[0].resolve())
+        return str(_local_gguf_load_path(matches[0]))
     return None
 
 
@@ -1944,11 +1992,7 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
         for f in _iter_gguf_files(snap, recursive = True):
             rel = f.relative_to(snap).as_posix()
             quant = _extract_quant_label(rel)
-            if (
-                _is_mmproj(f.name)
-                or _is_mtp_drafter(rel)
-                or _is_big_endian_gguf_path(rel, quant)
-            ):
+            if _is_mmproj(f.name) or _is_mtp_drafter(rel) or _is_big_endian_gguf_path(rel, quant):
                 continue
             rel_files.append(rel)
         if rel_files:
@@ -1956,9 +2000,7 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
     return None
 
 
-def detect_gguf_model_remote(
-    repo_id: str, hf_token: Optional[str] = None
-) -> Optional[str]:
+def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Optional[str]:
     """Return the best GGUF filename in a HF repo, or None.
 
     Retries (3 attempts, 1s/2s/4s backoff) on transient HF Hub failures: a
@@ -2016,9 +2058,7 @@ def detect_gguf_model_remote(
         )
         return cached
 
-    logger.warning(
-        f"Could not check GGUF files for '{repo_id}' after 3 attempts: {last_err}"
-    )
+    logger.warning(f"Could not check GGUF files for '{repo_id}' after 3 attempts: {last_err}")
     return None
 
 
@@ -2034,12 +2074,31 @@ def download_gguf_file(
         repo_id = repo_id,
         filename = filename,
         token = hf_token,
+        cache_dir = active_hf_hub_cache(),
     )
     return local_path
 
 
 # Cache embedding detection per session to avoid repeated HF API calls
 _embedding_detection_cache: Dict[tuple, bool] = {}
+
+
+# Bound the Hub lookup so a DNS-dead session fails fast to the cache instead of hanging on retries.
+_HUB_MODEL_INFO_TIMEOUT = 15.0
+
+
+def _embedding_marker_in_hf_cache(model_name: str) -> bool:
+    """True when model_name's cached snapshot carries a modules.json (the ST marker).
+    Cache-only, no network; used offline and as a fallback when the Hub lookup times out."""
+    from utils.utils import hf_cache_snapshot_dir
+
+    snapshot = hf_cache_snapshot_dir(model_name)
+    if snapshot is None:
+        return False
+    try:
+        return (snapshot / "modules.json").is_file()
+    except OSError:
+        return False
 
 
 def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
@@ -2056,6 +2115,15 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     Returns:
         True if embedding model, else False (default for local paths or errors).
     """
+    from utils.utils import hf_env_offline
+
+    # Offline (remote repo): reclassify from the local cache on every call, before/without the
+    # memo. An online lookup can memoize True from tags with no weights cached, so trusting it once
+    # the session goes offline would accept a repo _get() cannot load; a cached negative can also be
+    # invalidated by later cache materialization. The cache probe is local-only, so it's cheap.
+    if not is_local_path(model_name) and hf_env_offline():
+        return _embedding_marker_in_hf_cache(model_name)
+
     cache_key = (model_name, hf_token)
     if cache_key in _embedding_detection_cache:
         return _embedding_detection_cache[cache_key]
@@ -2070,7 +2138,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     try:
         from huggingface_hub import model_info as hf_model_info
 
-        info = hf_model_info(model_name, token = hf_token)
+        info = hf_model_info(model_name, token = hf_token, timeout = _HUB_MODEL_INFO_TIMEOUT)
         tags = set(info.tags or [])
         pipeline_tag = info.pipeline_tag or ""
 
@@ -2091,9 +2159,11 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         return is_emb
 
     except Exception as e:
+        # Timeout or transient network error: fall back to the local cache marker, don't hard-fail.
         logger.warning(f"Could not determine if {model_name} is embedding model: {e}")
-        _embedding_detection_cache[cache_key] = False
-        return False
+        is_emb = _embedding_marker_in_hf_cache(model_name)
+        _embedding_detection_cache[cache_key] = is_emb
+        return is_emb
 
 
 def _has_model_weight_files(model_dir: Path) -> bool:
@@ -2141,9 +2211,7 @@ def _looks_like_lora_adapter(model_dir: Path) -> bool:
     )
 
 
-def scan_trained_models(
-    outputs_dir: str = str(outputs_root()),
-) -> List[Tuple[str, str, str]]:
+def scan_trained_models(outputs_dir: str = str(outputs_root())) -> List[Tuple[str, str, str]]:
     """Scan outputs folder for trained Unsloth models.
 
     Returns:
@@ -2209,15 +2277,13 @@ def scan_exported_models(
 
             # Flat GGUF export (e.g. exports/gemma-3-4b-it-finetune-gguf/).
             # Skip mmproj (vision projection) files — not loadable as main models.
-            gguf_files = [
-                f for f in _iter_gguf_files(run_dir) if not _is_mmproj(f.name)
-            ]
+            gguf_files = [f for f in _iter_gguf_files(run_dir) if not _is_mmproj(f.name)]
             if gguf_files:
                 base_model = None
                 export_meta = run_dir / "export_metadata.json"
                 try:
                     if export_meta.exists():
-                        meta = json.loads(export_meta.read_text())
+                        meta = json.loads(export_meta.read_text(encoding = "utf-8"))
                         base_model = meta.get("base_model")
                 except Exception:
                     pass
@@ -2246,7 +2312,7 @@ def scan_exported_models(
                 if adapter_config.exists():
                     export_type = "lora"
                     try:
-                        cfg = json.loads(adapter_config.read_text())
+                        cfg = json.loads(adapter_config.read_text(encoding = "utf-8"))
                         base_model = cfg.get("base_model_name_or_path")
                     except Exception:
                         pass
@@ -2255,7 +2321,7 @@ def scan_exported_models(
                     export_meta = checkpoint_dir / "export_metadata.json"
                     try:
                         if export_meta.exists():
-                            meta = json.loads(export_meta.read_text())
+                            meta = json.loads(export_meta.read_text(encoding = "utf-8"))
                             base_model = meta.get("base_model")
                     except Exception:
                         pass
@@ -2268,7 +2334,7 @@ def scan_exported_models(
                         export_meta = meta_dir / "export_metadata.json"
                         try:
                             if export_meta.exists():
-                                meta = json.loads(export_meta.read_text())
+                                meta = json.loads(export_meta.read_text(encoding = "utf-8"))
                                 base_model = meta.get("base_model")
                                 if base_model:
                                     break
@@ -2285,12 +2351,10 @@ def scan_exported_models(
 
                 # Fallback: base model from ./outputs/{run_name}/adapter_config.json
                 if not base_model:
-                    outputs_adapter_cfg = (
-                        resolve_output_dir(run_dir.name) / "adapter_config.json"
-                    )
+                    outputs_adapter_cfg = resolve_output_dir(run_dir.name) / "adapter_config.json"
                     try:
                         if outputs_adapter_cfg.exists():
-                            cfg = json.loads(outputs_adapter_cfg.read_text())
+                            cfg = json.loads(outputs_adapter_cfg.read_text(encoding = "utf-8"))
                             base_model = cfg.get("base_model_name_or_path")
                     except Exception:
                         pass
@@ -2316,18 +2380,16 @@ def get_base_model_from_checkpoint(checkpoint_path: str) -> Optional[str]:
 
         adapter_config_path = checkpoint_path_obj / "adapter_config.json"
         if adapter_config_path.exists():
-            with open(adapter_config_path, "r") as f:
+            with open(adapter_config_path, "r", encoding = "utf-8") as f:
                 config = json.load(f)
                 base_model = config.get("base_model_name_or_path")
                 if base_model:
-                    logger.info(
-                        "Detected base model from adapter_config.json: %s", base_model
-                    )
+                    logger.info("Detected base model from adapter_config.json: %s", base_model)
                     return base_model
 
         config_path = checkpoint_path_obj / "config.json"
         if config_path.exists():
-            with open(config_path, "r") as f:
+            with open(config_path, "r", encoding = "utf-8") as f:
                 config = json.load(f)
                 for key in ("model_name", "_name_or_path"):
                     base_model = config.get(key)
@@ -2383,13 +2445,11 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
         # adapter_config.json first
         adapter_config_path = lora_path_obj / "adapter_config.json"
         if adapter_config_path.exists():
-            with open(adapter_config_path, "r") as f:
+            with open(adapter_config_path, "r", encoding = "utf-8") as f:
                 config = json.load(f)
                 base_model = config.get("base_model_name_or_path")
                 if base_model:
-                    logger.info(
-                        f"Detected base model from adapter_config.json: {base_model}"
-                    )
+                    logger.info(f"Detected base model from adapter_config.json: {base_model}")
                     return base_model
 
         # Fallback: try training_args.bin (requires torch)
@@ -2463,7 +2523,10 @@ def get_base_model_from_lora_identifier(
     for _attempt in range(2):  # one retry: a transient blip must not skip the base
         try:
             cfg_path = hf_hub_download(
-                identifier, "adapter_config.json", token = hf_token if hf_token else None
+                identifier,
+                "adapter_config.json",
+                token = hf_token if hf_token else None,
+                cache_dir = active_hf_hub_cache(),
             )
         except (EntryNotFoundError, RepositoryNotFoundError):
             # No adapter_config.json -> not a resolvable LoRA; caller scans the identifier.
@@ -2472,12 +2535,10 @@ def get_base_model_from_lora_identifier(
             last_exc = exc
             continue
         try:
-            with open(cfg_path, "r") as f:
+            with open(cfg_path, "r", encoding = "utf-8") as f:
                 base_model = json.load(f).get("base_model_name_or_path")
         except Exception as exc:
-            logger.warning(
-                "Could not parse adapter_config.json for '%s': %s", identifier, exc
-            )
+            logger.warning("Could not parse adapter_config.json for '%s': %s", identifier, exc)
             return None
         if base_model:
             logger.info(
@@ -2525,9 +2586,7 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
                 if config_path.is_file():
                     with open(config_path, "r", encoding = "utf-8") as f:
                         config = yaml.safe_load(f) or {}
-                        logger.info(
-                            f"Loaded model defaults from {config_path} (via mapping)"
-                        )
+                        logger.info(f"Loaded model defaults from {config_path} (via mapping)")
                         return config
 
         # For local paths (e.g. /home/.../Spark-TTS-0.5B/LLM from
@@ -2596,17 +2655,11 @@ class ModelConfig:
     is_lora: bool  # LoRA adapter?
     is_gguf: bool = False  # GGUF model?
     is_audio: bool = False  # TTS audio model?
-    audio_type: Optional[str] = (
-        None  # Audio codec type: 'snac', 'csm', 'bicodec', 'dac'
-    )
+    audio_type: Optional[str] = None  # Audio codec type: 'snac', 'csm', 'bicodec', 'dac'
     has_audio_input: bool = False  # Accepts audio input (ASR/speech understanding)
     gguf_file: Optional[str] = None  # Full path to the .gguf file (local mode)
-    gguf_mmproj_file: Optional[str] = (
-        None  # Full path to the mmproj .gguf file (vision projection)
-    )
-    gguf_mtp_file: Optional[str] = (
-        None  # Full path to the separate MTP drafter (local mode)
-    )
+    gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
+    gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
     gguf_hf_repo: Optional[str] = (
         None  # HF repo ID for -hf mode (e.g. "unsloth/gemma-3-4b-it-GGUF")
     )
@@ -2728,7 +2781,7 @@ class ModelConfig:
                 meta_path = gguf_dir / "export_metadata.json"
                 if meta_path.exists():
                     try:
-                        meta = json.loads(meta_path.read_text())
+                        meta = json.loads(meta_path.read_text(encoding = "utf-8"))
                         base = meta.get("base_model")
                         if base and is_vision_model(base, hf_token = hf_token):
                             base_is_vision = True
@@ -2744,9 +2797,7 @@ class ModelConfig:
                     gguf_is_vision = True
                     logger.info(f"Detected mmproj for vision: {mmproj_file}")
                 elif base_is_vision:
-                    logger.warning(
-                        f"Base model is vision but no mmproj file found in {gguf_dir}"
-                    )
+                    logger.warning(f"Base model is vision but no mmproj file found in {gguf_dir}")
 
                 # Separate MTP drafter sibling (Gemma 4), mirroring mmproj.
                 mtp_file = detect_mtp_file(gguf_file, search_root = companion_root)
@@ -2816,15 +2867,11 @@ class ModelConfig:
         # Auto-detect LoRA for local paths (adapter_config.json on disk)
         if not is_lora and is_local:
             detected_base = (
-                get_base_model_from_lora(path)
-                if _looks_like_lora_adapter(Path(path))
-                else None
+                get_base_model_from_lora(path) if _looks_like_lora_adapter(Path(path)) else None
             )
             if detected_base:
                 is_lora = True
-                logger.info(
-                    f"Auto-detected local LoRA adapter at '{path}' (base: {detected_base})"
-                )
+                logger.info(f"Auto-detected local LoRA adapter at '{path}' (base: {detected_base})")
 
         # Auto-detect LoRA for remote HF models. When offline, huggingface_hub
         # raises OfflineModeIsEnabled in ~0ms; we fall through to the cache.
@@ -2838,18 +2885,14 @@ class ModelConfig:
                     is_lora = True
                     logger.info(f"Auto-detected remote LoRA adapter: '{identifier}'")
             except Exception as e:
-                logger.debug(
-                    f"Could not check remote LoRA status for '{identifier}': {e}"
-                )
+                logger.debug(f"Could not check remote LoRA status for '{identifier}': {e}")
 
             # API may have failed; adapter_config.json could still be cached.
             if not is_lora:
                 for snap in _iter_hf_cache_snapshots(identifier):
                     if (snap / "adapter_config.json").is_file():
                         is_lora = True
-                        logger.info(
-                            f"Auto-detected cached LoRA adapter: '{identifier}'"
-                        )
+                        logger.info(f"Auto-detected cached LoRA adapter: '{identifier}'")
                         break
 
         # Handle LoRA adapters
@@ -2864,9 +2907,12 @@ class ModelConfig:
                     from huggingface_hub import hf_hub_download
 
                     config_path = hf_hub_download(
-                        identifier, "adapter_config.json", token = hf_token
+                        identifier,
+                        "adapter_config.json",
+                        token = hf_token,
+                        cache_dir = active_hf_hub_cache(),
                     )
-                    with open(config_path, "r") as f:
+                    with open(config_path, "r", encoding = "utf-8") as f:
                         adapter_config = json.load(f)
                     base_model = adapter_config.get("base_model_name_or_path")
                     if base_model:
@@ -2926,9 +2972,7 @@ class ModelConfig:
 
         # Resolve display names via the 'local_models' parameter
         if " (Active)" in selected or " (Ready)" in selected:
-            clean_display_name = selected.replace(" (Active)", "").replace(
-                " (Ready)", ""
-            )
+            clean_display_name = selected.replace(" (Active)", "").replace(" (Ready)", "")
             if local_models:
                 for local_display, local_path in local_models:
                     if local_display == clean_display_name:

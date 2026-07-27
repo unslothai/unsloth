@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""llama.cpp prebuilt update endpoints.
+"""llama.cpp prebuilt update endpoints -- the single main update item.
 
 GET  /api/llama/update-status  -> is a newer prebuilt available + job state
 POST /api/llama/update         -> download + atomically swap to the latest
@@ -9,13 +9,19 @@ POST /api/llama/update         -> download + atomically swap to the latest
 Detection reuses utils.llama_cpp_freshness; the swap reuses
 install_llama_prebuilt.py via utils.llama_cpp_update. Both fail open so the UI
 never blocks on a missing marker / offline GitHub.
+
+whisper.cpp updates piggyback here: the status payload carries a whisper
+sub-status (update_available is the llama OR whisper union) and the apply job
+chains a whisper phase after the llama phase when whisper is behind, with a
+per-phase breakdown in job.phases. All pre-existing top-level fields keep
+their shape, so older clients keep working unchanged.
 """
 
 from __future__ import annotations
 
 import asyncio
 import threading
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
@@ -35,11 +41,34 @@ class LlamaUpdateJob(BaseModel):
     to_tag: Optional[str] = None
     reload_required: Optional[bool] = None
     error: Optional[str] = None
-    progress: Optional[float] = Field(
-        None, description = "0..1 while running, 1 on success."
-    )
+    progress: Optional[float] = Field(None, description = "0..1 while running, 1 on success.")
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+    phases: Optional[dict] = Field(
+        None,
+        description = (
+            "Per-phase breakdown of a chained llama+whisper job "
+            "(name -> state/progress/to_tag/...); None for pre-chaining jobs."
+        ),
+    )
+
+
+class WhisperSubStatus(BaseModel):
+    """The whisper piggyback inside the llama update item."""
+
+    update_available: bool = Field(
+        False, description = "True when the chained apply would run a whisper phase."
+    )
+    installed_tag: Optional[str] = None
+    latest_tag: Optional[str] = None
+    update_size_bytes: Optional[int] = None
+    skip_reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why the whisper phase would be skipped "
+            "(up_to_date | local_link | source_build | not_installed | ...)."
+        ),
+    )
 
 
 class LlamaUpdateStatusResponse(BaseModel):
@@ -49,11 +78,20 @@ class LlamaUpdateStatusResponse(BaseModel):
     )
     update_available: bool = Field(
         False,
-        description = "True when the latest release is genuinely newer than the install.",
+        description = (
+            "True when an update would do something: llama.cpp is behind OR the "
+            "whisper piggyback is behind."
+        ),
+    )
+    llama_update_available: bool = Field(
+        False, description = "True when the latest llama.cpp release is newer than the install."
+    )
+    update_component: Optional[Literal["llama", "whisper"]] = Field(
+        None,
+        description = "Component whose versions the combined update banner should display.",
     )
     stale: bool = Field(
-        False,
-        description = "Update available AND install older than the staleness threshold.",
+        False, description = "Update available AND install older than the staleness threshold."
     )
     installed_tag: Optional[str] = None
     latest_tag: Optional[str] = None
@@ -61,11 +99,13 @@ class LlamaUpdateStatusResponse(BaseModel):
     installed_at_utc: Optional[str] = None
     age_days: Optional[int] = None
     source_build: bool = Field(
-        False,
-        description = "True when there is no marker (source build) but a prebuilt is offered.",
+        False, description = "True when there is no marker (source build) but a prebuilt is offered."
     )
     update_size_bytes: Optional[int] = Field(
         None, description = "Download size of the prebuilt Update would fetch, in bytes."
+    )
+    whisper: Optional[WhisperSubStatus] = Field(
+        None, description = "Whisper piggyback sub-status; None when the probe is unavailable."
     )
     job: LlamaUpdateJob = Field(default_factory = LlamaUpdateJob)
 

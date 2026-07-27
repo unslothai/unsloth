@@ -84,9 +84,7 @@ def _enc_kv_string(key: str, value: str) -> bytes:
 
 
 def _enc_kv_uint32(key: str, value: int) -> bytes:
-    return (
-        _enc_string(key) + struct.pack("<I", _VTYPE_UINT32) + struct.pack("<I", value)
-    )
+    return _enc_string(key) + struct.pack("<I", _VTYPE_UINT32) + struct.pack("<I", value)
 
 
 def _write_minimal_gguf(
@@ -364,8 +362,7 @@ _LIST_MUTATORS = frozenset({"append", "extend", "insert"})
 
 def _has_flag_literal(node: ast.AST) -> bool:
     return any(
-        isinstance(n, ast.Constant) and n.value == _NO_CACHE_PROMPT_FLAG
-        for n in ast.walk(node)
+        isinstance(n, ast.Constant) and n.value == _NO_CACHE_PROMPT_FLAG for n in ast.walk(node)
     )
 
 
@@ -394,9 +391,7 @@ def test_unsloth_never_injects_no_cache_prompt_into_any_command():
     violations: list[tuple[str, int]] = []
     for path in files:
         try:
-            violations += _no_cache_prompt_injections(
-                path.read_text(encoding = "utf-8"), str(path)
-            )
+            violations += _no_cache_prompt_injections(path.read_text(encoding = "utf-8"), str(path))
         except (OSError, UnicodeDecodeError, SyntaxError):
             continue
     assert files, "no backend source files were scanned"
@@ -643,7 +638,7 @@ def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch
         captured["cmd"] = cmd
         captured["env"] = kwargs.get("env")
         return _types.SimpleNamespace(
-            stdout = "--spec-type none,mtp,ngram-simple\n", stderr = ""
+            stdout = "--spec-type none,mtp,ngram-simple\n", stderr = "", returncode = 0
         )
 
     monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", fake_run)
@@ -685,6 +680,95 @@ def test_probe_server_capabilities_reports_outdated_binary(tmp_path):
     assert caps["found"] is True
     assert caps["mtp_token"] is None
     assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is False
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_reads_mtp_from_multiline_help(tmp_path):
+    # Enum on the indented line: first-line-only probing falsely reported
+    # "lacks MTP" (#7302).
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type TYPE\n"
+        "                                        speculative decoding type\n"
+        "                                        (none,draft-simple,draft-mtp,ngram-mod)\n",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["mtp_token"] == "draft-mtp"
+    assert caps["supports_mtp"] is True
+    assert caps["mtp_probe_inconclusive"] is False
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_empty_help_fails_open(tmp_path):
+    # --help prints nothing: must not claim the prebuilt lacks MTP (#7302).
+    fake = tmp_path / "llama-server"
+    fake.write_text("#!/usr/bin/env bash\nexit 0\n")
+    fake.chmod(0o755)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["mtp_token"] is None
+    assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is True
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_no_spec_type_is_definitive(tmp_path):
+    # Nonempty --help without --spec-type: pre-spec binary, not inconclusive.
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--gpu-layers N\n  GPU layers to offload\n",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["mtp_token"] is None
+    assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is False
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_failed_help_with_output_is_inconclusive(tmp_path):
+    fake = tmp_path / "llama-server"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = "--help" ]; then\n'
+        "  echo 'illegal instruction'\n"
+        "  exit 1\n"
+        "fi\n"
+    )
+    fake.chmod(0o755)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is True
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_crash_on_help_fails_open(tmp_path):
+    fake = tmp_path / "llama-server"
+    fake.write_text("#!/usr/bin/env bash\nkill -SEGV $$\n")
+    fake.chmod(0o755)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["mtp_token"] is None
+    assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is True
+
+
+def test_mtp_token_from_spec_help_prefers_draft_mtp():
+    assert (
+        LlamaCppBackend._mtp_token_from_spec_help("--spec-type none,draft-mtp,mtp,ngram-mod")
+        == "draft-mtp"
+    )
+    assert LlamaCppBackend._mtp_token_from_spec_help("--spec-type [none|mtp|ngram-cache]") == "mtp"
+    assert LlamaCppBackend._mtp_token_from_spec_help("--spec-type none,ngram-mod") is None
+    # No incidental substring matches.
+    assert LlamaCppBackend._mtp_token_from_spec_help("prompt cache") is None
 
 
 def test_probe_server_capabilities_handles_missing_binary():
@@ -692,6 +776,7 @@ def test_probe_server_capabilities_handles_missing_binary():
     caps = LlamaCppBackend.probe_server_capabilities("/no/such/llama-server")
     assert caps["found"] is False
     assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is True
     assert caps["supports_cache_ram"] is False
     assert caps["supports_ctx_checkpoints"] is False
     assert caps["supports_no_cache_prompt"] is False
@@ -834,14 +919,7 @@ def test_build_ngram_mod_flags_new():
 
 def test_build_ngram_mod_flags_legacy():
     flags = _build_ngram_mod_flags({"ngram_mod_flavor": "legacy"})
-    assert flags == [
-        "--spec-ngram-size-n",
-        "24",
-        "--draft-min",
-        "48",
-        "--draft-max",
-        "64",
-    ]
+    assert flags == ["--spec-ngram-size-n", "24", "--draft-min", "48", "--draft-max", "64"]
 
 
 def test_build_ngram_mod_flags_empty_when_unsupported():
@@ -851,9 +929,7 @@ def test_build_ngram_mod_flags_empty_when_unsupported():
 
 
 def test_build_ngram_mod_flags_respects_custom_values():
-    flags = _build_ngram_mod_flags(
-        {"ngram_mod_flavor": "new"}, n_match = 16, n_min = 24, n_max = 32
-    )
+    flags = _build_ngram_mod_flags({"ngram_mod_flavor": "new"}, n_match = 16, n_min = 24, n_max = 32)
     assert flags == [
         "--spec-ngram-mod-n-match",
         "16",
@@ -1004,9 +1080,7 @@ def _patch_probe(monkeypatch, ngram_supported):
     )
 
 
-def test_already_in_target_state_sub_3b_falls_back_to_ngram_mod_when_supported(
-    monkeypatch,
-):
+def test_already_in_target_state_sub_3b_falls_back_to_ngram_mod_when_supported(monkeypatch):
     # 0.8B MTP request -- load_model would have promoted to ngram-mod (no MTP
     # head); reload check must match a ngram-mod backend.
     _patch_probe(monkeypatch, ngram_supported = True)
@@ -1194,12 +1268,14 @@ def _resolver_backend(
     *,
     ngram_supported = True,
     mtp_token = "draft-mtp",
+    mtp_probe_inconclusive = False,
 ):
     """Backend with a deterministic probe so the resolver is hermetic."""
     fake = {
         "found": True,
         "mtp_token": mtp_token,
         "supports_mtp": bool(mtp_token),
+        "mtp_probe_inconclusive": mtp_probe_inconclusive,
         "ngram_mod_flavor": "new" if ngram_supported else None,
         "supports_ngram_mod": bool(ngram_supported),
         "spec_draft_n_max_flag": "--spec-draft-n-max",
@@ -1278,13 +1354,7 @@ _SUB_3B_MTP_MODEL = "unsloth/Qwen3.5-0.8B-MTP-GGUF"
     ],
 )
 def test_build_speculative_flags_matrix(
-    monkeypatch,
-    requested,
-    gpus,
-    model,
-    expect_spec_type,
-    expect_n_max,
-    expect_ngram_knobs,
+    monkeypatch, requested, gpus, model, expect_spec_type, expect_n_max, expect_ngram_knobs
 ):
     backend = _resolver_backend(monkeypatch)
     flags = backend._build_speculative_flags(
@@ -1563,9 +1633,7 @@ def test_auto_non_mtp_mla_model_unaffected(monkeypatch):
         ("mtp+ngram", "ngram-mod,draft-mtp", "2"),
     ],
 )
-def test_forced_mtp_on_mla_still_engages(
-    monkeypatch, mode, expect_spec_type, expect_n_max
-):
+def test_forced_mtp_on_mla_still_engages(monkeypatch, mode, expect_spec_type, expect_n_max):
     # Explicit override engages the deliberately-slower MTP route on MLA models,
     # regardless of the Auto gate. No policy downgrade reason.
     backend = _mla_resolver_backend(monkeypatch)
@@ -1771,9 +1839,7 @@ def _resolve_real(monkeypatch, repo, drafter, mode):
     _REAL_REPO_MATRIX,
     ids = [r[0].split("/")[-1] for r in _REAL_REPO_MATRIX],
 )
-def test_real_repo_auto_routing(
-    monkeypatch, repo, drafter, auto_spec, auto_ngram_knobs
-):
+def test_real_repo_auto_routing(monkeypatch, repo, drafter, auto_spec, auto_ngram_knobs):
     # Auto is the default mode the dropdown ships with.
     backend, flags, parsed = _resolve_real(monkeypatch, repo, drafter, "auto")
     if auto_spec is None:
@@ -1787,9 +1853,7 @@ def test_real_repo_auto_routing(
         assert backend.speculative_type == "draft-mtp"
         # gemma ships a separate drafter; Qwen bakes the head into the GGUF.
         assert (
-            (parsed.get("--model-draft") == drafter)
-            if drafter
-            else ("--model-draft" not in parsed)
+            (parsed.get("--model-draft") == drafter) if drafter else ("--model-draft" not in parsed)
         )
     else:  # ngram-mod (sub-3B MTP drop)
         assert parsed.get("--spec-type") == "ngram-mod"
@@ -1828,9 +1892,7 @@ def test_real_repo_forced_mtp_never_aborts(monkeypatch, repo, drafter):
         assert parsed.get("--spec-type") == "draft-mtp"
         assert backend.speculative_type == "draft-mtp"
         assert (
-            (parsed.get("--model-draft") == drafter)
-            if drafter
-            else ("--model-draft" not in parsed)
+            (parsed.get("--model-draft") == drafter) if drafter else ("--model-draft" not in parsed)
         )
     else:
         assert "--spec-type" not in parsed
@@ -1909,6 +1971,24 @@ def test_spec_fallback_reason_set_when_binary_lacks_mtp(monkeypatch):
         binary = "/fake/llama-server",
     )
     assert backend.spec_fallback_reason == "binary_no_mtp"
+
+
+def test_spec_fallback_reason_none_when_mtp_probe_inconclusive(monkeypatch):
+    backend = _resolver_backend(
+        monkeypatch,
+        mtp_token = None,
+        mtp_probe_inconclusive = True,
+    )
+    backend._build_speculative_flags(
+        speculative_type = "mtp",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert backend.spec_fallback_reason is None
 
 
 def test_spec_fallback_reason_none_when_mtp_engages(monkeypatch):

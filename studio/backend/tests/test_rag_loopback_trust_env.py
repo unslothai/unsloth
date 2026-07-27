@@ -4,9 +4,7 @@ package (all target the local 127.0.0.1 llama-server) must set trust_env=False."
 import ast
 import os
 
-RAG_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core", "rag"
-)
+RAG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core", "rag")
 HTTPX_CALLEES = {"get", "post", "stream", "request", "Client", "AsyncClient"}
 
 
@@ -30,11 +28,7 @@ def _httpx_calls(path):
 
 def _sets_trust_env_false(call):
     for kw in call.keywords:
-        if (
-            kw.arg == "trust_env"
-            and isinstance(kw.value, ast.Constant)
-            and kw.value.value is False
-        ):
+        if kw.arg == "trust_env" and isinstance(kw.value, ast.Constant) and kw.value.value is False:
             return True
     return False
 

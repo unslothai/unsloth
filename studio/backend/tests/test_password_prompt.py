@@ -177,12 +177,26 @@ def test_loop_success_applies_once(monkeypatch):
 
 
 def test_loop_short_password_reprompts(monkeypatch):
-    ok, applied, out = _run_loop(
-        monkeypatch, _keys("short", "long-enough-pw", "long-enough-pw")
-    )
+    ok, applied, out = _run_loop(monkeypatch, _keys("short", "long-enough-pw", "long-enough-pw"))
     assert ok is True
     assert applied == ["long-enough-pw"]
     assert "at least 8 characters" in out
+
+
+def test_loop_whitespace_only_reprompts(monkeypatch):
+    ok, applied, out = _run_loop(monkeypatch, _keys(" " * 8, "long-enough-pw", "long-enough-pw"))
+    assert ok is True
+    assert applied == ["long-enough-pw"]
+    assert "contain spaces" in out
+
+
+def test_loop_password_with_inner_space_reprompts(monkeypatch):
+    ok, applied, out = _run_loop(
+        monkeypatch, _keys("has space pw", "long-enough-pw", "long-enough-pw")
+    )
+    assert ok is True
+    assert applied == ["long-enough-pw"]
+    assert "contain spaces" in out
 
 
 def test_loop_rejects_current_password(monkeypatch):
@@ -308,9 +322,7 @@ def test_resolve_supplied_password_env(monkeypatch):
 def test_resolve_supplied_password_literal_beats_env(monkeypatch):
     import io
     monkeypatch.setenv(tp.SUPPLIED_PASSWORD_ENV, "env-secret-pw")
-    assert (
-        tp.resolve_supplied_password("cli-wins-pw", out = io.StringIO()) == "cli-wins-pw"
-    )
+    assert tp.resolve_supplied_password("cli-wins-pw", out = io.StringIO()) == "cli-wins-pw"
 
 
 def test_resolve_supplied_password_stdin_beats_env(monkeypatch):

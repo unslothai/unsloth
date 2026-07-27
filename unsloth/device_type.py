@@ -67,9 +67,7 @@ def get_device_type():
     # Check torch.accelerator
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
-            raise NotImplementedError(
-                "Unsloth cannot find any torch accelerator? You need a GPU."
-            )
+            raise NotImplementedError("Unsloth cannot find any torch accelerator? You need a GPU.")
         accelerator = str(torch.accelerator.current_accelerator())
         if accelerator in ("cuda", "xpu", "hip"):
             raise RuntimeError(
@@ -77,9 +75,7 @@ def get_device_type():
                 f"But `torch.accelerator.current_accelerator()` works with it being = `{accelerator}`\n"
                 f"Please reinstall torch - it's most likely broken :("
             )
-    raise NotImplementedError(
-        "Unsloth currently only works on NVIDIA, AMD and Intel GPUs."
-    )
+    raise NotImplementedError("Unsloth currently only works on NVIDIA, AMD and Intel GPUs.")
 
 
 DEVICE_TYPE: str = get_device_type()
@@ -149,7 +145,5 @@ if DEVICE_TYPE == "hip":
                 ALLOW_BITSANDBYTES = False
         elif ALLOW_BITSANDBYTES:
             from bitsandbytes.nn.modules import Params4bit
-            if "blocksize = 64 if not HIP_ENVIRONMENT else 128" in inspect.getsource(
-                Params4bit
-            ):
+            if "blocksize = 64 if not HIP_ENVIRONMENT else 128" in inspect.getsource(Params4bit):
                 ALLOW_PREQUANTIZED_MODELS = False

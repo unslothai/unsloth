@@ -185,9 +185,7 @@ class GaLoreProjector:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _compute_orthogonal(
-        weights: torch.Tensor, rank: int, side: str
-    ) -> torch.Tensor:
+    def _compute_orthogonal(weights: torch.Tensor, rank: int, side: str) -> torch.Tensor:
         """Compute the top-``rank`` orthogonal matrix via truncated SVD.
 
         Args:

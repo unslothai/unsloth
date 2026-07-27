@@ -68,9 +68,7 @@ class LlamaServerBackend:
         # Sticky after an auto GPU start fails: later spawns stay on CPU.
         self._force_cpu = False
         # Pooled client (full URLs per request survive a respawn); trust_env=False skips HTTP(S)_PROXY.
-        self._client = httpx.Client(
-            timeout = config.EMBED_REQUEST_TIMEOUT_S, trust_env = False
-        )
+        self._client = httpx.Client(timeout = config.EMBED_REQUEST_TIMEOUT_S, trust_env = False)
         atexit.register(self._shutdown)
 
     @property
@@ -190,7 +188,14 @@ class LlamaServerBackend:
         match = [f for f in files if variant in f.lower()] or files
         filename = sorted(match, key = len)[0]
         logger.info("resolving GGUF embedder %s/%s", repo, filename)
-        self._model_path = hf_hub_download(repo_id = repo, filename = filename, token = token)
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        self._model_path = hf_hub_download(
+            repo_id = repo,
+            filename = filename,
+            token = token,
+            cache_dir = active_hf_hub_cache(),
+        )
         self._model_repo = desired
         self._dim = None
         return self._model_path
@@ -222,9 +227,7 @@ class LlamaServerBackend:
         gpus = LlamaCppBackend._get_gpu_free_memory()  # [(idx, free_mib)], honors CVD
         return any(free >= LlamaServerBackend._MIN_GPU_FREE_MIB for _, free in gpus)
 
-    def _build_cmd(
-        self, binary: str, model_path: str, port: int, *, use_gpu: bool
-    ) -> list[str]:
+    def _build_cmd(self, binary: str, model_path: str, port: int, *, use_gpu: bool) -> list[str]:
         # No --embd-normalize (not in every build; we normalize in Python to match
         # the ST path). --fit off: don't auto-resize ctx/offload to device memory.
         cmd = [
@@ -267,12 +270,8 @@ class LlamaServerBackend:
         arch = platform.machine()
         lib_dirs = [binary_dir]
         for pattern in (
-            os.path.join(
-                sys.prefix, "lib", "python*", "site-packages", "nvidia", "cu*", "lib"
-            ),
-            os.path.join(
-                sys.prefix, "lib", "python*", "site-packages", "nvidia", "cudnn", "lib"
-            ),
+            os.path.join(sys.prefix, "lib", "python*", "site-packages", "nvidia", "cu*", "lib"),
+            os.path.join(sys.prefix, "lib", "python*", "site-packages", "nvidia", "cudnn", "lib"),
         ):
             lib_dirs.extend(d for d in glob.glob(pattern) if os.path.isdir(d))
         for cuda_lib in (
@@ -386,9 +385,7 @@ class LlamaServerBackend:
     def _current(self) -> bool:
         """Alive AND serving the effective repo (a Settings model change makes a
         live server stale)."""
-        return (
-            self._process_alive() and self._model_repo == config.effective_gguf_repo()
-        )
+        return self._process_alive() and self._model_repo == config.effective_gguf_repo()
 
     def _ensure_ready(self) -> None:
         """Guarantee a live server on the effective model, (re)spawning if needed.
@@ -459,9 +456,7 @@ class LlamaServerBackend:
                 raise RuntimeError(
                     f"llama-server embedder POST {path} -> {e.response.status_code}: {body}"
                 ) from e
-        raise RuntimeError(
-            f"llama-server embedder POST {path} failed after retry"
-        ) from last_exc
+        raise RuntimeError(f"llama-server embedder POST {path} failed after retry") from last_exc
 
     def encode(
         self,

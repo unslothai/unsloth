@@ -71,9 +71,7 @@ class TestVisionCacheHitMiss:
         """Two calls for the same model invoke the uncached fn once."""
         assert is_vision_model("org/my-vlm") is True
         assert is_vision_model("org/my-vlm") is True
-        mock_uncached.assert_called_once_with(
-            "org/my-vlm", None, local_files_only = False
-        )
+        mock_uncached.assert_called_once_with("org/my-vlm", None, local_files_only = False)
 
     @patch("utils.models.model_config._is_vision_model_uncached", return_value = False)
     def test_different_models_each_detected(self, mock_uncached):
@@ -113,9 +111,7 @@ class TestVisionCacheSubprocessPath:
     @patch("utils.models.model_config._raw_config_has_vision_config", return_value = None)
     @patch("utils.models.model_config._is_vision_model_subprocess", return_value = True)
     @patch("utils.transformers_version.needs_transformers_5", return_value = True)
-    def test_subprocess_called_once_with_cache(
-        self, mock_needs_t5, mock_subprocess, mock_raw
-    ):
+    def test_subprocess_called_once_with_cache(self, mock_needs_t5, mock_subprocess, mock_raw):
         """When the raw-config reader is inconclusive (None), the transformers
         5.x subprocess fires only on the first call; the second is cached."""
         # First call: raw None -> subprocess
@@ -153,9 +149,7 @@ class TestLocalGgufVisionDetection:
         "utils.models.model_config._is_vision_model_subprocess",
         side_effect = AssertionError("GGUF must not use Transformers vision detection"),
     )
-    def test_qwen36_gguf_with_mmproj_skips_transformers(
-        self, mock_subprocess, tmp_path
-    ):
+    def test_qwen36_gguf_with_mmproj_skips_transformers(self, mock_subprocess, tmp_path):
         model = tmp_path / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
         model.write_bytes(b"")
         (tmp_path / "mmproj-F32.gguf").write_bytes(b"")
@@ -167,9 +161,7 @@ class TestLocalGgufVisionDetection:
         "utils.models.model_config._is_vision_model_subprocess",
         side_effect = AssertionError("GGUF must not use Transformers vision detection"),
     )
-    def test_direct_gguf_in_variant_subdir_finds_snapshot_mmproj(
-        self, mock_subprocess, tmp_path
-    ):
+    def test_direct_gguf_in_variant_subdir_finds_snapshot_mmproj(self, mock_subprocess, tmp_path):
         variant_dir = tmp_path / "BF16"
         variant_dir.mkdir()
         model = variant_dir / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
@@ -183,9 +175,7 @@ class TestLocalGgufVisionDetection:
         "utils.models.model_config._is_vision_model_subprocess",
         side_effect = AssertionError("GGUF must not use Transformers vision detection"),
     )
-    def test_qwen36_gguf_without_mmproj_skips_transformers(
-        self, mock_subprocess, tmp_path
-    ):
+    def test_qwen36_gguf_without_mmproj_skips_transformers(self, mock_subprocess, tmp_path):
         model = tmp_path / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
         model.write_bytes(b"")
 
@@ -290,9 +280,7 @@ class TestVisionCacheDirectPath:
     @patch("utils.models.model_config._raw_config_has_vision_config", return_value = None)
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     @patch("utils.models.model_config.load_model_config")
-    def test_direct_vlm_detection_cached(
-        self, mock_load_config, mock_needs_t5, mock_raw
-    ):
+    def test_direct_vlm_detection_cached(self, mock_load_config, mock_needs_t5, mock_raw):
         """A standard VLM detected via architecture suffix should be cached."""
         cfg = MagicMock(spec = [])  # strict: only explicitly set attrs exist
         cfg.model_type = "gemma3"
@@ -307,9 +295,7 @@ class TestVisionCacheDirectPath:
     @patch("utils.models.model_config._raw_config_has_vision_config", return_value = None)
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     @patch("utils.models.model_config.load_model_config")
-    def test_direct_non_vlm_detection_cached(
-        self, mock_load_config, mock_needs_t5, mock_raw
-    ):
+    def test_direct_non_vlm_detection_cached(self, mock_load_config, mock_needs_t5, mock_raw):
         """A standard text model (no VLM indicators) should cache False."""
         cfg = MagicMock(spec = [])  # spec=[] means no attributes at all
         cfg.model_type = "llama"
@@ -341,9 +327,7 @@ class TestVisionCacheDirectPath:
     @patch("utils.models.model_config._raw_config_has_vision_config", return_value = None)
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     @patch("utils.models.model_config.load_model_config")
-    def test_gemma4_model_type_detected_and_cached(
-        self, mock_load_config, mock_needs_t5, mock_raw
-    ):
+    def test_gemma4_model_type_detected_and_cached(self, mock_load_config, mock_needs_t5, mock_raw):
         cfg = MagicMock(spec = [])
         cfg.model_type = "gemma4"
         cfg.architectures = ["Gemma4ForConditionalGeneration"]
@@ -386,9 +370,7 @@ class TestVisionCacheDirectPath:
     @patch("utils.models.model_config._raw_config_has_vision_config", return_value = None)
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     @patch("utils.models.model_config.load_model_config")
-    def test_audio_model_excluded_and_cached(
-        self, mock_load_config, mock_needs_t5, mock_raw
-    ):
+    def test_audio_model_excluded_and_cached(self, mock_load_config, mock_needs_t5, mock_raw):
         """Audio-only models (csm, whisper) with ForConditionalGeneration
         should be excluded from VLM detection and cached as False."""
         cfg = MagicMock(spec = [])  # strict: only explicitly set attrs exist
@@ -558,15 +540,10 @@ class TestSubprocessScript:
             is True
         )
         assert (
-            inline_is_vlm(
-                _C(model_type = "gemma4_text", architectures = ["Gemma4ForCausalLM"])
-            )
+            inline_is_vlm(_C(model_type = "gemma4_text", architectures = ["Gemma4ForCausalLM"]))
             is False
         )
-        assert (
-            inline_is_vlm(_C(model_type = "llama", architectures = ["LlamaForCausalLM"]))
-            is False
-        )
+        assert inline_is_vlm(_C(model_type = "llama", architectures = ["LlamaForCausalLM"])) is False
 
 
 # ---------------------------------------------------------------------------
@@ -725,14 +702,10 @@ class TestAudioDetectionCacheTokenAware:
         # Offline probe caches None under a local-only key.
         assert mc.detect_audio_type("some/audio-model", local_files_only = True) is None
         # A later online probe must re-run (different key) and detect the audio model.
-        assert (
-            mc.detect_audio_type("some/audio-model", local_files_only = False) == "snac"
-        )
+        assert mc.detect_audio_type("some/audio-model", local_files_only = False) == "snac"
         assert seen == [True, False]
         # The online positive is then cached for subsequent online callers.
-        assert (
-            mc.detect_audio_type("some/audio-model", local_files_only = False) == "snac"
-        )
+        assert mc.detect_audio_type("some/audio-model", local_files_only = False) == "snac"
         assert seen == [True, False]
         mc._audio_detection_cache.clear()
 
@@ -777,18 +750,7 @@ class TestEnvOfflineParsing:
     def test_truthy_values_recognized(self, monkeypatch):
         import utils.models.model_config as mc
         for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
-            for val in (
-                "1",
-                "true",
-                "TRUE",
-                "yes",
-                "Yes",
-                "on",
-                "ON",
-                " 1 ",
-                " on ",
-                "\ttrue\n",
-            ):
+            for val in ("1", "true", "TRUE", "yes", "Yes", "on", "ON", " 1 ", " on ", "\ttrue\n"):
                 monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
                 monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
                 monkeypatch.setenv(var, val)
@@ -802,6 +764,4 @@ class TestEnvOfflineParsing:
         assert mc._env_offline() is False
         for val in ("", "0", "false", "no", "off", "2", "onn"):
             monkeypatch.setenv("HF_HUB_OFFLINE", val)
-            assert (
-                mc._env_offline() is False
-            ), f"HF_HUB_OFFLINE={val!r} should not be offline"
+            assert mc._env_offline() is False, f"HF_HUB_OFFLINE={val!r} should not be offline"

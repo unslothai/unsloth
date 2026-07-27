@@ -53,8 +53,7 @@ CASES: list[Case] = [
     ),
     Case(
         "C3",
-        "removing katex is safe: streamdown/math, mermaid, "
-        "rehype-katex all keep it at top level",
+        "removing katex is safe: streamdown/math, mermaid, rehype-katex all keep it at top level",
         ["katex"],
         "PASS",
         [],
@@ -69,8 +68,7 @@ CASES: list[Case] = [
     ),
     Case(
         "C6",
-        "removing @radix-ui/react-slot is safe: pulled by "
-        "radix-ui umbrella + @assistant-ui/react",
+        "removing @radix-ui/react-slot is safe: pulled by radix-ui umbrella + @assistant-ui/react",
         ["@radix-ui/react-slot"],
         "PASS",
         [],
@@ -304,9 +302,7 @@ def run_case(case: Case, head_pkg: dict) -> tuple[bool, str]:
         if in_summary and line.strip().startswith("- "):
             failure_pkgs.append(line.strip()[2:])
 
-    ok = actual_status == case.expected_status and set(failure_pkgs) == set(
-        case.expected_failures
-    )
+    ok = actual_status == case.expected_status and set(failure_pkgs) == set(case.expected_failures)
     return ok, (
         f"expected: status={case.expected_status} fails={sorted(case.expected_failures)}\n"
         f"actual:   status={actual_status} fails={sorted(failure_pkgs)}\n"
@@ -854,7 +850,7 @@ ADV_CASES: list[AdvCase] = [
         "A12",
         "JSDoc @import of removed pkg should FAIL",
         "adv12.ts",
-        '/** @type {import("__adv_only_pkg_l__").Foo} */\n' "const x = null;\n",
+        '/** @type {import("__adv_only_pkg_l__").Foo} */\nconst x = null;\n',
         "__adv_only_pkg_l__",
         "FAIL",
         ["__adv_only_pkg_l__"],
@@ -1049,7 +1045,7 @@ PKG_FIELD_CASES: list[PkgFieldCase] = [
 
 
 def run_pkg_field_cases() -> int:
-    head_pkg = json.loads(HEAD_PKG.read_text())
+    head_pkg = json.loads(HEAD_PKG.read_text(encoding = "utf-8"))
     passed = 0
     for pc in PKG_FIELD_CASES:
         synth_head = json.loads(json.dumps(head_pkg))
@@ -1085,9 +1081,7 @@ def run_pkg_field_cases() -> int:
         finally:
             os.unlink(base_path)
             os.unlink(head_path)
-        actual_status = {0: "PASS", 1: "FAIL"}.get(
-            proc.returncode, f"RC{proc.returncode}"
-        )
+        actual_status = {0: "PASS", 1: "FAIL"}.get(proc.returncode, f"RC{proc.returncode}")
         fails: list[str] = []
         in_summary = False
         for line in proc.stdout.splitlines():
@@ -1097,15 +1091,11 @@ def run_pkg_field_cases() -> int:
             if in_summary and line.strip().startswith("- "):
                 fails.append(line.strip()[2:])
         # Both status and failure set must match.
-        ok = actual_status == pc.expected_status and set(fails) == set(
-            pc.expected_failures
-        )
+        ok = actual_status == pc.expected_status and set(fails) == set(pc.expected_failures)
         mark = "PASS" if ok else "FAIL"
         print(f"  [{mark}] {pc.id}: {pc.desc}")
         if not ok:
-            print(
-                f"      expected: status={pc.expected_status} fails={pc.expected_failures}"
-            )
+            print(f"      expected: status={pc.expected_status} fails={pc.expected_failures}")
             print(f"      actual:   status={actual_status} fails={fails}")
             for ln in proc.stdout.splitlines()[:25]:
                 print(f"      {ln}")
@@ -1118,13 +1108,13 @@ def run_pkg_field_cases() -> int:
 
 def run_adversarial_cases() -> int:
     ADVERSARIAL_TMP_DIR.mkdir(parents = True, exist_ok = True)
-    head_pkg = json.loads(HEAD_PKG.read_text())
+    head_pkg = json.loads(HEAD_PKG.read_text(encoding = "utf-8"))
     passed = 0
     for ac in ADV_CASES:
         # Drop the synthetic file.
         fpath = ADVERSARIAL_TMP_DIR / ac.filename
         try:
-            fpath.write_text(ac.content)
+            fpath.write_text(ac.content, encoding = "utf-8")
             # Base adds the target pkg; real head lacks it, so the script
             # treats it as removed and scans the repo (now with our file).
             synth_base = json.loads(json.dumps(head_pkg))
@@ -1150,9 +1140,7 @@ def run_adversarial_cases() -> int:
                 )
             finally:
                 os.unlink(base_path)
-            actual_status = {0: "PASS", 1: "FAIL"}.get(
-                proc.returncode, f"RC{proc.returncode}"
-            )
+            actual_status = {0: "PASS", 1: "FAIL"}.get(proc.returncode, f"RC{proc.returncode}")
             fails = []
             in_summary = False
             for line in proc.stdout.splitlines():
@@ -1161,15 +1149,11 @@ def run_adversarial_cases() -> int:
                     continue
                 if in_summary and line.strip().startswith("- "):
                     fails.append(line.strip()[2:])
-            ok = actual_status == ac.expected_status and set(fails) == set(
-                ac.expected_failures
-            )
+            ok = actual_status == ac.expected_status and set(fails) == set(ac.expected_failures)
             mark = "PASS" if ok else "FAIL"
             print(f"  [{mark}] {ac.id}: {ac.desc}")
             if not ok:
-                print(
-                    f"      expected: status={ac.expected_status} fails={ac.expected_failures}"
-                )
+                print(f"      expected: status={ac.expected_status} fails={ac.expected_failures}")
                 print(f"      actual:   status={actual_status} fails={fails}")
                 for ln in proc.stdout.splitlines()[:20]:
                     print(f"      {ln}")
@@ -1273,7 +1257,7 @@ ENUM_CASES: list[EnumCase] = [
 
 
 def run_enum_cases() -> int:
-    head_pkg = json.loads(HEAD_PKG.read_text())
+    head_pkg = json.loads(HEAD_PKG.read_text(encoding = "utf-8"))
     passed = 0
     ADVERSARIAL_TMP_DIR.mkdir(parents = True, exist_ok = True)
     for ec in ENUM_CASES:
@@ -1349,9 +1333,7 @@ def run_enum_cases() -> int:
         if not ok:
             print(f"      expected unused superset: {sorted(ec.expected_unused)}")
             print(f"      expected used NOT in unused: {sorted(ec.expected_used)}")
-            print(
-                f"      expected orphans superset: {sorted(ec.expected_orphan_types)}"
-            )
+            print(f"      expected orphans superset: {sorted(ec.expected_orphan_types)}")
             print(f"      actual unused: {sorted(unused)}")
             print(f"      actual orphans: {sorted(orphans)}")
             for ln in proc.stdout.splitlines()[:30]:
@@ -1524,7 +1506,7 @@ def run_wrapper_cases() -> int:
 
 
 def main() -> int:
-    head_pkg = json.loads(HEAD_PKG.read_text())
+    head_pkg = json.loads(HEAD_PKG.read_text(encoding = "utf-8"))
     print(f"Running {len(CASES)} edge cases against {SCRIPT.relative_to(REPO)}")
     print()
     results: list[tuple[Case, bool, str]] = []

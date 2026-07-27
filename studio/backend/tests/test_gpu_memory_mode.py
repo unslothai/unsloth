@@ -22,6 +22,7 @@ and MoE offload itself (``--fit off``). These tests pin:
 from __future__ import annotations
 
 import inspect
+import struct
 import sys
 import types as _types
 from pathlib import Path
@@ -65,9 +66,7 @@ def test_load_request_defaults_gpu_memory_mode_auto():
 
 
 def test_load_request_round_trips_json_key():
-    req = LoadRequest.model_validate(
-        {"model_path": "owner/repo", "gpu_memory_mode": "manual"}
-    )
+    req = LoadRequest.model_validate({"model_path": "owner/repo", "gpu_memory_mode": "manual"})
     assert req.gpu_memory_mode == "manual"
     assert req.model_dump()["gpu_memory_mode"] == "manual"
 
@@ -215,9 +214,7 @@ def test_auto_layers_branch_empties_gpus_and_drops_tensor_parallel():
     assert 'cmd.extend(["--fit", "on"])' in src
     # TP drops for this path, but at a guard BEFORE the quantized-KV cache-drop, so
     # a requested quantized cache survives into the --fit load.
-    tp_drop = src.find(
-        'if tensor_parallel and gpu_memory_mode == "manual" and gpu_layers < 0:'
-    )
+    tp_drop = src.find('if tensor_parallel and gpu_memory_mode == "manual" and gpu_layers < 0:')
     assert tp_drop != -1, "manual + Auto layers must drop tensor_parallel"
     assert "tensor_parallel = False" in src[tp_drop : tp_drop + 400]
     cache_drop = src.find("Tensor parallelism requires a non-quantized KV cache")
@@ -243,9 +240,7 @@ def test_auto_layers_never_sends_ctx_size_zero():
     zero = src.find('cmd.extend(["-c", "0"])')
     assert zero != -1, '"-c 0" emission must exist outside the Auto-layers case'
     guard = src.rfind("elif not auto_fit:", 0, zero)
-    assert (
-        guard != -1 and zero - guard < 120
-    ), '"-c 0" must sit under the not-auto_fit guard'
+    assert guard != -1 and zero - guard < 120, '"-c 0" must sit under the not-auto_fit guard'
 
 
 def test_manual_mode_clears_inherited_main_model_placement_env():
@@ -307,9 +302,7 @@ def test_load_request_accepts_valid_tensor_split(good):
 
 
 def test_route_normalizes_explicit_extras_before_reload_dedupe():
-    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(
-        encoding = "utf-8"
-    )
+    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     load_impl = route_src[route_src.index("async def _load_model_impl") :]
     strip = load_impl.index("_stripped_explicit = strip_shadowing_flags")
     normalize = load_impl.index(
@@ -418,16 +411,10 @@ def test_manual_reloads_on_gpu_layers_or_n_cpu_moe_or_split_change():
     # Changed MoE offload -> reload.
     assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 8) is False
     # Added a GPU split -> reload.
-    assert (
-        _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0, tensor_split = [2, 1])
-        is False
-    )
+    assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0, tensor_split = [2, 1]) is False
     # Same GPU split -> no reload.
     backend._tensor_split = [2, 1]
-    assert (
-        _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0, tensor_split = [2, 1])
-        is True
-    )
+    assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0, tensor_split = [2, 1]) is True
 
 
 def test_auto_layers_reload_tracks_only_gpu_layers():
@@ -438,10 +425,7 @@ def test_auto_layers_reload_tracks_only_gpu_layers():
     backend._n_cpu_moe = 0
     backend._tensor_split = None
     # Same Auto, leftover MoE/split in the request -> still no reload.
-    assert (
-        _target_state_manual(backend, gpu_layers = -1, n_cpu_moe = 8, tensor_split = [2, 1])
-        is True
-    )
+    assert _target_state_manual(backend, gpu_layers = -1, n_cpu_moe = 8, tensor_split = [2, 1]) is True
     # Auto -> explicit offload reloads.
     assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0) is False
 
@@ -483,9 +467,7 @@ def test_status_reports_requested_context_length():
     # never-populated field would leave hydration silently reverting the pin).
     from pathlib import Path as _P
 
-    route_src = (_P(_BACKEND_DIR) / "routes" / "inference.py").read_text(
-        encoding = "utf-8"
-    )
+    route_src = (_P(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     assert "requested_context_length = llama_backend.requested_n_ctx" in route_src
 
 
@@ -589,13 +571,9 @@ def test_fit_sets_target_margin():
     assert flags[flags.index("--fit-target") + 1] == "512"
     # Not emitted on the legacy auto path (fit on but not auto_fit): -c 0 pins
     # native there, so the tighter margin must not ride along.
-    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(
-        1, True, False, 0, 0, caps
-    )
+    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, True, False, 0, 0, caps)
     # Not emitted when fit is off.
-    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(
-        1, False, False, 0, 0, caps
-    )
+    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, False, False, 0, 0, caps)
     # Not emitted when the binary lacks support.
     assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(
         1, True, True, 0, 0, {"supports_fit_target": False}
@@ -615,11 +593,22 @@ def test_load_request_accepts_gpu_ids():
 def test_response_models_emit_gpu_ids(model_cls):
     if model_cls is LoadResponse:
         obj = model_cls(
-            status = "loaded", model = "m", display_name = "m", inference = {}, gpu_ids = [1]
+            status = "loaded",
+            model = "m",
+            display_name = "m",
+            inference = {},
+            gpu_ids = [1],
+            requested_gpu_ids = [1, 2],
         )
     else:
-        obj = model_cls(gpu_ids = [1])
+        obj = model_cls(gpu_ids = [1], requested_gpu_ids = [1, 2])
     assert obj.model_dump()["gpu_ids"] == [1]
+    assert obj.model_dump()["requested_gpu_ids"] == [1, 2]
+
+
+def test_gguf_load_and_status_responses_include_requested_gpu_pool():
+    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
+    assert route_src.count("requested_gpu_ids = llama_backend.requested_gpu_ids") == 3
 
 
 def test_gpu_ids_property_default_and_reset():
@@ -650,11 +639,35 @@ def _target_state_gpu_ids(backend, gpu_ids):
 def test_gpu_ids_reload_detection_is_order_insensitive():
     backend = _loaded_backend("auto")
     backend._gpu_ids = [0, 1]
+    # A real non-narrowed load records the raw request too; the non-diffusion
+    # dedupe now compares that raw pin (#7239). Set it to match the effective pin
+    # (no narrowing) so this exercises the order-insensitive comparison.
+    backend._requested_gpu_ids = [0, 1]
     # Same set, different order -> no reload.
     assert _target_state_gpu_ids(backend, [1, 0]) is True
     # Different set -> reload.
     assert _target_state_gpu_ids(backend, [0]) is False
     # Dropping the pick (auto) -> reload.
+    assert _target_state_gpu_ids(backend, None) is False
+
+
+def test_gpu_ids_reload_detection_accepts_raw_and_effective_pin():
+    backend = _loaded_backend("auto")
+    backend._requested_gpu_ids = [0, 1]
+    backend._gpu_ids = [0]
+    backend._last_load_kwargs = {"gpu_ids": [0, 1], "model_identifier": "owner/repo"}
+
+    # The original request still matches after the fitter narrows it.
+    assert _target_state_gpu_ids(backend, [1, 0]) is True
+    assert backend.requested_gpu_ids == [0, 1]
+    # The status response echoes the effective pin, which must also round-trip.
+    # Treat the incoming subset as the latest intent so status and a future
+    # reload do not restore GPU 1 after the user removed it.
+    assert _target_state_gpu_ids(backend, [0]) is True
+    assert backend.requested_gpu_ids == [0]
+    assert backend._last_load_kwargs == {"gpu_ids": [0], "model_identifier": "owner/repo"}
+    # A genuinely different placement pool still reloads.
+    assert _target_state_gpu_ids(backend, [1]) is False
     assert _target_state_gpu_ids(backend, None) is False
 
 
@@ -667,11 +680,230 @@ def test_gpu_ids_reload_detection_collapses_diffusion_to_single_device():
     backend._is_diffusion = True
     backend._gpu_ids = [1]  # loaded on the lowest of an earlier [3, 1] pick
     assert _target_state_gpu_ids(backend, [3, 1]) is True
+    assert backend.requested_gpu_ids == [1]
     assert _target_state_gpu_ids(backend, [1]) is True
     # Lowest device changes (2, not 1) -> reload.
     assert _target_state_gpu_ids(backend, [3, 2]) is False
     # Dropping the pick (auto) -> reload.
     assert _target_state_gpu_ids(backend, None) is False
+
+
+def test_remote_vulkan_diffusion_preflight_runs_before_teardown(monkeypatch):
+    def _mark_diffusion(probe, path):
+        assert path == "/cache/model.gguf"
+        probe._is_diffusion = True
+
+    monkeypatch.setattr(LlamaCppBackend, "_read_gguf_metadata", _mark_diffusion)
+    assert LlamaCppBackend._gguf_path_is_diffusion("/cache/model.gguf", "owner/model") is True
+
+    src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
+    preflight = src.index("_preflight_model_path = self._download_gguf(")
+    teardown = src.index("# ── Phase 1: kill old process")
+    assert preflight < teardown
+    assert "model_path = _preflight_model_path or self._download_gguf(" in src
+
+
+def test_local_vulkan_diffusion_preflight_runs_before_teardown():
+    src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
+    local_preflight = src.index(
+        "self._reject_vulkan_diffusion_gpu_ids_before_teardown(\n                    gguf_path,"
+    )
+    teardown = src.index("# ── Phase 1: kill old process")
+    assert local_preflight < teardown
+
+
+def test_remote_vulkan_diffusion_rejection_keeps_active_server(monkeypatch):
+    backend = LlamaCppBackend()
+    killed = []
+    monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
+    monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: True)
+    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None: [(0, 1024, 2048)])
+    monkeypatch.setattr(
+        backend,
+        "_download_gguf",
+        lambda **_kwargs: "/cache/diffusion.gguf",
+    )
+    monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *_args: True)
+    monkeypatch.setattr(backend, "_kill_process", lambda: killed.append(True))
+    monkeypatch.setattr(
+        llama_cpp_module,
+        "_resolve_repo_id_casing",
+        lambda repo: repo,
+    )
+    monkeypatch.setattr(
+        llama_cpp_module,
+        "_hf_offline_if_dns_dead",
+        lambda: __import__("contextlib").nullcontext(),
+    )
+
+    with pytest.raises(ValueError, match = "DiffusionGemma"):
+        backend.load_model(
+            hf_repo = "owner/model",
+            hf_variant = "Q4_K_M",
+            model_identifier = "owner/model",
+            gpu_ids = [0],
+        )
+
+    assert killed == []
+
+
+def test_remote_vulkan_preflight_download_failure_keeps_active_server(monkeypatch, tmp_path):
+    # A resolvable shard-1 file does not prove the variant is complete, so download
+    # failures must surface from the pre-teardown _download_gguf, not after the kill.
+    import hub.utils.gguf as hub_gguf
+
+    cached_shard = tmp_path / "model-00001-of-00003.gguf"
+    cached_shard.write_bytes(b"GGUF")
+    monkeypatch.setattr(
+        hub_gguf,
+        "resolve_local_gguf_path",
+        lambda _repo, _variant: str(cached_shard),
+    )
+
+    for failure in (
+        FileNotFoundError("shard 2 of 3 missing"),
+        OSError("[Errno 28] No space left on device"),
+        ConnectionError("hub unreachable"),
+    ):
+        backend = LlamaCppBackend()
+        order = []
+
+        def _download(_failure = failure, **_kwargs):
+            order.append("download")
+            raise _failure
+
+        monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
+        monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: True)
+        monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None: [(0, 1024, 2048)])
+        monkeypatch.setattr(backend, "_download_gguf", _download)
+        monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *_args: False)
+        monkeypatch.setattr(backend, "_kill_process", lambda: order.append("kill"))
+        monkeypatch.setattr(llama_cpp_module, "_resolve_repo_id_casing", lambda repo: repo)
+        monkeypatch.setattr(
+            llama_cpp_module,
+            "_hf_offline_if_dns_dead",
+            lambda: __import__("contextlib").nullcontext(),
+        )
+
+        with pytest.raises(type(failure)):
+            backend.load_model(
+                hf_repo = "owner/model",
+                hf_variant = "Q4_K_M",
+                model_identifier = "owner/model",
+                gpu_ids = [0],
+            )
+
+        assert order == ["download"], failure
+
+
+def test_local_vulkan_diffusion_rejection_keeps_active_server(monkeypatch, tmp_path):
+    gguf_path = tmp_path / "diffusion.gguf"
+    gguf_path.write_bytes(b"GGUF")
+
+    backend = LlamaCppBackend()
+    killed = []
+    monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
+    monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: True)
+    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None: [(0, 1024, 2048)])
+    monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *_args: True)
+    monkeypatch.setattr(backend, "_kill_process", lambda: killed.append(True))
+
+    with pytest.raises(ValueError, match = "DiffusionGemma"):
+        backend.load_model(
+            gguf_path = str(gguf_path),
+            model_identifier = "local/diffusion",
+            gpu_ids = [0],
+        )
+
+    assert killed == []
+
+
+class _ReachedServerStart(Exception):
+    """Marks a load getting past the pre-teardown preflight."""
+
+
+def _write_gguf_header(
+    path: Path,
+    architecture: str,
+    *,
+    diffusion: bool = False,
+) -> str:
+    """Smallest GGUF the header probe can classify: arch, plus the canvas marker."""
+
+    def _kv_str(key: str, value: str) -> bytes:
+        kb, vb = key.encode(), value.encode()
+        return (
+            struct.pack("<Q", len(kb)) + kb + struct.pack("<I", 8) + struct.pack("<Q", len(vb)) + vb
+        )
+
+    def _kv_u32(key: str, value: int) -> bytes:
+        kb = key.encode()
+        return struct.pack("<Q", len(kb)) + kb + struct.pack("<I", 4) + struct.pack("<I", value)
+
+    body = _kv_str("general.architecture", architecture)
+    if diffusion:
+        body += _kv_u32("diffusion.canvas_length", 256)
+    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 2 if diffusion else 1) + body)
+    return str(path)
+
+
+def _vulkan_pinned_backend(monkeypatch, killed: list) -> LlamaCppBackend:
+    backend = LlamaCppBackend()
+    monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
+    monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: True)
+    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None: [(0, 1024, 2048)])
+    monkeypatch.setattr(backend, "_kill_process", lambda: killed.append(True))
+    return backend
+
+
+def test_local_vulkan_pre_teardown_reads_the_real_gguf_header(monkeypatch, tmp_path):
+    # Classify from the header, not from Vulkan + gpu_ids alone: normal GGUFs load.
+    killed = []
+    backend = _vulkan_pinned_backend(monkeypatch, killed)
+    monkeypatch.setattr(
+        backend,
+        "_wait_for_vram_settle",
+        lambda **_kwargs: (_ for _ in ()).throw(_ReachedServerStart()),
+    )
+
+    with pytest.raises(_ReachedServerStart):
+        backend.load_model(
+            gguf_path = _write_gguf_header(tmp_path / "chat.gguf", "llama"),
+            model_identifier = "local/chat",
+            gpu_ids = [0],
+        )
+
+    assert killed == [True]
+
+
+def test_local_vulkan_diffusion_header_rejects_before_teardown(monkeypatch, tmp_path):
+    # Same path, real DiffusionGemma canvas marker: rejected with the server intact.
+    killed = []
+    backend = _vulkan_pinned_backend(monkeypatch, killed)
+
+    with pytest.raises(ValueError, match = "DiffusionGemma"):
+        backend.load_model(
+            gguf_path = _write_gguf_header(tmp_path / "d.gguf", "gemma3", diffusion = True),
+            model_identifier = "local/diffusion",
+            gpu_ids = [0],
+        )
+
+    assert killed == []
+
+
+def test_local_vulkan_missing_gguf_is_reported_before_teardown(monkeypatch, tmp_path):
+    # The preflight existence check must not cost the live model either.
+    killed = []
+    backend = _vulkan_pinned_backend(monkeypatch, killed)
+
+    with pytest.raises(FileNotFoundError):
+        backend.load_model(
+            gguf_path = str(tmp_path / "absent.gguf"),
+            model_identifier = "local/missing",
+            gpu_ids = [0],
+        )
+
+    assert killed == []
 
 
 def test_start_diffusion_server_resets_tensor_parallel():
@@ -681,22 +913,16 @@ def test_start_diffusion_server_resets_tensor_parallel():
     # diffusion re-Apply reloads against stale tensor-parallel state.
     src = inspect.getsource(llama_cpp_module.LlamaCppBackend._start_diffusion_server)
     assert "self._tensor_parallel = False" in src
+    assert "self._requested_gpu_ids = list(self._gpu_ids) if self._gpu_ids else None" in src
 
 
-def test_route_matches_loaded_settings_collapses_diffusion_gpu_ids():
-    # The route-level reload dedupe mirrors the backend: for a loaded diffusion
-    # model it compares the request against the single recorded device, not the
-    # full requested list, or a same-device multi-GPU pick reloads needlessly.
-    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(
-        encoding = "utf-8"
-    )
+def test_route_matches_loaded_settings_uses_shared_gpu_pin_matcher():
+    # Route-level and backend race dedupe must share one normalization path so
+    # raw, effective, and diffusion pins cannot drift apart.
+    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     match_impl = route_src[route_src.index("def _request_matches_loaded_settings") :]
-    guard = match_impl.index("if llama_backend.is_diffusion:")
-    collapse = match_impl.index(
-        "[sorted(request.gpu_ids)[0]] if request.gpu_ids else None"
-    )
-    compare = match_impl.index("if _req_gpu_ids != llama_backend.gpu_ids:")
-    assert guard < collapse < compare
+    assert "if not llama_backend.matches_gpu_ids(request.gpu_ids):" in match_impl
+    assert "llama_backend._record_matching_gpu_request(request.gpu_ids)" in match_impl
 
 
 # ── Manual tensor split: child enumeration pinned to the picker's order ──────
@@ -708,9 +934,7 @@ def _patch_split_pin_env(monkeypatch, *, inherited, reported):
     import utils.hardware as hw
 
     monkeypatch.setattr(
-        LlamaCppBackend,
-        "_resolve_visible_physical_ids",
-        staticmethod(lambda: inherited),
+        LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: inherited)
     )
     info = (
         {"available": False}
@@ -764,18 +988,209 @@ def test_split_pin_without_mask_only_sets_pci_order(monkeypatch):
 
 
 def test_split_pin_mirrors_hip_mask_on_rocm(monkeypatch):
-    # ROCm: the pin must land in HIP_VISIBLE_DEVICES too, and an inherited ROCR
-    # mask is cleared so the mask can't apply twice (ROCR re-indexes, then HIP
-    # would index into the already-reduced set).
+    # ROCm with the mask sourced from HIP: the pin must land in
+    # HIP_VISIBLE_DEVICES too, and an inherited ROCR mask is cleared so the
+    # mask can't apply twice (ROCR re-indexes, then HIP would index into the
+    # already-reduced set).
     _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = [1, 3])
-    torch_stub = _types.ModuleType("torch")
-    torch_stub.version = _types.SimpleNamespace(hip = "6.0")
-    monkeypatch.setitem(sys.modules, "torch", torch_stub)
-    env = {"CUDA_VISIBLE_DEVICES": "3,1", "ROCR_VISIBLE_DEVICES": "3,1"}
+    _rocm_torch_stub(monkeypatch)
+    env = {
+        "CUDA_VISIBLE_DEVICES": "3,1",
+        "HIP_VISIBLE_DEVICES": "3,1",
+        "ROCR_VISIBLE_DEVICES": "3,1",
+    }
     LlamaCppBackend._pin_visible_gpu_order_for_split(env)
     assert env["CUDA_VISIBLE_DEVICES"] == "1,3"
     assert env["HIP_VISIBLE_DEVICES"] == "1,3"
     assert "ROCR_VISIBLE_DEVICES" not in env
+
+
+def test_split_pin_preserves_inherited_rocr_mask(monkeypatch):
+    # Mask sourced from ROCR alone (e.g. an AMD SDK parent): the pin must
+    # re-emit at the ROCr layer, not swap to HIP -- clearing ROCR re-exposes
+    # every agent to HSA enumeration, which can segfault at startup on an
+    # unsupported GPU the parent mask was hiding (#7272 review). CUDA carries
+    # the post-ROCR ordinals, mirroring the prefer_rocr emission.
+    _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = [1, 3])
+    _rocm_torch_stub(monkeypatch)
+    env = {"ROCR_VISIBLE_DEVICES": "3,1"}
+    LlamaCppBackend._pin_visible_gpu_order_for_split(env)
+    assert env["ROCR_VISIBLE_DEVICES"] == "1,3"
+    assert env["CUDA_VISIBLE_DEVICES"] == "0,1"
+    assert "HIP_VISIBLE_DEVICES" not in env
+
+
+def test_split_pin_keeps_hip_on_windows_despite_stray_rocr(monkeypatch):
+    # On Windows the ROCR var is dead (no ROCr layer) and the resolver never
+    # reads it, so a stray value must not flip the pin to the ROCR emission:
+    # the HIP mask is the only effective selector there.
+    _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = [1, 3])
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = "6.0")
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(sys, "platform", "win32")
+    env = {"CUDA_VISIBLE_DEVICES": "3,1", "ROCR_VISIBLE_DEVICES": "9"}
+    LlamaCppBackend._pin_visible_gpu_order_for_split(env)
+    assert env["CUDA_VISIBLE_DEVICES"] == "1,3"
+    assert env["HIP_VISIBLE_DEVICES"] == "1,3"
+    assert "ROCR_VISIBLE_DEVICES" not in env
+
+
+def _rocm_torch_stub(monkeypatch):
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = "6.0")
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    # prefer_rocr is Linux-only (ROCR is an ROCr variable); pin the platform so
+    # these Linux-behaviour tests also pass on a Windows dev box.
+    monkeypatch.setattr(sys, "platform", "linux")
+
+
+def test_subset_pin_masks_via_rocr_on_rocm(monkeypatch):
+    # A GPU-subset pin must exclude the rest at the ROCr/HSA layer: HIP masking
+    # still enumerates every agent first, which segfaults the build on an
+    # unsupported deselected GPU (e.g. a gfx1103 iGPU under a gfx110X prebuilt).
+    # ROCR drops it at the driver layer; only one mask is set (HIP cleared).
+    _rocm_torch_stub(monkeypatch)
+    env = {"HIP_VISIBLE_DEVICES": "9"}  # stale/inherited HIP mask must not survive
+    LlamaCppBackend._emit_child_gpu_visibility(env, "0", prefer_rocr = True)
+    assert env["ROCR_VISIBLE_DEVICES"] == "0"
+    assert env["CUDA_VISIBLE_DEVICES"] == "0"
+    assert "HIP_VISIBLE_DEVICES" not in env
+
+
+def test_prefer_rocr_remaps_cuda_to_post_rocr_ordinals(monkeypatch):
+    # ROCR re-indexes the visible agents from 0, and HIP (cleared here) falls back
+    # to CUDA_VISIBLE_DEVICES -- so on the prefer_rocr path CUDA must carry the
+    # post-ROCR ordinals, not the physical ids, else a non-zero pick indexes out
+    # of range and the child sees no GPU and drops to CPU (#7272 review).
+    _rocm_torch_stub(monkeypatch)
+    # Single non-zero GPU: ROCR keeps the physical id, CUDA becomes ordinal 0.
+    env = {}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "1", prefer_rocr = True)
+    assert env["ROCR_VISIBLE_DEVICES"] == "1"
+    assert env["CUDA_VISIBLE_DEVICES"] == "0"
+    assert "HIP_VISIBLE_DEVICES" not in env
+    # Multi-GPU subset: ROCR keeps the physical ids, CUDA is the 0-based ordinals.
+    env = {}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "1,3", prefer_rocr = True)
+    assert env["ROCR_VISIBLE_DEVICES"] == "1,3"
+    assert env["CUDA_VISIBLE_DEVICES"] == "0,1"
+    assert "HIP_VISIBLE_DEVICES" not in env
+
+
+def test_subset_pin_default_still_uses_hip_and_clears_rocr(monkeypatch):
+    # Without prefer_rocr the masking is unchanged: HIP narrows, inherited ROCR
+    # is cleared so the two can't double-mask.
+    _rocm_torch_stub(monkeypatch)
+    env = {"ROCR_VISIBLE_DEVICES": "0,1"}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "1")
+    assert env["HIP_VISIBLE_DEVICES"] == "1"
+    assert "ROCR_VISIBLE_DEVICES" not in env
+
+
+def test_cpu_only_pin_keeps_hip_even_with_prefer_rocr(monkeypatch):
+    # The CPU-only sentinel never routes through ROCR (no portable "hide all"
+    # spelling); it hides every GPU via HIP.
+    _rocm_torch_stub(monkeypatch)
+    env = {}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "-1", prefer_rocr = True)
+    assert env["HIP_VISIBLE_DEVICES"] == "-1"
+    assert "ROCR_VISIBLE_DEVICES" not in env
+
+
+def _amd_sdk_torch_stub(monkeypatch):
+    # AMD SDK wheel: torch.version.hip is None but __version__ encodes rocm.
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = None)
+    torch_stub.__version__ = "2.9.1+rocm7.2.1"
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(sys, "platform", "linux")
+
+
+def test_prefer_rocr_falls_back_to_hip_on_windows(monkeypatch):
+    # ROCR_VISIBLE_DEVICES is a Linux ROCr variable (Windows HIP has no ROCr
+    # layer), so on Windows ROCm prefer_rocr must keep the HIP mask or a nonzero
+    # pick loses its only effective selector (#7272 review).
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = "6.0")
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(sys, "platform", "win32")
+    env = {"ROCR_VISIBLE_DEVICES": "9"}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "1", prefer_rocr = True)
+    assert env["HIP_VISIBLE_DEVICES"] == "1"
+    assert env["CUDA_VISIBLE_DEVICES"] == "1"
+    assert "ROCR_VISIBLE_DEVICES" not in env
+
+
+def test_amd_sdk_wheel_hip_none_still_masks_rocr(monkeypatch):
+    # An AMD SDK wheel leaves torch.version.hip unset but has "rocm" in __version__.
+    # It must still get the ROCR mask, else only CUDA_VISIBLE_DEVICES is set and an
+    # unsupported iGPU keeps enumerating and can crash llama-server.
+    _amd_sdk_torch_stub(monkeypatch)
+    env = {"HIP_VISIBLE_DEVICES": "9"}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "0", prefer_rocr = True)
+    assert env["ROCR_VISIBLE_DEVICES"] == "0"
+    assert "HIP_VISIBLE_DEVICES" not in env
+
+
+def test_cuda_wheel_hip_none_gets_no_rocm_mask(monkeypatch):
+    # A CUDA wheel (hip=None, no "rocm" in __version__) must NOT get a HIP/ROCR mask
+    # -- only CUDA_VISIBLE_DEVICES -- so the version-string check can't false-positive.
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = None)
+    torch_stub.__version__ = "2.9.1+cu124"
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    env = {}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "0", prefer_rocr = True)
+    assert env["CUDA_VISIBLE_DEVICES"] == "0"
+    assert "ROCR_VISIBLE_DEVICES" not in env
+    assert "HIP_VISIBLE_DEVICES" not in env
+
+
+def test_resolve_physical_ids_reads_rocr_on_amd_sdk_wheel(monkeypatch):
+    # _resolve_visible_physical_ids must use the same ROCm detection as
+    # _emit_child_gpu_visibility: on an AMD SDK wheel (hip=None, rocm in
+    # __version__) an inherited ROCR mask IS the ordinal->physical mapping.
+    # Reading it as "no mask" labels ordinal 0 as physical 0 and the child's
+    # ROCR pin then re-exposes the GPU the mask was hiding (#7272 review).
+    _amd_sdk_torch_stub(monkeypatch)
+    for var in ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1")
+    assert LlamaCppBackend._resolve_visible_physical_ids() == [1]
+
+
+def test_resolve_physical_ids_ignores_rocr_on_cuda_wheel(monkeypatch):
+    # A CUDA wheel (hip=None, no "rocm") keeps CUDA-only semantics: a stray
+    # ROCR var must not be read as the mask.
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = None)
+    torch_stub.__version__ = "2.9.1+cu124"
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    for var in ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1")
+    assert LlamaCppBackend._resolve_visible_physical_ids() is None
+
+
+def test_resolve_physical_ids_ignores_rocr_on_windows(monkeypatch):
+    # ROCR_VISIBLE_DEVICES is a Linux ROCr variable: Windows HIP has no ROCr
+    # layer, so a stray ROCR var there does not mask the runtime. Reading it as
+    # the ordinal->physical mapping would label ordinal 0 with a stale ROCR id
+    # while the runtime still enumerates every adapter, so auto-selection could
+    # budget one card and pin another (#7272 review). HIP must still be honoured.
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = None)
+    torch_stub.__version__ = "2.9.1+rocm7.2.1"  # AMD SDK wheel
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(sys, "platform", "win32")
+    for var in ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1")
+    assert LlamaCppBackend._resolve_visible_physical_ids() is None
+    # HIP precedence is unchanged on Windows.
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
+    assert LlamaCppBackend._resolve_visible_physical_ids() == [1]
 
 
 # ── Diffusion single-device selection ───────────────────────────────────────
@@ -871,22 +1286,12 @@ def test_zero_offload_flag_false_with_cpu_device_pin(device_args, env):
 
 
 def test_zero_offload_flag_true_with_surviving_tensor_mode():
-    cmd = [
-        "llama-server",
-        "-m",
-        "model.gguf",
-        "--gpu-layers",
-        "0",
-        "--split-mode",
-        "tensor",
-    ]
+    cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0", "--split-mode", "tensor"]
     assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], {}) is True
 
 
 def test_zero_offload_flag_true_for_unmasked_vulkan(monkeypatch):
-    monkeypatch.setattr(
-        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
     cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0"]
     assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], {}) is True
 
@@ -916,13 +1321,5 @@ def test_cmd_companion_ignores_cpu_forced_drafter():
     cmd = ["llama-server", "-md", "d.gguf", "--spec-draft-device", "cpu"]
     assert has(cmd, {}) is False
     # mmproj still counts even alongside a CPU drafter.
-    cmd = [
-        "llama-server",
-        "-md",
-        "d.gguf",
-        "--spec-draft-ngl",
-        "0",
-        "--mmproj",
-        "p.gguf",
-    ]
+    cmd = ["llama-server", "-md", "d.gguf", "--spec-draft-ngl", "0", "--mmproj", "p.gguf"]
     assert has(cmd, {}) is True

@@ -88,9 +88,7 @@ class TestTrustedHostAllowlist:
         _ok(f"import requests; requests.get({url!r})")
 
     def test_wikipedia_subdomain_passes(self):
-        _ok(
-            'import urllib.request; urllib.request.urlopen("https://m.en.wikipedia.org/wiki/Foo")'
-        )
+        _ok('import urllib.request; urllib.request.urlopen("https://m.en.wikipedia.org/wiki/Foo")')
 
     def test_hf_co_short_form_passes(self):
         _ok('import requests; requests.get("https://hf.co/unsloth/Qwen3.5-4B-GGUF")')
@@ -221,10 +219,7 @@ class TestUploadDenylist:
         )
 
     def test_plain_post_json_not_blocked(self):
-        _ok(
-            "import requests\n"
-            'requests.post("https://api.weather.gov/lookup", json={"k": "v"})'
-        )
+        _ok('import requests\nrequests.post("https://api.weather.gov/lookup", json={"k": "v"})')
 
 
 class TestSandboxEnvIsolation:
@@ -302,6 +297,8 @@ class TestSandboxEnvIsolation:
             "PYTHONPATH",
             "VIRTUAL_ENV",
             "SystemRoot",
+            "PATHEXT",  # Windows only; minimal list so cwd scripts cannot hijack
+            "NoDefaultCurrentDirectoryInExePath",  # Windows only; no cwd-first lookup
         }
         extras = set(env.keys()) - allowed
         assert not extras, f"sandbox env added unexpected keys: {extras}"
@@ -309,6 +306,220 @@ class TestSandboxEnvIsolation:
         # sitecustomize shim dir (code-interpreter path remap).
         assert env["PYTHONPATH"].endswith("sandbox_site")
         assert "leak-me" not in env["PYTHONPATH"]
+
+    def test_host_git_dir_appended_after_curated(self, monkeypatch, tmp_path):
+        # #7317: Windows Git lives under Program Files, not System32. Sandbox
+        # PATH resolves bare `git` by appending the dir of the git the HOST
+        # shell resolves (shutil.which), after the curated prefix.
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        prog = tmp_path / "Program Files"
+        monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(prog)])
+        git_dir = prog / "Git" / "cmd"
+        git_dir.mkdir(parents = True)
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(git_dir / "git.exe"))
+        env = _build_safe_env(str(tmp_path))
+        parts = env["PATH"].split(os.pathsep)
+        assert str(git_dir) in parts
+        # Curated prefix stays ahead of host Git so Studio python/pip win.
+        assert parts.index(str(git_dir)) > 0
+
+    def test_host_path_dirs_not_inherited(self, monkeypatch, tmp_path):
+        """Host PATH dirs (user-writable, git-lookalike) are never inherited;
+        only the resolved git dir is. No git resolved -> nothing appended."""
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        venv_scripts = tmp_path / "venv" / "Scripts"
+        venv_scripts.mkdir(parents = True)
+        fake_git = tmp_path / "scratch" / "Git" / "cmd"
+        fake_git.mkdir(parents = True)
+        monkeypatch.setenv(
+            "PATH",
+            os.pathsep.join([str(venv_scripts), str(fake_git), os.environ.get("PATH", "")]),
+        )
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: None)
+        env = _build_safe_env(str(tmp_path))
+        parts = env["PATH"].split(os.pathsep)
+        assert str(venv_scripts) not in parts
+        # A git-suffixed but unresolved (user-writable) dir is NOT trusted.
+        assert str(fake_git) not in parts
+
+    def test_git_cmd_shim_extension_added_to_pathext(self, monkeypatch, tmp_path):
+        """A host git resolved as a .cmd shim under a trusted root stays
+        resolvable under the restricted PATHEXT (cwd lookup disabled)."""
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        prog = tmp_path / "Program Files"
+        monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(prog)])
+        git_dir = prog / "Git" / "cmd"
+        git_dir.mkdir(parents = True)
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(git_dir / "git.cmd"))
+        env = _build_safe_env(str(tmp_path))
+        assert str(git_dir) in env["PATH"].split(os.pathsep)
+        assert env["PATHEXT"] == ".EXE;.COM;.CMD"
+
+    def test_user_writable_git_dir_refused(self, monkeypatch, tmp_path):
+        """Git resolved from a per-user manager (Scoop shims) is NOT trusted:
+        an attacker could drop rg.exe beside it and hit the auto-approve gate."""
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(
+            tools_mod, "_windows_program_roots", lambda: [str(tmp_path / "Program Files")]
+        )
+        shim_dir = tmp_path / "users" / "alice" / "scoop" / "shims"
+        shim_dir.mkdir(parents = True)
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(shim_dir / "git.exe"))
+        env = _build_safe_env(str(tmp_path))
+        assert str(shim_dir) not in env["PATH"].split(os.pathsep)
+        # No trusted git launcher -> PATHEXT stays minimal.
+        assert env["PATHEXT"] == ".EXE;.COM"
+
+    def test_trust_uses_known_folder_not_env_override(self, monkeypatch, tmp_path):
+        """Trust is driven by the resolved Program Files roots, so a git under
+        an attacker-overridden %ProgramFiles% env value is still refused."""
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        real_prog = tmp_path / "RealProgramFiles"
+        (real_prog).mkdir()
+        evil = tmp_path / "attacker"
+        (evil / "Git" / "cmd").mkdir(parents = True)
+        # Resolver returns the genuine root; env is overridden to the evil dir.
+        monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(real_prog)])
+        monkeypatch.setenv("ProgramFiles", str(evil))
+        monkeypatch.setattr(
+            tools_mod.shutil, "which", lambda name: str(evil / "Git" / "cmd" / "git.exe")
+        )
+        env = _build_safe_env(str(tmp_path))
+        assert str(evil / "Git" / "cmd") not in env["PATH"].split(os.pathsep)
+
+    def test_canonical_git_dir_appended(self, monkeypatch, tmp_path):
+        """The PATH entry is the realpath of the trusted dir, not a junction
+        alias, so it cannot be retargeted after the trust check."""
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        real_prog = tmp_path / "Program Files"
+        real_git = real_prog / "Git" / "cmd"
+        real_git.mkdir(parents = True)
+        link = tmp_path / "link"
+        try:
+            link.symlink_to(real_prog, target_is_directory = True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink unsupported in this environment")
+        monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(real_prog)])
+        monkeypatch.setattr(
+            tools_mod.shutil,
+            "which",
+            lambda name: str(link / "Git" / "cmd" / "git.exe"),
+        )
+        env = _build_safe_env(str(tmp_path))
+        parts = env["PATH"].split(os.pathsep)
+        assert str(real_git) in parts  # canonical, not the `link/...` alias
+
+    def test_windows_temp_git_dir_refused(self, monkeypatch, tmp_path):
+        """A git under a world-writable %SystemRoot% subdir (Windows\\Temp) is
+        NOT trusted, even though it sits under the Windows root."""
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(
+            tools_mod, "_windows_program_roots", lambda: [str(tmp_path / "Program Files")]
+        )
+        temp_git = tmp_path / "Windows" / "Temp" / "Git" / "cmd"
+        temp_git.mkdir(parents = True)
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(temp_git / "git.exe"))
+        env = _build_safe_env(str(tmp_path))
+        assert str(temp_git) not in env["PATH"].split(os.pathsep)
+
+    def test_trusted_program_dir_matches_via_realpath(self, monkeypatch, tmp_path):
+        """The trust check canonicalizes paths, so a symlinked/short alias of
+        Program Files still matches (stand-in for 8.3 PROGRA~1 on Windows)."""
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        real_prog = tmp_path / "Program Files"
+        (real_prog / "Git" / "cmd").mkdir(parents = True)
+        alias = tmp_path / "PROGRA~1"
+        try:
+            alias.symlink_to(real_prog, target_is_directory = True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink unsupported in this environment")
+        monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(real_prog)])
+        git_via_alias = alias / "Git" / "cmd" / "git.exe"
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(git_via_alias))
+        env = _build_safe_env(str(tmp_path))
+        parts = [os.path.normcase(os.path.realpath(p)) for p in env["PATH"].split(os.pathsep)]
+        assert os.path.normcase(str(real_prog / "Git" / "cmd")) in parts
+
+    def test_scan_past_untrusted_git_shim(self, monkeypatch, tmp_path):
+        """When an untrusted shim sorts first on PATH, the scan still finds a
+        later trusted Program Files git."""
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        prog = tmp_path / "Program Files"
+        trusted_git = prog / "Git" / "cmd"
+        trusted_git.mkdir(parents = True)
+        (trusted_git / "git.EXE").write_text("")  # match PATHEXT case on this FS
+        shim = tmp_path / "scoop" / "shims"
+        shim.mkdir(parents = True)
+        (shim / "git.EXE").write_text("")
+        monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(prog)])
+        # shutil.which returns the untrusted shim first.
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(shim / "git.EXE"))
+        monkeypatch.setenv("PATH", os.pathsep.join([str(shim), str(trusted_git)]))
+        monkeypatch.setenv("PATHEXT", ".EXE")
+        env = _build_safe_env(str(tmp_path))
+        parts = env["PATH"].split(os.pathsep)
+        assert str(trusted_git) in parts
+        assert str(shim) not in parts
+
+    def test_program_roots_fails_closed_without_known_folder_api(self, monkeypatch):
+        """When the known-folder API is unavailable, no roots are trusted: env
+        vars (even %SystemDrive%) are caller-overrideable, so we never derive a
+        trusted root from them."""
+        import core.inference.tools as tools_mod
+
+        # ctypes fails on this Linux host, so the API path raises and we fail
+        # closed. Any attacker override of these env vars must be irrelevant.
+        monkeypatch.setenv("ProgramFiles", r"D:\attacker-writable")
+        monkeypatch.setenv("ProgramW6432", r"D:\attacker-writable")
+        monkeypatch.setenv("SystemDrive", "D:")
+        assert tools_mod._windows_program_roots() == []
+
+    def test_augment_native_program_roots_derives_native_sibling(self):
+        """A 32-bit process only sees the x86 root; the native sibling is
+        derived by stripping the ` (x86)` suffix."""
+        import core.inference.tools as tools_mod
+
+        roots = tools_mod._augment_native_program_roots([r"C:\Program Files (x86)"])
+        lowered = [r.lower() for r in roots]
+        assert r"c:\program files (x86)" in lowered
+        assert r"c:\program files" in lowered
+
+    def test_no_default_current_directory_in_exe_path_set_on_windows(self, monkeypatch, tmp_path):
+        """cmd/CreateProcess must not search cwd for bare names in the sandbox."""
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: None)
+        env = _build_safe_env(str(tmp_path))
+        assert env["NoDefaultCurrentDirectoryInExePath"] == "1"
 
     def test_home_points_at_sandbox_workdir(self, tmp_path):
         from core.inference.tools import _build_safe_env
@@ -332,9 +543,7 @@ class TestSandboxEnvIsolation:
         env = _build_bypass_env(str(tmp_path))
         assert _SANDBOX_SITE_DIR in env["PYTHONPATH"].split(os.pathsep)
 
-    def test_bypass_env_prepends_shim_and_keeps_inherited_pythonpath(
-        self, monkeypatch, tmp_path
-    ):
+    def test_bypass_env_prepends_shim_and_keeps_inherited_pythonpath(self, monkeypatch, tmp_path):
         from core.inference.tools import _SANDBOX_SITE_DIR, _build_bypass_env
 
         monkeypatch.setenv("PYTHONPATH", "/operator/libs")
@@ -349,24 +558,24 @@ class TestSandboxCpuRlimitDefault:
     """Pin the default so a regression below 600s without opt-in is caught."""
 
     def test_default_cpu_s_is_600(self):
-        src = (_BACKEND_ROOT / "core" / "inference" / "tools.py").read_text()
+        src = (_BACKEND_ROOT / "core" / "inference" / "tools.py").read_text(encoding = "utf-8")
         assert 'UNSLOTH_STUDIO_SANDBOX_CPU_S", "600"' in src
 
     def test_clone_newnet_removed(self):
-        src = (_BACKEND_ROOT / "core" / "inference" / "tools.py").read_text()
+        src = (_BACKEND_ROOT / "core" / "inference" / "tools.py").read_text(encoding = "utf-8")
         assert "_libc.unshare(0x40000000)" not in src
         # Explanatory comment retained.
         assert "CLONE_NEWNET" in src
 
     def test_nofile_env_tunable(self):
-        src = (_BACKEND_ROOT / "core" / "inference" / "tools.py").read_text()
+        src = (_BACKEND_ROOT / "core" / "inference" / "tools.py").read_text(encoding = "utf-8")
         # Parity with the other rlimits: must come from the env, not be hardcoded.
         assert "UNSLOTH_STUDIO_SANDBOX_NOFILE" in src
 
 
 class TestMaxBodyDefault:
     def test_default_is_500_mb(self):
-        src = (_BACKEND_ROOT / "utils" / "upload_limits.py").read_text()
+        src = (_BACKEND_ROOT / "utils" / "upload_limits.py").read_text(encoding = "utf-8")
         assert "DEFAULT_UPLOAD_LIMIT_MB = 500" in src
         assert "UNSLOTH_STUDIO_MAX_BODY_MB" in src
 
@@ -484,6 +693,51 @@ class TestBashBlocklistPosition:
     def test_while_do_blocked(self):
         assert "curl" in self._find()("while true; do curl --version; break; done")
 
+    # ---- `.` is the POSIX synonym for the blocked `source` builtin ----
+    def test_dot_source_blocked(self):
+        assert "." in self._find()(". ./script.sh")
+        assert "." in self._find()("cat x && . ./payload")
+
+    def test_dot_in_argument_position_allowed(self):
+        assert self._find()("find . -type f") == set()
+        assert self._find()("ls .") == set()
+        assert self._find()("cd .") == set()
+
+    # ---- ANSI-C quoting must not hide a blocked command name ----
+    def test_ansi_c_quoted_command_blocked(self):
+        assert "ssh" in self._find()("$'ssh' user@host")
+        assert "source" in self._find()("$'source' ./payload")
+
+    def test_ansi_c_data_with_newline_is_not_a_command(self):
+        # $'...' expands to a single word, so a newline inside it is data for
+        # printf, not a separator that starts a second command.
+        payload = "printf '%s' $'hello\\n" + "rm" + " -rf x\\n'"
+        assert self._find()(payload) == set()
+
+    def test_command_position_glob_matches_blocked_name(self):
+        # Bash expands the pattern to the blocked name after this scan runs.
+        assert "rm" in self._find()("/bin/r[m] -rf /tmp/victim")
+        assert "rm" in self._find()("/bin/r? -rf /tmp/victim")
+
+    def test_glob_without_literal_character_allowed(self):
+        # A bracket expression in argument position is not a command word.
+        assert self._find()("echo '[a]'") == set()
+
+    def test_attached_exec_flag_value_blocked(self):
+        # fd accepts the command attached to the flag, so the value is what runs.
+        assert "rm" in self._find()("fd victim . --exec=rm")
+        assert "rm" in self._find()("fd victim . --exec-batch=rm")
+
+    def test_short_flag_neighbour_not_read_as_command(self):
+        # Only the long spellings carry an attached command; -x belongs to too
+        # many other utilities to read its neighbour as one.
+        assert self._find()("grep -x rm file.txt") == set()
+
+    def test_alias_body_scanned_as_command(self):
+        # `alias zap='rm -rf'` stores a command bash runs when zap is invoked.
+        assert "rm" in self._find()("alias zap='rm -rf'")
+        assert self._find()("alias ll='ls -la'") == set()
+
 
 class TestHfUploadImportGate:
     """Upload-method blocking requires an HF import in scope, so paramiko /
@@ -528,15 +782,11 @@ class TestHfUploadImportGate:
 
     def test_hf_bare_name_upload_folder_safe_allowed(self):
         _ok(
-            "from huggingface_hub import upload_folder;"
-            " upload_folder(folder_path='x', repo_id='r')"
+            "from huggingface_hub import upload_folder; upload_folder(folder_path='x', repo_id='r')"
         )
 
     def test_hf_bare_name_create_commit_safe_allowed(self):
-        _ok(
-            "from huggingface_hub import create_commit;"
-            " create_commit(operations=[], repo_id='r')"
-        )
+        _ok("from huggingface_hub import create_commit; create_commit(operations=[], repo_id='r')")
 
     def test_bare_name_upload_file_without_hf_import_allowed(self):
         # No HF import -- local helper named upload_file passes.

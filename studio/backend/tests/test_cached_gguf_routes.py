@@ -66,9 +66,246 @@ def test_iter_gguf_paths_matches_extension_case_insensitively(tmp_path):
     assert result == ["Q4_K_M.gguf", "Q8_0.GGUF"]
 
 
-def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(
-    monkeypatch, tmp_path
-):
+def test_legacy_hf_scan_uses_snapshot_path_for_inactive_cache(tmp_path):
+    repo = tmp_path / "models--Org--Model"
+    snapshot = repo / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+
+    [row] = models_route._scan_hf_cache(tmp_path, active_cache = False)
+
+    assert row.model_id == "Org/Model"
+    assert row.id == str(snapshot.resolve())
+    assert row.path == str(snapshot.resolve())
+
+
+def test_collect_local_models_scans_previous_cache(monkeypatch, tmp_path):
+    active = tmp_path / "active"
+    previous = tmp_path / "previous"
+    active.mkdir()
+    snapshot = previous / "models--Org--Previous" / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+    monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
+    monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
+    monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: [])
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active, previous])
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+
+    rows = models_route.collect_local_models(tmp_path / "models")
+
+    previous_row = next(row for row in rows if row.model_id == "Org/Previous")
+    assert previous_row.id == str(snapshot.resolve())
+
+
+def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_path):
+    active = tmp_path / "active"
+    previous = tmp_path / "previous"
+    active_partial = active / "models--Org--Model" / "blobs" / "abc.incomplete"
+    active_partial.parent.mkdir(parents = True)
+    active_partial.write_bytes(b"partial")
+    snapshot = previous / "models--Org--Model" / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+    (snapshot / "model.safetensors").write_bytes(b"complete")
+
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+    monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
+    monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
+    monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: [])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.known_hf_hub_caches",
+        lambda: [active, previous],
+    )
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+
+    rows = models_route.collect_local_models(tmp_path / "models")
+
+    [row] = [row for row in rows if row.model_id == "Org/Model"]
+    assert row.id == str(snapshot.resolve())
+    assert row.partial is False
+    assert row.active_cache is False
+
+
+def test_list_cached_gguf_reports_snapshot_load_id_for_inactive_cache(monkeypatch, tmp_path):
+    """Only a repo outside the active cache needs a snapshot load_id."""
+    active = tmp_path / "active"
+    snapshot = tmp_path / "legacy" / "models--Org--Away" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "Q4_K_M.gguf").write_bytes(b"\0")
+    away = _repo(
+        "Org/Away",
+        [],
+        tmp_path / "legacy" / "models--Org--Away",
+        revisions = [
+            SimpleNamespace(files = [_file("Q4_K_M.gguf", 5_000)], snapshot_path = snapshot),
+        ],
+    )
+    here = _repo("Org/Here", [_file("Q4_K_M.gguf", 6_000)], active / "models--Org--Here")
+
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [away, here])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = {
+        c["repo_id"]: c
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+    }
+
+    assert rows["Org/Away"]["load_id"] == str(snapshot)
+    assert "load_id" not in rows["Org/Here"]
+
+
+def test_list_cached_gguf_load_id_follows_snapshot_dir_mtime(monkeypatch, tmp_path):
+    """Pick the snapshot variant discovery reads: newest directory, not newest blob."""
+    import os
+
+    active = tmp_path / "active"
+    repo_dir = tmp_path / "legacy" / "models--Org--Multi"
+    older, newer = repo_dir / "snapshots" / "rev-a", repo_dir / "snapshots" / "rev-b"
+    for path in (older, newer):
+        path.mkdir(parents = True)
+    (older / "Q4_K_M.gguf").write_bytes(b"\0")
+    (newer / "Q8_0.gguf").write_bytes(b"\0")
+    os.utime(older, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    repo = _repo(
+        "Org/Multi",
+        [],
+        repo_dir,
+        revisions = [
+            # The older directory holds the newer blob, which is what diverges.
+            SimpleNamespace(
+                files = [_file("Q4_K_M.gguf", 5_000, blob_path = "b1")], snapshot_path = older
+            ),
+            SimpleNamespace(files = [_file("Q8_0.gguf", 6_000, blob_path = "b2")], snapshot_path = newer),
+        ],
+    )
+
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+    monkeypatch.setattr(
+        models_route, "_blob_mtime", lambda f: 9_000 if f.blob_path == "b1" else 1.0
+    )
+
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+
+    assert rows[0]["load_id"] == str(newer)
+
+
+def test_list_cached_gguf_load_id_skips_partial_split_snapshot(monkeypatch, tmp_path):
+    """A half-downloaded split quant must not beat an older snapshot that can load."""
+    import os
+
+    active = tmp_path / "active"
+    repo_dir = tmp_path / "legacy" / "models--Org--Split"
+    older, newer = repo_dir / "snapshots" / "rev-a", repo_dir / "snapshots" / "rev-b"
+    for path in (older, newer):
+        path.mkdir(parents = True)
+    (older / "Model-Q8_0.gguf").write_bytes(b"\0")
+    # Only part 1 of 3 landed before the download was interrupted.
+    (newer / "Model-Q4_K_M-00001-of-00003.gguf").write_bytes(b"\0")
+    os.utime(older, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    repo = _repo(
+        "Org/Split",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(files = [_file("Model-Q8_0.gguf", 5_000)], snapshot_path = older),
+            SimpleNamespace(
+                files = [_file("Model-Q4_K_M-00001-of-00003.gguf", 6_000)], snapshot_path = newer
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+
+    assert rows[0]["load_id"] == str(older)
+
+
+def test_list_cached_gguf_omits_load_id_when_no_snapshot_is_complete(monkeypatch, tmp_path):
+    """With only a half-downloaded split quant, fall back to the repo id, not a path."""
+    active = tmp_path / "active"
+    repo_dir = tmp_path / "legacy" / "models--Org--Torn"
+    snapshot = repo_dir / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "Model-Q4_K_M-00001-of-00003.gguf").write_bytes(b"\0")
+
+    repo = _repo(
+        "Org/Torn",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(
+                files = [_file("Model-Q4_K_M-00001-of-00003.gguf", 6_000)], snapshot_path = snapshot
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+
+    assert "load_id" not in rows[0]
+
+
+def test_list_cached_gguf_skips_snapshot_with_one_incomplete_variant(monkeypatch, tmp_path):
+    """A good quant beside a half-downloaded one is still not a safe load target."""
+    import os
+
+    active = tmp_path / "active"
+    repo_dir = tmp_path / "legacy" / "models--Org--Mixed"
+    older, newer = repo_dir / "snapshots" / "rev-a", repo_dir / "snapshots" / "rev-b"
+    for path in (older, newer):
+        path.mkdir(parents = True)
+    (older / "Model-Q8_0.gguf").write_bytes(b"\0")
+    # rev-b has a complete Q8_0 AND a half-downloaded split Q4_K_M. The picker
+    # enumerates the whole directory, so it would offer the broken one.
+    (newer / "Model-Q8_0.gguf").write_bytes(b"\0")
+    (newer / "Model-Q4_K_M-00001-of-00003.gguf").write_bytes(b"\0")
+    os.utime(older, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    repo = _repo(
+        "Org/Mixed",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(files = [_file("Model-Q8_0.gguf", 5_000)], snapshot_path = older),
+            SimpleNamespace(
+                files = [
+                    _file("Model-Q8_0.gguf", 5_000),
+                    _file("Model-Q4_K_M-00001-of-00003.gguf", 6_000),
+                ],
+                snapshot_path = newer,
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+
+    assert rows[0]["load_id"] == str(older)
+
+
+def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(monkeypatch, tmp_path):
     repo = _repo(
         "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",
         [_file("Q4_K_M.gguf", 5_000), _file("README.md", 10)],
@@ -133,6 +370,72 @@ def test_is_hidden_model_hides_validation_probe_everywhere():
     assert not models_route._is_hidden_model("user/stories260K-finetune-GGUF")
 
 
+def test_is_hidden_model_hides_dictation_models(tmp_path):
+    assert models_route._is_hidden_model("unsloth/whisper-tiny")
+    assert models_route._is_hidden_model("unsloth/whisper-base")
+    assert models_route._is_hidden_model("unsloth/whisper-small")
+    assert models_route._is_hidden_model("unsloth/whisper-large-v3-turbo")
+    assert models_route._is_hidden_model(
+        "/hf/models--unsloth--whisper-large-v3/snapshots/abc/model.safetensors"
+    )
+    assert not models_route._is_hidden_model("user/whisper-finetune")
+    assert not models_route._is_hidden_model(
+        "C:\\cache\\models--unsloth--whisper-small-finetune\\model.safetensors"
+    )
+    custom = tmp_path / "custom-whisper"
+    custom.mkdir()
+    (custom / "config.json").write_text(
+        '{"model_type": "whisper", "architectures": ["WhisperForConditionalGeneration"]}'
+    )
+    (custom / "model.safetensors").write_bytes(b"weights")
+    assert models_route._is_hidden_model(
+        "user/custom-checkpoint",
+        str(custom / "model.safetensors"),
+    )
+    named_only = tmp_path / "whisper-finetune"
+    named_only.mkdir()
+    (named_only / "config.json").write_text('{"model_type": "llama"}')
+    assert not models_route._is_hidden_model("user/whisper-finetune", str(named_only))
+
+
+def test_list_cached_models_hides_custom_whisper_by_config(monkeypatch, tmp_path):
+    # Regression: the legacy /cached-models picker must pass the snapshot path so
+    # the config check hides a custom (non-curated) Whisper checkpoint; a bare
+    # repo id cannot ("user/whisper-finetune" is not in the curated set).
+    repo_path = tmp_path / "models--user--whisper-finetune"
+    snap = repo_path / "snapshots" / "abc"
+    snap.mkdir(parents = True)
+    (snap / "config.json").write_text(
+        '{"model_type": "whisper", "architectures": ["WhisperForConditionalGeneration"]}'
+    )
+    (snap / "model.safetensors").write_bytes(b"weights")
+
+    captured: list = []
+    real_hidden = models_route._is_hidden_model
+
+    def spy(*values):
+        captured.append(values)
+        return real_hidden(*values)
+
+    monkeypatch.setattr(models_route, "_is_hidden_model", spy)
+    repo = _repo(
+        "user/whisper-finetune",
+        [SimpleNamespace(file_name = "model.safetensors", size_on_disk = 10)],
+        repo_path,
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+
+    result = asyncio.run(
+        models_route.list_cached_models(current_subject = "test-user", hf_token = None)
+    )
+    # The route passed the snapshot path (not just the repo id) ...
+    assert any(str(repo_path) in values for values in captured)
+    # ... so the custom Whisper checkpoint is hidden from the chat picker.
+    assert result["cached"] == []
+
+
 def test_is_hidden_model_matches_repo_ids_exactly(monkeypatch):
     """A custom embedder with a generic basename is hidden by EXACT repo-id
     match only, so unrelated cached repos that merely contain the basename stay
@@ -168,9 +471,7 @@ def test_is_hidden_model_matches_repo_derived_local_paths(monkeypatch):
         r"C:\Users\u\.cache\huggingface\hub\models--org--model-GGUF\snapshots\abc"
     )
     assert models_route._is_hidden_model("/lm-studio/org/model-GGUF/model-Q8_0.gguf")
-    assert not models_route._is_hidden_model(
-        "/lm-studio/user/model-chat/model-Q8_0.gguf"
-    )
+    assert not models_route._is_hidden_model("/lm-studio/user/model-chat/model-Q8_0.gguf")
     assert not models_route._is_hidden_model("/cache/models--org--model-instruct")
 
 
@@ -181,9 +482,7 @@ def test_is_hidden_model_prefers_existing_relative_path(monkeypatch, tmp_path):
     embedder = tmp_path / "models" / "embedder"
     embedder.mkdir(parents = True)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        rag_config, "effective_embedding_model", lambda: "models/embedder"
-    )
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "models/embedder")
     monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/embedder-GGUF")
 
     assert models_route._is_hidden_model(str(embedder))
@@ -287,9 +586,7 @@ def test_list_cached_gguf_hides_llama_validation_probe(monkeypatch, tmp_path):
         tmp_path / "models--unsloth--gemma-3-270m-it-GGUF",
     )
     monkeypatch.setattr(
-        models_route,
-        "_all_hf_cache_scans",
-        lambda: [SimpleNamespace(repos = [probe, real])],
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [probe, real])]
     )
 
     result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
@@ -319,9 +616,7 @@ def test_list_cached_gguf_skips_repos_without_positive_gguf_size(monkeypatch, tm
     assert result["cached"] == []
 
 
-def test_list_cached_gguf_keeps_largest_duplicate_repo_across_scans(
-    monkeypatch, tmp_path
-):
+def test_list_cached_gguf_keeps_largest_duplicate_repo_across_scans(monkeypatch, tmp_path):
     smaller = _repo(
         "Org/Dupe",
         [_file("Q4_K_M.gguf", 2_000)],
@@ -384,9 +679,7 @@ def test_list_cached_gguf_dedupes_shared_blobs_across_revisions(monkeypatch, tmp
     ]
 
 
-def test_list_cached_models_skips_non_suffix_repo_when_gguf_files_exist(
-    monkeypatch, tmp_path
-):
+def test_list_cached_models_skips_non_suffix_repo_when_gguf_files_exist(monkeypatch, tmp_path):
     mixed = _repo(
         "Org/MixedRepo",
         [
@@ -407,9 +700,7 @@ def test_list_cached_models_skips_non_suffix_repo_when_gguf_files_exist(
     assert result["cached"] == []
 
 
-def test_list_cached_gguf_includes_mixed_repo_with_gguf_and_safetensors(
-    monkeypatch, tmp_path
-):
+def test_list_cached_gguf_includes_mixed_repo_with_gguf_and_safetensors(monkeypatch, tmp_path):
     """Mixed repo still surfaces in cached-gguf as a GGUF download."""
     mixed = _repo(
         "Org/MixedRepo",
@@ -465,9 +756,7 @@ def test_list_cached_gguf_handles_none_size_on_disk(monkeypatch, tmp_path):
     ]
 
 
-def test_list_cached_gguf_skips_malformed_repo_without_wiping_response(
-    monkeypatch, tmp_path
-):
+def test_list_cached_gguf_skips_malformed_repo_without_wiping_response(monkeypatch, tmp_path):
     """One repo raising during classification must not poison the response."""
 
     class _ExplodingRepo:
@@ -549,9 +838,7 @@ def test_list_cached_models_includes_repo_with_only_mmproj_gguf(monkeypatch, tmp
     assert result["cached"] == [{"repo_id": "Org/MmprojAux", "size_bytes": 15_000}]
 
 
-def test_list_cached_gguf_includes_vision_repo_with_main_gguf_and_mmproj(
-    monkeypatch, tmp_path
-):
+def test_list_cached_gguf_includes_vision_repo_with_main_gguf_and_mmproj(monkeypatch, tmp_path):
     """A vision GGUF repo (main weight + mmproj) is a GGUF repo; reported size
     is the main weight only, since mmproj is filtered at classification."""
     vision_repo = _repo(
@@ -591,33 +878,14 @@ def _gfile(name: str, size: int, mtime: float) -> SimpleNamespace:
     )
 
 
-def test_all_hf_cache_scans_survives_inaccessible_aux_cache(monkeypatch, tmp_path):
-    """An unreadable auxiliary cache (e.g. an inaccessible
-    ``~/.cache/huggingface/hub``) must be skipped, not abort the scan.
-    Regression guard for ``extra.is_dir()`` raising and wiping the response.
-    """
-    import huggingface_hub
-    import utils.paths as paths_mod
+def test_all_hf_cache_scans_uses_shared_inventory(monkeypatch, tmp_path):
+    from hub.utils import inventory_scan
 
     active = SimpleNamespace(
         repos = [_repo("Org/Active", [_file("Q4_K_M.gguf", 5_000)], tmp_path / "active")]
     )
 
-    def _fake_scan(cache_dir = None):
-        if cache_dir is None:
-            return active
-        raise AssertionError("auxiliary scan should have been skipped")
-
-    class _Boom:
-        def is_dir(self):
-            raise PermissionError(13, "Permission denied")
-
-        def resolve(self):
-            raise PermissionError(13, "Permission denied")
-
-    monkeypatch.setattr(huggingface_hub, "scan_cache_dir", _fake_scan)
-    monkeypatch.setattr(paths_mod, "legacy_hf_cache_dir", lambda: _Boom())
-    monkeypatch.setattr(paths_mod, "hf_default_cache_dir", lambda: _Boom())
+    monkeypatch.setattr(inventory_scan, "all_hf_cache_scans", lambda: [active])
 
     scans = models_route._all_hf_cache_scans()
     assert scans == [active]
@@ -635,9 +903,7 @@ def test_all_hf_cache_scans_survives_inaccessible_aux_cache(monkeypatch, tmp_pat
     ]
 
 
-def test_list_cached_gguf_sorts_newest_first_grouping_by_latest_quant(
-    monkeypatch, tmp_path
-):
+def test_list_cached_gguf_sorts_newest_first_grouping_by_latest_quant(monkeypatch, tmp_path):
     """Downloaded is ordered newest-first, and a multi-quant repo is placed by
     its most recently downloaded quant (``last_modified`` = newest quant)."""
     older = _repo(
@@ -670,20 +936,13 @@ def test_list_cached_gguf_sorts_newest_first_grouping_by_latest_quant(
 def test_list_cached_gguf_dedupe_keeps_newest_timestamp(monkeypatch, tmp_path):
     """Same repo in two caches with equal size keeps the newest last_modified,
     regardless of scan order."""
-    older = _repo(
-        "org/dupe", [_gfile("dupe-Q4_K_M.gguf", 5_000, 1_000.0)], tmp_path / "a"
-    )
-    newer = _repo(
-        "org/dupe", [_gfile("dupe-Q4_K_M.gguf", 5_000, 9_000.0)], tmp_path / "b"
-    )
+    older = _repo("org/dupe", [_gfile("dupe-Q4_K_M.gguf", 5_000, 1_000.0)], tmp_path / "a")
+    newer = _repo("org/dupe", [_gfile("dupe-Q4_K_M.gguf", 5_000, 9_000.0)], tmp_path / "b")
     for scans in ([older, newer], [newer, older]):  # both orders
         monkeypatch.setattr(
             models_route,
             "_all_hf_cache_scans",
-            lambda s = scans: [
-                SimpleNamespace(repos = [s[0]]),
-                SimpleNamespace(repos = [s[1]]),
-            ],
+            lambda s = scans: [SimpleNamespace(repos = [s[0]]), SimpleNamespace(repos = [s[1]])],
         )
         result = asyncio.run(models_route.list_cached_gguf(current_subject = "t"))
         assert len(result["cached"]) == 1
@@ -713,15 +972,17 @@ def test_gguf_variants_mmproj_does_not_mark_quant_downloaded(monkeypatch, tmp_pa
         "list_gguf_variants",
         lambda repo_id, hf_token = None: (variants, True, []),
     )
-    monkeypatch.setattr(GV, "_local_main_gguf_blobs_by_quant", lambda _repo_id: {})
+    monkeypatch.setattr(
+        GV,
+        "_local_main_gguf_blobs_by_quant",
+        lambda _repo_id, repo_cache_dir = None: {},
+    )
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
     snap.mkdir(parents = True)
-    (snap / "model-Q4_K_M.gguf").write_bytes(
-        b"x" * 10_000
-    )  # real weight, fully present
+    (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 10_000)  # real weight, fully present
     (snap / "mmproj-F16.gguf").write_bytes(b"y" * 20_000)  # mmproj adapter, label "F16"
-    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id: [snap])
+    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id, root = None: [snap])
 
     result = asyncio.run(
         models_route.get_gguf_variants(
@@ -732,6 +993,52 @@ def test_gguf_variants_mmproj_does_not_mark_quant_downloaded(monkeypatch, tmp_pa
     flags = {v.quant: v.downloaded for v in result.variants}
     assert flags["Q4_K_M"] is True
     assert flags["F16"] is False
+
+
+def test_gguf_variants_route_scopes_local_probe_to_selected_cache(monkeypatch, tmp_path):
+    snapshot = tmp_path / "inactive" / "models--org--repo" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    calls = []
+
+    async def scoped_variants(repo_id, **kwargs):
+        calls.append((repo_id, kwargs))
+        return SimpleNamespace(
+            repo_id = repo_id,
+            variants = [],
+            has_vision = False,
+            default_variant = None,
+        )
+
+    context_calls = []
+    monkeypatch.setattr(GV, "get_gguf_variants_response", scoped_variants)
+    monkeypatch.setattr(
+        models_route,
+        "_read_native_context_length",
+        lambda model, *, is_local: context_calls.append((model, is_local)) or 8192,
+    )
+
+    result = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            prefer_local_cache = True,
+            local_path = str(snapshot),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+
+    assert calls == [
+        (
+            "org/repo",
+            {
+                "prefer_local_cache": True,
+                "local_path": str(snapshot),
+                "hf_token": None,
+            },
+        )
+    ]
+    assert context_calls == [(str(snapshot), True)]
+    assert result.context_length == 8192
 
 
 def test_gguf_variants_ignore_big_endian_siblings(monkeypatch, tmp_path):
@@ -755,12 +1062,16 @@ def test_gguf_variants_ignore_big_endian_siblings(monkeypatch, tmp_path):
             siblings,
         ),
     )
-    monkeypatch.setattr(GV, "_local_main_gguf_blobs_by_quant", lambda _repo_id: {})
+    monkeypatch.setattr(
+        GV,
+        "_local_main_gguf_blobs_by_quant",
+        lambda _repo_id, repo_cache_dir = None: {},
+    )
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
     snap.mkdir(parents = True)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 10)
-    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id: [snap])
+    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id, root = None: [snap])
 
     result = asyncio.run(
         models_route.get_gguf_variants(
@@ -768,14 +1079,12 @@ def test_gguf_variants_ignore_big_endian_siblings(monkeypatch, tmp_path):
         )
     )
 
-    assert [
-        (v.quant, v.filename, v.size_bytes, v.downloaded) for v in result.variants
-    ] == [("Q4_K_M", "model-Q4_K_M.gguf", 10, True)]
+    assert [(v.quant, v.filename, v.size_bytes, v.downloaded) for v in result.variants] == [
+        ("Q4_K_M", "model-Q4_K_M.gguf", 10, True)
+    ]
 
 
-def test_gguf_variants_cached_big_endian_does_not_satisfy_variant(
-    monkeypatch, tmp_path
-):
+def test_gguf_variants_cached_big_endian_does_not_satisfy_variant(monkeypatch, tmp_path):
     variants = [
         SimpleNamespace(
             filename = "model-Q4_K_M.gguf",
@@ -789,12 +1098,16 @@ def test_gguf_variants_cached_big_endian_does_not_satisfy_variant(
         "list_gguf_variants",
         lambda repo_id, hf_token = None: (variants, False, []),
     )
-    monkeypatch.setattr(GV, "_local_main_gguf_blobs_by_quant", lambda _repo_id: {})
+    monkeypatch.setattr(
+        GV,
+        "_local_main_gguf_blobs_by_quant",
+        lambda _repo_id, repo_cache_dir = None: {},
+    )
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
     snap.mkdir(parents = True)
     (snap / "model-Q4_K_M-be.gguf").write_bytes(b"x" * 10)
-    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id: [snap])
+    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id, root = None: [snap])
 
     result = asyncio.run(
         models_route.get_gguf_variants(
@@ -805,66 +1118,82 @@ def test_gguf_variants_cached_big_endian_does_not_satisfy_variant(
     assert result.variants[0].downloaded is False
 
 
-def test_gguf_download_progress_excludes_mmproj(monkeypatch, tmp_path):
-    """A cached mmproj adapter must not count toward a same-label main
-    variant's download progress (mmproj-F16 vs an F16 weight)."""
-    import huggingface_hub.constants as hf_constants
+def test_legacy_gguf_progress_delegates_to_shared_service(monkeypatch):
+    calls = []
 
-    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
-    snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
-    snap.mkdir(parents = True)
-    (snap / "mmproj-F16.gguf").write_bytes(b"y" * 20_000)  # only the adapter on disk
+    async def shared(repo_id, *, variant, expected_bytes, hf_token):
+        calls.append((repo_id, variant, expected_bytes, hf_token))
+        return {"downloaded_bytes": 10, "expected_bytes": 20, "progress": 0.5}
 
-    result = asyncio.run(
-        models_route.get_gguf_download_progress(
-            repo_id = "org/repo",
-            variant = "F16",
-            expected_bytes = 20_000,
-            current_subject = "test-user",
-        )
+    monkeypatch.setattr(
+        "hub.services.models.downloads.get_gguf_download_progress_response",
+        shared,
     )
-
-    assert result["downloaded_bytes"] == 0
-    assert result["progress"] == 0
-
-
-def test_gguf_download_progress_excludes_big_endian_sibling(monkeypatch, tmp_path):
-    import huggingface_hub.constants as hf_constants
-
-    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
-    snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
-    snap.mkdir(parents = True)
-    (snap / "model-Q4_K_M-be.gguf").write_bytes(b"y" * 20_000)
 
     result = asyncio.run(
         models_route.get_gguf_download_progress(
             repo_id = "org/repo",
             variant = "Q4_K_M",
-            expected_bytes = 20_000,
+            expected_bytes = 20,
+            hf_token = "token",
             current_subject = "test-user",
         )
     )
 
-    assert result["downloaded_bytes"] == 0
-    assert result["progress"] == 0
+    assert result["progress"] == 0.5
+    assert calls == [("org/repo", "Q4_K_M", 20, "token")]
 
 
-def test_gguf_download_progress_counts_quant_subdir(monkeypatch, tmp_path):
-    import huggingface_hub.constants as hf_constants
+def test_legacy_model_progress_delegates_to_shared_service(monkeypatch):
+    calls = []
 
-    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
-    snap = tmp_path / "models--org--repo" / "snapshots" / "rev" / "Q4_K_M"
-    snap.mkdir(parents = True)
-    (snap / "foo.gguf").write_bytes(b"x" * 20_000)
+    async def shared(repo_id, *, hf_token):
+        calls.append((repo_id, hf_token))
+        return {"downloaded_bytes": 10, "expected_bytes": 20, "progress": 0.5}
+
+    monkeypatch.setattr(
+        "hub.services.models.downloads.get_download_progress_response",
+        shared,
+    )
 
     result = asyncio.run(
-        models_route.get_gguf_download_progress(
+        models_route.get_download_progress(
             repo_id = "org/repo",
-            variant = "Q4_K_M",
-            expected_bytes = 20_000,
+            hf_token = "token",
             current_subject = "test-user",
         )
     )
 
-    assert result["downloaded_bytes"] == 20_000
-    assert result["progress"] == 1.0
+    assert result["progress"] == 0.5
+    assert calls == [("org/repo", "token")]
+
+
+def test_legacy_delete_delegates_to_shared_service(monkeypatch):
+    calls = []
+
+    async def shared(
+        repo_id,
+        variant,
+        hf_token,
+        cache_path = None,
+    ):
+        calls.append((repo_id, variant, hf_token, cache_path))
+        return {"status": "deleted", "repo_id": repo_id}
+
+    monkeypatch.setattr(
+        "hub.services.models.deletion.delete_cached_model_response",
+        shared,
+    )
+
+    result = asyncio.run(
+        models_route.delete_cached_model(
+            repo_id = "org/repo",
+            variant = None,
+            cache_path = "/data/hf/hub",
+            hf_token = "token",
+            current_subject = "test-user",
+        )
+    )
+
+    assert result == {"status": "deleted", "repo_id": "org/repo"}
+    assert calls == [("org/repo", None, "token", "/data/hf/hub")]

@@ -142,7 +142,7 @@ export function UpdateBanner({
                     </span>
                   </p>
                 )}
-                <p className="mt-1 text-[11px] text-muted-foreground/70">
+                <p className="mt-1 text-ui-11 text-muted-foreground/70">
                   {showFailure
                     ? "Backend recovered. Diagnostics are still available."
                     : isManualLinuxPackage
@@ -166,7 +166,7 @@ export function UpdateBanner({
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-auto rounded-full px-3 py-2 text-[13px] font-medium text-foreground"
+                    className="h-auto rounded-full px-3 py-2 text-ui-13 font-medium text-foreground"
                     onClick={() => {
                       handleCopyDiagnostics().catch(console.error);
                     }}
@@ -176,14 +176,14 @@ export function UpdateBanner({
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-auto rounded-full px-3 py-2 text-[13px] font-medium text-foreground"
+                    className="h-auto rounded-full px-3 py-2 text-ui-13 font-medium text-foreground"
                     onClick={onDismiss}
                   >
                     Later
                   </Button>
                   <Button
                     size="sm"
-                    className="-mr-1 h-auto rounded-full px-3.5 py-2 text-[13px]"
+                    className="-mr-1 h-auto rounded-full px-3.5 py-2 text-ui-13"
                     onClick={onInstall}
                     disabled={installDisabled}
                   >
@@ -195,14 +195,14 @@ export function UpdateBanner({
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-auto rounded-full px-3 py-2 text-[13px] font-medium text-foreground"
+                    className="h-auto rounded-full px-3 py-2 text-ui-13 font-medium text-foreground"
                     onClick={onDismiss}
                   >
                     Remind me later
                   </Button>
                   <Button
                     size="sm"
-                    className="-mr-1 h-auto rounded-full px-3.5 py-2 text-[13px]"
+                    className="-mr-1 h-auto rounded-full px-3.5 py-2 text-ui-13"
                     onClick={onInstall}
                     disabled={installDisabled}
                   >
@@ -219,7 +219,7 @@ export function UpdateBanner({
                 readOnly={true}
                 value={manualReport}
                 onFocus={(event) => event.currentTarget.select()}
-                className="mt-2 h-28 w-full resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-[10px] text-muted-foreground"
+                className="mt-2 h-28 w-full resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
               />
             )}
           </div>

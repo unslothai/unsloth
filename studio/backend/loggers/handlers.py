@@ -8,12 +8,19 @@ filter_sensitive_data (structlog processor for sanitization), and
 get_logger (factory for structured loggers).
 """
 
+from __future__ import annotations
+
 import os
 import re
 import time
+from typing import TYPE_CHECKING
 
 import structlog
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+# Annotations only: importing at runtime would make the ASGI stack a hard
+# dependency of every CLI command.
+if TYPE_CHECKING:
+    from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from utils.native_path_leases import redact_native_paths
 
@@ -130,9 +137,7 @@ class LoggingMiddleware:
         heartbeat. Stamps only on emit, so steady polls still log."""
         if method != "GET" or not (200 <= status_code < 300):
             return False
-        window_ms = (
-            _QUIET_POLL_DEDUP_MS if path in _QUIET_POLL_PATHS else _ACCESS_LOG_DEDUP_MS
-        )
+        window_ms = _QUIET_POLL_DEDUP_MS if path in _QUIET_POLL_PATHS else _ACCESS_LOG_DEDUP_MS
         if window_ms <= 0:
             return False
         key = (method, path, query, status_code)
@@ -188,11 +193,7 @@ class LoggingMiddleware:
                     scope["method"], path, status_code, not self._auth_refreshed
                 )
                 and not self._is_redundant_repeat(
-                    scope["method"],
-                    path,
-                    scope.get("query_string", b""),
-                    status_code,
-                    end_time,
+                    scope["method"], path, scope.get("query_string", b""), status_code, end_time
                 )
             ):
                 logger.info(

@@ -60,6 +60,7 @@ from utils.embedding_model_settings import (
     set_rag_embedding_model,
     validate_embedding_model,
 )
+from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
 
 router = APIRouter()
 
@@ -87,6 +88,23 @@ class HelperPrecacheResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_HELPER_PRECACHE_ENABLED
     disabled_by_env: bool
+
+
+class HuggingFaceCachePayload(BaseModel):
+    cache_home: Optional[str] = Field(default = None, max_length = 4096)
+
+
+class HuggingFaceCacheResponse(BaseModel):
+    cache_home: str
+    hub_cache: str
+    xet_cache: str
+    source: Literal["default", "studio", "environment"]
+    editable: bool
+    is_custom: bool
+    available: bool
+    writable: bool
+    free_bytes: Optional[int] = None
+    environment_variable: Optional[str] = None
 
 
 class OpenAIAutoSwitchPayload(BaseModel):
@@ -135,10 +153,32 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
     )
 
 
-@router.get("/upload-limit", response_model = UploadLimitResponse)
-def get_upload_limit(
+def _hugging_face_cache_response() -> HuggingFaceCacheResponse:
+    return HuggingFaceCacheResponse(**cache_status(get_hf_cache_paths()))
+
+
+@router.get("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
+def get_hugging_face_cache(
     current_subject: str = Depends(get_current_subject),
-) -> UploadLimitResponse:
+) -> HuggingFaceCacheResponse:
+    return _hugging_face_cache_response()
+
+
+@router.put("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
+def update_hugging_face_cache(
+    payload: HuggingFaceCachePayload, current_subject: str = Depends(get_current_subject)
+) -> HuggingFaceCacheResponse:
+    try:
+        set_hf_cache_home(payload.cache_home)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return _hugging_face_cache_response()
+
+
+@router.get("/upload-limit", response_model = UploadLimitResponse)
+def get_upload_limit(current_subject: str = Depends(get_current_subject)) -> UploadLimitResponse:
     return _upload_limit_response(get_upload_limit_mb())
 
 
@@ -192,9 +232,7 @@ class CodingAgentsResponse(BaseModel):
 
 
 @router.get("/coding-agents", response_model = CodingAgentsResponse)
-def get_coding_agents(
-    current_subject: str = Depends(get_current_subject),
-) -> CodingAgentsResponse:
+def get_coding_agents(current_subject: str = Depends(get_current_subject)) -> CodingAgentsResponse:
     return CodingAgentsResponse(detected = detect_installed_coding_agents())
 
 
@@ -212,14 +250,11 @@ def get_openai_auto_switch(
 
 @router.put("/openai-auto-switch", response_model = OpenAIAutoSwitchResponse)
 def update_openai_auto_switch(
-    payload: OpenAIAutoSwitchPayload,
-    current_subject: str = Depends(get_current_subject),
+    payload: OpenAIAutoSwitchPayload, current_subject: str = Depends(get_current_subject)
 ) -> OpenAIAutoSwitchResponse:
     try:
         enabled, idle_seconds, keep_kv = set_openai_auto_switch(
-            payload.enabled,
-            payload.auto_unload_idle_seconds,
-            payload.auto_unload_keep_kv,
+            payload.enabled, payload.auto_unload_idle_seconds, payload.auto_unload_keep_kv
         )
     except ValueError as exc:
         raise log_and_http_error(
@@ -273,9 +308,7 @@ def update_openai_auto_switch_override(
 
 
 class EmbeddingModelPayload(BaseModel):
-    embedding_model: str = Field(
-        ..., min_length = 1, max_length = MAX_EMBEDDING_MODEL_LENGTH
-    )
+    embedding_model: str = Field(..., min_length = 1, max_length = MAX_EMBEDDING_MODEL_LENGTH)
     # Token for gated/private repos during verification (not stored).
     hf_token: Optional[str] = Field(default = None, max_length = 512)
     # Skip HF verification (offline installs, local paths HF can't see).
@@ -385,9 +418,7 @@ def _hf_gguf_backend_error(model: str, hf_token: Optional[str]) -> str | None:
             files = list_repo_files(candidate, token = hf_token)
         except Exception:  # noqa: BLE001 - missing/gated repo: try next candidate
             continue
-        if any(
-            f.lower().endswith(".gguf") and "mmproj" not in f.lower() for f in files
-        ):
+        if any(f.lower().endswith(".gguf") and "mmproj" not in f.lower() for f in files):
             return None
     checked = " or ".join(repr(c) for c in candidates)
     return (
@@ -427,6 +458,11 @@ def update_embedding_model(
             log = logger,
         ) from exc
     hf_token = (payload.hf_token or "").strip() or None
+    from utils.utils import hf_env_offline
+
+    # Offline, both the Hub malware scan and the is-embedding check are unreachable and degrade
+    # to the local cache below; capture the state once.
+    local_only_load = hf_env_offline()
     # The env/default model needs no verification; saving it is a no-op override.
     # A local GGUF on the llama-server backend is accepted as-is: it is exactly
     # what the backend loads, and HF metadata cannot verify a local path.
@@ -437,9 +473,7 @@ def update_embedding_model(
     # wrongly reject a custom repo whose GGUF companion is clean; the GGUF availability
     # checks below cover that path instead.
     scan_st_pickle = (
-        model != default_embedding_model()
-        and not is_local_gguf
-        and not _llama_backend_active()
+        model != default_embedding_model() and not is_local_gguf and not _llama_backend_active()
     )
     if scan_st_pickle:
         # Malware/pickle gate before we persist a repo the embedder later loads with
@@ -452,28 +486,41 @@ def update_embedding_model(
         # Fall back to the loader's own token so a gated/private repo is actually scanned
         # (a token-less scan fails open for exactly the repo that would still load).
         scan_token = hf_token or _ambient_hf_token()
-        # Include the ST module dirs (0_Transformer/) so a flagged pickle directly under
-        # one blocks instead of passing as an unreferenced nested shard.
-        load_subdirs = tuple(
-            dict.fromkeys(
-                (
-                    *security_load_subdirs(model, scan_token),
-                    *_st_module_subdirs(model, scan_token),
+        # Offline: subdir probes would hit the network and hang; the offline gate walks the
+        # whole cached snapshot, so no load-subdir hints are needed.
+        if local_only_load:
+            load_subdirs = ()
+        else:
+            # Include ST module dirs (0_Transformer/) so a flagged pickle directly under one
+            # blocks instead of passing as an unreferenced nested shard.
+            load_subdirs = tuple(
+                dict.fromkeys(
+                    (
+                        *security_load_subdirs(model, scan_token),
+                        *_st_module_subdirs(model, scan_token),
+                    )
                 )
             )
-        )
         if evaluate_file_security(
-            model, hf_token = scan_token, load_subdirs = load_subdirs
+            model,
+            hf_token = scan_token,
+            load_subdirs = load_subdirs,
+            local_only_load = local_only_load,
         ).blocked:
             # 403, not 409: the client routes every 409 into the forceable "save anyway"
             # flow, but this block is a hard, non-forceable security refusal.
-            raise HTTPException(
-                status_code = 403,
+            if local_only_load:
+                detail = (
+                    f"{model!r} has cached pickle weights that cannot be security-scanned "
+                    "offline and no safetensors alternative, so it cannot be used as the "
+                    "embedding model. Re-download it with safetensors weights while online."
+                )
+            else:
                 detail = (
                     f"{model!r} is flagged as unsafe by Hugging Face's security scan and "
                     "cannot be used as the embedding model."
-                ),
-            )
+                )
+            raise HTTPException(status_code = 403, detail = detail)
     if model != default_embedding_model() and not payload.force and not is_local_gguf:
         from core.rag import config as rag_config
 
@@ -483,17 +530,28 @@ def update_embedding_model(
         # which would wrongly 409 a valid online GGUF embedder.
         gguf_named = _llama_backend_active() and rag_config._names_gguf(model)
         if not gguf_named and not is_embedding_model(model, hf_token = hf_token):
-            raise HTTPException(
-                status_code = 409,
-                detail = (
-                    f"Could not verify {model!r} as an embedding model on "
-                    "Hugging Face (it may be the wrong model type, gated, or "
-                    "you may be offline)."
-                ),
-            )
-        gguf_error = _local_gguf_backend_error(model) or _hf_gguf_backend_error(
-            model, hf_token
-        )
+            # Offline, is_embedding_model can only confirm the ST layout (modules.json); a
+            # transformers-native embedder (e.g. gte-modernbert) is unverifiable without Hub
+            # metadata. If already cached and loadable, accept it rather than raising a 409 that
+            # online would not (ST can load any cached encoder). Uncached -> 409.
+            from utils.utils import hf_cache_snapshot_is_loadable
+
+            # Require a genuinely loadable cache (config + weights), not just a resolved refs/main,
+            # so a metadata-only partial cache still gets the forceable 409.
+            offline_cached = local_only_load and hf_cache_snapshot_is_loadable(model)
+            if not offline_cached:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        f"Could not verify {model!r} as an embedding model on "
+                        "Hugging Face (it may be the wrong model type, gated, or "
+                        "you may be offline)."
+                    ),
+                )
+        # The Hub GGUF probe (list_repo_files) can hang offline; skip it. Local check stays.
+        gguf_error = _local_gguf_backend_error(model)
+        if gguf_error is None and not local_only_load:
+            gguf_error = _hf_gguf_backend_error(model, hf_token)
         if gguf_error:
             raise HTTPException(status_code = 409, detail = gguf_error)
     set_rag_embedding_model(model)
@@ -561,11 +619,7 @@ def update_preview_sharing(
             event = "settings.update_preview_sharing_failed",
             log = logger,
         ) from exc
-    logger.info(
-        "settings.preview_sharing_updated subject=%s enabled=%s",
-        current_subject,
-        enabled,
-    )
+    logger.info("settings.preview_sharing_updated subject=%s enabled=%s", current_subject, enabled)
     return PreviewSharingResponse(enabled = enabled)
 
 
@@ -597,9 +651,7 @@ class PersonalizationProfile(BaseModel):
         if not value:
             return value
         if not value.startswith("data:image/") and not _is_bundled_avatar_url(value):
-            raise ValueError(
-                "avatarDataUrl must be an image data URL or bundled avatar."
-            )
+            raise ValueError("avatarDataUrl must be an image data URL or bundled avatar.")
         return value
 
 
@@ -614,12 +666,8 @@ class PersonalizationCustomColors(BaseModel):
 class PersonalizationCustomColorModes(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
-    light: PersonalizationCustomColors = Field(
-        default_factory = PersonalizationCustomColors
-    )
-    dark: PersonalizationCustomColors = Field(
-        default_factory = PersonalizationCustomColors
-    )
+    light: PersonalizationCustomColors = Field(default_factory = PersonalizationCustomColors)
+    dark: PersonalizationCustomColors = Field(default_factory = PersonalizationCustomColors)
 
 
 MAX_IMPORTED_FONTS = 3
@@ -721,9 +769,7 @@ def _default_sidebar_menu() -> "list[PersonalizationSidebarMenuItem]":
 class PersonalizationCustomization(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
-    colors: PersonalizationCustomColorModes = Field(
-        default_factory = PersonalizationCustomColorModes
-    )
+    colors: PersonalizationCustomColorModes = Field(default_factory = PersonalizationCustomColorModes)
     uiFont: Optional[str] = Field(None, max_length = 200)
     headingFont: Optional[str] = Field(None, max_length = 200)
     chatFont: Optional[str] = Field(None, max_length = 200)
@@ -769,9 +815,7 @@ class PersonalizationCustomization(BaseModel):
         items = [item for item in value if not (item.id in seen or seen.add(item.id))]
         for item_id, visible in SIDEBAR_MENU_ITEM_DEFAULTS.items():
             if item_id not in seen:
-                items.append(
-                    PersonalizationSidebarMenuItem(id = item_id, visible = visible)
-                )
+                items.append(PersonalizationSidebarMenuItem(id = item_id, visible = visible))
         return items
 
 
@@ -791,9 +835,7 @@ class PersonalizationPayload(BaseModel):
 
     version: int = PERSONALIZATION_VERSION
     profile: PersonalizationProfile = Field(default_factory = PersonalizationProfile)
-    appearance: PersonalizationAppearance = Field(
-        default_factory = PersonalizationAppearance
-    )
+    appearance: PersonalizationAppearance = Field(default_factory = PersonalizationAppearance)
 
 
 class PersonalizationResponse(PersonalizationPayload):
@@ -814,13 +856,9 @@ def get_personalization_settings(
     response.saved = bool(stored)
     appearance = stored.get("appearance") if isinstance(stored, dict) else None
     profile = stored.get("profile") if isinstance(stored, dict) else None
-    response.customizationSaved = (
-        isinstance(appearance, dict) and "customization" in appearance
-    )
+    response.customizationSaved = isinstance(appearance, dict) and "customization" in appearance
     response.paletteSaved = isinstance(appearance, dict) and "palette" in appearance
-    response.greetingSlothSaved = (
-        isinstance(profile, dict) and "showGreetingSloth" in profile
-    )
+    response.greetingSlothSaved = isinstance(profile, dict) and "showGreetingSloth" in profile
     return response
 
 

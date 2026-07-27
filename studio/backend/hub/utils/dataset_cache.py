@@ -50,9 +50,7 @@ def _matches_label(snapshot: Path, path: Path, label: str) -> bool:
     return label in rel
 
 
-def dataset_snapshot_from_cache_path(
-    local_path: Optional[str], repo_id: str
-) -> Optional[Path]:
+def dataset_snapshot_from_cache_path(local_path: Optional[str], repo_id: str) -> Optional[Path]:
     if not local_path or not repo_id:
         return None
     try:
@@ -117,9 +115,7 @@ def cached_dataset_candidates(
 ) -> list[Path]:
     try:
         files = [
-            p
-            for p in snapshot.rglob("*")
-            if p.is_file() and p.name.lower().endswith(extensions)
+            p for p in snapshot.rglob("*") if p.is_file() and p.name.lower().endswith(extensions)
         ]
     except OSError:
         return []
@@ -131,9 +127,7 @@ def cached_dataset_candidates(
 
     def score(path: Path) -> tuple[int, int, str]:
         rel = _rel_lower(snapshot, path)
-        subset_match = bool(
-            subset_lower and _matches_label(snapshot, path, subset_lower)
-        )
+        subset_match = bool(subset_lower and _matches_label(snapshot, path, subset_lower))
         split_match = bool(split_lower and split_label_matches(rel, split_lower))
         location_rank = 3
         if split_match and (not subset_lower or subset_match):

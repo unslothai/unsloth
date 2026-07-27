@@ -5,8 +5,10 @@
 and token counting must be serialized (else threads panic "Already borrowed")."""
 
 import os
+import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -130,6 +132,35 @@ def test_token_counter_enables_parallelism_only_during_call(monkeypatch):
     assert os.environ.get("TOKENIZERS_PARALLELISM") == "false"  # restored after
 
 
+def test_sentence_transformer_load_uses_live_cache(monkeypatch, tmp_path):
+    observed = {}
+
+    class FakeSentenceTransformer:
+        def __init__(self, name, **kwargs):
+            observed["name"] = name
+            observed.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        SimpleNamespace(SentenceTransformer = FakeSentenceTransformer),
+    )
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
+    monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.active_hf_hub_cache",
+        lambda: str(tmp_path / "selected-hub"),
+    )
+    embeddings._model = None
+    embeddings._name = None
+
+    embeddings._get("Org/Embedder")
+
+    assert observed["name"] == "Org/Embedder"
+    assert observed["cache_folder"] == str(tmp_path / "selected-hub")
+
+
 class _SentinelLlamaBackend:
     """Stand-in for LlamaServerBackend; never spawns a real server."""
 
@@ -147,9 +178,7 @@ def _patch_llama_backend(monkeypatch, *, binary):
     from core.inference.llama_cpp import LlamaCppBackend
     from core.rag import embed_llama_server
 
-    monkeypatch.setattr(
-        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: binary)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: binary))
     monkeypatch.setattr(embed_llama_server, "LlamaServerBackend", _SentinelLlamaBackend)
 
 
@@ -191,9 +220,7 @@ class _BoomOnEncodeModel:
 
 def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
     # encode() blows up mid-run -> switch to llama-server and stay switched.
-    monkeypatch.setattr(
-        embeddings, "_get", lambda model_name = None: _BoomOnEncodeModel()
-    )
+    monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _BoomOnEncodeModel())
     _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
     calls = {}
 
@@ -207,9 +234,7 @@ def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
         calls["used"] = True
         return np.zeros((len(texts), 4), dtype = np.float32)
 
-    monkeypatch.setattr(
-        _SentinelLlamaBackend, "encode", _sentinel_encode, raising = False
-    )
+    monkeypatch.setattr(_SentinelLlamaBackend, "encode", _sentinel_encode, raising = False)
     embeddings._reset_backend()
 
     out = embeddings.encode(["alpha", "beta"])
@@ -221,9 +246,7 @@ def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
 
 def test_st_encode_failure_without_llama_binary_reraises(monkeypatch):
     # No llama-server binary -> surface the encode error.
-    monkeypatch.setattr(
-        embeddings, "_get", lambda model_name = None: _BoomOnEncodeModel()
-    )
+    monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _BoomOnEncodeModel())
     _patch_llama_backend(monkeypatch, binary = None)
     embeddings._reset_backend()
     with pytest.raises(RuntimeError, match = "CUDA error during encode"):

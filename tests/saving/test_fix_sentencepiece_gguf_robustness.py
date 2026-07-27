@@ -44,9 +44,7 @@ def test_user_defined_special_piece_is_not_retyped(tmp_path):
     ]
     (tmp_path / "tokenizer.model").write_bytes(_build(pieces))
     (tmp_path / "tokenizer.json").write_text(
-        json.dumps(
-            {"added_tokens": [{"id": 2, "content": "<ud_special>", "special": True}]}
-        )
+        json.dumps({"added_tokens": [{"id": 2, "content": "<ud_special>", "special": True}]})
     )
     fix_sentencepiece_gguf(str(tmp_path))
     got = dict(_read(str(tmp_path / "tokenizer.model")))
@@ -84,13 +82,10 @@ def test_entry_with_non_int_id_is_skipped(tmp_path):
 
 
 def test_save_py_except_clause_is_broad_exception():
-    with open(_SAVE_PY) as f:
+    with open(_SAVE_PY, encoding = "utf-8") as f:
         tree = ast.parse(f.read())
     for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.FunctionDef)
-            and node.name == "unsloth_save_pretrained_gguf"
-        ):
+        if isinstance(node, ast.FunctionDef) and node.name == "unsloth_save_pretrained_gguf":
             for subnode in ast.walk(node):
                 if isinstance(subnode, ast.Try):
                     body_src = "\n".join(ast.unparse(s) for s in subnode.body)
@@ -107,7 +102,7 @@ def test_save_py_except_clause_is_broad_exception():
 
 
 def test_tokenizer_utils_uses_import_protobuf_fallback_pattern():
-    with open(_TOK_PY) as f:
+    with open(_TOK_PY, encoding = "utf-8") as f:
         src = f.read()
     tree = ast.parse(src)
     for node in ast.walk(tree):

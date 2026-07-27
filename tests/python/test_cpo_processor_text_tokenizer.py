@@ -40,7 +40,7 @@ def _registrations(source):
 
 
 def test_cpo_registration_matches_orpo():
-    regs = _registrations(open(RL_PATH).read())
+    regs = _registrations(open(RL_PATH, encoding = "utf-8").read())
     shared = {"orpo_trainer_text_tokenizer", "orpo_trainer_processor_pad_token"}
     assert shared <= set(regs.get("orpo_trainer", []))
     assert shared <= set(regs.get("cpo_trainer", []))
@@ -48,17 +48,14 @@ def test_cpo_registration_matches_orpo():
 
 def _load_pad_rewriter():
     """Exec orpo_trainer_processor_pad_token (+ _PAD_FALLBACK) without importing unsloth."""
-    tree = ast.parse(open(RL_PATH).read())
+    tree = ast.parse(open(RL_PATH, encoding = "utf-8").read())
     nodes = []
     for n in tree.body:
         if isinstance(n, ast.Assign) and any(
             getattr(t, "id", None) == "_PAD_FALLBACK" for t in n.targets
         ):
             nodes.append(n)
-        elif (
-            isinstance(n, ast.FunctionDef)
-            and n.name == "orpo_trainer_processor_pad_token"
-        ):
+        elif isinstance(n, ast.FunctionDef) and n.name == "orpo_trainer_processor_pad_token":
             nodes.append(n)
     import re as _re
 
@@ -82,10 +79,7 @@ def test_pad_token_default_routed_through_inner_tokenizer():
     out = rewrite("__init__", init_src)
     assert "if processing_class.pad_token is None:" not in out
     assert "processing_class.pad_token = processing_class.eos_token" not in out
-    assert (
-        "_unsloth_proc_tok = getattr(processing_class, 'tokenizer', processing_class)"
-        in out
-    )
+    assert "_unsloth_proc_tok = getattr(processing_class, 'tokenizer', processing_class)" in out
     # bare pad_token_id must be routed through the getattr fallback, not left raw
     assert "= processing_class.pad_token_id\n" not in out
     ast.parse(out)  # rewritten source still compiles

@@ -62,16 +62,15 @@ async def list_cached_datasets(current_subject: str = Depends(get_current_subjec
 @router.delete("/cached", response_model = DeleteCachedDatasetResponse)
 async def delete_cached_dataset(
     repo_id: str = Body(..., embed = True),
+    cache_path: Optional[str] = Body(None, embed = True),
     current_subject: str = Depends(get_current_subject),
 ):
-    return await cache_inventory.delete_cached_dataset_response(repo_id)
+    return await cache_inventory.delete_cached_dataset_response(repo_id, cache_path)
 
 
 @router.get("/download-progress", response_model = DownloadProgressResponse)
 async def get_dataset_download_progress(
-    repo_id: str = Query(
-        ..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"
-    ),
+    repo_id: str = Query(..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
     hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
@@ -92,12 +91,9 @@ async def download_dataset(
     return await downloads.download_dataset_response(body, hf_token)
 
 
-@router.post(
-    "/download/cancel", response_model = CancelDatasetDownloadResponse, status_code = 202
-)
+@router.post("/download/cancel", response_model = CancelDatasetDownloadResponse, status_code = 202)
 async def cancel_dataset_download(
-    body: CancelDatasetDownloadRequest,
-    current_subject: str = Depends(get_current_subject),
+    body: CancelDatasetDownloadRequest, current_subject: str = Depends(get_current_subject)
 ):
     return await downloads.cancel_dataset_download_response(body)
 

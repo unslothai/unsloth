@@ -39,9 +39,7 @@ torch_Tensor = torch.Tensor
 from unsloth_zoo.utils import Version
 
 if DEVICE_TYPE == "xpu" and Version(torch.__version__) < Version("2.6.0"):
-    raise RuntimeError(
-        "Intel xpu currently supports unsloth with torch.version >= 2.6.0"
-    )
+    raise RuntimeError("Intel xpu currently supports unsloth with torch.version >= 2.6.0")
 
 if Version(torch.__version__) < Version("2.4.0"):
     torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
@@ -407,9 +405,7 @@ def get_lora_parameters_bias(proj):
     )
 
 
-def _maybe_fake_quantize_activations(
-    X: torch.Tensor, proj: torch.nn.Module
-) -> torch.Tensor:
+def _maybe_fake_quantize_activations(X: torch.Tensor, proj: torch.nn.Module) -> torch.Tensor:
     """Fake-quantize input activations if QAT is enabled, else return as-is.
     Weights are fake-quantized separately in `get_lora_parameters`.
     """
@@ -488,9 +484,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             out_absmax = ABSMAX_BUFFER[:n_elements_absmax]
         else:
             if out is None:
-                out = torch_empty(
-                    shape, dtype = dtype, device = device, requires_grad = False
-                )
+                out = torch_empty(shape, dtype = dtype, device = device, requires_grad = False)
             else:
                 assert out.shape == shape
                 assert out.dtype == dtype
@@ -603,9 +597,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             out_absmax = ABSMAX_BUFFER[:n_elements_absmax]
         else:
             if out is None:
-                out = torch_empty(
-                    shape, dtype = dtype, device = device, requires_grad = False
-                )
+                out = torch_empty(shape, dtype = dtype, device = device, requires_grad = False)
             else:
                 assert out.shape == shape
                 assert out.dtype == dtype
@@ -761,9 +753,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             code2 = state2.code
             blocksize2 = state2.blocksize
         else:
-            absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = (
-                quant_state
-            )
+            absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = quant_state
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
         global XPU_STREAMS
@@ -872,9 +862,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             code2 = state2.code
             blocksize2 = state2.blocksize
         else:
-            absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = (
-                quant_state
-            )
+            absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = quant_state
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
         pass
@@ -982,9 +970,7 @@ else:
             code2 = state2.code
             blocksize2 = state2.blocksize
         else:
-            absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = (
-                quant_state
-            )
+            absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = quant_state
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
         pass
@@ -1094,9 +1080,7 @@ def fast_linear_forward(
             out.addmv_(lora_B._fast_lora, temp_lora, alpha = lora_S)
         else:
             out = out.view(bsz, out_dim)
-            temp_lora = torch_mm(
-                X.view(bsz, in_dim), lora_A._fast_lora.t(), out = temp_lora
-            )
+            temp_lora = torch_mm(X.view(bsz, in_dim), lora_A._fast_lora.t(), out = temp_lora)
             out.addmm_(temp_lora, lora_B._fast_lora.t(), alpha = lora_S)
         out = out.view(bsz, 1, out_dim)
 

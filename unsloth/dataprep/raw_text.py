@@ -45,9 +45,7 @@ class RawTextDataLoader:
         if chunk_size <= 0:
             raise ValueError(f"chunk_size must be positive, got {chunk_size}")
         if stride >= chunk_size:
-            raise ValueError(
-                f"stride ({stride}) must be smaller than chunk_size ({chunk_size})"
-            )
+            raise ValueError(f"stride ({stride}) must be smaller than chunk_size ({chunk_size})")
         self.tokenizer = tokenizer
         self.chunk_size = chunk_size
         self.stride = stride
@@ -70,9 +68,7 @@ class RawTextDataLoader:
         text_content = self._read_file_by_format(file_path, file_format)
         if not text_content or not text_content.strip():
             raise ValueError(f"File '{file_path}' is empty or contains only whitespace")
-        chunks = self.smart_chunk_text(
-            text_content, self.chunk_size, self.stride, return_tokenized
-        )
+        chunks = self.smart_chunk_text(text_content, self.chunk_size, self.stride, return_tokenized)
         return self.create_causal_dataset(chunks)
 
     def load_from_files(
@@ -91,6 +87,10 @@ class RawTextDataLoader:
                 text_content, self.chunk_size, self.stride, return_tokenized
             )
             all_chunks.extend(chunks)
+        if not all_chunks:
+            # All files empty/whitespace: raise like load_from_file instead of
+            # create_causal_dataset([]) returning a 0-row text-column dataset.
+            raise ValueError("All files are empty or contain only whitespace")
         return self.create_causal_dataset(all_chunks)
 
     def chunk_text(
@@ -101,9 +101,7 @@ class RawTextDataLoader:
         """Split text into overlapping chunks"""
         if return_tokenized is None:
             return_tokenized = self.return_tokenized
-        return self.smart_chunk_text(
-            text, self.chunk_size, self.stride, return_tokenized
-        )
+        return self.smart_chunk_text(text, self.chunk_size, self.stride, return_tokenized)
 
     def create_causal_dataset(self, chunks):
         """Create dataset for causal language modeling"""
@@ -145,6 +143,12 @@ class RawTextDataLoader:
                 f"stride ({stride}) must be smaller than chunk_size ({chunk_size}) to progress the chunking loop"
             )
 
+        # Skip empty/whitespace text before tokenizing: BPE/SentencePiece emit
+        # real tokens for spaces/newlines, so a len(tokens)==0 check misses it
+        # and would yield a degenerate lone-EOS sample. Mirrors load_from_file.
+        if not text or not text.strip():
+            return []
+
         # Tokenize the whole text once for accurate token counts
         tokenized = self.tokenizer(text, return_tensors = "pt", add_special_tokens = False)
         tokens = tokenized["input_ids"]
@@ -180,9 +184,7 @@ class RawTextDataLoader:
 
             if return_tokenized:
                 chunk_tokens_list = (
-                    chunk_tokens.tolist()
-                    if hasattr(chunk_tokens, "tolist")
-                    else list(chunk_tokens)
+                    chunk_tokens.tolist() if hasattr(chunk_tokens, "tolist") else list(chunk_tokens)
                 )
 
                 # Append EOS on the last or a full chunk
@@ -193,20 +195,14 @@ class RawTextDataLoader:
 
                 attention_mask = [1] * len(chunk_tokens_list)
 
-                chunks.append(
-                    {"input_ids": chunk_tokens_list, "attention_mask": attention_mask}
-                )
+                chunks.append({"input_ids": chunk_tokens_list, "attention_mask": attention_mask})
             else:
                 # Decode back to text (backward compatibility)
-                chunk_text = self.tokenizer.decode(
-                    chunk_tokens, skip_special_tokens = True
-                )
+                chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens = True)
 
                 # Append EOS on the last or a full chunk
                 if end_idx == len(tokens) or len(chunk_tokens) == chunk_size:
-                    eos_token = (
-                        self.tokenizer.eos_token if self.tokenizer.eos_token else ""
-                    )
+                    eos_token = self.tokenizer.eos_token if self.tokenizer.eos_token else ""
                     chunk_text += eos_token
 
                 chunks.append(chunk_text)
@@ -357,23 +353,17 @@ class TextPreprocessor:
         # Calculate average length
         if text_lengths:
             stats["avg_length"] = sum(text_lengths) / len(text_lengths)
-            stats["min_length"] = (
-                stats["min_length"] if stats["min_length"] != float("inf") else 0
-            )
+            stats["min_length"] = stats["min_length"] if stats["min_length"] != float("inf") else 0
 
         # Generate warnings
         if stats["empty_samples"] > 0:
             stats["warnings"].append(f"Found {stats['empty_samples']} empty samples")
 
         if stats["repeated_content"] > 0:
-            stats["warnings"].append(
-                f"Found {stats['repeated_content']} repeated samples"
-            )
+            stats["warnings"].append(f"Found {stats['repeated_content']} repeated samples")
 
         if stats["encoding_issues"] > 0:
-            stats["warnings"].append(
-                f"Found {stats['encoding_issues']} encoding issues"
-            )
+            stats["warnings"].append(f"Found {stats['encoding_issues']} encoding issues")
 
         if stats["min_length"] < 10:
             stats["warnings"].append("Some samples are very short (< 10 characters)")

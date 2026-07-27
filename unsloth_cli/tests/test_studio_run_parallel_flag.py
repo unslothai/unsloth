@@ -71,9 +71,7 @@ def test_parallel_default_is_four():
     sig = inspect.signature(studio_mod.run)
     opt = sig.parameters["parallel"].default
     default = getattr(opt, "default", None)
-    assert (
-        default == 4
-    ), f"default changed to {default}; would silently alter existing deployments"
+    assert default == 4, f"default changed to {default}; would silently alter existing deployments"
 
 
 def test_parallel_range_guards_are_set():
@@ -172,13 +170,24 @@ def _install_reexec_capture(monkeypatch, *, platform):
 
     monkeypatch.setattr(sys, "platform", platform)
 
+    def capture(kind, argv):
+        captured.append(
+            {
+                "kind": kind,
+                "argv": list(argv),
+                "start_api_key_marker": studio_mod.os.environ.get(
+                    studio_mod._START_API_KEY_MARKER_ENV
+                ),
+            }
+        )
+
     def fake_execvp(file, argv):
-        captured.append({"kind": "execvp", "argv": list(argv)})
+        capture("execvp", argv)
         raise _ExecCaptured(argv)
 
     class _FakePopen:
         def __init__(self, argv, *a, **kw):
-            captured.append({"kind": "popen", "argv": list(argv)})
+            capture("popen", argv)
             self._argv = argv
 
         def wait(self):
@@ -238,11 +247,105 @@ def test_reexec_forwards_parallel_all_aliases(monkeypatch, flag, value):
 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+def test_reexec_hands_off_start_api_key_marker_out_of_band(monkeypatch, platform):
+    """A new child receives the marker while an old child sees no unknown flag."""
+    result, captured = _invoke_run(
+        monkeypatch,
+        _BASE + ["--start-api-key-marker"],
+        platform = platform,
+    )
+    assert len(captured) == 1, result.output
+    assert "--start-api-key-marker" not in captured[0]["argv"]
+    assert captured[0]["start_api_key_marker"] == "1"
+
+
+def test_reexeced_child_consumes_start_api_key_marker_env(monkeypatch):
+    """A supported child consumes the handoff before starting descendants."""
+    studio_mod = _load_run_command()
+    monkeypatch.setenv(studio_mod._START_API_KEY_MARKER_ENV, "1")
+
+    inherited = studio_mod._consume_start_api_key_marker_env()
+
+    assert inherited is True
+    assert studio_mod._START_API_KEY_MARKER_ENV not in studio_mod.os.environ
+
+
+def test_run_default_sets_tool_call_env(monkeypatch):
+    """Plain `unsloth run` enables healing and nudging via the inherited env
+    (written before the re-exec so the child server picks them up at import)."""
+    studio_mod = _load_run_command()
+    monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
+    monkeypatch.delenv("UNSLOTH_TOOL_CALL_NUDGE", raising = False)
+    _invoke_run(monkeypatch, _BASE)
+    assert studio_mod.os.environ["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
+    assert studio_mod.os.environ["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
+
+
+def test_run_disable_flags_set_tool_call_env(monkeypatch):
+    """`--disable-tool-call-healing --disable-tool-call-nudging` flips both env vars."""
+    studio_mod = _load_run_command()
+    monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
+    monkeypatch.delenv("UNSLOTH_TOOL_CALL_NUDGE", raising = False)
+    _invoke_run(
+        monkeypatch,
+        _BASE + ["--disable-tool-call-healing", "--disable-tool-call-nudging"],
+    )
+    assert studio_mod.os.environ["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "1"
+    assert studio_mod.os.environ["UNSLOTH_TOOL_CALL_NUDGE"] == "0"
+
+
+@pytest.mark.parametrize("inherited", ["0", "false", "False", "no", ""])
+def test_run_omitted_flag_respects_inherited_env(monkeypatch, inherited):
+    """When the flag is omitted, a value the parent set (e.g. `unsloth start`) wins
+    instead of being reset to the default."""
+    studio_mod = _load_run_command()
+    monkeypatch.setenv("UNSLOTH_TOOL_CALL_NUDGE", inherited)
+    monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
+    _invoke_run(monkeypatch, _BASE)
+    assert studio_mod.os.environ["UNSLOTH_TOOL_CALL_NUDGE"] == inherited
+
+
+_SAMPLING_ENV_SUFFIXES = (
+    "TEMPERATURE",
+    "TOP_P",
+    "TOP_K",
+    "MIN_P",
+    "REPETITION_PENALTY",
+    "PRESENCE_PENALTY",
+)
+
+
+def test_run_sampling_flags_set_env(monkeypatch):
+    """`--temperature`/`--top-k` write UNSLOTH_SAMPLING_* (a hard override the backend applies);
+    an omitted sampling flag leaves its env unset so the per-model recommendation stays."""
+    studio_mod = _load_run_command()
+    for _v in _SAMPLING_ENV_SUFFIXES:
+        monkeypatch.delenv(f"UNSLOTH_SAMPLING_{_v}", raising = False)
+    _invoke_run(monkeypatch, _BASE + ["--temperature", "0.3", "--top-k", "40"])
+    assert studio_mod.os.environ["UNSLOTH_SAMPLING_TEMPERATURE"] == "0.3"
+    assert studio_mod.os.environ["UNSLOTH_SAMPLING_TOP_K"] == "40"
+    assert "UNSLOTH_SAMPLING_TOP_P" not in studio_mod.os.environ
+
+
+def test_run_no_sampling_flags_leaves_env_unset(monkeypatch):
+    """Plain `unsloth run` writes no UNSLOTH_SAMPLING_*; the server keeps the recommendation."""
+    studio_mod = _load_run_command()
+    for _v in _SAMPLING_ENV_SUFFIXES:
+        monkeypatch.delenv(f"UNSLOTH_SAMPLING_{_v}", raising = False)
+    _invoke_run(monkeypatch, _BASE)
+    assert not any(k.startswith("UNSLOTH_SAMPLING_") for k in studio_mod.os.environ)
+
+
+def test_run_rejects_out_of_range_sampling_flag(monkeypatch):
+    """typer enforces the documented ranges before a value can reach the server."""
+    result, _captured = _invoke_run(monkeypatch, _BASE + ["--temperature", "9"])
+    assert result.exit_code != 0
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
 def test_reexec_argv_is_consistent_across_platforms(monkeypatch, platform):
     """Linux/Darwin (execvp) and Windows (Popen) must build the same argv."""
-    result, captured = _invoke_run(
-        monkeypatch, _BASE + ["--parallel", "12"], platform = platform
-    )
+    result, captured = _invoke_run(monkeypatch, _BASE + ["--parallel", "12"], platform = platform)
     assert len(captured) == 1
     expected_kind = "popen" if platform == "win32" else "execvp"
     assert (
@@ -278,12 +381,14 @@ def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     """--parallel + llama-server pass-through flags must all reach the child."""
     result, captured = _invoke_run(
         monkeypatch,
-        _BASE + ["--parallel", "8", "--top-k", "20", "--temp", "0.7"],
+        # --top-k is now a first-class sampling flag (routed via UNSLOTH_SAMPLING_*), so use
+        # --seed / --temp here, which remain genuine llama-server pass-through flags.
+        _BASE + ["--parallel", "8", "--seed", "42", "--temp", "0.7"],
     )
     assert len(captured) == 1
     argv = captured[0]["argv"]
     assert _value_after(argv, "--parallel") == "8", argv
-    assert _value_after(argv, "--top-k") == "20", argv
+    assert _value_after(argv, "--seed") == "42", argv
     assert _value_after(argv, "--temp") == "0.7", argv
 
 
@@ -311,9 +416,7 @@ def test_context_length_banner_line_omits_unknown_values(value):
         (None, "--load-in-4bit"),  # default True
     ],
 )
-def test_reexec_forwards_load_in_4bit_in_both_directions(
-    monkeypatch, user_flag, expected_in_child
-):
+def test_reexec_forwards_load_in_4bit_in_both_directions(monkeypatch, user_flag, expected_in_child):
     """Re-exec must emit the chosen polarity (or the typer default),
     so a future default flip on one layer can't silently invert
     behaviour for users who never typed the flag."""
@@ -322,16 +425,10 @@ def test_reexec_forwards_load_in_4bit_in_both_directions(
     assert len(captured) == 1
     argv = captured[0]["argv"]
     other_polarity = (
-        "--no-load-in-4bit"
-        if expected_in_child == "--load-in-4bit"
-        else "--load-in-4bit"
+        "--no-load-in-4bit" if expected_in_child == "--load-in-4bit" else "--load-in-4bit"
     )
-    assert (
-        expected_in_child in argv
-    ), f"expected {expected_in_child} in child argv; got {argv}"
-    assert (
-        other_polarity not in argv
-    ), f"unexpected {other_polarity} in child argv; got {argv}"
+    assert expected_in_child in argv, f"expected {expected_in_child} in child argv; got {argv}"
+    assert other_polarity not in argv, f"unexpected {other_polarity} in child argv; got {argv}"
 
 
 # Runtime check: fake sys.prefix into the studio venv to bypass

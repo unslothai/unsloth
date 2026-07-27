@@ -29,7 +29,7 @@ RL_PY = Path(__file__).resolve().parents[2] / "unsloth" / "models" / "rl.py"
 
 
 def _extract_mixed_precision_code() -> str:
-    lines = RL_PY.read_text().split("\n")
+    lines = RL_PY.read_text(encoding = "utf-8").split("\n")
     try:
         start = next(i for i, l in enumerate(lines) if "mixed_precision = (" in l)
     except StopIteration:
@@ -53,16 +53,7 @@ def _restore(mapping, saved):
             mapping[k] = v
 
 
-def _decide(
-    dtype,
-    *,
-    bf16_supported,
-    force_float32,
-    full_finetuning,
-    mixed_precision,
-    fp16,
-    bf16,
-):
+def _decide(dtype, *, bf16_supported, force_float32, full_finetuning, mixed_precision, fp16, bf16):
     """Run the template block; return (args.fp16, args.bf16, ACCELERATE_MP, raised).
 
     Stubs (sys.modules, env vars, torch.cuda.is_bf16_supported) are restored on
@@ -104,12 +95,7 @@ def _decide(
             exec(CODE, {"torch": torch, "os": os}, {"args": args, "model": model})
         except TypeError:
             raised = "TypeError"
-        return (
-            args.fp16,
-            args.bf16,
-            os.environ.get("ACCELERATE_MIXED_PRECISION"),
-            raised,
-        )
+        return args.fp16, args.bf16, os.environ.get("ACCELERATE_MIXED_PRECISION"), raised
     finally:
         torch.cuda.is_bf16_supported = orig_bf16
         _restore(os.environ, saved_env)

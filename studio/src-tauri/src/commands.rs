@@ -339,11 +339,21 @@ pub fn get_server_logs(state: tauri::State<'_, BackendState>) -> Vec<String> {
 
 /// Open an existing directory in the system file manager. Validates the path
 /// up front so callers get a clean error instead of a raw OS failure.
-fn open_existing_dir(dir: &std::path::Path) -> Result<(), String> {
+fn open_existing_dir_with<E>(
+    dir: &std::path::Path,
+    opener: impl FnOnce(&std::path::Path) -> Result<(), E>,
+) -> Result<(), String>
+where
+    E: std::fmt::Display,
+{
     if !dir.is_dir() {
         return Err(format!("Directory does not exist: {}", dir.display()));
     }
-    open::that(dir).map_err(|e| format!("Failed to open directory: {}", e))
+    opener(dir).map_err(|error| format!("Failed to open directory: {error}"))
+}
+
+fn open_existing_dir(dir: &std::path::Path) -> Result<(), String> {
+    open_existing_dir_with(dir, |path| open::that_detached(path))
 }
 
 /// Open the Unsloth Studio directory in the system file manager.
@@ -641,7 +651,8 @@ pub async fn start_managed_repair(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::fs;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -699,6 +710,40 @@ mod tests {
         port
     }
 
+    #[test]
+    fn existing_directory_helper_invokes_opener_and_surfaces_errors() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("unsloth-open-dir-{}-{nanos}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut opened = false;
+        super::open_existing_dir_with(&dir, |path| {
+            opened = true;
+            assert_eq!(path, dir);
+            Ok::<_, &str>(())
+        })
+        .unwrap();
+        assert!(opened);
+
+        let error = super::open_existing_dir_with(&dir, |_| Err("opener failed")).unwrap_err();
+        assert!(error.contains("opener failed"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn existing_directory_helper_rejects_missing_path_without_opening() {
+        let missing = std::env::temp_dir().join("unsloth-definitely-missing-open-dir");
+        let error = super::open_existing_dir_with(&missing, |_| {
+            panic!("opener must not run for an invalid directory");
+            #[allow(unreachable_code)]
+            Ok::<_, &str>(())
+        })
+        .unwrap_err();
+        assert!(error.contains("Directory does not exist"));
+    }
     #[test]
     fn repair_elevation_is_not_a_terminal_repair_failure() {
         assert!(!super::should_emit_repair_failed("NEEDS_ELEVATION"));
