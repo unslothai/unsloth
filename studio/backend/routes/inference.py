@@ -12987,9 +12987,7 @@ async def chat_count_tokens(
     # shape that reaches this, after a response is stopped before its first token.
     _takes_passthrough = _takes_tool_passthrough(payload, llama_backend)
     openai_messages = _strip_provider_synthetic_tool_history(
-        _drop_empty_assistant_sentinels(
-            [m.model_dump(exclude_none = True) for m in payload.messages]
-        )
+        _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
     )
     if not _takes_passthrough:
         openai_messages = _coalesce_consecutive_user_turns(openai_messages)
