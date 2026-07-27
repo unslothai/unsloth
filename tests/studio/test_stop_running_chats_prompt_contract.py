@@ -46,6 +46,6 @@ def test_an_unload_is_not_described_as_a_reload():
 
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     eject = runtime.index('"Unloading the model"')
-    assert '"unload"' in runtime[eject : eject + 120], (
-        "the eject path must ask for the unload wording"
-    )
+    assert (
+        '"unload"' in runtime[eject : eject + 120]
+    ), "the eject path must ask for the unload wording"
