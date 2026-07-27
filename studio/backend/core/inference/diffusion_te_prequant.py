@@ -419,7 +419,9 @@ def _validate_checkpoint(ckpt: Any, scheme: str, component: str, base: str, logg
 
 
 def te_prequant_hub_files(
-    sources: dict[str, "TePrequantSource"], api: Any, logger: Any = None
+    sources: dict[str, "TePrequantSource"],
+    api: Any,
+    logger: Any = None,
 ) -> dict[str, list[tuple[str, int]]]:
     """``{component: [(rfilename, size)]}`` for every hosted pre-cast checkpoint that really
     resolves on the Hub.

@@ -2520,6 +2520,7 @@ async def delete_finetuned_model(
     if source == "training":
         try:
             from core.training import get_training_backend
+
             training_backend = get_training_backend()
             if training_backend.is_training_active():
                 raise HTTPException(
@@ -2532,6 +2533,7 @@ async def delete_finetuned_model(
             # silently recreates part of the tree, and an expensive experiment is lost. The dataset
             # mutation and model-load routes already consult this service.
             from core.training.diffusion_training_service import get_diffusion_training_service
+
             if get_diffusion_training_service().is_active():
                 raise HTTPException(
                     status_code = 409,

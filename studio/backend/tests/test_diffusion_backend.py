@@ -3920,7 +3920,9 @@ def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monke
     base = by_repo["black-forest-labs/FLUX.1-dev"]
     # text_encoder_2's dense weights are gone; text_encoder (no hosted artifact here) stays, and so
     # do the non-weight files the pre-cast loader still meta-inits from.
-    assert not any(f.startswith("text_encoder_2/") and f.endswith(".safetensors") for f in base["files"])
+    assert not any(
+        f.startswith("text_encoder_2/") and f.endswith(".safetensors") for f in base["files"]
+    )
     assert "text_encoder/model.safetensors" in base["files"]
     assert "model_index.json" in base["files"]
     assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])

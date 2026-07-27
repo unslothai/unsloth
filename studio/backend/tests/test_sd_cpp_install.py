@@ -669,7 +669,9 @@ def test_unrunnable_managed_binary_is_removed_so_it_reinstalls(monkeypatch, tmp_
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
     assert eng.is_managed_binary(str(managed)) is True
 
-    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: str(managed) if managed.exists() else None)
+    monkeypatch.setattr(
+        bk, "find_sd_cpp_binary", lambda: str(managed) if managed.exists() else None
+    )
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: False)
     installs: list = []
 

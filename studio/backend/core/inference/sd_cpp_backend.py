@@ -138,7 +138,9 @@ def _usable_or_discard_managed(binary: str) -> bool:
     if _server_binary_runnable(binary):
         return True
     if not is_managed_binary(binary):
-        logger.warning("sd.cpp binary %s is not runnable; leaving the user-supplied copy alone", binary)
+        logger.warning(
+            "sd.cpp binary %s is not runnable; leaving the user-supplied copy alone", binary
+        )
         return True  # not ours to replace; the router's own probe still refuses it
     logger.warning("managed sd.cpp binary %s is not runnable; removing it so it reinstalls", binary)
     try:
