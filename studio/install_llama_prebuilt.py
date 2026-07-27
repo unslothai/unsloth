@@ -6196,19 +6196,16 @@ def _normalized_llama_backend(value: str | None) -> str | None:
     if not value:
         return None
     backend = value.strip().lower()
-    if backend in {"vulkan", "hip", "rocm", "cpu"}:
-        return "hip" if backend == "rocm" else backend
-    return None
+    return backend if backend in {"vulkan", "cpu"} else None
 
 
 def llama_backend_from_env() -> str | None:
     """Read an explicit llama.cpp backend preference from the environment.
 
-    Only ``UNSLOTH_LLAMA_BACKEND`` is honored. ``UNSLOTH_LLAMA_CPP_BACKEND`` is a separate
-    setup variable meaning ``auto``/``cpu`` (not a backend name) that setup warns about and
-    otherwise ignores, so reading it here would force Vulkan behind that warning.
+    ``UNSLOTH_LLAMA_CPP_BACKEND`` is shared with setup.sh/setup.ps1. ``auto`` and
+    unknown values leave selection automatic; ``cpu`` and ``vulkan`` are explicit.
     """
-    return _normalized_llama_backend(os.environ.get("UNSLOTH_LLAMA_BACKEND"))
+    return _normalized_llama_backend(os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND"))
 
 
 def resolved_llama_backend(llama_backend: str | None = None) -> str | None:
@@ -6218,11 +6215,12 @@ def resolved_llama_backend(llama_backend: str | None = None) -> str | None:
 
 
 def force_vulkan_requested(llama_backend: str | None = None) -> bool:
-    """Whether this run should install the upstream Vulkan llama.cpp prebuilt.
+    """Whether this run should install the Vulkan llama.cpp prebuilt.
 
-    Triggered by ``UNSLOTH_LLAMA_BACKEND=vulkan``, legacy ``UNSLOTH_FORCE_VULKAN``, or
-    ``--llama-backend vulkan``. Scoped to the llama.cpp backend; the torch/training stack
-    installs separately and still sees the real GPU.
+    Triggered by ``UNSLOTH_LLAMA_CPP_BACKEND=vulkan``, legacy
+    ``UNSLOTH_FORCE_VULKAN``, or ``--llama-backend vulkan``. Scoped to the
+    llama.cpp backend; the torch/training stack installs separately and still sees
+    the real GPU.
     """
     backend = resolved_llama_backend(llama_backend)
     if backend is not None:
@@ -6401,8 +6399,8 @@ def _route_to_vulkan_prebuilt(
     The default Unsloth release manifest includes Vulkan app bundles, including the
     DiffusionGemma visual server. Three triggers route here, all suppressed when a CPU
     flag (--cpu-fallback or --force-cpu, folded into force_cpu) wins:
-      * ``UNSLOTH_LLAMA_BACKEND=vulkan`` / ``UNSLOTH_FORCE_VULKAN`` / ``--llama-backend
-        vulkan`` forces Vulkan over the detected CUDA/ROCm backend;
+      * ``UNSLOTH_LLAMA_CPP_BACKEND=vulkan`` / ``UNSLOTH_FORCE_VULKAN`` /
+        ``--llama-backend vulkan`` forces Vulkan over the detected CUDA/ROCm backend;
       * Windows AMD with no HIP-prebuilt gfx arch auto-falls back to Vulkan (#7357);
       * an auto-detected Intel GPU with NO physical NVIDIA/ROCm, the purpose of the
         has_intel_gpu probe.
@@ -6426,7 +6424,7 @@ def _route_to_vulkan_prebuilt(
     if host.is_macos:
         if forced:
             log(
-                "UNSLOTH_LLAMA_BACKEND=vulkan is set but ignored on macOS "
+                "UNSLOTH_LLAMA_CPP_BACKEND=vulkan is set but ignored on macOS "
                 "(Metal is used; there is no Vulkan prebuilt)"
             )
         return host, published_repo, published_release_tag, None
@@ -6867,7 +6865,8 @@ def parse_args() -> argparse.Namespace:
             "Force the llama.cpp prebuilt backend. vulkan installs the Vulkan "
             "bundle and records the choice so Studio updates keep it; ignored on hosts "
             "with no Vulkan prebuilt (macOS, Windows arm64). "
-            "Same effect as UNSLOTH_LLAMA_BACKEND=vulkan / UNSLOTH_FORCE_VULKAN=1."
+            "Same effect as UNSLOTH_LLAMA_CPP_BACKEND=vulkan / "
+            "UNSLOTH_FORCE_VULKAN=1."
         ),
     )
     resolve_group = parser.add_mutually_exclusive_group()
