@@ -1141,7 +1141,9 @@ def test_local_only_covers_every_load_and_validate_network_path():
 
     route = _read_backend("routes/inference.py")
     validate_src = route.split('operation = "validate-model"', 1)[1]
-    assert "_local_only_offline.enter_context(_hf_offline_if_dns_dead(force = True))" in validate_src
+    assert (
+        "_local_only_offline.enter_context(_hf_offline_if_dns_dead(force = True))" in validate_src
+    )
     assert "_local_only_offline.close()" in validate_src
     # The non-GGUF load threads the flag into the subprocess backend.
     load_call = route.split("backend.load_model,\n            config = config,", 1)[1]
@@ -1159,7 +1161,7 @@ def test_local_only_covers_every_load_and_validate_network_path():
     # The route's snapshot rewrite is re-applied after the worker rebuilds
     # its ModelConfig from the identifier.
     assert 'snapshot_override = config.get("local_snapshot_path")' in worker
-    assert 'mc.path = snapshot_override' in worker
+    assert "mc.path = snapshot_override" in worker
     assert '"local_files_only": bool(config.get("local_files_only", False)),' in worker
 
     inference = _read_backend("core/inference/inference.py")
