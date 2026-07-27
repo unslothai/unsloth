@@ -78,7 +78,7 @@ def _read_line(raw: bytes, codepage: str) -> _Reading:
 class _Scan(NamedTuple):
     """What a pass over an existing shard established about it."""
 
-    legacy: bool  # the codepage reading won the vote
+    legacy: bool  # enough evidence to trust keys from the codepage reading
     readable: bool  # the file could be read at all
     saw_non_utf8: bool  # some line is bytes UTF-8 cannot decode
     utf8_keys: set  # keys from lines UTF-8 could read
@@ -176,6 +176,13 @@ class JsonlWriter:
         genuinely legacy shard has a legacy vote on every line that carries an
         umlaut.
 
+        More than one such line is required, because a single one is genuinely
+        undecidable: a legacy record holding one accented character and an ASCII
+        record holding one stray byte are the same shape. Reading it as damage
+        risks a duplicate; reading it as legacy marks an unreadable record seen
+        and blocks the retry that would replace it, losing it for good. Only one
+        of those is recoverable.
+
         The verdict only picks which reading supplies the dedup keys. The file
         itself is never rewritten either way, so a wrong answer costs at most a
         duplicate, never a corrupted record.
@@ -212,7 +219,7 @@ class JsonlWriter:
         except OSError:
             return _Scan(False, False, False, utf8_keys, legacy_keys)
         return _Scan(
-            legacy_votes > utf8_votes,
+            legacy_votes > 1 and legacy_votes > utf8_votes,
             True,
             saw_non_utf8,
             utf8_keys,

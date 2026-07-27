@@ -260,8 +260,13 @@ def test_a_moved_shard_is_not_rewritten_by_guesswork(
 ) -> None:
     """Off the writing machine there is no codepage to attribute the file to."""
     path = tmp_path / "out.jsonl"
+    # Two records: a lone non-UTF-8 line is treated as damage instead, since it
+    # cannot be told apart from a stray byte in an otherwise healthy shard.
     path.write_bytes(
-        json.dumps({"id": 1, "author": word}, ensure_ascii = False).encode(codepage) + b"\n"
+        b"".join(
+            json.dumps({"id": i, "author": word}, ensure_ascii = False).encode(codepage) + b"\n"
+            for i in (1, 4)
+        )
     )
     before = path.read_bytes()
 
@@ -277,7 +282,25 @@ def test_a_moved_shard_is_not_rewritten_by_guesswork(
     assert blob.startswith(before)  # never rewritten
     assert blob[len(before) :].isascii()  # appended as \uXXXX, so no second encoding
     rows = [json.loads(x) for x in blob.decode(codepage).splitlines() if x.strip()]
-    assert [row["author"] for row in rows] == [word, "Grüße"]
+    assert [row["author"] for row in rows] == [word, word, "Grüße"]
+
+
+def test_a_damaged_line_in_an_ascii_shard_does_not_block_its_retry(tmp_path: Path) -> None:
+    """With no non-ASCII records to outvote it, one damaged line is still damage."""
+    path = tmp_path / "out.jsonl"
+    path.write_bytes(
+        b'{"id": 1, "author": "alice"}\n'
+        + b'{"id": 99, "author": "bad \x96 byte"}\n'
+        + b'{"id": 2, "author": "bob"}\n'
+    )
+
+    writer = _load_state_store("cp1252").JsonlWriter(path)
+    try:
+        assert writer.has("id:1") and writer.has("id:2")
+        assert not writer.has("id:99")
+        assert writer.write({"id": 99, "author": "good byte"}) is True
+    finally:
+        writer.close()
 
 
 def test_a_damaged_line_does_not_block_its_own_retry(tmp_path: Path) -> None:
