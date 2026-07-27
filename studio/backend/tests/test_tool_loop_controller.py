@@ -7,6 +7,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -91,6 +93,29 @@ def test_status_and_provenance_match_local_event_conventions():
         "source": "local",
         "healed": True,
     }
+
+
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        # bare hosts are fetched, so the badge must name them
+        ("google.com", "Reading: google.com"),
+        ("www.google.com/x", "Reading: google.com"),
+        ("//google.com", "Reading: google.com"),
+        ("example.com:8443/path", "Reading: example.com"),
+        ("github.com/unslothai/unsloth", "Reading: github.com"),
+        # still generic for what the fetch layer refuses
+        ("/login", "Reading page..."),
+        ("javascript:alert(1)", "Reading page..."),
+        # urlparse raises on these, outside the fetch's handler: degrade, not raise
+        ("https://[::1", "Reading page..."),
+        ("https://::1]", "Reading page..."),
+        ("//exam／ple.com", "Reading page..."),
+        ("//example.com＠", "Reading page..."),
+    ],
+)
+def test_status_names_the_host_for_schemeless_urls(url, expected):
+    assert status_for_tool("web_search", {"url": url}) == expected
 
 
 def test_prepare_execute_builds_visible_events_and_model_tool_message():
