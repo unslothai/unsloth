@@ -892,6 +892,98 @@ def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
     assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat"]
 
 
+def _diffusion_scan(monkeypatch, tmp_path, repo_id: str, files: list, *, task: str):
+    """One cached diffusion repo through _scan_cached_models, with the download-partial signal
+    forced off so only the pipeline-shape checks can flag the row."""
+    repo_path = tmp_path / f"hub/models--{repo_id.replace('/', '--')}"
+    repo_path.mkdir(parents = True)
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [_repo(repo_id, files, repo_path)])],
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda _kind, _repo_id, _path: False,
+    )
+    monkeypatch.setattr(cache_inventory, "_cached_row_task", lambda _repo, gguf: task)
+    rows = cache_inventory._scan_cached_models()
+    assert len(rows) == 1
+    return rows[0]
+
+
+def test_cached_models_scan_marks_a_companion_only_pipeline_partial(monkeypatch, tmp_path):
+    """A GGUF image load prefetches the base repo's manifest + VAE + text encoder and skips the
+    multi-GB transformer. Every file its manifest expected arrived, so the download-partial check
+    passes it, but from_pretrained cannot load it -- the picker must not advertise it as on-device
+    (same rule /api/models/cached applies)."""
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        "Org/Pipeline-Companions-Only",
+        [
+            _file("model_index.json", 900),
+            _file("vae/diffusion_pytorch_model.safetensors", 300_000_000),
+            _file("text_encoder/model.safetensors", 900_000_000),
+        ],
+        task = "text-to-image",
+    )
+
+    assert row["partial"] is True
+    # A companion-only snapshot arrived intact, so it has no Resume / Redownload story.
+    assert row["partial_transport"] is None
+
+
+def test_cached_models_scan_keeps_a_complete_pipeline_loadable(monkeypatch, tmp_path):
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        "Org/Pipeline-Complete",
+        [
+            _file("model_index.json", 900),
+            _file("vae/diffusion_pytorch_model.safetensors", 300_000_000),
+            _file("text_encoder/model.safetensors", 900_000_000),
+            _file("transformer/diffusion_pytorch_model-00001-of-00002.safetensors", 4_000_000_000),
+        ],
+        task = "text-to-image",
+    )
+
+    assert row["partial"] is False
+    assert row["single_file"] is False
+
+
+def test_cached_models_scan_flags_a_single_file_diffusion_checkpoint(monkeypatch, tmp_path):
+    """No root model_index.json: loadable only through from_single_file + a filename. The picker
+    gates on this flag, and before it was carried here every hub-sourced row read as a full
+    pipeline -- so a checkpoint-only repo was offered as a pipeline load and failed after the
+    handoff."""
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        "Org/Single-File-Checkpoint",
+        [_file("config.json", 12), _file("z-image-turbo-fp8.safetensors", 6_000_000_000)],
+        task = "text-to-image",
+    )
+
+    assert row["single_file"] is True
+    assert row["partial"] is False
+
+
+def test_cached_models_scan_leaves_chat_repos_unflagged(monkeypatch, tmp_path):
+    """The flag is a diffusion-picker concern: a chat repo (no task) never carries it, so a plain
+    safetensors model is not mistaken for a single-file checkpoint."""
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        "Org/Chat-Model",
+        [_file("config.json", 12), _file("model.safetensors", 100)],
+        task = None,
+    )
+
+    assert row["single_file"] is False
+
+
 def test_cached_scans_hide_embedders_configured_by_cache_path(monkeypatch, tmp_path):
     from core.rag import config as rag_config
 

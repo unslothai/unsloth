@@ -396,7 +396,8 @@ const SETTLE_MAX_FAILS = 5; // consecutive progress failures before calling the 
  *  submission that never landed look like a completed image. So the wait needs evidence -- either
  *  progress was observed active, or a gallery record appeared that was not there when the POST
  *  went out -- and reports the failed submission otherwise. Throws if the backend stays
- *  unreachable too, so a real outage still surfaces. */
+ *  unreachable too, and if the wait outlives SETTLE_MAX_MS, so a real outage or a wedged
+ *  generation surfaces instead of the caller counting the run as done. */
 async function settleLostGeneration(
   isCurrent: () => boolean,
   knownIds: ReadonlySet<string>,
@@ -432,6 +433,9 @@ async function settleLostGeneration(
     }
     throw new Error("The image generation request did not reach the server.");
   }
+  // Out of budget with the run still active. Returning here would report the generation as
+  // completed and let the next run start against a busy backend, so surface it as a failure.
+  throw new Error("Timed out waiting for the image generation to finish.");
 }
 
 // The chat tab's model-load toast styling, reused verbatim so the diffusion
@@ -1446,16 +1450,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // The batch shared one base seed, so image batch_index>0 only reproduces by replaying the
     // whole batch: restore the batch size too (older recipes without it default to 1).
     setBatchSize(image.batch_size ?? 1);
-    // Restore the LoRA selection. The recipe stores each adapter as an "id:weight" string;
-    // the id itself may contain a colon (owner/name:weight-file.safetensors), so split on
-    // the LAST colon to recover the weight. A malformed entry falls back to weight 1.
-    setLoras(
-      (image.loras ?? []).map((s) => {
-        const idx = s.lastIndexOf(":");
-        const w = idx > 0 ? Number.parseFloat(s.slice(idx + 1)) : NaN;
-        return Number.isFinite(w) ? { id: s.slice(0, idx), weight: w } : { id: s, weight: 1 };
-      }),
-    );
     const m = matchAspect(image.width, image.height);
     setAspect(m.key);
     setPortrait(m.portrait);
@@ -1472,6 +1466,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       if (id && Number.isFinite(weight)) restoredLoras.push({ id, weight });
     }
     setLoras(restoredLoras);
+    // None of the conditioning images are persisted in a recipe, so a restore must not leave the
+    // form pointing at whatever is currently loaded in the Transform / Inpaint / Edit tabs: the
+    // next Generate would condition on an unrelated image and reproduce something else entirely.
+    // Clear them all and return to Create, the workflow the restored recipe actually describes
+    // (the workflow-validity effect snaps this back if the loaded model is edit-only).
+    setWorkflow("create");
+    setInitImage(null);
+    setMaskImage(null);
+    setReferenceImages([]);
     // The control image isn't persisted, so clear any stale ControlNet selection.
     setControlnetId("");
     setControlImage(null);
@@ -1740,6 +1743,23 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
   }, [status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
 
+  // The adapter list a load of *repoId* would BAKE into the build, shared by the load itself and
+  // by the download plan so the two never disagree. A torchao int8/fp8 transformer can only take
+  // adapters before quantize_ + compile, so a baked selection forces the dense build path -- which
+  // needs different files staged. Only a reload of the SAME target bakes: a fresh pick of another
+  // model can still hold a cross-family selection the family-swap effect clears after the load.
+  // Reads lastLoad.current, so call it before the load overwrites it.
+  const bakedLorasFor = useCallback(
+    (repoId: string): LoraSpecInput[] => {
+      const sameTarget = repoId === (lastLoad.current?.repoId ?? status?.repo_id ?? null);
+      if (!sameTarget) return [];
+      return loras
+        .map((l) => ({ id: l.id.trim(), weight: l.weight }))
+        .filter((l) => l.id && l.weight > 0);
+    },
+    [loras, status?.repo_id],
+  );
+
   const handleLoad = useCallback(
     // Resolves true when the background load STARTED (callers may revert
     // optimistic picker state on false); poll outcomes are handled internally.
@@ -1766,17 +1786,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // capable GPU) can only take adapters at LOAD time: they attach on the dense transformer
       // before quantize_ + compile. Generation-time /images/generate then rejects a new adapter
       // set with "reload the model with the adapter selection", so a reload that drops the
-      // selection leaves the advertised LoRA picker permanently unusable. Carry the same
-      // filtered nonzero list Generate sends, but only when reloading the SAME target (Reapply
-      // or re-picking the loaded model): a fresh pick of a different model can still hold a
-      // cross-family selection that the family-swap effect only clears after the load lands.
-      // Ignored by every other load kind (bf16 / bnb-4bit apply adapters at generation time).
-      const sameTarget = repoId === (prevLastLoad?.repoId ?? status?.repo_id ?? null);
-      const bakeLoras = sameTarget
-        ? loras
-            .map((l) => ({ id: l.id.trim(), weight: l.weight }))
-            .filter((l) => l.id && l.weight > 0)
-        : [];
+      // selection leaves the advertised LoRA picker permanently unusable. Ignored by every other
+      // load kind (bf16 / bnb-4bit apply adapters at generation time).
+      const bakeLoras = bakedLorasFor(repoId);
       // Whether THIS load carries the selection into the build, so a quantized load that did
       // not can drop a selection it can never apply rather than failing the next Generate.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
@@ -1827,8 +1839,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       attentionBackend,
       memoryMode,
       transformerCache,
-      loras,
-      status?.repo_id,
+      bakedLorasFor,
     ],
   );
 
@@ -1900,6 +1911,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           speed_mode: speedMode === "auto" ? undefined : speedMode,
           transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
           memory_mode: memoryMode === "auto" ? undefined : memoryMode,
+          // The backend's prefetch decision reads the adapter selection too: a baked LoRA always
+          // runs the dense build path. Omitting it here planned a quantized load's file set and
+          // then staged too little for the load that actually ran, which pulled the rest inline
+          // outside the download manager. Same list handleLoad bakes.
+          loras: (() => {
+            const baked = bakedLorasFor(repoId);
+            return baked.length > 0 ? baked : undefined;
+          })(),
         });
         if (plan.entries.length > 0) {
           pendingStagedLoad.current = { repoId, opts };
@@ -1918,7 +1937,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       }
       return handleLoadRef.current(repoId, opts);
     },
-    [stage, cpuOffload, speedMode, transformerQuant, memoryMode],
+    [stage, cpuOffload, speedMode, transformerQuant, memoryMode, bakedLorasFor],
   );
 
   // A diffusion model picked from the chat picker arrives as ?model= on this route. Load it
@@ -2287,6 +2306,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     };
     document.addEventListener("visibilitychange", genVisibilityListener.current);
     genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
+    // Every gallery id this page has already seen, captured BEFORE the first POST and grown as
+    // the run produces records. settleLostGeneration proves a lost POST reached the backend by
+    // finding a record outside this set, so the set must not be rebuilt inside the catch: by
+    // then run 1's own images are on the page, and run 2 would accept one of them as its proof.
+    const knownIds = new Set(galleryCache.images.map((image) => image.id));
     try {
       for (let i = 0; i < runs; i++) {
         // The page truly unmounted mid-run (app close / chat-only eject): stop
@@ -2347,18 +2371,19 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           if (!(err instanceof GenerateResponseLostError)) throw err;
           // The ids known before the POST went out: a record outside them is what proves the
           // request actually reached the backend when progress reads idle straight away.
-          await settleLostGeneration(
-            () => isMounted.current,
-            new Set(galleryCache.images.map((image) => image.id)),
-          );
+          await settleLostGeneration(() => isMounted.current, knownIds);
           if (!isMounted.current) break;
           await loadGallery();
+          // loadGallery refreshes the module cache synchronously, so this run's settled records
+          // are folded in before the next run can mistake one of them for its own proof.
+          galleryCache.images.forEach((image) => knownIds.add(image.id));
           setGenDone(i + 1);
           continue;
         }
         if (!isMounted.current) break;
         // Prepend this run's records (newest first) and load their blobs.
         setImages((prev) => [...res.images, ...prev]);
+        res.images.forEach((image) => knownIds.add(image.id));
         if (res.images[0]) setSelectedId(res.images[0].id);
         res.images.forEach((image) => void ensureSrc(image));
         setGenDone(i + 1);

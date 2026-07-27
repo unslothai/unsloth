@@ -3454,27 +3454,10 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
 
 
 def _repo_has_pipeline_index(repo_info) -> bool:
-    """Whether the cached snapshot carries a ROOT model_index.json, i.e. is loadable
-    as a full diffusers pipeline (from_pretrained reads only the repo root). A nested
-    subdir/model_index.json does not count: loading the repo root still fails, so the
-    row must keep its single_file flag. CachedFileInfo.file_name is the basename, so
-    a name match alone would also claim nested copies -- scope by file_path when the
-    scan provides it."""
-    try:
-        for rev in repo_info.revisions:
-            snapshot = getattr(rev, "snapshot_path", None)
-            for f in rev.files:
-                name = str(getattr(f, "file_name", "") or "")
-                path = getattr(f, "file_path", None)
-                if path is not None and snapshot is not None:
-                    p = Path(path)
-                    if p.name == "model_index.json" and p.parent == Path(snapshot):
-                        return True
-                elif name == "model_index.json":
-                    return True
-    except Exception:
-        pass
-    return False
+    """Root-model_index.json check. Shared with the hub inventory scan, which classifies the
+    same repos for the same pickers; see :func:`hub.utils.inventory_scan.repo_has_pipeline_index`."""
+    from hub.utils import inventory_scan as hf_cache_scan
+    return hf_cache_scan.repo_has_pipeline_index(repo_info)
 
 
 def _repo_is_diffusers(repo_info) -> bool:
@@ -3499,41 +3482,11 @@ def _repo_is_diffusers(repo_info) -> bool:
 
 
 def _repo_pipeline_missing_denoiser(repo_info) -> bool:
-    """True for a diffusers-pipeline snapshot (root ``model_index.json``) whose denoiser component
-    (``transformer/`` or ``unet/``) carries NO weight file -- the shape of a companion-only prefetch
-    where a GGUF image load pulled the base repo's VAE / text-encoder / manifest but skipped the
-    multi-GB transformer (the GGUF supplies it). ``_cached_repo_partial`` misses this, so the caller
-    marks such rows partial. Best-effort: any scan error reports not-missing so a glitch never hides
-    a genuinely complete pipeline."""
-    if not _repo_has_pipeline_index(repo_info):
-        return False
-    _DENOISER_DIRS = ("transformer", "unet")
-    _WEIGHT_SUFFIXES = (".safetensors", ".bin")
-    try:
-        for rev in repo_info.revisions:
-            snapshot = getattr(rev, "snapshot_path", None)
-            for f in rev.files:
-                name = str(getattr(f, "file_name", "") or "")
-                path = getattr(f, "file_path", None)
-                parts: tuple[str, ...] = ()
-                if path is not None and snapshot is not None:
-                    try:
-                        parts = Path(path).relative_to(Path(snapshot)).parts
-                    except ValueError:
-                        parts = ()
-                if not parts:
-                    # No snapshot scoping: fall back to the recorded name, which may itself carry the component
-                    # subdir (e.g. 'transformer/model...').
-                    parts = Path(name).parts
-                if (
-                    len(parts) >= 2
-                    and parts[0].lower() in _DENOISER_DIRS
-                    and parts[-1].lower().endswith(_WEIGHT_SUFFIXES)
-                ):
-                    return False
-        return True
-    except Exception:
-        return False
+    """Companion-only-prefetch check (pipeline manifest present, denoiser weights absent). Shared
+    with the hub inventory scan so both listings agree on which rows are really on-device; see
+    :func:`hub.utils.inventory_scan.repo_pipeline_missing_denoiser`."""
+    from hub.utils import inventory_scan as hf_cache_scan
+    return hf_cache_scan.repo_pipeline_missing_denoiser(repo_info)
 
 
 def _cached_repo_partial(repo_id: str, repo_cache_dir: Optional[Path] = None) -> bool:

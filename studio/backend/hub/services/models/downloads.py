@@ -85,12 +85,48 @@ def _job_status(
     return DownloadJobStatus(state = state, error = error, generation = generation)
 
 
+def _diffusion_load_in_flight(repo_id: str) -> bool:
+    """Whether the Images or Video backend is currently STAGING *repo_id* (or its companion
+    base repo) for a load. Both stage through the same HF cache as the download worker, so a
+    download started now would put two writers on the same blobs -- the exact race the
+    llama.cpp guard below prevents for chat. ``loading_repo_ids`` is the same signal the
+    delete-cached guard uses. Best-effort: an unavailable backend reports not-in-flight so a
+    probe failure never blocks a legitimate download."""
+    key = download_registry.normalize_repo_key(repo_id)
+    getters = []
+    try:
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
+        getters.append(get_active_diffusion_engine)
+    except Exception:
+        pass
+    try:
+        from core.inference.video import get_video_backend
+        getters.append(get_video_backend)
+    except Exception:
+        pass
+    for get_backend in getters:
+        try:
+            backend = get_backend()
+            for lid in getattr(backend, "loading_repo_ids", tuple)():
+                if download_registry.normalize_repo_key(str(lid)) == key:
+                    return True
+        except Exception as e:
+            logger.debug(f"Load-in-flight probe failed for {repo_id}: {e}")
+            continue
+    return False
+
+
 def _load_in_flight(repo_id: str) -> bool:
+    """Whether ANY loader is already fetching *repo_id*. Chat is not the only loader that
+    downloads on the load path: the Images and Video backends stage their snapshots the same
+    way, so both are consulted."""
     try:
         from core.inference.llama_cpp import hf_gguf_load_in_flight
-        return hf_gguf_load_in_flight(repo_id)
+        if hf_gguf_load_in_flight(repo_id):
+            return True
     except Exception:
-        return False
+        pass
+    return _diffusion_load_in_flight(repo_id)
 
 
 def _load_in_flight_error(repo_id: str) -> HTTPException:

@@ -200,6 +200,10 @@ class CachedModelRepo(CachedRepoBase):
     pipeline_tag: Optional[str] = None
     library_name: Optional[str] = None
     tags: Optional[List[str]] = None
+    # True for a diffusion-tagged repo with NO top-level model_index.json: a single-file
+    # checkpoint needing from_single_file + a filename. Pickers must not offer it as a pipeline
+    # load unless the catalog carries a curated artifact for it (which supplies the filename).
+    single_file: bool = False
 
 
 class CachedModelsResponse(BaseModel):

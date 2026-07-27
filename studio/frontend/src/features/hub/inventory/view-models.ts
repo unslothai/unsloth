@@ -168,6 +168,7 @@ export function buildCachedInventoryRow(
     partial_transport?: string | null;
     pipeline_tag?: string | null;
     task?: string | null;
+    single_file?: boolean;
     tags?: string[];
     library_name?: string | null;
     quant_method?: string | null;
@@ -227,6 +228,7 @@ export function buildCachedInventoryRow(
     partialTransport: row.partial_transport ?? null,
     pipelineTag: row.pipeline_tag ?? null,
     task: row.task ?? null,
+    singleFile: row.single_file ?? false,
     tags: row.tags,
     libraryName: row.library_name ?? null,
     quantMethod: row.quant_method ?? null,

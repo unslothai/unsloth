@@ -15,6 +15,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -222,3 +223,55 @@ def test_scope_key_stays_derivable_from_the_scope_alone():
     assert dl._scope_variant("video") == "@video"
     assert dl._scope_variant("  ") is None
     assert is_valid_gguf_variant("@diffusion")
+
+
+def _fake_backend(*loading: str):
+    return SimpleNamespace(loading_repo_ids = lambda: tuple(loading))
+
+
+def test_an_images_load_staging_a_repo_blocks_a_download_of_it(monkeypatch):
+    # The Images and Video backends stage their snapshots through the same HF cache as the
+    # download worker, so starting a download for a repo one of them is already fetching puts
+    # two writers on the same blobs. Chat was guarded; these were not.
+    from core.inference import diffusion_engine_router, video as video_backend
+
+    monkeypatch.setattr(
+        diffusion_engine_router,
+        "get_active_diffusion_engine",
+        lambda: _fake_backend("Tongyi-MAI/Z-Image-Turbo", "unsloth/Z-Image-Turbo-GGUF"),
+    )
+    monkeypatch.setattr(video_backend, "get_video_backend", lambda: _fake_backend())
+
+    # Both the checkpoint and the companion base it is pulling are covered, case-insensitively
+    # (the repo id arrives from the URL exactly as the user typed it).
+    assert dl._load_in_flight("Tongyi-MAI/Z-Image-Turbo") is True
+    assert dl._load_in_flight("tongyi-mai/z-image-turbo") is True
+    assert dl._load_in_flight("unsloth/Z-Image-Turbo-GGUF") is True
+    assert dl._load_in_flight("Org/Unrelated") is False
+
+
+def test_a_video_load_staging_a_repo_blocks_a_download_of_it(monkeypatch):
+    from core.inference import diffusion_engine_router, video as video_backend
+
+    monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", _fake_backend)
+    monkeypatch.setattr(
+        video_backend,
+        "get_video_backend",
+        lambda: _fake_backend("Wan-AI/Wan2.2-TI2V-5B-Diffusers"),
+    )
+
+    assert dl._load_in_flight("Wan-AI/Wan2.2-TI2V-5B-Diffusers") is True
+    assert dl._load_in_flight("Org/Unrelated") is False
+
+
+def test_an_unavailable_backend_never_blocks_a_download(monkeypatch):
+    # Fail open: a probe that raises must not make the repo undownloadable.
+    from core.inference import diffusion_engine_router, video as video_backend
+
+    def _boom():
+        raise RuntimeError("no engine")
+
+    monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", _boom)
+    monkeypatch.setattr(video_backend, "get_video_backend", _boom)
+
+    assert dl._load_in_flight("Org/Anything") is False
