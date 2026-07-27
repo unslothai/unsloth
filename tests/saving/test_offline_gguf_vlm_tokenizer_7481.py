@@ -66,11 +66,25 @@ def _offline_env(monkeypatch, cache_root):
     monkeypatch.setenv("HF_HUB_CACHE", str(cache_root))
 
 
+def test_resolve_hub_repo_cached_file_finds_tokenizer_model(tmp_path, monkeypatch):
+    snap = _write_gemma4_cache(tmp_path)
+    (snap / "tokenizer.model").write_bytes(b"sp-model")
+    _offline_env(monkeypatch, tmp_path)
+
+    got = L._resolve_hub_repo_cached_file(
+        _REPO,
+        "tokenizer.model",
+        local_files_only=True,
+        cache_dir=str(tmp_path),
+    )
+    assert got == str(snap / "tokenizer.model")
+
+
 def test_resolve_hub_repo_local_dir_from_cached_snapshot(tmp_path, monkeypatch):
     snap = _write_gemma4_cache(tmp_path)
     _offline_env(monkeypatch, tmp_path)
 
-    got = L._resolve_hub_repo_local_dir(_REPO, local_files_only = True, cache_dir = str(tmp_path))
+    got = L._resolve_hub_repo_local_dir(_REPO, local_files_only=True, cache_dir=str(tmp_path))
     assert got == str(snap)
 
 
@@ -78,9 +92,53 @@ def test_hub_repo_or_local_path_prefers_snapshot_over_repo_id(tmp_path, monkeypa
     snap = _write_gemma4_cache(tmp_path)
     _offline_env(monkeypatch, tmp_path)
 
-    got = L._hub_repo_or_local_path(_REPO, local_files_only = True, cache_dir = str(tmp_path))
+    got = L._hub_repo_or_local_path(_REPO, local_files_only=True, cache_dir=str(tmp_path))
     assert got == str(snap)
     assert got != _REPO
+
+
+def test_hub_repo_or_local_path_keeps_repo_id_online(tmp_path, monkeypatch):
+    snap = _write_gemma4_cache(tmp_path)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+
+    got = L._hub_repo_or_local_path(_REPO, local_files_only=False, cache_dir=str(tmp_path))
+    assert got == _REPO
+    assert got != str(snap)
+
+
+def test_has_tokenizer_model_offline_does_not_cache_negative(tmp_path, monkeypatch):
+    from unsloth.save import _TOKENIZER_MODEL_CACHE, _has_tokenizer_model
+
+    snap = _write_gemma4_cache(tmp_path)
+    _offline_env(monkeypatch, tmp_path)
+    _TOKENIZER_MODEL_CACHE.clear()
+
+    tok = SimpleNamespace(name_or_path=_REPO)
+    assert _has_tokenizer_model(tok, token=None) is False
+    assert _REPO not in _TOKENIZER_MODEL_CACHE
+
+    (snap / "tokenizer.model").write_bytes(b"sp-model")
+    assert _has_tokenizer_model(tok, token=None) is True
+
+
+def test_preserve_sentencepiece_offline_copies_cached_model(tmp_path, monkeypatch):
+    from unsloth.save import _TOKENIZER_MODEL_CACHE, _preserve_sentencepiece_tokenizer_assets
+
+    snap = _write_gemma4_cache(tmp_path)
+    (snap / "tokenizer.model").write_bytes(b"cached-sp-model")
+    _offline_env(monkeypatch, tmp_path)
+    _TOKENIZER_MODEL_CACHE.clear()
+
+    save_dir = tmp_path / "export"
+    save_dir.mkdir()
+    (save_dir / "tokenizer_config.json").write_text("{}", encoding="utf-8")
+    tok = SimpleNamespace(name_or_path=_REPO)
+
+    _preserve_sentencepiece_tokenizer_assets(tok, str(save_dir))
+
+    assert (save_dir / "tokenizer.model").read_bytes() == b"cached-sp-model"
 
 
 def test_load_pretrained_tokenizer_fast_passes_snapshot_not_repo_id(tmp_path, monkeypatch):
@@ -111,12 +169,13 @@ def test_load_pretrained_tokenizer_fast_passes_snapshot_not_repo_id(tmp_path, mo
 
 
 def test_has_tokenizer_model_offline_skips_model_info(tmp_path, monkeypatch):
-    from unsloth.save import _has_tokenizer_model
+    from unsloth.save import _TOKENIZER_MODEL_CACHE, _has_tokenizer_model
 
     _write_gemma4_cache(tmp_path)
     _offline_env(monkeypatch, tmp_path)
+    _TOKENIZER_MODEL_CACHE.clear()
 
-    tok = SimpleNamespace(name_or_path = _REPO, tokenizer = None)
+    tok = SimpleNamespace(name_or_path = _REPO)
 
     with patch("huggingface_hub.HfApi.model_info") as model_info:
         model_info.side_effect = AssertionError("model_info must not run offline")

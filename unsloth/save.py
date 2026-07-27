@@ -52,7 +52,7 @@ import traceback
 import psutil
 import re
 from transformers.models.llama.modeling_llama import logger
-from .models.loader_utils import get_model_name, _env_says_offline, _resolve_hub_repo_local_dir
+from .models.loader_utils import get_model_name, _env_says_offline, _resolve_hub_repo_cached_file
 from .models._utils import _convert_torchao_model
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
 from transformers import ProcessorMixin, PreTrainedTokenizerBase
@@ -448,17 +448,16 @@ def _has_tokenizer_model(tokenizer, token = None):
 
     # Offline: probe the local cache instead of model_info (issue #7481).
     if _env_says_offline():
-        local_dir = _resolve_hub_repo_local_dir(
+        cached_path = _resolve_hub_repo_cached_file(
             source,
+            "tokenizer.model",
             token = token,
             local_files_only = True,
-            filenames = ("tokenizer.model", "tokenizer.json", "tokenizer_config.json"),
             cache_dir = os.environ.get("HF_HUB_CACHE"),
         )
-        if local_dir is not None:
-            has_tokenizer_model = os.path.isfile(os.path.join(local_dir, "tokenizer.model"))
-            _TOKENIZER_MODEL_CACHE[source] = has_tokenizer_model
-            return has_tokenizer_model
+        if cached_path is not None:
+            _TOKENIZER_MODEL_CACHE[source] = True
+            return True
         return False
 
     try:
@@ -520,15 +519,29 @@ def _preserve_sentencepiece_tokenizer_assets(
                 if os.path.isfile(local_path):
                     downloaded_path = local_path
             else:
-                from huggingface_hub import hf_hub_download
-                try:
-                    downloaded_path = hf_hub_download(
-                        repo_id = source,
-                        filename = "tokenizer.model",
+                cached_path = None
+                if _env_says_offline():
+                    cached_path = _resolve_hub_repo_cached_file(
+                        source,
+                        "tokenizer.model",
                         token = token,
+                        local_files_only = True,
+                        cache_dir = os.environ.get("HF_HUB_CACHE"),
                     )
-                except Exception:
-                    downloaded_path = None
+                if cached_path is not None:
+                    downloaded_path = cached_path
+                else:
+                    from huggingface_hub import hf_hub_download
+                    try:
+                        downloaded_path = hf_hub_download(
+                            repo_id = source,
+                            filename = "tokenizer.model",
+                            token = token,
+                            local_files_only = _env_says_offline(),
+                            cache_dir = os.environ.get("HF_HUB_CACHE"),
+                        )
+                    except Exception:
+                        downloaded_path = None
 
     if not os.path.isfile(tokenizer_model) and downloaded_path is not None:
         shutil.copy2(downloaded_path, tokenizer_model)
@@ -3808,7 +3821,7 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     return _unsloth_save_lora_gguf(self, tokenizer, save_directory, outtype = outtype)
 
 
-from .models.loader_utils import get_model_name, _env_says_offline, _resolve_hub_repo_local_dir
+from .models.loader_utils import get_model_name, _env_says_offline, _resolve_hub_repo_cached_file
 from unsloth_zoo.saving_utils import (
     merge_and_overwrite_lora,
     prepare_saving,

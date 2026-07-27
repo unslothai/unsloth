@@ -1170,6 +1170,28 @@ def _resolve_hub_repo_local_dir(
     return None
 
 
+def _resolve_hub_repo_cached_file(
+    repo_id,
+    filename,
+    *,
+    token = None,
+    cache_dir = None,
+    local_files_only = False,
+):
+    """Return a cached file path under a Hub snapshot, or None if absent."""
+    local_dir = _resolve_hub_repo_local_dir(
+        repo_id,
+        token = token,
+        cache_dir = cache_dir,
+        local_files_only = local_files_only,
+        filenames = (filename,),
+    )
+    if local_dir is None:
+        return None
+    path = os.path.join(local_dir, filename)
+    return path if os.path.isfile(path) else None
+
+
 def _hub_repo_or_local_path(
     repo_id,
     *,
@@ -1179,14 +1201,16 @@ def _hub_repo_or_local_path(
     filenames = None,
 ):
     """Prefer a cached snapshot path over a Hub repo id when offline or ``local_files_only``."""
+    if isinstance(repo_id, str) and os.path.isdir(repo_id):
+        return repo_id
     lfo = bool(local_files_only) or _env_says_offline()
-    if not lfo and os.path.isdir(repo_id):
+    if not lfo:
         return repo_id
     local_dir = _resolve_hub_repo_local_dir(
         repo_id,
         token = token,
         cache_dir = cache_dir,
-        local_files_only = lfo,
+        local_files_only = True,
         filenames = filenames
         or (
             "tokenizer_config.json",
