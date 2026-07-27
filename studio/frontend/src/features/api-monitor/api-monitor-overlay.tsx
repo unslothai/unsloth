@@ -111,7 +111,9 @@ export function ApiMonitorOverlay(): ReactElement | null {
   // One loop for both jobs: panel contents while open, traffic watch while
   // closed. Stands down on the full page, which polls for itself.
   useEffect(() => {
-    if (onFullPage) {
+    // Opted out and closed: the panel can neither open nor show anything, so
+    // polling would be pure background load on every open Studio window.
+    if (onFullPage || (!autoOpen && !isOpen)) {
       return;
     }
     let cancelled = false;
@@ -146,7 +148,7 @@ export function ApiMonitorOverlay(): ReactElement | null {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [isOpen, onFullPage]);
+  }, [isOpen, onFullPage, autoOpen]);
 
   const entries = useMemo(() => data?.entries ?? [], [data]);
   const stats = useMemo(() => computeStats(entries), [entries]);

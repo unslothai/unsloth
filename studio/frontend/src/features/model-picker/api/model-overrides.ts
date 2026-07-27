@@ -134,6 +134,10 @@ export async function putModelOverride(
     body: JSON.stringify({
       // biome-ignore lint/style/useNamingConvention: API schema
       model_id: modelOverrideKey(modelId, ggufVariant),
+      // Say which operation this is. A save of an all-default config carries no
+      // fields, which is shape-identical to "forget this model", and guessing
+      // wrong wipes launch flags the UI cannot show or restore.
+      remove: config === null,
       // Launch flags have no UI control, so the backend preserves them when the
       // field is omitted. Forgetting a model means forgetting all of it, so that
       // path sends an explicit empty list to clear them.

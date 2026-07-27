@@ -3,25 +3,26 @@
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
-import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
+import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
+import { hasAuthToken } from "@/features/auth";
 import {
   ChatPage,
+  type ChatSearch,
   clearNewChatDraft,
   useChatRuntimeStore,
-  type ChatSearch,
 } from "@/features/chat";
-import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
-import { RemoteCodeConsentDialog } from "@/features/security";
-import { HfTokenWarningDialog } from "@/features/hf-auth";
-import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
-import { useTrainingUnloadGuard } from "@/features/training";
 import { useExportRuntimeLifecycle } from "@/features/export";
-import { hasAuthToken } from "@/features/auth";
+import { HfTokenWarningDialog } from "@/features/hf-auth";
+import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { usePersonalizationSync } from "@/features/profile";
+import { RemoteCodeConsentDialog } from "@/features/security";
+import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
+import { useTrainingUnloadGuard } from "@/features/training";
+import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
-import { useT, type TranslationKey } from "@/i18n";
+import { type TranslationKey, useT } from "@/i18n";
 import {
   Outlet,
   createRootRoute,
@@ -173,6 +174,16 @@ function RootLayout() {
       ? `${documentTitle} - ${DEFAULT_DOCUMENT_TITLE}`
       : DEFAULT_DOCUMENT_TITLE;
   }, [documentTitle]);
+
+  // Settings saved before the server-side override map existed live only in this
+  // browser, so an API load would use app defaults while the UI still showed the
+  // model as remembered. Backfill once, after auth.
+  useEffect(() => {
+    if (isAuthFlowRoute) {
+      return;
+    }
+    void backfillModelOverrides();
+  }, [isAuthFlowRoute]);
 
   useEffect(() => {
     if (isAuthFlowRoute) {

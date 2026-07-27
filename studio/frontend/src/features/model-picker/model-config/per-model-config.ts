@@ -416,7 +416,10 @@ function writeMap(map: StoredMap): boolean {
   }
 }
 
-function warnDroppedFields(raw: Record<string, unknown>, version: number): void {
+function warnDroppedFields(
+  raw: Record<string, unknown>,
+  version: number,
+): void {
   if (!import.meta.env?.DEV) {
     return;
   }
@@ -436,7 +439,8 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     typeof partial.speculativeType === "string"
       ? canonicalizeSpeculativeType(partial.speculativeType)
       : null;
-  const speculativeType = rawSpecType ?? DEFAULT_PER_MODEL_CONFIG.speculativeType;
+  const speculativeType =
+    rawSpecType ?? DEFAULT_PER_MODEL_CONFIG.speculativeType;
   const specDraftNMax =
     speculativeType != null &&
     MTP_SPECULATIVE_TYPES.has(speculativeType) &&
@@ -646,6 +650,32 @@ export function savePerModelConfig(
     return false;
   }
   return writeMap(map);
+}
+
+/** Every saved per-model config, decoded back to the ids it was keyed by. */
+export function listPerModelConfigs(): {
+  modelId: string;
+  ggufVariant: string | null;
+  config: PerModelConfig;
+}[] {
+  const out: {
+    modelId: string;
+    ggufVariant: string | null;
+    config: PerModelConfig;
+  }[] = [];
+  for (const [key, raw] of Object.entries(readMap())) {
+    const modelId = modelIdFromStorageKey(key);
+    if (!modelId) {
+      continue;
+    }
+    const variant = ggufVariantFromStorageKey(key);
+    out.push({
+      modelId,
+      ggufVariant: variant ? variant : null,
+      config: normalize(raw),
+    });
+  }
+  return out;
 }
 
 export function deletePerModelConfig(

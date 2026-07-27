@@ -4091,7 +4091,11 @@ def test_stale_gpu_ids_are_dropped_not_fatal(monkeypatch):
         "get_model_override",
         lambda mid: {"gpu_ids": [0, 1], "max_seq_length": 4096},
     )
-    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", lambda ids: False)
+
+    async def _unusable(ids):
+        return False
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _unusable)
 
     _run_hook("unsloth/B-GGUF")
     req = rec.calls[0]
@@ -4111,7 +4115,11 @@ def test_usable_gpu_ids_are_kept(monkeypatch):
         recorder = rec,
     )
     monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0, 1]})
-    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", lambda ids: True)
+
+    async def _usable(ids):
+        return True
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
 
     _run_hook("unsloth/B-GGUF")
     assert rec.calls[0].gpu_ids == [0, 1]
@@ -4126,4 +4134,89 @@ def test_override_gpu_ids_probe_never_raises(monkeypatch):
         raise RuntimeError("driver exploded")
 
     monkeypatch.setattr(hw, "resolve_requested_gpu_ids", boom)
-    assert inference_route._override_gpu_ids_still_resolve([0]) is False
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0])) is False
+
+
+def test_vulkan_ordinal_absent_from_the_probe_is_unusable(monkeypatch):
+    # resolve_requested_gpu_ids only rejects malformed Vulkan ordinals, so
+    # presence needs the same ggml probe the load itself runs. Without it this
+    # helper says "fine" and the load 400s on the check it skipped.
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/bin/llama-server")
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_memory", staticmethod(lambda binary: [(0, 8192)])
+    )
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0])) is True
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([7])) is False
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0, 1])) is False
+
+
+def test_vulkan_probe_without_a_binary_does_not_block_the_load(monkeypatch):
+    # No binary means nothing to probe with. Refusing here would drop a valid
+    # pin on every load, so the later path stays the authority.
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
+    monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: None))
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0])) is True
+
+
+def test_default_save_preserves_flags_instead_of_removing(monkeypatch):
+    # "Remember for this model" is on but every value is default, so the payload
+    # carries no fields. That is shape-identical to a removal, and guessing wrong
+    # wipes launch flags no UI can show or restore.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--flash-attn"])
+
+    resp = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF", remove = False),
+        "tester",
+    )
+    assert resp.overrides["unsloth/B-GGUF"]["llama_extra_args"] == ["--flash-attn"]
+
+
+def test_explicit_remove_still_clears_everything(monkeypatch):
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override(
+        "unsloth/B-GGUF", llama_extra_args = ["--flash-attn"], max_seq_length = 4096
+    )
+    resp = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(
+            model_id = "unsloth/B-GGUF", remove = True, llama_extra_args = []
+        ),
+        "tester",
+    )
+    assert "unsloth/B-GGUF" not in resp.overrides
+
+
+def test_bare_payload_without_remove_flag_still_removes(monkeypatch):
+    # The original contract, kept for any caller that predates the flag.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("unsloth/B-GGUF", max_seq_length = 4096)
+    resp = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF"), "tester"
+    )
+    assert "unsloth/B-GGUF" not in resp.overrides
+
+
+def test_remove_false_with_real_fields_saves_normally(monkeypatch):
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    resp = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(
+            model_id = "unsloth/B-GGUF", remove = False, max_seq_length = 8192
+        ),
+        "tester",
+    )
+    assert resp.overrides["unsloth/B-GGUF"]["max_seq_length"] == 8192

@@ -158,6 +158,10 @@ class ModelOverridePayload(BaseModel):
     gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 1024)
     n_cpu_moe: Optional[int] = Field(default = None, ge = 0, le = 1024)
     gpu_ids: Optional[list[int]] = None
+    # Explicit intent. A save whose config is entirely default carries no fields
+    # at all, which is indistinguishable from "forget this model" by shape alone.
+    # None keeps the original contract: a bare model_id means remove.
+    remove: Optional[bool] = None
 
     @field_validator("chat_template_override")
     @classmethod
@@ -354,11 +358,14 @@ def update_openai_auto_switch_override(
         # them and must not delete them).
         requested_extra_args = payload.llama_extra_args
         saved_fields = payload.model_dump(
-            exclude = {"model_id", "llama_extra_args"}, exclude_none = True
+            exclude = {"model_id", "llama_extra_args", "remove"}, exclude_none = True
         )
-        is_removal = not payload.tensor_parallel and not {
-            key: value for key, value in saved_fields.items() if key != "tensor_parallel"
-        }
+        if payload.remove is not None:
+            is_removal = payload.remove
+        else:
+            is_removal = not payload.tensor_parallel and not {
+                key: value for key, value in saved_fields.items() if key != "tensor_parallel"
+            }
         if requested_extra_args is None and not is_removal:
             requested_extra_args = get_model_override(payload.model_id).get("llama_extra_args")
             if requested_extra_args is None:
