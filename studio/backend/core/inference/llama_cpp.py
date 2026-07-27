@@ -11620,9 +11620,7 @@ class LlamaCppBackend:
                                         and not _reasoning_summary_emitted
                                     ):
                                         _reasoning_summary_emitted = True
-                                        _summary = _reasoning_summary_event(
-                                            _reasoning_started_at
-                                        )
+                                        _summary = _reasoning_summary_event(_reasoning_started_at)
                                         if _suppress_visible_output:
                                             _deferred_reasoning_summary = _summary
                                         else:

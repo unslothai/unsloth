@@ -1542,8 +1542,7 @@ def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
     visible_answer_index = next(
         index
         for index, event in enumerate(events)
-        if event.get("type") == "content"
-        and "No tool is needed" in event.get("text", "")
+        if event.get("type") == "content" and "No tool is needed" in event.get("text", "")
     )
     assert visible_answer_index < events.index(summaries[0])
     assert len(payloads) == 2
