@@ -13842,9 +13842,7 @@ async def anthropic_messages(
         through the registry and keys would add a cancel surface to a public API.
         Exactly one branch runs per request, so this cannot enter twice.
         """
-        _tracker = _TrackedCancel(
-            cancel_event, model = model_name, kind = "messages"
-        )
+        _tracker = _TrackedCancel(cancel_event, model = model_name, kind = "messages")
         _tracker.__enter__()
         try:
             return await _monitored_anthropic(coro)
@@ -14081,9 +14079,7 @@ async def _anthropic_tool_stream(
         # entry a non-forced /unload saw zero generations and tore the server down
         # mid-response. Entered inside the body generator so a response whose body never
         # starts leaves nothing behind. No thread_id: public API surface.
-        _tracker = _TrackedCancel(
-            cancel_event, model = model_name, kind = "messages"
-        )
+        _tracker = _TrackedCancel(cancel_event, model = model_name, kind = "messages")
         _tracker.__enter__()
         try:
             emitter = AnthropicStreamEmitter()
@@ -14232,9 +14228,7 @@ async def _anthropic_plain_stream(
     async def _stream():
         # Registered like the tool stream above: this default /v1/messages path decodes on
         # llama-server, so without an entry a non-forced /unload tore it down mid-response.
-        _tracker = _TrackedCancel(
-            cancel_event, model = model_name, kind = "messages"
-        )
+        _tracker = _TrackedCancel(cancel_event, model = model_name, kind = "messages")
         _tracker.__enter__()
         try:
             emitter = AnthropicStreamEmitter()

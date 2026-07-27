@@ -1980,7 +1980,8 @@ def test_audio_input_claims_the_worker_before_sending():
     src = pathlib.Path(orch_mod.__file__).read_text(encoding = "utf-8")
     tree = ast.parse(src)
     fn = next(
-        n for n in ast.walk(tree)
+        n
+        for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name == "_generate_audio_input_inner"
     )
     body = ast.get_source_segment(src, fn) or ""
