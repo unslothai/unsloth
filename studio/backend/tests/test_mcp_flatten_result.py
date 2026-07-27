@@ -195,7 +195,12 @@ def test_stdio_session_call_also_passes_raise_on_error_false(monkeypatch):
         def is_connected(self):
             return self.connected
 
-        async def call_tool(self, name, args, raise_on_error = True):
+        async def call_tool(
+            self,
+            name,
+            args,
+            raise_on_error = True,
+        ):
             seen["raise_on_error"] = raise_on_error
             return _result(_text("boom"), _image(), is_error = True)
 
