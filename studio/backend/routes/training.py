@@ -1561,16 +1561,21 @@ def _resolve_dataset_caption(
     is stripped, so an empty (tombstone) sidecar shadows metadata and yields "" -- the
     trainer then skips that image (``if caption:``), so it must not count as captioned."""
     caption: Optional[str] = None
+    sidecar_present = False
     for ext in (".txt", ".caption"):
         sidecar = image_path.with_suffix(ext)
         if sidecar.is_file():
+            sidecar_present = True
             try:
                 caption = sidecar.read_text(encoding = "utf-8").strip()
             except (OSError, UnicodeError):
-                # Unreadable/invalid UTF-8 sidecar: no caption, not a 500.
-                caption = None
+                # Unreadable / invalid UTF-8 sidecar: the EMPTY TOMBSTONE, not "no sidecar", which
+                # is what the trainer does with it. Uploads accept raw sidecar bytes, so reading it
+                # as absent let the grid and the dataset summary show a metadata caption that the
+                # run would silently replace with the instance prompt (or skip the image over).
+                caption = ""
             break
-    if caption is None:
+    if not sidecar_present:
         try:
             rel = image_path.relative_to(folder).as_posix()
         except ValueError:
@@ -2024,19 +2029,24 @@ def _image_record(
     metadata.jsonl / captions.jsonl row for the image."""
     caption: Optional[str] = None
     source = "none"
+    sidecar_present = False
     for ext in (".txt", ".caption"):
         sidecar = image_path.with_suffix(ext)
         if sidecar.is_file():
+            sidecar_present = True
             try:
                 caption = sidecar.read_text(encoding = "utf-8").strip()
                 source = "sidecar"
             except (OSError, UnicodeError):
                 # Unreadable / invalid UTF-8 sidecar (uploads store text sidecars as raw bytes):
                 # UnicodeDecodeError is a ValueError, not an OSError, so an OSError-only guard let it 500 the
-                # whole labeling grid. Read it as no caption, like the info summary does.
+                # whole labeling grid. The trainer treats ANY existing sidecar as the empty tombstone and
+                # never reads metadata for that image, so showing a metadata caption here would display a
+                # label the run silently replaces with the instance prompt.
                 caption = None
+                source = "sidecar"
             break
-    if caption is None:
+    if caption is None and not sidecar_present:
         # Basename first, then the relative path as written in the jsonl (as_posix so a Windows backslash
         # path still matches forward-slash keys): discover_image_caption_pairs's order.
         meta = meta_captions.get(image_path.name)

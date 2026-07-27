@@ -783,3 +783,35 @@ def test_an_import_into_a_folder_filled_meanwhile_does_not_merge(client, ds_root
     assert r.json()["imported"] == 0
     assert (folder / "img_0000.txt").read_text(encoding = "utf-8") == "from the first import"
     assert not training_route._dataset_import_lock(folder).locked()
+
+
+def test_an_unreadable_sidecar_shadows_the_metadata_caption(client, ds_root):
+    """The trainer treats ANY existing sidecar, including one it cannot decode, as an empty
+    tombstone and never falls back to metadata (discover_image_caption_pairs). Reading it as
+    "no sidecar" here made the grid and the summary show a metadata caption that the run would
+    silently replace with the instance prompt, so the user trained on labels they never saw."""
+    folder = ds_root / "tombstone"
+    folder.mkdir()
+    _write_png(folder / "a.png")
+    _write_png(folder / "b.png")
+    (folder / "a.txt").write_bytes(b"\xff\xfe not valid utf-8")
+    (folder / "metadata.jsonl").write_text(
+        '{"file_name": "a.png", "text": "metadata caption for a"}\n'
+        '{"file_name": "b.png", "text": "metadata caption for b"}\n',
+        encoding = "utf-8",
+    )
+
+    recs = {
+        rec["filename"]: rec
+        for rec in client.get("/api/train/diffusion/dataset/tombstone/images").json()["images"]
+    }
+    # a.png has a sidecar the trainer cannot read: uncaptioned, NOT the metadata row.
+    assert recs["a.png"]["caption"] in (None, "")
+    # b.png has no sidecar at all, so metadata still applies.
+    assert recs["b.png"]["caption"] == "metadata caption for b"
+
+    # And the dataset summary counts it the same way the run would: one captioned image, not two.
+    info = client.get("/api/train/diffusion/info").json()
+    summary = next(d for d in info["datasets"] if d["name"] == "tombstone")
+    assert summary["image_count"] == 2
+    assert summary["caption_count"] == 1
