@@ -3651,12 +3651,18 @@ def _cached_repo_task(repo_info) -> Optional[str]:
         pass
     if not _repo_is_diffusers(repo_info):
         return None
-    # Same trust rule the image load path applies, so every advertised row can actually load: a
-    # cached community pipeline has a model_index.json like any other, but validate_load_request
-    # refuses its repo id, so tagging it text-to-image put a row in the Images picker that 400s.
+    # BOTH gates, mirroring the video branch above: the load path's trust rule AND a detected image
+    # family. A model_index.json only proves the repo is a diffusers pipeline, not that it is one of
+    # the image families this backend can assemble, so an unsloth-hosted pipeline of an unsupported
+    # class cleared the trust gate, was advertised as text-to-image, and then deterministically
+    # failed validate_load_request, which detects the family the same way.
     try:
         from core.inference.diffusion import _is_trusted_diffusion_repo
-        return "text-to-image" if _is_trusted_diffusion_repo(repo_id) else None
+        from core.inference.diffusion_families import detect_family
+
+        if not _is_trusted_diffusion_repo(repo_id) or detect_family(repo_id) is None:
+            return None
+        return "text-to-image"
     except Exception:  # noqa: BLE001 -- an import failure must not hide a usable repo
         return "text-to-image"
 

@@ -1811,3 +1811,46 @@ def test_pipeline_class_guard_fires_before_any_download():
     assert "0.39" in msg and "0.37.0" in msg
     assert "3.10" in msg  # names the Python floor that carries a new enough diffusers
     assert diffusers is not None
+
+
+def test_cached_pipeline_needs_a_detectable_image_family(monkeypatch):
+    # A top-level model_index.json only proves the repo is a diffusers pipeline. An unsloth-hosted
+    # pipeline of a class this backend cannot assemble cleared the trust gate, was advertised to the
+    # Images picker as text-to-image, and then deterministically failed validate_load_request, which
+    # resolves the family the same way. Both gates now, mirroring the video branch above.
+    monkeypatch.setattr(models_route, "_repo_has_pipeline_index", lambda info: True)
+
+    def _task(repo_id):
+        return models_route._cached_repo_task(SimpleNamespace(repo_id = repo_id, repo_path = "/x"))
+
+    # Trusted AND a detected family -> claimed by Images.
+    assert _task("unsloth/Z-Image-Turbo") == "text-to-image"
+    assert _task("unsloth/FLUX.1-dev") == "text-to-image"
+    # Trusted but no image family the loader can detect -> not advertised.
+    assert _task("unsloth/some-unsupported-pipeline") is None
+    # Untrusted keeps its existing refusal.
+    assert _task("someone/random-diffusers-pipeline") is None
+
+
+def test_cached_repo_task_agrees_with_the_image_loader(monkeypatch):
+    # Same invariant as the GGUF arch test: whatever the picker advertises as a loadable image
+    # model, validate_load_request must accept.
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setattr(models_route, "_repo_has_pipeline_index", lambda info: True)
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    for repo_id in (
+        "unsloth/Z-Image-Turbo",
+        "unsloth/FLUX.1-dev",
+        "unsloth/some-unsupported-pipeline",
+        "unsloth/stable-audio-open-1.0",
+    ):
+        task = models_route._cached_repo_task(SimpleNamespace(repo_id = repo_id, repo_path = "/x"))
+        try:
+            backend.validate_load_request(repo_id)
+            loader_accepts = True
+        except (ValueError, FileNotFoundError, RuntimeError):
+            loader_accepts = False
+        assert (task == "text-to-image") == loader_accepts, (
+            f"{repo_id}: picker task={task} but loader accepts={loader_accepts}"
+        )

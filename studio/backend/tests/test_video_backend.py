@@ -2196,3 +2196,49 @@ def test_download_plan_keeps_the_wide_base_for_a_plain_ltx2_pick(monkeypatch):
     assert any(f.startswith("connectors/") for f in base["files"])
     # The GGUF still replaces the DiT, so the transformer shards stay out.
     assert not any(f.startswith("transformer/") for f in base["files"])
+
+
+def test_each_video_load_gets_its_own_cancel_event(monkeypatch):
+    """A cancelled load must STAY cancelled once the next one starts.
+
+    unload() sets the event the running worker holds and drops _loading, so the next begin_load
+    could arrive before that worker had exited. Clearing a shared event there un-cancelled the old
+    worker, and its multi-gigabyte checkpoint pull resumed alongside the replacement load until the
+    token check at the very end.
+    """
+    import threading
+    from types import SimpleNamespace
+
+    from core.inference.video import VideoBackend
+
+    backend = VideoBackend.__new__(VideoBackend)
+    backend._lock = threading.RLock()
+    backend._generate_lock = threading.RLock()
+    backend._cancel_event = threading.Event()
+    backend._load_token = 0
+    backend._loading = None
+    backend._active_generate_cancel = None
+    backend._state = None
+
+    started: list[threading.Event] = []
+    monkeypatch.setattr(
+        threading, "Thread", lambda *a, **k: SimpleNamespace(start = lambda: None, daemon = True)
+    )
+    fam = SimpleNamespace(base_repo = "org/base", name = "wan2.2-ti2v-5b")
+    monkeypatch.setattr(VideoBackend, "validate_load_request", lambda self, *a, **k: fam)
+    monkeypatch.setattr(VideoBackend, "status", lambda self: {})
+
+    backend.begin_load("org/base")
+    first = backend._cancel_event
+    started.append(first)
+
+    # unload() signals the in-flight worker and clears _loading, letting a new load through.
+    backend._teardown_state = lambda: None
+    backend.unload()
+    assert first.is_set(), "unload must cancel the in-flight load"
+
+    backend.begin_load("org/other")
+    second = backend._cancel_event
+    assert second is not first, "each load needs its own event"
+    assert first.is_set(), "the replaced load must stay cancelled"
+    assert not second.is_set(), "a fresh load starts uncancelled"

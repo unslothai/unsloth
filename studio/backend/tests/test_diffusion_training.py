@@ -1918,10 +1918,14 @@ def test_route_start_carries_and_contains_the_conditioning_cache_dir(client):
     # multi-GB text encoders on a rerun, but the start schema omitted the field, so Pydantic
     # dropped it silently and every API-driven run fell back to the in-memory cache. It also has to
     # be contained like output_dir: the trainer subprocess would otherwise resolve it against its
-    # own cwd.
+    # own cwd. Sent against a DiT family, the only one whose trainer reads the option (see
+    # test_route_rejects_cond_cache_dir_for_sdxl).
     from pathlib import Path
 
-    r = client.post("/api/train/diffusion/start", json = {**_BODY, "cond_cache_dir": "cond-cache"})
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "model_family": "z-image", "cond_cache_dir": "cond-cache"},
+    )
     assert r.status_code == 200, r.text
     resolved = client._fake.started_with["cond_cache_dir"]
     assert Path(resolved).is_absolute()
@@ -1932,5 +1936,45 @@ def test_route_start_carries_and_contains_the_conditioning_cache_dir(client):
     assert r.status_code == 200, r.text
     assert client._fake.started_with["cond_cache_dir"] is None
     r = client.post("/api/train/diffusion/start", json = {**_BODY, "cond_cache_dir": "   "})
+    assert r.status_code == 200, r.text
+    assert client._fake.started_with["cond_cache_dir"] is None
+
+
+def test_route_rejects_cond_cache_dir_for_sdxl(client):
+    # Only the DiT trainer reads cond_cache_dir. The SDXL trainer builds a per-process in-memory
+    # latent cache and never touches the persistent store, so accepting the option there promised
+    # cross-run reuse that never happened. Refuse it rather than ignore it.
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "model_family": "sdxl", "cond_cache_dir": "cond-cache"},
+    )
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"]
+    assert "cond_cache_dir" in detail and "sdxl" in detail
+    # It names the families that DO support it, so the message is actionable.
+    assert "z-image" in detail
+
+    # The check is on the RESOLVED family, so omitting model_family and letting an SDXL base be
+    # detected is refused too -- otherwise the common request shape kept the silent no-op.
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "cond_cache_dir": "cond-cache"},
+    )
+    assert r.status_code == 400, r.text
+    assert "cond_cache_dir" in r.json()["detail"]
+
+    # A DiT family still accepts it, resolved and contained like output_dir.
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "model_family": "z-image", "cond_cache_dir": "cond-cache"},
+    )
+    assert r.status_code == 200, r.text
+    from pathlib import Path
+
+    assert Path(client._fake.started_with["cond_cache_dir"]).is_absolute()
+    # And omitting it stays off (the trainer's in-memory default), not resolved to the outputs root.
+    r = client.post(
+        "/api/train/diffusion/start", json = {**_BODY, "model_family": "sdxl"}
+    )
     assert r.status_code == 200, r.text
     assert client._fake.started_with["cond_cache_dir"] is None

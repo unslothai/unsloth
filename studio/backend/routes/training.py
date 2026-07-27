@@ -1394,6 +1394,22 @@ async def start_diffusion_training(
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
 
+    # Only the DiT trainer reads cond_cache_dir. The SDXL trainer builds a per-process in-memory
+    # latent cache and never touches the persistent store, so accepting the option there promised
+    # cross-run reuse that never happened and silently re-encoded the dataset every run. Refuse it
+    # instead of ignoring it. Checked against the RESOLVED family, not the request field, so a
+    # request that omits model_family and lets an SDXL base be detected is caught too.
+    if cond_cache and normalized_cfg.resolved_family == "sdxl":
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "cond_cache_dir is not supported for the sdxl family: its trainer uses a "
+                "per-run in-memory latent cache and would ignore the persistent one. Omit it, "
+                "or train a DiT family (flux.1, flux.2-klein, flux.2-dev, qwen-image, "
+                "z-image, krea-2), which reuses conditioning across runs."
+            ),
+        )
+
     # Preflight the requested DiT precision BEFORE freeing GPU residents: the trainer's own checks
     # (bf16-capable GPU required; explicit int8 needs a functional torchao) fire only in the child,
     # AFTER _free_gpu_for_diffusion_training() evicted the user's model. Fail fast (400) so a

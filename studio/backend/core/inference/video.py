@@ -520,7 +520,13 @@ class VideoBackend:
                 raise RuntimeError("A video load is already in progress.")
             self._load_token += 1
             token = self._load_token
-            self._cancel_event.clear()
+            # A NEW event per load, never a clear() of the shared one. unload() sets the event the
+            # running worker holds, but it also drops _loading, so the next begin_load could start
+            # before that worker had exited and clear the very object it was watching -- the
+            # cancelled multi-gigabyte pull then resumed and ran alongside the replacement load
+            # until the token check at the end. A fresh object leaves the old worker's event set.
+            cancel_event = threading.Event()
+            self._cancel_event = cancel_event
             self._loading = _VideoLoadingState(repo_id = repo_id, base_repo = fam.base_repo)
 
         threading.Thread(
@@ -540,6 +546,7 @@ class VideoBackend:
                 text_encoder_quant = text_encoder_quant,
                 model_kind = model_kind,
                 _load_token = token,
+                _cancel_event = cancel_event,
             ),
             daemon = True,
         ).start()
@@ -547,6 +554,9 @@ class VideoBackend:
 
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
+        # This load's own event: a later load replaces self._cancel_event rather than clearing it,
+        # so a cancelled worker stays cancelled.
+        cancel_event = kwargs.pop("_cancel_event", None) or self._cancel_event
         try:
             fam = _detect_load_family(
                 kwargs["repo_id"], kwargs.get("gguf_filename"), kwargs.get("family_override")
@@ -583,7 +593,7 @@ class VideoBackend:
                         kwargs["repo_id"],
                         kwargs["gguf_filename"],
                         kwargs.get("hf_token"),
-                        cancel_event = self._cancel_event,
+                        cancel_event = cancel_event,
                     )
                 )
             # An LTX-2.3 checkpoint supplies the VAEs/vocoder/connectors, so the base pull shrinks to
@@ -624,7 +634,9 @@ class VideoBackend:
                         if self._load_token == token and self._loading is not None:
                             self._loading.expected_bytes = expected
             # Only a pre-cast checkpoint actually on disk earns the dense skip below.
-            te_skipped = self._fetch_te_prequant(te_sources, kwargs.get("hf_token"))
+            te_skipped = self._fetch_te_prequant(
+                te_sources, kwargs.get("hf_token"), cancel_event = cancel_event
+            )
             kwargs["_te_prequant_skipped"] = te_skipped
             base_local = self._predownload_base(
                 base,
@@ -632,6 +644,7 @@ class VideoBackend:
                 kind,
                 ltx23 = ltx23,
                 skip_te_components = te_skipped,
+                cancel_event = cancel_event,
             )
             # The 2.3 assembly pulls per component from the hub id (its snapshot lacks the base VAEs), so it
             # only gets the warmed cache; generic paths get the full local snapshot.
@@ -936,7 +949,11 @@ class VideoBackend:
         return "2.3" in text or "2_3" in text or "23b" in text
 
     def _fetch_te_prequant(
-        self, sources: dict[str, Any], hf_token: Optional[str]
+        self,
+        sources: dict[str, Any],
+        hf_token: Optional[str],
+        *,
+        cancel_event: Optional[threading.Event] = None,
     ) -> tuple[str, ...]:
         """Pre-fetch the hosted pre-cast encoder checkpoints; return the components whose
         dense weights the base pull can therefore skip.
@@ -946,6 +963,7 @@ class VideoBackend:
         drop the dense shards, and the pull becomes cancellable and resumable like every
         other load download instead of an untracked stall. A component whose fetch fails
         keeps its dense weights, so the load still has an encoder to fall back to."""
+        cancel = cancel_event if cancel_event is not None else self._cancel_event
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
         fetched: list[str] = []
@@ -959,10 +977,10 @@ class VideoBackend:
                     source.location,
                     source.filename,
                     hf_token,
-                    cancel_event = self._cancel_event,
+                    cancel_event = cancel,
                 )
             except Exception as exc:  # noqa: BLE001 -- no pre-cast file just means the dense encoder
-                if self._cancel_event.is_set():
+                if cancel.is_set():
                     raise
                 logger.warning(
                     "video.te_prequant_fetch_failed: %s/%s: %s",
@@ -982,6 +1000,7 @@ class VideoBackend:
         *,
         ltx23: bool = False,
         skip_te_components: tuple[str, ...] = (),
+        cancel_event: Optional[threading.Event] = None,
     ) -> Optional[str]:
         """Pull exactly the base-repo files the load needs; return the local snapshot dir.
 
@@ -992,6 +1011,7 @@ class VideoBackend:
         diffusers' own expected-files sweep. None -> caller keeps the hub id (local
         path, non-diffusers layout, or any metadata failure: from_pretrained then
         resolves the repo exactly as before)."""
+        cancel = cancel_event if cancel_event is not None else self._cancel_event
         try:
             if not base or Path(base).expanduser().exists():
                 return None
@@ -1009,18 +1029,18 @@ class VideoBackend:
             for name, _ in files:
                 # Explicit check: a cached file returns without consulting the event, so a warm-cache sweep would
                 # otherwise run to completion after an unload cancelled.
-                if self._cancel_event.is_set():
+                if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 local = Path(
                     hf_hub_download_with_xet_fallback(
-                        base, name, hf_token, cancel_event = self._cancel_event
+                        base, name, hf_token, cancel_event = cancel
                     )
                 )
                 if name == "model_index.json":
                     snapshot_root = local.parent
             return str(snapshot_root) if snapshot_root is not None else None
         except Exception as exc:  # noqa: BLE001 -- fall back to from_pretrained's own pull
-            if self._cancel_event.is_set():
+            if cancel.is_set():
                 raise
             logger.warning("video.predownload_fallback: %s", exc)
             return None
