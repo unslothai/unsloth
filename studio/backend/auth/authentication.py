@@ -164,14 +164,13 @@ async def get_current_subject_allow_password_change(
     )
 
 
-# The literal the examples ship with; pasting one unedited is likelier than a revoked key.
+# The literal the examples ship with; pasted unedited more often than a revoked key.
 API_KEY_PLACEHOLDER = f"{API_KEY_PREFIX}YOUR_KEY"
 
 
 def _invalid_api_key_detail(token: str) -> str:
-    """Why the key failed. Only the unedited example placeholder is called out;
-    every real key still gets one indistinguishable message, so this reveals
-    nothing about which keys exist."""
+    """Why the key failed. Only the example placeholder is called out; every real
+    key gets one indistinguishable message, so this leaks no key existence."""
     if token == API_KEY_PLACEHOLDER:
         return (
             "This is the placeholder key from the example. Create an API key in "

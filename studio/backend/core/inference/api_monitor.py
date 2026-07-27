@@ -148,10 +148,9 @@ class ApiMonitor:
     ) -> str:
         """Record a model load/unload alongside the request traffic that caused it.
 
-        ``running=True`` opens the row (a load in progress) and the caller closes
-        it with the usual :meth:`finish` / :meth:`fail`; an unload is terminal on
-        arrival. Rows are shared, so every subject sees them, and share the same
-        retention budget as requests.
+        ``running=True`` opens the row for the caller to close with :meth:`finish` /
+        :meth:`fail`; an unload is terminal on arrival. Rows are shared (visible to
+        every subject) and share the request retention budget.
         """
         now = time.time()
         entry = ApiMonitorEntry(
@@ -177,8 +176,8 @@ class ApiMonitor:
         return entry.id
 
     def relabel(self, entry_id: Optional[str], model: str) -> None:
-        """Rename an open lifecycle row once the load resolves its real id (the
-        caller only has the load path up front, which may be an HF snapshot dir)."""
+        """Rename an open lifecycle row once the load resolves its real id: up front
+        the caller only has the load path, which may be an HF snapshot dir."""
         if not entry_id or not model:
             return
         with self._lock:
@@ -198,8 +197,7 @@ class ApiMonitor:
                 entry.updated_at = time.time()
 
     def discard(self, entry_id: Optional[str]) -> None:
-        """Drop a row that turned out not to be an event (a load that was already
-        satisfied, so nothing was actually loaded)."""
+        """Drop a row that turned out not to be an event (an already-satisfied load)."""
         if not entry_id:
             return
         with self._lock:
@@ -293,9 +291,8 @@ class ApiMonitor:
             self._trim_terminal_locked()
 
     def fail_open(self, entry_id: Optional[str], error: str) -> None:
-        """Fail only a still-open row. Unlike :meth:`fail` this never touches an
-        entry that already finished, so a catch-all in a ``finally`` cannot stamp
-        an error onto a request that in fact succeeded."""
+        """Fail only a still-open row: unlike :meth:`fail`, a catch-all in a
+        ``finally`` cannot stamp an error onto a request that already succeeded."""
         if not entry_id:
             return
         with self._lock:
