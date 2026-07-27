@@ -25,6 +25,7 @@ from core.inference.sd_cpp_args import (
     build_sd_cpp_command,
     build_sd_cpp_server_command,
     build_sd_cpp_upscale_command,
+    metal_text_encoder_flags,
     native_speed_flags,
     offload_flags,
     text_encoder_flags_for_family,
@@ -45,6 +46,50 @@ def test_te_flags_by_family():
     assert text_encoder_flags_for_family("flux.1") == ("--clip_l", "--t5xxl")
     assert text_encoder_flags_for_family("flux.2-klein") == ("--llm",)
     assert text_encoder_flags_for_family("unknown") == ()
+
+
+# ── Metal text-encoder placement ────────────────────────────────────────────
+
+
+def test_metal_keeps_the_text_encoder_off_the_gpu(monkeypatch):
+    # ggml's Metal backend aborts the process on RMS_NORM with non-contiguous rows and has no
+    # per-op CPU fallback, so an LLM text encoder killed sd-server mid-generation on macOS
+    # (observed on macos-14 with FLUX.2-klein-4B Q2_K: loads on mps, first generation exits -6).
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU", raising = False)
+    monkeypatch.setattr("sys.platform", "darwin")
+    assert metal_text_encoder_flags() == ["--clip-on-cpu"]
+    for other in ("linux", "win32"):
+        monkeypatch.setattr("sys.platform", other)
+        assert metal_text_encoder_flags() == []
+    # Opt back in once ggml grows the kernel.
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU", "1")
+    assert metal_text_encoder_flags() == []
+
+
+def test_metal_text_encoder_flag_reaches_both_command_builders(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU", raising = False)
+    monkeypatch.setattr("sys.platform", "darwin")
+    files = SdCppModelFiles(diffusion_model = "/m/x.gguf")
+    server = build_sd_cpp_server_command(
+        binary = "sd-server", files = files, host = "127.0.0.1", port = 1234
+    )
+    cli = build_sd_cpp_command(
+        binary = "sd-cli", files = files, params = SdCppGenParams(prompt = "x"),
+        output_path = "/o/x.png",
+    )
+    assert server.count("--clip-on-cpu") == 1
+    assert cli.count("--clip-on-cpu") == 1
+    # An offload policy that already pins the encoder must not emit it twice.
+    dual = build_sd_cpp_server_command(
+        binary = "sd-server", files = files, host = "127.0.0.1", port = 1234,
+        offload = offload_flags("model"),
+    )
+    assert dual.count("--clip-on-cpu") == 1
+    monkeypatch.setattr("sys.platform", "linux")
+    assert "--clip-on-cpu" not in build_sd_cpp_server_command(
+        binary = "sd-server", files = files, host = "127.0.0.1", port = 1234
+    )
 
 
 # ── offload policy -> sd-cli flags ──────────────────────────────────────────

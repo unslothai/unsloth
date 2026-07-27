@@ -120,6 +120,34 @@ def native_speed_flags(speed_mode: Optional[str]) -> list[str]:
     raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
 
 
+# Kill switch for the Metal text-encoder placement below (1/true keeps the encoder on Metal).
+_METAL_TE_ON_GPU_ENV = "UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU"
+
+
+def metal_text_encoder_flags() -> list[str]:
+    """Keep the TEXT ENCODER on CPU when sd.cpp runs on Apple Metal, else nothing.
+
+    ggml's Metal backend gates RMS_NORM on contiguous rows and calls ``GGML_ABORT`` when that does
+    not hold, with no per-op CPU fallback, so an LLM text encoder (Qwen3 for FLUX.2 / Z-Image, T5
+    for FLUX.1) takes the whole sd-server process down mid-generation:
+
+        ggml_metal_op_encode_impl: error: unsupported op 'RMS_NORM' -> ggml_abort
+        LLMEmbedder::encode_prompt -> LLMRunner::compute -> GGMLRunner::compute
+
+    Observed on macos-14 arm64 with FLUX.2-klein-4B Q2_K: the model loads on ``mps`` and the first
+    generation dies with exit code -6. The encoder runs once per prompt while the DiT runs every
+    step, so pinning only the encoder keeps Metal for the part that matters. Set
+    ``UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU=1`` to opt back in once ggml grows the kernel."""
+    import os
+    import sys
+
+    if sys.platform != "darwin":
+        return []
+    if os.environ.get(_METAL_TE_ON_GPU_ENV, "").strip().lower() in ("1", "true", "yes", "on"):
+        return []
+    return ["--clip-on-cpu"]
+
+
 def offload_flags(
     policy: str,
     *,
@@ -239,8 +267,10 @@ def build_sd_cpp_command(
     cmd += ["--output", output_path]
     if threads is not None:
         cmd += ["--threads", str(int(threads))]
+    offload = list(offload or [])
     if offload:
-        cmd += list(offload)
+        cmd += offload
+    cmd += [f for f in metal_text_encoder_flags() if f not in offload]
     if verbose:
         cmd += ["-v"]
     if extra_args:
@@ -344,6 +374,7 @@ def build_sd_cpp_server_command(
         cmd += offload
     # De-dup speed flags against offload (may already include --diffusion-fa).
     cmd += [f for f in native_speed_flags(native_speed) if f not in offload]
+    cmd += [f for f in metal_text_encoder_flags() if f not in offload]
     if verbose:
         cmd += ["-v"]
     if extra_args:
