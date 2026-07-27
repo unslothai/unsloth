@@ -50,6 +50,7 @@ from core.inference.tool_call_parser import (
 # pattern lists, so the safetensors streaming strip stays aligned with the parser.
 from core.tool_healing import (
     _REHEARSAL_TAIL_STRIP_RE,
+    _THINK_CLOSE_RE,
     _strip_bracket_tag_calls,
     _think_spans_outside_tool_markup,
     apply_tool_strip_patterns,
@@ -304,6 +305,45 @@ def _status_for_tool(tool_name: str, arguments: dict) -> str:
     return status_for_tool(tool_name, arguments)
 
 
+def _reprompt_intent_text(text: str, *, reasoning_prefilled: bool = False) -> str:
+    """Return visible answer text for the plan-without-action classifier.
+
+    Safetensors reasoning shares the cumulative text channel with the answer.
+    Forward-looking phrases inside ``<think>`` / ``[THINK]`` are private
+    planning, not a user-visible promise to call a tool. Match GGUF's behavior:
+    classify visible content when present and fall back to reasoning only for a
+    reasoning-only stall.
+    """
+    prefilled_reasoning = ""
+    if reasoning_prefilled:
+        close = _THINK_CLOSE_RE.search(text)
+        if close is None:
+            return text.strip()
+        prefilled_reasoning = text[: close.end()].strip()
+        text = text[close.end() :].strip()
+        if not text:
+            return prefilled_reasoning
+
+    spans = _think_spans_outside_tool_markup(text)
+    if not spans:
+        return text.strip()
+
+    visible: list[str] = []
+    reasoning: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        visible.append(text[cursor:start])
+        reasoning.append(text[start:end])
+        cursor = end
+    visible.append(text[cursor:])
+
+    visible_text = "".join(visible).strip()
+    reasoning_text = "".join(reasoning).strip()
+    if visible_text:
+        return visible_text
+    return "\n".join(part for part in (prefilled_reasoning, reasoning_text) if part).strip()
+
+
 def _looks_like_enabled_bare_json(text: str, enabled_tool_names: Optional[set]) -> bool:
     """True when ``text`` opens with an ENABLED markerless bare-JSON call; an ordinary JSON answer returns False."""
     probe = strip_llama3_leading_sentinels(text.lstrip())
@@ -448,6 +488,7 @@ def run_safetensors_tool_loop(
     confirm_tool_calls: bool = False,
     bypass_permissions: bool = False,
     permission_mode: Optional[str] = None,
+    reasoning_prefilled: bool = False,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -473,13 +514,17 @@ def run_safetensors_tool_loop(
     """
     conversation = list(messages)
 
-    # Normalize the mode (mirrors the GGUF loop): "full" and
-    # bypass_permissions are the same switch; unset/unknown behaves as "ask".
-    # "off" keeps the sandbox but never prompts.
+    # Mirrors the GGUF loop: "full" and bypass_permissions are the same switch;
+    # unset defaults to "auto", unknown falls back to the stricter "ask"; "off"
+    # keeps the sandbox but never prompts. An explicit confirm_tool_calls=True with
+    # no mode is already resolved to "ask" at the request layer, so it never
+    # arrives here as an ambiguous unset.
     if permission_mode == "full":
         bypass_permissions = True
     elif bypass_permissions:
         permission_mode = "full"
+    elif permission_mode is None:
+        permission_mode = "auto"
     elif permission_mode not in ("ask", "auto", "off"):
         permission_mode = "ask"
 
@@ -954,9 +999,12 @@ def run_safetensors_tool_loop(
             if not safety_tc:
                 # Re-prompt once on plan-without-action, before any tool runs
                 # (GGUF loop parity). The retry is gated on nudge_tool_calls so
-                # Studio callers (which send True) always nudge, while API callers
+                # Unsloth callers (which send True) always nudge, while API callers
                 # who omit the flag keep today's no-reprompt behavior (opt-in).
-                stripped_answer = content_accum.strip()
+                intent_text = _reprompt_intent_text(
+                    content_accum,
+                    reasoning_prefilled = reasoning_prefilled,
+                )
                 if (
                     auto_heal_tool_calls
                     and nudge_tool_calls
@@ -965,7 +1013,7 @@ def run_safetensors_tool_loop(
                     and not rag_autoinjected
                     and not tool_denied
                     and not any(record.executed for record in tool_controller.history)
-                    and is_short_intent_without_action(stripped_answer)
+                    and is_short_intent_without_action(intent_text)
                 ):
                     reprompt_count += 1
                     logger.info(
@@ -973,9 +1021,9 @@ def run_safetensors_tool_loop(
                         "calling tools (%d chars)",
                         reprompt_count,
                         MAX_ACT_REPROMPTS,
-                        len(stripped_answer),
+                        len(intent_text),
                     )
-                    conversation.append({"role": "assistant", "content": stripped_answer})
+                    conversation.append({"role": "assistant", "content": intent_text})
                     tool_hint = " or ".join(_active_tool_names(active_tools)) or "an available tool"
                     conversation.append(
                         {
@@ -1145,18 +1193,15 @@ def run_safetensors_tool_loop(
             else:
                 assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
 
-            # Bypass wins over the confirm gate at the loop level too, so a
-            # direct internal caller passing both flags never prompts. In
-            # "auto" mode only calls detected as potentially unsafe pause.
-            # "off" never prompts (sandbox stays on).
+            # Bypass wins here too, so a direct internal caller with both flags
+            # never prompts. "auto" pauses only high-risk calls; "off" never
+            # prompts (sandbox stays on).
             needs_confirm = (
                 bool(confirm_tool_calls) and not bypass_permissions and permission_mode != "off"
             )
             if needs_confirm and permission_mode == "auto":
-                from core.inference.tools import is_potentially_unsafe_tool_call
-                needs_confirm = is_potentially_unsafe_tool_call(
-                    decision.tool_name, decision.arguments
-                )
+                from core.inference.tools import is_high_risk_tool_call
+                needs_confirm = is_high_risk_tool_call(decision.tool_name, decision.arguments)
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
             start_event = decision.tool_start_event()

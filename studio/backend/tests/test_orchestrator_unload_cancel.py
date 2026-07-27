@@ -34,6 +34,70 @@ def _bare_orchestrator():
     return o
 
 
+def test_adapter_control_raises_stream_errors(monkeypatch):
+    o = _bare_orchestrator()
+    monkeypatch.setattr(
+        o,
+        "_generate_dispatched",
+        lambda **_kwargs: iter([orch_mod.GenStreamError("Error: adapter failed")]),
+    )
+
+    with pytest.raises(RuntimeError, match = "adapter failed"):
+        list(o.generate_with_adapter_control(use_adapter = False))
+
+    closed = []
+
+    def _stream(**_kwargs):
+        try:
+            yield "token"
+            yield "late token"
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(o, "_generate_dispatched", _stream)
+    generator = o.generate_with_adapter_control(use_adapter = False)
+    assert next(generator) == "token"
+    generator.close()
+    assert closed == [True]
+
+
+def test_worker_closes_cancelled_generator_before_gen_done():
+    from core.inference.worker import _handle_generate
+
+    events = []
+
+    class _Backend:
+        last_generation_stats = None
+
+        def generate_with_adapter_control(self, **_kwargs):
+            try:
+                yield "token"
+                yield "late token"
+            finally:
+                events.append("closed")
+
+    class _Responses:
+        def __init__(self):
+            self.items = []
+
+        def put(self, item):
+            if item["type"] == "gen_done":
+                assert events == ["closed"]
+            self.items.append(item)
+
+    responses = _Responses()
+    cancel = threading.Event()
+    cancel.set()
+    _handle_generate(
+        _Backend(),
+        {"request_id": "r1", "messages": [], "use_adapter": False},
+        responses,
+        cancel,
+    )
+
+    assert [item["type"] for item in responses.items] == ["gen_done"]
+
+
 def test_unload_cancels_inflight_generation_then_unloads(monkeypatch):
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)

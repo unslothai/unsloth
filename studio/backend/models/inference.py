@@ -18,6 +18,8 @@ from pydantic import (
     model_validator,
 )
 
+from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+
 
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
@@ -54,17 +56,37 @@ class LoadRequest(BaseModel):
     @field_validator("chat_template_override")
     @classmethod
     def normalize_blank_chat_template_override(cls, value: Optional[str]) -> Optional[str]:
-        if value is not None and value.strip() == "":
+        if value is None:
             return None
+        # Char count is a lower bound on UTF-8 byte length: reject an oversized
+        # template before spending work encoding it.
+        if len(value) > MAX_CHAT_TEMPLATE_BYTES:
+            raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
+        if value.strip() == "":
+            return None
+        if len(value.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
+            raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
         return value
 
     cache_type_kv: Optional[str] = Field(
         None,
-        description = "KV cache data type for both K and V (e.g. 'f16', 'bf16', 'q8_0', 'q4_1', 'q5_1')",
+        description = (
+            "KV cache data type for both K and V "
+            "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
+        ),
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. Not supported for GGUF models.",
+        description = (
+            "GPU placement pool, for example [0, 1]. Omit or pass [] to use "
+            "automatic selection. CUDA/ROCm and Intel XPU values are physical "
+            "GPU indices; Vulkan values are ggml device ordinals. Explicit "
+            "physical IDs are unsupported when the parent visibility mask uses "
+            "non-numeric or subdevice entries, including CUDA_VISIBLE_DEVICES "
+            "with UUID/MIG entries and ZE_AFFINITY_MASK with subdevice tokens "
+            "(for example '0.0,0.1') or FLAT-hierarchy tile handles. For GGUF "
+            "models the fitter may pin the smallest subset of this pool that fits."
+        ),
     )
     speculative_type: Optional[str] = Field(
         None,
@@ -100,12 +122,72 @@ class LoadRequest(BaseModel):
             "No effect on a single GPU. Ignored for non-GGUF models."
         ),
     )
+    gpu_memory_mode: Literal["auto", "manual"] = Field(
+        "auto",
+        description = (
+            "GPU memory strategy for GGUF models. 'auto' (default): Unsloth "
+            "selects GPUs and caps context to fit VRAM. 'manual': you own the "
+            "offload. Leave gpu_layers at -1 (Auto) to hand memory management to "
+            "llama.cpp's --fit (no device masking, no context auto-reduce, no "
+            "gpu-layer/tensor-split planning); set gpu_layers >= 0 to pin layers "
+            "and n_cpu_moe yourself (--fit off), with tensor_parallel still "
+            "applying (split by free VRAM unless tensor_split is set, no planner). "
+            "Ignored for non-GGUF."
+        ),
+    )
+    gpu_layers: int = Field(
+        -1,
+        ge = -1,
+        description = (
+            "Manual mode only: number of layers to offload to the GPU "
+            "(--gpu-layers, with --fit off). A value >= the model's layer count "
+            "offloads all of them. -1 = Auto: hand layer + context sizing to "
+            "llama.cpp's --fit. Ignored unless gpu_memory_mode is 'manual'."
+        ),
+    )
+    n_cpu_moe: int = Field(
+        0,
+        ge = 0,
+        description = (
+            "Manual mode only: keep the first N MoE expert layers on the CPU "
+            "(--n-cpu-moe) to save VRAM on MoE models. 0 = none, N = number of "
+            "MoE layers offloaded (the backend offsets past any leading dense "
+            "layers). Ignored unless gpu_memory_mode is 'manual' with gpu_layers >= 0."
+        ),
+    )
+    tensor_split: Optional[List[float]] = Field(
+        None,
+        description = (
+            "Manual mode only: relative share of the model per GPU (--tensor-split), "
+            "in the order of the GPUs in use, e.g. [2, 1] for 2:1. Omit it to let "
+            "llama.cpp use its default, which splits by free VRAM. Any list given is "
+            "passed through as-is, so send [1, 1] to force an even split. Ignored "
+            "unless gpu_memory_mode is 'manual' with gpu_layers >= 0."
+        ),
+    )
+
+    @field_validator("tensor_split")
+    @classmethod
+    def _reject_degenerate_tensor_split(cls, value: Optional[List[float]]) -> Optional[List[float]]:
+        # A negative / non-finite / all-zero split is silently dropped at launch
+        # (stored as None) yet still compared raw in the reload dedupe, so an
+        # identical Apply reloads forever. Reject it up front; [] = no split.
+        if not value:
+            return value
+        import math
+
+        if any((not math.isfinite(v)) or v < 0 for v in value):
+            raise ValueError("tensor_split entries must be finite and non-negative")
+        if sum(value) <= 0:
+            raise ValueError("tensor_split must have a positive total")
+        return value
+
     llama_extra_args: Optional[List[str]] = Field(
         None,
         description = (
             "Extra arguments forwarded verbatim to llama-server for GGUF models. "
             "One token per list entry, e.g. ['--top-k', '20', '--seed', '42']. "
-            "Studio-managed flags (model identity, port, context length, GPU placement, "
+            "Unsloth-managed flags (model identity, port, context length, GPU placement, "
             "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
         ),
     )
@@ -115,6 +197,32 @@ class UnloadRequest(BaseModel):
     """Request to unload a model"""
 
     model_path: str = Field(..., description = "Model identifier to unload")
+
+
+class TranscribeRequest(BaseModel):
+    """Speech-to-text request for the dictation STT sidecar."""
+
+    audio: str = Field(..., description = "Base64-encoded audio (any common format)")
+    model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
+    language: Optional[str] = Field(None, description = "BCP-47 language, or 'auto'/None to detect")
+    fast: bool = Field(
+        False,
+        description = "Use low-latency single-candidate decoding for dictation",
+    )
+    engine: Optional[str] = Field(
+        None,
+        description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
+    )
+
+
+class SttLoadRequest(BaseModel):
+    """Warm the STT sidecar with a model without transcribing."""
+
+    model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
+    engine: Optional[str] = Field(
+        None,
+        description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
+    )
 
 
 class ValidateModelRequest(BaseModel):
@@ -133,10 +241,25 @@ class ValidateModelRequest(BaseModel):
     max_seq_length: int = Field(0, ge = 0, le = 1048576)
     load_in_4bit: bool = Field(True)
     gpu_ids: Optional[List[int]] = Field(None)
+    gpu_memory_mode: Literal["auto", "manual"] = Field(
+        "auto",
+        description = (
+            "GGUF GPU-memory strategy intended for the follow-up load. Manual "
+            "placement bypasses the training coexistence estimate: Auto layers "
+            "delegate fitting to llama.cpp, while explicit layers are user-owned."
+        ),
+    )
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "
         "Opt-in so the normal load preflight doesn't pay for a cache scan it doesn't need.",
+    )
+    include_chat_template: bool = Field(
+        False,
+        description = "Also read the embedded chat template from the local GGUF header, so a "
+        "native (picked / drag-drop) file's default template can be shown before it is loaded. "
+        "Opt-in and, like include_context_length, a metadata-only probe that skips the training "
+        "guard. Only the leased file's own embedded template is read, never sibling sidecars.",
     )
 
 
@@ -151,13 +274,13 @@ class TransformersUpgradeInfo(BaseModel):
     )
     supported_in_pypi: bool = Field(
         False,
-        description = "True if the latest PyPI release ships this model_type; Studio can "
+        description = "True if the latest PyPI release ships this model_type; Unsloth can "
         "install it into a persistent sidecar after user consent.",
     )
     supported_in_main: bool = Field(
         False,
         description = "True if transformers GitHub main ships this model_type (dev-only; "
-        "not installable through Studio yet).",
+        "not installable through Unsloth yet).",
     )
 
 
@@ -187,6 +310,21 @@ class ValidateModelResponse(BaseModel):
         None,
         description = "Native training context length, read from the GGUF header when the file "
         "is already downloaded locally; None for non-GGUF, gated, or not-yet-downloaded models.",
+    )
+    layer_count: Optional[int] = Field(
+        None,
+        description = "Total layer count (GGUF block_count), the manual gpu-layers ceiling, read "
+        "from the header alongside context_length; None when not read.",
+    )
+    moe_layer_count: Optional[int] = Field(
+        None,
+        description = "MoE expert-layer count (the manual --n-cpu-moe ceiling), read from the GGUF "
+        "header alongside context_length; 0 for dense models, None when not read.",
+    )
+    chat_template: Optional[str] = Field(
+        None,
+        description = "Embedded GGUF chat template, read from the header when include_chat_template "
+        "is set (native lease-backed picks); None for non-GGUF, over-cap, or not-read templates.",
     )
     # Additive fields; the consuming consent dialog ships in a follow-up frontend PR.
     requires_transformers_upgrade: bool = Field(
@@ -307,7 +445,10 @@ class LoadResponse(BaseModel):
     )
     cache_type_kv: Optional[str] = Field(
         None,
-        description = "KV cache data type for K and V (e.g. 'f16', 'bf16', 'q8_0')",
+        description = (
+            "KV cache data type for K and V "
+            "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
+        ),
     )
     chat_template: Optional[str] = Field(
         None,
@@ -332,6 +473,41 @@ class LoadResponse(BaseModel):
     tensor_parallel: bool = Field(
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+    )
+    gpu_memory_mode: Literal["auto", "manual"] = Field(
+        "auto",
+        description = "Active GPU memory strategy ('auto' or 'manual').",
+    )
+    gpu_layers: int = Field(
+        -1,
+        description = "Manual mode: requested --gpu-layers value (-1 = Auto/--fit, or when not manual).",
+    )
+    n_cpu_moe: int = Field(
+        0,
+        description = "Manual mode: MoE expert layers pinned to CPU (--n-cpu-moe); 0 = none.",
+    )
+    tensor_split: Optional[List[float]] = Field(
+        None,
+        description = "Manual mode: relative model share per GPU (--tensor-split); None = default (split by free VRAM).",
+    )
+    n_layers: Optional[int] = Field(
+        None,
+        description = "Model's layer count (GGUF block_count), for the manual gpu-layers ceiling.",
+    )
+    n_moe_layers: int = Field(
+        0,
+        description = "Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not an MoE model.",
+    )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "Effective GPU indices the model is using after fit-time narrowing, or None for automatic selection.",
+    )
+    requested_gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = (
+            "GPU placement pool requested by the user before fit-time narrowing, "
+            "or None for automatic selection."
+        ),
     )
 
 
@@ -432,7 +608,11 @@ class InferenceStatusResponse(BaseModel):
     )
     cache_type_kv: Optional[str] = Field(
         None,
-        description = "KV cache quantization dtype (e.g. 'q8_0'), or None for default",
+        description = (
+            "KV cache quantization dtype "
+            "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32'), "
+            "or None for default"
+        ),
     )
     chat_template: Optional[str] = Field(
         None, description = "Model's default chat template (Jinja2 source), if any"
@@ -460,6 +640,49 @@ class InferenceStatusResponse(BaseModel):
     tensor_parallel: bool = Field(
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+    )
+    gpu_memory_mode: Literal["auto", "manual"] = Field(
+        "auto",
+        description = "Active GPU memory strategy ('auto' or 'manual').",
+    )
+    gpu_layers: int = Field(
+        -1,
+        description = "Manual mode: requested --gpu-layers value (-1 = Auto/--fit, or when not manual).",
+    )
+    n_cpu_moe: int = Field(
+        0,
+        description = "Manual mode: MoE expert layers pinned to CPU (--n-cpu-moe); 0 = none.",
+    )
+    tensor_split: Optional[List[float]] = Field(
+        None,
+        description = "Manual mode: relative model share per GPU (--tensor-split); None = default (split by free VRAM).",
+    )
+    requested_context_length: Optional[int] = Field(
+        None,
+        description = (
+            "The n_ctx the active GGUF load was invoked with (0 = Auto). Lets the "
+            "UI re-seed a Manual + Auto-layers context pin on hydration, where "
+            "context_length only exposes the resolved value. None for non-GGUF."
+        ),
+    )
+    n_layers: Optional[int] = Field(
+        None,
+        description = "Model's layer count (GGUF block_count), for the manual gpu-layers ceiling.",
+    )
+    n_moe_layers: int = Field(
+        0,
+        description = "Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not an MoE model.",
+    )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "Effective GPU indices the model is using after fit-time narrowing, or None for automatic selection.",
+    )
+    requested_gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = (
+            "GPU placement pool requested by the user before fit-time narrowing, "
+            "or None for automatic selection."
+        ),
     )
     llama_cpp_supports_mtp: bool = Field(
         True,
@@ -533,7 +756,7 @@ class ImageContentPart(BaseModel):
 class InputDocumentContentPart(BaseModel):
     """Document (PDF / file) content part in a multimodal message.
 
-    Studio-normalised shape (file_data or file_url, plus optional filename/media_type).
+    Unsloth-normalised shape (file_data or file_url, plus optional filename/media_type).
     Mapped onto Anthropic ``document`` / OpenAI ``input_file`` for vision providers;
     dropped for non-vision providers.
     """
@@ -689,18 +912,18 @@ class ThinkingConfig(BaseModel):
     """Anthropic-compatible thinking/reasoning configuration.
     Use type='disabled' to turn off thinking, or type='enabled' to turn it on.
     Only type is read; extra fields (e.g. budget_tokens) are ignored, since
-    Studio sets provider thinking budgets itself.
+    Unsloth sets provider thinking budgets itself.
     """
 
     type: Literal["disabled", "enabled"] = "disabled"
 
 
 # Recognized permission_mode values. The field accepts a plain string rather than
-# a Literal so an unrecognized value from a newer UI/client degrades to the
-# safest gate ("ask") instead of a 422; the tool loops apply the same unknown ->
-# ask fallback, so normalizing here keeps that forward-compat path reachable at
-# the API boundary. None stays unset ("behaves as 'ask'" without self-enabling
-# the confirm gate).
+# a Literal so an unrecognized value from a newer UI/client degrades to the safest
+# gate ("ask") instead of a 422. None stays unset at the request boundary: the tool
+# loops normalize it to the product default "auto", while the route's confirm-gate
+# derivation keeps an unset mode lenient (a non-streaming request cannot prompt, so
+# it runs) to keep non-streaming clients and health checks working.
 _KNOWN_PERMISSION_MODES = ("ask", "auto", "off", "full")
 
 
@@ -748,7 +971,7 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = (
             "OpenAI function-tool definitions. When provided without `enable_tools=true`, "
-            "Studio forwards the tools to the backend so the model returns structured "
+            "Unsloth forwards the tools to the backend so the model returns structured "
             "tool_calls for the client to execute (standard OpenAI function calling)."
         ),
     )
@@ -863,11 +1086,13 @@ class ChatCompletionRequest(BaseModel):
             "[x-unsloth] Permission level for local tool calls. 'ask' pauses every "
             "call for approval; 'ask'/'auto' enable the confirmation gate on their "
             "own (needs a streaming request to deliver prompts). 'auto' ('Approve for "
-            "me') only pauses calls detected as potentially unsafe (state-mutating "
-            "terminal/python/MCP calls); read-only calls run immediately, and the "
-            "sandbox stays on. 'full' is equivalent to bypass_permissions=true (no "
-            "confirmation, no sandbox). Unset behaves as 'ask'. An unrecognized value "
-            "(e.g. from a newer client) is treated as 'ask'."
+            "me') only pauses calls detected as high risk (credential reads, privilege "
+            "escalation, destructive/persistence, network exfil); ordinary calls run "
+            "immediately, and the sandbox stays on. 'full' is equivalent to "
+            "bypass_permissions=true (no confirmation, no sandbox). Unset defaults to "
+            "'auto' for the per-call gate; a non-streaming request without an explicit "
+            "mode cannot prompt and runs the loop. An unrecognized value (e.g. from a "
+            "newer client) is treated as 'ask'."
         ),
     )
     auto_heal_tool_calls: Optional[bool] = Field(
@@ -1154,13 +1379,28 @@ class ChatCompletionRequest(BaseModel):
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
         elif (
+            self.permission_mode is None
+            and self.confirm_tool_calls is True
+            and not (self.provider_id or self.provider_type)
+        ):
+            # An explicit confirm_tool_calls=True with no mode opted into the
+            # pre-permission-mode contract of gating every call, so resolve it to
+            # "ask" rather than let the loop apply the "auto" default, which would
+            # silently weaken that opt-in to high-risk calls only. Unlike the "ask"
+            # branch below this only sets permission_mode, which is inert unless
+            # Unsloth's own tool loop runs, so it needs no enable_tools/mcp gate --
+            # deliberate, since a process-wide --enable-tools policy can force the
+            # loop when the request sets neither flag. A bare unset request
+            # (confirm_tool_calls is None) still defaults to auto.
+            self.permission_mode = "ask"
+        elif (
             self.permission_mode == "ask"
             and self.confirm_tool_calls is None
             and not (self.provider_id or self.provider_type)
             and (self.enable_tools is True or bool(self.mcp_enabled))
         ):
             # "Ask" gates every call, so a direct API caller that omits the legacy
-            # confirm flag must still hit the confirmation gate for Studio's own
+            # confirm flag must still hit the confirmation gate for Unsloth's own
             # tool loop. An explicit confirm_tool_calls=False wins over the mode
             # (mirrors _permission_mode_confirm and the Anthropic pre-switch guard),
             # so only self-enable when the flag is unset. Only self-enable when that
@@ -1168,7 +1408,7 @@ class ChatCompletionRequest(BaseModel):
             # (enable_tools / mcp_enabled) -- the router enters the loop on those
             # signals, not on enabled_tools alone (which merely filters which tools
             # run). A plain client-tool passthrough (client-supplied `tools` that
-            # Studio does not execute) must route verbatim, and external-provider
+            # Unsloth does not execute) must route verbatim, and external-provider
             # routing rejects confirm_tool_calls with tools, so skip the fold there.
             #
             # "auto" is deliberately NOT folded: it only prompts for a call the
@@ -1836,7 +2076,7 @@ class AnthropicMessagesRequest(BaseModel):
     )
     permission_mode: Optional[str] = Field(
         None,
-        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' only pauses calls detected as potentially unsafe, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset behaves as 'ask'; an unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
+        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' ('Approve for me') only pauses calls detected as high risk, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset defaults to 'auto' for the per-call gate; a non-streaming request without an explicit mode runs the loop. An unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,

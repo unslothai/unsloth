@@ -1004,7 +1004,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         }
         if (version < 12) {
           // hfToken moved to the shared hf-token-store; seed it once so an
-          // existing Studio-only token isn't lost.
+          // existing Unsloth-only token isn't lost.
           const legacyToken = typeof s.hfToken === "string" ? s.hfToken.trim() : "";
           if (legacyToken && !getHfToken()) {
             useHfTokenStore.getState().setToken(legacyToken);

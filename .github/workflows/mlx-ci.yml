@@ -130,7 +130,7 @@ jobs:
       #    MLX support landed after the most recent unsloth-zoo PyPI
       #    release; the wheel still raises NotImplementedError on
       #    Apple Silicon when device_type.get_device_type() runs
-      #    unguarded. Studio's own install.sh overlays unsloth-zoo
+      #    unguarded. Unsloth's own install.sh overlays unsloth-zoo
       #    from git main for the same reason. Pulling deps lets pip
       #    resolve the platform-conditional MLX-only wheels (mlx,
       #    mlx-lm, mlx-vlm gated on darwin+arm64 in unsloth-zoo's
@@ -317,13 +317,13 @@ jobs:
             echo
           done
 
-      # Validates the macOS prebuilt path Studio's setup.sh uses (#5963): install the
+      # Validates the macOS prebuilt path Unsloth's setup.sh uses (#5963): install the
       # unslothai/llama.cpp fork's latest release, download a small public GGUF, and
       # check llama-server /completion end to end. Split and placed last so the
       # untrusted binary runs only in the final smoke step, after every HF_TOKEN step,
       # leaving no token-bearing step or shared workspace for a tampered prebuilt to
       # corrupt. GH_TOKEN: releases API; HF_TOKEN (withheld on PR): probe + GGUF fetch.
-      - name: Studio prebuilt llama.cpp install + GGUF download (Mac M1)
+      - name: Unsloth prebuilt llama.cpp install + GGUF download (Mac M1)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -344,12 +344,12 @@ jobs:
 
       # Final step: runs the downloaded binaries with no secrets present, and clears
       # the GitHub Actions command files so a tampered prebuilt cannot influence the job.
-      - name: Studio prebuilt llama.cpp GGUF inference smoke (Mac M1)
+      - name: Unsloth prebuilt llama.cpp GGUF inference smoke (Mac M1)
         run: |
           set -euo pipefail
           unset GITHUB_ENV GITHUB_PATH GITHUB_OUTPUT GITHUB_STEP_SUMMARY
           INSTALL_DIR="$HOME/.unsloth-studio-prebuilt-test/llama.cpp"
-          # Studio bundles only llama-server + llama-quantize (not llama-cli);
+          # Unsloth bundles only llama-server + llama-quantize (not llama-cli);
           # inference goes through llama-server's HTTP /completion endpoint.
           LLAMA_SERVER="$INSTALL_DIR/build/bin/llama-server"
           LLAMA_QUANT="$INSTALL_DIR/build/bin/llama-quantize"
@@ -400,4 +400,4 @@ jobs:
             tail -40 /tmp/llama-server.log
             exit 1
           fi
-          echo "OK: Studio prebuilt llama.cpp on Mac M1 + GGUF /completion works"
+          echo "OK: Unsloth prebuilt llama.cpp on Mac M1 + GGUF /completion works"

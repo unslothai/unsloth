@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Bind Studio child processes to the parent's lifetime so none survive an
+"""Bind Unsloth child processes to the parent's lifetime so none survive an
 abnormal parent exit (terminal-window close, Task Manager "End Task", SIGKILL,
 crash) -- the cooperative shutdown path only runs on graceful exits.
 
@@ -139,7 +139,7 @@ def _install_windows_job() -> None:
             kernel32.CloseHandle(job)
             return
         # AssignProcessToJobObject(parent) makes children inherit the job. May
-        # fail if Studio already runs inside an incompatible host job (pre-Win8);
+        # fail if Unsloth already runs inside an incompatible host job (pre-Win8);
         # degrade to the cooperative path rather than blocking startup.
         if not kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess()):
             kernel32.CloseHandle(job)

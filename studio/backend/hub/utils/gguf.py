@@ -253,11 +253,16 @@ def _env_offline() -> bool:
     ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
 
 
-def iter_hf_cache_snapshots(repo_id: str):
-    from hub.utils.hf_cache_state import iter_repo_cache_dirs
+def iter_hf_cache_snapshots(repo_id: str, root: Optional[Path] = None):
+    from hub.utils.hf_cache_state import iter_active_repo_cache_dirs, iter_repo_cache_dirs
 
     snapshots: list[Path] = []
-    for repo_dir in iter_repo_cache_dirs("model", repo_id):
+    repo_dirs = (
+        iter_active_repo_cache_dirs("model", repo_id, root = root)
+        if root is not None
+        else iter_repo_cache_dirs("model", repo_id)
+    )
+    for repo_dir in repo_dirs:
         snapshots_dir = repo_dir / "snapshots"
         if not snapshots_dir.is_dir():
             continue
@@ -276,12 +281,17 @@ def iter_hf_cache_snapshots(repo_id: str):
     yield from snapshots
 
 
-def list_empty_gguf_variant_dirs(repo_id: str) -> set[str]:
+def list_empty_gguf_variant_dirs(repo_id: str, root: Optional[Path] = None) -> set[str]:
     """Quant labels present only as an EMPTY snapshot ``<quant>/`` folder (an
     interrupted split download); a quant with shards in any snapshot is excluded."""
     empty: dict[str, str] = {}
     nonempty: set[str] = set()
-    for snapshot in iter_hf_cache_snapshots(repo_id):
+    snapshots = (
+        iter_hf_cache_snapshots(repo_id, root = root)
+        if root is not None
+        else iter_hf_cache_snapshots(repo_id)
+    )
+    for snapshot in snapshots:
         try:
             entries = list(snapshot.iterdir())
         except OSError:
@@ -303,8 +313,15 @@ def list_empty_gguf_variant_dirs(repo_id: str) -> set[str]:
     return {label for key, label in empty.items() if key not in nonempty}
 
 
-def list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
-    for snapshot in iter_hf_cache_snapshots(repo_id):
+def list_gguf_variants_from_hf_cache(
+    repo_id: str, root: Optional[Path] = None
+) -> Optional[tuple[list[GgufVariantInfo], bool]]:
+    snapshots = (
+        iter_hf_cache_snapshots(repo_id, root = root)
+        if root is not None
+        else iter_hf_cache_snapshots(repo_id)
+    )
+    for snapshot in snapshots:
         variants, has_vision = list_local_gguf_variants(str(snapshot))
         if variants or has_vision:
             return variants, has_vision
@@ -312,7 +329,7 @@ def list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVa
 
 
 def list_partial_gguf_variants_from_state(
-    repo_id: str,
+    repo_id: str, hub_cache: Optional[Path] = None
 ) -> Optional[tuple[list[GgufVariantInfo], bool]]:
     """Reconstruct GGUF variants from download manifests/markers alone.
 
@@ -328,10 +345,26 @@ def list_partial_gguf_variants_from_state(
     # original-casing label over a lowercased cancel marker for the same variant.
     seen: set[str] = set()
     ordered: list[str] = []
-    for source in (
-        download_manifest.iter_variant_manifests("model", repo_id),
-        download_manifest.iter_variant_markers("model", repo_id),
-    ):
+    sources = (
+        (
+            download_manifest.iter_variant_manifests("model", repo_id),
+            download_manifest.iter_variant_markers("model", repo_id),
+        )
+        if hub_cache is None
+        else (
+            download_manifest.iter_variant_manifests(
+                "model",
+                repo_id,
+                hub_cache = hub_cache,
+            ),
+            download_manifest.iter_variant_markers(
+                "model",
+                repo_id,
+                hub_cache = hub_cache,
+            ),
+        )
+    )
+    for source in sources:
         for variant, _path in source:
             key = variant.lower()
             if key not in seen:
@@ -343,7 +376,16 @@ def list_partial_gguf_variants_from_state(
     variants: list[GgufVariantInfo] = []
     has_vision = False
     for variant in ordered:
-        manifest = download_manifest.read_manifest("model", repo_id, variant)
+        manifest = (
+            download_manifest.read_manifest("model", repo_id, variant)
+            if hub_cache is None
+            else download_manifest.read_manifest(
+                "model",
+                repo_id,
+                variant,
+                hub_cache = hub_cache,
+            )
+        )
         main_filename: Optional[str] = None
         size_bytes = 0
         companion_bytes = 0

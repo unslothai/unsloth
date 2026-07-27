@@ -1,4 +1,4 @@
-"""Sandbox tests: Studio dataset modules load/run in isolated no-torch venvs."""
+"""Sandbox tests: Unsloth dataset modules load/run in isolated no-torch venvs."""
 
 from __future__ import annotations
 
@@ -148,7 +148,7 @@ class TestDataCollatorsNoTorchVenv:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             print("OK: exec succeeded")
         """)
         result = subprocess.run(
@@ -168,7 +168,7 @@ class TestDataCollatorsNoTorchVenv:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             obj = DataCollatorSpeechSeq2SeqWithPadding(processor=None)
             assert obj.processor is None, "processor should be None"
             print("OK: DataCollatorSpeechSeq2SeqWithPadding instantiated")
@@ -190,7 +190,7 @@ class TestDataCollatorsNoTorchVenv:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             obj = DeepSeekOCRDataCollator(processor=None)
             assert obj.processor is None, "processor should be None"
             assert obj.max_length == 2048, "default max_length should be 2048"
@@ -212,7 +212,7 @@ class TestDataCollatorsNoTorchVenv:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             obj = VLMDataCollator(processor=None)
             assert obj.processor is None
             assert obj.mask_input_tokens is True, "default mask_input_tokens should be True"
@@ -259,7 +259,7 @@ class TestChatTemplatesNoTorchVenv:
             sys.modules['iterable'] = iterable
 
             # Read and transform the source: replace relative imports with absolute
-            source = open({str(CHAT_TEMPLATES)!r}).read()
+            source = open({str(CHAT_TEMPLATES)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
@@ -305,7 +305,7 @@ class TestChatTemplatesNoTorchVenv:
             sys.modules['iterable'] = iterable
 
             ns = {{}}
-            source = open({str(CHAT_TEMPLATES)!r}).read()
+            source = open({str(CHAT_TEMPLATES)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
@@ -402,7 +402,7 @@ class TestFormatConversionNoTorchVenv:
             sys.modules['utils.hardware'] = hardware_mod
 
             # Read and exec format_conversion.py
-            source = open({str(FORMAT_CONVERSION)!r}).read()
+            source = open({str(FORMAT_CONVERSION)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .iterable import', 'from iterable import')
             ns = {{'__name__': '__test__'}}
@@ -463,7 +463,7 @@ class TestFormatConversionNoTorchVenv:
             sys.modules['utils'] = utils_mod
             sys.modules['utils.hardware'] = hardware_mod
 
-            source = open({str(FORMAT_CONVERSION)!r}).read()
+            source = open({str(FORMAT_CONVERSION)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .iterable import', 'from iterable import')
             ns = {{'__name__': '__test__'}}
@@ -517,7 +517,7 @@ class TestNegativeControls:
                 loggers = types.ModuleType('loggers')
                 loggers.get_logger = lambda n: None
                 sys.modules['loggers'] = loggers
-                exec(open({temp_file!r}).read())
+                exec(open({temp_file!r}, encoding = "utf-8").read())
             """)
             result = subprocess.run(
                 [no_torch_venv, "-c", code],

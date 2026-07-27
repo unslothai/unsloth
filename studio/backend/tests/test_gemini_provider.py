@@ -768,7 +768,7 @@ def test_cached_content_pass_through(monkeypatch):
 
 
 def test_boolean_caching_does_not_set_cached_content(monkeypatch):
-    """Studio's existing True/False signals shouldn't fabricate a cache id."""
+    """Unsloth's existing True/False signals shouldn't fabricate a cache id."""
     captured = _capture_body(monkeypatch, enable_prompt_caching = True)
     assert "cachedContent" not in captured["body"]
 
@@ -2613,7 +2613,7 @@ def test_gemini_native_skips_orphan_function_response_for_native_part_replay(mon
 
 def test_gemini_native_part_falls_back_to_args_google(monkeypatch):
     """Round 27: a direct OpenAI-compat API caller (or imported third-party
-    thread) cannot use Studio's non-standard `tool_calls[].extra_content`
+    thread) cannot use Unsloth's non-standard `tool_calls[].extra_content`
     field, so the native_part payload round-trips through `function.arguments`
     as `{"google": {"native_part": {...}}}`. The synthetic-builtin detector
     recognizes that location, but the replay branch was only reading from
