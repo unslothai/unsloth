@@ -1628,6 +1628,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       const key = "__default";
       if (!threadId || threadId === key) return state;
+      // Two first turns can share "__default", and nothing links a run there to the
+      // thread being persisted. Moving the arrays wholesale handed this thread the
+      // sibling's owner and stop handle too, so stopping one aborted both. Adopt only
+      // when the key holds a single run; ambiguous, leave both where they are.
+      if ((state.runOwnerByThreadId[key]?.length ?? 0) > 1) return state;
       // Only the transient run maps move. Anything already filed under the real
       // id wins, since that is a later, better-identified run.
       const moved: Partial<ChatRuntimeStore> = {};

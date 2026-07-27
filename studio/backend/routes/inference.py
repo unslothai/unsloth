@@ -4400,11 +4400,14 @@ async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) 
                 return False
             await asyncio.sleep(0.02)
 
-    # Half the budget each, so the total wait under the gate is unchanged.
-    if not await _drain(time.monotonic() + budget / 2, discount_registered = True):
+    # Weighted, not halved, keeping the total wait under the gate unchanged. The first
+    # drain only asks whether unrelated inference is in flight, which patience does not
+    # change; the second waits for chats that were just cancelled to unwind, and cutting
+    # that short refused installs whose chats had already been stopped for nothing.
+    if not await _drain(time.monotonic() + budget / 5, discount_registered = True):
         return
     _raise_or_cancel_active_generations(force = True, action = "Installing a new transformers version")
-    await _drain(time.monotonic() + budget / 2, discount_registered = False)
+    await _drain(time.monotonic() + budget * 4 / 5, discount_registered = False)
 
 
 async def _drain_and_recancel_before_teardown(*, force: bool, action: str) -> None:

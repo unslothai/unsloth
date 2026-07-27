@@ -39,6 +39,7 @@ def _dispatcher():
     o._dispatcher_stop = threading.Event()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     return o
 
 

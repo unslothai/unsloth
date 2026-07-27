@@ -69,8 +69,13 @@ export function useToolOutputFor(
 ): string {
   // Unconditional: hooks cannot sit behind the early return below.
   const unresolvedScope = useUnresolvedToolPaneScope();
+  // Only a thread mid-run can be the one that just gained its id. Local ids repeat
+  // ("call_0"), so an unconditional fallback showed a live first turn's stdout in
+  // every older conversation whose own entry had been cleared.
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
   const own = map[toolOutputKey(paneScope, toolCallId)];
   if (own !== undefined) return own;
+  if (!isRunning) return "";
   return map[toolOutputKey(unresolvedScope, toolCallId)] ?? "";
 }
 

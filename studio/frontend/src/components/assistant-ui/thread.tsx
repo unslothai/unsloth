@@ -2706,10 +2706,13 @@ const ToolStatusDisplay: FC = () => {
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
   const entry = useChatRuntimeStore((s) => {
     // A first turn starts before its id is persisted, so the adapter files it
-    // under "__default"; only this thread's own run may claim it.
+    // under "__default"; only this thread's own run may claim it. Two first turns
+    // share that key with nothing to tell them apart, so claim it only when it
+    // holds one run: showing a sibling's status would be worse than showing none.
+    const unresolved = s.toolStatusByThreadId.__default;
     const own =
       s.toolStatusByThreadId[threadListItemId ?? ""] ??
-      (isThreadRunning ? s.toolStatusByThreadId.__default : undefined);
+      (isThreadRunning && unresolved?.length === 1 ? unresolved : undefined);
     // Newest of the runs behind this key: separate entries, so one finishing cannot blank
     // a sibling still running a tool.
     return own?.[own.length - 1];

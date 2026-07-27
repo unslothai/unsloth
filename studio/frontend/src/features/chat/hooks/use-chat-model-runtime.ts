@@ -468,6 +468,11 @@ export function useChatModelRuntime() {
         // killed by cancelling this load. Nothing to report, since the route runs its
         // stop-loading fast path ahead of the active-chat refusal.
         await unloadModel({ model_path: model.id }).catch(() => {});
+        // clearCheckpoint above assumed nothing was left loaded, but a forced switch
+        // keeps the previous model resident until /load's teardown, and the stop-loading
+        // fast path leaves it there. Take the answer from the backend: it restores that
+        // model and its capabilities, and reports none when the load had already evicted it.
+        await syncInferenceStatusToStore().catch(() => {});
       } finally {
         cancelUnloadPendingRef.current = false;
         if (!loadingModelRef.current) {

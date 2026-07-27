@@ -120,6 +120,10 @@ class InferenceOrchestrator:
         # bypass _gen_lock, send commands directly, read from per-request
         # mailboxes routed by a dispatcher thread on request_id.
         self._mailboxes: dict[str, queue.Queue] = {}
+        # request_id -> cancel event, so the dispatcher can move worker ownership as it
+        # routes. Consumers read their mailbox whenever they get around to it, so only the
+        # dispatcher sees responses in the order the worker actually produced them.
+        self._request_cancel_events: dict[str, object] = {}
         self._mailbox_lock = threading.Lock()
         self._dispatcher_thread: Optional[threading.Thread] = None
         self._dispatcher_stop = threading.Event()
@@ -550,6 +554,7 @@ class InferenceOrchestrator:
         cancel_event = None,
         stats_holder: Optional[dict] = None,
         read_timeout: float = 30.0,
+        mark_started: bool = True,
     ) -> Generator[str, None, None]:
         """Yield tokens from a response stream until gen_done/gen_error.
 
@@ -587,8 +592,11 @@ class InferenceOrchestrator:
             if rtype == "status":
                 continue
             # The worker is answering THIS request, so it is the one executing:
-            # only now may its cancel event speak for the shared worker one.
-            self._mark_worker_started(cancel_event)
+            # only now may its cancel event speak for the shared worker one. The
+            # dispatched path opts out: its dispatcher already did this in worker order,
+            # and a mailbox read can lag far behind that.
+            if mark_started:
+                self._mark_worker_started(cancel_event)
             # Subprocess-level error (no request_id); request-scoped failures
             # arrive as gen_error below.
             if rtype == "error" and not resp.get("request_id"):
@@ -693,7 +701,17 @@ class InferenceOrchestrator:
                 if rid:
                     with self._mailbox_lock:
                         mbox = self._mailboxes.get(rid)
+                        owner = self._request_cancel_events.get(rid)
                     if mbox is not None:
+                        # Worker order, not consumer order: retire a request the moment its
+                        # last response is routed. Waiting for the consumer's finally left it
+                        # owning the worker after the worker had moved on, so a late Stop for
+                        # it cancelled whichever request had started next.
+                        if owner is not None:
+                            if rtype in ("gen_done", "gen_error"):
+                                self._release_worker(owner)
+                            else:
+                                self._mark_worker_started(owner)
                         mbox.put(resp)
                         continue
 
@@ -809,6 +827,8 @@ class InferenceOrchestrator:
             )
             if not unloading:
                 self._mailboxes[request_id] = mailbox
+                if cancel_event is not None:
+                    self._request_cancel_events[request_id] = cancel_event
             # When bailing without a mailbox, note whether any OTHER compare request still
             # routes through the dispatcher; if none and this call started it, stop it below.
             orphaned_dispatcher = unloading and not dispatcher_preexisting and not self._mailboxes
@@ -839,6 +859,7 @@ class InferenceOrchestrator:
             self._release_worker(cancel_event)
             with self._mailbox_lock:
                 self._mailboxes.pop(request_id, None)
+                self._request_cancel_events.pop(request_id, None)
             yield GenStreamError(f"Error: {exc}")
             return
 
@@ -857,11 +878,15 @@ class InferenceOrchestrator:
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
                 read_timeout = _DISPATCH_READ_TIMEOUT,
+                mark_started = False,
             )
         finally:
+            # Normally already retired by the dispatcher at gen_done; this covers the
+            # streams that end without one (cancel, disconnect, a dead subprocess).
             self._release_worker(cancel_event)
             with self._mailbox_lock:
                 self._mailboxes.pop(request_id, None)
+                self._request_cancel_events.pop(request_id, None)
 
     def _drain_mailbox(
         self,
@@ -1657,12 +1682,16 @@ class InferenceOrchestrator:
             self._active_cancel_events.append(cancel_event)
 
     def _mark_worker_started(self, cancel_event) -> None:
-        """Promote a claimed request to executing, on its first worker response."""
+        """Promote a claimed request to executing, on its first worker response.
+
+        Sole executor: the subprocess runs one generation at a time, so answering
+        this one means it has left the previous one behind.
+        """
         if cancel_event is None:
             return
         with self._active_cancel_lock:
-            if not any(ev is cancel_event for ev in self._executing_cancel_events):
-                self._executing_cancel_events.append(cancel_event)
+            if self._executing_cancel_events[:1] != [cancel_event]:
+                self._executing_cancel_events[:] = [cancel_event]
 
     def _release_worker(self, cancel_event) -> None:
         with self._active_cancel_lock:

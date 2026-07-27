@@ -4088,9 +4088,15 @@ export function createOpenAIStreamAdapter(
         // An unresolved run has no id to compare, so compare what was on screen when it
         // started instead: treating it as always visible wrote its counts into whatever
         // conversation the user had moved to.
+        // A first turn has no id at run start but is adopted onto one mid-run, and
+        // autosave moves activeThreadId with it. Read the adopted key, or the run stays
+        // "unresolved" for life: its usage was never filed and the visible-write gate
+        // compared against null, leaving the context bar blank after the first reply.
+        const usageKey = liveThreadKey(serverCancel);
+        const usageThreadKey = usageKey === "__default" ? null : usageKey;
         const usageThreadIsVisible =
           useChatRuntimeStore.getState().activeThreadId ===
-          (resolvedThreadKey ?? activeThreadIdAtRunStart);
+          (usageThreadKey ?? activeThreadIdAtRunStart);
         if (
           meta?.usage &&
           typeof meta.usage.prompt_tokens === "number" &&
@@ -4107,10 +4113,10 @@ export function createOpenAIStreamAdapter(
           };
           // File it under this run's own thread even when the gate below blocks the
           // visible write, so switching back re-applies it.
-          if (resolvedThreadKey !== null) {
+          if (usageThreadKey !== null) {
             useChatRuntimeStore
               .getState()
-              .setThreadContextUsage(resolvedThreadKey, usage);
+              .setThreadContextUsage(usageThreadKey, usage);
           }
           if (usageThreadIsVisible) {
             useChatRuntimeStore.getState().setContextUsage(usage);

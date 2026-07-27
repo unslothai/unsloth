@@ -486,3 +486,32 @@ def test_two_approved_chats_do_not_block_each_other():
         assert queue._active - queue._parked <= 1
 
     asyncio.run(scenario())
+
+
+def test_an_immediate_arrival_cannot_take_an_approved_chat_s_slot():
+    # The fairness reservation lived only in _grant_waiters_locked. reserve()'s
+    # fast path ignored it, so a request arriving in the window between the slot
+    # freeing and the approved chat's next poll took the slot straight off the top.
+    async def scenario():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+
+        a = queue.reserve(capacity = 1, config = config)
+        assert a.lease_nowait() is not None
+        queue.park()  # A is on an approval prompt; its slot is up for grabs
+        b = queue.reserve(capacity = 1, config = config)
+        b_lease = b.lease_nowait()
+        assert b_lease is not None
+
+        resumed = asyncio.ensure_future(queue.unpark_async(poll_s = 0.01))
+        await asyncio.sleep(0.03)  # A is approved and now holds a ticket
+
+        # No await between these two: C arrives before A's poll can run again.
+        b_lease.release()
+        c = queue.reserve(capacity = 1, config = config)
+        assert c.lease_nowait() is None, "the freed slot is reserved for the approved chat"
+
+        await asyncio.wait_for(resumed, timeout = 2)
+        assert queue._active - queue._parked <= 1
+
+    asyncio.run(scenario())

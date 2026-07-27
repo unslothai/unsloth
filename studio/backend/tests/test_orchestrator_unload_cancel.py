@@ -779,6 +779,7 @@ def test_dispatched_bails_when_unload_flips_before_mailbox_registration(monkeypa
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     o._unload_pending = False
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(o, "_start_dispatcher", lambda: None)
@@ -821,6 +822,7 @@ def test_dispatched_bails_when_model_swapped_before_mailbox_registration(monkeyp
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     o._unload_pending = False
     o._dispatcher_thread = _AliveDispatcher()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
@@ -850,6 +852,7 @@ def test_dispatched_bails_when_dispatcher_stopped_before_mailbox_registration(mo
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     o._unload_pending = False
     o._dispatcher_thread = _AliveDispatcher()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
@@ -876,6 +879,7 @@ def test_dispatched_happy_path_registers_and_sends(monkeypatch):
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     o._unload_pending = False
     o._dispatcher_thread = _AliveDispatcher()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
@@ -1342,6 +1346,7 @@ def test_dispatched_bail_stops_orphan_dispatcher_it_started(monkeypatch):
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     o._unload_pending = False
     o._dispatcher_thread = None  # none running -> this call starts it
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
@@ -1386,6 +1391,7 @@ def test_dispatched_bail_keeps_dispatcher_with_other_active_mailbox(monkeypatch)
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     o._unload_pending = False
     o._dispatcher_thread = None
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
@@ -1423,6 +1429,7 @@ def test_dispatched_bail_keeps_preexisting_dispatcher(monkeypatch):
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     o._unload_pending = False
     o._dispatcher_thread = _AliveDispatcher()  # already running
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
@@ -1549,6 +1556,7 @@ def test_concurrent_start_dispatcher_spawns_exactly_one():
     o._resp_queue = _queue.Queue()  # real queue so the dispatcher loop blocks and stays alive
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     o._dispatcher_thread = None
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
@@ -1664,6 +1672,7 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
     o._resp_queue = _queue.Queue()  # a spawned dispatcher would block-read here and stay alive
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
     o._unload_pending = False
@@ -1717,3 +1726,92 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
     assert o._dispatcher_thread is None, "the stop cleared it and the queued start spawned nothing"
     live = [t for t in threading.enumerate() if t.name == "inference-dispatcher" and t.is_alive()]
     assert live == [], "no fresh dispatcher may be left to consume the unloaded reply"
+
+
+def _dispatch(o, resps):
+    """Run the dispatcher over a fixed response list and stop it."""
+    import queue as _queue
+
+    o._resp_queue = _queue.Queue()
+    for r in resps:
+        o._resp_queue.put(r)
+    o._dispatcher_stop = threading.Event()
+    t = threading.Thread(target = o._dispatcher_loop, daemon = True)
+    t.start()
+    deadline = time.monotonic() + 5.0
+    while not o._resp_queue.empty() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    o._dispatcher_stop.set()
+    t.join(timeout = 5.0)
+
+
+def test_worker_ownership_follows_the_worker_not_the_consumer():
+    # The subprocess runs one generation at a time and can start B while A's consumer has
+    # yet to drain its mailbox. A must stop owning the worker the moment its gen_done is
+    # routed, else a late Stop for A cancels B.
+    import queue as _queue
+
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    a_cancel, b_cancel = threading.Event(), threading.Event()
+    o._mailboxes = {"a": _queue.Queue(), "b": _queue.Queue()}
+    o._request_cancel_events = {"a": a_cancel, "b": b_cancel}
+    o._claim_worker(a_cancel)
+    o._claim_worker(b_cancel)
+
+    _dispatch(o, [{"type": "token", "request_id": "a", "token": "hi"}])
+    assert o._owns_worker(a_cancel), "the request the worker is answering owns it"
+    assert not o._owns_worker(b_cancel), "a queued request does not"
+
+    # A finishes. B has been sent but has not answered yet (it is prefilling), so the
+    # gap between the two is the window a late Stop for A used to fire into.
+    _dispatch(o, [{"type": "gen_done", "request_id": "a"}])
+    assert not o._owns_worker(a_cancel), "a finished request stops owning the worker"
+    assert o._owns_worker(b_cancel), "the next queued request is the one prefilling"
+
+    # Worker moves on to B, still before A's consumer reads anything.
+    _dispatch(o, [{"type": "token", "request_id": "b", "token": "yo"}])
+    assert not o._owns_worker(a_cancel), "a finished request must not cancel its successor"
+    assert o._owns_worker(b_cancel), "the worker moved on to B, so B owns it"
+
+    # A's own stream unwinding afterwards must not disturb B.
+    o._release_worker(a_cancel)
+    assert o._owns_worker(b_cancel)
+
+
+def test_status_responses_do_not_transfer_worker_ownership():
+    # Status lines are not an answer to any request; the dispatcher drops them before
+    # routing, so they must not promote anyone.
+    import queue as _queue
+
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    a_cancel, b_cancel = threading.Event(), threading.Event()
+    o._mailboxes = {"a": _queue.Queue(), "b": _queue.Queue()}
+    o._request_cancel_events = {"a": a_cancel, "b": b_cancel}
+    o._claim_worker(a_cancel)
+    o._claim_worker(b_cancel)
+
+    _dispatch(o, [{"type": "status", "request_id": "b", "message": "loading"}])
+    # Nothing has answered, so the oldest claim is still the one prefilling.
+    assert o._owns_worker(a_cancel)
+    assert not o._owns_worker(b_cancel)
+
+
+def test_only_the_latest_responder_executes():
+    # The subprocess runs one generation at a time, so answering B means it has left A.
+    # _generate_inner promotes from its own consumer, and it can share the worker with a
+    # dispatched request, so the two must not both count as executing.
+    o = _bare_orchestrator()
+    a_cancel, b_cancel = threading.Event(), threading.Event()
+    o._claim_worker(a_cancel)
+    o._claim_worker(b_cancel)
+
+    o._mark_worker_started(a_cancel)
+    assert o._owns_worker(a_cancel)
+    o._mark_worker_started(b_cancel)
+    assert o._owns_worker(b_cancel), "the latest responder is the one executing"
+    assert not o._owns_worker(a_cancel), "and it is the only one"
+    # Idempotent: more of B's own tokens must not disturb it.
+    o._mark_worker_started(b_cancel)
+    assert o._owns_worker(b_cancel)
