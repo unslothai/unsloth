@@ -1993,6 +1993,7 @@ def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch
     start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
     cmd, env = captured["command"], captured["kwargs"]["env"]
     assert "--disable-tools" in cmd and "--enable-tools" not in cmd
+    assert cmd[cmd.index("--reasoning") + 1] == "off"
     assert "--gpu-memory-mode" not in cmd
     assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
@@ -2002,10 +2003,16 @@ def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch
         "http://127.0.0.1:8888",
         "unsloth/M-GGUF",
         start.LoadOptions(),
-        start.ServerOptions(enable_tools = True, tool_call_healing = False, tool_call_nudging = False),
+        start.ServerOptions(
+            enable_tools = True,
+            tool_call_healing = False,
+            tool_call_nudging = False,
+            reasoning = "auto",
+        ),
     )
     cmd, env = captured["command"], captured["kwargs"]["env"]
     assert "--enable-tools" in cmd and "--disable-tools" not in cmd
+    assert cmd[cmd.index("--reasoning") + 1] == "auto"
     assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "1"
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "0"
 
@@ -2153,11 +2160,14 @@ def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
             "0.3",
             "--top-k",
             "40",
+            "--reasoning",
+            "on",
         ],
     )
     assert result.exit_code == 0, result.output
     so = captured["server_options"]
     assert so.temperature == 0.3 and so.top_k == 40 and so.top_p is None
+    assert so.reasoning == "on"
 
 
 def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
@@ -2681,6 +2691,7 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     cmd = captured["command"]
     assert cmd[1] == "run"
     assert "--disable-tools" in cmd and "--no-cloudflare" in cmd
+    assert cmd[cmd.index("--reasoning") + 1] == "off"
     assert cmd[cmd.index("--model") + 1] == "unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL"
     assert cmd[cmd.index("--gguf-variant") + 1] == "UD-Q4_K_XL"
     assert cmd[cmd.index("--context-length") + 1] == "8192"
