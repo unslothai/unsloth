@@ -10,7 +10,11 @@ import {
   openModelsDir,
   pickHuggingFaceCacheDir,
 } from "@/features/native-intents";
-import { useSystemInfo, type GpuDevice } from "@/hooks/use-system";
+import {
+  aggregateGpuMemoryTotalGb,
+  useSystemInfo,
+  type GpuDevice,
+} from "@/hooks/use-system";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
@@ -184,6 +188,18 @@ export function ResourcesTab() {
   const [hfCacheLoaded, setHfCacheLoaded] = useState(false);
   const [cacheBrowserOpen, setCacheBrowserOpen] = useState(false);
   const [cacheSaving, setCacheSaving] = useState(false);
+  const displayedGpu = systemInfo.gpu?.available
+    ? systemInfo.gpu
+    : (systemInfo.inference_gpu ?? systemInfo.gpu);
+  const separateInferenceGpu =
+    systemInfo.gpu?.available &&
+    systemInfo.inference_gpu &&
+    systemInfo.inference_gpu.backend !== systemInfo.gpu.backend
+      ? systemInfo.inference_gpu
+      : null;
+  const inferenceVramTotal = separateInferenceGpu
+    ? aggregateGpuMemoryTotalGb(separateInferenceGpu.devices)
+    : 0;
 
   useEffect(() => {
     let cancelled = false;
@@ -203,17 +219,14 @@ export function ResourcesTab() {
   }, []);
 
   const metrics = useMemo(() => {
-    const devices = systemInfo.gpu?.devices ?? [];
+    const devices = displayedGpu?.devices ?? [];
     const ramTotal = systemInfo.memory?.total_gb ?? 0;
     const ramAvailable = systemInfo.memory?.available_gb ?? 0;
     const ramUsed = Math.max(0, ramTotal - ramAvailable);
     const diskTotal = systemInfo.disk?.total_gb ?? 0;
     const diskFree = systemInfo.disk?.free_gb ?? 0;
     const diskUsed = Math.max(0, diskTotal - diskFree);
-    const vramTotal = devices.reduce(
-      (sum, device) => sum + (device.memory_total_gb ?? 0),
-      0,
-    );
+    const vramTotal = aggregateGpuMemoryTotalGb(devices);
     // null usage = unknown (e.g. Windows ROCm perf counter): treating it as 0
     // fabricates a 0-used total, so the aggregate is unknown if any device is.
     const vramUsageKnown =
@@ -252,7 +265,7 @@ export function ResourcesTab() {
       vramPercent,
       vramUsageKnown,
     };
-  }, [systemInfo]);
+  }, [displayedGpu, systemInfo]);
 
   const handleCacheFolder = async () => {
     if (!hfCache) return;
@@ -312,9 +325,9 @@ export function ResourcesTab() {
       : t("settings.resources.environment.unknown");
   const cpuFrequencyLabel = formatFrequency(systemInfo.cpu?.frequency_mhz);
   const hasGpu =
-    (systemInfo.gpu?.available ?? false) && metrics.devices.length > 0;
+    (displayedGpu?.available ?? false) && metrics.devices.length > 0;
   const backendLabel = (
-    systemInfo.gpu?.backend ?? systemInfo.device_backend ?? "cpu"
+    displayedGpu?.backend ?? systemInfo.device_backend ?? "cpu"
   ).toUpperCase();
   const modelsFolderPath = hfCache
     ? hfCache.cacheHome
@@ -426,6 +439,19 @@ export function ResourcesTab() {
       </SettingsSection>
 
       <SettingsSection title={t("settings.resources.gpu.title")}>
+        {separateInferenceGpu && (
+          <div className="flex items-center justify-between gap-4 border-b border-border/60 py-3 text-sm">
+            <span className="text-muted-foreground">GGUF inference</span>
+            <span className="text-right font-mono text-xs uppercase text-foreground">
+              {separateInferenceGpu.backend ?? "GPU"}
+              {separateInferenceGpu.available
+                ? inferenceVramTotal
+                  ? ` · ${formatGiB(inferenceVramTotal)}`
+                  : ""
+                : " · unavailable"}
+            </span>
+          </div>
+        )}
         {hasGpu ? (
           metrics.devices.map((device, index) => {
             const ordinal = deviceOrdinal(device);

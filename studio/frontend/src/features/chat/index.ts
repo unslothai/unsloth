@@ -11,9 +11,11 @@ export {
   fetchGgufStagedMetadata,
   getCachedModelPath,
   getInferenceStatus,
+  listCachedGguf,
   listChatAttachments,
   listGgufVariants,
   listLocalModels,
+  listModels,
   listRecommendedFolders,
   listScanFolders,
   loadModel,
@@ -28,7 +30,11 @@ export {
   type LocalModelInfo,
   type ScanFolderInfo,
 } from "./api/chat-api";
-export type { GgufVariantDetail } from "./types/api";
+export type {
+  BackendModelDetails,
+  GgufVariantDetail,
+  InferenceStatusResponse,
+} from "./types/api";
 export {
   ChatSettingsPanel,
   ParamSlider,
@@ -80,6 +86,11 @@ export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { listStoredChatThreads } from "./utils/chat-history-storage";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
 export { ArtifactCard } from "./artifacts/artifact-card";
+export { ResearchMessage } from "./components/research-message";
+export {
+  ResearchActivityPanel,
+  ResearchActivitySheet,
+} from "./components/research-activity-panel";
 export {
   useChatArtifactsStore,
   useSelectedChatArtifact,

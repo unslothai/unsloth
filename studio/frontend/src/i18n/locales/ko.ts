@@ -752,6 +752,7 @@ export const ko = {
       trainWithLora: "LoRA로 학습",
       stableRank: "안정 랭크",
       memoryEfficient: "메모리 효율적",
+      weightDecomposed: "가중치 분해",
       optimization: "최적화",
       schedule: "스케줄",
       memory: "메모리",

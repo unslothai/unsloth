@@ -114,6 +114,28 @@ def _file_suffix(path: str) -> str:
     return "." + base.rsplit(".", 1)[1].lower() if "." in base else ""
 
 
+def _hf_cache_snapshot_ref(local_path: str) -> Optional[tuple]:
+    """``(repo_id, revision)`` for an HF-cache snapshot path, else None. An inactive Studio
+    cache loads by its snapshot path but keeps the ``models--org--repo/snapshots/<rev>``
+    layout, so the gate recovers its provenance and scans that exact commit instead of
+    exempting it (an older cached commit can hold a pickle since dropped from the branch)."""
+    try:
+        path = Path(local_path).resolve(strict = False)
+    except (OSError, ValueError):
+        return None
+    for parent in path.parents:
+        if parent.name != "snapshots":
+            continue
+        encoded = parent.parent.name
+        if not encoded.startswith("models--"):
+            return None
+        repo_id = encoded.removeprefix("models--").replace("--", "/")
+        if not repo_id:
+            return None
+        return repo_id, path.relative_to(parent).parts[0]  # <rev> dir under snapshots/
+    return None
+
+
 def _load_relative_path(norm: str, load_subdirs) -> str:
     """``norm`` relative to a ``from_pretrained`` load root. Some loads read from a
     snapshot SUBDIRECTORY (Spark-TTS / BiCodec load ``<snapshot>/LLM``), where a file
@@ -141,13 +163,14 @@ def _indexed_shard_paths(
     model_name: str,
     hf_token: Optional[str],
     load_subdirs = (),
+    revision: Optional[str] = None,
 ):
     """Repo-relative weight paths a load could fetch via weight-index files. Returns a
     set (empty when the repo ships no index files -- a definitive "nothing sharded"), or
     None when the lookup was inconclusive (transient error) so the caller treats a
     flagged subdir pickle conservatively. Reads only small JSON indexes, never weights.
     Indexes are looked up at the root and each ``load_subdirs`` root, with ``weight_map``
-    entries re-prefixed to repo-relative paths.
+    entries re-prefixed to repo-relative paths. ``revision`` scopes to a cached commit.
     """
     import json
 
@@ -166,6 +189,7 @@ def _indexed_shard_paths(
                 index_path = hf_hub_download(
                     model_name,
                     prefix + filename,
+                    revision = revision,
                     token = hf_token or None,
                     cache_dir = active_hf_hub_cache(),
                 )
@@ -175,7 +199,9 @@ def _indexed_shard_paths(
                 inconclusive = True  # transient: an index that might exist could not be read
                 continue
             try:
-                weight_map = (json.loads(open(index_path).read()) or {}).get("weight_map") or {}
+                weight_map = (json.loads(open(index_path, encoding = "utf-8").read()) or {}).get(
+                    "weight_map"
+                ) or {}
                 for shard in weight_map.values():
                     shard_norm = _normalize_repo_path(str(shard))
                     # weight_map paths are relative to the index file's directory.
@@ -260,9 +286,14 @@ def _load_scan_target(model_name: str, load_subdirs: tuple) -> tuple:
     return model_name, load_subdirs
 
 
-def _fetch_security_status(model_name: str, hf_token: Optional[str]):
+def _fetch_security_status(
+    model_name: str,
+    hf_token: Optional[str],
+    revision: Optional[str] = None,
+):
     """``security_repo_status`` (a dict) or None if unavailable. Hub metadata only;
     retries once on a transient error, then returns None so the caller fails open.
+    ``revision`` scopes the scan to a specific cached commit (else the default branch).
     """
     from huggingface_hub import model_info as hf_model_info
 
@@ -272,6 +303,7 @@ def _fetch_security_status(model_name: str, hf_token: Optional[str]):
         try:
             info = hf_model_info(
                 model_name,
+                revision = revision,
                 token = token_arg,
                 securityStatus = True,
                 timeout = timeout,
@@ -296,7 +328,7 @@ def _st_load_roots(snapshot: Path) -> list:
     roots = [snapshot]
     try:
         import json
-        modules = json.loads((snapshot / "modules.json").read_text())
+        modules = json.loads((snapshot / "modules.json").read_text(encoding = "utf-8"))
     except (OSError, ValueError):
         return roots  # no / invalid modules.json -> snapshot root is the only load root
     for module in modules or ():
@@ -485,12 +517,17 @@ def evaluate_file_security(
     # fails open): the Spark-TTS "<parent>/LLM" alias is really unsloth/<parent> from LLM/.
     model_name, load_subdirs = _load_scan_target(model_name, tuple(load_subdirs))
 
-    # Local paths (including a local .gguf) have no Hub scan. A remote ref is scanned
-    # even if named "*.gguf", so a repo cannot dodge the scan via its name.
+    # Local paths have no Hub scan, EXCEPT an HF-cache snapshot whose canonical path
+    # encodes a repo id + commit: scan that exact commit so an inactive-cache load can't
+    # dodge the gate. A remote ref is scanned even if named "*.gguf" (name can't dodge it).
+    snapshot_revision = None
     try:
         from utils.paths import is_local_path
         if is_local_path(model_name):
-            return FileSecurityDecision(model_name, False, reason = "local path; no Hub scan")
+            cache_ref = _hf_cache_snapshot_ref(model_name)
+            if cache_ref is None:
+                return FileSecurityDecision(model_name, False, reason = "local path; no Hub scan")
+            model_name, snapshot_revision = cache_ref
     except Exception:
         # Cannot classify the path -> do not block on that account.
         return FileSecurityDecision(model_name, False, reason = "path check failed; not blocked")
@@ -499,7 +536,7 @@ def evaluate_file_security(
     if local_only_load:
         return _evaluate_local_only(model_name)
 
-    status = _fetch_security_status(model_name, hf_token)
+    status = _fetch_security_status(model_name, hf_token, revision = snapshot_revision)
     if not isinstance(status, dict):
         return FileSecurityDecision(
             model_name, False, reason = "scan unavailable; allowed (fail-open)"
@@ -536,7 +573,9 @@ def evaluate_file_security(
             maybe_shard.append({"path": path, "level": level, "norm": norm})
 
     if maybe_shard:
-        indexed = _indexed_shard_paths(model_name, hf_token, load_subdirs)
+        indexed = _indexed_shard_paths(
+            model_name, hf_token, load_subdirs, revision = snapshot_revision
+        )
         for m in maybe_shard:
             # Block if a root index lists this shard, or if the lookup was inconclusive
             # (transient error -> stay conservative). A definitive "no index / not listed"

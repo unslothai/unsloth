@@ -14,6 +14,13 @@ FAIL=0
 # controllable path so we can test the "no GPU" scenario on GPU machines.
 _FUNC_FILE=$(mktemp)
 _FAKE_SMI_DIR=$(mktemp -d)
+# The ROCm probe helpers read the real /opt/rocm prefix by ABSOLUTE path
+# (_ensure_rocm_probe_env appends /opt/rocm/bin to PATH and runs the host
+# rocminfo; version detection reads /opt/rocm/.info/version). On a real ROCm
+# host that leaks the host GPU into the minimal-PATH harness and makes the
+# no-GPU / CPU assertions host-dependent. Redirect the whole prefix to an empty
+# temp dir so the probes stay hermetic (same idea as the nvidia-smi rewrite).
+_FAKE_ROCM_DIR=$(mktemp -d)
 {
     sed -n '/^_run_bounded()/,/^}/p' "$INSTALL_SH"
     echo ""
@@ -23,10 +30,28 @@ _FAKE_SMI_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_has_usable_nvidia_gpu()/,/^}/p' "$INSTALL_SH"
     echo ""
+    # ROCm gfx-arch probe helpers that get_torch_index_url / _has_amd_rocm_gpu
+    # now call. These MUST stay in sync with install.sh: if get_torch_index_url
+    # references a helper that is not extracted here, the ROCm branch hits an
+    # undefined function, silently falls through to the CPU wheel index, and the
+    # ROCm assertions below fail.
+    sed -n '/^_ensure_rocm_probe_env()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_probe_amd_gfx_arch()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_amd_gpu_present_via_pci()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_infer_amd_gfx_arch_from_gpu_name()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_infer_linux_amd_gfx_arch()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_amd_arch_index_family_for_gfx()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^_trim_index_path_slashes()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH"
-} | sed "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
+} | sed -e "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
+      -e "s|/opt/rocm|$_FAKE_ROCM_DIR|g" \
   > "$_FUNC_FILE"
 
 # Save system PATH so we always have basic tools (uname, grep, head, etc.)
@@ -438,6 +463,7 @@ assert_eq "url override preserves fragment slash" "https://mirror.example.com/wh
 
 rm -f "$_FUNC_FILE"
 rm -rf "$_FAKE_SMI_DIR"
+rm -rf "$_FAKE_ROCM_DIR"
 rm -rf "$_TOOLS_DIR"
 
 echo ""
