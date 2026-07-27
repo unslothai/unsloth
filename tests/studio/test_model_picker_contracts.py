@@ -617,7 +617,7 @@ def test_diffusion_gates_cover_the_staged_load_flow():
     GGUF by name alone, so gating Host Memory on the LOADED model left staged Load offering it.
     """
     page = _read("features/model-picker/components/model-config-page.tsx")
-    assert "looksLikeDiffusionGemma(target.id)" in page
+    assert "resolveIsDiffusion(" in page
     assert "isDiffusion={isDiffusionModel}" in page
     assert "isDiffusion={isActiveModel && loadedIsDiffusion}" not in page
 
@@ -626,6 +626,51 @@ def test_diffusion_gates_cover_the_staged_load_flow():
     # Same normalization as _classify_diffusion_gguf in routes/inference.py.
     assert 'replace(/[^a-z0-9]+/g, "")' in identity
     assert '"diffusiongemma"' in identity
+
+
+def test_loaded_diffusion_classification_outranks_the_name_hint():
+    """The page must feed resolveIsDiffusion a TRI-STATE, matching the backend.
+
+    ``_preflight_is_diffusion`` stays None until a header is really read so a name hint cannot
+    override a header; the page owes the same shape. Only a model that is not the active one may
+    fall back to the name, or an ordinary GGUF with DiffusionGemma in its id loses the Host Memory
+    control and (on Vulkan) the GPU picker that /load accepts for it.
+    """
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "const loadedDiffusionClassification: DiffusionClassification = isActiveModel" in page
+    assert "? loadedIsDiffusion" in page
+    assert ": null;" in page
+    # The name must never be OR'd back on top of a loaded classification.
+    assert "loadedIsDiffusion) || looksLikeDiffusionGemma" not in page
+
+    identity = _read("features/model-picker/model-config/model-identity.ts")
+    assert "export type DiffusionClassification = boolean | null;" in identity
+    assert "export function resolveIsDiffusion(" in identity
+    assert "return loaded ?? looksLikeDiffusionGemma(...parts);" in identity
+
+
+def test_load_never_carries_a_hidden_host_memory_mode():
+    """The gate hides Host Memory, so the load must also stop sending it.
+
+    Hiding alone leaves a remembered pinned/resident mode on the config, which handleRun would
+    still pass to onRun; /validate and /load then 400 with no visible control to clear it. The
+    strip is on the LOAD payload only: savePerModelConfig keeps the remembered value, which is
+    valid again the moment the same model loads with a header saying it is not diffusion.
+    """
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    handle_run = page.split("const handleRun = () => {", 1)[1]
+    assert "diffusionSafeLoadConfig(" in handle_run
+    save_call = handle_run.split("savePerModelConfig(", 1)[1].split(")", 1)[0]
+    # Saved unstripped; only the payload handed to onRun loses the mode.
+    assert "effectiveRuntimeConfig" in save_call
+    assert "diffusionSafeLoadConfig" not in save_call
+    assert "onRun(effectiveLoadConfig)" in handle_run
+
+    apply_config = _read("features/model-picker/model-config/apply-per-model-config.ts")
+    assert "export function diffusionSafeLoadConfig(" in apply_config
+    assert "return { ...config, ggufMemoryMode: undefined };" in apply_config
+    # No strip for a model the backend accepts a mode for.
+    assert "if (!isDiffusion || config.ggufMemoryMode == null) {" in apply_config
 
 
 def test_gpu_picker_hidden_when_its_ordinals_mean_other_devices():

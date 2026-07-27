@@ -98,6 +98,23 @@ export function currentRuntimePerModelConfig(
   };
 }
 
+// Host-memory modes are the one per-model field the diffusion runner has no equivalent
+// for: /validate and /load both 400 on an explicit gguf_memory_mode for a GGUF they
+// classify as diffusion. The Host Memory control is hidden for such a model, so a mode
+// that is still on a remembered config would fail every load with no visible way to clear
+// it. Drop it from what is SENT only. What is REMEMBERED stays: staged, the classification
+// is just the DiffusionGemma name stand-in, and a mode it hides is valid again the moment
+// the same model loads with a header saying it is not diffusion.
+export function diffusionSafeLoadConfig(
+  config: PerModelConfig,
+  isDiffusion: boolean,
+): PerModelConfig {
+  if (!isDiffusion || config.ggufMemoryMode == null) {
+    return config;
+  }
+  return { ...config, ggufMemoryMode: undefined };
+}
+
 export function perModelConfigsEqual(
   a: PerModelConfig,
   b: PerModelConfig,

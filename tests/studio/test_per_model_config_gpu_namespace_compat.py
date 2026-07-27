@@ -467,6 +467,101 @@ console.log("RESULT " + JSON.stringify(out));
         assert result[name] is expected, name
 
 
+def test_loaded_header_classification_beats_the_diffusion_name(tmp_path):
+    """Once a model is loaded, its header classification decides, not its name.
+
+    The backend already resolves this the same way: ``_preflight_is_diffusion`` is tri-state
+    (None until a header is really read) so a name hint cannot override a header. The config
+    page has to agree, or an ordinary GGUF carrying ``DiffusionGemma`` in its id loses the Host
+    Memory control and the Vulkan GPU picker that ``/load`` accepts for it, while a real
+    DiffusionGemma whose id says nothing keeps offering controls ``/load`` rejects.
+    """
+    # (loaded classification, model id, expected gate).
+    cases = [
+        # Loaded and the header says ordinary: the name must not re-hide the controls.
+        [False, "unsloth/DiffusionGemma-derivative-GGUF", False],
+        [False, "unsloth/diffusion_gemma-distill-GGUF", False],
+        # Loaded and the header says diffusion: gate it whatever the id looks like.
+        [True, "unsloth/DiffusionGemma-2B-GGUF", True],
+        [True, "unsloth/gemma-3-4b-it-GGUF", True],
+        # Nothing loaded: no header has been read on either side, so the name stands in
+        # for exactly the rule the backend falls back to.
+        [None, "unsloth/DiffusionGemma-2B-GGUF", True],
+        [None, "/models/DiffusionGemma.Q4_K_M.gguf", True],
+        [None, "unsloth/DiffusionGemma-derivative-GGUF", True],
+        [None, "unsloth/gemma-3-4b-it-GGUF", False],
+    ]
+    script = """
+const identity = await import(%(identity)s);
+const out: boolean[] = [];
+for (const [loaded, id] of %(cases)s as [boolean | null, string, boolean][]) {
+  out.push(identity.resolveIsDiffusion(loaded, id));
+}
+console.log("RESULT " + JSON.stringify(out));
+""" % {
+        "identity": json.dumps(_MODEL_IDENTITY.as_uri()),
+        "cases": json.dumps(cases),
+    }
+    result = _run(tmp_path, script)
+    assert result == [case[2] for case in cases]
+
+
+def test_hidden_host_memory_mode_never_reaches_the_load(tmp_path):
+    """A remembered host-memory mode a diffusion gate hides must not be sent, only kept.
+
+    ``_reject_diffusion_memory_mode`` 400s an explicit ``gguf_memory_mode``, and the control that
+    would clear it is hidden, so sending it would fail every load with no way out. Dropping it from
+    STORAGE instead would throw away a setting that is valid again as soon as the same id loads
+    with a header saying it is not diffusion, which is the staged case the name check cannot tell
+    apart. So the load payload loses the mode and the saved config keeps it.
+    """
+    body = _extract_function(_APPLY_CONFIG.read_text(), "diffusionSafeLoadConfig")
+    script = (
+        body
+        + """
+const remembered = {
+  customContextLength: 8192,
+  maxSeqLength: null,
+  kvCacheDtype: null,
+  speculativeType: "auto",
+  specDraftNMax: null,
+  tensorParallel: false,
+  chatTemplateOverride: null,
+  gpuMemoryMode: "manual",
+  gpuLayers: 20,
+  nCpuMoe: 0,
+  selectedGpuIds: null,
+  ggufMemoryMode: "pinned",
+} as any;
+const gated = diffusionSafeLoadConfig(remembered, true);
+const ungated = diffusionSafeLoadConfig(remembered, false);
+const noMode = { ...remembered, ggufMemoryMode: undefined };
+console.log("RESULT " + JSON.stringify({
+  sentMode: gated.ggufMemoryMode ?? null,
+  // Everything else the load needs has to survive the strip untouched.
+  sentContext: gated.customContextLength,
+  sentGpuMemoryMode: gated.gpuMemoryMode,
+  sentGpuLayers: gated.gpuLayers,
+  // The caller's object is what gets saved, so the strip must not mutate it.
+  rememberedMode: remembered.ggufMemoryMode,
+  // A non-diffusion model keeps its mode, and neither case copies needlessly.
+  ungatedMode: ungated.ggufMemoryMode ?? null,
+  ungatedIsSame: ungated === remembered,
+  unsetIsSame: diffusionSafeLoadConfig(noMode, true) === noMode,
+}));
+"""
+    )
+    result = _run(tmp_path, script)
+    assert result["sentMode"] is None
+    assert result["sentContext"] == 8192
+    assert result["sentGpuMemoryMode"] == "manual"
+    assert result["sentGpuLayers"] == 20
+    assert result["rememberedMode"] == "pinned"
+    assert result["ungatedMode"] == "pinned"
+    assert result["ungatedIsSame"] is True
+    assert result["unsetIsSame"] is True
+
+
 def test_gguf_pin_candidates_read_their_own_channel(tmp_path):
     """/api/system publishes the llama.cpp pin space separately from the PyTorch devices.
 

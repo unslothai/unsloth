@@ -26,6 +26,22 @@ export function looksLikeDiffusionGemma(
   );
 }
 
+// Tri-state, mirroring the backend's _preflight_is_diffusion (core/inference/llama_cpp.py):
+// null means no GGUF header has been read yet, so nothing is classified.
+export type DiffusionClassification = boolean | null;
+
+// Resolve one diffusion answer from the backend's header classification plus the name.
+// The header wins whenever it exists: it is what /validate and /load themselves decide
+// on, so an ordinary GGUF that merely carries DiffusionGemma in its id keeps the controls
+// those endpoints accept for it. The name check is only the stand-in for a staged pick,
+// whose header the backend has not read yet either.
+export function resolveIsDiffusion(
+  loaded: DiffusionClassification,
+  ...parts: (string | null | undefined)[]
+): boolean {
+  return loaded ?? looksLikeDiffusionGemma(...parts);
+}
+
 type ParsedModelStorageKey = {
   modelId: string;
   ggufVariant: string;

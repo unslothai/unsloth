@@ -37,8 +37,14 @@ import {
   useDefaultChatTemplate,
   useModelMaxPositionEmbeddings,
 } from "../hooks/use-model-defaults";
-import { perModelConfigsEqual } from "../model-config/apply-per-model-config";
-import { looksLikeDiffusionGemma } from "../model-config/model-identity";
+import {
+  diffusionSafeLoadConfig,
+  perModelConfigsEqual,
+} from "../model-config/apply-per-model-config";
+import {
+  type DiffusionClassification,
+  resolveIsDiffusion,
+} from "../model-config/model-identity";
 import {
   CONTEXT_LENGTH_MIN,
   DEFAULT_MAX_SEQ_LENGTH,
@@ -654,10 +660,19 @@ export function ModelConfigPage({
   const rememberId = useId();
   const isActiveModel = loadedConfig != null;
   const loadedIsDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
-  // No header flag before load, so fall back to the name check: staged Load must also
-  // hide the controls /validate and /load reject.
-  const isDiffusionModel =
-    (isActiveModel && loadedIsDiffusion) || looksLikeDiffusionGemma(target.id);
+  // Every load path sets loadedIsDiffusion from the response's header classification in
+  // the same update as the checkpoint, so once this target is the ACTIVE model that
+  // answer is what /validate and /load will apply: prefer it, including when it says the
+  // model is NOT diffusion. Staged, no header has been read on either side, so the
+  // classification is unavailable (null) and the name check stands in: staged Load must
+  // still hide the controls the backend's own name fallback rejects.
+  const loadedDiffusionClassification: DiffusionClassification = isActiveModel
+    ? loadedIsDiffusion
+    : null;
+  const isDiffusionModel = resolveIsDiffusion(
+    loadedDiffusionClassification,
+    target.id,
+  );
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
@@ -957,9 +972,15 @@ export function ModelConfigPage({
     if (saveFailed) {
       toast.error("Couldn't save these settings, loading with them anyway.");
     }
+    // Saved above with the mode intact; the load never carries one the diffusion
+    // runner rejects (see diffusionSafeLoadConfig).
+    const loadRuntimeConfig = diffusionSafeLoadConfig(
+      effectiveRuntimeConfig,
+      isDiffusionModel,
+    );
     const effectiveLoadConfig = target.isGguf
-      ? effectiveRuntimeConfig
-      : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
+      ? loadRuntimeConfig
+      : { ...loadRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
     onRun(effectiveLoadConfig);
   };
 
