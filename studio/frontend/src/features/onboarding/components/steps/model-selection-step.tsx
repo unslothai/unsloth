@@ -33,22 +33,26 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { MODEL_TYPE_TO_HF_TASK, PRIORITY_TRAINING_MODELS, applyPriorityOrdering } from "@/config/training";
 import {
-  useDebouncedValue,
-  useGpuInfo,
-  useHfTokenValidation,
-} from "@/hooks";
-import { useHubModelSearch } from "@/features/hub/hooks/use-hub-model-search";
-import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
+  MODEL_TYPE_TO_HF_TASKS,
+  PRIORITY_TRAINING_MODELS,
+  applyPriorityOrdering,
+} from "@/config/training";
+import {
+  hfApiToken,
+  useHfTokenStore,
+  useHubInfiniteScroll,
+  useHubModelSearch,
+} from "@/features/hub";
+import { useTrainingConfigStore } from "@/features/training";
+import { useDebouncedValue, useGpuInfo, useHfTokenValidation } from "@/hooks";
 import { extractParamLabel } from "@/lib/model-size";
 import { formatCompact } from "@/lib/utils";
 import {
-  type TrainingMethod as VramTrainingMethod,
   type VramFitStatus,
+  type TrainingMethod as VramTrainingMethod,
   buildModelVramMap,
 } from "@/lib/vram";
-import { useTrainingConfigStore } from "@/features/training";
 import type { TrainingMethod } from "@/types/training";
 import {
   InformationCircleIcon,
@@ -68,8 +72,6 @@ export function ModelSelectionStep() {
     ensureModelDefaultsLoaded,
     trainingMethod,
     setTrainingMethod,
-    hfToken,
-    setHfToken,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       modelType: s.modelType,
@@ -78,16 +80,16 @@ export function ModelSelectionStep() {
       ensureModelDefaultsLoaded: s.ensureModelDefaultsLoaded,
       trainingMethod: s.trainingMethod,
       setTrainingMethod: s.setTrainingMethod,
-      hfToken: s.hfToken,
-      setHfToken: s.setHfToken,
     })),
   );
+  const hfToken = useHfTokenStore((s) => s.token);
+  const setHfToken = useHfTokenStore((s) => s.setToken);
 
   const [inputValue, setInputValue] = useState("");
   const selectingRef = useRef(false);
   const debouncedQuery = useDebouncedValue(inputValue);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
-  const task = modelType ? MODEL_TYPE_TO_HF_TASK[modelType] : undefined;
+  const task = modelType ? MODEL_TYPE_TO_HF_TASKS[modelType] : undefined;
   const {
     results: hfResults,
     isLoading,
@@ -97,7 +99,7 @@ export function ModelSelectionStep() {
     error: hfSearchError,
   } = useHubModelSearch(debouncedQuery, {
     task,
-    accessToken: debouncedHfToken || undefined,
+    accessToken: hfApiToken(debouncedHfToken),
     excludeGguf: true,
     priorityIds: PRIORITY_TRAINING_MODELS,
     // Curated unsloth listing by default, but a typed query searches the whole
@@ -120,25 +122,35 @@ export function ModelSelectionStep() {
       trainingMethod as VramTrainingMethod,
       gpu,
     );
-    const map = new Map<string, { status: VramFitStatus | null; detail: string | null }>();
+    const map = new Map<
+      string,
+      { status: VramFitStatus | null; detail: string | null }
+    >();
     for (const r of hfResults) {
       const fit = fitMap.get(r.id);
       map.set(r.id, {
         status: fit?.status ?? null,
-        detail: r.totalParams ? formatCompact(r.totalParams) : extractParamLabel(r.id),
+        detail: r.totalParams
+          ? formatCompact(r.totalParams)
+          : extractParamLabel(r.id),
       });
     }
     return map;
   }, [hfResults, gpu, trainingMethod]);
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
-  const { scrollRef, sentinelRef } = useHubInfiniteScroll(fetchMore, scannedCount, {
-    isFetching: isLoading || isLoadingMore,
-    resultCount: hfResults.length,
-    resetKey: debouncedQuery,
-  });
+  const { scrollRef, sentinelRef } = useHubInfiniteScroll(
+    fetchMore,
+    scannedCount,
+    {
+      isFetching: isLoading || isLoadingMore,
+      resultCount: hfResults.length,
+      resetKey: debouncedQuery,
+    },
+  );
 
   useEffect(() => {
+    if (!selectedModel) return;
     ensureModelDefaultsLoaded();
   }, [selectedModel, ensureModelDefaultsLoaded]);
 

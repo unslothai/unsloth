@@ -2,6 +2,17 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const en = {
+  picker: {
+    onDevice: "On Device",
+    huggingFace: "Hugging Face",
+    retry: "Retry",
+    offlineTitle: "You're offline",
+    offlineBody: "Switch to Device to use cached or local {noun}.",
+    offlineSwitchDevice: "Device",
+    searchAriaLabel: "Search {noun}",
+    rateLimitedTitle: "Hugging Face rate limit reached",
+    rateLimitedBody: "Wait a moment, then retry searching {noun}.",
+  },
   common: {
     cancel: "Cancel",
     close: "Close",
@@ -937,6 +948,135 @@ export const en = {
   studio: {
     routeTitle: "Train",
     title: "Fine-tuning Studio",
+    wizard: {
+      modelTitle: "Model",
+      modelDescription: "Select model and training method",
+      datasetTitle: "Dataset",
+      datasetDescription: "Select or upload training data",
+      paramsTitle: "Parameters",
+      paramsDescription: "Configure training parameters",
+      configTitle: "Configuration",
+      configDescription: "Save and load configurations",
+      modelLabel: "Model",
+      methodLabel: "Method",
+      hfTokenLabel: "Hugging Face token",
+      hfDatasetLabel: "Dataset",
+      uploadLocalLabel: "Or upload a local file",
+      sourceBrowse: "Browse",
+      releaseToUpload: "Release to upload",
+      loadYaml: "Load YAML",
+      saveYaml: "Save YAML",
+      resetDefaults: "Reset to defaults",
+      cachedModelGoneTitle: "Cached model no longer available",
+      cachedModelGoneDescription:
+        "The model files left this device, so training will download them again.",
+      cachedDatasetGoneTitle: "Cached dataset no longer available",
+      cachedDatasetGoneDescription:
+        "The dataset files left this device, so training will download them again.",
+    },
+    preview: {
+      title: "Run preview",
+      ready: "Ready",
+      notReady: "Not ready",
+      modelPending: "Model pending",
+      datasetPending: "Dataset pending",
+      method: "Method",
+      length: "Length",
+      steps: "{count} steps",
+      epoch: "{count} epoch",
+      epochs: "{count} epochs",
+      batch: "Batch",
+      context: "Context",
+      lr: "LR",
+      hardware: "Hardware",
+      noGpu: "No GPU detected",
+      hfToken: "HF token",
+      connected: "Connected",
+      notSet: "Not set",
+      files: "Files",
+      model: "Model",
+      dataset: "Dataset",
+      downloadsOnStart: "Downloads on start",
+      continuesOnStart: "Continues on start",
+      noticeModelDownload:
+        "This model is not on this device yet. Training will download it automatically.",
+      noticeModelPartial:
+        "Training will complete the partial model download before loading it.",
+      noticeDatasetDownload:
+        "This dataset is not on this device yet. Training will download it automatically.",
+      noticeDatasetPartial:
+        "Training will complete the partial dataset download before reading it.",
+    },
+    datasetPicker: {
+      noun: "datasets",
+      selectDataset: "Select dataset",
+      hubPlaceholder: "Search Hugging Face datasets...",
+      devicePlaceholder: "Search local datasets...",
+      useAsHubDataset: "Use as Hugging Face dataset",
+      useAsLocalPath: "Use as local path",
+      hfCacheLabel: "HF cache",
+      scanningLocal: "Scanning datasets on this device…",
+      couldntScan: "Couldn't scan local datasets",
+      someLocationsUnscanned: "Some dataset locations could not be scanned.",
+      noLocalDatasets:
+        "Nothing on this device yet. Download a dataset from the Hub, build one in Recipes, or upload a file.",
+      searchingHub: "Searching Hugging Face…",
+      noDatasetsFound: "No datasets found.",
+      tokenRejectedTitle: "Hugging Face token rejected",
+      tokenRejectedBody: "Update your token in Settings → General, then retry.",
+      hubUnreachable: "Couldn't reach Hugging Face",
+    },
+    modelPicker: {
+      noun: "models",
+      selectModel: "Select model",
+      hubPlaceholder: "Search or paste a Hugging Face id...",
+      devicePlaceholder: "Search local models or paste a folder path...",
+      useAsHubModel: "Use as Hugging Face model",
+      useAsLocalPath: "Use as local path",
+      hfCacheLabel: "HF cache",
+      scanningLocal: "Scanning local models…",
+      couldntScan: "Couldn't scan local models",
+      someLocationsUnscanned: "Some local locations could not be scanned.",
+      noLocalModels: "No local models found.",
+      noLocalModelsHint: "Paste a folder path above or switch to Hugging Face.",
+      searchingHub: "Searching Hugging Face…",
+      noModelsFound: "No models found.",
+      tokenRejectedTitle: "Hugging Face token rejected",
+      tokenRejectedBody: "Update your token in Settings → General, then retry.",
+      hubUnreachable: "Couldn't reach Hugging Face",
+      cantUseModel: "Can't use model for training",
+      reasonEmptyId: "Enter a model id or local model path.",
+      reasonGguf: "GGUF models cannot be used for training.",
+      reasonAdapter: "Adapter outputs cannot be used as base training models.",
+      reasonNotTrainable: "This on-device model is not trainable.",
+      reasonUnsupportedFormat:
+        "This model format is not supported for training.",
+      vramNeeds: "Needs ~{est}GB VRAM (GPU: {total}GB)",
+      vramTight: "~{est}GB VRAM (tight on {total}GB)",
+      vramApprox: "~{est}GB VRAM",
+    },
+    methods: {
+      qlora: {
+        label: "QLoRA",
+        hint: "4-bit quantization. Lowest VRAM, fastest to start.",
+        note: "4-bit",
+      },
+      lora: {
+        label: "LoRA",
+        hint: "16-bit adapters. Balanced quality and memory.",
+        note: "16-bit",
+      },
+      full: {
+        label: "Full fine-tune",
+        hint: "Trains all weights. Highest quality, needs the most VRAM.",
+        note: "fp16",
+      },
+      cpt: {
+        label: "Continued pretraining",
+        hint: "Continued pretraining for new domains or languages.",
+        note: "continued",
+      },
+    },
     subtitles: {
       configure: "Configure and start training",
       trainingInProgress: "Training in progress",
@@ -1019,6 +1159,7 @@ export const en = {
       searching: "Searching...",
       noDatasetsFound: "No datasets found",
       loadingLocalDatasets: "Loading local datasets...",
+      sourceAriaLabel: "Dataset source",
       failedToLoadLocalDatasets: "Failed to load local datasets.",
       noLocalDatasetsYet: "No local datasets yet.",
       noLocalDatasetsMatchSearch: "No local datasets match search.",
@@ -1099,6 +1240,11 @@ export const en = {
     params: {
       title: "Parameters",
       description: "Configure training hyperparameters",
+      mode: {
+        simple: "Simple",
+        advanced: "Advanced",
+        ariaLabel: "Parameter mode",
+      },
       projectName: "Project Name",
       optional: "Optional",
       projectNameDescription:
@@ -1205,6 +1351,11 @@ export const en = {
       starting: "Starting...",
       loadingModel: "Loading model...",
       checkingDataset: "Checking dataset...",
+      chooseModel: "Choose a model",
+      chooseDataset: "Choose a dataset",
+      chooseModelAndDataset: "Choose model and dataset",
+      datasetUnverified:
+        "Couldn't verify the dataset is compatible with this model. Check your connection or Hugging Face token — starting training will retry the check.",
       configLabel: "Training Config",
       upload: "Upload",
       uploadConfigTooltip: "Load a saved YAML config",
@@ -1240,6 +1391,18 @@ export const en = {
     },
     history: {
       title: "History",
+      filesDeleted: "Files deleted",
+      deleteArtifactsLabel: "Also delete adapter files on disk",
+      deleteArtifactsDescription:
+        "Removes the run's output folder, including saved adapters and checkpoints.",
+      deleteArtifactsSharedNote:
+        "Another run shares this output folder. Files are kept until the last run that uses them is deleted.",
+      artifactsKeptShared:
+        "Run deleted. Adapter files were kept because another run uses the same folder.",
+      deleteArtifactsActiveError:
+        "These files are in use by the training run in progress. Stop training before deleting them.",
+      deleteArtifactsFailed:
+        "The run was deleted but its files could not be removed.",
       emptyTitle: "No training runs yet",
       emptyDescription:
         "No training runs yet. Start your first training run in the Configure tab.",

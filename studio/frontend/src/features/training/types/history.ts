@@ -16,6 +16,7 @@ export interface TrainingRunSummary {
   output_dir: string | null;
   can_resume: boolean;
   resumed_later: boolean;
+  artifacts_available?: boolean;
   has_preview_model: boolean;
   preview_ref: string | null;
   preview_sig: string | null;
@@ -52,4 +53,6 @@ export interface TrainingRunDetailResponse {
 export interface TrainingRunDeleteResponse {
   status: string;
   message: string;
+  artifacts_deleted: boolean;
+  artifacts_kept_reason: "shared_output_dir" | null;
 }

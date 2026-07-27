@@ -2868,3 +2868,44 @@ html[data-chat-font] .aui-root {
 [data-sonner-toast] .sonner-loading-wrapper {
 	--size: var(--ui-icon-size) !important;
 }
+
+.elevated-card {
+	border: 1px solid #ebeae6;
+	border-radius: 20px;
+	box-shadow: 0 0 60px 8px #f5f5f4;
+}
+
+@media (min-width: 640px) {
+	.elevated-card {
+		border-radius: 28px;
+	}
+}
+
+@media (min-width: 1024px) {
+	.elevated-card {
+		border-radius: 32px;
+	}
+}
+
+.dark .elevated-card {
+	border-color: transparent;
+	box-shadow: none;
+}
+
+.page-title-halo {
+	text-shadow:
+		0 0 24px #e4e3df,
+		0 0 56px #ebeae6,
+		0 0 96px #efeeea;
+}
+
+.dark .page-title-halo {
+	text-shadow: none;
+}
+
+.train-section-chip {
+	background-color: color-mix(in srgb,
+			var(--chip-color, transparent) 12%,
+			transparent);
+	color: var(--chip-color, currentColor);
+}

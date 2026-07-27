@@ -4,6 +4,13 @@
 export { SettingsDialog } from "./settings-dialog";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
 export {
+  formatUploadSize,
+  getCachedUploadLimitBytes,
+  getCachedUploadLimitLabel,
+  loadUploadLimitSettings,
+  subscribeUploadLimitSettings,
+} from "./api/upload-limit";
+export {
   loadPersonalization,
   savePersonalization,
 } from "./api/personalization";

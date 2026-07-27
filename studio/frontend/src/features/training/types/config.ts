@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ModelInventoryFormat } from "@/features/hub";
 import type {
   DatasetFormat,
   DatasetSource,
@@ -14,6 +15,17 @@ import type { BackendModelConfig } from "../api/models-api";
 
 export type LoraVariant = "lora" | "rslora" | "loftq" | "dora";
 
+export interface ModelCacheReferenceOptions {
+  knownCached?: boolean;
+  localPath?: string | null;
+  modelFormat?: ModelInventoryFormat | null;
+}
+
+export interface DatasetCacheReferenceOptions {
+  knownCached?: boolean;
+  localPath?: string | null;
+}
+
 /** Column-to-role mapping, e.g. { "problem": "user", "solution": "assistant", "context": "system" } */
 export type DatasetManualMapping = Record<string, string>;
 
@@ -21,12 +33,16 @@ export interface TrainingConfigState {
   currentStep: StepNumber;
   modelType: ModelType | null;
   selectedModel: string | null;
+  modelKnownCached: boolean;
+  modelLocalPath: string | null;
+  modelFormat: ModelInventoryFormat | null;
   projectName: string;
   trainingMethod: TrainingMethod;
-  hfToken: string;
   datasetSource: DatasetSource;
   datasetFormat: DatasetFormat;
   dataset: string | null;
+  datasetKnownCached: boolean;
+  datasetLocalPath: string | null;
   datasetSubset: string | null;
   datasetSplit: string | null;
   datasetEvalSplit: string | null;
@@ -78,6 +94,7 @@ export interface TrainingConfigState {
   isCheckingDataset: boolean;
   isDatasetImage: boolean | null;
   isDatasetAudio: boolean;
+  datasetCheckFailed: boolean;
   trustRemoteCode: boolean;
   approvedRemoteCodeFingerprint?: string | null;
   finetuneVisionLayers: boolean;
@@ -96,13 +113,39 @@ export interface TrainingConfigActions {
   prevStep: () => void;
   setModelType: (type: ModelType) => void;
   setSelectedModel: (model: string | null) => void;
+  selectTrainingModel: (
+    model: string | null,
+    modelType: ModelType | null,
+    options?: ModelCacheReferenceOptions,
+  ) => void;
+  setSelectedModelCacheReference: (
+    model: string,
+    options: {
+      localPath: string | null;
+      modelFormat: ModelInventoryFormat | null;
+    },
+  ) => void;
+  clearSelectedModelCacheReference: (
+    model: string,
+    localPath?: string | null,
+  ) => void;
+  clearSelectedDatasetCacheReference: (
+    dataset: string,
+    localPath?: string | null,
+  ) => void;
+  setSelectedDatasetCacheReference: (
+    dataset: string,
+    localPath: string | null,
+  ) => void;
   setProjectName: (value: string) => void;
   ensureModelDefaultsLoaded: () => void;
   ensureDatasetChecked: () => void;
   setTrainingMethod: (method: TrainingMethod) => void;
-  setHfToken: (token: string) => void;
   setDatasetSource: (source: DatasetSource) => void;
-  selectHfDataset: (dataset: string | null) => void;
+  selectHfDataset: (
+    dataset: string | null,
+    options?: DatasetCacheReferenceOptions,
+  ) => void;
   selectLocalDataset: (file: string | null) => void;
   selectS3Source: () => void;
   setDatasetFormat: (format: DatasetFormat) => void;

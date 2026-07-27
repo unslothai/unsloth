@@ -6,7 +6,7 @@ from __future__ import annotations
 import errno
 import shutil
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Iterable, Iterator, Optional
 
 
@@ -154,6 +154,132 @@ def latest_snapshot_dir(repo_dir: Path) -> Optional[Path]:
             return None
         return max(snapshots, key = lambda entry: entry.stat().st_mtime)
     except OSError:
+        return None
+
+
+def ref_snapshot_dir(repo_dir: Path, ref: str = "main") -> Optional[Path]:
+    if (
+        not ref
+        or ref in {".", ".."}
+        or Path(ref).name != ref
+        or PureWindowsPath(ref).name != ref
+    ):
+        return None
+    try:
+        repo_root = repo_dir.resolve(strict = True)
+        refs = (repo_root / "refs").resolve(strict = True)
+        ref_path = (refs / ref).resolve(strict = True)
+        if (
+            refs.parent != repo_root
+            or not refs.is_dir()
+            or ref_path.parent != refs
+            or not ref_path.is_file()
+            or ref_path.stat().st_size > 256
+        ):
+            return None
+        commit = ref_path.read_text(encoding = "utf-8").strip()
+    except (OSError, RuntimeError, UnicodeError):
+        return None
+    if (
+        not commit
+        or len(commit) > 256
+        or commit in {".", ".."}
+        or Path(commit).name != commit
+        or PureWindowsPath(commit).name != commit
+    ):
+        return None
+    try:
+        snapshots = (repo_root / "snapshots").resolve(strict = True)
+        if snapshots.parent != repo_root or not snapshots.is_dir():
+            return None
+        snapshot = (snapshots / commit).resolve(strict = True)
+        snapshot.relative_to(snapshots)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return snapshot if _safe_is_dir(snapshot) else None
+
+
+def validated_repo_cache_path(
+    local_path: Optional[str],
+    repo_type: str,
+    repo_id: str,
+) -> Optional[tuple[Path, Path]]:
+    if not local_path or not repo_id:
+        return None
+    try:
+        resolved = Path(local_path).expanduser().resolve(strict = True)
+        expected = target_dir_name(repo_type, repo_id)
+        repo_dir = next(
+            (
+                candidate
+                for candidate in (resolved, *resolved.parents)
+                if candidate.name.lower() == expected
+            ),
+            None,
+        )
+        if repo_dir is None:
+            return None
+        allowed_roots = {
+            root.resolve(strict = True)
+            for root in hf_cache_roots()
+            if root.exists()
+        }
+        repo_dir = repo_dir.resolve(strict = True)
+        if repo_dir.parent not in allowed_roots:
+            return None
+        resolved.relative_to(repo_dir)
+        return repo_dir, resolved
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def latest_snapshot_from_cache_path(
+    local_path: Optional[str],
+    repo_type: str,
+    repo_id: str,
+    metadata_filenames: tuple[str, ...] = (),
+) -> Optional[str]:
+    validated = validated_repo_cache_path(local_path, repo_type, repo_id)
+    if validated is None:
+        return None
+    repo_dir, selected = validated
+    try:
+        def has_metadata(path: Path) -> bool:
+            if not metadata_filenames:
+                return True
+            return any((path / name).is_file() for name in metadata_filenames)
+
+        snapshots = (repo_dir / "snapshots").resolve(strict = True)
+        if snapshots.parent != repo_dir or not snapshots.is_dir():
+            return None
+        if selected != repo_dir:
+            if selected.parent != snapshots or not selected.is_dir():
+                return None
+            return str(selected) if has_metadata(selected) else None
+
+        candidates: list[Path] = []
+        pinned = ref_snapshot_dir(repo_dir)
+        if pinned is not None and has_metadata(pinned):
+            return str(pinned)
+        for path in snapshots.iterdir():
+            try:
+                candidate = path.resolve(strict = True)
+            except (OSError, RuntimeError):
+                continue
+            if (
+                candidate.parent == snapshots
+                and candidate.is_dir()
+                and has_metadata(candidate)
+            ):
+                candidates.append(candidate)
+        if not candidates:
+            return None
+        candidates.sort(
+            key = lambda path: path.stat().st_mtime if path.exists() else 0,
+            reverse = True,
+        )
+        return str(candidates[0].resolve())
+    except Exception:
         return None
 
 

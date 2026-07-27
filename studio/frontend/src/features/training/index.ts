@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export { useTrainingConfigStore } from "./stores/training-config-store";
+export {
+  hasSeparateStreamingEvalSplit,
+  useTrainingConfigStore,
+} from "./stores/training-config-store";
 export {
   shouldShowTrainingView,
   useTrainingRuntimeStore,
@@ -12,7 +15,10 @@ export {
   getTrainingRunDisplayTitle,
   getTrainingRunModelSubtitle,
 } from "./lib/run-display";
-export { parseBackendTrainingMethod } from "./lib/training-methods";
+export {
+  isRawTextDatasetFormat,
+  parseBackendTrainingMethod,
+} from "./lib/training-methods";
 export { useTrainingHistorySidebarItems } from "./hooks/use-training-history-sidebar";
 export { useTrainingRuntimeLifecycle } from "./hooks/use-training-runtime-lifecycle";
 export { useTrainingCompletionWatch } from "./hooks/use-training-completion-watch";
@@ -44,6 +50,7 @@ export {
   getTrainingRun,
   deleteTrainingRun,
   renameTrainingRun,
+  HistoryRequestError,
 } from "./api/history-api";
 export {
   onTrainingRunUpdated,
@@ -55,3 +62,25 @@ export {
 } from "./events";
 export { parseYamlConfig, serializeConfigToYaml } from "./lib/yaml-config";
 export { validateTrainingConfig } from "./lib/validation";
+export { useTrainingReadiness } from "./hooks/use-training-readiness";
+export { useTrainingResourceNotices } from "./hooks/use-training-resource-notices";
+export {
+  cacheLocalPathMatchesSelection,
+  cachedInventoryPathMatchesSelection,
+} from "./lib/cache-reference";
+export { validateTrainingModelCandidate } from "./lib/freeform-model-validation";
+export { isLocalTrainingModelSelection } from "./lib/model-selection";
+export { isUntrainableModelFormat } from "./lib/model-support";
+export {
+  type ModelTypeCapabilityFlags,
+  resolvePickerInferredModelType,
+  trainingModelTypeFlagsFromMetadata,
+} from "./lib/model-type-inference";
+export {
+  buildCachedTrainingModelLookup,
+  buildLocalTrainingModelLookup,
+} from "./lib/training-picker-lookups";
+export {
+  TRAINING_METHOD_META,
+  TRAINING_METHOD_ORDER,
+} from "./lib/training-method-meta";

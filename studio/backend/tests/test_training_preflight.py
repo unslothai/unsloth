@@ -55,6 +55,8 @@ from core.training.trainer import UnslothTrainer  # noqa: E402
 
 _preflight = UnslothTrainer._preflight_first_batch
 _renders_empty = UnslothTrainer._chat_template_renders_empty
+_auto_detect_eval = UnslothTrainer._auto_detect_eval_split_from_hf
+_load_and_format_dataset = UnslothTrainer.load_and_format_dataset
 
 
 class _FakeInnerTrainer:
@@ -106,6 +108,219 @@ class _RealTemplateTokenizer:
         add_generation_prompt = False,
     ):
         return "<|im_start|>user\nhi<|im_end|>"
+
+
+class _SizedDataset:
+    def __init__(self, size, splits = ()):
+        self.size = size
+        self.info = SimpleNamespace(splits = {name: object() for name in splits})
+
+    def __len__(self):
+        return self.size
+
+
+def _dataset_loader_self():
+    trainer = SimpleNamespace(
+        should_stop = False,
+        _audio_type = None,
+        is_audio_vlm = False,
+        is_vlm = False,
+        model_name = "org/model",
+        tokenizer = None,
+        _update_progress = lambda **kwargs: None,
+        _resolve_eval_split_from_dataset = lambda dataset: None,
+    )
+    trainer._auto_detect_eval_split_from_hf = _auto_detect_eval.__get__(trainer)
+    trainer.load_and_format_dataset = _load_and_format_dataset.__get__(trainer)
+    return trainer
+
+
+def _patch_dataset_formatting(monkeypatch):
+    monkeypatch.setattr(
+        "core.training.trainer.format_and_template_dataset",
+        lambda dataset, **kwargs: {
+            "dataset": dataset,
+            "detected_format": "test",
+            "success": True,
+        },
+    )
+
+
+def test_cached_auto_eval_uses_supplied_splits_and_loader(monkeypatch):
+    remote_calls: list[object] = []
+    local_calls: list[str] = []
+    expected = _SizedDataset(20)
+
+    def fail_remote(*args, **kwargs):
+        remote_calls.append((args, kwargs))
+        raise AssertionError("remote dataset access is not allowed")
+
+    monkeypatch.setattr("core.training.trainer.load_dataset", fail_remote)
+    monkeypatch.setattr(sys.modules["datasets"], "get_dataset_split_names", fail_remote)
+
+    result = _auto_detect_eval(
+        SimpleNamespace(),
+        "org/dataset",
+        None,
+        available_splits = ["train", "validation"],
+        split_loader = lambda split: local_calls.append(split) or expected,
+        excluded_split = "train",
+    )
+
+    assert result is expected
+    assert local_calls == ["validation"]
+    assert remote_calls == []
+
+
+def test_cached_auto_eval_with_no_splits_stays_local(monkeypatch):
+    remote_calls: list[object] = []
+
+    def fail_remote(*args, **kwargs):
+        remote_calls.append((args, kwargs))
+        raise AssertionError("remote dataset access is not allowed")
+
+    monkeypatch.setattr("core.training.trainer.load_dataset", fail_remote)
+    monkeypatch.setattr(sys.modules["datasets"], "get_dataset_split_names", fail_remote)
+
+    result = _auto_detect_eval(
+        SimpleNamespace(),
+        "org/dataset",
+        None,
+        available_splits = [],
+        split_loader = fail_remote,
+        excluded_split = "train",
+    )
+
+    assert result is None
+    assert remote_calls == []
+
+
+def test_cached_auto_eval_excludes_training_split():
+    local_calls: list[str] = []
+
+    result = _auto_detect_eval(
+        SimpleNamespace(),
+        "org/dataset",
+        None,
+        available_splits = ["train", "validation"],
+        split_loader = lambda split: local_calls.append(split) or _SizedDataset(20),
+        excluded_split = "validation",
+    )
+
+    assert result is None
+    assert local_calls == []
+
+
+def test_cached_train_auto_eval_stays_on_pinned_dataset(monkeypatch):
+    from hub.utils import dataset_cache
+
+    _patch_dataset_formatting(monkeypatch)
+    trainer = _dataset_loader_self()
+    cache_calls: list[str] = []
+    train = _SizedDataset(40, ("train", "validation"))
+    validation = _SizedDataset(20, ("train", "validation"))
+
+    def load_cached(repo_id, local_path, *, subset, split, token = None):
+        cache_calls.append(split)
+        return validation if split == "validation" else train
+
+    def fail_remote(*args, **kwargs):
+        raise AssertionError("remote dataset access is not allowed")
+
+    monkeypatch.setattr(dataset_cache, "load_cached_hf_dataset", load_cached)
+    monkeypatch.setattr("core.training.trainer.load_dataset", fail_remote)
+    monkeypatch.setattr(sys.modules["datasets"], "get_dataset_split_names", fail_remote)
+
+    result = trainer.load_and_format_dataset(
+        "org/dataset",
+        eval_steps = 1,
+        dataset_local_files_only = True,
+        dataset_local_path = "/cache/snapshot",
+    )
+
+    assert result is not None
+    assert result[0]["dataset"] is train
+    assert result[1] is validation
+    assert cache_calls == ["train", "validation"]
+
+
+def test_remote_train_fallback_keeps_auto_eval_remote(monkeypatch):
+    from hub.utils import dataset_cache
+
+    _patch_dataset_formatting(monkeypatch)
+    trainer = _dataset_loader_self()
+    cache_calls: list[str] = []
+    remote_calls: list[str] = []
+    train = _SizedDataset(40, ("train", "validation"))
+    validation = _SizedDataset(20, ("train", "validation"))
+
+    def load_cached(repo_id, local_path, *, subset, split, token = None):
+        cache_calls.append(split)
+        raise FileNotFoundError(split)
+
+    def load_remote(*, path, split, **kwargs):
+        remote_calls.append(split)
+        return validation if split == "validation" else train
+
+    monkeypatch.setattr(dataset_cache, "load_cached_hf_dataset", load_cached)
+    monkeypatch.setattr("core.training.trainer.load_dataset", load_remote)
+    monkeypatch.setattr(
+        sys.modules["datasets"],
+        "get_dataset_split_names",
+        lambda **kwargs: ["train", "validation"],
+    )
+
+    result = trainer.load_and_format_dataset(
+        "org/dataset",
+        eval_steps = 1,
+        dataset_local_files_only = True,
+        dataset_local_path = "/cache/snapshot",
+    )
+
+    assert result is not None
+    assert result[0]["dataset"] is train
+    assert result[1] is validation
+    assert cache_calls == ["train"]
+    assert remote_calls == ["train", "validation"]
+
+
+def test_cached_explicit_eval_failure_reloads_remote_pair(monkeypatch):
+    from hub.utils import dataset_cache
+
+    _patch_dataset_formatting(monkeypatch)
+    trainer = _dataset_loader_self()
+    cache_calls: list[str] = []
+    remote_calls: list[str] = []
+    cached_train = _SizedDataset(40, ("train", "validation"))
+    remote_train = _SizedDataset(50, ("train", "validation"))
+    remote_validation = _SizedDataset(20, ("train", "validation"))
+
+    def load_cached(repo_id, local_path, *, subset, split, token = None):
+        cache_calls.append(split)
+        if split == "validation":
+            raise FileNotFoundError(split)
+        return cached_train
+
+    def load_remote(*, path, split, **kwargs):
+        remote_calls.append(split)
+        return remote_validation if split == "validation" else remote_train
+
+    monkeypatch.setattr(dataset_cache, "load_cached_hf_dataset", load_cached)
+    monkeypatch.setattr("core.training.trainer.load_dataset", load_remote)
+
+    result = trainer.load_and_format_dataset(
+        "org/dataset",
+        eval_split = "validation",
+        eval_steps = 1,
+        dataset_local_files_only = True,
+        dataset_local_path = "/cache/snapshot",
+    )
+
+    assert result is not None
+    assert result[0]["dataset"] is remote_train
+    assert result[1] is remote_validation
+    assert cache_calls == ["train", "validation"]
+    assert remote_calls == ["train", "validation"]
 
 
 class TestPreflightFirstBatch(unittest.TestCase):

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ModelInventoryFormat } from "@/features/hub";
 import type { S3Config } from "@/types/training";
 
 export interface TrainingStartRequest {
@@ -8,6 +9,10 @@ export interface TrainingStartRequest {
   project_name: string | null;
   training_type: string;
   hf_token: string | null;
+  model_known_cached?: boolean;
+  model_local_path?: string | null;
+  model_format?: ModelInventoryFormat | null;
+  model_snapshot_path?: string | null;
   load_in_4bit: boolean;
   max_seq_length: number;
   vision_image_size?: number | null;
@@ -16,6 +21,9 @@ export interface TrainingStartRequest {
   /** sha256 fingerprint pinning user approval of this exact custom-code version. */
   approved_remote_code_fingerprint?: string | null;
   hf_dataset: string | null;
+  dataset_known_cached?: boolean;
+  dataset_local_path?: string | null;
+  dataset_snapshot_path?: string | null;
   subset: string | null;
   train_split: string | null;
   eval_split: string | null;

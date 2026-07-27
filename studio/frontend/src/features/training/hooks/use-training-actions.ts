@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getHfToken, useHfTokenStore } from "@/features/hub";
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
@@ -11,6 +12,8 @@ import { emitTrainingRunsChanged } from "../events";
 import { getTrainingRun } from "../api/history-api";
 import { buildTrainingStartPayload } from "../api/mappers";
 import { resetTraining, startTraining, stopTraining } from "../api/train-api";
+import { cacheLocalPathMatchesSelection } from "../lib/cache-reference";
+import { isMissingLocalDatasetCacheError } from "../lib/local-cache-errors";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
 import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
 import { validateTrainingConfig } from "../lib/validation";
@@ -19,6 +22,7 @@ import { useTrainingConfigStore } from "../stores/training-config-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingStartRequest } from "../types/api";
 import type { TrainingConfigState } from "../types/config";
+import type { CheckFormatResponse } from "../types/datasets";
 
 /** Chatml → format-specific role remap (only for formats that differ from chatml). */
 const ROLE_REMAP: Record<string, Record<string, string>> = {
@@ -44,7 +48,7 @@ export function useTrainingActions() {
   const startError = useTrainingRuntimeStore((state) => state.startError);
 
   const startTrainingRun = useCallback(async (): Promise<boolean> => {
-    let config = useTrainingConfigStore.getState();
+    const config = useTrainingConfigStore.getState();
     const runtimeStore = useTrainingRuntimeStore.getState();
     const dialogStore = useDatasetPreviewDialogStore.getState();
 
@@ -55,11 +59,11 @@ export function useTrainingActions() {
       return false;
     }
 
-    const preparedToken = await prepareHfTokenForUse(config.hfToken);
+    const currentToken = getHfToken();
+    const preparedToken = await prepareHfTokenForUse(currentToken);
     if (!preparedToken.proceed) return false;
-    if ((preparedToken.token ?? "") !== config.hfToken) {
-      config.setHfToken(preparedToken.token ?? "");
-      config = useTrainingConfigStore.getState();
+    if ((preparedToken.token ?? "") !== currentToken) {
+      useHfTokenStore.getState().setToken(preparedToken.token ?? "");
     }
 
     primeNativeNotificationPermission().catch(() => undefined);
@@ -77,13 +81,38 @@ export function useTrainingActions() {
       let isVlm = config.isVisionModel && config.isDatasetImage === true;
 
       if (datasetName) {
-        const check = await checkDatasetFormat({
-          datasetName,
-          hfToken: config.hfToken.trim() || null,
-          subset: config.datasetSubset,
-          split: config.datasetSplit,
-          isVlm,
-        });
+        const preferLocalCache =
+          config.datasetSource === "huggingface" && config.datasetKnownCached;
+        const datasetLocalPath =
+          config.datasetSource === "huggingface" ? config.datasetLocalPath : null;
+        let check: CheckFormatResponse;
+
+        try {
+          check = await checkDatasetFormat({
+            datasetName,
+            hfToken: getHfToken().trim() || null,
+            subset: config.datasetSubset,
+            split: config.datasetSplit,
+            isVlm,
+            preferLocalCache,
+            localPath: datasetLocalPath,
+          });
+        } catch (error) {
+          if (!preferLocalCache || !isMissingLocalDatasetCacheError(error)) {
+            throw error;
+          }
+
+          clearMissingDatasetCacheReference(datasetName, datasetLocalPath);
+          check = await checkDatasetFormat({
+            datasetName,
+            hfToken: getHfToken().trim() || null,
+            subset: config.datasetSubset,
+            split: config.datasetSplit,
+            isVlm,
+            preferLocalCache: false,
+            localPath: null,
+          });
+        }
 
         // Backend auto-detects image/audio from dataset content; sync the flags
         // into the store so buildTrainingStartPayload picks them up.
@@ -107,7 +136,8 @@ export function useTrainingActions() {
         const isRawFormat = isRawTextDatasetFormat(config.datasetFormat);
         const needsReview =
           !isRawFormat &&
-          (check.requires_manual_mapping || check.detected_format === "custom_heuristic");
+          (check.requires_manual_mapping ||
+            check.detected_format === "custom_heuristic");
         if (needsReview && !hasManualMapping(config, isVlm, isAudio)) {
           // Pre-fill from suggested_mapping or VLM detected columns
           const hint: Record<string, string> = {};
@@ -117,12 +147,22 @@ export function useTrainingActions() {
               hint[col] = table ? (table[role] ?? role) : role;
             }
           } else if (isAudio) {
-            if (check.detected_audio_column) hint[check.detected_audio_column] = "audio";
-            if (check.detected_text_column) hint[check.detected_text_column] = "text";
-            if (check.detected_speaker_column) hint[check.detected_speaker_column] = "speaker_id";
+            if (check.detected_audio_column) {
+              hint[check.detected_audio_column] = "audio";
+            }
+            if (check.detected_text_column) {
+              hint[check.detected_text_column] = "text";
+            }
+            if (check.detected_speaker_column) {
+              hint[check.detected_speaker_column] = "speaker_id";
+            }
           } else if (isVlm) {
-            if (check.detected_image_column) hint[check.detected_image_column] = "image";
-            if (check.detected_text_column) hint[check.detected_text_column] = "text";
+            if (check.detected_image_column) {
+              hint[check.detected_image_column] = "image";
+            }
+            if (check.detected_text_column) {
+              hint[check.detected_text_column] = "text";
+            }
           }
 
           if (Object.keys(hint).length > 0) {
@@ -145,7 +185,7 @@ export function useTrainingActions() {
       if (config.selectedModel) {
         const remoteCodeOk = await confirmRemoteCodeIfNeeded({
           modelName: config.selectedModel,
-          hfToken: config.hfToken.trim() || null,
+          hfToken: getHfToken().trim() || null,
           requiresTrustRemoteCode: config.trustRemoteCode,
           onApprove: (fingerprint) =>
             useTrainingConfigStore.setState({
@@ -222,14 +262,13 @@ export function useTrainingActions() {
 
       primeNativeNotificationPermission().catch(() => undefined);
 
-      const config = useTrainingConfigStore.getState();
       const savedConfig = detail.config as Partial<TrainingStartRequest>;
       const payload = {
         ...savedConfig,
         hf_token:
           typeof savedConfig.hf_token === "string"
             ? savedConfig.hf_token
-            : config.hfToken.trim() || null,
+            : getHfToken().trim() || null,
         wandb_token: null,
         resume_from_checkpoint: outputDir,
       } as TrainingStartRequest;
@@ -317,6 +356,25 @@ export function useTrainingActions() {
     stopTrainingRun,
     dismissTrainingRun,
   };
+}
+
+function clearMissingDatasetCacheReference(
+  datasetName: string,
+  datasetLocalPath: string | null,
+): void {
+  const current = useTrainingConfigStore.getState();
+  if (
+    current.datasetSource !== "huggingface" ||
+    current.dataset !== datasetName ||
+    !current.datasetKnownCached ||
+    !cacheLocalPathMatchesSelection(current.datasetLocalPath, datasetLocalPath)
+  ) {
+    return;
+  }
+  useTrainingConfigStore.setState({
+    datasetKnownCached: false,
+    datasetLocalPath: null,
+  });
 }
 
 function getDatasetName(config: TrainingConfigState): string | null {

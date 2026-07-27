@@ -7,6 +7,7 @@ import type {
   UploadDatasetResponse,
 } from "../types/datasets";
 import { authFetch } from "@/features/auth";
+import { hubTokenHeader } from "@/features/hub";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 type CheckDatasetFormatArgs = {
@@ -15,6 +16,8 @@ type CheckDatasetFormatArgs = {
   subset?: string | null;
   split?: string | null;
   isVlm?: boolean;
+  preferLocalCache?: boolean;
+  localPath?: string | null;
 };
 
 export async function checkDatasetFormat({
@@ -23,16 +26,22 @@ export async function checkDatasetFormat({
   subset,
   split,
   isVlm,
+  preferLocalCache,
+  localPath,
 }: CheckDatasetFormatArgs): Promise<CheckFormatResponse> {
-  const res = await authFetch("/api/datasets/check-format", {
+  const res = await authFetch("/api/hub/datasets/check-format", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...hubTokenHeader(hfToken),
+    },
     body: JSON.stringify({
       dataset_name: datasetName,
-      hf_token: hfToken || undefined,
       subset: subset || undefined,
       split: split || "train",
       is_vlm: !!isVlm,
+      prefer_local_cache: !!preferLocalCache,
+      local_path: localPath || undefined,
     }),
   });
 

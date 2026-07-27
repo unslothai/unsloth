@@ -1314,6 +1314,18 @@ def delete_run(id: str) -> None:
         conn.close()
 
 
+def list_other_run_output_dirs(exclude_id: str) -> list[str]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT output_dir FROM training_runs WHERE output_dir IS NOT NULL AND id != ?",
+            (exclude_id,),
+        ).fetchall()
+        return [str(row[0]) for row in rows]
+    finally:
+        conn.close()
+
+
 def cleanup_orphaned_runs() -> None:
     """Mark any 'running' rows as errored on startup (server restarted mid-training)."""
     conn = get_connection()

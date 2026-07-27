@@ -29,8 +29,8 @@ try:
         normalize_resume_output_dir,
     )
     from storage.studio_db import get_resumable_run_by_output_dir
-    from utils.models.model_config import load_model_defaults
-    from utils.paths import resolve_dataset_path
+    from utils.models.model_config import detect_gguf_model, load_model_defaults
+    from utils.paths import is_local_path, resolve_dataset_path
 except ImportError:
     # Fallback: parent directory.
     parent_backend = backend_path.parent / "backend"
@@ -43,8 +43,8 @@ except ImportError:
         normalize_resume_output_dir,
     )
     from storage.studio_db import get_resumable_run_by_output_dir
-    from utils.models.model_config import load_model_defaults
-    from utils.paths import resolve_dataset_path
+    from utils.models.model_config import detect_gguf_model, load_model_defaults
+    from utils.paths import is_local_path, resolve_dataset_path
 
 # Auth
 from auth.authentication import authenticated_via_api_key, get_current_subject
@@ -67,6 +67,8 @@ class TrainingStopRequest(PydanticBaseModel):
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+_LOCAL_MODEL_PROBE_LIMIT = 2000
 
 # Consecutive 1s polls without a step update that count as a stall. Applied only
 # once stepping: the pre-first-step phase (model load + tokenization) can take far
@@ -93,6 +95,118 @@ def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset"
             detail = f"{label} not found: {missing_detail}",
         )
     return validated
+
+
+def _has_trainable_local_weights(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    try:
+        files = [entry for entry in path.iterdir() if entry.is_file()]
+    except OSError:
+        return False
+    has_config = (path / "config.json").is_file()
+    if not has_config:
+        return False
+    for file in files:
+        lower = file.name.lower()
+        if lower.endswith(".safetensors") and not lower.startswith(
+            ("adapter_model", "optimizer", "scheduler", "rng_state", "scaler")
+        ):
+            return True
+        if lower.endswith((".pt", ".pth", ".ckpt")) and lower.startswith(
+            ("model", "pytorch_model", "consolidated", "lit_model")
+        ):
+            return True
+        if lower.endswith(".h5") and lower.startswith(("model", "tf_model")):
+            return True
+        if lower.endswith(".msgpack") and lower.startswith(("model", "flax_model")):
+            return True
+        if lower.endswith(".npz") and lower.startswith("model"):
+            return True
+        if lower.endswith(".bin") and lower.startswith(
+            ("pytorch_model", "model", "consolidated")
+        ):
+            return True
+    return False
+
+
+def _has_adapter_metadata(path: Path) -> bool:
+    return path.is_dir() and (path / "adapter_config.json").is_file()
+
+
+def _detect_local_gguf(path: Path) -> Optional[str]:
+    try:
+        detected = detect_gguf_model(str(path))
+        if detected is not None or not path.is_dir():
+            return detected
+        for index, entry in enumerate(path.rglob("*"), start = 1):
+            if index > _LOCAL_MODEL_PROBE_LIMIT:
+                break
+            if entry.suffix.lower() != ".gguf":
+                continue
+            detected = detect_gguf_model(str(entry))
+            if detected is not None:
+                return detected
+    except (OSError, RuntimeError):
+        return None
+    return None
+
+
+def _reject_untrainable_model_request(request: TrainingStartRequest) -> None:
+    model_format = (request.model_format or "").strip().lower()
+    if model_format == "gguf":
+        raise HTTPException(
+            status_code = 400,
+            detail = "GGUF models are inference-only and cannot be trained.",
+        )
+    if model_format == "adapter":
+        raise HTTPException(
+            status_code = 400,
+            detail = "Adapter models are inference-only and cannot be trained as base models.",
+        )
+    path: Optional[Path] = None
+    if is_local_path(request.model_name):
+        try:
+            path = Path(request.model_name).expanduser().resolve(strict = True)
+        except (OSError, RuntimeError, ValueError):
+            return
+    else:
+        from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
+
+        if request.resume_from_checkpoint and request.model_snapshot_path:
+            snapshot = latest_snapshot_from_cache_path(
+                request.model_snapshot_path,
+                "model",
+                request.model_name,
+                ("config.json", "adapter_config.json"),
+            )
+        elif request.model_known_cached or request.model_local_path:
+            from core.training.training import _resolve_model_snapshot
+
+            snapshot = _resolve_model_snapshot(
+                request.model_name,
+                request.model_local_path,
+            )
+        else:
+            snapshot = None
+        if snapshot:
+            path = Path(snapshot)
+    if path is None:
+        return
+    has_trainable_weights = _has_trainable_local_weights(path)
+    if _has_adapter_metadata(path) and not has_trainable_weights:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Adapter-only local models are inference-only and cannot be trained as base models."
+            ),
+        )
+    has_gguf = _detect_local_gguf(path) is not None
+    if has_gguf and not has_trainable_weights:
+        raise HTTPException(
+            status_code = 400,
+            detail = "GGUF-only local models are inference-only and cannot be trained.",
+        )
 
 
 @router.get("/hardware")
@@ -197,6 +311,7 @@ async def start_training(
             request.local_eval_datasets = _validate_local_dataset_paths(
                 request.local_eval_datasets, "Local eval dataset"
             )
+        _reject_untrainable_model_request(request)
         resume_output_dir: Optional[str] = None
         resume_run: Optional[dict] = None
         if request.resume_from_checkpoint:
@@ -282,6 +397,14 @@ async def start_training(
                         "Streaming is not supported with S3 datasets."
                     ),
                 )
+            if request.dataset_known_cached or request.dataset_local_path:
+                raise HTTPException(
+                    status_code = 422,
+                    detail = (
+                        "dataset_streaming streams from the Hub and cannot use the local "
+                        "dataset cache; disable streaming to train from the cached copy."
+                    ),
+                )
 
         # Convert request to backend kwargs.
         training_kwargs = {
@@ -293,6 +416,13 @@ async def start_training(
             "max_seq_length": request.max_seq_length,
             "vision_image_size": request.vision_image_size,
             "hf_dataset": request.hf_dataset or "",
+            "model_known_cached": request.model_known_cached,
+            "model_local_path": request.model_local_path,
+            "model_format": request.model_format,
+            "model_snapshot_path": request.model_snapshot_path,
+            "dataset_known_cached": request.dataset_known_cached,
+            "dataset_local_path": request.dataset_local_path,
+            "dataset_snapshot_path": request.dataset_snapshot_path,
             "local_datasets": request.local_datasets,
             "local_eval_datasets": request.local_eval_datasets,
             "format_type": request.format_type,

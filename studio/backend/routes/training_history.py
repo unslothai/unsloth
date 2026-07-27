@@ -5,14 +5,17 @@
 Training history API routes — browse, view, and delete past training runs.
 """
 
+import asyncio
 import json
+import shutil
+from pathlib import Path, PureWindowsPath
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loggers import get_logger
 
 from auth.authentication import get_current_subject
-from core.training.resume import can_resume_run
+from core.training.resume import artifacts_present, can_resume_run
 from models import (
     TrainingRunDeleteResponse,
     TrainingRunDetailResponse,
@@ -25,16 +28,38 @@ from storage.studio_db import (
     delete_run,
     get_run,
     get_run_metrics,
+    list_other_run_output_dirs,
     list_runs,
     update_run_display_name,
 )
 from utils.models.checkpoints import has_preview_model, preview_ref
+from utils.paths import outputs_root, resolve_output_dir
 from utils.preview_sharing_settings import get_preview_sharing_enabled
 from utils.preview_token import sign_preview_ref
 
 logger = get_logger(__name__)
 
 router = APIRouter()
+
+
+def _canonical_output_dir(output_dir: Optional[str]) -> Optional[Path]:
+    if not output_dir or not str(output_dir).strip():
+        return None
+    try:
+        outputs_base = outputs_root().expanduser().resolve(strict = False)
+        try:
+            candidate = resolve_output_dir(output_dir)
+        except ValueError:
+            raw = str(output_dir).strip()
+            path = Path(raw).expanduser()
+            if PureWindowsPath(raw).is_absolute() and not path.is_absolute():
+                return None
+            candidate = path if path.is_absolute() else outputs_base / path
+        resolved = candidate.resolve(strict = False)
+        resolved.relative_to(outputs_base)
+        return resolved
+    except (OSError, RuntimeError, ValueError):
+        return None
 
 
 def _preview_fields(output_dir: Optional[str], sharing_on: bool) -> dict:
@@ -53,6 +78,69 @@ def _preview_fields(output_dir: Optional[str], sharing_on: bool) -> dict:
     }
 
 
+def _summary_from_row(row: dict, sharing_on: bool) -> TrainingRunSummary:
+    return TrainingRunSummary(
+        **{
+            **{k: v for k, v in row.items() if k != "config_json"},
+            "can_resume": can_resume_run(row),
+            "artifacts_available": artifacts_present(row.get("output_dir")),
+            **_preview_fields(row.get("output_dir"), sharing_on),
+        }
+    )
+
+
+def _delete_run_output_dir(run_id: str, output_dir: str) -> bool:
+    resolved = _canonical_output_dir(output_dir)
+    if resolved is None:
+        logger.warning(
+            "Cannot resolve output_dir for run %s; skipping disk cleanup: %s",
+            run_id,
+            output_dir,
+        )
+        return False
+    outputs_base = outputs_root().expanduser().resolve(strict = False)
+
+    if resolved == outputs_base:
+        logger.warning(
+            "Refusing to delete the outputs root itself for run %s: %s", run_id, resolved
+        )
+        return False
+
+    if not resolved.exists():
+        return True
+
+    if not resolved.is_dir():
+        logger.warning("Run %s output path is not a directory; skipping: %s", run_id, resolved)
+        return False
+
+    try:
+        shutil.rmtree(resolved)
+        logger.info("Deleted adapter directory for run %s: %s", run_id, resolved)
+        return True
+    except OSError:
+        logger.exception("Failed to delete adapter directory for run %s: %s", run_id, resolved)
+        return False
+
+
+def _active_training_output_dir() -> Optional[str]:
+    from core.training import get_training_backend
+
+    return get_training_backend().active_output_dir()
+
+
+def _same_output_dir(first: Optional[str], second: Optional[str]) -> bool:
+    first_path = _canonical_output_dir(first)
+    second_path = _canonical_output_dir(second)
+    return first_path is not None and first_path == second_path
+
+
+def _output_dir_shared(output_dir: str, run_id: str) -> bool:
+    return any(
+        _same_output_dir(output_dir, candidate)
+        for candidate in list_other_run_output_dirs(run_id)
+    )
+
+
 @router.get("/runs", response_model = TrainingRunListResponse)
 async def list_training_runs(
     limit: int = Query(50, ge = 1, le = 200),
@@ -63,16 +151,7 @@ async def list_training_runs(
     result = list_runs(limit = limit, offset = offset)
     sharing_on = get_preview_sharing_enabled()
     return TrainingRunListResponse(
-        runs = [
-            TrainingRunSummary(
-                **{
-                    **r,
-                    "can_resume": can_resume_run(r),
-                    **_preview_fields(r.get("output_dir"), sharing_on),
-                }
-            )
-            for r in result["runs"]
-        ],
+        runs = [_summary_from_row(r, sharing_on) for r in result["runs"]],
         total = result["total"],
     )
 
@@ -93,13 +172,7 @@ async def get_training_run_detail(run_id: str, current_subject: str = Depends(ge
     metrics_data = get_run_metrics(run_id)
 
     return TrainingRunDetailResponse(
-        run = TrainingRunSummary(
-            **{
-                **{k: v for k, v in run.items() if k != "config_json"},
-                "can_resume": can_resume_run(run),
-                **_preview_fields(run.get("output_dir"), get_preview_sharing_enabled()),
-            }
-        ),
+        run = _summary_from_row(run, get_preview_sharing_enabled()),
         config = config,
         metrics = TrainingRunMetrics(**metrics_data),
     )
@@ -125,26 +198,57 @@ async def update_training_run(
     refreshed = get_run(run_id)
     if refreshed is None:
         raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
-    return TrainingRunSummary(
-        **{
-            **{k: v for k, v in refreshed.items() if k != "config_json"},
-            "can_resume": can_resume_run(refreshed),
-            **_preview_fields(refreshed.get("output_dir"), get_preview_sharing_enabled()),
-        }
-    )
+    return _summary_from_row(refreshed, get_preview_sharing_enabled())
 
 
 @router.delete("/runs/{run_id}", response_model = TrainingRunDeleteResponse)
-async def delete_training_run(run_id: str, current_subject: str = Depends(get_current_subject)):
+async def delete_training_run(
+    run_id: str,
+    delete_artifacts: bool = Query(
+        False,
+        description = "Also delete the run's output directory on disk",
+    ),
+    current_subject: str = Depends(get_current_subject),
+):
     """Delete a training run and its metrics (CASCADE)."""
     run = get_run(run_id)
     if run is None:
         raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
     if run["status"] == "running":
         raise HTTPException(status_code = 409, detail = "Cannot delete a running training run")
-    logger.info("Deleting training run %s", run_id)
+    logger.info("Deleting training run %s (delete_artifacts=%s)", run_id, delete_artifacts)
+    artifacts_deleted = False
+    artifacts_kept_reason: Optional[str] = None
+    if delete_artifacts:
+        output_dir = run.get("output_dir")
+        if output_dir:
+            if _same_output_dir(output_dir, _active_training_output_dir()):
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        "Cannot delete artifacts while a training run is writing to this directory"
+                    ),
+                )
+            if _output_dir_shared(output_dir, run_id):
+                artifacts_kept_reason = "shared_output_dir"
+                logger.info(
+                    "Keeping artifacts for run %s; another run shares %s", run_id, output_dir
+                )
+            else:
+                artifacts_deleted = await asyncio.to_thread(
+                    _delete_run_output_dir,
+                    run_id,
+                    output_dir,
+                )
+                if not artifacts_deleted:
+                    raise HTTPException(
+                        status_code = 409,
+                        detail = "Could not delete run artifacts; training history was retained",
+                    )
     delete_run(run_id)
     return TrainingRunDeleteResponse(
         status = "deleted",
         message = f"Run {run_id} deleted",
+        artifacts_deleted = artifacts_deleted,
+        artifacts_kept_reason = artifacts_kept_reason,
     )

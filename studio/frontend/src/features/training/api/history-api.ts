@@ -12,9 +12,18 @@ import type {
 
 const readError = (r: Response): Promise<string> => readFastApiError(r);
 
+export class HistoryRequestError extends Error {
+  status: number | null;
+  constructor(message: string, status: number | null) {
+    super(message);
+    this.name = "HistoryRequestError";
+    this.status = status;
+  }
+}
+
 async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    throw new Error(await readError(response));
+    throw new HistoryRequestError(await readError(response), response.status);
   }
   return (await response.json()) as T;
 }
@@ -44,11 +53,12 @@ export async function getTrainingRun(
 
 export async function deleteTrainingRun(
   runId: string,
-  signal?: AbortSignal,
+  options?: { deleteArtifacts?: boolean; signal?: AbortSignal },
 ): Promise<TrainingRunDeleteResponse> {
+  const query = options?.deleteArtifacts ? "?delete_artifacts=true" : "";
   const response = await authFetch(
-    `/api/train/runs/${encodeURIComponent(runId)}`,
-    { method: "DELETE", signal },
+    `/api/train/runs/${encodeURIComponent(runId)}${query}`,
+    { method: "DELETE", signal: options?.signal },
   );
   return parseJson<TrainingRunDeleteResponse>(response);
 }

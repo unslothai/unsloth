@@ -35,9 +35,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  hfApiToken,
+  useHfTokenStore,
+  useHubDatasetSearch,
+  useHubInfiniteScroll,
+} from "@/features/hub";
 import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
-import { useHubDatasetSearch } from "@/features/hub/hooks/use-hub-dataset-search";
-import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
 import { cn } from "@/lib/utils";
 import {
   HfDatasetSubsetSplitSelectors,
@@ -64,9 +68,9 @@ const FORMAT_OPTIONS: { value: DatasetFormat; label: string }[] = [
 ];
 
 export function DatasetStep() {
+  const hfToken = useHfTokenStore((s) => s.token);
+  const setHfToken = useHfTokenStore((s) => s.setToken);
   const {
-    hfToken,
-    setHfToken,
     datasetSource,
     selectHfDataset,
     selectLocalDataset,
@@ -85,8 +89,6 @@ export function DatasetStep() {
     modelType,
   } = useTrainingConfigStore(
     useShallow((s) => ({
-      hfToken: s.hfToken,
-      setHfToken: s.setHfToken,
       datasetSource: s.datasetSource,
       selectHfDataset: s.selectHfDataset,
       selectLocalDataset: s.selectLocalDataset,
@@ -118,7 +120,7 @@ export function DatasetStep() {
     error: hfSearchError,
   } = useHubDatasetSearch(debouncedQuery, {
     modelType,
-    accessToken: hfToken || undefined,
+    accessToken: hfApiToken(hfToken),
   });
 
   const { error: tokenValidationError, isChecking: isCheckingToken } =
@@ -303,7 +305,7 @@ export function DatasetStep() {
             variant="wizard"
             enabled={datasetSource === "huggingface"}
             datasetName={dataset}
-            accessToken={hfToken || undefined}
+            accessToken={hfApiToken(hfToken)}
             datasetSubset={datasetSubset}
             setDatasetSubset={setDatasetSubset}
             datasetSplit={datasetSplit}

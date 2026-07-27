@@ -1,14 +1,59 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import errno
+import json
+import os
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from hub.utils.hf_cache_state import iter_repo_cache_dirs
+from hub.utils.hf_cache_state import (
+    iter_repo_cache_dirs,
+    ref_snapshot_dir,
+    validated_repo_cache_path,
+)
 
 
 TRAINING_DATA_EXTS = (".parquet", ".json", ".jsonl", ".csv")
+
+_RESERVED_SPLIT_TOKENS = frozenset({"train", "test", "validation", "valid", "val", "eval"})
+
+
+def hf_datasets_cache_roots() -> list[Path]:
+    roots: list[Path] = []
+    seen: set[Path] = set()
+
+    def add(path: Optional[Path]) -> None:
+        if path is None:
+            return
+        try:
+            resolved = path.expanduser().resolve(strict = True)
+        except (OSError, RuntimeError, ValueError):
+            return
+        if not resolved.is_dir() or resolved in seen:
+            return
+        seen.add(resolved)
+        roots.append(resolved)
+
+    env_cache = os.environ.get("HF_DATASETS_CACHE")
+    if env_cache:
+        add(Path(env_cache))
+
+    try:
+        from datasets import config as datasets_config
+
+        add(Path(datasets_config.HF_DATASETS_CACHE))
+    except Exception:
+        pass
+
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        add(Path(hf_home) / "datasets")
+
+    xdg_cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    add(xdg_cache / "huggingface" / "datasets")
+    return roots
 
 
 def _rel_lower(snapshot: Path, path: Path) -> str:
@@ -45,27 +90,33 @@ def _matches_label(snapshot: Path, path: Path, label: str) -> bool:
     tokens = [token for token in re.split(r"[^a-z0-9]+", rel) if token]
     if label in tokens:
         return True
-    if label in {"train", "test", "validation", "valid", "val", "eval"}:
+    if label in _RESERVED_SPLIT_TOKENS:
         return False
     return label in rel
 
 
 def dataset_snapshot_from_cache_path(local_path: Optional[str], repo_id: str) -> Optional[Path]:
-    if not local_path or not repo_id:
+    validated = validated_repo_cache_path(local_path, "dataset", repo_id)
+    if validated is None:
         return None
+    repo_dir, selected = validated
     try:
-        root = Path(local_path).expanduser()
-        if not root.exists():
+        snapshots = (repo_dir / "snapshots").resolve(strict = True)
+        if snapshots.parent != repo_dir or not snapshots.is_dir():
             return None
-        expected_repo_dir = f"datasets--{repo_id.replace('/', '--')}".lower()
-        if expected_repo_dir not in {part.lower() for part in root.parts}:
-            return None
-        if root.is_dir() and root.parent.name == "snapshots":
-            return root.resolve()
-        snapshots = root / "snapshots" if root.is_dir() else None
-        if snapshots is None or not snapshots.is_dir():
-            return None
-        candidates = [p for p in snapshots.iterdir() if p.is_dir()]
+        if selected != repo_dir:
+            return selected if selected.parent == snapshots and selected.is_dir() else None
+        pinned = ref_snapshot_dir(repo_dir)
+        if pinned is not None:
+            return pinned
+        candidates: list[Path] = []
+        for path in snapshots.iterdir():
+            try:
+                candidate = path.resolve(strict = True)
+            except (OSError, RuntimeError):
+                continue
+            if candidate.parent == snapshots and candidate.is_dir():
+                candidates.append(candidate)
         if not candidates:
             return None
         candidates.sort(
@@ -75,6 +126,47 @@ def dataset_snapshot_from_cache_path(local_path: Optional[str], repo_id: str) ->
         return candidates[0].resolve()
     except Exception:
         return None
+
+
+def processed_dataset_cache_path(local_path: Optional[str], repo_id: str) -> Optional[Path]:
+    if not local_path or not repo_id:
+        return None
+    try:
+        resolved = Path(local_path).expanduser().resolve(strict = True)
+        expected = repo_id.replace("/", "___").lower()
+        if (
+            resolved.name.lower() != expected
+            or resolved.parent not in set(hf_datasets_cache_roots())
+            or not resolved.is_dir()
+        ):
+            return None
+        return resolved
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def latest_processed_dataset_cache_path(repo_id: str) -> Optional[Path]:
+    if not repo_id:
+        return None
+    expected = repo_id.replace("/", "___")
+    for root in hf_datasets_cache_roots():
+        direct = processed_dataset_cache_path(str(root / expected), repo_id)
+        if direct is not None:
+            return direct
+        try:
+            matches = [
+                entry
+                for entry in root.iterdir()
+                if entry.name.lower() == expected.lower()
+            ]
+        except OSError:
+            continue
+        if len(matches) != 1:
+            continue
+        matched = processed_dataset_cache_path(str(matches[0]), repo_id)
+        if matched is not None:
+            return matched
+    return None
 
 
 def latest_cached_dataset_snapshot(
@@ -87,22 +179,145 @@ def latest_cached_dataset_snapshot(
     newest: Optional[Path] = None
     newest_mtime = -1.0
     for entry in iter_repo_cache_dirs("dataset", repo_id):
-        snapshots = entry / "snapshots"
-        if not snapshots.is_dir():
+        validated = validated_repo_cache_path(str(entry), "dataset", repo_id)
+        if validated is None:
+            continue
+        repo_dir, _ = validated
+        pinned = ref_snapshot_dir(repo_dir)
+        if pinned is not None:
+            return pinned.resolve()
+        candidate = dataset_snapshot_from_cache_path(str(repo_dir), repo_id)
+        if candidate is None:
             continue
         try:
-            candidates = [s for s in snapshots.iterdir() if s.is_dir()]
+            mtime = candidate.stat().st_mtime
         except OSError:
             continue
-        for snap in candidates:
-            try:
-                mtime = snap.stat().st_mtime
-            except OSError:
-                continue
-            if mtime > newest_mtime:
-                newest = snap
-                newest_mtime = mtime
+        if mtime > newest_mtime:
+            newest = candidate
+            newest_mtime = mtime
     return newest
+
+
+def latest_cached_dataset_path(
+    repo_id: str, local_path: Optional[str] = None
+) -> Optional[Path]:
+    selected = dataset_cache_path_from_cache_path(local_path, repo_id)
+    if selected is not None:
+        return selected
+    processed = latest_processed_dataset_cache_path(repo_id)
+    if processed is not None:
+        return processed
+    return latest_cached_dataset_snapshot(repo_id, local_path)
+
+
+def dataset_cache_path_from_cache_path(
+    local_path: Optional[str], repo_id: str
+) -> Optional[Path]:
+    processed = processed_dataset_cache_path(local_path, repo_id)
+    return processed or dataset_snapshot_from_cache_path(local_path, repo_id)
+
+
+def is_cache_artifact_error(error: BaseException | None) -> bool:
+    retryable_errno = {
+        errno.EACCES,
+        errno.EIO,
+        errno.EISDIR,
+        errno.ENOENT,
+        errno.ENOTDIR,
+        errno.EPERM,
+        *(
+            value
+            for value in (getattr(errno, "EBADMSG", None), getattr(errno, "ESTALE", None))
+            if value is not None
+        ),
+    }
+    seen: set[int] = set()
+    current = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(
+            current,
+            (
+                FileNotFoundError,
+                PermissionError,
+                IsADirectoryError,
+                NotADirectoryError,
+                EOFError,
+                json.JSONDecodeError,
+            ),
+        ):
+            return True
+        if isinstance(current, OSError) and current.errno in retryable_errno:
+            return True
+        if type(current).__name__ in {
+            "ArrowIOError",
+            "DataFilesNotFoundError",
+            "DatasetNotFoundError",
+            "LocalEntryNotFoundError",
+            "SafetensorError",
+        }:
+            return True
+        message = str(current).lower()
+        if any(
+            marker in message
+            for marker in (
+                "can't load the model for",
+                "can't load tokenizer for",
+                "cached path",
+                "cached snapshot",
+                "does not appear to have a file named",
+                "failed finding central directory",
+                "invalid header length",
+                "invalid load key",
+                "invalid parquet",
+                "metadata incomplete buffer",
+                "no such file or directory",
+                "not found in the cached files",
+                "offline mode is enabled",
+                "outgoing traffic has been disabled",
+                "parquet magic bytes",
+                "pickle data was truncated",
+                "pytorchstreamreader failed",
+                "safetensor header",
+                "safetensors header",
+            )
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def load_cached_hf_dataset(
+    repo_id: str,
+    local_path: Optional[str],
+    *,
+    subset: Optional[str],
+    split: str,
+    token: Optional[str] = None,
+) -> Any:
+    processed = processed_dataset_cache_path(local_path, repo_id)
+    snapshot = None if processed is not None else dataset_snapshot_from_cache_path(
+        local_path, repo_id
+    )
+    if processed is None and snapshot is None:
+        raise FileNotFoundError(f"Cached dataset path for {repo_id} is unavailable")
+
+    from datasets import DownloadConfig
+    from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
+
+    kwargs: dict[str, Any] = {
+        "path": repo_id if processed is not None else str(snapshot),
+        "split": split,
+        "download_config": DownloadConfig(local_files_only = True),
+    }
+    if processed is not None:
+        kwargs["cache_dir"] = str(processed.parent)
+    if subset:
+        kwargs["name"] = subset
+    if token:
+        kwargs["token"] = token
+    return load_dataset(**kwargs)
 
 
 def cached_dataset_candidates(

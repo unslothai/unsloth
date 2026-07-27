@@ -1,0 +1,144 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { useDebouncedValue } from "@/hooks";
+import { useCallback, useState } from "react";
+import {
+  PICKER_TAB,
+  type PickerTab,
+  readPickerTabPreference,
+  writePickerTabPreference,
+} from "./picker-tab-state";
+
+type PickerViewInput = {
+  hasDeviceItems: boolean;
+  isLoadingDevice: boolean;
+};
+
+type PickerViewState = {
+  activeQuery: string;
+  handleQueryChange: (next: string) => void;
+  tab: PickerTab;
+};
+
+function resolvePickerTab({
+  hasDeviceItems,
+  hasExplicitTabPreference,
+  isLoadingDevice,
+  lockedInferredTab,
+  online,
+  selectedTab,
+}: PickerViewInput & {
+  hasExplicitTabPreference: boolean;
+  lockedInferredTab: PickerTab | null;
+  online: boolean;
+  selectedTab: PickerTab;
+}): PickerTab {
+  const shouldUseDeviceTab = !online || (!isLoadingDevice && hasDeviceItems);
+  const inferredTab =
+    shouldUseDeviceTab && !hasExplicitTabPreference
+      ? PICKER_TAB.device
+      : selectedTab;
+  return lockedInferredTab ?? inferredTab;
+}
+
+export function usePickerState({
+  storageKey,
+  hfToken,
+  online,
+}: {
+  storageKey: string;
+  hfToken?: string | null;
+  online: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [initialTabPreference] = useState(() =>
+    readPickerTabPreference(storageKey),
+  );
+  const [selectedTab, setTabState] = useState<PickerTab>(
+    () => initialTabPreference ?? (online ? PICKER_TAB.hub : PICKER_TAB.device),
+  );
+  const [lockedInferredTab, setLockedInferredTab] = useState<PickerTab | null>(
+    null,
+  );
+  const [hubQuery, setHubQuery] = useState("");
+  const [deviceQuery, setDeviceQuery] = useState("");
+  const [hasExplicitTabPreference, setHasExplicitTabPreference] = useState(
+    initialTabPreference !== null,
+  );
+
+  const debouncedHubQuery = useDebouncedValue(hubQuery);
+  const debouncedHfToken = useDebouncedValue(hfToken, 500);
+
+  const handleTabChange = useCallback(
+    (next: PickerTab) => {
+      setLockedInferredTab(null);
+      setHasExplicitTabPreference(true);
+      setTabState(next);
+      writePickerTabPreference(storageKey, next);
+    },
+    [storageKey],
+  );
+
+  const closePicker = useCallback(() => {
+    setOpen(false);
+    setLockedInferredTab(null);
+  }, []);
+
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (nextOpen) {
+        setOpen(true);
+        return;
+      }
+      closePicker();
+    },
+    [closePicker],
+  );
+
+  const getViewState = useCallback(
+    ({ hasDeviceItems, isLoadingDevice }: PickerViewInput): PickerViewState => {
+      const tab = resolvePickerTab({
+        hasDeviceItems,
+        hasExplicitTabPreference,
+        isLoadingDevice,
+        lockedInferredTab,
+        online,
+        selectedTab,
+      });
+      const activeQuery = (
+        tab === PICKER_TAB.hub ? hubQuery : deviceQuery
+      ).trim();
+      const shouldLockInferredTab =
+        !hasExplicitTabPreference || tab !== selectedTab;
+      const setQuery = tab === PICKER_TAB.hub ? setHubQuery : setDeviceQuery;
+      const handleQueryChange = (next: string) => {
+        if (shouldLockInferredTab) {
+          setLockedInferredTab((current) => current ?? tab);
+        }
+        setQuery(next);
+      };
+      return { activeQuery, handleQueryChange, tab };
+    },
+    [
+      deviceQuery,
+      hasExplicitTabPreference,
+      hubQuery,
+      lockedInferredTab,
+      online,
+      selectedTab,
+    ],
+  );
+
+  return {
+    closePicker,
+    debouncedHfToken,
+    debouncedHubQuery,
+    deviceQuery,
+    getViewState,
+    handleOpenChange,
+    handleTabChange,
+    hubQuery,
+    open,
+  };
+}

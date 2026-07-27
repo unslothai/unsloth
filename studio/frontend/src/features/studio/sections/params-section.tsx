@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { SectionCard } from "@/components/section-card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Collapsible,
@@ -41,18 +40,15 @@ import {
   TARGET_MODULES,
 } from "@/config/training";
 import {
+  isRawTextDatasetFormat,
   useMaxStepsEpochsToggle,
   useTrainingConfigStore,
 } from "@/features/training";
-import { isRawTextDatasetFormat } from "@/features/training/lib/training-methods";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { isAdapterMethod } from "@/types/training";
 import type { GradientCheckpointing } from "@/types/training";
-import {
-  InformationCircleIcon,
-  Settings04Icon,
-} from "@hugeicons/core-free-icons";
+import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactElement,
@@ -177,7 +173,11 @@ function formatSchedulerLabel(
   }
 }
 
-export function ParamsSection(): ReactElement {
+export function ParamsSection({
+  mode = "advanced",
+}: {
+  mode?: "simple" | "advanced";
+}): ReactElement {
   const t = useT();
   const store = useTrainingConfigStore();
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
@@ -193,17 +193,22 @@ export function ParamsSection(): ReactElement {
   const showVisionImageSize = showVisionLora && !isDeepseekOcr;
   const [loraOpen, setLoraOpen] = useState(false);
   const [hyperOpen, setHyperOpen] = useState(false);
-  const [ctxInput, setCtxInput] = useState(String(store.contextLength));
+  const showAdvanced = mode === "advanced";
+  const [ctxDraft, setCtxDraft] = useState(() => ({
+    contextLength: store.contextLength,
+    value: String(store.contextLength),
+  }));
+  const ctxInput =
+    ctxDraft.contextLength === store.contextLength
+      ? ctxDraft.value
+      : String(store.contextLength);
+  const setCtxInput = (value: string) => {
+    setCtxDraft({ contextLength: store.contextLength, value });
+  };
   const ctxAnchorRef = useRef<HTMLDivElement>(null);
   const ctxItems = CONTEXT_LENGTHS.map(String);
   // Backend validator allows [256, 2048]; offer the full span.
   const visionImageSizePresets = [256, 384, 512, 768, 1024, 1536, 2048];
-
-  // Keep input in sync when the store value changes externally
-  // (e.g. model defaults being applied after model selection).
-  useEffect(() => {
-    setCtxInput(String(store.contextLength));
-  }, [store.contextLength]);
 
   // Apple Silicon (MLX) supports a different optimizer set than the CUDA list.
   const isMac = platformDeviceType === "mac";
@@ -261,256 +266,37 @@ export function ParamsSection(): ReactElement {
   const epochsSliderMax = Math.max(20, store.epochs, 1);
 
   return (
-    <div data-tour="studio-params" className="min-w-0">
-      <SectionCard
-        icon={<HugeiconsIcon icon={Settings04Icon} className="size-5" />}
-        title={t("studio.params.title")}
-        description={t("studio.params.description")}
-        accent="orange"
-        className="min-h-studio-config-column"
-      >
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-2">
-            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              {t("studio.params.projectName")}
-              <span className="text-ui-10 font-normal text-muted-foreground/70">
-                {t("studio.params.optional")}
-              </span>
+    <div className="min-w-0">
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-2">
+          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            {t("studio.params.projectName")}
+            <span className="text-ui-10 font-normal text-muted-foreground/70">
+              {t("studio.params.optional")}
             </span>
-            <Input
-              value={store.projectName || ""}
-              onChange={(event) => store.setProjectName(event.target.value)}
-              placeholder="customer-support-lora"
-              maxLength={80}
-            />
-            <p className="text-ui-10 text-muted-foreground">
-              {t("studio.params.projectNameDescription")}
-            </p>
-          </div>
+          </span>
+          <Input
+            value={store.projectName || ""}
+            onChange={(event) => store.setProjectName(event.target.value)}
+            placeholder="customer-support-lora"
+            maxLength={80}
+          />
+          <p className="text-ui-10 text-muted-foreground">
+            {t("studio.params.projectNameDescription")}
+          </p>
+        </div>
 
-          {/* Max Steps / Epochs */}
-          <div className="flex flex-col gap-2">
-            <div
-              key={useEpochs ? "epochs" : "steps"}
-              className="flex flex-col gap-2 animate-in fade-in-0 slide-in-from-bottom-1 duration-200"
-            >
-              <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  {useEpochs
-                    ? t("studio.params.epochs")
-                    : t("studio.params.maxSteps")}
-                  <Tooltip>
-                    <TooltipTrigger asChild={true}>
-                      <button
-                        type="button"
-                        className="text-foreground/70 hover:text-foreground"
-                      >
-                        <HugeiconsIcon
-                          icon={InformationCircleIcon}
-                          className="size-3"
-                        />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {useEpochs
-                        ? t("studio.params.epochsTooltip")
-                        : t("studio.params.maxStepsTooltip")}{" "}
-                      <a
-                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-primary underline"
-                      >
-                        {t("studio.params.readMore")}
-                      </a>
-                    </TooltipContent>
-                  </Tooltip>
-                </span>
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={toggleUseEpochs}
-                    className="text-xs text-primary underline cursor-pointer"
-                  >
-                    {useEpochs
-                      ? t("studio.params.useMaxSteps")
-                      : t("studio.params.useEpochs")}
-                  </button>
-                  <input
-                    type="number"
-                    value={useEpochs ? store.epochs : store.maxSteps}
-                    onChange={(e) => {
-                      const raw = e.target.value;
-                      if (raw === "") return;
-
-                      const value = Number(raw);
-                      if (!Number.isFinite(value) || value < 1) return;
-
-                      if (useEpochs) {
-                        store.setEpochs(value);
-                      } else {
-                        store.setMaxSteps(value);
-                      }
-                    }}
-                    min={1}
-                    max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
-                    step={1}
-                    className="w-16 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
-                  />
-                </div>
-              </div>
-              <Slider
-                value={[
-                  useEpochs
-                    ? Math.min(epochsSliderMax, Math.max(1, store.epochs))
-                    : Math.min(maxStepsSliderMax, Math.max(1, store.maxSteps)),
-                ]}
-                onValueChange={([v]) =>
-                  useEpochs ? store.setEpochs(v) : store.setMaxSteps(v)
-                }
-                min={1}
-                max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
-                step={1}
-              />
-              <p className="text-ui-10 text-muted-foreground">
-                {useEpochs
-                  ? t("studio.params.epochsDescription")
-                  : t("studio.params.maxStepsDescription")}
-              </p>
-            </div>
-          </div>
-
-          {/* Context length */}
-          <div className="flex flex-col gap-2">
-            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              {t("studio.params.contextLength")}
-              <Tooltip>
-                <TooltipTrigger asChild={true}>
-                  <button
-                    type="button"
-                    className="text-foreground/70 hover:text-foreground"
-                  >
-                    <HugeiconsIcon
-                      icon={InformationCircleIcon}
-                      className="size-3"
-                    />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {t("studio.params.contextLengthTooltip")}{" "}
-                  <a
-                    href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-primary underline"
-                  >
-                    {t("studio.params.readMore")}
-                  </a>
-                </TooltipContent>
-              </Tooltip>
-            </span>
-            <div ref={ctxAnchorRef}>
-              <Combobox
-                items={ctxItems}
-                filteredItems={ctxItems}
-                filter={null}
-                value={String(store.contextLength)}
-                onValueChange={(v) => {
-                  if (v && trySetContextLength(v)) {
-                    setCtxInput(v);
-                  }
-                }}
-                onInputValueChange={setCtxInput}
-                itemToStringValue={(id) => Number(id).toLocaleString()}
-                autoHighlight={false}
-              >
-                <ComboboxInput
-                  placeholder={String(store.contextLength)}
-                  className="w-full font-mono"
-                  onBlur={() => {
-                    trySetContextLength(ctxInput);
-                    setCtxInput(String(store.contextLength));
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key !== "Enter") {
-                      return;
-                    }
-                    const n = trySetContextLength(ctxInput);
-                    if (n === null) {
-                      return;
-                    }
-                    if (!ctxItems.includes(ctxInput.trim())) {
-                      e.stopPropagation();
-                      e.preventDefault();
-                    }
-                    setCtxInput(String(n));
-                  }}
-                />
-                <ComboboxContent anchor={ctxAnchorRef}>
-                  <ComboboxEmpty>
-                    {t("studio.params.customContextLength")}
-                  </ComboboxEmpty>
-                  <ComboboxList className="p-1">
-                    {(id: string) => (
-                      <ComboboxItem key={id} value={id} className="font-mono">
-                        {Number(id).toLocaleString()}
-                      </ComboboxItem>
-                    )}
-                  </ComboboxList>
-                </ComboboxContent>
-              </Combobox>
-            </div>
-            <p className="text-ui-10 text-muted-foreground">
-              {t("studio.params.contextLengthDescription")}
-            </p>
-          </div>
-
-          {/* Learning Rate */}
-          <div className="flex flex-col gap-2">
-            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              {t("studio.params.learningRate")}
-              <Tooltip>
-                <TooltipTrigger asChild={true}>
-                  <button
-                    type="button"
-                    className="text-foreground/70 hover:text-foreground"
-                  >
-                    <HugeiconsIcon
-                      icon={InformationCircleIcon}
-                      className="size-3"
-                    />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {t("studio.params.learningRateTooltip")}{" "}
-                  <a
-                    href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-primary underline"
-                  >
-                    {t("studio.params.readMore")}
-                  </a>
-                </TooltipContent>
-              </Tooltip>
-            </span>
-            <Input
-              type="number"
-              step="0.00001"
-              value={store.learningRate}
-              onChange={(e) => store.setLearningRate(Number(e.target.value))}
-              className="w-full font-mono"
-            />
-            <p className="text-ui-10 text-muted-foreground">
-              {t("studio.params.learningRateDescription")}
-            </p>
-          </div>
-
-          {/* Embedding Learning Rate (CPT only) */}
-          {isCpt && (
-            <div className="flex flex-col gap-2">
+        {/* Max Steps / Epochs */}
+        <div className="flex flex-col gap-2">
+          <div
+            key={useEpochs ? "epochs" : "steps"}
+            className="flex flex-col gap-2 animate-in fade-in-0 slide-in-from-bottom-1 duration-200"
+          >
+            <div className="flex items-center justify-between">
               <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                {t("studio.params.embeddingLearningRate")}
+                {useEpochs
+                  ? t("studio.params.epochs")
+                  : t("studio.params.maxSteps")}
                 <Tooltip>
                   <TooltipTrigger asChild={true}>
                     <button
@@ -524,254 +310,467 @@ export function ParamsSection(): ReactElement {
                     </button>
                   </TooltipTrigger>
                   <TooltipContent>
-                    {t("studio.params.embeddingLearningRateTooltip")}
+                    {useEpochs
+                      ? t("studio.params.epochsTooltip")
+                      : t("studio.params.maxStepsTooltip")}{" "}
+                    <a
+                      href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary underline"
+                    >
+                      {t("studio.params.readMore")}
+                    </a>
                   </TooltipContent>
                 </Tooltip>
               </span>
-              <Input
-                type="number"
-                step="0.00001"
-                min="0"
-                max="1"
-                placeholder={`auto (${(store.learningRate / 10).toExponential(1)})`}
-                value={store.embeddingLearningRate ?? ""}
-                onChange={(e) => {
-                  const raw = e.target.value;
-                  if (raw === "") {
-                    store.setEmbeddingLearningRate(null);
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={toggleUseEpochs}
+                  className="text-xs text-primary underline cursor-pointer"
+                >
+                  {useEpochs
+                    ? t("studio.params.useMaxSteps")
+                    : t("studio.params.useEpochs")}
+                </button>
+                <input
+                  type="number"
+                  value={useEpochs ? store.epochs : store.maxSteps}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    if (raw === "") return;
+
+                    const value = Number(raw);
+                    if (!Number.isFinite(value) || value < 1) return;
+
+                    if (useEpochs) {
+                      store.setEpochs(value);
+                    } else {
+                      store.setMaxSteps(value);
+                    }
+                  }}
+                  min={1}
+                  max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
+                  step={1}
+                  className="w-16 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
+                />
+              </div>
+            </div>
+            <Slider
+              value={[
+                useEpochs
+                  ? Math.min(epochsSliderMax, Math.max(1, store.epochs))
+                  : Math.min(maxStepsSliderMax, Math.max(1, store.maxSteps)),
+              ]}
+              onValueChange={([v]) =>
+                useEpochs ? store.setEpochs(v) : store.setMaxSteps(v)
+              }
+              min={1}
+              max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
+              step={1}
+            />
+            <p className="text-ui-10 text-muted-foreground">
+              {useEpochs
+                ? t("studio.params.epochsDescription")
+                : t("studio.params.maxStepsDescription")}
+            </p>
+          </div>
+        </div>
+
+        {/* Context length */}
+        <div className="flex flex-col gap-2">
+          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            {t("studio.params.contextLength")}
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <button
+                  type="button"
+                  className="text-foreground/70 hover:text-foreground"
+                >
+                  <HugeiconsIcon
+                    icon={InformationCircleIcon}
+                    className="size-3"
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {t("studio.params.contextLengthTooltip")}{" "}
+                <a
+                  href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary underline"
+                >
+                  {t("studio.params.readMore")}
+                </a>
+              </TooltipContent>
+            </Tooltip>
+          </span>
+          <div ref={ctxAnchorRef}>
+            <Combobox
+              items={ctxItems}
+              filteredItems={ctxItems}
+              filter={null}
+              value={String(store.contextLength)}
+              onValueChange={(v) => {
+                if (v && trySetContextLength(v)) {
+                  setCtxInput(v);
+                }
+              }}
+              onInputValueChange={setCtxInput}
+              itemToStringValue={(id) => Number(id).toLocaleString()}
+              autoHighlight={false}
+            >
+              <ComboboxInput
+                placeholder={String(store.contextLength)}
+                className="w-full font-mono"
+                onBlur={() => {
+                  trySetContextLength(ctxInput);
+                  setCtxInput(String(store.contextLength));
+                }}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter") {
                     return;
                   }
-                  const n = Number(raw);
-                  store.setEmbeddingLearningRate(Number.isFinite(n) ? n : null);
+                  const n = trySetContextLength(ctxInput);
+                  if (n === null) {
+                    return;
+                  }
+                  if (!ctxItems.includes(ctxInput.trim())) {
+                    e.stopPropagation();
+                    e.preventDefault();
+                  }
+                  setCtxInput(String(n));
                 }}
-                className="w-full font-mono"
               />
-              <p className="text-ui-10 text-muted-foreground">
-                {t("studio.params.embeddingLearningRateDescription")}
-              </p>
-            </div>
-          )}
+              <ComboboxContent anchor={ctxAnchorRef}>
+                <ComboboxEmpty>
+                  {t("studio.params.customContextLength")}
+                </ComboboxEmpty>
+                <ComboboxList className="p-1">
+                  {(id: string) => (
+                    <ComboboxItem key={id} value={id} className="font-mono">
+                      {Number(id).toLocaleString()}
+                    </ComboboxItem>
+                  )}
+                </ComboboxList>
+              </ComboboxContent>
+            </Combobox>
+          </div>
+          <p className="text-ui-10 text-muted-foreground">
+            {t("studio.params.contextLengthDescription")}
+          </p>
+        </div>
 
-          {/* LoRA Settings */}
-          {isLora && (
-            <Collapsible open={loraOpen} onOpenChange={setLoraOpen}>
-              <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
-                <HugeiconsIcon
-                  icon={ChevronDownStandardIcon}
-                  className={`size-3.5 transition-transform ${loraOpen ? "rotate-180" : ""}`}
+        {/* Learning Rate */}
+        <div className="flex flex-col gap-2">
+          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            {t("studio.params.learningRate")}
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <button
+                  type="button"
+                  className="text-foreground/70 hover:text-foreground"
+                >
+                  <HugeiconsIcon
+                    icon={InformationCircleIcon}
+                    className="size-3"
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {t("studio.params.learningRateTooltip")}{" "}
+                <a
+                  href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary underline"
+                >
+                  {t("studio.params.readMore")}
+                </a>
+              </TooltipContent>
+            </Tooltip>
+          </span>
+          <Input
+            type="number"
+            step="0.00001"
+            value={store.learningRate}
+            onChange={(e) => store.setLearningRate(Number(e.target.value))}
+            className="w-full font-mono"
+          />
+          <p className="text-ui-10 text-muted-foreground">
+            {t("studio.params.learningRateDescription")}
+          </p>
+        </div>
+
+        {/* Embedding Learning Rate (CPT only) */}
+        {isCpt && (
+          <div className="flex flex-col gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              {t("studio.params.embeddingLearningRate")}
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  <button
+                    type="button"
+                    className="text-foreground/70 hover:text-foreground"
+                  >
+                    <HugeiconsIcon
+                      icon={InformationCircleIcon}
+                      className="size-3"
+                    />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {t("studio.params.embeddingLearningRateTooltip")}
+                </TooltipContent>
+              </Tooltip>
+            </span>
+            <Input
+              type="number"
+              step="0.00001"
+              min="0"
+              max="1"
+              placeholder={`auto (${(store.learningRate / 10).toExponential(1)})`}
+              value={store.embeddingLearningRate ?? ""}
+              onChange={(e) => {
+                const raw = e.target.value;
+                if (raw === "") {
+                  store.setEmbeddingLearningRate(null);
+                  return;
+                }
+                const n = Number(raw);
+                store.setEmbeddingLearningRate(Number.isFinite(n) ? n : null);
+              }}
+              className="w-full font-mono"
+            />
+            <p className="text-ui-10 text-muted-foreground">
+              {t("studio.params.embeddingLearningRateDescription")}
+            </p>
+          </div>
+        )}
+
+        {/* LoRA Settings */}
+        {showAdvanced && isLora && (
+          <Collapsible open={loraOpen} onOpenChange={setLoraOpen}>
+            <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+              <HugeiconsIcon
+                icon={ChevronDownStandardIcon}
+                className={`size-3.5 transition-transform ${loraOpen ? "rotate-180" : ""}`}
+              />
+              {t("studio.params.loraSettings")}
+            </CollapsibleTrigger>
+            <CollapsibleContent className="mt-3 data-[state=open]:overflow-visible">
+              <div className="pt-1.5 flex flex-col gap-4">
+                <SliderRow
+                  label={t("studio.params.rank")}
+                  tooltip={
+                    <>
+                      {t("studio.params.rankTooltip")}{" "}
+                      <a
+                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline"
+                      >
+                        {t("studio.params.readMore")}
+                      </a>
+                    </>
+                  }
+                  value={store.loraRank}
+                  onChange={store.setLoraRank}
+                  min={4}
+                  max={128}
+                  step={4}
                 />
-                {t("studio.params.loraSettings")}
-              </CollapsibleTrigger>
-              <CollapsibleContent className="mt-3 data-[state=open]:overflow-visible">
-                <div className="pt-1.5 flex flex-col gap-4">
-                  <SliderRow
-                    label={t("studio.params.rank")}
-                    tooltip={
-                      <>
-                        {t("studio.params.rankTooltip")}{" "}
-                        <a
-                          href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary underline"
-                        >
-                          {t("studio.params.readMore")}
-                        </a>
-                      </>
-                    }
-                    value={store.loraRank}
-                    onChange={store.setLoraRank}
-                    min={4}
-                    max={128}
-                    step={4}
-                  />
-                  <SliderRow
-                    label={t("studio.params.alpha")}
-                    tooltip={
-                      <>
-                        {t("studio.params.alphaTooltip")}{" "}
-                        <a
-                          href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary underline"
-                        >
-                          {t("studio.params.readMore")}
-                        </a>
-                      </>
-                    }
-                    value={store.loraAlpha}
-                    onChange={store.setLoraAlpha}
-                    min={4}
-                    max={256}
-                    step={4}
-                  />
-                  <SliderRow
-                    label={t("studio.params.dropout")}
-                    tooltip={
-                      <>
-                        {t("studio.params.dropoutTooltip")}{" "}
-                        <a
-                          href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary underline"
-                        >
-                          {t("studio.params.readMore")}
-                        </a>
-                      </>
-                    }
-                    value={store.loraDropout}
-                    onChange={store.setLoraDropout}
-                    min={0}
-                    max={0.5}
-                    step={0.01}
-                    format={(v) => v.toFixed(2)}
-                  />
+                <SliderRow
+                  label={t("studio.params.alpha")}
+                  tooltip={
+                    <>
+                      {t("studio.params.alphaTooltip")}{" "}
+                      <a
+                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline"
+                      >
+                        {t("studio.params.readMore")}
+                      </a>
+                    </>
+                  }
+                  value={store.loraAlpha}
+                  onChange={store.setLoraAlpha}
+                  min={4}
+                  max={256}
+                  step={4}
+                />
+                <SliderRow
+                  label={t("studio.params.dropout")}
+                  tooltip={
+                    <>
+                      {t("studio.params.dropoutTooltip")}{" "}
+                      <a
+                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline"
+                      >
+                        {t("studio.params.readMore")}
+                      </a>
+                    </>
+                  }
+                  value={store.loraDropout}
+                  onChange={store.setLoraDropout}
+                  min={0}
+                  max={0.5}
+                  step={0.01}
+                  format={(v) => v.toFixed(2)}
+                />
 
-                  {/* Vision checkboxes */}
-                  {showVisionLora && (
-                    <div className="flex flex-col gap-2 pt-1">
-                      {(
-                        [
-                          [
-                            "finetuneVisionLayers",
-                            t("studio.params.visionLayers"),
-                            store.finetuneVisionLayers,
-                            store.setFinetuneVisionLayers,
-                          ],
-                          [
-                            "finetuneLanguageLayers",
-                            t("studio.params.languageLayers"),
-                            store.finetuneLanguageLayers,
-                            store.setFinetuneLanguageLayers,
-                          ],
-                          [
-                            "finetuneAttentionModules",
-                            t("studio.params.attentionModules"),
-                            store.finetuneAttentionModules,
-                            store.setFinetuneAttentionModules,
-                          ],
-                          [
-                            "finetuneMLPModules",
-                            t("studio.params.mlpModules"),
-                            store.finetuneMLPModules,
-                            store.setFinetuneMLPModules,
-                          ],
-                        ] as const
-                      ).map(([key, label, value, setter]) => (
-                        <div key={key} className="flex items-center gap-2">
-                          <Checkbox
-                            id={key}
-                            checked={value as boolean}
-                            onCheckedChange={(v) =>
-                              (setter as (v: boolean) => void)(!!v)
-                            }
-                          />
-                          <label
-                            htmlFor={key}
-                            className="text-xs cursor-pointer text-muted-foreground"
-                          >
-                            {label}
-                          </label>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Text target modules */}
-                  {!showVisionLora && (
-                    <div className="flex flex-col gap-2 pt-1">
-                      <span className="text-xs font-medium text-muted-foreground">
-                        {t("studio.params.targetModules")}
-                      </span>
-                      <div className="flex flex-wrap gap-1.5">
-                        {(isCpt ? CPT_TARGET_MODULES : TARGET_MODULES).map(
-                          (mod) => {
-                            const active = store.targetModules.includes(mod);
-                            return (
-                              <button
-                                key={mod}
-                                type="button"
-                                onClick={() => {
-                                  store.setTargetModules(
-                                    active
-                                      ? store.targetModules.filter(
-                                          (m) => m !== mod,
-                                        )
-                                      : [...store.targetModules, mod],
-                                  );
-                                }}
-                                className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-ui-11 font-mono transition-colors ${
-                                  active
-                                    ? "border-orange-300 bg-orange-50 text-orange-700 dark:border-orange-700 dark:bg-orange-950 dark:text-orange-300"
-                                    : "text-muted-foreground hover:bg-muted/50"
-                                }`}
-                              >
-                                {mod}
-                              </button>
-                            );
-                          },
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* LoRA variant */}
-                  <div className="grid grid-cols-2 gap-2">
+                {/* Vision checkboxes */}
+                {showVisionLora && (
+                  <div className="flex flex-col gap-2 pt-1">
                     {(
                       [
-                        {
-                          value: "lora",
-                          label: t("studio.params.enableLora"),
-                          desc: t("studio.params.trainWithLora"),
-                        },
-                        {
-                          value: "rslora",
-                          label: "RS-LoRA",
-                          desc: t("studio.params.stableRank"),
-                        },
-                        {
-                          value: "loftq",
-                          label: "LoftQ",
-                          desc: t("studio.params.memoryEfficient"),
-                        },
-                        {
-                          value: "dora",
-                          label: "DoRA",
-                          desc: t("studio.params.weightDecomposed"),
-                        },
+                        [
+                          "finetuneVisionLayers",
+                          t("studio.params.visionLayers"),
+                          store.finetuneVisionLayers,
+                          store.setFinetuneVisionLayers,
+                        ],
+                        [
+                          "finetuneLanguageLayers",
+                          t("studio.params.languageLayers"),
+                          store.finetuneLanguageLayers,
+                          store.setFinetuneLanguageLayers,
+                        ],
+                        [
+                          "finetuneAttentionModules",
+                          t("studio.params.attentionModules"),
+                          store.finetuneAttentionModules,
+                          store.setFinetuneAttentionModules,
+                        ],
+                        [
+                          "finetuneMLPModules",
+                          t("studio.params.mlpModules"),
+                          store.finetuneMLPModules,
+                          store.setFinetuneMLPModules,
+                        ],
                       ] as const
-                    ).map((opt) => (
-                      <button
-                        key={opt.value}
-                        type="button"
-                        disabled={
-                          isMac &&
-                          (opt.value === "loftq" || opt.value === "dora")
-                        }
-                        onClick={() => store.setLoraVariant(opt.value)}
-                        className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
-                          store.loraVariant === opt.value
-                            ? "border-ring-strong bg-primary/5"
-                            : "border-border hover:border-foreground/20"
-                        }`}
-                      >
-                        <p className="text-xs font-medium">{opt.label}</p>
-                        <p className="text-ui-10 text-muted-foreground">
-                          {isMac && (opt.value === "loftq" || opt.value === "dora")
-                            ? "Not supported on Apple Silicon"
-                            : opt.desc}
-                        </p>
-                      </button>
+                    ).map(([key, label, value, setter]) => (
+                      <div key={key} className="flex items-center gap-2">
+                        <Checkbox
+                          id={key}
+                          checked={value as boolean}
+                          onCheckedChange={(v) =>
+                            (setter as (v: boolean) => void)(!!v)
+                          }
+                        />
+                        <label
+                          htmlFor={key}
+                          className="text-xs cursor-pointer text-muted-foreground"
+                        >
+                          {label}
+                        </label>
+                      </div>
                     ))}
                   </div>
-                </div>
-              </CollapsibleContent>
-            </Collapsible>
-          )}
+                )}
 
-          {/* Training Hyperparams */}
+                {/* Text target modules */}
+                {!showVisionLora && (
+                  <div className="flex flex-col gap-2 pt-1">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      {t("studio.params.targetModules")}
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(isCpt ? CPT_TARGET_MODULES : TARGET_MODULES).map(
+                        (mod) => {
+                          const active = store.targetModules.includes(mod);
+                          return (
+                            <button
+                              key={mod}
+                              type="button"
+                              onClick={() => {
+                                store.setTargetModules(
+                                  active
+                                    ? store.targetModules.filter(
+                                        (m) => m !== mod,
+                                      )
+                                    : [...store.targetModules, mod],
+                                );
+                              }}
+                              className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-ui-11 font-mono transition-colors ${
+                                active
+                                  ? "border-orange-300 bg-orange-50 text-orange-700 dark:border-orange-700 dark:bg-orange-950 dark:text-orange-300"
+                                  : "text-muted-foreground hover:bg-muted/50"
+                              }`}
+                            >
+                              {mod}
+                            </button>
+                          );
+                        },
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* LoRA variant */}
+                <div className="grid grid-cols-2 gap-2">
+                  {(
+                    [
+                      {
+                        value: "lora",
+                        label: t("studio.params.enableLora"),
+                        desc: t("studio.params.trainWithLora"),
+                      },
+                      {
+                        value: "rslora",
+                        label: "RS-LoRA",
+                        desc: t("studio.params.stableRank"),
+                      },
+                      {
+                        value: "loftq",
+                        label: "LoftQ",
+                        desc: t("studio.params.memoryEfficient"),
+                      },
+                      {
+                        value: "dora",
+                        label: "DoRA",
+                        desc: t("studio.params.weightDecomposed"),
+                      },
+                    ] as const
+                  ).map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      disabled={
+                        isMac && (opt.value === "loftq" || opt.value === "dora")
+                      }
+                      onClick={() => store.setLoraVariant(opt.value)}
+                      className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
+                        store.loraVariant === opt.value
+                          ? "border-ring-strong bg-primary/5"
+                          : "border-border hover:border-foreground/20"
+                      }`}
+                    >
+                      <p className="text-xs font-medium">{opt.label}</p>
+                      <p className="text-ui-10 text-muted-foreground">
+                        {isMac &&
+                        (opt.value === "loftq" || opt.value === "dora")
+                          ? "Not supported on Apple Silicon"
+                          : opt.desc}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+        )}
+
+        {/* Training Hyperparams */}
+        {showAdvanced && (
           <Collapsible open={hyperOpen} onOpenChange={setHyperOpen}>
             <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
               <HugeiconsIcon
@@ -1220,8 +1219,8 @@ export function ParamsSection(): ReactElement {
               </Tabs>
             </CollapsibleContent>
           </Collapsible>
-        </div>
-      </SectionCard>
+        )}
+      </div>
     </div>
   );
 }

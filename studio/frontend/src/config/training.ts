@@ -155,13 +155,26 @@ export const DEFAULT_HYPERPARAMS = {
   s3Config: null as import("@/types/training").S3Config | null,
 };
 
-export const MODEL_TYPE_TO_HF_TASK: Record<ModelType, PipelineType> = {
-  text: "text-generation",
-  vision: "image-text-to-text",
-  audio: "text-to-speech",
-  embeddings: "feature-extraction",
+export const MODEL_TYPE_TO_HF_TASKS: Record<
+  ModelType,
+  readonly PipelineType[]
+> = {
+  text: ["text-generation"],
+  vision: [
+    "image-text-to-text",
+    "visual-question-answering",
+    "document-question-answering",
+    "image-to-text",
+    "any-to-any",
+  ],
+  audio: [
+    "text-to-speech",
+    "automatic-speech-recognition",
+    "audio-text-to-text",
+    "text-to-audio",
+  ],
+  embeddings: ["feature-extraction"],
 };
-
 
 export const PRIORITY_TRAINING_MODELS: readonly string[] = [
   "unsloth/gemma-4-E2B-it",

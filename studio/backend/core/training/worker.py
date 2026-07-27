@@ -62,6 +62,236 @@ def _output_dir_from_resume_checkpoint(resume_from_checkpoint: str | None) -> st
     return str(path.parent if path.name.startswith("checkpoint-") else path)
 
 
+def _model_local_files_only(config: dict) -> bool:
+    return bool(config.get("model_snapshot_path"))
+
+
+def _dataset_local_files_only(config: dict) -> bool:
+    return bool(config.get("dataset_snapshot_path"))
+
+
+def _untrainable_model_format_error(config: dict) -> str | None:
+    model_format = str(config.get("model_format") or "").strip().lower()
+    if model_format == "gguf":
+        return "GGUF models are inference-only and cannot be trained."
+    if model_format == "adapter":
+        return "Adapter models are inference-only and cannot be trained as base models."
+    return None
+
+
+def _resolve_cached_model_load_name(config: dict) -> str:
+    return config.get("model_snapshot_path") or config["model_name"]
+
+
+def _drop_model_pin(config: dict) -> str:
+    config["model_snapshot_path"] = None
+    return config["model_name"]
+
+
+def _verify_config_pins(config: dict, event_queue: Any) -> None:
+    for message in config.get("cache_pin_warnings") or []:
+        _send_status(event_queue, message)
+    model_path = config.get("model_snapshot_path")
+    if model_path:
+        from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
+
+        config["model_snapshot_path"] = latest_snapshot_from_cache_path(
+            model_path,
+            "model",
+            config["model_name"],
+            ("config.json", "adapter_config.json"),
+        )
+    dataset_path = config.get("dataset_snapshot_path")
+    if dataset_path:
+        from hub.utils.dataset_cache import dataset_cache_path_from_cache_path
+
+        resolved = dataset_cache_path_from_cache_path(
+            dataset_path,
+            config.get("hf_dataset") or "",
+        )
+        config["dataset_snapshot_path"] = str(resolved) if resolved else None
+
+
+def _load_cached_dataset_for_config(
+    config: dict,
+    split: str | None,
+    token: str | None = None,
+):
+    hf_dataset = config.get("hf_dataset")
+    local_path = config.get("dataset_snapshot_path")
+    if not hf_dataset or not local_path:
+        return None
+    from hub.utils.dataset_cache import load_cached_hf_dataset
+
+    return load_cached_hf_dataset(
+        hf_dataset,
+        local_path,
+        subset = config.get("subset"),
+        split = split or "train",
+        token = token,
+    )
+
+
+def _load_hf_train_and_eval_datasets(
+    config: dict,
+    token: str | None,
+    load_dataset: Callable,
+    status_callback: Callable[[str], None],
+):
+    hf_dataset = config["hf_dataset"]
+    subset = config.get("subset")
+    train_split = config.get("train_split", "train") or "train"
+    eval_split = config.get("eval_split")
+    dataset = None
+    loaded_from_cache = False
+
+    def load_remote(split: str):
+        kwargs = {"split": split, "token": token}
+        if subset:
+            kwargs["name"] = subset
+        return load_dataset(hf_dataset, **kwargs)
+
+    if _dataset_local_files_only(config):
+        status_callback(f"Loading cached dataset: {hf_dataset}")
+        try:
+            dataset = _load_cached_dataset_for_config(config, train_split, token)
+            loaded_from_cache = dataset is not None
+        except Exception as error:
+            from hub.utils.dataset_cache import is_cache_artifact_error
+
+            if not is_cache_artifact_error(error):
+                raise
+            status_callback("Cached dataset unavailable; downloading from the Hub...")
+
+    if dataset is None:
+        dataset = load_remote(train_split)
+
+    eval_dataset = None
+    if eval_split:
+        try:
+            if loaded_from_cache:
+                try:
+                    eval_dataset = _load_cached_dataset_for_config(config, eval_split, token)
+                except Exception as error:
+                    from hub.utils.dataset_cache import is_cache_artifact_error
+
+                    if not is_cache_artifact_error(error):
+                        raise
+                    status_callback(
+                        "Cached eval split unavailable; reloading train and eval from the Hub..."
+                    )
+                    remote_train = load_remote(train_split)
+                    remote_eval = load_remote(eval_split)
+                    dataset = remote_train
+                    eval_dataset = remote_eval
+            else:
+                eval_dataset = load_remote(eval_split)
+        except Exception as error:
+            status_callback(f"Eval split load failed: {error}")
+            eval_dataset = None
+
+    return dataset, eval_dataset
+
+
+def _pre_detect_training_model(
+    trainer,
+    config: dict,
+    model_name: str,
+    hf_token: str | None,
+    model_load_name: str,
+    local_files_only: bool,
+) -> None:
+    trainer.pre_detect_and_load_tokenizer(
+        model_name = model_name,
+        max_seq_length = config["max_seq_length"],
+        hf_token = hf_token,
+        is_dataset_image = config.get("is_dataset_image", False),
+        is_dataset_audio = config.get("is_dataset_audio", False),
+        trust_remote_code = config.get("trust_remote_code", False),
+        model_load_name = model_load_name,
+        local_files_only = local_files_only,
+    )
+
+
+def _reload_dataset_with_remote_model_tokenizer(
+    trainer,
+    config: dict,
+    model_name: str,
+    hf_token: str | None,
+    reload_dataset: Callable[[], tuple],
+):
+    _pre_detect_training_model(
+        trainer,
+        config,
+        model_name,
+        hf_token,
+        model_name,
+        False,
+    )
+    return reload_dataset()
+
+
+def _model_load_security_error(
+    config: dict,
+    load_target: str,
+    hf_token: str | None,
+) -> dict | None:
+    from utils.models.model_config import get_base_model_from_lora_identifier
+    from utils.security import (
+        evaluate_file_security,
+        evaluate_remote_code_consent_for_targets,
+        security_load_subdirs,
+    )
+
+    targets = [load_target]
+    try:
+        base_model = get_base_model_from_lora_identifier(load_target, hf_token)
+        if base_model:
+            targets.append(base_model)
+    except Exception as error:
+        logger.debug("Could not resolve LoRA base for security scan: %s", error)
+
+    primary_name = config["model_name"]
+    for target in dict.fromkeys(targets):
+        load_subdirs = security_load_subdirs(
+            primary_name if target == load_target else target,
+            hf_token,
+        )
+        decision = evaluate_file_security(
+            target,
+            hf_token = hf_token,
+            load_subdirs = load_subdirs,
+        )
+        if decision.blocked:
+            return {
+                "error": decision.reason,
+                "error_kind": "malware_blocked",
+                "security": decision.response_payload(),
+            }
+
+    if not config.get("trust_remote_code", False):
+        return None
+
+    decision = evaluate_remote_code_consent_for_targets(
+        targets,
+        hf_token = hf_token,
+        trust_remote_code = True,
+        approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+        subject = config.get("subject"),
+    )
+    if not decision.blocked:
+        return None
+    return {
+        "error": (
+            f"Model '{decision.model_name}' ships custom code flagged as "
+            f"{decision.max_severity} by the security scan. Review it and "
+            f"re-run with approval to proceed.\n\n{decision.findings_summary}"
+        ),
+        "error_kind": "remote_code_blocked",
+        "remote_code": decision.response_payload(),
+    }
+
+
 _CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
 _CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
 _MAMBA_SSM_RELEASE_TAG = "v2.3.1"
@@ -1549,6 +1779,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
     hf_token = config.get("hf_token") or None
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
+    model_load_name = _resolve_cached_model_load_name(config)
+    model_local_only = _model_local_files_only(config)
 
     if config.get("use_loftq"):
         message = "LoftQ is not supported for MLX training yet."
@@ -1592,84 +1824,47 @@ def _run_mlx_training(event_queue, stop_queue, config):
     _lora_seed = config.get("lora_random_state")
     lora_random_state = random_seed if _lora_seed is None else int(_lora_seed)
 
-    # Malware gate (MLX): a poisoned pickle deserializes on load even with
-    # trust_remote_code False, so check HF's security scan (metadata-only) first.
-    # For a LoRA, gate the base whose weights deserialize.
-    from utils.security import evaluate_file_security
+    security_error = _model_load_security_error(config, model_load_name, hf_token)
+    if security_error:
+        _send("error", **security_error)
+        return
 
-    malware_targets = [model_name]
     try:
-        from utils.models.model_config import get_base_model_from_lora_identifier
-
-        # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
-        _base = get_base_model_from_lora_identifier(model_name, config.get("hf_token") or None)
-        if _base:
-            malware_targets.append(_base)
-    except Exception as exc:
-        logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
-    from utils.security import security_load_subdirs
-
-    for target in dict.fromkeys(malware_targets):
-        _fs = evaluate_file_security(
-            target, hf_token = hf_token, load_subdirs = security_load_subdirs(target, hf_token)
+        model, tokenizer = FastMLXModel.from_pretrained(
+            model_load_name,
+            load_in_4bit = config.get("load_in_4bit", True),
+            full_finetuning = not use_lora,
+            text_only = None if is_dataset_image else True,
+            token = hf_token,
+            trust_remote_code = bool(config.get("trust_remote_code", False)),
+            random_state = model_random_state,
         )
-        if _fs.blocked:
-            _send(
-                "error",
-                error = _fs.reason,
-                error_kind = "malware_blocked",
-                security = _fs.response_payload(),
-            )
+    except Exception as error:
+        from hub.utils.dataset_cache import is_cache_artifact_error
+
+        if not model_local_only or not is_cache_artifact_error(error):
+            raise
+        security_error = _model_load_security_error(config, model_name, hf_token)
+        if security_error:
+            _send("error", **security_error)
             return
-
-    # Consent gate (MLX): the CUDA path gates in run_training_process, but MLX returns
-    # before that, so scan auto_map code here before FastMLXModel runs it. Block
-    # CRITICAL/HIGH unless pinned-approved; for a LoRA, gate the base whose code runs.
-    if config.get("trust_remote_code", False):
-        from utils.security import evaluate_remote_code_consent_for_targets
-
-        consent_targets = [model_name]
-        try:
-            from utils.models.model_config import get_base_model_from_lora_identifier
-
-            # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
-            base_model = get_base_model_from_lora_identifier(
-                model_name, config.get("hf_token") or None
-            )
-            if base_model:
-                consent_targets.append(base_model)
-        except Exception as exc:
-            logger.debug("Could not resolve LoRA base for consent scan: %s", exc)
-        # Scan adapter + base as one combined unit, pinned by a single fingerprint.
-        _rc = evaluate_remote_code_consent_for_targets(
-            consent_targets,
-            hf_token = hf_token,
-            trust_remote_code = True,
-            approved_fingerprint = config.get("approved_remote_code_fingerprint"),
-            subject = config.get("subject"),
+        _send(
+            "status",
+            status_message = (
+                f"Cached files for {model_name} are incomplete; retrying from Hugging Face..."
+            ),
         )
-        if _rc.blocked:
-            _send(
-                "error",
-                error = (
-                    f"Model '{_rc.model_name}' ships custom code flagged as "
-                    f"{_rc.max_severity} by the security scan. Review it and "
-                    f"re-run with approval to proceed.\n\n{_rc.findings_summary}"
-                ),
-                error_kind = "remote_code_blocked",
-                remote_code = _rc.response_payload(),
-            )
-            return
-
-    model, tokenizer = FastMLXModel.from_pretrained(
-        model_name,
-        load_in_4bit = config.get("load_in_4bit", True),
-        full_finetuning = not use_lora,
-        text_only = None if is_dataset_image else True,
-        token = hf_token,
-        trust_remote_code = bool(config.get("trust_remote_code", False)),
-        random_state = model_random_state,
-    )
+        model_load_name = _drop_model_pin(config)
+        model_local_only = False
+        model, tokenizer = FastMLXModel.from_pretrained(
+            model_load_name,
+            load_in_4bit = config.get("load_in_4bit", True),
+            full_finetuning = not use_lora,
+            text_only = None if is_dataset_image else True,
+            token = hf_token,
+            trust_remote_code = bool(config.get("trust_remote_code", False)),
+            random_state = model_random_state,
+        )
 
     is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
     model._is_vlm_model = is_vlm
@@ -1741,9 +1936,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # ── 3. Load dataset ──
     _send("status", status_message = "Loading dataset...")
     hf_dataset = config.get("hf_dataset", "")
-    subset = config.get("subset")
-    train_split = config.get("train_split", "train") or "train"
-    eval_split = config.get("eval_split")
     slice_start = config.get("dataset_slice_start")
     slice_end = config.get("dataset_slice_end")
 
@@ -1769,11 +1961,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
         loader = _mlx_local_dataset_loader_for_files(all_files)
         return load_dataset(loader, data_files = all_files, split = "train")
 
+    eval_dataset = None
     if hf_dataset:
-        load_kwargs = {"split": train_split, "token": hf_token}
-        if subset:
-            load_kwargs["name"] = subset
-        dataset = load_dataset(hf_dataset, **load_kwargs)
+        dataset, eval_dataset = _load_hf_train_and_eval_datasets(
+            config,
+            hf_token,
+            load_dataset,
+            lambda message: _send("status", status_message = message),
+        )
         dataset = _slice(dataset)
     elif config.get("local_datasets"):
         dataset = _load_local(config["local_datasets"])
@@ -1802,17 +1997,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         raise ValueError("No dataset specified")
 
     # Eval dataset (separate split or local file)
-    eval_dataset = None
-    if eval_split and hf_dataset:
-        eval_kwargs = {"split": eval_split, "token": hf_token}
-        if subset:
-            eval_kwargs["name"] = subset
-        try:
-            eval_dataset = load_dataset(hf_dataset, **eval_kwargs)
-        except Exception as e:
-            _send("status", status_message = f"Eval split load failed: {e}")
-            eval_dataset = None
-    elif config.get("local_eval_datasets"):
+    if not hf_dataset and config.get("local_eval_datasets"):
         eval_dataset = _load_local(config["local_eval_datasets"])
 
     # ── 3b. Format dataset (VLM or text) ──
@@ -2386,7 +2571,21 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
+    _verify_config_pins(config, event_queue)
+
     model_name = config["model_name"]
+
+    format_error = _untrainable_model_format_error(config)
+    if format_error:
+        event_queue.put(
+            {
+                "type": "error",
+                "error": format_error,
+                "stack": "",
+                "ts": time.time(),
+            }
+        )
+        return
 
     # ── 0. MLX FAST-PATH (must run before any torch/transformers imports) ──
     # Apple Silicon uses MLXTrainer directly -- skip torch imports / installs.
@@ -2452,81 +2651,14 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             model_name,
         )
 
-    # 1a. Malware gate: a poisoned pickle deserializes on load even with
-    # trust_remote_code False, so check HF's security scan (metadata-only) first.
-    # For a LoRA, gate the base whose weights deserialize.
-    from utils.security import evaluate_file_security
-
-    malware_targets = [model_name]
-    try:
-        from utils.models.model_config import get_base_model_from_lora_identifier
-
-        # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
-        _base = get_base_model_from_lora_identifier(model_name, config.get("hf_token") or None)
-        if _base:
-            malware_targets.append(_base)
-    except Exception as exc:
-        logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
-    from utils.security import security_load_subdirs
-
-    _ls_hf = config.get("hf_token") or None
-    for target in dict.fromkeys(malware_targets):
-        _fs = evaluate_file_security(
-            target, hf_token = _ls_hf, load_subdirs = security_load_subdirs(target, _ls_hf)
-        )
-        if _fs.blocked:
-            event_queue.put(
-                {
-                    "type": "error",
-                    "error": _fs.reason,
-                    "error_kind": "malware_blocked",
-                    "security": _fs.response_payload(),
-                    "ts": time.time(),
-                }
-            )
-            return
-
-    # 1a'. Consent gate: scan auto_map Python before it runs; refuse CRITICAL/HIGH
-    # unless pinned-approved.
-    if config.get("trust_remote_code", False):
-        from utils.security import evaluate_remote_code_consent_for_targets
-
-        # A LoRA adapter's base is where custom code runs, so gate it too.
-        consent_targets = [model_name]
-        try:
-            from utils.models.model_config import get_base_model_from_lora_identifier
-
-            # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
-            base_model = get_base_model_from_lora_identifier(
-                model_name, config.get("hf_token") or None
-            )
-            if base_model:
-                consent_targets.append(base_model)
-        except Exception as exc:
-            logger.debug("Could not resolve LoRA base for consent scan: %s", exc)
-        # Scan adapter + base as one combined unit, pinned by a single fingerprint.
-        _rc = evaluate_remote_code_consent_for_targets(
-            consent_targets,
-            hf_token = config.get("hf_token") or None,
-            trust_remote_code = True,
-            approved_fingerprint = config.get("approved_remote_code_fingerprint"),
-            subject = config.get("subject"),
-        )
-        if _rc.blocked:
-            event_queue.put(
-                {
-                    "type": "error",
-                    "error": (
-                        f"Model '{_rc.model_name}' ships custom code flagged as "
-                        f"{_rc.max_severity} by the security scan. Review it and "
-                        f"re-run with approval to proceed.\n\n{_rc.findings_summary}"
-                    ),
-                    "error_kind": "remote_code_blocked",
-                    "remote_code": _rc.response_payload(),
-                    "ts": time.time(),
-                }
-            )
-            return
+    security_error = _model_load_security_error(
+        config,
+        _resolve_cached_model_load_name(config),
+        config.get("hf_token") or None,
+    )
+    if security_error:
+        event_queue.put({"type": "error", **security_error, "ts": time.time()})
+        return
 
     # ── 1b. Install fast-path kernel libraries for the chosen model.
     # 1) causal-conv1d ALWAYS runs eagerly via the substring path: some SSM
@@ -3011,63 +3143,83 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     try:
         hf_token = config.get("hf_token", "")
         hf_token = hf_token if hf_token and hf_token.strip() else None
+        model_load_name = _resolve_cached_model_load_name(config)
+        model_local_only = _model_local_files_only(config)
+        dataset_local_only = _dataset_local_files_only(config)
+        from hub.utils.dataset_cache import is_cache_artifact_error
+
+        hf_dataset = config.get("hf_dataset", "")
+        training_type = config.get("training_type", "LoRA/QLoRA")
+        is_cpt_for_dataset = training_type == "Continued Pretraining"
+
+        def _load_training_dataset():
+            result = trainer.load_and_format_dataset(
+                dataset_source = hf_dataset if hf_dataset and hf_dataset.strip() else None,
+                format_type = config.get("format_type", ""),
+                local_datasets = config.get("local_datasets") or None,
+                local_eval_datasets = config.get("local_eval_datasets") or None,
+                custom_format_mapping = config.get("custom_format_mapping"),
+                subset = config.get("subset"),
+                train_split = config.get("train_split", "train"),
+                eval_split = config.get("eval_split"),
+                dataset_streaming = config.get("dataset_streaming", False),
+                eval_steps = config.get("eval_steps", 0.00),
+                dataset_slice_start = config.get("dataset_slice_start"),
+                dataset_slice_end = config.get("dataset_slice_end"),
+                is_cpt = is_cpt_for_dataset,
+                s3_config = config.get("s3_config"),
+                dataset_local_files_only = dataset_local_only,
+                dataset_local_path = config.get("dataset_snapshot_path"),
+            )
+            if isinstance(result, tuple):
+                loaded_dataset, loaded_eval_dataset = result
+            else:
+                loaded_dataset = result
+                loaded_eval_dataset = None
+            eval_steps_value = config.get("eval_steps", 0.00)
+            if eval_steps_value is not None and float(eval_steps_value) <= 0:
+                loaded_eval_dataset = None
+            return loaded_dataset, loaded_eval_dataset
 
         # ── 4a. Lightweight detection + tokenizer (no VRAM) ──
         _send_status(event_queue, "Detecting model type...")
-        trainer.pre_detect_and_load_tokenizer(
-            model_name = model_name,
-            max_seq_length = config["max_seq_length"],
-            hf_token = hf_token,
-            is_dataset_image = config.get("is_dataset_image", False),
-            is_dataset_audio = config.get("is_dataset_audio", False),
-            trust_remote_code = config.get("trust_remote_code", False),
-        )
+        try:
+            _pre_detect_training_model(
+                trainer,
+                config,
+                model_name,
+                hf_token,
+                model_load_name,
+                model_local_only,
+            )
+        except Exception as error:
+            if not model_local_only or not is_cache_artifact_error(error):
+                raise
+            security_error = _model_load_security_error(config, model_name, hf_token)
+            if security_error:
+                event_queue.put({"type": "error", **security_error, "ts": time.time()})
+                return
+            _send_status(
+                event_queue,
+                f"Cached files for {model_name} are incomplete; retrying from Hugging Face...",
+            )
+            model_load_name = _drop_model_pin(config)
+            model_local_only = False
+            _pre_detect_training_model(
+                trainer,
+                config,
+                model_name,
+                hf_token,
+                model_load_name,
+                model_local_only,
+            )
         if trainer.should_stop:
             event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             return
 
         # ── 4b. Load and format dataset (LLM helper may use VRAM briefly) ──
         _send_status(event_queue, "Loading and formatting dataset...")
-        hf_dataset = config.get("hf_dataset", "")
-        training_type = config.get("training_type", "LoRA/QLoRA")
-        _is_cpt_for_dataset = training_type == "Continued Pretraining"
-        dataset_result = trainer.load_and_format_dataset(
-            dataset_source = hf_dataset if hf_dataset and hf_dataset.strip() else None,
-            format_type = config.get("format_type", ""),
-            local_datasets = config.get("local_datasets") or None,
-            local_eval_datasets = config.get("local_eval_datasets") or None,
-            custom_format_mapping = config.get("custom_format_mapping"),
-            subset = config.get("subset"),
-            train_split = config.get("train_split", "train"),
-            eval_split = config.get("eval_split"),
-            dataset_streaming = config.get("dataset_streaming", False),
-            eval_steps = config.get("eval_steps", 0.00),
-            dataset_slice_start = config.get("dataset_slice_start"),
-            dataset_slice_end = config.get("dataset_slice_end"),
-            is_cpt = _is_cpt_for_dataset,
-            s3_config = config.get("s3_config"),
-        )
-
-        if isinstance(dataset_result, tuple):
-            dataset, eval_dataset = dataset_result
-        else:
-            dataset = dataset_result
-            eval_dataset = None
-
-        # Disable eval if eval_steps <= 0
-        eval_steps = config.get("eval_steps", 0.00)
-        if eval_steps is not None and float(eval_steps) <= 0:
-            eval_dataset = None
-
-        # Tell the parent eval is configured so the frontend shows
-        # "Waiting for first evaluation step..." instead of "not configured".
-        if eval_dataset is not None:
-            event_queue.put(
-                {
-                    "type": "eval_configured",
-                    "ts": time.time(),
-                }
-            )
+        dataset, eval_dataset = _load_training_dataset()
 
         if dataset is None or trainer.should_stop:
             if trainer.should_stop:
@@ -3147,7 +3299,60 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 is_dataset_audio = config.get("is_dataset_audio", False),
                 trust_remote_code = config.get("trust_remote_code", False),
                 gpu_ids = config.get("resolved_gpu_ids"),
+                model_load_name = model_load_name,
+                local_files_only = model_local_only,
             )
+            if (
+                not success
+                and model_local_only
+                and not trainer.should_stop
+                and is_cache_artifact_error(trainer.model_load_error)
+            ):
+                security_error = _model_load_security_error(config, model_name, hf_token)
+                if security_error:
+                    event_queue.put({"type": "error", **security_error, "ts": time.time()})
+                    return
+                _send_status(
+                    event_queue,
+                    f"Cached files for {model_name} are incomplete; retrying from Hugging Face...",
+                )
+                model_load_name = _drop_model_pin(config)
+                model_local_only = False
+                trainer.model = None
+                trainer.tokenizer = None
+                dataset = None
+                eval_dataset = None
+                gc.collect()
+                from utils.hardware import clear_gpu_cache
+
+                clear_gpu_cache()
+                _send_status(
+                    event_queue,
+                    "Reloading and formatting the dataset with the Hub tokenizer...",
+                )
+                dataset, eval_dataset = _reload_dataset_with_remote_model_tokenizer(
+                    trainer,
+                    config,
+                    model_name,
+                    hf_token,
+                    _load_training_dataset,
+                )
+                if dataset is None or trainer.should_stop:
+                    success = False
+                else:
+                    success = trainer.load_model(
+                        model_name = model_name,
+                        max_seq_length = config["max_seq_length"],
+                        load_in_4bit = _train_load_in_4bit,
+                        full_finetuning = not use_lora,
+                        hf_token = hf_token,
+                        is_dataset_image = config.get("is_dataset_image", False),
+                        is_dataset_audio = config.get("is_dataset_audio", False),
+                        trust_remote_code = config.get("trust_remote_code", False),
+                        gpu_ids = config.get("resolved_gpu_ids"),
+                        model_load_name = model_load_name,
+                        local_files_only = model_local_only,
+                    )
         finally:
             _load_watchdog_stop.set()
             event_queue.put({"type": "model_load_completed", "ts": time.time()})
@@ -3165,6 +3370,14 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     }
                 )
             return
+
+        if eval_dataset is not None:
+            event_queue.put(
+                {
+                    "type": "eval_configured",
+                    "ts": time.time(),
+                }
+            )
 
         # ── 4d. Prepare model (LoRA, full finetuning, or CPT) ──
         if is_cpt:
@@ -3468,6 +3681,8 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     import threading
 
     model_name = config["model_name"]
+    model_load_name = _resolve_cached_model_load_name(config)
+    model_local_only = _model_local_files_only(config)
     training_start_time = time.time()
 
     # ── 1. Import embedding-specific libraries ──
@@ -3534,80 +3749,39 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         training_type = config.get("training_type", "LoRA/QLoRA")
         use_lora = training_type == "LoRA/QLoRA"
 
-        # Malware gate (embedding): a poisoned pickle deserializes on load even with
-        # trust_remote_code False, so check HF's security scan (metadata-only) first.
-        # For a LoRA, gate the base whose weights deserialize.
-        from utils.security import evaluate_file_security
+        security_error = _model_load_security_error(config, model_load_name, hf_token)
+        if security_error:
+            event_queue.put({"type": "error", **security_error, "ts": time.time()})
+            return
 
-        malware_targets = [model_name]
         try:
-            from utils.models.model_config import get_base_model_from_lora_identifier
-            _base = get_base_model_from_lora_identifier(model_name, hf_token)
-            if _base:
-                malware_targets.append(_base)
-        except Exception as exc:
-            logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
-        from utils.security import security_load_subdirs
-
-        for target in dict.fromkeys(malware_targets):
-            _fs = evaluate_file_security(
-                target, hf_token = hf_token, load_subdirs = security_load_subdirs(target, hf_token)
+            model = FastSentenceTransformer.from_pretrained(
+                model_name = model_load_name,
+                max_seq_length = max_seq_length,
+                full_finetuning = not use_lora,
+                token = hf_token,
             )
-            if _fs.blocked:
-                event_queue.put(
-                    {
-                        "type": "error",
-                        "error": _fs.reason,
-                        "error_kind": "malware_blocked",
-                        "security": _fs.response_payload(),
-                        "ts": time.time(),
-                    }
-                )
+        except Exception as error:
+            from hub.utils.dataset_cache import is_cache_artifact_error
+
+            if not model_local_only or not is_cache_artifact_error(error):
+                raise
+            security_error = _model_load_security_error(config, model_name, hf_token)
+            if security_error:
+                event_queue.put({"type": "error", **security_error, "ts": time.time()})
                 return
-
-        # Consent gate (embedding): scan any auto_map code before it runs; block
-        # CRITICAL/HIGH unless pinned-approved. A no-op without auto_map.
-        if config.get("trust_remote_code", False):
-            from utils.security import evaluate_remote_code_consent_for_targets
-
-            consent_targets = [model_name]
-            try:
-                from utils.models.model_config import get_base_model_from_lora_identifier
-                _cbase = get_base_model_from_lora_identifier(model_name, hf_token)
-                if _cbase:
-                    consent_targets.append(_cbase)
-            except Exception as exc:
-                logger.debug("Could not resolve LoRA base for consent scan: %s", exc)
-            # Scan adapter + base as one combined unit, pinned by a single fingerprint.
-            _rc = evaluate_remote_code_consent_for_targets(
-                consent_targets,
-                hf_token = hf_token,
-                trust_remote_code = True,
-                approved_fingerprint = config.get("approved_remote_code_fingerprint"),
-                subject = config.get("subject"),
+            _send_status(
+                event_queue,
+                f"Cached files for {model_name} are incomplete; retrying from Hugging Face...",
             )
-            if _rc.blocked:
-                event_queue.put(
-                    {
-                        "type": "error",
-                        "error": (
-                            f"Model '{_rc.model_name}' ships custom code flagged as "
-                            f"{_rc.max_severity} by the security scan. Review it and "
-                            f"re-run with approval to proceed.\n\n{_rc.findings_summary}"
-                        ),
-                        "error_kind": "remote_code_blocked",
-                        "remote_code": _rc.response_payload(),
-                        "ts": time.time(),
-                    }
-                )
-                return
-
-        model = FastSentenceTransformer.from_pretrained(
-            model_name = model_name,
-            max_seq_length = max_seq_length,
-            full_finetuning = not use_lora,
-            token = hf_token,
-        )
+            model_load_name = _drop_model_pin(config)
+            model_local_only = False
+            model = FastSentenceTransformer.from_pretrained(
+                model_name = model_load_name,
+                max_seq_length = max_seq_length,
+                full_finetuning = not use_lora,
+                token = hf_token,
+            )
     except Exception as e:
         event_queue.put(
             {
@@ -3719,14 +3893,34 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             return load_dataset(loader, data_files = all_files, split = "train")
 
         if hf_dataset and hf_dataset.strip():
-            hf_token = config.get("hf_token", "")
-            hf_token = hf_token if hf_token and hf_token.strip() else None
-            dataset = load_dataset(
-                hf_dataset.strip(),
-                subset,
-                split = train_split,
-                token = hf_token,
-            )
+            dataset = None
+            if _dataset_local_files_only(config):
+                _send_status(event_queue, f"Loading cached dataset: {hf_dataset.strip()}")
+                try:
+                    dataset = _load_cached_dataset_for_config(
+                        config,
+                        train_split,
+                        config.get("hf_token") or None,
+                    )
+                except Exception as error:
+                    from hub.utils.dataset_cache import is_cache_artifact_error
+
+                    if not is_cache_artifact_error(error):
+                        raise
+                    _send_status(
+                        event_queue,
+                        "Cached dataset unavailable; downloading from the Hub...",
+                    )
+                    dataset = None
+            if dataset is None:
+                hf_token = config.get("hf_token", "")
+                hf_token = hf_token if hf_token and hf_token.strip() else None
+                dataset = load_dataset(
+                    hf_dataset.strip(),
+                    subset,
+                    split = train_split,
+                    token = hf_token,
+                )
         elif local_datasets:
             dataset = _load_local_embedding_dataset(local_datasets)
         elif config.get("s3_config"):

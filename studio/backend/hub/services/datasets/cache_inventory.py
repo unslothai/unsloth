@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -17,6 +16,7 @@ from hub.services import resolve_destructive_repo_ids
 from hub.services.datasets import downloads
 from hub.utils import download_manifest
 from hub.utils import inventory_scan as hf_cache_scan
+from hub.utils.dataset_cache import hf_datasets_cache_roots
 from hub.utils.hf_cache_state import (
     purge_partial_repo,
     purge_repo_cache_dirs,
@@ -134,38 +134,7 @@ def _scan_hub_dataset_cache_dirs() -> list[dict]:
 
 
 def _hf_datasets_cache_roots() -> list[Path]:
-    roots: list[Path] = []
-    seen: set[str] = set()
-
-    def _add(path: Optional[Path]) -> None:
-        if path is None or not path.is_dir():
-            return
-        try:
-            resolved = str(path.resolve())
-        except OSError:
-            return
-        if resolved in seen:
-            return
-        seen.add(resolved)
-        roots.append(path)
-
-    env_cache = os.environ.get("HF_DATASETS_CACHE")
-    if env_cache:
-        _add(Path(env_cache).expanduser())
-
-    try:
-        from datasets import config as datasets_config
-        _add(Path(datasets_config.HF_DATASETS_CACHE))
-    except Exception:
-        pass
-
-    hf_home = os.environ.get("HF_HOME")
-    if hf_home:
-        _add(Path(hf_home).expanduser() / "datasets")
-
-    xdg_cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")).expanduser()
-    _add(xdg_cache / "huggingface" / "datasets")
-    return roots
+    return hf_datasets_cache_roots()
 
 
 def _repo_id_from_datasets_cache_dir(name: str) -> str | None:
