@@ -4367,28 +4367,45 @@ _POST_CANCEL_DRAIN_TIMEOUT_S = 5.0
 
 
 async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) -> None:
-    """Stop the chats a confirmed sidecar swap interrupts, then let them unwind.
+    """Clear the way for a confirmed sidecar swap, then stop the chats it interrupts.
 
     The installer gates on the middleware's in-flight count, not on
-    active_generations, so cancelling is not enough on its own: a cancelled
-    stream is still counted until its response finishes. Wait for that, then let
-    the caller's own recheck decide.
+    active_generations, so it also sees requests the cancel cannot stop. Drain
+    those FIRST, discounting the registered chats (they are what the cancel is
+    for, so waiting on them would wait out the point of the force). Only then
+    cancel, and let the survivors unwind. Cancelling first meant an unrelated
+    counted request -- a /v1/messages/count_tokens, say -- was still there for
+    the caller's recheck, which then refused an install that had already stopped
+    every chat for nothing.
 
-    Bounded like every other post-cancel drain: the request being unwound may
-    never observe its cancel event, and this holds the lifecycle gate and the
-    sidecar reservation inside ``asyncio.shield``, so an unbounded wait would
-    wedge the process. Expiry differs from the swap drains only in what follows
-    it -- the caller's recheck raises the same 409 as an unconfirmed install
-    rather than proceeding, because the install still can and should be refused.
+    Bounded on both halves: the requests being waited on may never observe a
+    cancel, and this holds the lifecycle gate and the sidecar reservation inside
+    ``asyncio.shield``, so an unbounded wait would wedge the process. Expiring in
+    the first half returns without cancelling, so the caller's recheck refuses
+    with the chats untouched.
     """
     from core.inference.llama_keepwarm import other_inference_request_count
 
+    budget = _POST_CANCEL_DRAIN_TIMEOUT_S if timeout_s is None else timeout_s
+
+    async def _drain(deadline: float, *, discount_registered: bool) -> bool:
+        while True:
+            counted = other_inference_request_count(
+                current_request_counted = False, include_pending = False
+            )
+            if discount_registered:
+                counted -= min(counted, active_generations.count())
+            if counted <= 0:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.02)
+
+    # Half the budget each, so the total wait under the gate is unchanged.
+    if not await _drain(time.monotonic() + budget / 2, discount_registered = True):
+        return
     _raise_or_cancel_active_generations(force = True, action = "Installing a new transformers version")
-    deadline = time.monotonic() + (_POST_CANCEL_DRAIN_TIMEOUT_S if timeout_s is None else timeout_s)
-    while other_inference_request_count(current_request_counted = False, include_pending = False) > 0:
-        if time.monotonic() >= deadline:
-            return
-        await asyncio.sleep(0.02)
+    await _drain(time.monotonic() + budget / 2, discount_registered = False)
 
 
 _UNRESOLVED_BACKEND_STATE = object()
@@ -6187,7 +6204,7 @@ async def generate_stream(
                     # Watcher set cancel_event between chunks. Reset here: closing
                     # the generator does not signal a subprocess backend, so it would
                     # keep decoding. The finally's reset is guarded, so no double-run.
-                    backend.reset_generation_state()
+                    backend.reset_generation_state(cancel_event)
                     break
                 chunk = await asyncio.to_thread(next, gen, _DONE)
                 if chunk is _DONE:
@@ -6203,11 +6220,11 @@ async def generate_stream(
 
         except asyncio.CancelledError:
             cancel_event.set()
-            backend.reset_generation_state()
+            backend.reset_generation_state(cancel_event)
             raise
         except Exception as e:
             cancel_event.set()
-            backend.reset_generation_state()
+            backend.reset_generation_state(cancel_event)
             logger.error(f"Error during generation: {e}", exc_info = True)
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
             yield "data: [DONE]\n\n"
@@ -6217,7 +6234,7 @@ async def generate_stream(
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                 if not completed and not cancel_event.is_set():
                     cancel_event.set()
-                    backend.reset_generation_state()
+                    backend.reset_generation_state(cancel_event)
                 if gen is not None:
                     try:
                         await asyncio.to_thread(gen.close)
@@ -10124,11 +10141,11 @@ async def openai_chat_completions(
 
                 while True:
                     if cancel_event.is_set():
-                        backend.reset_generation_state()
+                        backend.reset_generation_state(cancel_event)
                         break
                     if await request.is_disconnected():
                         cancel_event.set()
-                        backend.reset_generation_state()
+                        backend.reset_generation_state(cancel_event)
                         api_monitor.finish(monitor_id, "cancelled")
                         return
 
@@ -10151,7 +10168,7 @@ async def openai_chat_completions(
                     if event is _sf_tool_sentinel:
                         break
                     if isinstance(event, GenStreamError):
-                        backend.reset_generation_state()
+                        backend.reset_generation_state(cancel_event)
                         _msg = _friendly_gen_stream_error(event)
                         api_monitor.fail(monitor_id, _msg)
                         yield _openai_stream_error_sse(
@@ -10246,16 +10263,16 @@ async def openai_chat_completions(
 
             except asyncio.CancelledError:
                 cancel_event.set()
-                backend.reset_generation_state()
+                backend.reset_generation_state(cancel_event)
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
             except GenStreamErrorRaised as exc:
-                backend.reset_generation_state()
+                backend.reset_generation_state(cancel_event)
                 _msg = _friendly_gen_stream_error(exc)
                 api_monitor.fail(monitor_id, _msg)
                 yield _openai_stream_error_sse({"error": {"message": _msg, "type": "server_error"}})
             except Exception:
-                backend.reset_generation_state()
+                backend.reset_generation_state(cancel_event)
                 # Generic wire message; full trace stays in the log (CWE-209:
                 # transformers/torch errors may leak paths).
                 logger.exception("safetensors tool stream error")
@@ -10349,20 +10366,20 @@ async def openai_chat_completions(
             return _model_json_response(response)
         except asyncio.CancelledError:
             cancel_event.set()
-            backend.reset_generation_state()
+            backend.reset_generation_state(cancel_event)
             api_monitor.finish(monitor_id, "cancelled")
             raise
         except GenStreamErrorRaised as exc:
-            backend.reset_generation_state()
+            backend.reset_generation_state(cancel_event)
             _msg = _friendly_gen_stream_error(exc)
             api_monitor.fail(monitor_id, _msg)
             raise HTTPException(status_code = 500, detail = _msg)
         except HTTPException as exc:
-            backend.reset_generation_state()
+            backend.reset_generation_state(cancel_event)
             api_monitor.fail(monitor_id, str(exc.detail))
             raise
         except Exception:
-            backend.reset_generation_state()
+            backend.reset_generation_state(cancel_event)
             # CWE-209: generic detail; full trace in log.
             logger.exception("safetensors tool completion error")
             api_monitor.fail(monitor_id, "An internal error occurred.")
@@ -10514,7 +10531,7 @@ async def openai_chat_completions(
                 gen = generate()
                 while True:
                     if cancel_event.is_set():
-                        backend.reset_generation_state()
+                        backend.reset_generation_state(cancel_event)
                         break
                     # Stall keepalive (see safetensors tool stream) each window while
                     # next(gen) runs in a worker. next(gen, _DONE) returns _DONE rather
@@ -10534,7 +10551,7 @@ async def openai_chat_completions(
                     if cumulative is _DONE:
                         break
                     if isinstance(cumulative, GenStreamError):
-                        backend.reset_generation_state()
+                        backend.reset_generation_state(cancel_event)
                         _msg = _friendly_gen_stream_error(cumulative)
                         api_monitor.fail(monitor_id, _msg)
                         yield _openai_stream_error_sse(
@@ -10543,7 +10560,7 @@ async def openai_chat_completions(
                         return
                     if await request.is_disconnected():
                         cancel_event.set()
-                        backend.reset_generation_state()
+                        backend.reset_generation_state(cancel_event)
                         api_monitor.finish(monitor_id, "cancelled")
                         return
                     new_text = cumulative[len(prev_text) :]
@@ -10644,18 +10661,18 @@ async def openai_chat_completions(
 
             except asyncio.CancelledError:
                 cancel_event.set()
-                backend.reset_generation_state()
+                backend.reset_generation_state(cancel_event)
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
             except GenStreamErrorRaised as exc:
                 # Adapter-controlled (compare-mode) backend failure. Honor the
                 # public flag so operational errors surface their real message.
-                backend.reset_generation_state()
+                backend.reset_generation_state(cancel_event)
                 _msg = _friendly_gen_stream_error(exc)
                 api_monitor.fail(monitor_id, _msg)
                 yield _openai_stream_error_sse({"error": {"message": _msg, "type": "server_error"}})
             except Exception as e:
-                backend.reset_generation_state()
+                backend.reset_generation_state(cancel_event)
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info = True)
                 _msg = _friendly_error(e)
                 api_monitor.fail(monitor_id, _msg)
@@ -10705,7 +10722,7 @@ async def openai_chat_completions(
             full_text = ""
             for token in generate():
                 if isinstance(token, GenStreamError):
-                    backend.reset_generation_state()
+                    backend.reset_generation_state(cancel_event)
                     _msg = _friendly_gen_stream_error(token)
                     api_monitor.fail(monitor_id, _msg)
                     raise HTTPException(status_code = 500, detail = _msg)
@@ -10812,12 +10829,12 @@ async def openai_chat_completions(
         except GenStreamErrorRaised as exc:
             # Adapter-controlled (compare-mode) backend failure. Honor the public
             # flag so operational errors surface their real message.
-            backend.reset_generation_state()
+            backend.reset_generation_state(cancel_event)
             _msg = _friendly_gen_stream_error(exc)
             api_monitor.fail(monitor_id, _msg)
             raise HTTPException(status_code = 500, detail = _msg)
         except Exception as e:
-            backend.reset_generation_state()
+            backend.reset_generation_state(cancel_event)
             logger.error(f"Error during OpenAI completion: {e}", exc_info = True)
             api_monitor.fail(monitor_id, _friendly_error(e))
             raise HTTPException(status_code = 500, detail = safe_error_detail(e))

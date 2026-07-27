@@ -689,7 +689,7 @@ def test_generate_stream_cancels_backend_on_stream_cancelled_error():
             body_src = "\n".join(ast.unparse(stmt) for stmt in sub.body)
             found_cancel_handler = (
                 "cancel_event.set()" in body_src
-                and "backend.reset_generation_state()" in body_src
+                and "backend.reset_generation_state(cancel_event)" in body_src
                 and any(isinstance(stmt, ast.Raise) and stmt.exc is None for stmt in sub.body)
             )
         if isinstance(sub, ast.Try) and sub.finalbody:
@@ -700,7 +700,7 @@ def test_generate_stream_cancels_backend_on_stream_cancelled_error():
                 "not completed" in final_src
                 and "not cancel_event.is_set()" in final_src
                 and "cancel_event.set()" in final_src
-                and "backend.reset_generation_state()" in final_src
+                and "backend.reset_generation_state(cancel_event)" in final_src
                 and _awaits_to_thread_gen_close(sub)
             )
 
@@ -748,11 +748,11 @@ def test_stream_chunks_cancel_branch_resets_backend_state():
         ):
             continue
         body_src = "\n".join(ast.unparse(s) for s in sub.body)
-        if "backend.reset_generation_state()" in body_src:
+        if "backend.reset_generation_state(cancel_event)" in body_src:
             return
     raise AssertionError(
         "stream_chunks `if cancel_event.is_set():` branch must call "
-        "backend.reset_generation_state() -- matches the existing "
+        "backend.reset_generation_state(cancel_event) -- matches the existing "
         "request.is_disconnected() / CancelledError cleanup paths and "
         "prevents KV-cache drift after cancel-via-POST"
     )

@@ -6370,7 +6370,7 @@ class TestApiMonitorSafetensorsUsage:
                     }
                     yield "safe reply"
 
-                def reset_generation_state(self):
+                def reset_generation_state(self, caller_cancel_event = None):
                     pass
 
             monitor = ApiMonitor(max_entries = 3)
@@ -6441,7 +6441,7 @@ class TestApiMonitorSafetensorsUsage:
                     cancel_event.set()
                     yield {"type": "content", "text": "ignored"}
 
-                def reset_generation_state(self):
+                def reset_generation_state(self, caller_cancel_event = None):
                     pass
 
             monitor = ApiMonitor(max_entries = 3)
@@ -6502,7 +6502,7 @@ class TestApiMonitorSafetensorsUsage:
                 def generate_chat_completion_with_tools(self, **_kwargs):
                     yield {"type": "content", "text": "unused"}
 
-                def reset_generation_state(self):
+                def reset_generation_state(self, caller_cancel_event = None):
                     nonlocal reset_called
                     reset_called = True
 

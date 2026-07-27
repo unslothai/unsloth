@@ -1367,7 +1367,7 @@ def test_legacy_generate_stream_is_visible_to_the_swap_gate(monkeypatch):
         active_model_name = "org/M",
         models = {"org/M": {}},
         generate_chat_response = lambda **kw: _fake_generate_chat_response(**kw),
-        reset_generation_state = lambda: None,
+        reset_generation_state = lambda *a: None,
         resize_image = lambda img: img,
     )
     monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: backend)
@@ -1880,7 +1880,7 @@ def test_standard_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
             seen["reached_the_decode"] = cancel_event is not None and cancel_event.is_set()
             yield "33"
 
-        def reset_generation_state(self):
+        def reset_generation_state(self, caller_cancel_event = None):
             pass
 
     _standard_chat_stubs(monkeypatch, _StandardBackend())
@@ -1922,7 +1922,7 @@ def test_standard_non_stream_chat_unregisters_when_it_fails(monkeypatch):
             raise RuntimeError("decode exploded")
             yield  # pragma: no cover - generator marker
 
-        def reset_generation_state(self):
+        def reset_generation_state(self, caller_cancel_event = None):
             pass
 
     _standard_chat_stubs(monkeypatch, _BrokenBackend())
@@ -1966,7 +1966,7 @@ def test_audio_input_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
             seen["reached_the_decode"] = cancel_event is not None and cancel_event.is_set()
             yield "33"
 
-        def reset_generation_state(self):
+        def reset_generation_state(self, caller_cancel_event = None):
             pass
 
     _standard_chat_stubs(monkeypatch, _AudioInputBackend())
@@ -2387,6 +2387,52 @@ def test_a_confirmed_install_that_cannot_drain_refuses_instead_of_swapping(monke
     assert calls["installed"] == []
 
 
+
+def test_confirmed_install_does_not_spend_its_cancel_on_an_install_that_will_refuse(monkeypatch):
+    # An unrelated middleware-counted request that active_generations cannot stop
+    # (a long count_tokens) must be waited out BEFORE the cancel, not after: the
+    # recheck refuses while it is there, so cancelling first stopped every chat
+    # for an install that then failed anyway.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from models.inference import InstallLatestTransformersRequest
+
+    ev = threading.Event()
+    inf_mod, calls = _stub_install_route(monkeypatch, in_flight_events = [ev])
+
+    import core.inference.llama_keepwarm as keepwarm
+
+    def _never_drains(current_request_counted = True, *, include_pending = True):
+        # The streaming chat (counted AND registered) plus one request that is
+        # counted only and never finishes. Discounting the registered chat still
+        # leaves the stranger, so the first drain must not clear.
+        return 2
+
+    monkeypatch.setattr(keepwarm, "other_inference_request_count", _never_drains)
+    monkeypatch.setattr(inf_mod, "_POST_CANCEL_DRAIN_TIMEOUT_S", 0.05)
+
+    async def _install():
+        return await asyncio.wait_for(
+            inf_mod.install_latest_transformers_route(
+                InstallLatestTransformersRequest(version = "5.0.0", force_cancel_active = True),
+                "tester",
+            ),
+            timeout = 5,
+        )
+
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(_install())
+        # The refusal is the same as before; what changed is that the chat lives.
+        assert not ev.is_set()
+        assert active_generations.count() == 1
+
+    assert exc.value.status_code == 409
+    assert calls["installed"] == []
+
 # ── draining before teardown ──────────────────────────────────────────
 
 
@@ -2461,3 +2507,55 @@ def test_drain_returns_as_soon_as_the_cancelled_requests_unwind(monkeypatch):
     # drain returns immediately instead of sitting out the rest of the timeout.
     polls = _drain_with_counts(monkeypatch, [2, 1, 0], timeout_s = 30)
     assert polls == 3
+
+
+# ── queued chats must not cancel the running one ──────────────────────
+
+
+def _orchestrator_for_ownership():
+    """A real InferenceOrchestrator with just enough stubbed to drive the lock."""
+    _route_gate()  # skips when the inference stack is unavailable
+    orch_mod = pytest.importorskip(
+        "core.inference.orchestrator", reason = "inference stack not installed"
+    )
+    orch = orch_mod.InferenceOrchestrator.__new__(orch_mod.InferenceOrchestrator)
+    orch._gen_lock = threading.Lock()
+    orch._active_cancel_event = None
+    orch._cancel_event = threading.Event()
+    orch._ensure_subprocess_alive = lambda: False  # stop before _send_cmd
+    return orch
+
+
+def test_a_queued_chat_cannot_reset_the_chat_that_is_generating():
+    # Safetensors generation is serialized on _gen_lock, and the worker has ONE
+    # cancel event. Chat B, still queued, was stopped and its handler called
+    # reset_generation_state(), which set that shared event and killed chat A --
+    # the conversation actually running. Passing the request's own event makes
+    # the reset a no-op for anyone who is not the current holder.
+    orch = _orchestrator_for_ownership()
+    a_event = threading.Event()
+    b_event = threading.Event()
+
+    orch._active_cancel_event = a_event  # A holds the lock and is generating
+    orch.reset_generation_state(b_event)  # B is queued and gets stopped
+    assert not orch._cancel_event.is_set()
+
+    orch.reset_generation_state(a_event)  # A's own Stop still works
+    assert orch._cancel_event.is_set()
+
+
+def test_a_global_reset_still_cancels_whatever_is_running():
+    # Unload and model switch pass nothing: they mean "stop everything", and
+    # scoping them would leave a generation alive across a teardown.
+    orch = _orchestrator_for_ownership()
+    orch._active_cancel_event = threading.Event()
+    orch.reset_generation_state()
+    assert orch._cancel_event.is_set()
+
+
+def test_a_reset_with_no_generation_running_is_not_dropped():
+    # Nothing holds the lock, so there is no other chat to protect: an error
+    # path that resets before any generation started must still reset.
+    orch = _orchestrator_for_ownership()
+    orch.reset_generation_state(threading.Event())
+    assert orch._cancel_event.is_set()

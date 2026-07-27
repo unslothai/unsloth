@@ -104,6 +104,10 @@ class InferenceOrchestrator:
         # so a generate queued behind the cancelled one is skipped, not run.
         self._drain_event: Any = None
         self._gen_lock = threading.Lock()  # Serializes generation
+        # Cancel event of the request currently holding _gen_lock. Lets a Stop
+        # identify whether it owns the running generation or is merely queued
+        # behind it, since the worker's own cancel event is shared by all.
+        self._active_cancel_event: Any = None
         # Set during a switch so a generation winning the _gen_lock handoff bails
         # instead of starting on the outgoing model.
         self._unload_pending = False
@@ -1605,16 +1609,39 @@ class InferenceOrchestrator:
                 yield GenStreamError(f"Error: {exc}")
                 return
 
-            yield from self._consume_token_stream(
-                self._read_resp,
-                lambda: self._drain_until_gen_done(timeout = 5.0),
-                crash_context = "generation",
-                cancel_event = cancel_event,
-                stats_holder = stats_holder,
-            )
+            # Claim the worker for this request, so a Stop on some OTHER chat --
+            # one still queued on the lock above, which has generated nothing --
+            # cannot reset the generation running here. Released in the finally
+            # so the next lock holder can claim it.
+            self._active_cancel_event = cancel_event
+            try:
+                yield from self._consume_token_stream(
+                    self._read_resp,
+                    lambda: self._drain_until_gen_done(timeout = 5.0),
+                    crash_context = "generation",
+                    cancel_event = cancel_event,
+                    stats_holder = stats_holder,
+                )
+            finally:
+                if self._active_cancel_event is cancel_event:
+                    self._active_cancel_event = None
 
-    def reset_generation_state(self):
-        """Cancel any ongoing generation and reset state."""
+    def reset_generation_state(self, caller_cancel_event = None):
+        """Cancel any ongoing generation and reset state.
+
+        ``caller_cancel_event`` scopes the reset to one request. The worker has a
+        single cancel event and generation is serialized on _gen_lock, so a chat
+        that is still queued has no generation of its own to reset: calling this
+        from its Stop handler would kill whichever chat currently holds the lock.
+        Pass the request's own event and the reset is dropped unless that request
+        is the one running. Omit it for genuinely global resets (unload, switch).
+        """
+        if (
+            caller_cancel_event is not None
+            and self._active_cancel_event is not None
+            and self._active_cancel_event is not caller_cancel_event
+        ):
+            return
         self._cancel_generation()
         if not self._ensure_subprocess_alive():
             return
