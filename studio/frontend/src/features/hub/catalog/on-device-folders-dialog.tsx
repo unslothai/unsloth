@@ -152,28 +152,26 @@ export function OnDeviceFoldersDialog({
     onInventoryChange?.();
   }, [onInventoryChange]);
 
-  // Relocating the cache changes which repos are on disk, so re-read the
-  // inventory even though no scan folder was touched.
-  const saveDownloadLocation = useCallback(
-    async (nextPath: string | null) => {
-      setDownloadSaving(true);
-      try {
-        const settings = await updateHuggingFaceCacheSettings(nextPath);
-        setDownloadCache(settings);
-        toast.success("Download location updated", {
-          description: settings.cacheHome,
-        });
-        onInventoryChange?.();
-      } catch (err) {
-        toast.error("Couldn't update the download location", {
-          description: formatError(err),
-        });
-      } finally {
-        setDownloadSaving(false);
-      }
-    },
-    [onInventoryChange],
-  );
+  // Relocating the cache changes which repos are on disk, but
+  // updateHuggingFaceCacheSettings already bumps the inventory version, which
+  // re-fetches every source. Refreshing here too would scan twice, since the
+  // two rounds carry different version keys and cannot be deduplicated.
+  const saveDownloadLocation = useCallback(async (nextPath: string | null) => {
+    setDownloadSaving(true);
+    try {
+      const settings = await updateHuggingFaceCacheSettings(nextPath);
+      setDownloadCache(settings);
+      toast.success("Download location updated", {
+        description: settings.cacheHome,
+      });
+    } catch (err) {
+      toast.error("Couldn't update the download location", {
+        description: formatError(err),
+      });
+    } finally {
+      setDownloadSaving(false);
+    }
+  }, []);
 
   const changeDownloadLocation = useCallback(async () => {
     if (!isTauri) {
