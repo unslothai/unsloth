@@ -932,14 +932,29 @@ def test_pending_gguf_scans_gate_safetensors_candidates():
     assert "if (isModelKindEntry(candidate) && pendingJobs > 0) {" in auto_load
 
 
-def test_final_attempt_waits_for_pending_scans():
+def test_only_first_attempt_leapfrogs_pending_scans():
     """Fast-resolving candidates whose loads fail must not exhaust the attempt
-    cap while pending scans can still yield a smaller loadable quant: the
-    final attempt is only spent once resolution has settled and the global
-    order is complete."""
+    cap while pending scans can still yield smaller loadable quants: only the
+    first (latency-critical) attempt may run ahead of pending scans; once any
+    budget is spent, the remaining attempts wait for the settled global
+    smallest-first order."""
     src = _read("features/chat/api/chat-adapter.ts")
     auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
-    assert "if (pendingJobs > 0 && loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS - 1) {" in auto_load
+    assert "if (pendingJobs > 0 && loadAttempts > 0) {" in auto_load
+
+
+def test_hidden_matcher_fetch_never_blocks_send_unbounded():
+    """ensureHiddenModelMatchers has no timeout of its own (unlike the
+    30s-bounded inventory calls), so the send path must not await it serially:
+    it runs alongside inventory discovery and is only awaited through a short
+    grace, after which the static needles filter alone."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
+    assert "await ensureHiddenModelMatchers()" not in auto_load
+    assert "const hiddenMatchersReady = ensureHiddenModelMatchers().catch(" in auto_load
+    assert "const HIDDEN_MATCHERS_GRACE_MS" in src
+    assert "setTimeout(resolve, HIDDEN_MATCHERS_GRACE_MS)" in auto_load
+    assert "clearTimeout(matcherTimer)" in auto_load
 
 
 def test_resolution_workers_stop_on_terminal_result():

@@ -1595,6 +1595,12 @@ function normalizeLoadTargetKey(value: string): string {
 // indexed folders can saturate the connection pool and disk.
 const AUTO_LOAD_VARIANT_SCAN_CONCURRENCY = 4;
 
+// How long after the bounded inventory calls resolve the best-effort
+// hidden-model matcher fetch may still be waited on. It usually settles
+// while the inventory requests run; past this bound the static needles
+// filter alone rather than letting an unbounded request stall Send.
+const HIDDEN_MATCHERS_GRACE_MS = 1_000;
+
 // Settle window before the fallback starts consuming resolved candidates:
 // when scans finish quickly (the common case) the pool is complete first and
 // keeps the exact smallest-first order; slow scans stop blocking the send
@@ -2019,13 +2025,25 @@ export async function autoLoadOnDeviceModel(): Promise<{
   let allLocalRows: LocalModelInfo[];
   try {
     // Dynamic hidden-model matchers are best-effort; the static needles
-    // still filter the built-in infra models when the fetch fails.
-    await ensureHiddenModelMatchers().catch(() => undefined);
+    // still filter the built-in infra models when the fetch fails. The
+    // fetch has no timeout of its own, so it runs alongside the
+    // (30s-bounded) inventory calls and is only awaited through a short
+    // grace afterwards: a stalled matcher request must not hang Send.
+    const hiddenMatchersReady = ensureHiddenModelMatchers().catch(
+      () => undefined,
+    );
     const [cachedGguf, cachedModels, localList] = await Promise.all([
       listCachedGguf(hfToken),
       listCachedModels(hfToken),
       listLocalModels(),
     ]);
+    await new Promise<void>((resolve) => {
+      const matcherTimer = setTimeout(resolve, HIDDEN_MATCHERS_GRACE_MS);
+      hiddenMatchersReady.then(() => {
+        clearTimeout(matcherTimer);
+        resolve();
+      });
+    });
     allGgufRepos = cachedGguf;
     allModelRepos = cachedModels;
     allLocalRows = localList.models;
@@ -2453,11 +2471,13 @@ export async function autoLoadOnDeviceModel(): Promise<{
           await nextProgress();
           continue;
         }
-        // The final attempt is precious: while scans are still pending, a
-        // smaller candidate can still enter the pool, so the last slot is
-        // not spent until resolution settles and the global order is
-        // complete. Earlier attempts keep flowing incrementally.
-        if (pendingJobs > 0 && loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS - 1) {
+        // Only the first attempt may leapfrog pending scans: it is the
+        // latency-critical one and it almost always succeeds. Once any
+        // budget has been spent, consumption waits for resolution to
+        // settle, so the remaining attempts follow the complete global
+        // smallest-first order instead of exhausting the cap on larger
+        // candidates while smaller ones are still resolving.
+        if (pendingJobs > 0 && loadAttempts > 0) {
           await nextProgress();
           continue;
         }
