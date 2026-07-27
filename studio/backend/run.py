@@ -111,13 +111,26 @@ from startup_banner import print_studio_access_banner, print_studio_stop_hint
 
 logger = get_logger(__name__)
 
+DISABLE_PUBLIC_CHECK_ENV = "UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK"
+
+
+def public_check_disabled() -> bool:
+    """True when the operator has turned off the third-party startup lookups.
+
+    On a wildcard bind Unsloth asks ifconfig.me for the public IP and check-host.net
+    whether the port is reachable. Both are useful for sharing a Studio but both tell
+    an outside service this machine is running one, which lab and privacy-sensitive
+    deployments do not want (#7307 Problem 8). Set the var to opt out.
+    """
+    return os.environ.get(DISABLE_PUBLIC_CHECK_ENV, "").strip().lower() in {"1", "true", "yes"}
+
 
 def _resolve_external_ip() -> str:
     """Resolve the machine's external IP address.
 
     Tries, in order:
     1. GCE metadata server (instant on Google Cloud VMs)
-    2. ifconfig.me (anywhere with internet)
+    2. ifconfig.me (anywhere with internet, skipped by UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK)
     3. LAN IP via UDP socket trick (fallback)
     """
     import urllib.request
@@ -136,14 +149,15 @@ def _resolve_external_ip() -> str:
     except Exception:
         pass
 
-    # 2. Public IP service.
-    try:
-        with urllib.request.urlopen("https://ifconfig.me", timeout = 3) as resp:
-            ip = resp.read().decode().strip()
-            if ip:
-                return ip
-    except Exception:
-        pass
+    # 2. Public IP service. Third-party, so skippable; the LAN address below still works.
+    if not public_check_disabled():
+        try:
+            with urllib.request.urlopen("https://ifconfig.me", timeout = 3) as resp:
+                ip = resp.read().decode().strip()
+                if ip:
+                    return ip
+        except Exception:
+            pass
 
     # 3. Fallback: LAN IP via UDP socket trick
     try:
@@ -304,7 +318,8 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
     """Probe check-host.net to confirm display_host:port is reachable from the
     public internet. Synchronous so output lands between the banner URLs and the
     stop hint. Bounded at ~15s; failures swallowed (verifier failing != Unsloth
-    failing). Only meaningful for a wildcard bind."""
+    failing). Only meaningful for a wildcard bind, and skipped entirely by
+    UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK."""
     global _public_reachable
     # Reset to "unknown" each run; set True/False only when the probe decides.
     _public_reachable = None
@@ -343,6 +358,11 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
     except ValueError:
         # Not an IP literal; probe by hostname.
         pass
+
+    # The probe hands display_host:port to a third party and asks it to connect.
+    if public_check_disabled():
+        logger.debug("Skipping the check-host.net probe (%s).", DISABLE_PUBLIC_CHECK_ENV)
+        return
 
     try:
         qs = urllib.parse.urlencode({"host": f"{display_host}:{port}", "max_nodes": 3})

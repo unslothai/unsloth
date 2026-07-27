@@ -123,7 +123,7 @@ def test_ensure_default_admin_does_not_recreate_bootstrap_for_existing_admin():
 
 def test_ensure_default_admin_loads_existing_bootstrap_after_restart(monkeypatch):
     created = storage.ensure_default_admin()
-    bootstrap_pw = storage._BOOTSTRAP_PW_PATH.read_text().strip()
+    bootstrap_pw = storage._BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8").strip()
 
     monkeypatch.setattr(storage, "_bootstrap_password", None)
     created_again = storage.ensure_default_admin()
@@ -136,12 +136,12 @@ def test_ensure_default_admin_loads_existing_bootstrap_after_restart(monkeypatch
 
 def test_ensure_default_admin_does_not_generate_for_empty_existing_bootstrap():
     seed_user()
-    storage._BOOTSTRAP_PW_PATH.write_text(" \n")
+    storage._BOOTSTRAP_PW_PATH.write_text(" \n", encoding = "utf-8")
 
     created = storage.ensure_default_admin()
 
     assert created is False
-    assert storage._BOOTSTRAP_PW_PATH.read_text() == " \n"
+    assert storage._BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8") == " \n"
     assert storage.get_bootstrap_password() is None
 
 
@@ -436,6 +436,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
         "models_router": APIRouter(),
         "providers_router": APIRouter(),
         "rag_router": APIRouter(),
+        "research_runs_router": APIRouter(),
         "settings_router": settings_module.router,
         "training_history_router": APIRouter(),
         "training_router": APIRouter(),
@@ -649,7 +650,7 @@ def test_desktop_auth_provision_has_bounded_timeout():
     rs_path = (
         Path(__file__).resolve().parents[3] / "studio" / "src-tauri" / "src" / "desktop_auth.rs"
     )
-    src = rs_path.read_text()
+    src = rs_path.read_text(encoding = "utf-8")
     start = src.index("async fn provision_desktop_auth(")
     depth = 0
     body_start = src.index("{", start)
