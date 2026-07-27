@@ -2782,6 +2782,10 @@ exit 0
     }
 }
 
+# $null so a value left by an earlier run in the same session never reaches the finally
+# below: under `irm | iex` the script scope IS the caller's session. Twin of install.sh's
+# `_UNSLOTH_TORCH_OVERRIDES=""` ahead of its traps -- only a path this run created is removed.
+$script:TorchOverridesFile = $null
 try {
     Install-UnslothStudio @args
 } finally {
@@ -2789,4 +2793,12 @@ try {
     # session outlives the installer, so a terminating exception that bypasses the in-flow
     # clears must not leave an abandoned exact pin for a later `studio setup` / `update`.
     Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
+    # Same for the generated uv overrides temp file (twin of install.sh's
+    # _cleanup_install_temporaries): it copies the caller's inherited UV_OVERRIDE contents, so a
+    # terminating error between its creation and the in-flow removal would leave those
+    # requirements sitting in %TEMP%. Only paths this script created are ever set here.
+    if ($script:TorchOverridesFile) {
+        Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
+        $script:TorchOverridesFile = $null
+    }
 }
