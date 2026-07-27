@@ -1175,6 +1175,7 @@ def _has_usable_nvidia_gpu() -> bool:
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
     if cvd is not None and cvd.strip() in ("", "-1"):
         return False
+
     def _lists_a_gpu(exe: str) -> bool:
         try:
             result = subprocess.run(
@@ -1200,19 +1201,21 @@ def _has_usable_nvidia_gpu() -> bool:
     if _path_exe:
         candidates.append(_path_exe)
     if IS_WINDOWS:
-        candidates.extend((
-            os.path.join(
-                os.environ.get("ProgramFiles", r"C:\Program Files"),
-                "NVIDIA Corporation",
-                "NVSMI",
-                "nvidia-smi.exe",
-            ),
-            os.path.join(
-                os.environ.get("SystemRoot", r"C:\Windows"),
-                "System32",
-                "nvidia-smi.exe",
-            ),
-        ))
+        candidates.extend(
+            (
+                os.path.join(
+                    os.environ.get("ProgramFiles", r"C:\Program Files"),
+                    "NVIDIA Corporation",
+                    "NVSMI",
+                    "nvidia-smi.exe",
+                ),
+                os.path.join(
+                    os.environ.get("SystemRoot", r"C:\Windows"),
+                    "System32",
+                    "nvidia-smi.exe",
+                ),
+            )
+        )
     for _candidate in candidates:
         if _candidate != _path_exe and not os.path.isfile(_candidate):
             continue
