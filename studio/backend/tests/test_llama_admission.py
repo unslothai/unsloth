@@ -418,3 +418,33 @@ def test_unpark_gives_up_when_the_caller_is_cancelled():
         await asyncio.wait_for(waiting, timeout = 2)
 
     asyncio.run(scenario())
+
+
+def test_an_approved_chat_is_not_overtaken_by_later_arrivals():
+    # A parks on an approval prompt, B takes the slot, C arrives afterwards.
+    # release() grants under the same lock, so a plain poll in unpark_async never
+    # saw a free slot: A waited behind every later arrival and starved.
+    async def scenario():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+
+        a = queue.reserve(capacity = 1, config = config)
+        assert a.lease_nowait() is not None
+        b = queue.reserve(capacity = 1, config = config)
+        queue.park()  # A's slot goes to B
+        b_lease = await asyncio.wait_for(b.wait(timeout_s = 1), timeout = 2)
+        assert b_lease is not None
+
+        # A is approved and starts waiting; C arrives only after that.
+        resumed = asyncio.ensure_future(queue.unpark_async(poll_s = 0.01))
+        await asyncio.sleep(0.03)
+        c = queue.reserve(capacity = 1, config = config)
+        assert c.lease_nowait() is None
+
+        b_lease.release()  # the slot frees exactly once
+        await asyncio.wait_for(resumed, timeout = 2)
+        # A resumed; C is still queued behind it rather than having overtaken it.
+        assert c.lease_nowait() is None
+        assert queue._active - queue._parked <= 1
+
+    asyncio.run(scenario())

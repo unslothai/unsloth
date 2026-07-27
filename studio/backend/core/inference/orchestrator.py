@@ -107,6 +107,7 @@ class InferenceOrchestrator:
         # Cancel event of the request holding _gen_lock: lets a Stop tell whether it owns
         # the running generation or is queued behind it (the worker's event is shared).
         self._active_cancel_events: list = []
+        self._executing_cancel_events: list = []
         self._active_cancel_lock = threading.Lock()
         # Set during a switch so a generation winning the _gen_lock handoff bails
         # instead of starting on the outgoing model.
@@ -582,6 +583,9 @@ class InferenceOrchestrator:
             rtype = resp.get("type", "")
             if rtype == "status":
                 continue
+            # The worker is answering THIS request, so it is the one executing:
+            # only now may its cancel event speak for the shared worker one.
+            self._mark_worker_started(cancel_event)
             # Subprocess-level error (no request_id); request-scoped failures
             # arrive as gen_error below.
             if rtype == "error" and not resp.get("request_id"):
@@ -1632,28 +1636,45 @@ class InferenceOrchestrator:
                 self._release_worker(cancel_event)
 
     def _claim_worker(self, cancel_event) -> None:
-        """Record this request as one of the generations the worker is running."""
+        """Record this request as one the worker will run.
+
+        Admission only. The subprocess executes generations one at a time, so a
+        dispatched request sitting behind another in the command queue is claimed
+        but not executing, and must not be able to signal the shared cancel event
+        (that would end whichever request IS executing). _mark_worker_started
+        promotes it once the worker answers it.
+        """
         with self._active_cancel_lock:
             self._active_cancel_events.append(cancel_event)
 
+    def _mark_worker_started(self, cancel_event) -> None:
+        """Promote a claimed request to executing, on its first worker response."""
+        if cancel_event is None:
+            return
+        with self._active_cancel_lock:
+            if not any(ev is cancel_event for ev in self._executing_cancel_events):
+                self._executing_cancel_events.append(cancel_event)
+
     def _release_worker(self, cancel_event) -> None:
         with self._active_cancel_lock:
-            try:
-                self._active_cancel_events.remove(cancel_event)
-            except ValueError:
-                pass
+            for bucket in (self._active_cancel_events, self._executing_cancel_events):
+                try:
+                    bucket.remove(cancel_event)
+                except ValueError:
+                    pass
 
     def _owns_worker(self, cancel_event) -> bool:
         """Whether a reset from this request may signal the shared cancel event.
 
-        True when it is one of the running generations, and also when nothing is
-        running at all: an error path that resets before any generation started
-        has no one else to interrupt, so it must not become a silent no-op.
+        True when it is one of the EXECUTING generations, and also when none are:
+        an error path that resets before anything started has no one else to
+        interrupt, so it must not become a silent no-op. Claimed-but-queued does
+        not count, or a Stop on a queued request would end the running one.
         """
         with self._active_cancel_lock:
-            if not self._active_cancel_events:
+            if not self._executing_cancel_events:
                 return True
-            return any(ev is cancel_event for ev in self._active_cancel_events)
+            return any(ev is cancel_event for ev in self._executing_cancel_events)
 
     def reset_generation_state(self, caller_cancel_event = None):
         """Cancel any ongoing generation and reset state.

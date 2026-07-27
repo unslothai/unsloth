@@ -2487,6 +2487,7 @@ def _orchestrator_for_ownership():
     orch = orch_mod.InferenceOrchestrator.__new__(orch_mod.InferenceOrchestrator)
     orch._gen_lock = threading.Lock()
     orch._active_cancel_events = []
+    orch._executing_cancel_events = []
     orch._active_cancel_lock = threading.Lock()
     orch._cancel_event = threading.Event()
     orch._ensure_subprocess_alive = lambda: False  # stop before _send_cmd
@@ -2501,7 +2502,8 @@ def test_a_queued_chat_cannot_reset_the_chat_that_is_generating():
     a_event = threading.Event()
     b_event = threading.Event()
 
-    orch._claim_worker(a_event)  # A holds the lock and is generating
+    orch._claim_worker(a_event)  # A holds the lock ...
+    orch._mark_worker_started(a_event)  # ... and the worker is answering it
     orch.reset_generation_state(b_event)  # B is queued and gets stopped
     assert not orch._cancel_event.is_set()
 
@@ -2513,7 +2515,9 @@ def test_a_global_reset_still_cancels_whatever_is_running():
     # Unload and model switch pass nothing: they mean "stop everything", and
     # scoping them would leave a generation alive across a teardown.
     orch = _orchestrator_for_ownership()
-    orch._claim_worker(threading.Event())
+    _running = threading.Event()
+    orch._claim_worker(_running)
+    orch._mark_worker_started(_running)
     orch.reset_generation_state()
     assert orch._cancel_event.is_set()
 
@@ -2577,7 +2581,9 @@ def test_a_dispatched_chat_cannot_reset_its_concurrently_dispatched_sibling():
     c_event = threading.Event()
 
     orch._claim_worker(a_event)
+    orch._mark_worker_started(a_event)
     orch._claim_worker(b_event)
+    orch._mark_worker_started(b_event)
 
     orch.reset_generation_state(c_event)  # a third, unrelated request
     assert not orch._cancel_event.is_set()
@@ -2591,7 +2597,9 @@ def test_releasing_one_generation_leaves_the_other_claimed():
     a_event = threading.Event()
     b_event = threading.Event()
     orch._claim_worker(a_event)
+    orch._mark_worker_started(a_event)
     orch._claim_worker(b_event)
+    orch._mark_worker_started(b_event)
     orch._release_worker(a_event)
 
     orch.reset_generation_state(a_event)  # now a stranger
@@ -2599,4 +2607,24 @@ def test_releasing_one_generation_leaves_the_other_claimed():
 
     orch._release_worker(b_event)
     orch.reset_generation_state(a_event)  # nothing running: no one to protect
+    assert orch._cancel_event.is_set()
+
+
+def test_a_dispatched_request_queued_behind_another_is_not_an_owner():
+    # The subprocess runs generations one at a time, so admission is not
+    # execution: B can be claimed while A is the one the worker is answering.
+    # Counting B as an owner let its Stop signal the shared event and end A.
+    orch = _orchestrator_for_ownership()
+    a_event = threading.Event()
+    b_event = threading.Event()
+
+    orch._claim_worker(a_event)
+    orch._mark_worker_started(a_event)  # the worker answered A
+    orch._claim_worker(b_event)  # B is only queued behind it
+
+    orch.reset_generation_state(b_event)
+    assert not orch._cancel_event.is_set(), "a queued request must not reset A"
+
+    orch._mark_worker_started(b_event)  # the worker moves on to B
+    orch.reset_generation_state(b_event)
     assert orch._cancel_event.is_set()
