@@ -30,6 +30,8 @@ _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
 from utils.transformers_version import (
+
+
     _resolve_base_model,
     _is_lora_adapter_dir,
     _has_adapter_weights,
@@ -1314,7 +1316,7 @@ class TestGetTransformersTier:
 
         class _Response:
             def __init__(self):
-                self.headers = {}
+                self.headers = _link_headers()
 
             def __enter__(self):
                 return self
@@ -3856,7 +3858,7 @@ class _PagedResponse:
         next_url: str | None = None,
     ):
         self._payload = payload
-        self.headers = {"Link": f'<{next_url}>; rel="next"'} if next_url else {}
+        self.headers = _link_headers(f'<{next_url}>; rel="next"' if next_url else None)
 
     def read(self, n = -1):
         return self._payload
@@ -5257,7 +5259,7 @@ class TestImpossible510ScanIsSkipped:
         class _Resp:
             def __init__(self, body: bytes):
                 self._body = body
-                self.headers = {"Link": None}
+                self.headers = _link_headers()
 
             def read(self, n = -1):
                 return self._body
@@ -5651,6 +5653,20 @@ class TestPaginationOriginNormalizesDefaultPorts:
         assert len(seen) == 1
 
 
+def _link_headers(*values):
+    """A real ``HTTPMessage``, the container urllib actually returns.
+
+    A dict stub only has ``get``, so it cannot show a cursor announced by a second repeated
+    ``Link`` field line, which is the shape that returns a truncated page as whole.
+    """
+    import email.message
+    msg = email.message.Message()
+    for value in values:
+        if value is not None:
+            msg.add_header("Link", value)
+    return msg
+
+
 class TestLinkRelIsFoundAtAnyParameterPosition:
     """RFC 8288 lets ``rel`` sit anywhere in an entry's parameter list; missing it makes
     ``_hf_api_get_json`` cache a truncated first page as a confirmed default tier."""
@@ -5689,6 +5705,41 @@ class TestLinkRelIsFoundAtAnyParameterPosition:
         import utils.transformers_version as tv
         assert tv._parse_link_next(None) is None
 
+    @pytest.mark.parametrize(
+        "fields,expected,why",
+        [
+            ([f'<{_NEXT}>; rel="next"'], _NEXT, "one field, same answer as the string form"),
+            (
+                ['<https://h/p>; rel="prev"', f'<{_NEXT}>; rel="next"'],
+                _NEXT,
+                "cursor in the second field: HTTPMessage.get would return only the first",
+            ),
+            ([f'<{_NEXT}>; rel="next"', '<https://h/p>; rel="prev"'], _NEXT, "cursor first"),
+            # Negative controls: repeated fields must not invent a cursor.
+            (['<https://h/p>; rel="prev"', '<https://h/l>; rel="last"'], None, "no next field"),
+            ([], None, "header absent"),
+            (None, None, "get_all returns None when the header is absent"),
+        ],
+    )
+    def test_every_repeated_link_field_is_read(self, fields, expected, why):
+        """RFC 7230 lets a server repeat ``Link`` as separate field lines. Reading only the
+        first returns a truncated page as whole, which caches a later-page 5.x import as a
+        confirmed default tier."""
+        import utils.transformers_version as tv
+        assert tv._parse_link_next(fields) == expected, why
+
+    def test_repeated_link_fields_reach_the_tier(self, monkeypatch):
+        """End to end through the real header container: the marker lives on page 2, whose
+        cursor is only announced by a second ``Link`` field line."""
+        import email.message
+        import utils.transformers_version as tv
+
+        headers = email.message.Message()
+        headers.add_header("Link", '<https://huggingface.co/api/x?cursor=0>; rel="prev"')
+        headers.add_header("Link", f'<{self._NEXT}>; rel="next"')
+        assert headers.get("Link") != headers.get_all("Link")[-1], "precondition: get hides it"
+        assert tv._parse_link_next(headers.get_all("Link")) == self._NEXT
+
     def test_later_page_marker_is_not_truncated_away(self, monkeypatch):
         """End to end: the 5.x-only import lives on page 2, behind a decoy parameter."""
         import utils.transformers_version as tv
@@ -5703,7 +5754,7 @@ class TestLinkRelIsFoundAtAnyParameterPosition:
                 link = None,
             ):
                 self._payload = payload
-                self.headers = {"Link": link} if link else {}
+                self.headers = _link_headers(link)
 
             def read(self, n = -1):
                 return self._payload

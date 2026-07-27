@@ -811,22 +811,28 @@ def _iter_link_entries(header: str):
             yield uri, params
 
 
-def _parse_link_next(link_header: str | None) -> str | None:
-    """Next-page URL from an RFC 8288 ``Link`` header, or None.
+def _parse_link_next(link_header: "str | list[str] | None") -> str | None:
+    """Next-page URL from RFC 8288 ``Link`` header field(s), or None.
 
     ``rel`` may sit at any position, be unquoted, and carry a case-insensitive space-separated
     list. Matching only a leading ``rel="next"`` would drop the valid
     ``<...>; type="application/json"; rel="next"``, and that is not safe:
     :func:`_hf_api_get_json` reads "no next cursor" as "listing finished" and returns the
     truncated page with ``success=True``, caching a later-page 5.x-only import as default tier.
+
+    A list is accepted because RFC 7230 lets a server repeat ``Link`` as separate field lines,
+    and ``HTTPMessage.get`` returns only the first: a cursor in a later line hits that same
+    truncated-page-cached-as-default failure.
     """
-    for uri, params in _iter_link_entries(link_header or ""):
-        for name, value in params:
-            if name != "rel":
-                continue
-            if "next" in value.lower().split():
-                return uri
-            break  # RFC 8288: only an entry's first rel parameter is significant
+    fields = [link_header] if isinstance(link_header, str) else list(link_header or ())
+    for field in fields:
+        for uri, params in _iter_link_entries(field or ""):
+            for name, value in params:
+                if name != "rel":
+                    continue
+                if "next" in value.lower().split():
+                    return uri
+                break  # RFC 8288: only an entry's first rel parameter is significant
     return None
 
 
@@ -859,7 +865,7 @@ def _hf_api_get_json(path: str, hf_token: str | None = None) -> tuple[object | N
             req = urllib.request.Request(url, headers = headers)
             with _hub_urlopen(req, timeout = 10) as resp:
                 payload = json.loads(resp.read().decode())
-                next_url = _parse_link_next(resp.headers.get("Link"))
+                next_url = _parse_link_next(resp.headers.get_all("Link"))
             if not isinstance(payload, list):
                 return payload, True
             merged.extend(payload)
