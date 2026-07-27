@@ -496,8 +496,11 @@ export function ApiMonitorPage(): ReactElement {
     if (!selectedIsMissing && lastFetchedRef.current === revision) {
       return;
     }
-    lastFetchedRef.current = revision;
-    requestDetail(selectedId_);
+    // Only remember the revision when a fetch really started; the in-flight
+    // guard can refuse, and recording it anyway skips that revision for good.
+    if (requestDetail(selectedId_)) {
+      lastFetchedRef.current = revision;
+    }
   }, [selectedId_, selectedUpdatedAt, selectedIsMissing, requestDetail]);
 
   // The desktop webview's origin is tauri://, not the API server, and the

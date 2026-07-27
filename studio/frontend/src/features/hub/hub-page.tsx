@@ -1226,8 +1226,12 @@ export function ModelsPage() {
   const [settingsTarget, setSettingsTarget] = useState<ModelPickTarget | null>(
     null,
   );
+  // Bumped per open so a slow variant lookup for a row the user has moved on
+  // from cannot land on top of the row they actually chose.
+  const settingsOpenSeq = useRef(0);
   const openModelSettings = useCallback(
     async (row: CachedInventoryRow | LocalInventoryRow) => {
+      const openSeq = ++settingsOpenSeq.current;
       // loadId is what the loader accepts; repoId is only a display/API alias.
       const id = row.loadId;
       // Whether the loaded model is this row, under any of the names it goes by.
@@ -1277,6 +1281,11 @@ export function ModelsPage() {
             ggufVariant = null;
           }
         }
+      }
+      // The variant lookup above is async, so a second row opened while it was
+      // pending would otherwise be overwritten by whichever call finished last.
+      if (settingsOpenSeq.current !== openSeq) {
+        return;
       }
       const leaf = id.split(/[\\/]/).filter(Boolean).pop() ?? id;
       setSettingsTarget({

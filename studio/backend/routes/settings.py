@@ -126,6 +126,17 @@ class OpenAIAutoSwitchResponse(BaseModel):
     auto_unload_keep_kv: bool = DEFAULT_AUTO_UNLOAD_KEEP_KV
 
 
+# A quant suffix, as modelOverrideKey builds it: no path separator and short.
+# Guards against splitting "C:\\models\\x.gguf", where the colon is a drive letter.
+_MAX_VARIANT_SUFFIX_LEN = 64
+
+# A local model's id is its filesystem path, optionally with a quant suffix, and
+# LoadRequest.model_path is unbounded. A limit under PATH_MAX would 422 the server
+# sync while the local save succeeded, leaving the UI showing settings the API
+# never applies.
+MAX_MODEL_OVERRIDE_KEY_LEN = 4096 + 1 + _MAX_VARIANT_SUFFIX_LEN
+
+
 class ModelOverridePayload(BaseModel):
     """One model's saved launch config, applied when the API loads that model.
 
@@ -136,7 +147,7 @@ class ModelOverridePayload(BaseModel):
     mode) are left to it, since their valid sets follow the llama.cpp build.
     """
 
-    model_id: str = Field(..., min_length = 1, max_length = 512)
+    model_id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
     # None means "leave the stored value alone": the settings UI has no control
     # for launch flags, so a save from it must not wipe flags set through this
     # API. An explicit [] clears them (that is how "forget this model" arrives).
@@ -327,11 +338,6 @@ def get_openai_auto_switch_overrides(
     current_subject: str = Depends(get_current_subject),
 ) -> ModelOverridesResponse:
     return ModelOverridesResponse(overrides = get_model_overrides())
-
-
-# A quant suffix, as modelOverrideKey builds it: no path separator and short.
-# Guards against splitting "C:\\models\\x.gguf", where the colon is a drive letter.
-_MAX_VARIANT_SUFFIX_LEN = 64
 
 
 def _bare_model_id(model_id: str) -> Optional[str]:

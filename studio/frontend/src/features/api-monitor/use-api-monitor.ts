@@ -168,7 +168,7 @@ interface UseApiMonitorResult {
   /** Full prompt/reply for entries the user expanded, keyed by entry id. */
   details: Record<string, ApiMonitorEntry>;
   loadingDetails: ReadonlySet<string>;
-  requestDetail: (id: string) => void;
+  requestDetail: (id: string) => boolean;
 }
 
 /**
@@ -247,9 +247,12 @@ export function useApiMonitor({
     };
   }, [paused, intervalMs]);
 
-  const requestDetail = useCallback((id: string): void => {
+  // Returns whether a fetch actually started. Callers that remember "I have
+  // fetched revision N" must not record it when the in-flight guard turned them
+  // away, or that revision is skipped for good once updated_at stops moving.
+  const requestDetail = useCallback((id: string): boolean => {
     if (inFlightDetails.current.has(id)) {
-      return;
+      return false;
     }
     inFlightDetails.current.add(id);
     setLoadingDetails((prev) => new Set(prev).add(id));
@@ -275,6 +278,7 @@ export function useApiMonitor({
           return next;
         });
       });
+    return true;
   }, []);
 
   const clear = useCallback(async (): Promise<void> => {

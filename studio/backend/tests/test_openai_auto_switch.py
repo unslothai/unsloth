@@ -4220,3 +4220,30 @@ def test_remove_false_with_real_fields_saves_normally(monkeypatch):
         "tester",
     )
     assert resp.overrides["unsloth/B-GGUF"]["max_seq_length"] == 8192
+
+
+def test_override_lookup_falls_back_to_case_insensitive(monkeypatch):
+    # The browser lowercases ids before storing them, so the backfill writes
+    # "unsloth/qwen3-8b-gguf:q4_k_m" while the resolver asks for the repo's real
+    # casing. Without this fallback every migrated entry is invisible.
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("unsloth/qwen3-8b-gguf:q4_k_m", max_seq_length = 8192)
+    got = settings.get_model_override("unsloth/Qwen3-8B-GGUF:Q4_K_M")
+    assert got["max_seq_length"] == 8192
+
+
+def test_exact_override_match_beats_a_case_variant(monkeypatch):
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("/models/foo.gguf", max_seq_length = 1024)
+    settings.set_model_override("/models/Foo.gguf", max_seq_length = 8192)
+    assert settings.get_model_override("/models/Foo.gguf")["max_seq_length"] == 8192
+    assert settings.get_model_override("/models/foo.gguf")["max_seq_length"] == 1024
+
+
+def test_ambiguous_case_fallback_matches_nothing(monkeypatch):
+    # Two POSIX paths differing only in case are two different files. Guessing
+    # between them would apply one model's settings to another.
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("/models/foo.gguf", max_seq_length = 1024)
+    settings.set_model_override("/models/FOO.gguf", max_seq_length = 8192)
+    assert settings.get_model_override("/models/Foo.gguf") == {}

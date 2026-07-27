@@ -433,9 +433,28 @@ def get_model_overrides() -> dict[str, dict]:
 
 
 def get_model_override(model_id: str) -> dict:
-    """The launch override applied when auto-switch loads ``model_id`` (or empty)."""
-    override = get_model_overrides().get(model_id)
-    return override if isinstance(override, dict) else {}
+    """The launch override applied when auto-switch loads ``model_id`` (or empty).
+
+    Falls back to a case-insensitive match when nothing matches exactly. Repo ids
+    and quants are case-insensitive in practice ("Q4_K_M" and "q4_k_m" name one
+    file), and the browser normalizes them to lowercase before storing, so an
+    exact-only lookup misses entries written from that side. Exact still wins, and
+    an ambiguous fallback matches nothing, so two POSIX paths differing only in
+    case stay distinct.
+    """
+    overrides = get_model_overrides()
+    override = overrides.get(model_id)
+    if isinstance(override, dict):
+        return override
+    if not isinstance(model_id, str):
+        return {}
+    folded = model_id.casefold()
+    matches = [
+        value
+        for key, value in overrides.items()
+        if isinstance(key, str) and key.casefold() == folded and isinstance(value, dict)
+    ]
+    return matches[0] if len(matches) == 1 else {}
 
 
 def set_model_override(
