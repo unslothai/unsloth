@@ -1872,9 +1872,7 @@ def test_cached_picker_hides_a_family_this_diffusers_cannot_build(monkeypatch):
     assert family_pipeline_available(fam) is True
 
     monkeypatch.setattr(models_module, "_repo_is_diffusers", lambda info: True)
-    monkeypatch.setattr(
-        "core.inference.diffusion._is_trusted_diffusion_repo", lambda repo_id: True
-    )
+    monkeypatch.setattr("core.inference.diffusion._is_trusted_diffusion_repo", lambda repo_id: True)
     info = types.SimpleNamespace(repo_id = "unsloth/Z-Image-Turbo")
     assert models_module._cached_repo_task(info) == "text-to-image"
 
