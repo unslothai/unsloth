@@ -1152,7 +1152,6 @@ def test_an_unbuilt_index_warms_instead_of_blocking(monkeypatch):
         lambda: type("B", (), {"active_model_name": None})(),
     )
     assert (
-        asyncio.run(inference_route._reject_unservable_model("unsloth/B-GGUF:Q8_0", _Req()))
-        is None
+        asyncio.run(inference_route._reject_unservable_model("unsloth/B-GGUF:Q8_0", _Req())) is None
     )
     assert warmed == [1]
