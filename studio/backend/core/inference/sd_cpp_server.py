@@ -85,7 +85,12 @@ _DIAGNOSTIC_MARKERS = (
 )
 
 
-def _diagnostic_tail(lines, *, keep: int = 20, limit: int = 1500) -> str:
+def _diagnostic_tail(
+    lines,
+    *,
+    keep: int = 20,
+    limit: int = 1500,
+) -> str:
     """The most useful part of the captured output, not merely its last lines.
 
     A native abort prints its REASON first and then a long backtrace, so taking the last N lines
@@ -95,10 +100,11 @@ def _diagnostic_tail(lines, *, keep: int = 20, limit: int = 1500) -> str:
     captured = list(lines)
     marked = [line for line in captured if any(m in line.lower() for m in _DIAGNOSTIC_MARKERS)]
     chosen: list[str] = []
-    for line in marked[-keep:] + captured[-max(keep // 2, 4):]:
+    for line in marked[-keep:] + captured[-max(keep // 2, 4) :]:
         if line not in chosen:
             chosen.append(line)
     return "\n".join(chosen)[:limit]
+
 
 # Grace for the best-effort native cancel to show in job status before abandoning the poll;
 # without the cap a lost cancel would hold the generate lock until the job ends.
