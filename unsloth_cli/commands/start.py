@@ -2393,7 +2393,7 @@ def _managed_node_tools() -> Optional[tuple[Path, Path, bool]]:
         from utils.node_runtime import managed_node_binary, resolve_node_executable
 
         node = Path(managed_node_binary())
-    except Exception:
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
         return None
     npm = node.with_name("npm.cmd" if os.name == "nt" else "npm")
     try:

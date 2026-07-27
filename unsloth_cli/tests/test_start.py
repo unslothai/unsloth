@@ -268,6 +268,15 @@ def test_npm_executable_uses_studio_managed_node(monkeypatch, tmp_path):
     assert start._npm_executable() == str(npm)
 
 
+def test_managed_node_probe_tolerates_unsupported_path_flavour(monkeypatch):
+    def unsupported_backend_path():
+        raise RuntimeError("unsupported path flavour")
+
+    monkeypatch.setattr(start, "ensure_studio_backend_path", unsupported_backend_path)
+
+    assert start._managed_node_tools() is None
+
+
 def test_npm_executable_uses_managed_npm_when_system_node_has_none(monkeypatch, tmp_path):
     start.ensure_studio_backend_path()
     from utils import node_runtime
