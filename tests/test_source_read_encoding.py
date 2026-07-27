@@ -382,6 +382,22 @@ def _eagerly_consumed(tree: ast.Module) -> set:
     return consumed
 
 
+def _temp_rooted_names(tree: ast.Module) -> set:
+    """Module-level names anchored on a directory the run itself created."""
+    names = set()
+    for node in tree.body:
+        value = node.value if isinstance(node, (ast.Assign, ast.AnnAssign)) else None
+        if value is None:
+            continue
+        if any(
+            isinstance(n, ast.Call) and _callee_name(n.func) in TEMP_FACTORIES
+            for n in ast.walk(value)
+        ):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names.update(t.id for t in targets if isinstance(t, ast.Name))
+    return names
+
+
 def _non_path_names(tree: ast.Module) -> set:
     """Module-level names bound to a call that plainly does not make a path.
 
@@ -533,6 +549,18 @@ def _imports_at_each_call(tree: ast.Module) -> dict:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             visible.update(_import_bindings(node))
             return
+        if isinstance(node, ast.If):
+            # Only a branch that certainly runs may bind a name for the code
+            # after it; the others are explored with a copy that is thrown away.
+            taken = _static_truth(node.test)
+            walk(node.test, visible)
+            for arm, runs in ((node.body, taken is not False), (node.orelse, taken is not True)):
+                if not runs:
+                    continue
+                inner = visible if taken is not None else dict(visible)
+                for child in arm:
+                    walk(child, inner)
+            return
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
                 walk(child, dict(visible))  # its own scope, so its own copy
@@ -585,6 +613,11 @@ def _is_path_class(name, modules) -> bool:
     return (modules.get(name) or name).split(".")[-1] in PATH_CLASSES
 
 
+def _is_path_attr(node: ast.AST) -> bool:
+    """True for a qualified path class, as in `pathlib.Path` or `pl.Path`."""
+    return isinstance(node, ast.Attribute) and node.attr in PATH_CLASSES
+
+
 def _is_path_preserving(func) -> bool:
     """True for a call whose result still points at its first argument.
 
@@ -614,7 +647,9 @@ def _path_expr(call: ast.Call, modules = NO_MODULES):
     """
     func = call.func
     if isinstance(func, ast.Attribute):
-        if isinstance(func.value, ast.Name) and _is_module_receiver(func.value.id, modules):
+        if _is_path_attr(func.value) or (
+            isinstance(func.value, ast.Name) and _is_module_receiver(func.value.id, modules)
+        ):
             return call.args[0] if call.args else _path_keyword(call)
         return func.value
     if isinstance(func, ast.Name) and _open_alias(func.id, modules) is not None:
@@ -1115,8 +1150,9 @@ def _offender(call: ast.Call, modules = NO_MODULES) -> str | None:
     func = call.func
     if isinstance(func, ast.Attribute):
         receiver = func.value.id if isinstance(func.value, ast.Name) else None
-        # An unbound `Path.read_text(p)` puts the instance in slot 0.
-        shift = 1 if _is_path_class(receiver, modules) else 0
+        # An unbound `Path.read_text(p)` puts the instance in slot 0, and
+        # `pathlib.Path.read_text(p)` is the same call fully qualified.
+        shift = 1 if _is_path_class(receiver, modules) or _is_path_attr(func.value) else 0
         if func.attr in GUARDED_METHODS:
             if func.attr == "read_text" and not shift and call.args:
                 first = call.args[0]
@@ -1184,15 +1220,20 @@ def _scan(tree: ast.Module, rel: str):
     calls = {id(c): c for c in _import_time_calls(tree)}
     calls.update({id(c): c for c in _checked_in_path_calls(tree, modules, visible_at)})
     not_paths = _non_path_names(tree)
+    temp_roots = _temp_rooted_names(tree)
     for call in sorted(calls.values(), key = lambda c: (c.lineno, c.col_offset)):
         func = call.func
         if (
             isinstance(func, ast.Attribute)
-            and func.attr in GUARDED_METHODS
+            and (func.attr in GUARDED_METHODS or func.attr == "open")
             and isinstance(func.value, ast.Name)
             and func.value.id in not_paths
         ):
-            continue
+            continue  # ZipFile.open and friends have no encoding to name
+        expr = _path_expr(call, visible_at.get(id(call), modules))
+        root = _path_root(expr) if expr is not None else None
+        if isinstance(root, ast.Name) and root.id in temp_roots:
+            continue  # the run made this file, so the platform default is safe
         name = _offender(call, visible_at.get(id(call), modules))
         if name is not None:
             yield f"{rel}:{call.lineno}: {name}"
