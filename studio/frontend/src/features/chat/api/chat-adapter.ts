@@ -2140,12 +2140,16 @@ export async function autoLoadOnDeviceModel(): Promise<{
     };
   }
 
-  // The platform snapshot the picker's format gates key on: hydrated by the
-  // bounded best-effort prefetch above, else the store's boot-detected
-  // client-side values (the same defaults the whole UI uses pre-hydration).
+  // The platform snapshot the picker's format gates key on. Format gates
+  // only apply once the BACKEND-reported platform has been fetched: the
+  // boot-detected fallback describes the browser, which may differ from the
+  // host (a Mac browser against a remote Linux/CUDA backend would wrongly
+  // gate out every cached non-GGUF candidate). While the platform is
+  // unknown, candidates flow ungated and an actually chat-only backend
+  // rejects ineligible ones at validation without consuming an attempt.
   const platformState = usePlatformStore.getState();
   const platform: AutoLoadPlatform = {
-    chatOnly: platformState.isChatOnly(),
+    chatOnly: platformState.fetched ? platformState.isChatOnly() : false,
     isMac: platformState.deviceType === "mac",
   };
   const ggufRepos = allGgufRepos.filter(isAutoLoadableCachedRepo);
@@ -2183,6 +2187,31 @@ export async function autoLoadOnDeviceModel(): Promise<{
           seenLoadTargets.has(`${kind}:${normalizeLoadTargetKey(alias)}`),
         ),
     );
+
+  // One variant scan per cached repo per run: the remembered-model lookup
+  // and the cascade share the same result, so a stalled repository times
+  // out ONCE instead of gating Send through a second identical bounded
+  // request. Rejections are memoized too, on purpose: a repo whose scan
+  // already failed this run is not rescanned.
+  const repoVariantScans = new Map<
+    string,
+    ReturnType<typeof listGgufVariantsBounded>
+  >();
+  const scanRepoVariants = (
+    repoId: string,
+    localPath: string | null | undefined,
+  ) => {
+    const key = `${repoId}|${localPath ?? ""}`;
+    let pending = repoVariantScans.get(key);
+    if (!pending) {
+      pending = listGgufVariantsBounded(repoId, {
+        preferLocalCache: true,
+        localPath,
+      });
+      repoVariantScans.set(key, pending);
+    }
+    return pending;
+  };
 
   try {
     if (lastLoaded) {
@@ -2230,10 +2259,7 @@ export async function autoLoadOnDeviceModel(): Promise<{
           // may still pick another complete quant from this repo (only the
           // failed candidate key below is excluded).
           try {
-            const variants = await listGgufVariantsBounded(repo.repo_id, {
-              preferLocalCache: true,
-              localPath: repo.cache_path,
-            });
+            const variants = await scanRepoVariants(repo.repo_id, repo.cache_path);
             const variant = variants.variants.find(
               (entry) =>
                 entry.downloaded &&
@@ -2388,10 +2414,7 @@ export async function autoLoadOnDeviceModel(): Promise<{
     const resolveCachedGgufEntry = async (
       repo: CachedGgufRepo,
     ): Promise<Extract<FallbackCandidate, { type: "cached-gguf" }> | null> => {
-      const variants = await listGgufVariantsBounded(repo.repo_id, {
-        preferLocalCache: true,
-        localPath: repo.cache_path,
-      });
+      const variants = await scanRepoVariants(repo.repo_id, repo.cache_path);
       const downloaded = variants.variants
         .filter(
           (v) => v.downloaded && !v.partial && isAutoLoadableGgufVariant(v),

@@ -297,8 +297,13 @@ def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
     retained from a previously selected Hugging Face cache."""
     src = _read("features/chat/api/chat-adapter.ts")
     auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
-    assert auto_load.count("preferLocalCache: true") >= 2
-    assert auto_load.count("localPath: repo.cache_path") >= 2
+    # Both cached-repo lookups (remembered model and cascade) route through
+    # the memoized scanRepoVariants, which carries the cache-scoped params.
+    scan_fn = auto_load.split("const scanRepoVariants = (", 1)[1]
+    scan_fn = scan_fn.split("return pending;", 1)[0]
+    assert "preferLocalCache: true" in scan_fn
+    assert "localPath," in scan_fn
+    assert auto_load.count("await scanRepoVariants(repo.repo_id, repo.cache_path)") == 2
 
     chat_api = _read("features/chat/api/chat-api.ts")
     variants_fn = chat_api.split("export async function listGgufVariants", 1)[1]
@@ -1289,6 +1294,32 @@ def test_generation_and_scan_paths_stay_bounded_and_local():
 
     assert "function expandSeenValues(" in adapter
     assert adapter.count("expandSeenValues(value)") == 2
+
+
+def test_local_only_gguf_reuse_and_platform_gates_are_authoritative():
+    """Round-18 gates. get_paths_info performs no offline-mode check and
+    HF_HUB_OFFLINE is baked into hub constants at import, so local-only GGUF
+    reuse skips the remote size verification per-call instead of relying on
+    the env guard. Platform format gates only apply once the BACKEND-reported
+    platform is fetched (the browser fallback may describe a different
+    machine). snapshot_size_bytes uses the resolvers' complete-revision
+    predicate (config plus weights in the SAME revision). Cached-repo variant
+    scans are memoized per run so a stalled repo times out once."""
+    llama = _read_backend("core/inference/llama_cpp.py")
+    assert "verify_sizes = not local_files_only," in llama
+    reuse = llama.split("_cached_complete_candidate(hf_repo, gguf_filename, gguf_extra_shards)", 1)[1]
+    reuse = reuse.split("cached_main is not None", 1)[0]
+    assert "local_files_only" in reuse and "_cached_candidate_matches_revision_size" in reuse
+
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    assert "chatOnly: platformState.fetched ? platformState.isChatOnly() : false," in adapter
+    assert "const repoVariantScans = new Map<" in adapter
+    assert "const scanRepoVariants = (" in adapter
+    assert adapter.count("await scanRepoVariants(repo.repo_id, repo.cache_path)") == 2
+
+    inventory = _read_backend("hub/services/models/cache_inventory.py")
+    assert "rev_has_config" in inventory
+    assert 'if selected_category == "safetensors":' in inventory
 
 
 def test_gguf_background_loads_never_download_companions():

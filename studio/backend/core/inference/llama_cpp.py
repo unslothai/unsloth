@@ -5350,10 +5350,16 @@ class LlamaCppBackend:
                 # Resolve by variant so a newer revision's filename does not hide
                 # the complete older copy. Size-check against that older snapshot's
                 # own revision when its metadata remains available.
+                # Local-only loads skip the remote size check outright: the
+                # hub API behind it (get_paths_info) performs no offline-mode
+                # check and HF_HUB_OFFLINE is baked into hub constants at
+                # import, so only a per-call skip reliably keeps this off the
+                # network. A truncated cache then fails the load into
+                # candidate failover instead of being caught up front.
                 cached_main = cached_gguf_for_load(
                     hf_repo,
                     hf_variant,
-                    verify_sizes = True,
+                    verify_sizes = not local_files_only,
                     hf_token = hf_token,
                 )
             else:
@@ -5361,7 +5367,10 @@ class LlamaCppBackend:
                 cached_main = (
                     candidate[0]
                     if candidate is not None
-                    and _cached_candidate_matches_revision_size(hf_repo, candidate, hf_token)
+                    and (
+                        local_files_only
+                        or _cached_candidate_matches_revision_size(hf_repo, candidate, hf_token)
+                    )
                     else None
                 )
             if cached_main is not None:

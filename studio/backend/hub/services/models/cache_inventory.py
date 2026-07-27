@@ -443,6 +443,7 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     # rather than only the all-revisions total.
     rev_category_sizes: dict[str, dict[str, int]] = {}
     rev_snapshot_mtimes: dict[str, float] = {}
+    rev_has_config: dict[str, bool] = {}
     has_config = False
     has_adapter_config = False
     has_adapter_weights = False
@@ -474,6 +475,7 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
                 continue
             if name == "config.json":
                 has_config = True
+                rev_has_config[rev_id] = True
                 continue
             if name == "adapter_config.json":
                 has_adapter_config = True
@@ -520,13 +522,21 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
 
     size_bytes = sum(size for size, _mtime in selected_blobs.values())
     # The one snapshot a load resolves (newest snapshot-dir mtime) among the
-    # revisions actually holding selected-format weights; falls back to the
-    # all-revisions total when no revision reports one.
+    # revisions holding selected-format weights. For safetensors rows the
+    # snapshot resolvers additionally require config.json in the SAME
+    # revision, so sizing must use that predicate too: a weight-only newer
+    # revision would otherwise be sized while the older complete revision is
+    # what actually loads. Falls back to weight-only revisions, then to the
+    # all-revisions total.
     weight_revs = [
         rev_id
         for rev_id, sizes in rev_category_sizes.items()
         if sizes.get(selected_category, 0) > 0
     ]
+    if selected_category == "safetensors":
+        complete_revs = [rev_id for rev_id in weight_revs if rev_has_config.get(rev_id, False)]
+        if complete_revs:
+            weight_revs = complete_revs
     if weight_revs:
         newest_rev = max(weight_revs, key = lambda rev_id: rev_snapshot_mtimes.get(rev_id, 0.0))
         snapshot_size_bytes = rev_category_sizes[newest_rev].get(selected_category, 0)
