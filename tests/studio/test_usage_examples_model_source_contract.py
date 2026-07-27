@@ -15,8 +15,7 @@ API_KEYS_TAB_TSX = SETTINGS / "tabs/api-keys-tab.tsx"
 
 
 def test_examples_name_a_model_the_server_can_serve():
-    # The snippets used to fall back to a hardcoded repo id, so a copied curl 404d. Read
-    # the servable ids from /v1/models, the same list the backend's error lists.
+    # A hardcoded repo id made copied curls 404; read the servable ids from /v1/models.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     assert 'from "../api/openai-models"' in src
     assert "function useExampleModelName(): string" in src
@@ -32,9 +31,8 @@ def test_examples_name_a_model_the_server_can_serve():
 
 
 def test_examples_never_print_a_hardcoded_model_id():
-    # The bug this contract exists for: the catalog started as `[]`, so any render before
-    # /v1/models answered printed a snippet naming a model the server cannot serve. It is
-    # tri-state now (null until /v1 answers) and the panel asks for a model instead.
+    # The bug this exists for: a `[]` catalog printed a snippet before /v1/models answered.
+    # It is tri-state now, and the panel asks for a model instead.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     assert "MODEL_FALLBACK" not in src
     # No repo-shaped literal anywhere: a snippet may only name what /v1 returns.
@@ -52,8 +50,7 @@ def test_examples_never_print_a_hardcoded_model_id():
 
 
 def test_catalog_refresh_follows_the_loaded_model():
-    # `[needsCatalog]` alone never re-ran while there was no local checkpoint, so a
-    # finished load left the snippet naming whatever the first fetch saw.
+    # `[needsCatalog]` alone never re-ran, so a finished load left the first fetch's name.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "}, [needsCatalog, checkpoint, ggufVariant]);" in hook
@@ -64,8 +61,7 @@ def test_catalog_refresh_follows_the_loaded_model():
 
 
 def test_usage_examples_has_no_duplicate_auto_switch_control():
-    # ModelAutoSwitchSection renders the same setting just below this panel and shares no
-    # state with it, so a second switch here would drift out of sync.
+    # ModelAutoSwitchSection renders this setting just below and shares no state with it.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     # Reading the setting is fine; writing it here is what would be a second control.
     assert "updateOpenAIAutoSwitchSettings" not in src

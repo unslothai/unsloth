@@ -291,8 +291,7 @@ export interface ApiMonitorEntry {
   completion_tokens?: number | null;
   total_tokens?: number | null;
   error?: string | null;
-  // "lifecycle" is a model load/unload/download: event/reason instead of a prompt,
-  // and no detail to fetch.
+  // "lifecycle" is a model load/unload/download: event/reason instead of a prompt.
   kind?: "request" | "lifecycle";
   event?: "load" | "unload" | "download" | null;
   reason?: "manual" | "idle" | "api" | null;

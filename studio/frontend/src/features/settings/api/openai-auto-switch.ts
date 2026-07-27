@@ -13,8 +13,7 @@ export type OpenAIAutoSwitchSettings = {
   idleUnloadActive: boolean;
   // Persist the KV cache to disk on idle unload and restore it on reload.
   autoUnloadKeepKv: boolean;
-  // Fetch a GGUF named in an API request. Stored independently, but only
-  // takes effect while `enabled` is on.
+  // Fetch a GGUF named in an API request; stored independently of `enabled`, gated on it.
   autoDownloadModel: boolean;
 };
 

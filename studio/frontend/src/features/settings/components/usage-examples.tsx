@@ -332,8 +332,7 @@ function buildSnippets(
 
 const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
 const USE_TUNNEL_KEY = "unsloth_api_use_tunnel";
-// Slow retry while /v1 has nothing to name: a download or load can finish while this
-// panel is open, and neither moves the checkpoint below.
+// Slow retry while /v1 has nothing to name: a download or load moves no store state.
 const CATALOG_RETRY_MS = 15000;
 
 function readUseTunnelPref(): boolean {
@@ -354,8 +353,7 @@ function writeUseTunnelPref(value: boolean): void {
   }
 }
 
-// A checkpoint can be an on-disk load path, which leaks the host layout and is not an
-// id /v1 advertises. Mirrors the backend's _looks_like_path.
+// A checkpoint can be an on-disk load path, which /v1 never advertises. Mirrors _looks_like_path.
 function looksLikePath(id: string): boolean {
   return (
     id.startsWith("/") ||
@@ -367,8 +365,7 @@ function looksLikePath(id: string): boolean {
   );
 }
 
-// The model the examples name. Only ever an id /v1 resolves against; null means the
-// server has nothing to serve yet, and the panel says so instead of a dead id.
+// The model the examples name: always an id /v1 resolves against, null when there is none.
 function useExampleModelName(): string | null {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
@@ -380,8 +377,7 @@ function useExampleModelName(): string | null {
     !!checkpoint && !checkpoint.startsWith("external::") && !looksLikePath(checkpoint);
   const needsCatalog = !usableCheckpoint;
 
-  // Only when the checkpoint can't answer it, since /v1/models scans the model dirs.
-  // Retries until something is servable, since a download moves no store state.
+  // Only when the checkpoint can't answer it; retries until something is servable.
   // biome-ignore lint/correctness/useExhaustiveDependencies: a load or unload must refetch the servable ids
   useEffect(() => {
     if (!needsCatalog) return;
@@ -422,8 +418,7 @@ function useExampleModelName(): string | null {
       }
       return checkpoint;
     }
-    // No usable checkpoint: name something this server holds, quant included so the
-    // request pins the file on disk. An unloaded one only answers if switching is on.
+    // No usable checkpoint: name something held here, with its quant to pin the file on disk.
     const pick =
       catalog?.find((m) => m.loaded) ?? (autoSwitch ? catalog?.[0] : undefined);
     if (!pick) {
@@ -635,8 +630,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
         {t("settings.apiKeys.usageExamples")}
       </h2>
       <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-border bg-muted/20">
-        {/* No model-auto-switch row: ModelAutoSwitchSection renders the same setting
-            just below and shares no state with it, so a duplicate would drift. */}
+        {/* No model-auto-switch row: ModelAutoSwitchSection renders that setting just below. */}
         {cloudflareUrl ? (
           <div className="flex min-w-0 items-center justify-between gap-2 border-b border-border px-2 py-1.5">
             <div className="flex shrink-0 items-center gap-1.5">

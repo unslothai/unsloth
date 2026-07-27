@@ -423,8 +423,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     elif manifest:
                         _delete_resume_files(manifest)
                     logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)
-                    # This path skips note_model_unloaded (an idle unload stashes for
-                    # reload), so record the monitor row here.
+                    # An idle unload stashes for reload and skips note_model_unloaded.
                     _note_idle_unload_event(freed)
                     seen_model = None
         except Exception as exc:

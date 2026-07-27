@@ -52,8 +52,7 @@ class ApiMonitorEntry:
     total_tokens: Optional[int] = None
     total_tokens_authoritative: bool = False
     error: Optional[str] = None
-    # "request" (an HTTP call) or "lifecycle" (a model load/unload). Lifecycle rows carry
-    # event/reason instead of a prompt, and are server-wide so every subject sees them.
+    # "request" (HTTP call) or "lifecycle" (model load/unload: event/reason, not a prompt; shared).
     kind: str = "request"
     event: Optional[str] = None
     reason: Optional[str] = None

@@ -3670,8 +3670,7 @@ async def _no_model_loaded_error(
         return status, _no_model_loaded_detail(base)
     try:
         if _loaded_satisfies(named):
-            # Resident, just not on a backend this endpoint can use (a Transformers model
-            # on a GGUF-only surface). "Not downloaded" would be false, so stay generic.
+            # Resident but on a backend this endpoint can't use, so "not downloaded" is false.
             return status, _no_model_loaded_detail(base)
         if await asyncio.to_thread(resolve_local_gguf, named) is not None:
             # Resolvable but unloaded: the switch failed, which the generic text covers.
@@ -3730,9 +3729,7 @@ async def _maybe_auto_download_model(
         return
     if not is_downloadable_ref(requested_model):
         return
-    # An Ollama-style tag (":latest", ":8b") names no quant, so the resolver misses it
-    # and we land here even when the resident model answers to it. Downloading would
-    # be wrong, and the quant match below would 404 a request that is already servable.
+    # An Ollama-style tag (":latest") names no quant, so the resolver misses a servable model.
     if _loaded_satisfies(requested_model):
         return
     try:
@@ -3794,8 +3791,7 @@ def _loaded_satisfies(requested: str) -> bool:
     active = getattr(get_inference_backend(), "active_model_name", None)
     if not active:
         return False
-    # Only llama.cpp carries a quant identity, so this backend cannot confirm an explicit
-    # quant. A non-quant tag claims nothing about the weights, so it matches on the repo.
+    # Only llama.cpp carries a quant identity, so this backend can only match on the repo.
     if looks_like_quant(variant):
         return False
     return base in {active.lower(), (public_model_id(active) or "").lower()}
@@ -3863,20 +3859,16 @@ async def _reject_unservable_model(
             or getattr(get_inference_backend(), "active_model_name", None)
         ):
             return
-        # Refresh in the background when stale, and read whatever is there now. Never
-        # scan from here (see resolve_local_gguf's allow_scan note): a cold or stale
-        # index only costs evidence, and the gate below already fails safe without it,
-        # whereas scanning would stall this request for as long as it takes. Reading
-        # the built index is a dict lookup, cheaper than handing it to a thread.
+        # Refresh in the background and read the index as-is: scanning here would stall the
+        # request, and a cold index only costs evidence (the gate below fails safe without it).
         warm_index_soon()
         resolved = resolve_local_gguf(requested_model, allow_scan = False)
-        # A manual load stores the on-disk path that the resolver advertises under a
-        # publisher/model alias (LM Studio, custom folders); match on the path too.
+        # A manual load stores the on-disk path the resolver advertises under an alias, so
+        # match on the path too.
         if resolved is not None and _resolves_to_resident(resolved[0]):
             return
         downloaded = resolved is not None
-        # /v1/models may already have advertised this id off its own scan while the
-        # resolver index is still cold, and that is evidence too.
+        # /v1/models may have advertised this id off its own scan while the index is cold.
         advertised = _advertised_local_path(base)
         if advertised is not None and _resolves_to_resident(advertised):
             return
@@ -3888,8 +3880,7 @@ async def _reject_unservable_model(
         )
         switchable = downloaded and get_openai_auto_switch_enabled()
     except Exception as exc:
-        # Can't verify: an explicit quant still proves intent, so refuse; anything else
-        # may be a foreign label, so let it by.
+        # Can't verify: an explicit quant still proves intent, so refuse; let anything else by.
         logger.debug("unservable-model check failed for %r: %s", requested_model, exc)
         if not quantified:
             return
@@ -3897,8 +3888,7 @@ async def _reject_unservable_model(
     if not (quantified or here):
         return
     if switchable:
-        # On disk and switching allowed, so the swap failed. Answering as the resident
-        # model would be the wrong weights under the right name.
+        # On disk and switching allowed, so the swap failed: the resident model is wrong weights.
         status_code, code = 503, "model_switch_failed"
         message = (
             f"The model '{requested_model}' is downloaded, but this server could not "
@@ -3988,8 +3978,7 @@ async def _maybe_auto_switch_model(
             else None
         )
         if resolved is None:
-            # Not on disk. Opt-in: fetch in the background and ask the caller to retry,
-            # rather than silently answering from whatever is resident.
+            # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
             if auto_switch_on and not reload_only:
                 await _maybe_auto_download_model(requested_model, fastapi_request)
             # Idle-unload may have freed the model; reload exactly what it freed
@@ -4673,8 +4662,7 @@ async def _load_model_impl(
     # sampled step logs even if it reports 100% immediately (cached/small load).
     _reset_load_progress_step()
 
-    # Open a live "loading" row: discarded below if already loaded, relabelled once the
-    # real id is known, and closed on every exit by the handlers at the end of this function.
+    # Live "loading" row: discarded if already loaded, relabelled on the real id, closed on exit.
     _load_event = api_monitor.record_lifecycle(
         event = "load",
         model = _lifecycle_model_label(request.model_path, request.gguf_variant),
@@ -6289,8 +6277,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             ):
                 _display_model_id = os.path.basename(_model_id)
             elif not _native_grant_backed and _display_model_id == _model_id:
-                # No label was registered, so the raw identifier came back. Report the clean
-                # public id: an HF cache load would otherwise show the snapshot's commit sha.
+                # No label registered, so report the clean public id, not the snapshot's sha.
                 _display_model_id = _llama_public_model_id(llama_backend) or _display_model_id
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
             _audio_type = getattr(llama_backend, "_audio_type", None)
@@ -10962,6 +10949,8 @@ def _advertised_local_path(model: str) -> Optional[str]:
                 paths.setdefault(cid.strip().lower(), path)
         _ADVERTISED_CACHE.update(at = _CATALOG_CACHE["at"], paths = paths)
     return _ADVERTISED_CACHE["paths"].get(model.strip().lower())
+
+
 _CATALOG_TTL_S = 30.0
 # Per-loop lock (like _auto_switch_lock): a module-level asyncio.Lock ties its
 # waiters to the loop that first awaited it, so a second event loop awaiting it
@@ -11044,9 +11033,8 @@ async def _openai_catalog_objects() -> list[dict]:
             "object": "model",
             "created": _created,
             "owned_by": _OWNED_BY,
-            # A manual load keys the resident entry by the path basename while the
-            # catalog knows the same weights as "publisher/model", so match on the
-            # path too or the alias is advertised as not loaded.
+            # A manual load keys the resident entry by path basename while the catalog uses
+            # the alias, so match on the path or the alias reads as not loaded.
             "loaded": _resolves_to_resident(getattr(info, "path", None)),
         }
         # The id stays bare for OpenAI compat; a client appends ":<quant>" to pin one.

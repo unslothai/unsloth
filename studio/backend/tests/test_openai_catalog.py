@@ -251,9 +251,8 @@ def test_lifecycle_model_label_is_path_free():
 
 
 def test_a_standalone_gguf_does_not_advertise_a_quant_that_stops_resolving(monkeypatch):
-    # Codex P1: llama.cpp reads hf_variant off the filename for a directly loaded
-    # .gguf, but the resolver stores standalone files with no quants, so a client
-    # that pinned "<stem>:<quant>" would get model-not-found once it is not resident.
+    # llama.cpp reads hf_variant off the filename, but the resolver stores standalone files
+    # with no quants, so a pinned "<stem>:<quant>" would 404 once it is not resident.
     from core.inference.local_model_resolver import _LocalGgufEntry
 
     standalone = _LocalGgufEntry("Qwen3-Q4", "/srv/models/Qwen3-Q4.gguf", ())
@@ -272,9 +271,8 @@ def test_a_standalone_gguf_does_not_advertise_a_quant_that_stops_resolving(monke
 
 
 def test_an_alias_for_the_resident_weights_is_not_listed_as_unloaded(monkeypatch):
-    # Codex P2: an LM Studio publisher/model GGUF loaded by absolute path keys the
-    # resident entry by the path basename, so an id-only dedup emits the alias a
-    # second time marked not loaded, which is the wrong residency for those weights.
+    # A GGUF loaded by absolute path keys the resident entry by basename, so an id-only dedup
+    # would emit the alias again marked not loaded.
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama())
     monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
 

@@ -16,11 +16,8 @@ type ApiOpenAIModelList = {
 };
 
 /**
- * The models this server can serve.
- *
- * `/v1/models` rather than the hub inventory: it returns exactly the ids
- * `/v1/chat/completions` resolves against, so a snippet built from it runs as
- * printed. `/v1` accepts the UI session JWT, so `authFetch` works unchanged.
+ * The models this server can serve: `/v1/models` returns exactly the ids
+ * `/v1/chat/completions` resolves against, and accepts the UI session JWT.
  */
 export async function listOpenAIModels(): Promise<OpenAIModel[]> {
   const res = await authFetch("/v1/models");

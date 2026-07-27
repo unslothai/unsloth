@@ -34,14 +34,11 @@ class _LocalGgufEntry:
 _CACHE_TTL_S = 5.0
 _lock = threading.Lock()
 _scan: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
-# Separate from _lock on purpose: _lock is held for the whole scan, so sharing it
-# would make the request path wait on the very scan it is trying to stay off.
+# Not _lock: that is held for the whole scan, so the request path would wait on it.
 _warm_lock = threading.Lock()
 _warming = False
 _last_scan_s = 0.0
-# Rescan for at most a tenth of the time. A big install can take longer to scan
-# than the TTL, and warming on the TTL alone would then keep one thread scanning
-# more or less continuously, starving the loop it was meant to keep free.
+# Rescan at most a tenth of the time: on the TTL alone a slow scan would run continuously.
 _WARM_DUTY = 10.0
 
 

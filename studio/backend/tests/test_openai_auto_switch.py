@@ -307,9 +307,9 @@ def test_openai_compat_routes_bound_to_handlers_with_auth():
     for key, handler in expected.items():
         assert key in seen, f"route {key} is not registered"
         route = seen[key]
-        assert (
-            route.endpoint.__name__ == handler
-        ), f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        assert route.endpoint.__name__ == handler, (
+            f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        )
         deps = [d.call.__name__ for d in route.dependant.dependencies]
         assert "get_current_subject" in deps, f"{key} lost its auth dependency"
 
@@ -3009,8 +3009,7 @@ def test_require_vision_ignores_reload_stash(monkeypatch):
     monkeypatch.setattr(
         inference_route, "_target_is_vision", lambda _p: False
     )  # would reject if used
-    # 404 because the restored A is not the requested B; the restore still ran. B carries
-    # a quant, so it reads as a reference to this server, not a foreign provider label.
+    # 404 because the restored A is not the requested B, whose quant makes it a real reference.
     with pytest.raises(HTTPException):
         asyncio.run(
             inference_route._maybe_auto_switch_model(
@@ -3364,8 +3363,7 @@ def _run_responses_stream_no_model(
     active_model_name,
     resolves_to = None,
 ):
-    # Drive _responses_stream's GGUF-not-loaded guard: llama backend unloaded,
-    # inference backend maybe holding a non-GGUF model. Returns (status, detail).
+    # Drive _responses_stream's GGUF-not-loaded guard. Returns (status, detail).
     from fastapi import HTTPException
     from models.inference import ResponsesRequest, ChatMessage
 
@@ -3387,9 +3385,8 @@ def _run_responses_stream_no_model(
 
 
 def test_responses_stream_hint_matches_toggle_regardless_of_active_model(monkeypatch):
-    # The hint attaches whenever the toggle is off, even with a non-GGUF model active,
-    # since auto-switch evicts it to load a resolved GGUF. With it on the error changes
-    # kind: the name resolved to nothing local, so 404 rather than 400.
+    # The hint attaches whenever the toggle is off, whatever is active. With it on the name
+    # resolved to nothing local, so 404 rather than 400.
     off_status, hinted = _run_responses_stream_no_model(
         monkeypatch, enabled = False, active_model_name = None
     )
@@ -3416,8 +3413,7 @@ def _wire_unloaded_chat(
     enabled,
     catalog = ("org/A-GGUF", "org/B-GGUF"),
 ):
-    # Nothing loaded, so a chat request reaches the "no model loaded" error. Pin the
-    # catalog so listed ids don't depend on what is cached on the test machine.
+    # Nothing loaded, so a chat request hits "no model loaded". Pin the catalog for determinism.
     async def _catalog():
         return [{"id": mid} for mid in catalog]
 
@@ -3445,8 +3441,8 @@ def _chat_error(payload):
 
 
 def test_chat_names_undownloaded_model_404s_with_available_ids(monkeypatch):
-    # The reported bug: the named model is not on this machine, so the switch silently
-    # did nothing and /inference/load cannot fix it. Name it and list what can serve.
+    # The reported bug: the model is not here, so the switch did nothing and /inference/load
+    # cannot fix it. Name it and list what can serve.
     _wire_unloaded_chat(monkeypatch, enabled = True)
     status, detail = _chat_error(_chat_request(model = "unsloth/gemma-4-E4B-it-GGUF:UD-Q5_K_XL"))
     assert status == 404
@@ -3479,8 +3475,7 @@ def test_chat_wrong_quant_lists_the_local_quants(monkeypatch):
 
 
 def test_chat_error_unchanged_when_auto_switch_off(monkeypatch):
-    # Toggle off: nothing resolved, so "not downloaded" would be a guess. Keep the
-    # pre-existing status and text, hint included.
+    # Toggle off: nothing resolved, so keep the pre-existing status and text, hint included.
     _wire_unloaded_chat(monkeypatch, enabled = False)
     status, detail = _chat_error(_chat_request(model = "org/nope-GGUF"))
     assert status == 400
@@ -3560,8 +3555,8 @@ def test_chat_undownloaded_model_uses_the_openai_envelope(monkeypatch):
 
 
 def test_gguf_only_paths_keep_the_generic_error_for_the_resident_non_gguf_model(monkeypatch):
-    # A resident Transformers model named on a GGUF-only path: resolve_local_gguf misses,
-    # but the catalog lists that same id, so "not downloaded" would contradict itself.
+    # resolve_local_gguf misses a resident Transformers model the catalog does list, so
+    # "not downloaded" would contradict itself.
     resident = "unsloth/Qwen3.5-4B-GGUF"  # the id _run_responses_stream_no_model asks for
 
     async def _catalog():

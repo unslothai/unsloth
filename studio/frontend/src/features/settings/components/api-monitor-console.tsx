@@ -280,8 +280,7 @@ export function ApiMonitorConsole(): ReactElement {
     }
   }, []);
 
-  // /unload matches on the internal id, which the monitor response omits (it would be
-  // a host path), so read it from status the same way the chat runtime does.
+  // /unload matches on the internal id, which the monitor omits, so read it from status.
   const unloadActiveModel = useCallback(async (): Promise<void> => {
     setUnloading(true);
     try {
@@ -346,8 +345,7 @@ export function ApiMonitorConsole(): ReactElement {
   const hasActive = (data?.active_requests ?? 0) > 0;
   const entries = useMemo(() => data?.entries ?? [], [data]);
 
-  // Page 1 tracks the live list. Paging back freezes the id order: rows keep
-  // refreshing, but new traffic must not shove history down a page while it is read.
+  // Page 1 tracks the live list; paging back freezes the id order so history holds still.
   const [page, setPage] = useState(0);
   const [frozenIds, setFrozenIds] = useState<string[] | null>(null);
   const byId = useMemo(
@@ -475,8 +473,7 @@ export function ApiMonitorConsole(): ReactElement {
           <div className="rounded-full border border-border px-2.5 py-1 text-xs capitalize text-muted-foreground">
             {statusLabel}
           </div>
-          {/* Always rendered, disabled when idle: hiding the only manual release path
-              made it invisible exactly when someone goes looking for it. */}
+          {/* Always rendered, disabled when idle: the only manual release must stay visible. */}
           <Button
             type="button"
             variant="ghost"
@@ -546,9 +543,8 @@ export function ApiMonitorConsole(): ReactElement {
         )}
       </div>
 
-      {/* Also whenever a snapshot is frozen: retention evicts frozen ids as new traffic
-          arrives, so the frozen list can shrink below one page. Hiding the pager then
-          strands the console on a stale snapshot with no way back to the live list. */}
+      {/* Also while frozen: retention can shrink that list below one page, and hiding the
+          pager would strand the console on a stale snapshot. */}
       {ordered.length > PAGE_SIZE || frozenIds !== null ? (
         <div className="flex items-center justify-between gap-2 border-t border-border/60 px-4 py-2 text-xs text-muted-foreground">
           <span>

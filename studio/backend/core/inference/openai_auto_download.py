@@ -72,8 +72,7 @@ class _Active:
 _lock = threading.Lock()
 _active: Optional[_Active] = None
 
-# Repos the Hub says this server cannot serve. Without it, every LiteLLM or OpenRouter
-# "vendor/model" request pays a Hub probe before falling through to the resident model.
+# Repos the Hub says are not servable, so a "vendor/model" miss doesn't re-probe every request.
 _NOT_SERVABLE_TTL_S = 10 * 60
 _NOT_SERVABLE_MAX = 256
 _cache_lock = threading.Lock()
@@ -385,8 +384,7 @@ async def maybe_auto_download(
     if _is_not_servable(repo_id, hf_token) and not looks_like_quant(wanted_variant):
         return None
 
-    # Adopt or reject against the single in-flight slot before touching the network, so
-    # retries during a long download stay free.
+    # Settle the single-flight slot before the network, so retries during a download stay cheap.
     with _lock:
         current = _active
         if current is not None and current.repo_id == repo_id:
@@ -408,8 +406,7 @@ async def maybe_auto_download(
 
     if adopted is not None:
         if adopted.variant is None:
-            # Still probing: no job yet, and a stale whole-repo error would
-            # release the slot the probe is using.
+            # Still probing: no job yet, and a stale whole-repo error would free the probe's slot.
             return _downloading_refusal(adopted.repo_id, None)
         state, error = await _job_state(adopted.repo_id, adopted.variant)
         if state in ("running", "cancelling", "unknown"):
@@ -438,8 +435,7 @@ async def maybe_auto_download(
             repo_id, wanted_variant, requested_model, hf_token, provisional
         )
     except BaseException:
-        # BaseException, not Exception: CancelledError is not an Exception, so a request
-        # cancelled mid-probe would otherwise wedge the provisional slot until restart.
+        # Not `except Exception`: a cancel mid-probe would otherwise wedge the provisional slot.
         _release(provisional)
         raise
 
@@ -468,8 +464,7 @@ async def _admit_and_start(
             return _gated_refusal(repo_id)
         if status == 404:
             _mark_not_servable(repo_id, hf_token)
-            # An id the Hub does not know is a foreign label, not a miss: fall through to the
-            # resident model. An explicit quant is a deliberate GGUF reference, so answer it.
+            # Unknown to the Hub reads as a foreign label; only an explicit quant makes it ours.
             if not looks_like_quant(wanted_variant):
                 return None
             # A private repo reads as absent without a token; don't confirm either way.
@@ -490,8 +485,7 @@ async def _admit_and_start(
         )
 
     if getattr(info, "gated", False) and await asyncio.to_thread(_auth_denied, repo_id, hf_token):
-        # The Hub serves metadata for a gated repo without granting its files, so a probe that
-        # returned is not proof of access. Unchecked, the config read below misreports it.
+        # Metadata for a gated repo is not file access; unchecked, the config read below lies.
         _release(active)
         return _gated_refusal(repo_id)
 
@@ -510,8 +504,7 @@ async def _admit_and_start(
             ),
         )
 
-    # trust_remote_code gate. _config_has_auto_map is tri-state, so refuse on True and on None
-    # (unreadable); _requires_trust_remote_code_for_model swallows errors into False.
+    # trust_remote_code gate: _config_has_auto_map is tri-state, so refuse on True and on None.
     from utils.security.consent import _config_has_auto_map
 
     has_auto_map = await asyncio.to_thread(_config_has_auto_map, repo_id, hf_token)
@@ -581,8 +574,7 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
         return lowered.get(wanted.strip().lower())
     from utils.models.model_config import _pick_best_gguf
 
-    # _pick_best_gguf ranks filenames, so feed it "<label>.gguf". It matches its
-    # upper-case preference tokens case-sensitively, so upper-case and map back.
+    # _pick_best_gguf ranks filenames and matches upper-case tokens, so feed "<LABEL>.gguf".
     synthetic: dict[str, str] = {}
     for name in variants:
         synthetic.setdefault(f"{name.upper()}.gguf", name)
@@ -630,8 +622,7 @@ async def _dispatch(
             message = f"Could not start downloading '{requested_model}'.",
         )
 
-    # The service can refuse without raising (accepted=False, no worker launched). Taking the
-    # slot would promise a download that does not exist, so report the conflict instead.
+    # accepted=False means no worker launched, so report the conflict instead of taking the slot.
     if isinstance(dispatched, dict) and not dispatched.get("accepted", True):
         _release(active)
         logger.info("auto-download: dispatch refused for %s (%s)", label, dispatched.get("state"))

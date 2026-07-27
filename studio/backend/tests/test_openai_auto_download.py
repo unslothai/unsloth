@@ -67,8 +67,7 @@ def _clean_slot():
     from core.inference import local_model_resolver
 
     auto_dl.reset_for_tests()
-    # The hook warms the index in the background; drop it so one test's scan is
-    # never handed to the next one inside the TTL.
+    # The hook warms the index in the background; drop it so a scan never leaks between tests.
     local_model_resolver.invalidate_index()
     yield
     auto_dl.reset_for_tests()
@@ -287,8 +286,7 @@ def test_missing_repo_is_404_without_confirming_existence(hub):
 
 def test_an_id_the_hub_does_not_know_falls_through(hub):
     hub["raise"] = _hub_error(_repo_not_found_error(), 404, "nope")
-    # LiteLLM and OpenRouter name every provider "vendor/model", so a namespace is not
-    # intent: an id the Hub never heard of stays a foreign label the resident model answers.
+    # "vendor/model" is how LiteLLM names providers, so an unknown id stays a foreign label.
     for foreign in (
         "anthropic/claude-3.5-sonnet",
         "openai/gpt-4o",
@@ -308,8 +306,7 @@ def test_a_foreign_id_is_probed_once_then_cached(hub):
 
 
 def test_an_anonymous_404_does_not_silence_an_authorised_caller(hub):
-    # The Hub 404s a private repo the caller cannot see, so caching that verdict globally
-    # would let one anonymous request hide it from the token holder for the whole TTL.
+    # The Hub 404s a private repo, so a global verdict would hide it from the token holder.
     hub["raise"] = _hub_error(_repo_not_found_error(), 404, "nope")
     assert _run("myorg/private-GGUF") is None
     assert hub["probes"] == 1
@@ -331,8 +328,7 @@ def test_the_cache_is_per_token(hub):
 
 
 def test_the_gated_message_names_the_header_that_actually_works(hub):
-    # Auto-download never uses the server's token, so naming a Studio setting would loop
-    # the caller on the same 403.
+    # Auto-download never uses the server's token, so a Studio setting would loop the caller.
     hub["info"] = _Info(_gguf_repo_info().siblings, gated = "manual")
     hub["auth_denied"] = True
     refusal = _run("meta-llama/Llama-2-7b-hf")
@@ -347,8 +343,7 @@ def test_gated_repo_is_403(hub):
 
 
 def test_a_gated_repo_that_still_returns_metadata_is_403(hub):
-    # Metadata for a gated repo is not file access, so report the licence gate rather than
-    # the custom-code refusal the unreadable config would otherwise produce.
+    # Metadata for a gated repo is not file access, so report the licence gate, not custom code.
     hub["info"] = _Info(_gguf_repo_info().siblings, gated = "manual")
     hub["auth_denied"] = True
     refusal = _run("meta-llama/Llama-2-7b-hf")
@@ -473,8 +468,7 @@ def test_hf_token_is_passed_to_the_worker(hub):
 
 
 def test_a_refused_dispatch_is_not_reported_as_downloading(hub):
-    # The hub service can decline a claim without raising (accepted=False, no worker), so
-    # the caller must hear "busy", not a download that was never started.
+    # The hub service can decline without raising (accepted=False), so the caller hears "busy".
     hub["dispatch_result"] = {
         "job_key": "unsloth/x-gguf::ud-q5_k_xl",
         "state": "running",  # the blocking job's state, not ours
@@ -492,16 +486,14 @@ def test_a_refused_dispatch_is_not_reported_as_downloading(hub):
 
 
 def test_an_adoptable_dispatch_still_tracks_the_existing_job(hub):
-    # accepted=True with claimed=False means this repo+quant is already downloading
-    # (started from the Hub UI); attach to it rather than refuse.
+    # accepted=True with claimed=False means it is already downloading (Hub UI); attach to it.
     hub["dispatch_result"] = {"job_key": "k", "state": "running", "accepted": True}
     assert _run("unsloth/x-GGUF:UD-Q5_K_XL").code == "model_downloading"
     assert len(hub["watched"]) == 1
 
 
 def test_a_failed_status_probe_does_not_end_the_watch(hub, monkeypatch):
-    # A probe that raised says nothing about the worker. Reading it as "idle" freed the
-    # slot under a live download, admitting a second multi-GB fetch alongside the first.
+    # A probe that raised says nothing: reading it as "idle" freed the slot mid-download.
     from hub.services.models import downloads
 
     async def _boom(repo_id, gguf_variant = ""):
@@ -556,8 +548,7 @@ def test_a_stale_watcher_cannot_release_a_newer_download(hub, monkeypatch):
 
 
 def test_a_cancelled_admission_does_not_wedge_the_slot(hub):
-    # CancelledError is a BaseException, so an `except Exception` cleanup would leave the
-    # provisional slot installed and refuse every later request.
+    # CancelledError is a BaseException, so an `except Exception` cleanup would wedge the slot.
     def _cancel():
         raise asyncio.CancelledError()
 
@@ -750,8 +741,7 @@ def test_downloaded_but_auto_switch_off_says_so(monkeypatch):
 
 
 def test_a_failed_switch_is_reported_not_answered_by_the_resident_model(monkeypatch):
-    # On disk and switching allowed means the swap failed, so answering from the resident
-    # model would be the wrong weights under the right name.
+    # On disk and switching allowed means the swap failed; the resident model is wrong weights.
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
     with pytest.raises(HTTPException) as excinfo:
         _reject("unsloth/B-GGUF", loaded, monkeypatch, downloaded = True, auto_switch = True)
@@ -770,8 +760,7 @@ def test_a_failed_switch_is_reported_not_answered_by_the_resident_model(monkeypa
     ],
 )
 def test_a_provider_prefixed_label_still_reaches_the_resident_model(foreign, monkeypatch):
-    # LiteLLM and OpenRouter address every provider as "vendor/model", so treating a
-    # namespace as a concrete reference would 404 all of them.
+    # A namespace is how LiteLLM addresses providers, so reading it as a reference 404s them.
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
     assert _reject(foreign, loaded, monkeypatch) is None
 
@@ -793,8 +782,7 @@ def test_a_repo_that_is_here_is_refused_without_a_quant(monkeypatch):
 
 
 def test_a_diagnosis_failure_does_not_serve_the_wrong_model(monkeypatch):
-    # The mismatch is established before the diagnosis runs, so only the wording is
-    # uncertain; falling through here would answer as another model.
+    # The mismatch is already established, so falling through would answer as another model.
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
     monkeypatch.setattr(
@@ -941,8 +929,7 @@ def test_every_other_bad_key_stays_indistinguishable():
 
 
 def test_the_servers_own_hf_token_is_never_borrowed(monkeypatch):
-    # The repo is named by whoever holds an API key, so fetching under the owner's Hub
-    # identity would let that key pull the owner's private repos.
+    # The repo is named by an API key holder, so the owner's Hub identity must not be used.
     import routes.settings as settings_route
 
     monkeypatch.setattr(settings_route, "_ambient_hf_token", lambda: "hf_owner_secret")
@@ -1118,10 +1105,7 @@ def test_a_resolver_alias_for_the_resident_model_is_not_refused(monkeypatch):
 
 
 def test_the_request_path_never_triggers_a_model_index_rescan(monkeypatch):
-    # The scan walks several model dirs and HF caches under a lock every other
-    # caller queues behind, and takes seconds on a large install. With
-    # auto-switch off this hook is the only thing between a request and that
-    # scan, so it must answer from the last built index instead.
+    # The scan takes seconds under a lock, so this hook must answer from the last built index.
     from core.inference import local_model_resolver as resolver
 
     scans = []
@@ -1151,10 +1135,8 @@ def test_the_request_path_never_triggers_a_model_index_rescan(monkeypatch):
 
 
 def test_a_cold_index_still_refuses_an_explicit_quant_and_warms_in_the_background(monkeypatch):
-    # Before the first scan there is no evidence of what is on disk, but an explicit
-    # quant is evidence enough on its own: answering it from the resident model's own
-    # quant would be the wrong weights under the right name. A bare name proves
-    # nothing, so it still falls through. Either way the warm happens off this request.
+    # A cold index has no evidence of what is on disk, but an explicit quant is evidence on
+    # its own; a bare name proves nothing. Either way the warm happens off this request.
     from core.inference import local_model_resolver as resolver
 
     warmed = []
@@ -1176,9 +1158,7 @@ def test_a_cold_index_still_refuses_an_explicit_quant_and_warms_in_the_backgroun
 
 
 def test_warming_the_index_never_waits_on_the_scan_lock(monkeypatch):
-    # _lock is held for the whole scan. If the request path contended for it, the
-    # first cold request would park every later one on the event loop for the length
-    # of the very scan it is meant to stay off.
+    # _lock is held for the whole scan, so contending for it would park every later request.
     import threading
     import time as _time
 
@@ -1195,8 +1175,7 @@ def test_warming_the_index_never_waits_on_the_scan_lock(monkeypatch):
         elapsed = _time.perf_counter() - started
     finally:
         released.set()
-        # Join before the monkeypatches unwind, or the scan finishes against the real
-        # module state and publishes its stub result over it.
+        # Join before the monkeypatches unwind, or the scan publishes its stub result over them.
         for _ in range(500):
             if not resolver._warming:
                 break
@@ -1205,9 +1184,8 @@ def test_warming_the_index_never_waits_on_the_scan_lock(monkeypatch):
 
 
 def test_a_stale_index_is_refreshed_so_a_hub_download_becomes_visible(monkeypatch):
-    # Only the API auto-download watcher calls invalidate_index. A model fetched in
-    # the Hub UI has no such hook, so if the warm only ever ran once this path would
-    # never see it and would keep answering from the resident model.
+    # Only the auto-download watcher calls invalidate_index, so a Hub UI download is seen
+    # only if the warm can run again.
     from core.inference import local_model_resolver as resolver
 
     scans = []
@@ -1223,10 +1201,8 @@ def test_a_stale_index_is_refreshed_so_a_hub_download_becomes_visible(monkeypatc
 
 
 def test_an_id_v1_models_advertised_is_refused_before_the_resolver_warms(monkeypatch):
-    # Codex P1: /v1/models scans on its own schedule, so it can advertise an
-    # unloaded local GGUF while the resolver index is still cold. A bare id carries
-    # no quant to refuse on, so without the catalog as evidence that request would
-    # be answered by the unrelated resident model.
+    # /v1/models can advertise an unloaded local GGUF while the resolver index is cold. A bare
+    # id has no quant to refuse on, so without that evidence the resident model would answer.
     from core.inference import local_model_resolver as resolver
 
     monkeypatch.setattr(resolver, "_scan", (0.0, {}))
@@ -1252,8 +1228,8 @@ def test_an_id_v1_models_advertised_is_refused_before_the_resolver_warms(monkeyp
 
 
 def test_an_advertised_alias_for_the_resident_weights_is_still_served(monkeypatch):
-    # The flip side: the catalog can list the resident weights under an alias the
-    # loaded entry does not answer to. That is not evidence of a different model.
+    # The flip side: the catalog can list the resident weights under an alias, which is not
+    # evidence of a different model.
     from core.inference import local_model_resolver as resolver
 
     monkeypatch.setattr(resolver, "_scan", (0.0, {}))
