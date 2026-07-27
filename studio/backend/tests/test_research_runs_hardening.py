@@ -579,9 +579,13 @@ def _stream_body() -> str:
     return f"data: {chunk}\n\ndata: [DONE]\n\n"
 
 
-def _run_stream(supervisor) -> tuple:
+def _run_stream(supervisor, timeout_seconds: float = 30.0) -> tuple:
     return asyncio.run(
-        supervisor._stream_completion(_waiting_run(30.0), [{"role": "user"}], report_progress = False)
+        supervisor._stream_completion(
+            _waiting_run(timeout_seconds),
+            [{"role": "user"}],
+            report_progress = False,
+        )
     )
 
 
@@ -674,6 +678,59 @@ def test_stream_completion_never_retries_once_the_report_has_streamed(monkeypatc
         _run_stream(supervisor)
     assert len(sent) == 1
     assert delays == []
+
+
+def test_stream_completion_rejects_in_band_error_after_partial_report(monkeypatch):
+    chunk = json.dumps({"choices": [{"delta": {"content": "half"}}]})
+    error = json.dumps({"error": {"message": "generation failed"}})
+    stream = f"data: {chunk}\n\ndata: {error}\n\ndata: [DONE]\n\n"
+    sent = _install_fake_client(monkeypatch, [_response(200, body = stream)])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(RuntimeError, match = "Local model stream failed"):
+        _run_stream(supervisor)
+
+    assert len(sent) == 1
+
+
+def test_stream_completion_timeout_is_absolute_despite_keepalives(monkeypatch):
+    state = {"iteratorClosed": False, "responseClosed": False}
+
+    class _KeepaliveStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            state["responseClosed"] = True
+
+        async def aiter_lines(self):
+            try:
+                while True:
+                    await asyncio.sleep(0.01)
+                    yield ": keepalive"
+            finally:
+                state["iteratorClosed"] = True
+
+    sent = _install_fake_client(monkeypatch, [_KeepaliveStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    async def run():
+        return await asyncio.wait_for(
+            supervisor._stream_completion(
+                _waiting_run(0.05),
+                [{"role": "user"}],
+                report_progress = False,
+            ),
+            timeout = 1,
+        )
+
+    with pytest.raises(httpx.ReadTimeout):
+        asyncio.run(run())
+
+    assert len(sent) == 1
+    assert state == {"iteratorClosed": True, "responseClosed": True}
 
 
 def test_stream_completion_model_waits_do_not_refund_transport_attempts(monkeypatch):

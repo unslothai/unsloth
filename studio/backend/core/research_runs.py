@@ -1448,8 +1448,12 @@ class ResearchSupervisor:
             last_progress_flush = asyncio.get_running_loop().time()
 
         try:
-            timeout = httpx.Timeout(float(config["budgets"]["modelTimeoutSeconds"]))
-            async with httpx.AsyncClient(timeout = timeout, trust_env = False) as client:
+            model_timeout = float(config["budgets"]["modelTimeoutSeconds"])
+            timeout = httpx.Timeout(model_timeout)
+            async with (
+                asyncio.timeout(model_timeout),
+                httpx.AsyncClient(timeout = timeout, trust_env = False) as client,
+            ):
                 response: httpx.Response | None = None
                 send_task: asyncio.Task | None = None
                 model_waits = 0
@@ -1517,6 +1521,8 @@ class ResearchSupervisor:
                             continue
                         try:
                             chunk = json.loads(data)
+                            if isinstance(chunk, dict) and "error" in chunk:
+                                raise RuntimeError("Local model stream failed")
                             choice = chunk.get("choices", [{}])[0]
                             delta = choice.get("delta", {})
                             if isinstance(choice.get("finish_reason"), str):
@@ -1561,6 +1567,8 @@ class ResearchSupervisor:
                         await response.aclose()
             await flush_progress()
             return report, reasoning, finish_reason
+        except TimeoutError as exc:
+            raise httpx.ReadTimeout("Local model request exceeded its wall-clock timeout") from exc
         finally:
             try:
                 await asyncio.to_thread(auth_storage.revoke_internal_api_key, int(key["id"]))
