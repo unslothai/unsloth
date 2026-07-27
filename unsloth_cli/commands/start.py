@@ -1201,7 +1201,6 @@ def _require_studio(
 
 def _studio_auth_root() -> Path:
     from unsloth_cli.commands.studio import STUDIO_HOME
-
     return STUDIO_HOME / "auth"
 
 
@@ -2391,7 +2390,6 @@ def _managed_node_tools() -> Optional[tuple[Path, Path, bool]]:
     try:
         ensure_studio_backend_path()
         from utils.node_runtime import managed_node_binary, resolve_node_executable
-
         node = Path(managed_node_binary())
     except (ImportError, OSError, RuntimeError, TypeError, ValueError):
         return None

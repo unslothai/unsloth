@@ -181,7 +181,9 @@ def test_install_agent_windows_failure_hints_execution_policy(monkeypatch, capsy
     _simulate_windows(monkeypatch)
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
     monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
-    monkeypatch.setattr(start, "_npm_executable", lambda: r"C:\Users\me\AppData\Roaming\npm\npm.cmd")
+    monkeypatch.setattr(
+        start, "_npm_executable", lambda: r"C:\Users\me\AppData\Roaming\npm\npm.cmd"
+    )
     monkeypatch.setattr(
         start.subprocess,
         "run",
@@ -1223,7 +1225,9 @@ def test_missing_pi_subagent_extension_fails_before_install_or_connect(monkeypat
     monkeypatch.setattr(
         start,
         "_connect",
-        lambda *args, **kwargs: pytest.fail("local prerequisites must be checked before connection"),
+        lambda *args, **kwargs: pytest.fail(
+            "local prerequisites must be checked before connection"
+        ),
     )
 
     result = CliRunner().invoke(start.start_app, ["pi", "--as-subagent"])
