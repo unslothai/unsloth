@@ -14752,9 +14752,7 @@ _JSON_SCHEMA_SINGLE_KEYWORDS = frozenset(
 )
 _JSON_SCHEMA_LIST_KEYWORDS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
 _LLAMA_GRAMMAR_MAX_REPETITION = 2000
-_JSON_SCHEMA_REPETITION_KEYWORDS = frozenset(
-    {"maxItems", "maxLength", "minItems", "minLength"}
-)
+_JSON_SCHEMA_REPETITION_KEYWORDS = frozenset({"maxItems", "maxLength", "minItems", "minLength"})
 
 
 def _llama_compatible_tool_schema(schema):
@@ -14804,9 +14802,7 @@ def _llama_compatible_tool_schema(schema):
     for keyword in _JSON_SCHEMA_LIST_KEYWORDS:
         children = compatible.get(keyword)
         if isinstance(children, list):
-            compatible[keyword] = [
-                _llama_compatible_tool_schema(value) for value in children
-            ]
+            compatible[keyword] = [_llama_compatible_tool_schema(value) for value in children]
 
     return compatible
 
