@@ -116,6 +116,22 @@ def test_windows_vulkan_picks_vulkan():
     assert _resolve("Windows", "AMD64", "vulkan") == "sd-master-8caa3f9-bin-win-vulkan-x64.zip"
 
 
+def test_windows_arm64_takes_no_x64_build():
+    """An x64 zip cannot run natively on a Windows arm64 host. Reporting no match lets the caller
+    fall back instead of downloading and installing a binary that fails on first launch."""
+    for accel in ("auto", "cuda", "vulkan", "rocm"):
+        assert _resolve("Windows", "ARM64", accel) is None
+        assert _resolve("Windows", "aarch64", accel) is None
+
+
+def test_windows_arm64_picks_an_arm64_build_when_one_exists():
+    assets = [*_ASSETS, "sd-master-8caa3f9-bin-win-avx2-arm64.zip"]
+    assert (
+        resolve_release_asset(assets, system = "Windows", machine = "ARM64", accelerator = "auto")
+        == "sd-master-8caa3f9-bin-win-avx2-arm64.zip"
+    )
+
+
 # ── cudart helper archive is never chosen as the engine ─────────────────────
 
 

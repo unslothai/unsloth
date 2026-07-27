@@ -171,6 +171,40 @@ def _sanitize(token: str) -> str:
     return re.sub(r"[^a-z0-9.]+", "-", str(token).lower()).strip("-")
 
 
+def _hub_cache_roots() -> list[str]:
+    """Hub cache roots to look a repo up in, ACTIVE one first.
+
+    Studio can move its cache during a session (Settings), and loading follows the live setting,
+    but ``huggingface_hub.constants.HF_HUB_CACHE`` is a snapshot of the environment at import
+    time. Reading only that constant left the revision "unresolved" (or pinned to a snapshot in
+    the previous root) once the cache moved, so pulling a new revision of the same checkpoint no
+    longer changed this key and a warm run silently reused the old embeddings and latents. The
+    constant stays as a fallback, since the trainer subprocess may run without Studio's settings
+    module importable."""
+    import os  # noqa: PLC0415 — keep the module import list light for the subprocess
+
+    roots: list[str] = []
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache  # noqa: PLC0415
+
+        active = str(active_hf_hub_cache() or "").strip()
+        if active:
+            roots.append(active)
+    except Exception:  # noqa: BLE001 -- settings unavailable in the subprocess: fall back
+        pass
+    for candidate in (os.environ.get("HF_HUB_CACHE"), os.environ.get("HUGGINGFACE_HUB_CACHE")):
+        if candidate and candidate.strip() and candidate.strip() not in roots:
+            roots.append(candidate.strip())
+    try:
+        from huggingface_hub import constants  # noqa: PLC0415
+
+        if constants.HF_HUB_CACHE and str(constants.HF_HUB_CACHE) not in roots:
+            roots.append(str(constants.HF_HUB_CACHE))
+    except Exception:  # noqa: BLE001 -- no hub package: whatever we collected above stands
+        pass
+    return roots
+
+
 def source_revision(ref: Any) -> str:
     """Revision/content marker for a checkpoint reference, resolved without loading it.
 
@@ -208,21 +242,20 @@ def source_revision(ref: Any) -> str:
                         )
             return f"dir-{hashlib.sha256('|'.join(sorted(parts)).encode()).hexdigest()[:16]}"
         if "/" in name:
-            from huggingface_hub import constants  # noqa: PLC0415
-
             org, _, repo = name.partition("/")
-            base = os.path.join(constants.HF_HUB_CACHE, f"models--{org}--{repo}")
-            ref_file = os.path.join(base, "refs", "main")
-            if os.path.isfile(ref_file):
-                with open(ref_file, encoding = "utf-8") as fh:
-                    sha = fh.read().strip()
-                if sha:
-                    return f"rev-{sha[:16]}"
-            snaps = os.path.join(base, "snapshots")
-            if os.path.isdir(snaps):
-                names = sorted(os.listdir(snaps))
-                if len(names) == 1:
-                    return f"rev-{names[0][:16]}"
+            for root in _hub_cache_roots():
+                base = os.path.join(root, f"models--{org}--{repo}")
+                ref_file = os.path.join(base, "refs", "main")
+                if os.path.isfile(ref_file):
+                    with open(ref_file, encoding = "utf-8") as fh:
+                        sha = fh.read().strip()
+                    if sha:
+                        return f"rev-{sha[:16]}"
+                snaps = os.path.join(base, "snapshots")
+                if os.path.isdir(snaps):
+                    names = sorted(os.listdir(snaps))
+                    if len(names) == 1:
+                        return f"rev-{names[0][:16]}"
         return "unresolved"
     except Exception:  # noqa: BLE001 — best-effort, never block a run
         return "unresolved"

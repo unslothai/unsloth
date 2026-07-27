@@ -6,6 +6,7 @@ Training API routes
 """
 
 import sys
+import threading
 from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -1580,6 +1581,38 @@ def _resolve_dataset_caption(
     return caption
 
 
+_DATASET_IMPORT_LOCKS: Dict[str, "threading.Lock"] = {}
+_DATASET_IMPORT_LOCKS_GUARD = threading.Lock()
+
+
+def _dataset_import_lock(folder: Path) -> "threading.Lock":
+    """One lock per dataset folder, so two imports cannot fill the same empty name at once.
+
+    Keyed by the resolved path (the same folder can be reached by different names), and kept for
+    the process lifetime: there are a handful of dataset folders and a Lock is tiny, while
+    dropping one while another thread holds it would defeat the point."""
+    key = str(folder.resolve(strict = False))
+    with _DATASET_IMPORT_LOCKS_GUARD:
+        lock = _DATASET_IMPORT_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _DATASET_IMPORT_LOCKS[key] = lock
+        return lock
+
+
+def _import_response(entry: dict, folder: Path, *, imported: int) -> "DiffusionDatasetImportResponse":
+    summary = _diffusion_dataset_summary(folder)
+    return DiffusionDatasetImportResponse(
+        name = folder.name,
+        path = str(folder),
+        image_count = summary.image_count,
+        caption_count = summary.caption_count,
+        imported = imported,
+        license = entry["license"],
+        source_repo = entry["repo"],
+    )
+
+
 def _diffusion_dataset_summary(folder: Path) -> DiffusionDatasetSummary:
     # Count an image as captioned only when it resolves to a NON-EMPTY caption via the same sidecar
     # over metadata precedence the trainer uses: an empty tombstone sidecar shadows a metadata row and
@@ -2448,13 +2481,38 @@ async def import_diffusion_dataset_example(
     folder = _resolve_dataset_folder(body.name or entry["id"], must_exist = False)
 
     def do_import() -> DiffusionDatasetImportResponse:
+        folder.mkdir(parents = True, exist_ok = True)
+        if _diffusion_dataset_summary(folder).image_count > 0:
+            return _import_response(entry, folder, imported = 0)
+        # One import at a time per dataset folder. The training interlock COUNTS mutations rather
+        # than excluding them, so two imports of different examples into the same empty name both
+        # passed the emptiness check; the loser then merged its files into the winner's folder,
+        # overwriting same-numbered images and leaving a dataset whose images and captions came
+        # from two sources. Refusing the second is honest: the first is already filling that name.
+        lock = _dataset_import_lock(folder)
+        if not lock.acquire(blocking = False):
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    f"An import into '{folder.name}' is already running. Wait for it to finish, "
+                    "then reload the dataset list."
+                ),
+            )
+        try:
+            return _do_import_locked(entry, folder)
+        finally:
+            lock.release()
+
+    def _do_import_locked(entry: dict, folder: Path) -> DiffusionDatasetImportResponse:
         import os
         import shutil
         import tempfile
 
-        folder.mkdir(parents = True, exist_ok = True)
-        existing = _diffusion_dataset_summary(folder)
         imported = 0
+        # Re-read under the lock: a winner may have promoted its staging dir while this request
+        # was checking, so the folder may no longer be empty. Returning it as-is matches the
+        # idempotent path rather than mixing two imports.
+        existing = _diffusion_dataset_summary(folder)
         if existing.image_count == 0:
             cap = int(entry["image_cap"])
             # Materialize into a private staging dir and promote into the dataset folder only after the whole
@@ -2495,15 +2553,6 @@ async def import_diffusion_dataset_example(
                     os.replace(str(staging), str(folder))
             finally:
                 shutil.rmtree(staging, ignore_errors = True)
-        summary = _diffusion_dataset_summary(folder)
-        return DiffusionDatasetImportResponse(
-            name = folder.name,
-            path = str(folder),
-            image_count = summary.image_count,
-            caption_count = summary.caption_count,
-            imported = imported,
-            license = entry["license"],
-            source_repo = entry["repo"],
-        )
+        return _import_response(entry, folder, imported = imported)
 
     return await asyncio.to_thread(do_import)

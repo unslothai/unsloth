@@ -729,3 +729,57 @@ def test_import_preserves_unrelated_files_when_folder_not_empty(client, ds_root,
     assert r.json()["imported"] == 3
     assert sorted(p.name for p in folder.glob("*.png")) == [f"img_{i:04d}.png" for i in range(3)]
     assert (folder / "notes.md").read_text(encoding = "utf-8") == "keep me"
+
+
+def test_a_second_concurrent_import_of_the_same_name_is_refused(client, ds_root, monkeypatch):
+    """The training interlock counts mutations rather than excluding them, so two imports into the
+    same empty name both got through; the loser then merged its files into the winner's folder and
+    produced a dataset built from two sources. The second request is refused instead."""
+    import routes.training as training_route
+
+    _install_fake_load_dataset(monkeypatch, n_rows = 3)
+    folder = ds_root / "my-tux"
+    folder.mkdir(parents = True)
+    # Stand in for the in-flight import: the lock is held for the whole materialize + promote.
+    held = training_route._dataset_import_lock(folder)
+    assert held.acquire(blocking = False)
+    try:
+        r = client.post(
+            "/api/train/diffusion/dataset/import-example",
+            json = {"id": "tuxemon", "name": "my-tux"},
+        )
+    finally:
+        held.release()
+    assert r.status_code == 409, r.text
+    assert "already running" in r.json()["detail"]
+    # Nothing was written into the folder the other import owns.
+    assert list(folder.glob("*.png")) == []
+
+    # Once it is free the same request imports normally.
+    ok = client.post(
+        "/api/train/diffusion/dataset/import-example",
+        json = {"id": "tuxemon", "name": "my-tux"},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["imported"] == 3
+
+
+def test_an_import_into_a_folder_filled_meanwhile_does_not_merge(client, ds_root, monkeypatch):
+    """The re-check under the lock: a request that waited while another import promoted its
+    staging dir must return the folder as-is, not move its own files on top."""
+    import routes.training as training_route
+
+    _install_fake_load_dataset(monkeypatch, n_rows = 3)
+    folder = ds_root / "my-tux"
+    folder.mkdir(parents = True)
+    (folder / "img_0000.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 16)
+    (folder / "img_0000.txt").write_text("from the first import", encoding = "utf-8")
+
+    r = client.post(
+        "/api/train/diffusion/dataset/import-example",
+        json = {"id": "tuxemon", "name": "my-tux"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["imported"] == 0
+    assert (folder / "img_0000.txt").read_text(encoding = "utf-8") == "from the first import"
+    assert not training_route._dataset_import_lock(folder).locked()

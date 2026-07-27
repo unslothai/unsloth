@@ -292,3 +292,59 @@ def test_source_revision_marks_a_dir_update_and_never_raises(tmp_path):
     assert source_revision(str(d)) != third
     for ref in (None, "", "no/such/repo-xyz", "/does/not/exist", 7):
         assert isinstance(source_revision(ref), str)
+
+
+def test_source_revision_reads_the_active_hub_cache(tmp_path, monkeypatch):
+    """Studio can move its HF cache mid-session and loading follows the live setting, but
+    huggingface_hub's HF_HUB_CACHE constant is a snapshot from import time. Reading only that left
+    the marker unresolved (or pinned to the old root), so pulling a new revision of the same
+    checkpoint stopped invalidating the conditioning cache and a warm run reused stale latents."""
+    from core.training import diffusion_train_extras as extras
+
+    old_root = tmp_path / "old" / "hub"
+    new_root = tmp_path / "new" / "hub"
+    for root, sha in ((old_root, "a" * 40), (new_root, "b" * 40)):
+        refs = root / "models--org--ckpt" / "refs"
+        refs.mkdir(parents = True)
+        (refs / "main").write_text(sha, encoding = "utf-8")
+
+    monkeypatch.setattr(extras, "_hub_cache_roots", lambda: [str(new_root), str(old_root)])
+    assert extras.source_revision("org/ckpt") == f"rev-{'b' * 16}"
+
+    monkeypatch.setattr(extras, "_hub_cache_roots", lambda: [str(old_root)])
+    assert extras.source_revision("org/ckpt") == f"rev-{'a' * 16}"
+
+
+def test_hub_cache_roots_puts_the_active_studio_cache_first(monkeypatch, tmp_path):
+    from core.training import diffusion_train_extras as extras
+    from utils import hf_cache_settings
+
+    active = tmp_path / "studio" / "hub"
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: str(active))
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "env" / "hub"))
+
+    roots = extras._hub_cache_roots()
+    assert roots and roots[0] == str(active)
+    # The environment root is still consulted, just after the live setting.
+    assert str(tmp_path / "env" / "hub") in roots
+
+
+def test_hub_cache_roots_survives_without_studio_settings(monkeypatch, tmp_path):
+    # The trainer subprocess may run without Studio's settings module importable; the env and the
+    # library constant still have to work.
+    import builtins
+
+    from core.training import diffusion_train_extras as extras
+
+    real_import = builtins.__import__
+
+    def _blocked(name, *args, **kwargs):
+        if name == "utils.hf_cache_settings":
+            raise ImportError("no studio settings here")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked)
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "env" / "hub"))
+    roots = extras._hub_cache_roots()
+    monkeypatch.setattr(builtins, "__import__", real_import)
+    assert str(tmp_path / "env" / "hub") in roots

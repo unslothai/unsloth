@@ -1197,6 +1197,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   );
   // Guards a "load more" so a fast scroll can't fire several at once.
   const loadingMore = useRef(false);
+  // The gallery strip, used as the IntersectionObserver root so a tile's PNG is fetched as it
+  // nears view instead of every tile of every page up front.
+  const stripRef = useRef<HTMLDivElement | null>(null);
   // False once the page truly unmounts (app close / chat-only eject). The page now
   // stays mounted across tab switches, so a switch does NOT flip this -- a batch keeps
   // generating off-tab; the multi-run loop only stops on a real unmount.
@@ -1390,7 +1393,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       galleryCache.hasMore = page.has_more;
       setImages(page.images);
       setHasMore(page.has_more);
-      page.images.forEach((image) => void ensureSrc(image));
+      // No visibility signal without IntersectionObserver (jsdom / an old webview), so keep the
+      // eager fetch there rather than render a strip of permanent spinners.
+      if (typeof IntersectionObserver === "undefined") {
+        page.images.forEach((image) => void ensureSrc(image));
+      }
     } catch {
       // Best-effort: a failed gallery load shouldn't block the page.
     }
@@ -1412,13 +1419,52 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       });
       galleryCache.hasMore = page.has_more;
       setHasMore(page.has_more);
-      page.images.forEach((image) => void ensureSrc(image));
+      if (typeof IntersectionObserver === "undefined") {
+        page.images.forEach((image) => void ensureSrc(image));
+      }
     } catch {
       // transient; the user can scroll again to retry
     } finally {
       loadingMore.current = false;
     }
   }, [ensureSrc]);
+
+  // A gallery page holds PAGE_SIZE multi-megabyte PNGs, and an object URL lives until the page
+  // closes, so fetching every record of every page up front grew memory without bound as the user
+  // scrolled -- for tiles they may never look at. Fetch a tile as it nears the strip's edge
+  // instead; it already shows a spinner until its src lands. Observed from here rather than
+  // through a ref on each tile, and re-run per page so "load more" tiles are picked up and
+  // removed ones go with the observer. Mirrors the Video page's strip.
+  useEffect(() => {
+    const root = stripRef.current;
+    if (!root || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const id = (entry.target as HTMLElement).dataset.imageId;
+          const image = id ? images.find((i) => i.id === id) : undefined;
+          if (image) void ensureSrc(image);
+        }
+      },
+      // rootMargin applies to the ROOT's box only, so the root must be the horizontally
+      // scrolling strip: a tile past its right edge is clipped by the strip, and a margin on the
+      // viewport root would never reach it. The sideways margin starts a fetch a few tiles early.
+      { root, rootMargin: "0px 600px" },
+    );
+    for (const tile of root.querySelectorAll("[data-image-id]")) io.observe(tile);
+    return () => io.disconnect();
+  }, [images, ensureSrc]);
+
+  // The preview is what the user actually looks at, so the selected image is fetched whether or
+  // not its tile is on screen: a selection restored across a tab switch, a freshly generated
+  // image, or a pick made just before the strip scrolls it out of view.
+  useEffect(() => {
+    if (!selected) return;
+    void (async () => {
+      await ensureSrc(selected);
+    })();
+  }, [selected, ensureSrc]);
 
   useEffect(() => {
     void loadGallery();
@@ -3361,6 +3407,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
           {(images.length > 0 || busy === "generating") && (
             <div
+              ref={stripRef}
               className="hover-scrollbar flex shrink-0 gap-2 overflow-x-auto border-t border-foreground/10 p-3"
               onScroll={(e) => {
                 // Near the right edge: pull the next older page (infinite scroll).
@@ -3379,6 +3426,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 <button
                   key={image.id}
                   type="button"
+                  data-image-id={image.id}
                   onClick={() => setSelectedId(image.id)}
                   className="relative size-16 shrink-0 overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                 >
