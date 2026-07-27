@@ -10962,6 +10962,8 @@ def _advertised_local_path(model: str) -> Optional[str]:
                 paths.setdefault(cid.strip().lower(), path)
         _ADVERTISED_CACHE.update(at = _CATALOG_CACHE["at"], paths = paths)
     return _ADVERTISED_CACHE["paths"].get(model.strip().lower())
+
+
 _CATALOG_TTL_S = 30.0
 # Per-loop lock (like _auto_switch_lock): a module-level asyncio.Lock ties its
 # waiters to the loop that first awaited it, so a second event loop awaiting it
