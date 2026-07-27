@@ -106,10 +106,17 @@ def test_redirect_to_out_of_range_port_is_blocked(monkeypatch):
     )
 
     class _Redirecting:
-        def open(self, req, timeout = None):
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
             raise HTTPError(
-                req.full_url, 302, "Found",
-                {"Location": "https://example.org:99999/next"}, None,
+                req.full_url,
+                302,
+                "Found",
+                {"Location": "https://example.org:99999/next"},
+                None,
             )
 
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _Redirecting())
