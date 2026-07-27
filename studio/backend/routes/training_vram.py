@@ -347,14 +347,13 @@ def can_load_chat_during_training(
         needed_gb = required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
         aggregate_fits = usable_gb >= needed_gb
 
-        # Explicit HF and Vulkan placement shard across a known number of GPUs.
-        # An even-share floor stops one near-full GPU hiding behind aggregate capacity.
+        # Explicit HF placement uses balanced sharding across a known number of
+        # GPUs. GGUF pins are candidate pools: llama.cpp may narrow an uneven
+        # pool to the smallest fitting subset, so only their aggregate matters.
         min_free_gb = min(free_vals)
         per_gpu_fits = True
         per_gpu_needed_gb = None
-        if mode == "gguf_vulkan" and requested_gpu_ids:
-            per_gpu_needed_gb = needed_gb / len(requested_gpu_ids)
-        elif mode == "explicit" and len(free_vals) > 1:
+        if mode == "explicit" and len(free_vals) > 1:
             per_gpu_needed_gb = needed_gb / len(free_vals)
         if per_gpu_needed_gb is not None:
             per_gpu_fits = min_free_gb >= per_gpu_needed_gb

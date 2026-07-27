@@ -3725,13 +3725,23 @@ if ($LocalLlamaCppLinked) {
         # by install_llama_prebuilt.py and does not change the torch backend.
         $llamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
         $legacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()
+        $windowsArm64 = (
+            $env:OS -eq "Windows_NT" -and
+            (
+                "$($env:PROCESSOR_ARCHITECTURE)".ToUpperInvariant() -eq "ARM64" -or
+                "$($env:PROCESSOR_ARCHITEW6432)".ToUpperInvariant() -eq "ARM64"
+            )
+        )
         $explicitVulkanBackend = $false
         if ($llamaBackend -eq "cpu") {
             $prebuiltArgs += "--force-cpu"
         } elseif ($llamaBackend -eq "vulkan") {
             if ($IsMacOS) {
                 Write-Host "[WARN] Vulkan has no effect on macOS; the universal build uses Metal" -ForegroundColor Yellow
+            } elseif ($windowsArm64) {
+                throw "Vulkan was requested, but upstream provides no Windows ARM64 Vulkan prebuilt. Unset UNSLOTH_LLAMA_CPP_BACKEND or compile llama.cpp from source."
             } else {
+                $prebuiltArgs += @("--llama-backend", "vulkan")
                 $explicitVulkanBackend = $true
                 Write-Host "  llama.cpp      Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" -ForegroundColor Cyan
             }
@@ -3739,6 +3749,9 @@ if ($LocalLlamaCppLinked) {
             Write-Host "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$($env:UNSLOTH_LLAMA_CPP_BACKEND)' (expected 'auto', 'cpu', or 'vulkan')" -ForegroundColor Yellow
         }
         if (-not $IsMacOS -and $llamaBackend -ne "cpu" -and $legacyForceVulkan -in @("1", "true", "yes", "on")) {
+            if ($windowsArm64) {
+                throw "Vulkan was requested, but upstream provides no Windows ARM64 Vulkan prebuilt. Unset UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
+            }
             $explicitVulkanBackend = $true
         }
         $prevEAPPrebuilt = $ErrorActionPreference

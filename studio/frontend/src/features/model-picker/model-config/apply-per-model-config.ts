@@ -7,7 +7,7 @@ import {
   normalizeSpeculativeType,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
-  reconcilePersistedGpuIds,
+  reconcilePersistedGpuSelection,
   useChatRuntimeStore,
 } from "@/features/chat";
 import {
@@ -35,14 +35,14 @@ export function applyPerModelConfigToRuntime(
   if (maxSeqLength !== store.params.maxSeqLength) {
     store.setParams({ ...store.params, maxSeqLength });
   }
-  const selectedGpuIds =
+  const gpuSelection =
     config.selectedGpuIds !== undefined
-      ? reconcilePersistedGpuIds(
+      ? reconcilePersistedGpuSelection(
           config.selectedGpuIds,
           config.selectedGpuIndexKind,
           options.isDiffusion,
         )
-      : null;
+      : { ids: null, indexKind: null };
   useChatRuntimeStore.setState({
     customContextLength: config.customContextLength ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
@@ -61,13 +61,8 @@ export function applyPerModelConfigToRuntime(
     gpuLayers: config.gpuLayers ?? GPU_LAYERS_AUTO,
     nCpuMoe: config.nCpuMoe ?? 0,
     splitRatio: null,
-    selectedGpuIds,
-    selectedGpuIndexKind:
-      selectedGpuIds == null
-        ? null
-        : config.selectedGpuIndexKind === undefined
-          ? "physical"
-          : config.selectedGpuIndexKind,
+    selectedGpuIds: gpuSelection.ids,
+    selectedGpuIndexKind: gpuSelection.indexKind,
   });
 }
 
@@ -126,16 +121,22 @@ export function perModelConfigsEqual(
 
 // Serialize the per-model GPU knobs with the same "absent == default"
 // coalescing the store applies: mode auto/absent, gpuLayers Auto (< 0) /
-// absent, nCpuMoe 0 / absent, and the GPU pick (null / absent = all GPUs).
+// absent, nCpuMoe 0 / absent, and null / absent GPU picks as automatic.
 export function gpuFieldsSignature(config: PerModelConfig): string {
+  const gpuSelection =
+    config.selectedGpuIds == null
+      ? "automatic"
+      : [
+          [...config.selectedGpuIds].sort((a, b) => a - b).join(","),
+          config.selectedGpuIndexKind === undefined
+            ? "physical"
+            : (config.selectedGpuIndexKind ?? "deferred"),
+        ].join("@");
   return [
     config.gpuMemoryMode ?? "auto",
     config.gpuLayers == null || config.gpuLayers < 0 ? -1 : config.gpuLayers,
     config.nCpuMoe ?? 0,
-    config.selectedGpuIds == null
-      ? "all"
-      : [...config.selectedGpuIds].sort((a, b) => a - b).join(","),
-    config.selectedGpuIndexKind ?? "untagged",
+    gpuSelection,
   ].join("|");
 }
 

@@ -22,6 +22,9 @@ import {
 import {
   type GpuIndexKind,
   type SystemGpuDevice,
+  gpuDeviceCacheReady,
+  pinnableGpuContext,
+  reconcileGpuSelection,
   useGpuDevices,
 } from "@/hooks/use-gpu-info";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -130,14 +133,38 @@ function withoutUnsupportedDiffusionSettings(
   };
 }
 
-function gpuIndexKindOf(
+function reconcileConfigGpuSelection(
+  config: PerModelConfig,
   gpuDevices: SystemGpuDevice[],
-): GpuIndexKind | null {
-  return gpuDevices.length > 0 &&
-    gpuDevices[0].indexKind !== null &&
-    gpuDevices.every((device) => device.indexKind === gpuDevices[0].indexKind)
-    ? gpuDevices[0].indexKind
-    : null;
+  isDiffusion: boolean,
+  devicesReady: boolean,
+): PerModelConfig {
+  const context = pinnableGpuContext(
+    devicesReady ? gpuDevices : null,
+    isDiffusion,
+  );
+  const supported = isDiffusion
+    ? withoutUnsupportedDiffusionSettings(
+        config,
+        context.indexKind ?? null,
+      )
+    : config;
+  if (supported.selectedGpuIds == null) {
+    return supported;
+  }
+  const reconciled = reconcileGpuSelection(
+    supported.selectedGpuIds,
+    supported.selectedGpuIndexKind,
+    context.indexKind,
+    context.ids,
+  );
+  const next = {
+    ...supported,
+    selectedGpuIds: reconciled.ids ?? undefined,
+    selectedGpuIndexKind:
+      reconciled.ids === null ? undefined : reconciled.indexKind,
+  };
+  return perModelConfigsEqual(next, supported) ? supported : next;
 }
 
 function ChatTemplateSetting({
@@ -317,29 +344,25 @@ function GpuMemorySettings({
   const moeLayersMax = moeLayerCount ?? 0;
   const showMoeSlider = isManual && !autoLayers && moeLayersMax > 0;
   const selectedGpuIds = config.selectedGpuIds ?? null;
-  const gpuIndexKind = gpuIndexKindOf(gpuDevices);
+  const gpuContext = pinnableGpuContext(gpuDevices, isDiffusion);
+  const pinnableDevices = gpuContext.devices ?? [];
+  const gpuIndexKind = gpuContext.indexKind ?? null;
   const singleGpuInUse =
-    (selectedGpuIds ?? gpuDevices.map((device) => device.index)).length <= 1;
-  // Multi-GPU only, with one backend-declared index namespace. null = all.
-  const showGpuPicker =
-    gpuDevices.length > 1 &&
-    gpuIndexKind !== null &&
-    gpuDevices.every((d) =>
-      isDiffusion ? d.diffusionPinnable : d.pinnable,
-    );
+    (selectedGpuIds ?? gpuContext.ids ?? []).length <= 1;
+  // Multi-GPU only, with one backend-declared index namespace. null = automatic.
+  const showGpuPicker = (gpuContext.ids?.length ?? 0) > 1;
   const isGpuChecked = (index: number) =>
     selectedGpuIds === null || selectedGpuIds.includes(index);
   const toggleGpu = (index: number) => {
-    const all = gpuDevices.map((d) => d.index);
+    const all = gpuContext.ids ?? [];
     const current = selectedGpuIds ?? all;
     const next = current.includes(index)
       ? current.filter((i) => i !== index)
       : [...current, index].sort((a, b) => a - b);
     if (next.length === 0) return; // keep at least one GPU selected
-    const selectsAll = next.length === all.length;
     update({
-      selectedGpuIds: selectsAll ? null : next,
-      selectedGpuIndexKind: selectsAll ? null : gpuIndexKind,
+      selectedGpuIds: next,
+      selectedGpuIndexKind: gpuIndexKind,
     });
   };
   return (
@@ -434,13 +457,13 @@ function GpuMemorySettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>GPUs</span>
             <InfoHint>
-              Which GPUs this model may use. Unsloth applies the selection with
-              the active CUDA, ROCm, or Vulkan backend. Leave all checked to use
-              every GPU. At least one GPU must stay selected.
+              By default, Unsloth chooses GPUs automatically. Editing this list
+              makes the checked GPUs the explicit candidate pool. At least one
+              GPU must stay selected.
             </InfoHint>
           </div>
           <div className="flex flex-col gap-2">
-            {gpuDevices.map((d) => (
+            {pinnableDevices.map((d) => (
               <div
                 key={d.index}
                 className="flex items-center justify-between gap-3"
@@ -632,7 +655,7 @@ function GgufAdvancedSettings({
 interface ModelConfigPageProps {
   target: ModelPickTarget;
   onBack?: () => void;
-  onRun: (config: PerModelConfig, isDiffusion: boolean) => void;
+  onRun: (config: PerModelConfig, isDiffusion?: boolean) => void;
   loadedConfig?: PerModelConfig | null;
   loadedContextLength?: number | null;
   initialConfig?: PerModelConfig | null;
@@ -663,7 +686,7 @@ export function ModelConfigPage({
     (s) => s.ggufMaxContextLength,
   );
   const gpuDevices = useGpuDevices();
-  const gpuIndexKind = gpuIndexKindOf(gpuDevices);
+  const gpuDevicesReady = gpuDeviceCacheReady();
   const resolveInitial = () => {
     const resolved = resolveInitialConfig(target.id, target.ggufVariant);
     if (loadedConfig) {
@@ -681,9 +704,12 @@ export function ModelConfigPage({
   };
   const [initial] = useState(resolveInitial);
   const [config, setConfig] = useState<PerModelConfig>(() =>
-    isDiffusion
-      ? withoutUnsupportedDiffusionSettings(initial.config, gpuIndexKind)
-      : initial.config,
+    reconcileConfigGpuSelection(
+      initial.config,
+      gpuDevices,
+      isDiffusion,
+      gpuDevicesReady,
+    ),
   );
   const [remember, setRemember] = useState(() => initial.remembered);
   const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
@@ -731,7 +757,7 @@ export function ModelConfigPage({
     contextLength: number | null;
     layerCount: number | null;
     moeLayerCount: number | null;
-    isDiffusion: boolean;
+    isDiffusion?: boolean;
   } | null>(null);
   useEffect(() => {
     if (contextFetchKey == null) {
@@ -747,9 +773,6 @@ export function ModelConfigPage({
       .then((dims) => {
         if (!cancelled) {
           setFetchedStagedDims({ key: contextFetchKey, ...dims });
-          if (dims.isDiffusion) {
-            setConfig(withoutUnsupportedDiffusionSettings);
-          }
         }
       })
       .catch(() => {
@@ -759,7 +782,7 @@ export function ModelConfigPage({
             contextLength: null,
             layerCount: null,
             moeLayerCount: null,
-            isDiffusion: false,
+            isDiffusion: undefined,
           });
         }
       });
@@ -780,15 +803,21 @@ export function ModelConfigPage({
     stagedDims == null &&
     (config.gpuMemoryMode === "manual" ||
       config.selectedGpuIds != null);
-  const resolvedIsDiffusion =
-    isDiffusion || stagedDims?.isDiffusion === true;
+  const classifiedIsDiffusion =
+    isDiffusion ? true : stagedDims?.isDiffusion;
+  const resolvedIsDiffusion = classifiedIsDiffusion === true;
+  const gpuIndexKind =
+    pinnableGpuContext(gpuDevices, resolvedIsDiffusion).indexKind ?? null;
   useEffect(() => {
-    if (resolvedIsDiffusion && gpuIndexKind === "vulkan") {
-      setConfig((current) =>
-        withoutUnsupportedDiffusionSettings(current, gpuIndexKind),
-      );
-    }
-  }, [resolvedIsDiffusion, gpuIndexKind]);
+    setConfig((current) =>
+      reconcileConfigGpuSelection(
+        current,
+        gpuDevices,
+        resolvedIsDiffusion,
+        gpuDevicesReady,
+      ),
+    );
+  }, [gpuDevices, gpuDevicesReady, resolvedIsDiffusion]);
 
   const isMtp =
     config.speculativeType != null &&
@@ -988,7 +1017,7 @@ export function ModelConfigPage({
     const effectiveLoadConfig = target.isGguf
       ? effectiveRuntimeConfig
       : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
-    onRun(effectiveLoadConfig, resolvedIsDiffusion);
+    onRun(effectiveLoadConfig, classifiedIsDiffusion);
   };
 
   return (

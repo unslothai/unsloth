@@ -4,7 +4,8 @@
 import { mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
 import {
   cachedPinnableGpuIndexKind,
-  cachedPinnableGpuIndices,
+  reconcileCachedGpuSelection,
+  type ReconciledGpuSelection,
   type GpuIndexKind,
 } from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
@@ -639,23 +640,19 @@ export function reconcilePersistedGpuIds(
   savedIndexKind?: GpuIndexKind | null,
   forDiffusion = false,
 ): number[] | null {
-  if (ids == null) return ids;
-  if (arguments.length >= 2) {
-    const currentIndexKind = cachedPinnableGpuIndexKind(forDiffusion);
-    const expectedIndexKind =
-      savedIndexKind === undefined ? "physical" : savedIndexKind;
-    if (
-      currentIndexKind !== undefined &&
-      savedIndexKind !== null &&
-      currentIndexKind !== expectedIndexKind
-    ) {
-      return null;
-    }
-  }
-  const pinnable = cachedPinnableGpuIndices(forDiffusion);
-  if (pinnable === null) return ids; // cache not ready: can't validate, keep it
-  const kept = ids.filter((i) => pinnable.includes(i));
-  return kept.length > 0 ? kept : null;
+  return reconcilePersistedGpuSelection(
+    ids,
+    savedIndexKind,
+    forDiffusion,
+  ).ids;
+}
+
+export function reconcilePersistedGpuSelection(
+  ids: number[] | null,
+  savedIndexKind?: GpuIndexKind | null,
+  forDiffusion = false,
+): ReconciledGpuSelection {
+  return reconcileCachedGpuSelection(ids, savedIndexKind, forDiffusion);
 }
 
 export function requestedGpuIdsFromResponse(resp: {

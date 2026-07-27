@@ -34,6 +34,70 @@ export interface SystemGpuDevice {
 
 export type GpuIndexKind = "physical" | "vulkan";
 
+export interface ReconciledGpuSelection {
+  ids: number[] | null;
+  indexKind: GpuIndexKind | null;
+}
+
+export interface PinnableGpuContext {
+  devices: SystemGpuDevice[] | null;
+  ids: number[] | null;
+  indexKind: GpuIndexKind | null | undefined;
+}
+
+export function pinnableGpuContext(
+  devices: SystemGpuDevice[] | null,
+  forDiffusion = false,
+): PinnableGpuContext {
+  if (devices === null) {
+    return { devices: null, ids: null, indexKind: undefined };
+  }
+  const pinnable = devices.filter((device) =>
+    forDiffusion ? device.diffusionPinnable : device.pinnable,
+  );
+  const indexKind = pinnable[0]?.indexKind ?? null;
+  if (
+    pinnable.length <= 1 ||
+    indexKind === null ||
+    !pinnable.every((device) => device.indexKind === indexKind)
+  ) {
+    return { devices: pinnable, ids: [], indexKind: null };
+  }
+  return {
+    devices: pinnable,
+    ids: pinnable.map((device) => device.index),
+    indexKind,
+  };
+}
+
+export function reconcileGpuSelection(
+  ids: number[] | null,
+  savedIndexKind: GpuIndexKind | null | undefined,
+  currentIndexKind: GpuIndexKind | null | undefined,
+  pinnableIds: number[] | null,
+): ReconciledGpuSelection {
+  if (ids == null) return { ids: null, indexKind: null };
+  if (currentIndexKind === undefined || pinnableIds === null) {
+    return {
+      ids,
+      indexKind:
+        savedIndexKind === undefined ? "physical" : savedIndexKind,
+    };
+  }
+  const expectedIndexKind =
+    savedIndexKind === undefined ? "physical" : savedIndexKind;
+  if (
+    currentIndexKind === null ||
+    (expectedIndexKind !== null && expectedIndexKind !== currentIndexKind)
+  ) {
+    return { ids: null, indexKind: null };
+  }
+  const kept = ids.filter((id) => pinnableIds.includes(id));
+  return kept.length
+    ? { ids: kept, indexKind: currentIndexKind }
+    : { ids: null, indexKind: null };
+}
+
 const DEFAULT_GPU: GpuInfo = {
   available: false,
   budgetKnown: false,
@@ -241,6 +305,18 @@ export function useGpuDevices(): SystemGpuDevice[] {
   return devices;
 }
 
+/** Whether device discovery is settled enough to rewrite remembered UI state. */
+export function gpuDeviceCacheReady(): boolean {
+  if (cachedSystem === null) {
+    return false;
+  }
+  const inferenceGpu = cachedSystem.inference_gpu;
+  return !(
+    inferenceGpu?.backend === "vulkan" &&
+    !inferenceGpu.available
+  );
+}
+
 /** Warm the shared system cache before validating persisted GPU IDs. */
 export async function ensureGpuDeviceCache(): Promise<void> {
   await fetchSystemOnce();
@@ -250,23 +326,35 @@ export async function ensureGpuDeviceCache(): Promise<void> {
 export function cachedPinnableGpuIndices(
   forDiffusion = false,
 ): number[] | null {
-  if (!cachedSystem) return null;
-  const pinnable = toGpuDevices(cachedSystem).filter((d) =>
-    forDiffusion ? d.diffusionPinnable : d.pinnable,
-  );
-  return pinnable.length > 1 ? pinnable.map((d) => d.index) : [];
+  return pinnableGpuContext(
+    cachedSystem ? toGpuDevices(cachedSystem) : null,
+    forDiffusion,
+  ).ids;
 }
 
 /** Cached index namespace, undefined before fetch and null when unavailable. */
 export function cachedPinnableGpuIndexKind(
   forDiffusion = false,
 ): GpuIndexKind | null | undefined {
-  if (!cachedSystem) return undefined;
-  const pinnable = toGpuDevices(cachedSystem).filter((d) =>
-    forDiffusion ? d.diffusionPinnable : d.pinnable,
+  return pinnableGpuContext(
+    cachedSystem ? toGpuDevices(cachedSystem) : null,
+    forDiffusion,
+  ).indexKind;
+}
+
+export function reconcileCachedGpuSelection(
+  ids: number[] | null,
+  savedIndexKind?: GpuIndexKind | null,
+  forDiffusion = false,
+): ReconciledGpuSelection {
+  const context = pinnableGpuContext(
+    cachedSystem ? toGpuDevices(cachedSystem) : null,
+    forDiffusion,
   );
-  const kinds = new Set(pinnable.map((d) => d.indexKind).filter((k) => k));
-  return pinnable.length > 1 && kinds.size === 1
-    ? ([...kinds][0] as GpuIndexKind)
-    : null;
+  return reconcileGpuSelection(
+    ids,
+    savedIndexKind,
+    context.indexKind,
+    context.ids,
+  );
 }

@@ -1445,6 +1445,7 @@ else
             if [ "$_HOST_SYSTEM" = "Darwin" ]; then
                 step "llama.cpp" "Vulkan has no effect on macOS; the universal build uses Metal" "$C_WARN" >&2
             else
+                _PREBUILT_CMD+=(--llama-backend vulkan)
                 _explicit_vulkan_backend=true
                 step "llama.cpp" "Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" "$C_OK"
             fi

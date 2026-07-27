@@ -85,6 +85,7 @@ def test_backend_auto_no_flag_no_warn(value):
 def test_backend_vulkan_is_accepted(value):
     args, stderr = _run(value)
     assert "--force-cpu" not in args
+    assert args[-2:] == ["--llama-backend", "vulkan"]
     assert "Ignoring" not in stderr
 
 
@@ -213,7 +214,20 @@ def test_ps1_backend_auto_no_flag_no_warn(value):
 def test_ps1_backend_vulkan_is_accepted(value):
     out = _run_ps1(value)
     assert "--force-cpu" not in out
+    assert "--llama-backend,vulkan" in out
     assert "Ignoring" not in out
+
+
+def test_ps1_forced_vulkan_fails_closed_on_windows_arm64():
+    ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
+    arm64_guard = ps1.index('elseif ($windowsArm64)')
+    vulkan_flag = ps1.index(
+        '$prebuiltArgs += @("--llama-backend", "vulkan")',
+        arm64_guard,
+    )
+    assert arm64_guard < vulkan_flag
+    assert "upstream provides no Windows ARM64 Vulkan prebuilt" in ps1
+    assert "Unset UNSLOTH_FORCE_VULKAN" in ps1
 
 
 @_SKIP_NO_PWSH

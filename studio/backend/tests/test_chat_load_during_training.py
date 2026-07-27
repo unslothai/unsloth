@@ -262,8 +262,8 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(info["mode"], "gguf_vulkan")
         self.assertEqual(info["usable_gb"], 18.5)
 
-    def test_vulkan_multi_gpu_enforces_per_device_floor(self):
-        # Aggregate capacity clears 15.5 GB, but one shard has less than half.
+    def test_vulkan_uneven_pool_uses_fitting_subset(self):
+        # The loader may choose the 20 GB device alone from this candidate pool.
         ok, info, _ = self._run(
             devices = _devices((0, 80, 0), (1, 80, 0)),
             required_override = 10.0,
@@ -271,9 +271,28 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
             gpu_ids_are_vulkan_ordinals = True,
             vulkan_free_vram_gb = {0: 20.0, 1: 2.0},
         )
+        self.assertTrue(ok)
+        self.assertNotIn("per_gpu_needed_gb", info)
+
+    def test_vulkan_uneven_pool_is_order_independent(self):
+        ok, _, _ = self._run(
+            devices = _devices((0, 80, 0), (1, 80, 0)),
+            required_override = 10.0,
+            gpu_ids = [1, 0],
+            gpu_ids_are_vulkan_ordinals = True,
+            vulkan_free_vram_gb = {0: 20.0, 1: 2.0},
+        )
+        self.assertTrue(ok)
+
+    def test_vulkan_pool_with_insufficient_aggregate_refuses(self):
+        ok, _, _ = self._run(
+            devices = _devices((0, 80, 0), (1, 80, 0)),
+            required_override = 10.0,
+            gpu_ids = [0, 1],
+            gpu_ids_are_vulkan_ordinals = True,
+            vulkan_free_vram_gb = {0: 8.0, 1: 2.0},
+        )
         self.assertFalse(ok)
-        self.assertEqual(info["per_gpu_needed_gb"], 7.75)
-        self.assertEqual(info["min_free_gb"], 2.0)
 
     def test_vulkan_auto_uses_full_vulkan_pool(self):
         ok, info, _ = self._run(

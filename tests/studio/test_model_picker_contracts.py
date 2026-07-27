@@ -199,7 +199,7 @@ def test_compare_load_uses_each_models_gpu_config():
     assert "if (ownConfig.selectedGpuIds != null)" in src
     assert "ownConfig.selectedGpuIndexKind," in src
     assert "compareLoadKnobs.selectedGpuIndexKind," in src
-    assert src.count("sel.isDiffusion === true") >= 2
+    assert src.count("resolvedIsDiffusion === true") >= 2
     for field in (
         "gpu_memory_mode: effectiveGpuMemoryMode",
         "gpu_layers: effectiveGpuLayers",
@@ -451,7 +451,7 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
     assert "const effectiveLoadConfig" in src
     # The persisted record is saved from effectiveRuntimeConfig; the load request
     # carries effectiveLoadConfig (with any committed context input).
-    assert "onRun(effectiveLoadConfig, resolvedIsDiffusion)" in src
+    assert "onRun(effectiveLoadConfig, classifiedIsDiffusion)" in src
     assert "savePerModelConfig(" in src
 
 
@@ -563,7 +563,7 @@ def test_compare_pane_non_gguf_falls_back_to_app_default():
     assert (
         "const effectiveMaxSeqLength = ownConfig.customContextLength ?? "
         "normalizeMaxSeqLength(ownConfig.maxSeqLength) ?? "
-        "(isGgufLoad ? 0 : DEFAULT_MAX_SEQ_LENGTH);" in src
+        "(targetIsGguf ? 0 : DEFAULT_MAX_SEQ_LENGTH);" in src
     )
     # The buggy fallback to the active model's shared runtime value must not return.
     assert "(isGgufLoad ? 0 : maxSeqLength)" not in src
@@ -585,13 +585,43 @@ def test_default_gpu_mode_clears_manual_knobs():
 def test_requested_gpu_pick_survives_fit_narrowing_and_namespace_changes():
     store = _read("features/chat/stores/chat-runtime-store.ts")
     assert "requestedGpuIdsFromResponse(resp)" in store
-    assert 'savedIndexKind === undefined ? "physical" : savedIndexKind' in store
-    assert "savedIndexKind !== null" in store
-    assert "currentIndexKind !== expectedIndexKind" in store
     gpu_info = _read("hooks/use-gpu-info.ts")
+    assert 'savedIndexKind === undefined ? "physical" : savedIndexKind' in gpu_info
+    assert "expectedIndexKind !== null" in gpu_info
+    assert "expectedIndexKind !== currentIndexKind" in gpu_info
     assert "cachedPinnableGpuIndexKind" in gpu_info
     config = _read("features/model-picker/model-config/per-model-config.ts")
     assert '"selectedGpuIndexKind"' in config
+
+
+def test_staged_gpu_pick_reconciles_with_async_namespace_discovery():
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "reconcileGpuSelection(" in page
+    assert "setConfig((current)" in page
+    assert "reconcileConfigGpuSelection(" in page
+    assert "gpuIndexKind" in page
+    assert "pinnableDevices" in page
+    assert "reconciled.ids === null ? undefined : reconciled.indexKind" in " ".join(
+        page.split()
+    )
+    assert "selectsAll ? null : next" not in page
+    gpu_info = _read("hooks/use-gpu-info.ts")
+    assert 'inferenceGpu?.backend === "vulkan"' in gpu_info
+    assert "!inferenceGpu.available" in gpu_info
+
+
+def test_compare_classifies_gguf_before_reconciling_gpu_ids():
+    compare = _read("features/chat/shared-composer.tsx")
+    metadata = compare.index("fetchGgufStagedMetadata(")
+    reconcile = compare.index("reconcilePersistedGpuIds(", metadata)
+    validate = compare.index("const validation = await validateModel(", reconcile)
+    load = compare.index("const resp = await loadModel(", validate)
+    assert metadata < reconcile < validate < load
+    assert compare.count("resolvedIsDiffusion") >= 3
+    assert "prepareHfTokenForUse(" in compare
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "isDiffusion?: boolean" in page
+    assert "onRun(effectiveLoadConfig, classifiedIsDiffusion)" in page
 
 
 def test_cpu_only_llama_build_hides_gpu_picker():
@@ -615,7 +645,8 @@ def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert 'className={isDiffusion ? "hidden" : ROW_CLASS}' in page
     assert "withoutUnsupportedDiffusionSettings(config, gpuIndexKind)" in page
-    assert 'resolvedIsDiffusion && gpuIndexKind === "vulkan"' in page
+    assert "reconcileConfigGpuSelection(" in page
+    assert "resolvedIsDiffusion" in page
     assert "stagedMetadataPending ||" in page
     assert "config.selectedGpuIds != null" in page
     for field in (

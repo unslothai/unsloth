@@ -19,9 +19,9 @@ export interface PerModelConfig {
   tensorParallel: boolean;
   chatTemplateOverride: string | null;
   // GPU Memory controls (per-model, GGUF-only), optional so older blobs still
-  // parse. null selectedGpuIds (all GPUs) is distinct from absent. The --tensor-split
-  // ratio is deliberately not remembered: it is positionally bound to the exact
-  // GPU set/order and unvalidated.
+  // parse. null or absent selectedGpuIds means automatic placement; an array is
+  // an explicit candidate pool. The --tensor-split ratio is deliberately not
+  // remembered because it is bound to the exact GPU set and order.
   gpuMemoryMode?: "auto" | "manual";
   gpuLayers?: number;
   nCpuMoe?: number;
