@@ -830,16 +830,20 @@ export function AppSidebar() {
     // Reset so the next project delete never inherits this checkbox.
     setDeleteProjectFiles(false);
     if (target.kind === "chats-bulk") {
-      let failed = 0;
-      for (const item of target.items) {
-        const ok = await deleteChatWithCleanup(item, { silent: true });
-        if (!ok) failed += 1;
-      }
-      if (failed === 0) {
-        chatRecentsSelection.clearSelection();
-      } else {
-        toast.error(translate("shell.toast.failedToDeleteSomeChats"));
-      }
+      // Guarded: this dialog already closed, so the bar stays live for the
+      // whole loop and a second confirm would delete the same rows again.
+      await chatRecentsSelection.runBulkAction(async () => {
+        let failed = 0;
+        for (const item of target.items) {
+          const ok = await deleteChatWithCleanup(item, { silent: true });
+          if (!ok) failed += 1;
+        }
+        if (failed === 0) {
+          chatRecentsSelection.clearSelection();
+        } else {
+          toast.error(translate("shell.toast.failedToDeleteSomeChats"));
+        }
+      });
       return;
     }
     if (target.kind === "chat") {
@@ -876,34 +880,36 @@ export function AppSidebar() {
       return;
     }
     if (target.kind === "runs-bulk") {
-      // Re-check status: a run can start between opening and confirming.
-      const live = new Map(runItems.map((run) => [run.id, run]));
-      const deletable = target.runs.filter(
-        (run) => (live.get(run.id) ?? run).status !== "running",
-      );
-      const skipped = target.skipped + (target.runs.length - deletable.length);
-      let failed = 0;
-      for (const run of deletable) {
-        try {
-          await deleteTrainingRun(run.id);
-          if (selectedHistoryRunId === run.id) {
-            setSelectedHistoryRunId(null);
-          }
-          emitTrainingRunDeleted(run.id);
-        } catch {
-          failed += 1;
-        }
-      }
-      if (failed === 0) {
-        runRecentsSelection.clearSelection();
-      } else {
-        toast.error(translate("shell.toast.failedToDeleteSomeRuns"));
-      }
-      if (skipped > 0) {
-        toast.error(
-          t("shell.toast.skippedRunningRuns", { count: skipped }),
+      await runRecentsSelection.runBulkAction(async () => {
+        // Re-check status: a run can start between opening and confirming.
+        const live = new Map(runItems.map((run) => [run.id, run]));
+        const deletable = target.runs.filter(
+          (run) => (live.get(run.id) ?? run).status !== "running",
         );
-      }
+        const skipped = target.skipped + (target.runs.length - deletable.length);
+        let failed = 0;
+        for (const run of deletable) {
+          try {
+            await deleteTrainingRun(run.id);
+            if (selectedHistoryRunId === run.id) {
+              setSelectedHistoryRunId(null);
+            }
+            emitTrainingRunDeleted(run.id);
+          } catch {
+            failed += 1;
+          }
+        }
+        if (failed === 0) {
+          runRecentsSelection.clearSelection();
+        } else {
+          toast.error(translate("shell.toast.failedToDeleteSomeRuns"));
+        }
+        if (skipped > 0) {
+          toast.error(
+            t("shell.toast.skippedRunningRuns", { count: skipped }),
+          );
+        }
+      });
       return;
     }
     if (target.run.status === "running") {
@@ -1779,6 +1785,7 @@ export function AppSidebar() {
                     </SidebarMenu>
                     <SidebarBulkSelectionBar
                       count={chatRecentsSelection.selectedCount}
+                      busy={chatRecentsSelection.isBulkPending}
                       onClear={chatRecentsSelection.clearSelection}
                       onDelete={() => {
                         const items = recentChatItems.filter((item) =>
@@ -1925,6 +1932,7 @@ export function AppSidebar() {
                   </SidebarMenu>
                   <SidebarBulkSelectionBar
                     count={runRecentsSelection.selectedCount}
+                    busy={runRecentsSelection.isBulkPending}
                     onClear={runRecentsSelection.clearSelection}
                     onDelete={() => {
                       // Drop running runs so the confirmed count is what gets deleted.

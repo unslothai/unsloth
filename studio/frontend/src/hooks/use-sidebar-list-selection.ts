@@ -72,6 +72,8 @@ export function useSidebarListSelection({
   listRootRef: RefObject<HTMLElement | null>;
 }) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [isBulkPending, setIsBulkPending] = useState(false);
+  const bulkPendingRef = useRef(false);
   const dragRef = useRef<DragState | null>(null);
   const autoScrollRef = useRef<number | null>(null);
   const autoScrollDirectionRef = useRef<-1 | 1 | null>(null);
@@ -90,6 +92,37 @@ export function useSidebarListSelection({
     setSelectedIds(new Set());
     anchorIdRef.current = null;
   }, []);
+
+  // One batch at a time. The confirm dialog closes before the deletes finish,
+  // so the still-live bar would otherwise re-submit the same rows and delete
+  // each one twice. The ref guards the second call that lands before the state
+  // update; the flag drives the bar. Both reset on the failure path too, or a
+  // throwing batch would leave the bar dead until it remounts.
+  const runBulkAction = useCallback(
+    async (action: () => Promise<void>): Promise<boolean> => {
+      if (bulkPendingRef.current) return false;
+      bulkPendingRef.current = true;
+      setIsBulkPending(true);
+      try {
+        await action();
+        return true;
+      } finally {
+        bulkPendingRef.current = false;
+        setIsBulkPending(false);
+      }
+    },
+    [],
+  );
+
+  // The sidebar outlives the list: a route change, browser history, or
+  // collapsing the section unmounts the rows while the hook keeps its state.
+  // Drop the batch then, or coming back restores it and the next plain row
+  // click toggles selection instead of opening the row. No dep array: the ref
+  // has no identity to key on.
+  useEffect(() => {
+    if (selectedIds.size === 0) return;
+    if (listRootRef.current == null) clearSelection();
+  });
 
   // Drop stale selections when the list changes. Bail out unless truly stale:
   // itemIds is rebuilt most renders, so an unconditional setState loops.
@@ -258,18 +291,39 @@ export function useSidebarListSelection({
 
   useEffect(() => {
     if (selectedIds.size === 0) return;
+    const isInsideSelectionBoundary = (target: Element | null) => {
+      if (!target) return false;
+      if (listRootRef.current?.contains(target)) return true;
+      // The confirm dialog is portaled out of the list, so clearing on it would
+      // drop the batch it is confirming. Its overlay is a portal sibling of the
+      // role-bearing content, not a descendant, so a backdrop dismiss only
+      // counts as inside if the overlay is matched on its own.
+      return (
+        target.closest(
+          '[role="dialog"], [role="alertdialog"], [data-slot$="-overlay"]',
+        ) != null
+      );
+    };
     const onPointerDown = (event: PointerEvent) => {
-      const listRoot = listRootRef.current;
-      if (!listRoot) return;
       const target = event.target instanceof Element ? event.target : null;
-      if (target && listRoot.contains(target)) return;
-      // The confirm dialog is portaled out of the list, so clearing on its
-      // buttons would drop the batch it is confirming.
-      if (target?.closest('[role="dialog"], [role="alertdialog"]')) return;
+      if (isInsideSelectionBoundary(target)) return;
+      clearSelection();
+    };
+    // Keyboard activation of an outside control fires no pointerdown at all.
+    // detail 0 is what marks it: pointer clicks are already handled above,
+    // while the overlay they landed on is still mounted.
+    const onClick = (event: MouseEvent) => {
+      if (event.detail !== 0) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (isInsideSelectionBoundary(target)) return;
       clearSelection();
     };
     window.addEventListener("pointerdown", onPointerDown);
-    return () => window.removeEventListener("pointerdown", onPointerDown);
+    window.addEventListener("click", onClick);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("click", onClick);
+    };
   }, [clearSelection, listRootRef, selectedIds.size]);
 
   const handleItemPointerDown = useCallback(
@@ -329,6 +383,8 @@ export function useSidebarListSelection({
     selectedIds,
     selectedCount: selectedIds.size,
     isSelectionActive: selectedIds.size > 0,
+    isBulkPending,
+    runBulkAction,
     clearSelection,
     handleItemPointerDown,
     handleItemClick,

@@ -10,6 +10,7 @@ REPO = Path(__file__).resolve().parents[2]
 FRONTEND = REPO / "studio/frontend/src"
 APP_SIDEBAR = FRONTEND / "components/app-sidebar.tsx"
 SELECTION_HOOK = FRONTEND / "hooks/use-sidebar-list-selection.ts"
+BULK_BAR = FRONTEND / "components/sidebar-bulk-selection-bar.tsx"
 
 
 def _hook() -> str:
@@ -20,6 +21,10 @@ def _sidebar() -> str:
     return APP_SIDEBAR.read_text(encoding = "utf-8")
 
 
+def _bulk_bar() -> str:
+    return BULK_BAR.read_text(encoding = "utf-8")
+
+
 def _between(text: str, start: str, end: str) -> str:
     begin = text.index(start)
     return text[begin : text.index(end, begin)]
@@ -27,10 +32,58 @@ def _between(text: str, start: str, end: str) -> str:
 
 def test_outside_pointerdown_ignores_the_portaled_confirm_dialog():
     # Clearing on the portaled dialog's buttons would drop the batch it confirms.
-    block = _between(_hook(), "const onPointerDown = (event: PointerEvent)", "clearSelection();")
-    assert "listRoot.contains(target)" in block
-    assert '\'[role="dialog"], [role="alertdialog"]\'' in block
-    assert block.index("listRoot.contains(target)") < block.index('[role="dialog"]')
+    block = _between(_hook(), "const isInsideSelectionBoundary", "const onPointerDown")
+    assert "listRootRef.current?.contains(target)" in block
+    assert '[role="dialog"], [role="alertdialog"]' in block
+    assert block.index("listRootRef.current?.contains(target)") < block.index('[role="dialog"]')
+    used = _between(_hook(), "const onPointerDown = (event: PointerEvent)", "clearSelection();")
+    assert "isInsideSelectionBoundary(target)" in used
+
+
+def test_selection_boundary_covers_the_portaled_dialog_overlay():
+    # Radix renders the overlay as a sibling of the role-bearing content, so a
+    # backdrop dismiss only counts as inside if the overlay matches on its own.
+    block = _between(_hook(), "const isInsideSelectionBoundary", "const onPointerDown")
+    assert '[data-slot$="-overlay"]' in block
+
+
+def test_keyboard_activation_outside_the_list_clears_the_batch():
+    # Keyboard activation fires no pointerdown; detail 0 is what marks it, and
+    # pointer clicks stay on the pointerdown path.
+    block = _between(_hook(), "const onClick = (event: MouseEvent)", "window.addEventListener")
+    assert "if (event.detail !== 0) return;" in block
+    assert "isInsideSelectionBoundary(target)" in block
+    hook = _hook()
+    assert 'window.addEventListener("click", onClick);' in hook
+    assert 'window.removeEventListener("click", onClick);' in hook
+
+
+def test_selection_drops_when_the_list_unmounts():
+    # A route change unmounts the rows while the sidebar keeps the hook alive.
+    block = _between(_hook(), "// The sidebar outlives the list", "// Drop stale selections")
+    assert "if (selectedIds.size === 0) return;" in block
+    assert "if (listRootRef.current == null) clearSelection();" in block
+
+
+def test_bulk_actions_are_single_flight_and_release_on_failure():
+    block = _between(_hook(), "const runBulkAction", "useEffect(")
+    assert "if (bulkPendingRef.current) return false;" in block
+    # The reset has to sit in finally, or a throwing batch leaves the bar dead.
+    assert "} finally {" in block
+    assert block.index("} finally {") < block.index("bulkPendingRef.current = false;")
+    assert block.index("} finally {") < block.index("setIsBulkPending(false);")
+
+
+def test_bulk_delete_loops_run_under_the_single_flight_guard():
+    sidebar = _sidebar()
+    chats = _between(sidebar, 'if (target.kind === "chats-bulk")', 'if (target.kind === "chat")')
+    runs = _between(sidebar, 'if (target.kind === "runs-bulk")', 'if (target.run.status ===')
+    assert "await chatRecentsSelection.runBulkAction(async () => {" in chats
+    assert "await runRecentsSelection.runBulkAction(async () => {" in runs
+    # The dialog closes before the loop finishes, so the bar has to say so.
+    assert "busy={chatRecentsSelection.isBulkPending}" in sidebar
+    assert "busy={runRecentsSelection.isBulkPending}" in sidebar
+    assert "disabled={busy}" in _bulk_bar()
 
 
 def test_pointerdown_keeps_the_previous_shift_click_anchor():

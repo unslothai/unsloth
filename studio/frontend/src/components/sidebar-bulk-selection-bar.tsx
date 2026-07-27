@@ -10,10 +10,12 @@ export function SidebarBulkSelectionBar({
   count,
   onDelete,
   onClear,
+  busy = false,
 }: {
   count: number;
   onDelete: () => void;
   onClear: () => void;
+  busy?: boolean;
 }) {
   const t = useT();
   if (count <= 0) return null;
@@ -34,6 +36,9 @@ export function SidebarBulkSelectionBar({
         size="sm"
         variant="destructive"
         className="h-6 shrink-0 rounded-full px-2.5 text-xs"
+        // The confirm dialog closes before the batch finishes; without this the
+        // bar invites a second confirm over rows already being deleted.
+        disabled={busy}
         onClick={onDelete}
       >
         <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-3.5" />
