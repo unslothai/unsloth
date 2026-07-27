@@ -141,6 +141,26 @@ def test_raw_text_loader():
         except ValueError as e:
             assert "stride" in str(e) and "chunk_size" in str(e)
 
+        # smart_chunk_text validation: called directly, chunk_size/stride are its own
+        # arguments and bypass the constructor guard, so it must guard itself or an
+        # invalid stride makes `start_idx += chunk_size - stride` non-positive and the
+        # chunking loop never terminates (hangs).
+        long_text = "This is a test file for raw text training. " * 10
+        valid_chunks = loader.smart_chunk_text(long_text, chunk_size = 5, stride = 2)
+        assert len(valid_chunks) > 0, "Valid stride should produce chunks"
+
+        try:
+            loader.smart_chunk_text(long_text, chunk_size = 5, stride = 5)
+            assert False, "Should raise ValueError for stride == chunk_size"
+        except ValueError as e:
+            assert "stride" in str(e) and "chunk_size" in str(e)
+
+        try:
+            loader.smart_chunk_text(long_text, chunk_size = 5, stride = 10)
+            assert False, "Should raise ValueError for stride > chunk_size"
+        except ValueError as e:
+            assert "stride" in str(e) and "chunk_size" in str(e)
+
         # Preprocessor.
         preprocessor = TextPreprocessor()
         clean_text = preprocessor.clean_text("  messy   text  \n\n\n  ")
@@ -221,6 +241,171 @@ def test_raw_text_loader():
         os.unlink(test_file)
 
 
+def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
+    """smart_chunk_text's single-chunk branch must return a plain list for
+    input_ids even when the tokenizer has no eos_token_id, matching the
+    multi-chunk branch's unconditional tolist()/list() conversion."""
+
+    class MockTensor:
+        def __init__(self, data):
+            self.data = data
+
+        def __getitem__(self, idx):
+            return self.data
+
+        def __len__(self):
+            return len(self.data)
+
+        def tolist(self):
+            return self.data
+
+    class MockTokenizerNoEos:
+        def __init__(self):
+            self.eos_token = None
+            self.eos_token_id = None
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
+            token_ids = list(range(len(text.split())))
+            if return_tensors == "pt":
+                return {"input_ids": [MockTensor(token_ids)]}
+            return {"input_ids": token_ids}
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
+            return " ".join(f"word_{i}" for i in token_ids)
+
+    loader = RawTextDataLoader(MockTokenizerNoEos(), chunk_size = 2048, stride = 512)
+    result = loader.smart_chunk_text(
+        "hello world short text", chunk_size = 2048, stride = 512, return_tokenized = True
+    )
+    input_ids = result[0]["input_ids"]
+    assert isinstance(
+        input_ids, list
+    ), f"input_ids should be a plain list even without an eos_token_id, got {type(input_ids)}"
+    assert input_ids == [0, 1, 2, 3], f"unexpected input_ids: {input_ids}"
+    print("✅ test_smart_chunk_text_single_chunk_no_eos_returns_plain_list passed!")
+    return True
+
+
+def test_load_from_file_skips_non_object_json_lines():
+    """Non-object .jsonl lines (valid JSON, not dicts) are skipped, not fatal."""
+    # "context" contains "text", ["text"] holds it, 42 isn't iterable -- each
+    # would reach data[field] and raise TypeError without the isinstance guard.
+    with tempfile.NamedTemporaryFile("w", suffix = ".jsonl", delete = False) as f:
+        f.write('"context"\n["text", "x"]\n42\n{"text": "keep this"}\n')
+        path = f.name
+    try:
+        text = RawTextDataLoader(None)._read_file_by_format(path, "json_lines")
+        assert text == "keep this", text
+    finally:
+        os.unlink(path)
+
+    print("test_load_from_file_skips_non_object_json_lines passed")
+    return True
+
+
+def test_smart_chunk_text_empty_input_returns_no_chunks():
+    """Empty/whitespace text must yield no chunks. This tokenizer keeps one token
+    per char (like BPE/SentencePiece keeping spaces), so a len(tokens)==0 check
+    would miss whitespace; the fix guards on text.strip() before tokenizing."""
+
+    class WhitespacePreservingTokenizer:
+        def __init__(self, eos_token_id):
+            self.eos_token = "</s>" if eos_token_id is not None else None
+            self.eos_token_id = eos_token_id
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
+            token_ids = [ord(c) % 100 for c in text]  # whitespace -> real tokens
+            if return_tensors == "pt":
+                return {"input_ids": [token_ids]}
+            return {"input_ids": token_ids}
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
+            return "".join(chr(32 + (t % 90)) for t in token_ids)
+
+    for eos_token_id in (2, None):
+        loader = RawTextDataLoader(
+            WhitespacePreservingTokenizer(eos_token_id), chunk_size = 2048, stride = 512
+        )
+        # Whitespace tokenizes to >0 tokens, so [] proves the pre-tokenize guard.
+        assert len(loader.tokenizer("   \n\t  ")["input_ids"]) > 0
+        for text in ("", "   \n\t  "):
+            for return_tokenized in (True, False):
+                assert (
+                    loader.smart_chunk_text(
+                        text, chunk_size = 2048, stride = 512, return_tokenized = return_tokenized
+                    )
+                    == []
+                ), f"no chunks for empty input (eos={eos_token_id}, text={text!r}, tokenized={return_tokenized})"
+                assert loader.chunk_text(text, return_tokenized = return_tokenized) == [], (
+                    f"chunk_text: no chunks for empty input "
+                    f"(eos={eos_token_id}, text={text!r}, tokenized={return_tokenized})"
+                )
+    print("test_smart_chunk_text_empty_input_returns_no_chunks passed")
+    return True
+
+
+def test_load_from_files_all_empty_raises():
+    """All-empty file list must raise (like load_from_file) instead of returning
+    a 0-row text-column dataset in return_tokenized mode."""
+
+    class WhitespacePreservingTokenizer:
+        eos_token = "</s>"
+        eos_token_id = 2
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
+            token_ids = [ord(c) % 100 for c in text]
+            if return_tensors == "pt":
+                return {"input_ids": [token_ids]}
+            return {"input_ids": token_ids}
+
+    loader = RawTextDataLoader(WhitespacePreservingTokenizer(), chunk_size = 2048, stride = 512)
+    paths = []
+    try:
+        for content in ("", "   \n\t  "):
+            with tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False) as f:
+                f.write(content)
+                paths.append(f.name)
+        raised = False
+        try:
+            loader.load_from_files(paths, return_tokenized = True)
+        except ValueError as e:
+            raised = True
+            assert "empty" in str(e).lower() or "whitespace" in str(e).lower(), str(e)
+        assert raised, "load_from_files must raise when all files are empty/whitespace"
+    finally:
+        for p in paths:
+            os.unlink(p)
+    print("test_load_from_files_all_empty_raises passed")
+    return True
+
+
 if __name__ == "__main__":
     success = test_raw_text_loader()
+    success = test_smart_chunk_text_single_chunk_no_eos_returns_plain_list() and success
+    success = test_load_from_file_skips_non_object_json_lines() and success
+    success = test_smart_chunk_text_empty_input_returns_no_chunks() and success
+    success = test_load_from_files_all_empty_raises() and success
     sys.exit(0 if success else 1)

@@ -15,7 +15,7 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPath, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
 
-foreach ($name in @("ConvertTo-TorchFlavorTag", "Get-ExpectedTorchFlavorTag")) {
+foreach ($name in @("ConvertTo-TorchFlavorTag", "Get-ExpectedTorchFlavorTag", "Trim-IndexPathSlashes", "Redact-InstallOutput")) {
     $fn = $ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
     }, $true)
@@ -48,6 +48,19 @@ Check "rocm7.2 leaf -> rocm"          ((Get-ExpectedTorchFlavorTag -TorchIndexUr
 Check "mirror cu130 leaf -> cu130"   ((Get-ExpectedTorchFlavorTag -TorchIndexUrl "https://my.mirror/whl/cu130") -eq "cu130")
 Check "unrecognized leaf -> null"    ($null -eq (Get-ExpectedTorchFlavorTag -TorchIndexUrl "https://my.mirror/whl/simple"))
 Check "empty url -> null"            ($null -eq (Get-ExpectedTorchFlavorTag -TorchIndexUrl ""))
+
+Write-Host "Trim-IndexPathSlashes (install.ps1 parity: path-only, token-preserving)"
+Check "double path slash collapsed"      ((Trim-IndexPathSlashes "https://h/whl/cu128//") -eq "https://h/whl/cu128")
+Check "single trailing slash trimmed"    ((Trim-IndexPathSlashes "https://h/whl/cu128/") -eq "https://h/whl/cu128")
+Check "query token slash preserved"      ((Trim-IndexPathSlashes "https://h/whl/cu128?token=ab12cd/") -eq "https://h/whl/cu128?token=ab12cd/")
+Check "path slash trimmed, query kept"   ((Trim-IndexPathSlashes "https://h/whl/cu128//?token=ab12cd/") -eq "https://h/whl/cu128?token=ab12cd/")
+
+Write-Host "Redact-InstallOutput (install.ps1 parity: credential redaction)"
+Check "userinfo redacted"                ((Redact-InstallOutput "ERROR https://alice:s3cr3t@download.pytorch.org/whl/cu128") -eq "ERROR https://<redacted>@download.pytorch.org/whl/cu128")
+Check "query value redacted"             ((Redact-InstallOutput "https://host/whl/cu128?token=abcd1234&channel=beta") -eq "https://host/whl/cu128?token=<redacted>&channel=<redacted>")
+Check "fragment token redacted"          ((Redact-InstallOutput "ERROR https://mirror.local/whl/cu128#token=SECRET123 (403)") -eq "ERROR https://mirror.local/whl/cu128#<redacted> (403)")
+Check "bare hash comment untouched"      ((Redact-InstallOutput "# retrying with --no-cache-dir") -eq "# retrying with --no-cache-dir")
+Check "plain line untouched"             ((Redact-InstallOutput "Resolved 42 packages in 1.2s") -eq "Resolved 42 packages in 1.2s")
 
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) FAILED" -ForegroundColor Red; exit 1 }

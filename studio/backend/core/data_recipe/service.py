@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from utils.paths import recipe_datasets_root
+
 from .jsonable import to_jsonable
 from .local_callable_validators import (
     register_oxc_local_callable_validators,
@@ -276,6 +278,11 @@ def build_config_builder(recipe: dict[str, Any]):
 def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = None):
     _apply_data_designer_image_context_patch()
     from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
+
+    if artifact_path is None:
+        # DataDesigner defaults to cwd/artifacts; packaged Unsloth can run with
+        # cwd=/, so keep default callers on Unsloth's writable recipe artifact root.
+        artifact_path = str(recipe_datasets_root())
 
     recipe = _strip_frontend_model_config_metadata(recipe)
     model_providers = build_model_providers(recipe)

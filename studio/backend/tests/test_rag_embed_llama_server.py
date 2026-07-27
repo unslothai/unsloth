@@ -149,7 +149,7 @@ def test_build_env_gpu_inherits_devices(monkeypatch):
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
     b = LlamaServerBackend()
     env = b._build_env("/bin/llama-server", use_gpu = True)
-    assert env.get("CUDA_VISIBLE_DEVICES") == "0,1"  # inherit Studio's selection
+    assert env.get("CUDA_VISIBLE_DEVICES") == "0,1"  # inherit Unsloth's selection
 
 
 def test_use_gpu_explicit_modes(monkeypatch):

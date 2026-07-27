@@ -52,7 +52,7 @@ MAX_POS = 131072
 
 
 def _load_class_init():
-    tree = ast.parse(LLAMA_PY.read_text())
+    tree = ast.parse(LLAMA_PY.read_text(encoding = "utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef) and node.name == CLASS_NAME:
             for sub in node.body:
@@ -96,7 +96,7 @@ def _iter_names_and_calls(node):
 
 
 def _find_method(source_path, class_name, method_name):
-    for node in ast.walk(ast.parse(source_path.read_text())):
+    for node in ast.walk(ast.parse(source_path.read_text(encoding = "utf-8"))):
         if isinstance(node, ast.ClassDef) and node.name == class_name:
             for sub in node.body:
                 if isinstance(sub, ast.FunctionDef) and sub.name == method_name:
@@ -105,7 +105,7 @@ def _find_method(source_path, class_name, method_name):
 
 
 def _find_function(source_path, function_name):
-    for node in ast.walk(ast.parse(source_path.read_text())):
+    for node in ast.walk(ast.parse(source_path.read_text(encoding = "utf-8"))):
         if isinstance(node, ast.FunctionDef) and node.name == function_name:
             return node
     return None

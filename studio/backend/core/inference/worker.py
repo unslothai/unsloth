@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 logger = get_logger(__name__)
-from utils.hardware import apply_gpu_ids
+from utils.hardware import apply_gpu_ids, is_apple_silicon
 
 _SHARE_OBJECT_MAX_BYTES = 1 << 20
 _SHARE_OBJECT_ERROR_SIZE = -1
@@ -151,7 +151,7 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     import json
 
     try:
-        with open(adapter_cfg_path) as f:
+        with open(adapter_cfg_path, encoding = "utf-8") as f:
             adapter_cfg = json.load(f)
         training_method = adapter_cfg.get("unsloth_training_method")
         if training_method == "lora" and load_in_4bit:
@@ -290,6 +290,18 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
 
         hf_token = _clean_token(config.get("hf_token"))
         load_in_4bit = _resolve_lora_4bit(mc, config.get("load_in_4bit", True))
+
+        # Latest-transformers sidecar models load 16-bit: bnb 4-bit feeds quantized
+        # expert weights into unvalidated paths (e.g. grouped-MoE torch._grouped_mm).
+        if load_in_4bit:
+            from utils.transformers_version import latest_tier_active_for
+            if latest_tier_active_for(config["model_name"], hf_token):
+                load_in_4bit = False
+                logger.info(
+                    "Latest-transformers sidecar active for %s - forcing a 16-bit "
+                    "load (4-bit is disabled for brand-new architectures)",
+                    config["model_name"],
+                )
 
         trust_remote_code = config.get("trust_remote_code", False)
         if not trust_remote_code and _needs_nemotron_trust(config["model_name"], hf_token = hf_token):
@@ -501,20 +513,25 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
 
         logger.info("Starting text generation for request_id=%s", request_id)
 
-        for cumulative_text in generator:
-            # cancel_event is an mp.Event — checked instantly, no queue polling.
-            if cancel_event.is_set():
-                logger.info("Generation cancelled for request %s", request_id)
-                break
+        try:
+            for cumulative_text in generator:
+                # cancel_event is an mp.Event — checked instantly, no queue polling.
+                if cancel_event.is_set():
+                    logger.info("Generation cancelled for request %s", request_id)
+                    break
 
-            _send_response(
-                resp_queue,
-                {
-                    "type": "token",
-                    "request_id": request_id,
-                    "text": cumulative_text,
-                },
-            )
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "token",
+                        "request_id": request_id,
+                        "text": cumulative_text,
+                    },
+                )
+        finally:
+            close = getattr(generator, "close", None)
+            if callable(close):
+                close()
 
         _send_response(
             resp_queue,
@@ -777,17 +794,14 @@ def run_inference_process(
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
-    apply_gpu_ids(config.get("resolved_gpu_ids"))
+    apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
     model_name = config["model_name"]
 
     # ── 0. MLX fast-path — skip torch/transformers ──
     _ensure_backend_on_path()
 
-    from utils.hardware import hardware as _hw
-
-    _hw.detect_hardware()
-    if _hw.DEVICE == _hw.DeviceType.MLX:
+    if is_apple_silicon():
         # Non-fatal: fall through with the installed version, but log the cause
         # instead of swallowing it (issue #6103).
         try:
@@ -799,6 +813,11 @@ def run_inference_process(
                 model_name,
                 exc,
             )
+
+    from utils.hardware import hardware as _hw
+
+    _hw.detect_hardware()
+    if _hw.DEVICE == _hw.DeviceType.MLX:
         try:
             from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
 
@@ -906,7 +925,31 @@ def run_inference_process(
                 )
         return
 
-    # ── Resolve the effective base once, before activation/gates/install (no ML import) ──
+    # ── Windows: check Triton availability ──
+    # Placed ahead of the torchao stub below (which imports torch on win32 to detect ROCm),
+    # matching the training and export workers' gate-then-stub ordering.
+    if sys.platform == "win32":
+        try:
+            import triton  # noqa: F401
+            logger.info("Triton available — torch.compile enabled")
+        except ImportError:
+            os.environ["TORCHDYNAMO_DISABLE"] = "1"
+            logger.warning(
+                "Triton not found on Windows — torch.compile disabled. "
+                'Install for better performance: pip install "triton-windows<3.7"'
+            )
+
+    # ── Stub torchao on Windows ROCm before ANY transformers import ──
+    # Must precede every path that pulls transformers, not just the ML imports in section 2:
+    # a local LoRA adapter with no recorded base reaches transformers here via
+    # _resolve_base_model -> utils.models. See core/_torchao_stub.py; no-op off Windows ROCm.
+    from core._torchao_stub import install_torchao_windows_rocm_stub
+
+    install_torchao_windows_rocm_stub()
+
+    # ── Resolve the effective base once, before activation/gates/install ──
+    # No ML import on the common path; a local adapter with no recorded base pulls
+    # transformers via utils.models, which is why the stub above precedes this.
     # A remote LoRA's base is in its Hub adapter_config.json (else surfaced only by ModelConfig
     # after import). _lora_base is set only for a genuine adapter, never a full fine-tune's base.
     import json as _json
@@ -920,7 +963,10 @@ def run_inference_process(
     if _local_adapter_cfg.is_file():
         try:
             _lora_base = (
-                _json.loads(_local_adapter_cfg.read_text()).get("base_model_name_or_path") or None
+                _json.loads(_local_adapter_cfg.read_text(encoding = "utf-8")).get(
+                    "base_model_name_or_path"
+                )
+                or None
             )
         except Exception:
             _lora_base = None
@@ -944,19 +990,7 @@ def run_inference_process(
         )
         return
 
-    # ── 1b. Windows: check Triton availability (must precede import torch) ──
-    if sys.platform == "win32":
-        try:
-            import triton  # noqa: F401
-            logger.info("Triton available — torch.compile enabled")
-        except ImportError:
-            os.environ["TORCHDYNAMO_DISABLE"] = "1"
-            logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
-                'Install for better performance: pip install "triton-windows<3.7"'
-            )
-
-    # ── 1c. Security gates, then SSM/Mamba kernels, BEFORE importing transformers ──
+    # ── 1b. Security gates, then SSM/Mamba kernels, BEFORE importing transformers ──
     # transformers snapshots its optional-backend gates at import, so a hybrid model's kernels
     # must be installed before the import below ("mamba-ssm is required" otherwise). The gates
     # are metadata-only, so run them first and refuse a blocked model before any native build.

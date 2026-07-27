@@ -224,7 +224,7 @@ class TestRetryLogFilenameUnique:
 class TestFitOffRetryEligible:
     """Gate for the one-shot --fit off startup-crash retry.
 
-    Retry only when Studio's own VRAM math placed the model and nothing
+    Retry only when Unsloth's own VRAM math placed the model and nothing
     on the command line chose the fit mode explicitly."""
 
     def test_eligible_for_plain_ngl_launch(self):

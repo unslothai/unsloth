@@ -4,7 +4,7 @@
 """Unit tests for OpenAI Responses API image_generation tool wiring.
 
 The tool is a server-side Responses-API tool (``{type: "image_generation"}``);
-the result comes back as an ``image_generation_call`` output item, which Studio
+the result comes back as an ``image_generation_call`` output item, which Unsloth
 translates into ``_toolEvent`` chunks so the chat adapter renders it inline.
 Tests pin: the tool is added to the body only on a cloud OpenAI base when asked
 for, the done event produces the expected chunks, and non-cloud bases drop it.

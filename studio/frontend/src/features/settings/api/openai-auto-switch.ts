@@ -11,6 +11,10 @@ export type OpenAIAutoSwitchSettings = {
   // True when the idle-unload loop will actually unload (e.g. enabled via the
   // UNSLOTH_MODEL_IDLE_TTL env var even while the toggle is off).
   idleUnloadActive: boolean;
+  // Persist the KV cache to disk on idle unload and restore it on reload.
+  autoUnloadKeepKv: boolean;
+  // Fetch a GGUF named in an API request; stored independently of `enabled`, gated on it.
+  autoDownloadModel: boolean;
 };
 
 type ApiOpenAIAutoSwitchSettings = {
@@ -21,6 +25,10 @@ type ApiOpenAIAutoSwitchSettings = {
   default_enabled: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   idle_unload_active?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  auto_unload_keep_kv?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  auto_download_model?: boolean;
 };
 
 let cachedSettings: OpenAIAutoSwitchSettings | null = null;
@@ -34,6 +42,8 @@ function fromApi(
     autoUnloadIdleSeconds: settings.auto_unload_idle_seconds,
     defaultEnabled: settings.default_enabled,
     idleUnloadActive: settings.idle_unload_active ?? false,
+    autoUnloadKeepKv: settings.auto_unload_keep_kv ?? true,
+    autoDownloadModel: settings.auto_download_model ?? false,
   };
 }
 
@@ -66,15 +76,28 @@ export async function loadOpenAIAutoSwitchSettings() {
 
 export async function updateOpenAIAutoSwitchSettings(
   enabled: boolean,
-  autoUnloadIdleSeconds: number,
+  autoUnloadIdleSeconds?: number,
+  autoUnloadKeepKv?: boolean,
+  autoDownloadModel?: boolean,
 ): Promise<OpenAIAutoSwitchSettings> {
   const res = await authFetch("/api/settings/openai-auto-switch", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       enabled,
-      // biome-ignore lint/style/useNamingConvention: API schema
-      auto_unload_idle_seconds: autoUnloadIdleSeconds,
+      // Omitted fields keep their stored value.
+      ...(autoUnloadIdleSeconds === undefined
+        ? {}
+        : // biome-ignore lint/style/useNamingConvention: API schema
+          { auto_unload_idle_seconds: autoUnloadIdleSeconds }),
+      ...(autoUnloadKeepKv === undefined
+        ? {}
+        : // biome-ignore lint/style/useNamingConvention: API schema
+          { auto_unload_keep_kv: autoUnloadKeepKv }),
+      ...(autoDownloadModel === undefined
+        ? {}
+        : // biome-ignore lint/style/useNamingConvention: API schema
+          { auto_download_model: autoDownloadModel }),
     }),
   });
   if (!res.ok) {

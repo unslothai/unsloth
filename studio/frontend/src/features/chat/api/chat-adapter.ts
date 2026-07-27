@@ -2,16 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getAuthToken } from "@/features/auth";
-import {
-  loadRememberedLoadSettings,
-  rememberedLoadSettingsKey,
-} from "@/components/assistant-ui/model-selector/remembered-load-settings";
+import { resolveInitialConfig } from "@/features/model-picker";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
+import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
   getExternalProviderApiKey,
   isCustomProviderType,
@@ -44,13 +42,24 @@ import {
 import {
   type PendingImageEditReference,
   type RagAutoInject,
+  GPU_LAYERS_AUTO,
+  loadedGpuMemoryFields,
+  reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
+  persistGpuMemoryModeOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
+import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "../presets/preset-policy";
+import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import {
+  shouldPreserveFullOutput,
+  toolOutputKey,
+  toolPaneScope,
+} from "../tool-output-scope";
 import type { ModelType } from "../types";
 import { isMultimodalResponse } from "../types/api";
 import type {
@@ -65,6 +74,8 @@ import {
   getStoredChatThread,
   getStoredChatProject,
   listStoredChatThreads,
+  listStoredChatMessages,
+  saveStoredChatMessage,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
 import {
@@ -80,11 +91,13 @@ import {
 import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
   generateAudio,
+  GenerationLengthError,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
   loadModel,
   streamChatCompletions,
+  StreamInterruptedError,
   validateModel,
 } from "./chat-api";
 import {
@@ -95,6 +108,16 @@ import {
   encryptProviderApiKey,
   isProviderKeyRotationError,
 } from "./providers-api";
+import {
+  beginExternalResearchFollow,
+  ingestResearchUpdate,
+  useResearchRunStore,
+} from "../stores/research-run-store";
+import {
+  cancelResearchRun,
+  createResearchRun,
+  followResearchRun,
+} from "./research-api";
 
 // Small models (<=9B) answer from memory instead of calling search, so "auto"
 // forces retrieval for them and leaves it to larger ones.
@@ -173,6 +196,7 @@ interface ResponseDetailsMetadata {
     artifacts: boolean;
     confirmToolCalls: boolean;
     bypassPermissions: boolean;
+    permissionMode?: string;
   };
 }
 
@@ -225,6 +249,49 @@ const pendingFirstThreadSaves = new Map<string, Promise<void>>();
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Best-effort partial parse of a live tool_args stream into a tool part's
+ * `args`, so cards render the payload while the model is still writing it. The
+ * structured path streams raw arguments JSON; the text path wraps it in call
+ * markup, unwrapped here. Returns null until something parses; never throws.
+ */
+function parseLiveToolArgs(
+  raw: string,
+): { args: Record<string, unknown>; argsText: string } | null {
+  let candidate = raw.trimStart();
+  if (!candidate.startsWith("{")) {
+    const brace = candidate.indexOf("{");
+    if (brace < 0) return null;
+    candidate = candidate.slice(brace);
+  }
+  const parsed = parsePartialJsonObject(candidate) as
+    | Record<string, unknown>
+    | undefined;
+  if (!parsed || typeof parsed !== "object") return null;
+  // Call envelope from the text path: unwrap to the arguments payload.
+  const inner = parsed.arguments ?? parsed.parameters;
+  if (typeof parsed.name === "string" && inner !== undefined) {
+    if (typeof inner === "string") {
+      // Stringified arguments: partial-parse the inner JSON string.
+      const innerParsed = parsePartialJsonObject(inner) as
+        | Record<string, unknown>
+        | undefined;
+      if (innerParsed && typeof innerParsed === "object") {
+        return { args: innerParsed, argsText: inner };
+      }
+      return null;
+    }
+    if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+      return {
+        args: inner as Record<string, unknown>,
+        argsText: JSON.stringify(inner),
+      };
+    }
+    return null;
+  }
+  return { args: parsed, argsText: candidate };
 }
 
 function parseSystemVariablesMap(raw: string): Record<string, unknown> {
@@ -901,6 +968,33 @@ function serializeAssistantToolCallPart(
   return entry;
 }
 
+export interface McpImageToolResult {
+  text: string;
+  images: { data: string; mimeType: string }[];
+}
+
+export function isMcpImageToolResult(
+  val: unknown,
+): val is McpImageToolResult {
+  if (typeof val !== "object" || val === null) {
+    return false;
+  }
+  const v = val as { text?: unknown; images?: unknown; sessionId?: unknown };
+  return (
+    typeof v.text === "string" &&
+    v.sessionId === undefined &&
+    Array.isArray(v.images) &&
+    v.images.length > 0 &&
+    v.images.every(
+      (img: unknown) =>
+        typeof img === "object" &&
+        img !== null &&
+        typeof (img as { data?: unknown }).data === "string" &&
+        typeof (img as { mimeType?: unknown }).mimeType === "string",
+    )
+  );
+}
+
 function serializeToolResultPart(
   part: ToolCallMessagePart,
 ): SerializedToolResult | null {
@@ -920,6 +1014,8 @@ function serializeToolResultPart(
     // content; serialise a sentinel JSON so legitimately empty tool
     // outputs still round-trip the follow-up turn to the provider.
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
+  } else if (isMcpImageToolResult(result)) {
+    content = result.text.length > 0 ? result.text : JSON.stringify({ result: "" });
   } else {
     try {
       content = JSON.stringify(result);
@@ -1269,6 +1365,29 @@ async function resolveProjectInstructions(
   return project.instructions?.trim() ?? "";
 }
 
+async function resolveChatInstructions(
+  threadId: string | undefined,
+  systemPrompt: unknown,
+  systemVariables: unknown,
+): Promise<string> {
+  const safeSystemPrompt =
+    typeof systemPrompt === "string"
+      ? resolveSystemPromptVariables(
+          systemPrompt,
+          typeof systemVariables === "string" ? systemVariables : "",
+        )
+      : "";
+  const projectInstructions = await resolveProjectInstructions(threadId);
+  return [
+    projectInstructions
+      ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
+      : "",
+    safeSystemPrompt.trim(),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 async function resolveProjectId(
   threadId: string | undefined,
 ): Promise<string | null> {
@@ -1321,6 +1440,7 @@ const GGUF_KNOWN_QUANT_RE =
 
 type AutoLoadCandidate = {
   id: string;
+  loadId?: string | null;
   kind: LastLocalModelKind;
   ggufVariant: string | null;
   maxSeqLength: number;
@@ -1409,6 +1529,13 @@ async function autoLoadSmallestModel(): Promise<{
     max_seq_length: number;
     is_lora: boolean;
     gguf_variant?: string | null;
+    // GGUF-only: scopes the training guard to the same placement policy /load
+    // will use. Manual mode must match because it makes placement user-owned.
+    // The layer/MoE/split/KV/spec knobs are deliberately not sent: Auto mode's
+    // guard sizes conservatively, while Manual mode bypasses that estimate.
+    // The safetensors fallback omits both fields and uses HF auto-placement.
+    gpu_ids?: number[];
+    gpu_memory_mode?: "auto" | "manual";
   }): Promise<boolean> {
     const validation = await validateModel({
       ...payload,
@@ -1425,6 +1552,11 @@ async function autoLoadSmallestModel(): Promise<{
       blockedByTrustRemoteCode = true;
       return false;
     }
+    // Never install packages from a background load; explicit loads raise the upgrade dialog.
+    if (validation.requires_transformers_upgrade) {
+      hadNonTrustFailure = true;
+      return false;
+    }
     return true;
   }
 
@@ -1435,33 +1567,70 @@ async function autoLoadSmallestModel(): Promise<{
       return false;
     }
     const currentStore = useChatRuntimeStore.getState();
-    const remembered = loadRememberedLoadSettings(
-      rememberedLoadSettingsKey({
-        id: candidate.id,
-        ggufVariant: candidate.ggufVariant,
-      }),
-    );
+    const modelPath = candidate.loadId ?? candidate.id;
+    const { config } = resolveInitialConfig(candidate.id, candidate.ggufVariant);
     const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
       modelId: candidate.id,
       ggufVariant: candidate.ggufVariant,
       isGguf: candidate.kind === "gguf",
-      customContextLength: remembered?.contextLength ?? null,
+      customContextLength: config.customContextLength,
       ggufContextLength: null,
       currentCheckpoint: currentStore.params.checkpoint,
       activeGgufVariant: currentStore.activeGgufVariant,
-      maxSeqLength: candidate.maxSeqLength,
+      maxSeqLength: config.maxSeqLength ?? candidate.maxSeqLength,
       presetSource: currentStore.activePresetSource,
     });
+    // The GPU knobs are per-model, so read them from the same per-model config
+    // that fed effectiveMaxSeqLength -- on a background auto-load the live store
+    // holds session defaults, not the saved Manual mode / layer pin / GPU pick.
+    // Absent fields fall back like the interactive restore: the mode to the store
+    // (a persisted standing preference), the per-model knobs to their defaults.
+    // The saved GPU pick is reconciled against the GPUs present now.
+    const effectiveGpuMemoryMode =
+      config.gpuMemoryMode ?? currentStore.gpuMemoryMode;
+    const effectiveGpuLayers = config.gpuLayers ?? GPU_LAYERS_AUTO;
+    const effectiveNCpuMoe = config.nCpuMoe ?? 0;
+    if (config.selectedGpuIds != null) {
+      // Warm the device cache first: on a cold cache the reconcile passes the
+      // saved pick through unvalidated, and a stale cross-host pick then fails
+      // the load with the picker hidden.
+      await ensureGpuDeviceCache();
+    }
+    const effectiveGpuIds =
+      config.selectedGpuIds !== undefined
+        ? reconcilePersistedGpuIds(config.selectedGpuIds)
+        : null;
+    // Under Manual GPU memory + Auto layers, llama.cpp's --fit owns context
+    // sizing, so send 0 (or the pinned length). GGUF-only; a no-op otherwise.
+    // The context pin is per-model too, so it comes from the saved config, not
+    // the live store.
+    const fitMaxSeqLength = resolveFitMaxSeqLength(
+      candidate.kind === "gguf",
+      effectiveGpuMemoryMode,
+      effectiveGpuLayers,
+      config.customContextLength ?? null,
+      effectiveMaxSeqLength,
+    );
     const effectiveSpeculativeType =
-      remembered?.speculativeType ?? specSettings.speculativeType;
+      config.speculativeType ?? specSettings.speculativeType;
     const effectiveSpecDraftNMax =
-      remembered?.specDraftNMax ?? specSettings.specDraftNMax;
+      config.specDraftNMax ?? specSettings.specDraftNMax;
+    const effectiveChatTemplateOverride = config.chatTemplateOverride?.trim()
+      ? config.chatTemplateOverride
+      : null;
     if (
       !(await canAutoLoad({
-        model_path: candidate.id,
-        max_seq_length: effectiveMaxSeqLength,
+        model_path: modelPath,
+        max_seq_length: fitMaxSeqLength,
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
+        // The same remembered-derived GPU pick the load below sends.
+        ...(candidate.kind === "gguf"
+          ? {
+              gpu_ids: effectiveGpuIds ?? undefined,
+              gpu_memory_mode: effectiveGpuMemoryMode,
+            }
+          : {}),
       }))
     ) {
       skippedAutoLoadCandidates.add(
@@ -1471,35 +1640,59 @@ async function autoLoadSmallestModel(): Promise<{
     }
     loadAttempts += 1;
     const loadResp = await loadModel({
-      model_path: candidate.id,
+      model_path: modelPath,
       hf_token: hfToken,
-      max_seq_length: effectiveMaxSeqLength,
+      max_seq_length: fitMaxSeqLength,
       load_in_4bit: true,
       is_lora: false,
       gguf_variant: candidate.ggufVariant,
       trust_remote_code: trustRemoteCode,
-      cache_type_kv: remembered?.kvCacheDtype ?? null,
+      chat_template_override: effectiveChatTemplateOverride,
+      cache_type_kv: config.kvCacheDtype,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
-      tensor_parallel: remembered?.tensorParallel ?? false,
+      tensor_parallel: config.tensorParallel,
+      // GGUF-only: the safetensors fallback loads via HF auto-placement (no
+      // explicit pins). The split ratio is deliberately never remembered
+      // (positionally bound to an exact GPU set), so auto-load leaves llama.cpp's
+      // free-VRAM default in charge rather than sending a stale store value.
+      ...(candidate.kind === "gguf"
+        ? {
+            gpu_memory_mode: effectiveGpuMemoryMode,
+            gpu_layers: effectiveGpuLayers,
+            n_cpu_moe: effectiveNCpuMoe,
+            gpu_ids: effectiveGpuIds ?? undefined,
+          }
+        : {}),
     });
-    saveSpeculativeType(effectiveSpeculativeType);
+    // Only persist the global preference when the value came from the global
+    // settings. A per-model config's choice must stay load-local, or autoloading
+    // a remembered model on startup would rewrite the global default.
+    if (config.speculativeType == null) {
+      saveSpeculativeType(effectiveSpeculativeType);
+    }
+    // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
+    persistGpuMemoryModeOnLoad(loadResp, effectiveGpuMemoryMode);
+    const loadedModelId = loadResp.model || modelPath;
     useChatRuntimeStore
       .getState()
-      .setCheckpoint(candidate.id, candidate.ggufVariant ?? undefined);
+      .setCheckpoint(loadedModelId, candidate.ggufVariant ?? undefined);
     const store = useChatRuntimeStore.getState();
     store.setModelRequiresTrustRemoteCode(
       loadResp.requires_trust_remote_code ?? false,
     );
     store.setParams({
       ...store.params,
+      ...(candidate.kind === "gguf"
+        ? {}
+        : { maxSeqLength: effectiveMaxSeqLength }),
       maxTokens:
         candidate.kind === "gguf"
           ? loadResp.context_length ?? 131072
           : effectiveMaxSeqLength,
     });
     const autoModel: ChatModelSummary = {
-      id: candidate.id,
+      id: loadedModelId,
       name: loadResp.display_name ?? candidate.id,
       isVision: loadResp.is_vision ?? false,
       isLora: loadResp.is_lora ?? false,
@@ -1508,10 +1701,19 @@ async function autoLoadSmallestModel(): Promise<{
       audioType: loadResp.audio_type ?? null,
       hasAudioInput: loadResp.has_audio_input ?? false,
     };
-    if (!store.models.some((m) => m.id === candidate.id)) {
+    if (!store.models.some((m) => m.id === loadedModelId)) {
       store.setModels([...store.models, autoModel]);
     }
     if (candidate.kind === "gguf") {
+      // Keep an explicit Manual+Auto context pin the load just applied (so a
+      // later Apply doesn't silently revert it to auto-fit sizing), mirroring
+      // the interactive path's keepCustomCtx; other cases baseline on
+      // ggufContextLength.
+      const keepCustomCtx = resolveManualAutoCtxPin(
+        effectiveGpuMemoryMode,
+        effectiveGpuLayers,
+        config.customContextLength ?? null,
+      );
       useChatRuntimeStore.setState({
         ggufContextLength: loadResp.context_length ?? 131072,
         ggufMaxContextLength:
@@ -1528,9 +1730,14 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        ...loadedGpuMemoryFields(loadResp),
+        loadedCustomContextLength: keepCustomCtx,
         defaultChatTemplate: loadResp.chat_template ?? null,
-        chatTemplateOverride: null,
-        loadedChatTemplateOverride: null,
+        chatTemplateOverride: effectiveChatTemplateOverride,
+        loadedChatTemplateOverride: effectiveChatTemplateOverride,
+        // Retain the saved requested context so re-saving the config keeps the
+        // override; null stays null (auto/VRAM-fit).
+        customContextLength: config.customContextLength,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
         loadedIsDiffusion: loadResp.is_diffusion ?? false,
         ...resolveLoadedSpeculativeSettings(loadResp),
@@ -1548,9 +1755,13 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
+        // GGUF load left, matching the interactive/status sibling load paths.
+        ...loadedGpuMemoryFields(loadResp),
         defaultChatTemplate: loadResp.chat_template ?? null,
-        chatTemplateOverride: null,
-        loadedChatTemplateOverride: null,
+        chatTemplateOverride: effectiveChatTemplateOverride,
+        loadedChatTemplateOverride: effectiveChatTemplateOverride,
+        customContextLength: null,
         ...resolveLoadedSpeculativeSettings(loadResp),
         loadedIsMultimodal: isMultimodalResponse(loadResp),
         loadedIsDiffusion: loadResp.is_diffusion ?? false,
@@ -1577,7 +1788,10 @@ async function autoLoadSmallestModel(): Promise<{
         const repo = findCachedRepo(ggufRepos, lastLoaded.id);
         if (repo && lastLoaded.ggufVariant) {
           try {
-            const variants = await listGgufVariants(repo.repo_id);
+            const variants = await listGgufVariants(repo.repo_id, undefined, {
+              preferLocalCache: true,
+              localPath: repo.cache_path,
+            });
             const variant = variants.variants.find(
               (entry) =>
                 entry.downloaded &&
@@ -1594,6 +1808,7 @@ async function autoLoadSmallestModel(): Promise<{
               if (
                 await loadAutoLoadCandidate({
                   id: repo.repo_id,
+                  loadId: repo.load_id,
                   kind: "gguf",
                   ggufVariant: variant.quant,
                   maxSeqLength: 0,
@@ -1622,6 +1837,7 @@ async function autoLoadSmallestModel(): Promise<{
             if (
               await loadAutoLoadCandidate({
                 id: repo.repo_id,
+                loadId: repo.load_id,
                 kind: "model",
                 ggufVariant: null,
                 maxSeqLength: store.params.maxSeqLength,
@@ -1651,7 +1867,10 @@ async function autoLoadSmallestModel(): Promise<{
       for (const repo of sorted) {
         if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
         try {
-          const variants = await listGgufVariants(repo.repo_id);
+          const variants = await listGgufVariants(repo.repo_id, undefined, {
+            preferLocalCache: true,
+            localPath: repo.cache_path,
+          });
           const downloaded = variants.variants
             .filter((v) => v.downloaded && isAutoLoadableGgufVariant(v))
             .sort((a, b) => a.size_bytes - b.size_bytes);
@@ -1667,6 +1886,7 @@ async function autoLoadSmallestModel(): Promise<{
             if (
               await loadAutoLoadCandidate({
                 id: repo.repo_id,
+                loadId: repo.load_id,
                 kind: "gguf",
                 ggufVariant: variant.quant,
                 maxSeqLength: 0,
@@ -1701,6 +1921,7 @@ async function autoLoadSmallestModel(): Promise<{
           if (
             await loadAutoLoadCandidate({
               id: repo.repo_id,
+              loadId: repo.load_id,
               kind: "model",
               ggufVariant: null,
               maxSeqLength: 4096,
@@ -1735,12 +1956,17 @@ async function autoLoadSmallestModel(): Promise<{
       duration: 30000,
     });
     try {
+      const rt = useChatRuntimeStore.getState();
       if (
         !(await canAutoLoad({
           model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
           max_seq_length: 0,
           is_lora: false,
           gguf_variant: "UD-Q4_K_XL",
+          // The same live-store GPU pick the load below sends (a fresh default
+          // model has no remembered settings to prefer).
+          gpu_ids: rt.selectedGpuIds ?? undefined,
+          gpu_memory_mode: rt.gpuMemoryMode,
         }))
       ) {
         toast.dismiss(toastId);
@@ -1750,6 +1976,9 @@ async function autoLoadSmallestModel(): Promise<{
       const loadResp = await loadModel({
         model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
         hf_token: hfToken,
+        // Model default under both modes: Auto layers + no pin means
+        // resolveFitMaxSeqLength returns 0 for every mode (the canAutoLoad
+        // preflight above sends the same).
         max_seq_length: 0,
         load_in_4bit: true,
         is_lora: false,
@@ -1757,8 +1986,20 @@ async function autoLoadSmallestModel(): Promise<{
         trust_remote_code: trustRemoteCode,
         speculative_type: specSettings.speculativeType,
         spec_draft_n_max: specSettings.specDraftNMax,
+        // GPU Memory mode is a standing preference, so honor it on auto-load.
+        // The layer/MoE/split knobs and the context pin are per-model: the live
+        // store may hold edits drafted for a staged pick, and a fresh default
+        // model has no remembered settings, so those stay at their defaults like
+        // the cached-candidate path. The GPU pick deliberately differs (it's the
+        // picker's current on-screen selection, which the canAutoLoad preflight
+        // above already committed to).
+        gpu_memory_mode: rt.gpuMemoryMode,
+        gpu_layers: GPU_LAYERS_AUTO,
+        n_cpu_moe: 0,
+        gpu_ids: rt.selectedGpuIds ?? undefined,
       });
       saveSpeculativeType(specSettings.speculativeType);
+      persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
       useChatRuntimeStore
         .getState()
         .setCheckpoint("unsloth/Qwen3.5-4B-MTP-GGUF", "UD-Q4_K_XL");
@@ -1795,6 +2036,10 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        ...loadedGpuMemoryFields(loadResp),
+        // Drives the GPU Memory controls' diffusion gate; set alongside the
+        // GPU fields on every load path so the gate can't read stale.
+        loadedIsDiffusion: loadResp.is_diffusion ?? false,
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
@@ -1830,18 +2075,263 @@ export function createOpenAIStreamAdapter(
   options: OpenAIStreamAdapterOptions = {},
 ): ChatModelAdapter {
   return {
-    async *run({ messages, abortSignal, unstable_threadId }) {
+    async *run({
+      messages,
+      abortSignal,
+      unstable_threadId,
+      unstable_assistantMessageId,
+    }) {
       await useChatRuntimeStore.getState().hydratePersistedSettings();
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable even if the user
       // switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const threadAlreadyResearched = Boolean(
+        resolvedThreadId &&
+          useResearchRunStore.getState().claimedThreadIds[resolvedThreadId],
+      );
+      if (runtime.deepResearchEnabled && threadAlreadyResearched) {
+        runtime.setDeepResearchEnabled(false);
+        runtime = useChatRuntimeStore.getState();
+      }
+      if (
+        runtime.deepResearchEnabled &&
+        !options.pairId &&
+        (options.modelType === undefined || options.modelType === "base")
+      ) {
+        if (runtime.modelLoading) {
+          toast.info("Waiting for model to finish loading…");
+          await waitForModelReady(abortSignal);
+        }
+        if (!useChatRuntimeStore.getState().params.checkpoint) {
+          const { loaded, blockedByTrustRemoteCode } =
+            await autoLoadSmallestModel();
+          if (!loaded) {
+            toast.error(
+              blockedByTrustRemoteCode
+                ? "This model needs custom code approval"
+                : "No model loaded",
+              {
+                description: blockedByTrustRemoteCode
+                  ? "Select it from the top bar to review and approve its custom code, or pick another model."
+                  : "Pick a model in the top bar, then retry.",
+              },
+            );
+            throw new Error("Load a model first.");
+          }
+        }
+        runtime = useChatRuntimeStore.getState();
+        if (!resolvedThreadId) throw new Error("Research requires a saved chat.");
+        if (!unstable_assistantMessageId) {
+          throw new Error(
+            "Deep research could not bind its assistant message. Please retry the send.",
+          );
+        }
+        const userMessage = [...messages].reverse().find((m) => m.role === "user");
+        if (!userMessage) throw new Error("Research requires a user message.");
+        const userMessageIndex = messages.indexOf(userMessage);
+        const userMessageParentId =
+          userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null;
+        const { params } = runtime;
+        const model = params.checkpoint.trim();
+        if (!model || parseExternalModelId(model)) {
+          throw new Error("Deep research requires a selected local model.");
+        }
+        const inferenceRequest: {
+          model: string;
+          temperature?: number;
+          topP?: number;
+          maxTokens?: number;
+          enableThinking?: boolean;
+          reasoningEffort?: string;
+        } = { model };
+        if (
+          Number.isFinite(params.temperature) &&
+          params.temperature >= 0 &&
+          params.temperature <= 2
+        ) {
+          inferenceRequest.temperature = params.temperature;
+        }
+        if (Number.isFinite(params.topP) && params.topP > 0 && params.topP <= 1) {
+          inferenceRequest.topP = params.topP;
+        }
+        if (Number.isFinite(params.maxTokens) && params.maxTokens > 0) {
+          inferenceRequest.maxTokens = Math.min(8192, Math.floor(params.maxTokens));
+        }
+        const reasoningRequested =
+          runtime.reasoningAlwaysOn ||
+          (runtime.reasoningEnabled && runtime.reasoningEffort !== "none");
+        if (
+          runtime.reasoningStyle === "enable_thinking" ||
+          runtime.reasoningStyle === "enable_thinking_effort"
+        ) {
+          inferenceRequest.enableThinking = reasoningRequested;
+        }
+        if (
+          reasoningRequested &&
+          (runtime.reasoningStyle === "reasoning_effort" ||
+            runtime.reasoningStyle === "enable_thinking_effort")
+        ) {
+          // Clamp like normal chat does. reasoningEffort is one shared persisted setting and
+          // the load paths refresh reasoningEffortLevels without re-clamping it, so a level
+          // this model lacks is dropped by llama.cpp and the run falls back to the default.
+          inferenceRequest.reasoningEffort = clampReasoningEffortToLevels(
+            runtime.reasoningEffort,
+            runtime.reasoningEffortLevels,
+          );
+        }
+        const researchProjectId = await resolveProjectId(resolvedThreadId);
+        const projectRagEnabled = researchProjectId
+          ? await projectHasSources(researchProjectId)
+          : false;
+        const researchInstructions = await resolveChatInstructions(
+          resolvedThreadId,
+          params.systemPrompt,
+          params.systemVariables,
+        );
+        const ragScope =
+          runtime.ragEnabled || projectRagEnabled
+            ? runtime.ragEnabled && runtime.ragSource.type === "kb"
+              ? {
+                  kb_id: runtime.ragSource.kbId,
+                   default_top_k: runtime.ragTopK,
+                   mode: runtime.ragMode,
+                   autoinject: runtime.ragAutoInject,
+                   autoinject_min_score: runtime.ragAutoInjectMinScore,
+                }
+              : {
+                  ...(runtime.ragEnabled
+                    ? { thread_id: resolvedThreadId }
+                    : {}),
+                  ...(projectRagEnabled && researchProjectId
+                    ? { project_id: researchProjectId }
+                    : {}),
+                   default_top_k: runtime.ragTopK,
+                   mode: runtime.ragMode,
+                   autoinject: runtime.ragAutoInject,
+                   autoinject_min_score: runtime.ragAutoInjectMinScore,
+                }
+            : undefined;
+
+        const threadKey = resolvedThreadId;
+        runtime.setThreadRunning(threadKey, true);
+        let report = "";
+        let releaseResearchFollow: (() => void) | null = null;
+        const researchFollowController = new AbortController();
+        const detachResearchFollow = () => {
+          researchFollowController.abort({ detach: true });
+        };
+        const forwardAdapterAbort = () => {
+          researchFollowController.abort(abortSignal.reason);
+        };
+        abortSignal.addEventListener("abort", forwardAdapterAbort, { once: true });
+        try {
+          // The normal history adapter persists messages after model execution,
+          // but research validates the user message before it can start.
+          const storedUserMessage = (await listStoredChatMessages(resolvedThreadId)).find(
+            (message) => message.id === userMessage.id,
+          );
+          await saveStoredChatMessage({
+            id: userMessage.id,
+            threadId: resolvedThreadId,
+            parentId: storedUserMessage?.parentId ?? userMessageParentId,
+            role: "user",
+            content: userMessage.content,
+            ...(userMessage.attachments?.length
+              ? { attachments: userMessage.attachments }
+              : {}),
+            createdAt: userMessage.createdAt?.getTime?.() ?? Date.now(),
+          });
+          const createdRun = await createResearchRun({
+            threadId: resolvedThreadId,
+            userMessageId: userMessage.id,
+            assistantMessageId: unstable_assistantMessageId,
+            inferenceRequest,
+            ...(researchInstructions ? { instructions: researchInstructions } : {}),
+            ...(ragScope ? { ragScope } : {}),
+            websitePolicy: {
+              allowedDomains: [...runtime.researchWebsitePolicy.allowedDomains],
+              blockedDomains: [...runtime.researchWebsitePolicy.blockedDomains],
+            },
+          });
+          releaseResearchFollow = beginExternalResearchFollow(
+            createdRun,
+            detachResearchFollow,
+          );
+          runtime.setDeepResearchEnabled(false);
+          if (abortSignal.aborted) {
+            const detached = Boolean(
+              (abortSignal.reason as { detach?: boolean } | undefined)?.detach,
+            );
+            if (!detached) {
+              try {
+                ingestResearchUpdate(await cancelResearchRun(createdRun.id));
+              } catch {
+                // The durable run remains visible and can be stopped again after recovery.
+              }
+            }
+            return;
+          }
+          for await (const update of followResearchRun(createdRun.id, {
+            initialRun: createdRun,
+            signal: researchFollowController.signal,
+            replayFrom: 0,
+          })) {
+            const run = update.run;
+            ingestResearchUpdate(run, update.event);
+            // The activity store coalesces these high-frequency events. Yielding them
+            // through assistant-ui would replace the whole hidden message content per
+            // token, making long planning turns progressively more expensive.
+            if (
+              update.event?.event === "reasoning.updated" ||
+              update.event?.event === "report.updated"
+            ) {
+              continue;
+            }
+            if (run.status === "completed" && typeof run.report === "string") {
+              report = run.report;
+            } else if (typeof run.report === "string") {
+              report = run.report;
+            }
+            yield {
+              content: [{ type: "text" as const, text: report }],
+              metadata: {
+                custom: {
+                  researchRunId: run.id,
+                  researchRun: run,
+                  serverManaged: true,
+                  serverRevision: run.lastEventSeq,
+                },
+              },
+            };
+          }
+        } catch (error) {
+          if (!abortSignal.aborted && !researchFollowController.signal.aborted) {
+            throw error;
+          }
+        } finally {
+          abortSignal.removeEventListener("abort", forwardAdapterAbort);
+          releaseResearchFollow?.();
+          runtime.setThreadRunning(threadKey, false);
+        }
+        return;
+      }
       const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
       const toolConfirmationScopeId = resolvedThreadId
         ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
         : sandboxSessionId || "_default";
       const toolConfirmationIdsByBackendId = new Map<string, string>();
+      // Store keys are pane-scoped since local tool ids ("call_0") repeat across
+      // turns and concurrent panes (compare mode). Track this run's keys so
+      // cleanup can't wipe another pane's.
+      const toolOutputPaneScope = toolPaneScope(
+        options.modelType,
+        options.pairId,
+      );
+      const scopedToolOutputKey = (id: string) =>
+        toolOutputKey(toolOutputPaneScope, id);
+      const runToolLiveOutputKeys = new Set<string>();
       const resolvedThreadKey = resolvedThreadId ?? null;
       const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
       const selectedImageEditReference =
@@ -1917,6 +2407,7 @@ export function createOpenAIStreamAdapter(
         mcpEnabledForChat,
         confirmToolCalls,
         bypassPermissions,
+        permissionMode,
         webFetchToolsEnabled,
         ragEnabled,
         ragSource,
@@ -2097,25 +2588,11 @@ export function createOpenAIStreamAdapter(
         );
       }
 
-      const safeSystemPrompt =
-        typeof params.systemPrompt === "string"
-          ? resolveSystemPromptVariables(
-              params.systemPrompt,
-              typeof params.systemVariables === "string"
-                ? params.systemVariables
-                : "",
-            )
-          : "";
-      const projectInstructions =
-        await resolveProjectInstructions(resolvedThreadId);
-      const combinedSystemPrompt = [
-        projectInstructions
-          ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
-          : "",
-        safeSystemPrompt.trim(),
-      ]
-        .filter(Boolean)
-        .join("\n\n");
+      const combinedSystemPrompt = await resolveChatInstructions(
+        resolvedThreadId,
+        params.systemPrompt,
+        params.systemVariables,
+      );
       if (combinedSystemPrompt) {
         outboundMessages.unshift({
           role: "system",
@@ -2390,6 +2867,34 @@ export function createOpenAIStreamAdapter(
       };
       // Tool call parts, cumulative; result lands on tool_end.
       const toolCallParts: PositionedToolCallPart[] = [];
+      // Raw tool_args accumulator per card: the backend forwards arguments while
+      // the model is still WRITING them, and the partial parse below feeds the
+      // card's args so the code renders live.
+      const liveArgsTextById = new Map<string, string>();
+      // Backend tool ids ("call_0", ...) restart every response, so a bare id as
+      // store key lets a later turn's stream overwrite the preserved output an
+      // earlier still-mounted finished card reads (the tool_start stale-clear
+      // only guards the forward direction). Mint one per-run-unique part id per
+      // backend id (confirmation ids already synthesize their own) so each card
+      // key is unique; every tool_start/output/args/end resolves the same id via
+      // this map, dropped at tool_end.
+      const toolPartIdByBackendId = new Map<string, string>();
+      const resolveToolPartId = (backendToolCallId: string): string => {
+        if (!backendToolCallId) {
+          return toolCallParts[toolCallParts.length - 1]?.toolCallId ?? "";
+        }
+        const confirmationId =
+          toolConfirmationIdsByBackendId.get(backendToolCallId);
+        if (confirmationId) {
+          return confirmationId;
+        }
+        let partId = toolPartIdByBackendId.get(backendToolCallId);
+        if (!partId) {
+          partId = `${backendToolCallId}:${crypto.randomUUID()}`;
+          toolPartIdByBackendId.set(backendToolCallId, partId);
+        }
+        return partId;
+      };
       // Latest Gemini text-part thoughtSignature; pinned onto the final
       // text MessagePart so next-turn replay carries it.
       let latestTextThoughtSignature: string | undefined;
@@ -2608,6 +3113,7 @@ export function createOpenAIStreamAdapter(
             artifacts: renderHtmlToolEnabledForThisTurn,
             confirmToolCalls,
             bypassPermissions,
+            permissionMode,
           },
         });
         const externalCapabilities = getProviderCapabilities(
@@ -2893,6 +3399,7 @@ export function createOpenAIStreamAdapter(
             audio_base64: audioBase64,
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
+            ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning
               ? reasoningStyle === "enable_thinking_effort"
@@ -2918,6 +3425,19 @@ export function createOpenAIStreamAdapter(
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }
               : {}),
+            // Permission level for local tool calls is sent for every local
+            // chat, not only when a tool pill is on: a process policy
+            // (unsloth run --enable-tools) can open the tool loop with no pill,
+            // and the backend must still see the selected gate. "auto" OMITS
+            // confirm_tool_calls: an explicit true would make the backend treat
+            // every auto request as needing a stream and defeat the safe-only
+            // no-stream exception. "ask" sends true; off/full send false (full
+            // also drops the sandbox).
+            permission_mode: permissionMode,
+            ...(permissionMode === "auto"
+              ? {}
+              : { confirm_tool_calls: permissionMode === "ask" }),
+            bypass_permissions: bypassPermissions,
             ...(supportsTools &&
             (toolsEnabled ||
               codeToolsEnabled ||
@@ -2939,10 +3459,6 @@ export function createOpenAIStreamAdapter(
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
-                  // Bypass Permissions wins: never request the confirm gate
-                  // while bypassing, and tell the backend to drop the sandbox.
-                  confirm_tool_calls: confirmToolCalls && !bypassPermissions,
-                  bypass_permissions: bypassPermissions,
                   // Scope: thread_id = this thread's docs, kb_id = a KB,
                   // project_id = the thread's project sources (auto-on whenever
                   // the project has indexed sources, no Docs pill needed).
@@ -3116,6 +3632,66 @@ export function createOpenAIStreamAdapter(
                   anthropicRefusalSeen = true;
                   continue;
                 }
+                if (toolEvent.type === "tool_output") {
+                  // Incremental stdout from a running tool: append to the live
+                  // store so the card renders it while the spinner runs. Final
+                  // result arrives via tool_end.
+                  const backendToolCallId =
+                    (toolEvent.tool_call_id as string) || "";
+                  const liveId = resolveToolPartId(backendToolCallId);
+                  const liveText =
+                    typeof toolEvent.text === "string" ? toolEvent.text : "";
+                  if (liveId && liveText) {
+                    const liveKey = scopedToolOutputKey(liveId);
+                    runToolLiveOutputKeys.add(liveKey);
+                    useChatRuntimeStore
+                      .getState()
+                      .appendToolLiveOutput(liveKey, liveText);
+                  }
+                  continue;
+                }
+                if (toolEvent.type === "tool_args") {
+                  // The model is still WRITING this call's arguments: accumulate
+                  // the raw stream and feed a partial parse into the part's args
+                  // so the card shows the code live. tool_start later replaces
+                  // args with the authoritative parse.
+                  const backendToolCallId =
+                    (toolEvent.tool_call_id as string) || "";
+                  const liveId = resolveToolPartId(backendToolCallId);
+                  const fragment =
+                    typeof toolEvent.text === "string" ? toolEvent.text : "";
+                  if (liveId && fragment) {
+                    const accum =
+                      (liveArgsTextById.get(liveId) ?? "") + fragment;
+                    liveArgsTextById.set(liveId, accum);
+                    const partial = parseLiveToolArgs(accum);
+                    const idx = toolCallParts.findIndex(
+                      (p) => p.toolCallId === liveId,
+                    );
+                    if (partial && idx !== -1) {
+                      const existing = toolCallParts[
+                        idx
+                      ] as PositionedToolCallPart;
+                      toolCallParts[idx] = {
+                        ...existing,
+                        args: partial.args as ToolCallMessagePart["args"],
+                        argsText: partial.argsText,
+                      };
+                      yield {
+                        content: buildAssistantContent(cumulativeText),
+                        metadata: {
+                          timing: buildTiming(
+                            streamStartTime,
+                            totalChunks,
+                            firstTokenTime,
+                          ),
+                          custom: { reasoningDuration },
+                        },
+                      };
+                    }
+                  }
+                  continue;
+                }
                 closeReasoningContent();
                 const toolProvenance = parseToolProvenance(
                   toolEvent.provenance,
@@ -3129,12 +3705,18 @@ export function createOpenAIStreamAdapter(
                   const id =
                     awaitingConfirmation && approvalId
                       ? `${toolConfirmationScopeId}:${approvalId}`
-                      : backendToolCallId ||
-                        approvalId ||
-                        `${toolEvent.tool_name}_${Date.now()}`;
+                      : backendToolCallId
+                        ? resolveToolPartId(backendToolCallId)
+                        : approvalId ||
+                          `${toolEvent.tool_name}_${Date.now()}`;
                   if (awaitingConfirmation && backendToolCallId) {
                     toolConfirmationIdsByBackendId.set(backendToolCallId, id);
                   }
+                  // "call_0" restarts every response: drop stale live/preserved
+                  // output under this key, else the card shows the previous call's.
+                  const staleKey = scopedToolOutputKey(id);
+                  useChatRuntimeStore.getState().clearToolLiveOutput(staleKey);
+                  useChatRuntimeStore.getState().clearToolFullOutput(staleKey);
                   const toolArgs = (toolEvent.arguments ??
                     {}) as ToolCallMessagePart["args"];
                   const idx = toolCallParts.findIndex(
@@ -3178,17 +3760,35 @@ export function createOpenAIStreamAdapter(
                 } else if (toolEvent.type === "tool_end") {
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
-                  const id =
-                    (backendToolCallId
-                      ? toolConfirmationIdsByBackendId.get(backendToolCallId)
-                      : undefined) ||
-                    backendToolCallId ||
-                    toolCallParts[toolCallParts.length - 1]?.toolCallId ||
-                    "";
+                  const id = resolveToolPartId(backendToolCallId);
                   if (backendToolCallId) {
                     toolConfirmationIdsByBackendId.delete(backendToolCallId);
+                    toolPartIdByBackendId.delete(backendToolCallId);
                   }
                   useChatRuntimeStore.getState().clearToolConfirmation(id);
+                  // The result replaces the live output, but if the stream
+                  // captured MORE than the truncated result, preserve it so the
+                  // finished card keeps everything. Uses the shared predicate,
+                  // not a length compare (footer / "Exit code N:" / __IMAGES__
+                  // tail can make the result longer by byte).
+                  const liveKey = scopedToolOutputKey(id);
+                  const liveOutput =
+                    useChatRuntimeStore.getState().toolLiveOutput[liveKey] ??
+                    "";
+                  if (
+                    id &&
+                    shouldPreserveFullOutput(
+                      liveOutput,
+                      (toolEvent.result as string) ?? "",
+                    )
+                  ) {
+                    useChatRuntimeStore
+                      .getState()
+                      .setToolFullOutput(liveKey, liveOutput);
+                  }
+                  useChatRuntimeStore.getState().clearToolLiveOutput(liveKey);
+                  runToolLiveOutputKeys.delete(liveKey);
+                  liveArgsTextById.delete(id);
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
@@ -3196,9 +3796,12 @@ export function createOpenAIStreamAdapter(
                     const rawResult = (toolEvent.result as string) ?? "";
                     const imgMarker = "\n__IMAGES__:";
                     const imgIdx = rawResult.lastIndexOf(imgMarker);
+                    const mcpImgMarker = "\n__MCP_IMAGES__:";
+                    const mcpImgIdx = rawResult.lastIndexOf(mcpImgMarker);
                     let parsedResult:
                       | string
                       | { text: string; images: string[]; sessionId: string }
+                      | McpImageToolResult
                       | {
                           image_b64: string;
                           image_mime: string;
@@ -3208,6 +3811,24 @@ export function createOpenAIStreamAdapter(
                           prompt?: string;
                         };
                     const imageB64 = toolEvent.image_b64 as string | undefined;
+                    // A valid MCP image envelope wins; an invalid marker falls
+                    // through so a sandbox __IMAGES__ suffix still renders and
+                    // legit text round-trips unchanged.
+                    let mcpImages: McpImageToolResult | null = null;
+                    if (mcpImgIdx !== -1) {
+                      try {
+                        const images = JSON.parse(
+                          rawResult.slice(mcpImgIdx + mcpImgMarker.length),
+                        );
+                        const candidate = {
+                          text: rawResult.slice(0, mcpImgIdx),
+                          images,
+                        };
+                        if (isMcpImageToolResult(candidate)) mcpImages = candidate;
+                      } catch {
+                        // Not a valid envelope; fall through below.
+                      }
+                    }
                     if (
                       toolCallParts[idx].toolName === "image_generation" &&
                       typeof imageB64 === "string" &&
@@ -3225,6 +3846,8 @@ export function createOpenAIStreamAdapter(
                         background: toolEvent.background as string | undefined,
                         prompt: toolEvent.prompt as string | undefined,
                       };
+                    } else if (mcpImages !== null) {
+                      parsedResult = mcpImages;
                     } else if (imgIdx !== -1) {
                       const text = rawResult.slice(0, imgIdx);
                       // Fall back to "_default" to match the backend sandbox
@@ -3730,7 +4353,24 @@ export function createOpenAIStreamAdapter(
         );
         if (!abortSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (isContextLimitError(msg)) {
+          if (err instanceof GenerationLengthError) {
+            toast.error("Response ran out of tokens", {
+              description:
+                "The model used the full Max Tokens budget while thinking " +
+                "and did not produce a final answer. Increase Max Tokens in " +
+                "chat Settings or turn off thinking, then retry.",
+              duration: 8000,
+            });
+          } else if (err instanceof StreamInterruptedError) {
+            // Connection dropped mid-turn: surface it explicitly (the rethrow
+            // below also marks the message with an inline error + Retry).
+            toast.error("Response interrupted", {
+              description:
+                "The connection dropped before the model finished. " +
+                "The partial answer is kept. Use Retry to regenerate.",
+              duration: 8000,
+            });
+          } else if (isContextLimitError(msg)) {
             // llama-server runs with --no-context-shift, returning a hard
             // error instead of silently dropping old KV-cache turns. Point
             // the user at the control that raises the ceiling.
@@ -3756,6 +4396,19 @@ export function createOpenAIStreamAdapter(
         }
         runtime.setGeneratingStatus(null);
         runtime.setToolStatus(null);
+        // Clear only this run's live keys (a concurrent pane owns its own). A
+        // key still here streamed stdout but never reached tool_end (SSE drop or
+        // cancel), so promote it to full output first, else the partial
+        // diagnostics the user was watching vanish from the card.
+        for (const liveKey of runToolLiveOutputKeys) {
+          const store = useChatRuntimeStore.getState();
+          const liveOutput = store.toolLiveOutput[liveKey] ?? "";
+          if (liveOutput) {
+            store.setToolFullOutput(liveKey, liveOutput);
+          }
+          store.clearToolLiveOutput(liveKey);
+        }
+        runToolLiveOutputKeys.clear();
         // Drop the transient denoising canvas so the finished bubble shows only
         // the committed markdown answer (cancellation/error included).
         runtime.setActiveDiffusionCanvas(null);

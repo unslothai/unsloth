@@ -130,4 +130,4 @@ def test_cli_entrypoints_wait_before_returning_to_shell():
 
     assert (
         _calls_shutdown_wait_getattr(tree) >= 3
-    ), "Studio CLI terminal paths must wait for the backend thread after requesting shutdown"
+    ), "Unsloth CLI terminal paths must wait for the backend thread after requesting shutdown"

@@ -17,9 +17,9 @@ import {
   formatRelativeShort,
   formatShortDate,
 } from "@/features/hub/lib/format";
-import { cn, formatCompact } from "@/lib/utils";
-import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { cn, formatCompact } from "@/lib/utils";
 import {
   Calendar03Icon,
   CalendarAdd01Icon,
@@ -37,10 +37,10 @@ import {
   RamMemoryIcon,
   Share05Icon,
 } from "@hugeicons/core-free-icons";
-import { Tick02Icon } from "@/lib/tick-icon";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useDeferredValue, useMemo } from "react";
+import { selectActiveJob, useDownloadManagerStore } from "../download-manager";
 import { useCopyFeedback } from "../hooks/use-copy-feedback";
 import { useDatasetSize } from "../hooks/use-dataset-size";
 import {
@@ -49,8 +49,8 @@ import {
   formatPipelineTag,
   parseLanguageTags,
 } from "../lib/view-models";
+import { confirmExternalLink } from "../stores/external-link-confirm";
 import type { SelectedModelView } from "../types";
-import { selectActiveJob, useDownloadManagerStore } from "../download-manager";
 import { DatasetDownloadSection } from "./dataset-download-section";
 import { DownloadSection } from "./download-section";
 import { LocalDatasetCard } from "./local-dataset-card";
@@ -58,6 +58,13 @@ import { LocalOnDeviceCard } from "./local-on-device-card";
 import { ModelReadme } from "./model-readme";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessChip, CapabilityPill } from "./shared";
+
+// HF pipeline_tag values authoritative for embedding-only repos; capability
+// labels (code/vision/audio) can leak onto them via name or tags.
+const EMBEDDING_PIPELINE_TAGS: ReadonlySet<string> = new Set([
+  "feature-extraction",
+  "sentence-similarity",
+]);
 
 function ViewRepositoryButton({
   repoId,
@@ -159,7 +166,7 @@ function StatRow({
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>
-        <span className="hub-tag-meta inline-flex cursor-default items-center gap-1.5 px-2.5 py-1 text-[11.5px] text-muted-foreground transition-colors hover:text-foreground/80">
+        <span className="hub-tag-meta inline-flex cursor-default items-center gap-1.5 px-2.5 py-1 text-ui-11p5 text-muted-foreground transition-colors hover:text-foreground/80">
           <HugeiconsIcon
             icon={icon}
             strokeWidth={1.75}
@@ -201,7 +208,7 @@ function StatusChip({
   return (
     <span
       className={cn(
-        "inline-flex h-5 shrink-0 items-center whitespace-nowrap rounded-full border bg-transparent px-2 text-[11px] font-medium leading-none",
+        "inline-flex h-5 shrink-0 items-center whitespace-nowrap rounded-full border bg-transparent px-2 text-ui-11 font-medium leading-none",
         toneClass,
         className,
       )}
@@ -241,12 +248,12 @@ function BaseModelSearchChip({
           <button
             type="button"
             onClick={() => onSearchHub(searchTerm)}
-            className="inline-flex h-6 max-w-full cursor-pointer items-center gap-1.5 rounded-full bg-muted px-2.5 text-[11.5px] transition-colors hover:bg-muted/80 dark:bg-[rgba(255,255,255,0.04)]"
+            className="inline-flex h-6 max-w-full cursor-pointer items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 transition-colors hover:bg-muted/80 dark:bg-[rgba(255,255,255,0.04)]"
           >
             {content}
           </button>
         ) : (
-          <span className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-full bg-muted px-2.5 text-[11.5px] dark:bg-[rgba(255,255,255,0.04)]">
+          <span className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 dark:bg-[rgba(255,255,255,0.04)]">
             {content}
           </span>
         )}
@@ -263,17 +270,22 @@ type VramInfo = { est: number; status: "fits" | "tight" | "exceeds" } | null;
 function ModelStatusChips({
   isDataset,
   isGguf,
+  chatOnly,
   unslothSupport,
   vramInfo,
 }: {
   isDataset: boolean;
   isGguf: boolean;
+  chatOnly: boolean;
   unslothSupport: UnslothSupport;
   vramInfo: VramInfo;
 }) {
   const showUnsupported = !isDataset && unslothSupport.status === "unsupported";
+  // The format-unsupported chip already explains itself; this one covers the
+  // supported-format model a chat-only host still can't run.
+  const showChatOnly = !isDataset && !isGguf && chatOnly && !showUnsupported;
   const showVram = !isDataset && vramInfo && !isGguf;
-  if (!showUnsupported && !showVram) return null;
+  if (!showUnsupported && !showChatOnly && !showVram) return null;
 
   const vramTone = vramInfo
     ? vramInfo.status === "exceeds"
@@ -313,11 +325,31 @@ function ModelStatusChips({
           >
             This model may not be supported yet.
             {unslothSupport.reason && (
-              <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+              <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
                 {unslothSupport.reason}
               </span>
             )}
-            <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+            <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
+              Still downloadable to your Hugging Face cache.
+            </span>
+          </TooltipContent>
+        </Tooltip>
+      )}
+      {showChatOnly && (
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <span tabIndex={0} className="inline-flex outline-none">
+              <StatusChip tone="warning" label="GGUF-only device" />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent
+            side="bottom"
+            sideOffset={6}
+            className="tooltip-compact max-w-xs"
+          >
+            This device has no supported GPU or usable MLX, so only GGUF models
+            can run here.
+            <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
               Still downloadable to your Hugging Face cache.
             </span>
           </TooltipContent>
@@ -336,7 +368,7 @@ function ModelStatusChips({
             className="tooltip-compact max-w-xs"
           >
             Estimated 4-bit memory load is around {vramInfo.est} GB.
-            <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+            <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
               {vramDetail}
             </span>
           </TooltipContent>
@@ -367,6 +399,7 @@ export type ModelInspectorActions = {
     expectedBytes?: number;
   }) => void;
   onUseInChat: () => void;
+  onEject?: () => void;
   onTrain?: () => void;
   onInventoryChange?: () => void;
   onSearchHub?: (query: string) => void;
@@ -401,11 +434,13 @@ export const ModelInspector = memo(function ModelInspector({
     onLoad,
     onLoadLocal,
     onUseInChat,
+    onEject,
     onTrain,
     onInventoryChange,
     onSearchHub,
   } = actions;
   const deviceType = usePlatformStore((s) => s.deviceType);
+  const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const hfToken = useHfTokenStore((s) => s.token);
   const datasetRepoId = isDataset && model?.hubRepoId ? model.hubRepoId : null;
   const datasetSize = useDatasetSize(datasetRepoId, {
@@ -467,10 +502,10 @@ export const ModelInspector = memo(function ModelInspector({
           <HugeiconsIcon icon={CubeIcon} strokeWidth={1.5} className="size-5" />
         </div>
         <div className="space-y-1">
-          <p className="text-[15px] font-semibold tracking-tight text-foreground">
+          <p className="text-ui-15 font-semibold tracking-tight text-foreground">
             Select a {isDataset ? "dataset" : "model"}
           </p>
-          <p className="max-w-sm text-[12.5px] leading-5 text-muted-foreground">
+          <p className="max-w-sm text-ui-12p5 leading-5 text-muted-foreground">
             {isDataset
               ? "Choose a dataset from the catalog to inspect its download state and details."
               : "Choose an item from the catalog to inspect its runtime fit, download state, and model card."}
@@ -484,14 +519,16 @@ export const ModelInspector = memo(function ModelInspector({
     ? formatRelativeShort(model.updatedAt)
     : formatLocalUpdated(model.localUpdatedAt);
   const updatedLabel = updatedRaw === "Unknown update" ? "N/A" : updatedRaw;
-  const createdLabel = model.createdAt ? formatShortDate(model.createdAt) : null;
+  const createdLabel = model.createdAt
+    ? formatShortDate(model.createdAt)
+    : null;
   const libraryLabel = isDataset ? null : formatLibrary(model.libraryName);
   const gatedAccess = model.gated !== false && model.gated !== undefined;
   const downloadsTooltip =
     model.downloadsAllTime != null ? (
       <>
         Downloads (30 days)
-        <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+        <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
           {formatCompact(model.downloadsAllTime)} all time
         </span>
       </>
@@ -504,15 +541,35 @@ export const ModelInspector = memo(function ModelInspector({
   const paramsLabel = model.totalParams
     ? formatCompact(model.totalParams)
     : "N/A";
-  const trainingSupported = unslothSupport.status !== "unsupported";
+  const unslothSupported = unslothSupport.status !== "unsupported";
+  // Embedding-only non-GGUF repos have no generative head, so keep them out of
+  // the Run gate. Prefer the pipeline tag, else the capability heuristic.
+  const isEmbeddingOnly =
+    !model.isGguf &&
+    model.capabilities.some((c) => c.key === "embedding") &&
+    (EMBEDDING_PIPELINE_TAGS.has(model.pipelineTag?.toLowerCase() ?? "") ||
+      !model.capabilities.some(
+        (c) =>
+          c.key === "conversational" ||
+          c.key === "tools" ||
+          c.key === "reasoning" ||
+          c.key === "code" ||
+          c.key === "vision" ||
+          c.key === "audio",
+      ));
+  // Chat-only hosts (no supported GPU / usable MLX) run inference only through
+  // llama.cpp, so only GGUF is loadable.
   const canRunModel =
-    !isDataset && (model.runtimeCapabilities?.canChat ?? true);
+    !isDataset &&
+    (model.runtimeCapabilities?.canChat ?? true) &&
+    !isEmbeddingOnly &&
+    (model.isGguf || (!chatOnly && unslothSupported));
   const canTrainModel =
     !isDataset &&
     (model.runtimeCapabilities?.canTrain ?? false) &&
     model.modelFormat !== "gguf" &&
     model.modelFormat !== "adapter" &&
-    trainingSupported;
+    unslothSupported;
 
   const languages = parseLanguageTags(model.tags);
   const datasetSizeBytes =
@@ -525,11 +582,11 @@ export const ModelInspector = memo(function ModelInspector({
           <OwnerAvatar
             owner={model.owner}
             repoName={model.title}
-            className="size-[60px] rounded-[18px] text-[19px]"
+            className="size-[60px] rounded-[18px] text-ui-19"
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
-              <h2 className="truncate text-[25px] font-semibold leading-[31px] tracking-normal text-foreground">
+              <h2 className="truncate text-ui-25 font-semibold leading-ui-31 tracking-normal text-foreground">
                 {model.title}
               </h2>
               {model.hubRepoId && (
@@ -542,12 +599,12 @@ export const ModelInspector = memo(function ModelInspector({
                 </div>
               )}
             </div>
-            <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[15px] leading-[24px] text-muted-foreground">
+            <div className="mt-0.5 flex min-w-0 items-center gap-1 text-ui-15 leading-ui-24 text-muted-foreground">
               <span className="truncate">{model.owner}</span>
               {model.owner.toLowerCase() === "unsloth" && (
                 <span
                   aria-label="Verified Unsloth"
-                  className="hub-verified-badge size-[18px] shrink-0 text-primary"
+                  className="hub-verified-badge size-[18px] shrink-0 text-verified"
                 />
               )}
             </div>
@@ -556,12 +613,12 @@ export const ModelInspector = memo(function ModelInspector({
 
         <div className="mt-4 flex flex-wrap items-center gap-1.5">
           {isDataset && (
-            <span className="inline-flex shrink-0 items-center rounded-full border border-violet-500/40 bg-transparent px-2 py-0.5 text-[11.5px] font-medium text-violet-600 dark:text-violet-400">
+            <span className="inline-flex shrink-0 items-center rounded-full border border-violet-500/40 bg-transparent px-2 py-0.5 text-ui-11p5 font-medium text-violet-600 dark:text-violet-400">
               Dataset
             </span>
           )}
           {!isDataset && (
-            <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-muted px-2.5 text-[11.5px] font-medium text-foreground dark:bg-[rgba(255,255,255,0.04)]">
+            <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 font-medium text-foreground dark:bg-[rgba(255,255,255,0.04)]">
               <HugeiconsIcon
                 icon={CubeIcon}
                 strokeWidth={1.75}
@@ -643,6 +700,7 @@ export const ModelInspector = memo(function ModelInspector({
               }
               onLoad={onLoadLocal}
               onUseInChat={onUseInChat}
+              onEject={onEject}
               onTrain={
                 model.isDownloaded && canTrainModel ? onTrain : undefined
               }
@@ -666,6 +724,7 @@ export const ModelInspector = memo(function ModelInspector({
               knownBytes={model.cachedBytes}
               onLoad={model.isLocal ? onLoadLocal : onLoad}
               onUseInChat={onUseInChat}
+              onEject={onEject}
               onTrain={
                 model.isDownloaded && canTrainModel ? onTrain : undefined
               }
@@ -677,12 +736,12 @@ export const ModelInspector = memo(function ModelInspector({
 
       <div className="pb-5 pt-5">
         {selectionHiddenByFilters && (
-          <p className="mb-3 rounded-[8px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11.5px] leading-snug text-muted-foreground">
+          <p className="mb-3 rounded-[8px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui-11p5 leading-snug text-muted-foreground">
             Current selection is hidden by the active filters or search.
           </p>
         )}
         {metadataUnavailable && (
-          <p className="mb-3 text-[11.5px] leading-snug text-muted-foreground">
+          <p className="mb-3 text-ui-11p5 leading-snug text-muted-foreground">
             Couldn't load full details from Hugging Face. Some fields may be
             incomplete.
           </p>
@@ -765,6 +824,7 @@ export const ModelInspector = memo(function ModelInspector({
         <ModelStatusChips
           isDataset={isDataset}
           isGguf={model.isGguf}
+          chatOnly={chatOnly}
           unslothSupport={unslothSupport}
           vramInfo={vramInfo}
         />

@@ -184,7 +184,7 @@ export async function effectiveTransportMode(
     return preferred;
   }
   const reason =
-    capabilities.xet.reason ?? "Studio will use HTTP downloads instead.";
+    capabilities.xet.reason ?? "Unsloth will use HTTP downloads instead.";
   if (lastXetUnavailableWarningReason !== reason) {
     lastXetUnavailableWarningReason = reason;
     toast.warning("Xet download transport unavailable", {

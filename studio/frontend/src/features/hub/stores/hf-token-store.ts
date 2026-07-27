@@ -5,11 +5,9 @@ import { create } from "zustand";
 import { bumpInventoryVersion } from "./inventory-events";
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
-const HF_TOKEN_CHANGED_EVENT = "unsloth:hf-token-changed";
 const LEGACY_TRAINING_KEY = "unsloth_training_config_v1";
 let storageSyncStarted = false;
 let storageSyncListener: ((event: StorageEvent) => void) | null = null;
-let tokenChangedListener: ((event: Event) => void) | null = null;
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
@@ -63,10 +61,6 @@ function stopStorageSync(): void {
     window.removeEventListener("storage", storageSyncListener);
     storageSyncListener = null;
   }
-  if (tokenChangedListener !== null) {
-    window.removeEventListener(HF_TOKEN_CHANGED_EVENT, tokenChangedListener);
-    tokenChangedListener = null;
-  }
   storageSyncStarted = false;
 }
 
@@ -100,10 +94,6 @@ export const useHfTokenStore = create<HfTokenStore>((set) => {
       applyToken(event.newValue ?? "", false);
     };
     window.addEventListener("storage", storageSyncListener);
-    tokenChangedListener = (event) => {
-      applyToken((event as CustomEvent<string>).detail ?? "", false);
-    };
-    window.addEventListener(HF_TOKEN_CHANGED_EVENT, tokenChangedListener);
   }
 
   return {
@@ -115,6 +105,21 @@ export const useHfTokenStore = create<HfTokenStore>((set) => {
 
 export function getHfToken(): string {
   return useHfTokenStore.getState().token;
+}
+
+// Keep a plain zustand store's `hfToken` field in sync with the shared token:
+// seed the current value, then mirror later edits. Returns the unsubscribe so
+// callers can wire it to HMR disposal.
+export function mirrorHfTokenInto<T extends { hfToken: string }>(store: {
+  getState: () => T;
+  setState: (partial: Partial<T>) => void;
+}): () => void {
+  store.setState({ hfToken: getHfToken() } as Partial<T>);
+  return useHfTokenStore.subscribe((state) => {
+    if (store.getState().hfToken !== state.token) {
+      store.setState({ hfToken: state.token } as Partial<T>);
+    }
+  });
 }
 
 // HF's JS client throws on a non-empty token that isn't `hf_...` instead of

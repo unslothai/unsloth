@@ -154,7 +154,7 @@ jobs:
           path: gguf-cache
           key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Gated off PR (see note above); public GGUF still downloads.
@@ -256,7 +256,7 @@ jobs:
             done
           fi
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           # Guard the PID: an unset/zero UNSLOTH_SERVER_PID would make
@@ -359,7 +359,7 @@ jobs:
           path: gguf-cache
           key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Gated off PR (see note above); public GGUF still downloads.
@@ -448,7 +448,7 @@ jobs:
             done
           fi
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           # Guard the PID: an unset/zero UNSLOTH_SERVER_PID would make
@@ -543,7 +543,7 @@ jobs:
           path: gguf-cache
           key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -620,7 +620,7 @@ jobs:
             done
           fi
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           if [ -n "${UNSLOTH_SERVER_PID:-}" ] && [ "${UNSLOTH_SERVER_PID}" != "0" ]; then
@@ -706,7 +706,7 @@ jobs:
           path: hf-cache
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Gated off PR (see note above); public GGUF still downloads.
@@ -764,7 +764,7 @@ jobs:
             done
           fi
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           # Guard the PID: an unset/zero UNSLOTH_SERVER_PID would make

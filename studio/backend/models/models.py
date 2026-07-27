@@ -143,6 +143,12 @@ class GgufVariantDetail(BaseModel):
     update_available: bool = Field(
         False, description = "Whether a newer version of this variant is available on HF"
     )
+    partial: bool = Field(
+        False,
+        description = "Whether this variant is an interrupted download. The hub service "
+        "already computes it; carry it through so callers can hide a quant whose shards "
+        "are incomplete instead of offering one that cannot load.",
+    )
 
 
 class GgufVariantsResponse(BaseModel):
@@ -177,6 +183,14 @@ class LocalModelInfo(BaseModel):
     model_id: Optional[str] = Field(
         None,
         description = "HF repo id for cached models, e.g. org/model",
+    )
+    active_cache: Optional[bool] = Field(
+        None,
+        description = "Whether an HF model belongs to the current download cache.",
+    )
+    partial: bool = Field(
+        False,
+        description = "Whether the cached model has an incomplete download.",
     )
     model_format: Optional[str] = Field(
         None,

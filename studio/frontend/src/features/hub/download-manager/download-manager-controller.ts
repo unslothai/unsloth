@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { DOWNLOAD_KIND } from "./constants";
 import {
   createDownloadManagerInitialState,
-  jobKeyOf,
   removeJob,
-  selectActiveJob,
   setState,
-  useDownloadManagerStore,
 } from "./download-manager-state";
 import { resetDownloadApiAdapterState } from "./download-api-adapter";
 import {
@@ -69,25 +65,6 @@ export const downloadManager: DownloadManagerController = {
   dismiss: removeJob,
 };
 
-/** Cancel the in-flight download for a staged model pick. No-op when nothing is
- *  downloading (e.g. a native/local file that was never fetched). Lets non-React
- *  callers (the chat store's abandon paths) stop a staged transfer without the
- *  useRepoDownload hook. */
-export function cancelStagedModelDownload(
-  pending: { id: string; ggufVariant?: string | null } | null,
-): void {
-  if (!pending) return;
-  const variant = pending.ggufVariant ?? null;
-  const activeJob = selectActiveJob(
-    useDownloadManagerStore.getState(),
-    DOWNLOAD_KIND.MODEL,
-    pending.id,
-    variant,
-  );
-  void downloadManager.cancel(
-    activeJob?.key ?? jobKeyOf(DOWNLOAD_KIND.MODEL, pending.id, variant),
-  );
-}
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {

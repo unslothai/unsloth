@@ -14,6 +14,13 @@ FAIL=0
 # controllable path so we can test the "no GPU" scenario on GPU machines.
 _FUNC_FILE=$(mktemp)
 _FAKE_SMI_DIR=$(mktemp -d)
+# The ROCm probe helpers read the real /opt/rocm prefix by ABSOLUTE path
+# (_ensure_rocm_probe_env appends /opt/rocm/bin to PATH and runs the host
+# rocminfo; version detection reads /opt/rocm/.info/version). On a real ROCm
+# host that leaks the host GPU into the minimal-PATH harness and makes the
+# no-GPU / CPU assertions host-dependent. Redirect the whole prefix to an empty
+# temp dir so the probes stay hermetic (same idea as the nvidia-smi rewrite).
+_FAKE_ROCM_DIR=$(mktemp -d)
 {
     sed -n '/^_run_bounded()/,/^}/p' "$INSTALL_SH"
     echo ""
@@ -23,8 +30,28 @@ _FAKE_SMI_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_has_usable_nvidia_gpu()/,/^}/p' "$INSTALL_SH"
     echo ""
+    # ROCm gfx-arch probe helpers that get_torch_index_url / _has_amd_rocm_gpu
+    # now call. These MUST stay in sync with install.sh: if get_torch_index_url
+    # references a helper that is not extracted here, the ROCm branch hits an
+    # undefined function, silently falls through to the CPU wheel index, and the
+    # ROCm assertions below fail.
+    sed -n '/^_ensure_rocm_probe_env()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_probe_amd_gfx_arch()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_amd_gpu_present_via_pci()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_infer_amd_gfx_arch_from_gpu_name()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_infer_linux_amd_gfx_arch()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_amd_arch_index_family_for_gfx()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_trim_index_path_slashes()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH"
-} | sed "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
+} | sed -e "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
+      -e "s|/opt/rocm|$_FAKE_ROCM_DIR|g" \
   > "$_FUNC_FILE"
 
 # Save system PATH so we always have basic tools (uname, grep, head, etc.)
@@ -379,8 +406,64 @@ _result=$(run_func "$_dir" " -1 ")
 assert_eq "CVD=' -1 ' hides NVIDIA -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 rm -rf "$_dir"
 
+# --- explicit overrides (headless / container / CI; no GPU probing) ----------
+# 39) UNSLOTH_TORCH_INDEX_FAMILY pins the family with no GPU present (not the cpu fallback).
+_result=$(UNSLOTH_TORCH_INDEX_FAMILY="cu128" run_func "none")
+assert_eq "family override (no GPU) -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
+
+# 40) Family override beats real detection: an nvidia-smi 12.6 host still gets cu128
+#     (the Docker-build case -- builder sees the host driver but publishes a cu128 image).
+_dir=$(make_mock_smi "12.6")
+_result=$(UNSLOTH_TORCH_INDEX_FAMILY="cu128" run_func "$_dir")
+assert_eq "family override beats detected 12.6 -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
+rm -rf "$_dir"
+
+# 41) UNSLOTH_TORCH_INDEX_URL is used verbatim and wins over detection.
+_dir=$(make_mock_smi "12.6")
+_result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu999" run_func "$_dir")
+assert_eq "url override beats detection -> verbatim" "https://mirror.example.com/whl/cu999" "$_result"
+rm -rf "$_dir"
+
+# 42) Family override is appended to UNSLOTH_PYTORCH_MIRROR (mirror still honoured).
+_result=$(UNSLOTH_PYTORCH_MIRROR="https://mirror.example.com/whl" UNSLOTH_TORCH_INDEX_FAMILY="cu128" run_func "none")
+assert_eq "mirror + family override -> mirror/cu128" "https://mirror.example.com/whl/cu128" "$_result"
+
+# 43) Trailing slash in UNSLOTH_TORCH_INDEX_URL is stripped.
+_result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128/" run_func "none")
+assert_eq "url override trailing slash stripped" "https://mirror.example.com/whl/cu128" "$_result"
+
+# 44) URL override takes precedence over family override.
+_result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu130" UNSLOTH_TORCH_INDEX_FAMILY="cu128" run_func "none")
+assert_eq "url override beats family override -> url" "https://mirror.example.com/whl/cu130" "$_result"
+
+# 45) An empty override is ignored (falls through to normal detection).
+_result=$(UNSLOTH_TORCH_INDEX_FAMILY="" UNSLOTH_TORCH_INDEX_URL="" run_func "none")
+assert_eq "empty overrides ignored -> detected cpu" "https://download.pytorch.org/whl/cpu" "$_result"
+
+# 46) ALL trailing slashes are stripped from a URL override (not just one).
+_result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128///" run_func "none")
+assert_eq "url override double slash stripped" "https://mirror.example.com/whl/cu128" "$_result"
+
+# 47) Leading and trailing slashes stripped from a family override.
+_result=$(UNSLOTH_TORCH_INDEX_FAMILY="//cu128//" run_func "none")
+assert_eq "family override slashes stripped" "https://download.pytorch.org/whl/cu128" "$_result"
+
+# 48) A ?query token that ends in "/" is PRESERVED: only PATH slashes are trimmed, so a
+# base64 token ending in "/" is not corrupted (path-only trim, not whole-URL rstrip).
+_result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128?token=ab12cd/" run_func "none")
+assert_eq "url override preserves query token slash" "https://mirror.example.com/whl/cu128?token=ab12cd/" "$_result"
+
+# 49) Double PATH slash before a query is collapsed while the query survives intact.
+_result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128//?token=ab12cd/" run_func "none")
+assert_eq "url override path slash trimmed, query kept" "https://mirror.example.com/whl/cu128?token=ab12cd/" "$_result"
+
+# 50) A #fragment ending in "/" is likewise preserved.
+_result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128#anchor/" run_func "none")
+assert_eq "url override preserves fragment slash" "https://mirror.example.com/whl/cu128#anchor/" "$_result"
+
 rm -f "$_FUNC_FILE"
 rm -rf "$_FAKE_SMI_DIR"
+rm -rf "$_FAKE_ROCM_DIR"
 rm -rf "$_TOOLS_DIR"
 
 echo ""

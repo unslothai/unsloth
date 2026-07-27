@@ -157,6 +157,9 @@ function detectFormatKey(
     if (alias) return alias;
   }
   if (modelId) {
+    // Owner implies format even when local metadata lacks tags; mirrors the
+    // backend's _looks_like_mlx_repo heuristic.
+    if (modelId.trim().toLowerCase().startsWith("mlx-community/")) return "mlx";
     const name = repoLeaf(modelId);
     for (const { key, pattern } of FORMAT_NAME_PATTERNS) {
       if (pattern.test(name)) return key;
