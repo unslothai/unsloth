@@ -88,14 +88,20 @@ def _installed_version(dist_name: str) -> Optional[str]:
         return None
 
 
-def remove_manifest(root: Optional[Path] = None) -> None:
-    """Called before the dependency pass so an aborted run cannot leave a valid one."""
+def remove_manifest(root: Optional[Path] = None) -> bool:
+    """Called before the dependency pass so an aborted run cannot leave a valid one.
+
+    True when no manifest remains. A surviving marker (Windows raises on a
+    read-only or locked file) still names this version and these digests, so a
+    pass killed afterwards would verify as complete.
+    """
     try:
         manifest_path(root).unlink()
     except FileNotFoundError:
-        return
+        return True
     except OSError:
-        return
+        return False
+    return True
 
 
 def write_manifest(

@@ -2715,7 +2715,16 @@ def install_python_stack() -> int:
 
     # Drop it up front: if this run is interrupted, the missing manifest is what
     # tells the CLI, setup.sh and the preflight that the venv is half-built.
-    install_manifest.remove_manifest()
+    # Stop if it survives rather than mutate the venv behind a marker that still
+    # reads as valid; that is the half-installed launch this is meant to prevent.
+    if not install_manifest.remove_manifest():
+        print(
+            f"error: could not remove the stale {install_manifest.MANIFEST_NAME} in "
+            f"{install_manifest.venv_root()}; refusing to install behind a marker "
+            "that would still report this venv as complete",
+            file = sys.stderr,
+        )
+        return 1
 
     # 1. Try uv for faster installs (before pip upgrade -- uv venvs don't
     #    include pip by default).

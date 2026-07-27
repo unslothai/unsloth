@@ -106,10 +106,36 @@ def test_interrupted_install_leaves_no_manifest(install_root, req_root):
     # point after that cannot leave a stale-but-valid manifest behind.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     assert im.manifest_path(install_root).is_file()
-    im.remove_manifest(install_root)
+    assert im.remove_manifest(install_root) is True
     assert not im.manifest_path(install_root).is_file()
     state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
     assert state["reason"] == "studio_install_incomplete"
+
+
+def test_remove_manifest_reports_whether_the_marker_is_really_gone(
+    install_root, req_root, monkeypatch
+):
+    # Nothing to remove is success: a first install has no manifest yet.
+    assert im.remove_manifest(install_root) is True
+
+    # A marker that survives must be reported, not swallowed: the dependency
+    # pass would then run behind a manifest that still names this version and
+    # these digests, so a run killed part-way verifies as complete.
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    path = im.manifest_path(install_root)
+
+    def _refuse(*_args, **_kwargs):
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(pathlib.Path, "unlink", _refuse)
+    assert im.remove_manifest(install_root) is False
+    monkeypatch.undo()
+
+    # The stale marker is still there and still verifies, which is why the
+    # installer has to stop instead of pressing on.
+    assert path.is_file()
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
+    assert state["manifest_ok"] is True
 
 
 def test_schema_bump_invalidates_an_old_manifest(install_root, req_root):
