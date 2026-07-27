@@ -3069,7 +3069,7 @@ WEB_SEARCH_TOOL = {
                 },
                 "url": {
                     "type": "string",
-                    "description": "A URL to fetch full page content from (instead of searching). Use this to read a page found in search results.",
+                    "description": "A URL to fetch full page content from (instead of searching). An http(s) URL or a bare hostname such as example.com. Use this to read a page found in search results.",
                 },
             },
             "required": [],

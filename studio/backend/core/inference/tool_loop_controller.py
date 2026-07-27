@@ -212,7 +212,12 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     if tool_name == "web_search":
         url = str(arguments.get("url") or "").strip()
         if url:
-            parsed = urlparse(url)
+            # Bare hosts are fetched as https, so normalize before reading the
+            # host or the badge falls back to the generic text for exactly the
+            # URLs the fetch layer accepts.
+            from core.inference.tools import _normalize_url_scheme
+
+            parsed = urlparse(_normalize_url_scheme(url))
             if parsed.scheme in ("http", "https") and parsed.hostname:
                 host = parsed.hostname
                 if host.startswith("www."):
