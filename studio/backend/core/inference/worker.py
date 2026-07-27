@@ -204,7 +204,11 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     return load_in_4bit
 
 
-def _ensure_ssm_kernels(targets: list, resp_queue: Any, local_files_only: bool = False) -> bool:
+def _ensure_ssm_kernels(
+    targets: list,
+    resp_queue: Any,
+    local_files_only: bool = False,
+) -> bool:
     """Install the SSM kernels the given model(s) lazy-import in from_pretrained; no-op for
     non-SSM models, idempotent. Returns True on success; on a fatal mamba-ssm failure sends a
     'loaded' failure response and returns False. Call BEFORE importing transformers, which
@@ -222,7 +226,6 @@ def _ensure_ssm_kernels(targets: list, resp_queue: Any, local_files_only: bool =
     _ssm_status = lambda m: _send_response(resp_queue, {"type": "status", "message": m})
     if local_files_only:
         import importlib.util
-
         for ssm_target in dict.fromkeys(t for t in targets if t):
             try:
                 needs_mamba = model_is_ssm(ssm_target)

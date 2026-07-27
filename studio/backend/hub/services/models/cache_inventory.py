@@ -451,11 +451,7 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     has_checkpoint = False
 
     def _record_blob(
-        target: dict[str, tuple[int, float]],
-        file_obj,
-        rev_id: str,
-        file_name: str,
-        category: str,
+        target: dict[str, tuple[int, float]], file_obj, rev_id: str, file_name: str, category: str
     ) -> None:
         blob_path = getattr(file_obj, "blob_path", None)
         size = int(file_obj.size_on_disk or 0)

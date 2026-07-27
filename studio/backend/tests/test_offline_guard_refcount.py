@@ -65,9 +65,9 @@ def test_overlapping_guards_restore_only_after_last_exit(clean_env):
     assert os.environ.get("HF_HUB_OFFLINE") == "1"
     assert b.__enter__() is True
     a.__exit__(None, None, None)
-    assert os.environ.get("HF_HUB_OFFLINE") == "1", (
-        "first exit must not restore while another guard is active"
-    )
+    assert (
+        os.environ.get("HF_HUB_OFFLINE") == "1"
+    ), "first exit must not restore while another guard is active"
     b.__exit__(None, None, None)
     assert "HF_HUB_OFFLINE" not in os.environ
 
