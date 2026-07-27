@@ -1077,6 +1077,47 @@ def test_background_loads_resolve_local_files_only():
     assert "str(get_hf_cache_paths().hub_cache)," in route
 
 
+def test_background_candidate_filters_have_no_side_effects():
+    """Round-13 gates. Local checkpoint rows carry pickle weights with no Hub
+    security scan, so they are never background-picked. The canAutoLoad probe
+    validates with the same local-only policy /load enforces, and the validate
+    route runs it offline so the metadata probe cannot reach the Hub. Non-GGUF
+    audio models are refused under local-only in both routes because their
+    codec runtimes download auxiliaries at load time. Revision-only caches
+    (refs pruned) still resolve through the snapshot-dir fallback."""
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    assert 'if (row.model_format === "checkpoint") {' in adapter
+
+    can_fn = adapter.split("async function canAutoLoad", 1)[1]
+    can_fn = can_fn.split("async function", 1)[0]
+    assert "local_files_only: true," in can_fn
+
+    chat_api = _read("features/chat/api/chat-api.ts")
+    assert "local_files_only: payload.local_files_only ?? false," in chat_api
+
+    request_model = _read_backend("models/inference.py")
+    validate_schema = request_model.split("class ValidateModelRequest", 1)[1]
+    assert "local_files_only: bool = Field(" in validate_schema
+
+    route = _read_backend("routes/inference.py")
+    # Both /load and /validate force offline resolution under local-only.
+    assert route.count("with _hf_offline_if_dns_dead(force = request.local_files_only):") == 2
+    # Audio gate present in both routes, GGUF exempt (llama.cpp path already
+    # resolves companions cached-or-skipped under the flag).
+    assert route.count("needs audio codec downloads") == 2
+    for gate in route.split("needs audio codec downloads")[:-1]:
+        tail = gate.rsplit("if request.local_files_only", 1)[1]
+        assert "is_gguf" in tail and "is_audio" in tail
+
+    llama = _read_backend("core/inference/llama_cpp.py")
+    assert "def _hf_offline_if_dns_dead(force: bool = False):" in llama
+    assert "if not force and not _probe_dns_dead():" in llama
+
+    helper = _read_backend("hub/utils/local_snapshot.py")
+    assert "def _snapshot_dir_fallback(" in helper
+    assert "config.json" in helper
+
+
 def test_gguf_background_loads_never_download_companions():
     """A cached GGUF load can still fetch from the Hub through its optional
     companions (mmproj, MTP drafter) or a cache-miss main quant. Background

@@ -256,6 +256,14 @@ class ValidateModelRequest(BaseModel):
             "delegate fitting to llama.cpp, while explicit layers are user-owned."
         ),
     )
+    local_files_only: bool = Field(
+        False,
+        description = (
+            "Background auto-loads: resolve model metadata from the local "
+            "cache only and reject candidates whose runtime would pull "
+            "remote auxiliaries (e.g. audio codec models)."
+        ),
+    )
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "

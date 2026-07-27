@@ -169,6 +169,9 @@ export async function validateModel(
       // --fit, while a pinned layer count is owned by the user. Tell validate
       // so it applies the same training-guard policy as /load.
       gpu_memory_mode: payload.gpu_memory_mode,
+      // Background auto-loads: resolve metadata from the local cache only
+      // and reject candidates whose runtime pulls remote auxiliaries.
+      local_files_only: payload.local_files_only ?? false,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);

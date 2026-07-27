@@ -1530,6 +1530,13 @@ function isAutoLoadableLocalRow(
   // for a Hub-id base can trigger the implicit remote fetch a background
   // auto-load must never start. Adapters stay interactive-only.
   if (row.model_format === "adapter") return false;
+  // Checkpoint rows (pickle .bin/.pt weights) are chat-capable but a local
+  // scan-folder checkpoint has no Hub security scan, and deserializing a
+  // pickle can execute code. Loading one must be an explicit user action,
+  // never a background pick; they stay interactive-only like adapters.
+  if (row.model_format === "checkpoint") {
+    return false;
+  }
   if (isHiddenModelId(row.model_id, row.id, row.path)) return false;
   // The name-based big-endian marker only applies to direct .gguf files: a
   // DIRECTORY named e.g. /models/foo-be says nothing about the files inside
@@ -1787,6 +1794,10 @@ export async function autoLoadOnDeviceModel(): Promise<{
       ...payload,
       hf_token: hfToken,
       load_in_4bit: true,
+      // Same local-only policy the follow-up /load enforces, so ineligible
+      // candidates (uncached, or audio models whose codecs would fetch) are
+      // rejected here without consuming a load attempt.
+      local_files_only: true,
       trust_remote_code: trustRemoteCode,
     });
     // Background auto-load never runs a repo's custom code or loads Hub-flagged unsafe

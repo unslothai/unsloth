@@ -507,14 +507,16 @@ def _hf_env_offline() -> bool:
 
 
 @contextlib.contextmanager
-def _hf_offline_if_dns_dead():
+def _hf_offline_if_dns_dead(force: bool = False):
     """Set HF_HUB_OFFLINE for this block only when DNS to huggingface.co fails;
     restores env on exit so a transient hiccup can't quarantine the process.
-    No-op if the user already set it."""
+    No-op if the user already set it. ``force`` skips the DNS probe and goes
+    offline unconditionally (local-only background loads resolve metadata
+    from the cache without any network)."""
     if "HF_HUB_OFFLINE" in os.environ:
         yield False
         return
-    if not _probe_dns_dead():
+    if not force and not _probe_dns_dead():
         yield False
         return
 

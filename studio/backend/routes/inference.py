@@ -4483,8 +4483,9 @@ async def _load_model_impl(
 
         # is_lora auto-detected from adapter_config.json on disk/HF.
         # DNS-probe wrap so offline loads skip 30-60s of soft-failed network
-        # checks before the worker starts.
-        with _hf_offline_if_dns_dead():
+        # checks before the worker starts. Local-only loads force offline so
+        # metadata resolution itself cannot reach the Hub.
+        with _hf_offline_if_dns_dead(force = request.local_files_only):
             config = ModelConfig.from_identifier(
                 model_id = model_identifier,
                 hf_token = request.hf_token,
@@ -4505,6 +4506,18 @@ async def _load_model_impl(
         # weight load to the files actually on disk, so an incomplete cache
         # fails over to the next candidate instead of fetching.
         from utils.paths import is_local_path
+
+        # Python audio runtimes fetch codec auxiliaries (SNAC/DAC/BiCodec repos)
+        # at load time regardless of where the weights live, so a local-only
+        # load of a non-GGUF audio model still hits the network. Refuse it.
+        if request.local_files_only and not config.is_gguf and getattr(config, "is_audio", False):
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    f"Model '{model_log_label}' needs audio codec downloads; "
+                    "select it explicitly to load it."
+                ),
+            )
 
         if request.local_files_only and not config.is_gguf and not is_local_path(config.path):
             from hub.utils.local_snapshot import resolve_local_snapshot_path
@@ -5121,16 +5134,31 @@ async def validate_model(
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "validate-model")
         )
-        config = ModelConfig.from_identifier(
-            model_id = model_identifier,
-            hf_token = request.hf_token,
-            gguf_variant = request.gguf_variant,
-        )
+        # Local-only validation (background auto-loads) forces offline so the
+        # metadata probe resolves from cache instead of the Hub.
+        with _hf_offline_if_dns_dead(force = request.local_files_only):
+            config = ModelConfig.from_identifier(
+                model_id = model_identifier,
+                hf_token = request.hf_token,
+                gguf_variant = request.gguf_variant,
+            )
 
         if not config:
             raise HTTPException(
                 status_code = 400,
                 detail = f"Invalid model identifier: {model_log_label}",
+            )
+
+        # Same audio gate as /load: non-GGUF audio models pull codec repos at
+        # load time, so a local-only candidate is rejected here before the
+        # frontend burns a load attempt on it.
+        if request.local_files_only and not getattr(config, "is_gguf", False) and getattr(config, "is_audio", False):
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    f"Model '{model_log_label}' needs audio codec downloads; "
+                    "select it explicitly to load it."
+                ),
             )
 
         # Apply the same training coexistence policy as /load before the frontend

@@ -31,14 +31,23 @@ from hub.utils.local_snapshot import resolve_local_snapshot_path
 _REV = "0123456789abcdef0123456789abcdef01234567"
 
 
-def _build_cached_repo(cache_dir: Path, repo_id: str, files: dict[str, str]) -> Path:
+def _build_cached_repo(
+    cache_dir: Path,
+    repo_id: str,
+    files: dict[str, str],
+    with_refs: bool = True,
+    rev: str = _REV,
+) -> Path:
     """Lay out a minimal HF hub cache entry the way huggingface_hub expects:
-    ``models--org--name/refs/main`` pointing at a snapshot directory."""
+    ``models--org--name/refs/main`` pointing at a snapshot directory.
+    ``with_refs = False`` builds the revision-only layout (pruned or foreign
+    caches) the inventory scanner accepts."""
     repo_dir = cache_dir / f"models--{repo_id.replace('/', '--')}"
-    snapshot = repo_dir / "snapshots" / _REV
+    snapshot = repo_dir / "snapshots" / rev
     snapshot.mkdir(parents = True)
-    (repo_dir / "refs").mkdir()
-    (repo_dir / "refs" / "main").write_text(_REV)
+    if with_refs:
+        (repo_dir / "refs").mkdir(exist_ok = True)
+        (repo_dir / "refs" / "main").write_text(rev)
     for name, content in files.items():
         (snapshot / name).write_text(content)
     return snapshot
@@ -73,6 +82,68 @@ def test_incomplete_snapshot_still_resolves_locally(tmp_path):
 
 def test_uncached_repo_resolves_to_none(tmp_path):
     assert resolve_local_snapshot_path("org/never-downloaded", cache_dir = str(tmp_path)) is None
+
+
+def test_revision_only_snapshot_resolves_without_refs(tmp_path):
+    """snapshot_download(local_files_only = True) needs refs/main, but the
+    inventory scanner accepts revision-only layouts (pruned refs), so the
+    resolver must fall back to the snapshot directory itself."""
+    snapshot = _build_cached_repo(
+        tmp_path,
+        "org/no-refs",
+        {"config.json": "{}", "model.safetensors": "weights"},
+        with_refs = False,
+    )
+    resolved = resolve_local_snapshot_path("org/no-refs", cache_dir = str(tmp_path))
+    assert resolved is not None
+    assert Path(resolved).resolve() == snapshot.resolve()
+
+
+def test_refless_fallback_picks_newest_snapshot_with_config(tmp_path):
+    """With several revision dirs, the fallback must pick the newest one that
+    actually holds a config.json, skipping empty or partial revisions."""
+    import os
+    import time
+
+    old = _build_cached_repo(
+        tmp_path,
+        "org/multi-rev",
+        {"config.json": "{}"},
+        with_refs = False,
+        rev = "a" * 40,
+    )
+    stale = time.time() - 1000
+    os.utime(old, (stale, stale))
+    new = _build_cached_repo(
+        tmp_path,
+        "org/multi-rev",
+        {"config.json": "{}"},
+        with_refs = False,
+        rev = "b" * 40,
+    )
+    configless = _build_cached_repo(
+        tmp_path,
+        "org/multi-rev",
+        {"tokenizer.json": "{}"},
+        with_refs = False,
+        rev = "c" * 40,
+    )
+    assert configless.exists()
+    resolved = resolve_local_snapshot_path("org/multi-rev", cache_dir = str(tmp_path))
+    assert resolved is not None
+    assert Path(resolved).resolve() == new.resolve()
+
+
+def test_refless_fallback_without_config_resolves_to_none(tmp_path):
+    """A snapshots dir with no config.json anywhere is not a loadable text
+    model cache; resolution must stay None (409 upstream), not guess."""
+    _build_cached_repo(
+        tmp_path,
+        "org/no-config",
+        {"tokenizer.json": "{}"},
+        with_refs = False,
+    )
+    assert resolve_local_snapshot_path("org/no-config", cache_dir = str(tmp_path)) is None
 
 
 def test_resolution_never_uses_the_network(tmp_path, monkeypatch):
