@@ -10290,6 +10290,9 @@ async def openai_chat_completions(
                 or bool(payload.tools)
                 or bool(payload.openai_code_exec_container_id)
                 or bool(payload.anthropic_code_exec_container_id)
+                # _ext_local_tools treats MCP as independently enabling the
+                # local runtime, so an MCP-only request is tool intent too.
+                or payload.mcp_enabled is True
             )
             and not (_ext_local_tools and payload.stream)
         ):

@@ -27,6 +27,10 @@ import time
 import uuid
 from typing import Any, AsyncGenerator, Optional
 
+from core.inference.tool_call_parser import (
+    RAG_MAX_SEARCHES_PER_TURN,
+    RAG_SEARCH_CAP_NUDGE,
+)
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     strip_result_for_model,
@@ -232,6 +236,9 @@ async def stream_external_local_tool_loop(
     effective_tool_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
     # Cap total tool calls across all rounds at the caller's per-message budget, even with parallel calls.
     calls_remaining = max_tool_iterations
+    # Per-request, like the GGUF and safetensors loops: the argument dedupe
+    # cannot catch a paraphrased knowledge-base query.
+    kb_search_count = 0
     # A forced tool_choice applies only to the first round; later rounds are freed to answer.
     active_tool_choice = tool_choice
 
@@ -547,22 +554,35 @@ async def stream_external_local_tool_loop(
                         # Keep the stream alive while a slow tool runs; a search / terminal /
                         # MCP call can hold this for minutes with nothing else to send.
                         result_out: list[Any] = []
-                        async for keepalive in _run_with_keepalive(
-                            asyncio.to_thread(
-                                execute_tool,
-                                name,
-                                arguments,
-                                cancel_event,
-                                effective_tool_timeout,
-                                session_id,
-                                thread_id,
-                                rag_scope,
-                                bypass_permissions,
-                                None,
-                            ),
-                            result_out,
+                        # RAG: cap paraphrased KB re-searches, which the
+                        # argument dedupe cannot catch. The GGUF and
+                        # safetensors loops already do this; without it a
+                        # remote can spend the whole budget on retrieval.
+                        if (
+                            name == "search_knowledge_base"
+                            and kb_search_count >= RAG_MAX_SEARCHES_PER_TURN
                         ):
-                            yield keepalive
+                            result = RAG_SEARCH_CAP_NUDGE
+                            result_out.append(result)
+                        else:
+                            async for keepalive in _run_with_keepalive(
+                                asyncio.to_thread(
+                                    execute_tool,
+                                    name,
+                                    arguments,
+                                    cancel_event,
+                                    effective_tool_timeout,
+                                    session_id,
+                                    thread_id,
+                                    rag_scope,
+                                    bypass_permissions,
+                                    None,
+                                ),
+                                result_out,
+                            ):
+                                yield keepalive
+                            if name == "search_knowledge_base":
+                                kb_search_count += 1
                         result = result_out[0]
                     except Exception as exc:
                         logger.exception("external_agentic.tool_failed name=%s", name)
