@@ -48,6 +48,9 @@ _MAX_WATCH_S = 24 * 60 * 60
 # the worker is still alive and still owns the slot.
 _TIMED_OUT_POLL_S = 60.0
 _RETRY_AFTER_S = 30
+# Long enough for a client honouring Retry-After to come back and be told, short
+# enough that a client that never returns cannot hold the slot.
+_FAILED_HOLD_S = 3 * _RETRY_AFTER_S
 _MAX_LISTED_VARIANTS = 8
 
 
@@ -70,6 +73,11 @@ class _Active:
     expected_bytes: int = 0
     monitor_id: Optional[str] = None
     started_at: float = 0.0
+    # Set when the worker failed. The slot is kept until a retry surfaces it, since
+    # the advertised retry interval is far longer than the watcher's poll and the
+    # client would otherwise just restart the same failing download.
+    error: Optional[str] = None
+    failed_at: float = 0.0
 
 
 _lock = threading.Lock()
@@ -327,7 +335,6 @@ async def _watch(active: _Active, hf_token: Optional[str]) -> None:
     """Poll a dispatched job so the monitor row resolves and the resolver cache
     is dropped the moment the weights land."""
     from core.inference import api_monitor as monitor_module
-    from core.inference.local_model_resolver import invalidate_index
 
     api_monitor = monitor_module.api_monitor
     deadline = time.monotonic() + _MAX_WATCH_S
@@ -362,14 +369,20 @@ async def _watch(active: _Active, hf_token: Optional[str]) -> None:
                 api_monitor.finish(active.monitor_id, status = "cancelled")
                 return
             if state == "complete":
-                # Drop the resolver cache so the next retry sees the new model.
-                await asyncio.to_thread(invalidate_index)
+                # No invalidate here: finalize_worker_exit already dropped the cache and
+                # started the warm, and a second one would mark that fresh scan stale and
+                # push a synchronous rescan onto the client's retry.
                 api_monitor.finish(active.monitor_id, status = "completed")
             elif state == "idle":
                 # The job vanished without a terminal state (worker killed).
                 api_monitor.fail_open(active.monitor_id, "Download did not complete")
             else:
                 api_monitor.fail_open(active.monitor_id, error or f"Download {state}")
+                # Keep the slot so the next retry is told it failed rather than
+                # silently starting the same download again.
+                active.error = error or f"Download {state}"
+                active.failed_at = time.monotonic()
+                return
             return
     except asyncio.CancelledError:
         raise
@@ -377,7 +390,8 @@ async def _watch(active: _Active, hf_token: Optional[str]) -> None:
         logger.warning("auto-download: watcher failed for %r: %s", active.repo_id, exc)
         api_monitor.fail_open(active.monitor_id, "Download tracking failed")
     finally:
-        _release(active)
+        if not active.failed_at:
+            _release(active)
 
 
 def _downloading_refusal(label: str, percent: Optional[float]) -> AutoDownloadRefusal:
@@ -388,6 +402,37 @@ def _downloading_refusal(label: str, percent: Optional[float]) -> AutoDownloadRe
         message = (f"Downloading '{label}'{progress}. Retry shortly. Track it in Unsloth Studio."),
         retry_after = _RETRY_AFTER_S,
     )
+
+
+async def _is_downloadable_model(repo_id: str, hf_token: Optional[str]) -> bool:
+    """Whether the Hub has this repo with GGUF weights we could fetch.
+
+    Only asked while another download holds the slot, to tell a second download
+    apart from an ordinary foreign label. Any failure answers False: falling
+    through to the resident model is what such a label does anyway, and refusing
+    it would strand normal traffic for the length of the download.
+    """
+    if _is_not_servable(repo_id, hf_token):
+        return False
+
+    def _probe():
+        from huggingface_hub import HfApi
+
+        return HfApi(token = _hub_token(hf_token)).model_info(
+            repo_id, timeout = _MODEL_INFO_TIMEOUT_S
+        )
+
+    try:
+        info = await asyncio.to_thread(_probe)
+    except Exception:
+        return False
+    siblings = list(getattr(info, "siblings", None) or [])
+    servable = any(
+        str(getattr(s, "rfilename", "") or "").lower().endswith(".gguf") for s in siblings
+    )
+    if not servable:
+        _mark_not_servable(repo_id, hf_token)
+    return servable
 
 
 async def maybe_auto_download(
@@ -414,24 +459,39 @@ async def maybe_auto_download(
         return None
 
     # Settle the single-flight slot before the network, so retries during a download stay cheap.
+    busy: Optional[_Active] = None
     with _lock:
         current = _active
+        if current is not None and current.failed_at:
+            # A held failure only owns the slot until someone is told about it.
+            if current.repo_id != repo_id and time.monotonic() - current.failed_at > _FAILED_HOLD_S:
+                _active = current = None
         if current is not None and current.repo_id == repo_id:
             adopted = current
         elif current is not None:
-            return AutoDownloadRefusal(
-                status = 503,
-                code = "model_download_busy",
-                message = (
-                    f"Already downloading '{_public_label(current.repo_id, current.variant)}'. "
-                    f"Retry '{requested_model}' once it finishes."
-                ),
-                retry_after = _RETRY_AFTER_S,
-            )
+            adopted = None
+            busy = current
         else:
             adopted = None
             provisional = _Active(repo_id = repo_id, started_at = time.time())
             _active = provisional
+
+    if busy is not None:
+        # Refusing before the probe blocks ordinary drop-in traffic: a namespaced label
+        # that is not a downloadable GGUF repo (LiteLLM/OpenRouter style) would be told
+        # to wait out a multi-hour download instead of falling through to the resident
+        # model. Only a label that could itself be downloaded is a second download.
+        if not await _is_downloadable_model(repo_id, hf_token):
+            return None
+        return AutoDownloadRefusal(
+            status = 503,
+            code = "model_download_busy",
+            message = (
+                f"Already downloading '{_public_label(busy.repo_id, busy.variant)}'. "
+                f"Retry '{requested_model}' once it finishes."
+            ),
+            retry_after = _RETRY_AFTER_S,
+        )
 
     if adopted is not None:
         if adopted.variant is None:
@@ -445,7 +505,8 @@ async def maybe_auto_download(
                     adopted.repo_id, adopted.variant, adopted.expected_bytes, hf_token
                 ),
             )
-        if state == "error":
+        if state == "error" or adopted.error:
+            error = error or adopted.error
             # Surface once, then free the slot so a retry can start over.
             _release(adopted)
             return AutoDownloadRefusal(

@@ -3500,6 +3500,9 @@ _DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY = "_unsloth_disable_openai_auto_switch"
 # only restore an idle-freed model, never run the resolver (so a downloaded GGUF
 # literally named "default" can't be swapped to). The NUL keeps it off any index.
 _RELOAD_ONLY_MODEL = "\x00reload-only"
+# One cold scan is worth paying to avoid answering a named model with another; a
+# pathological install must not hang the request behind it forever.
+_COLD_INDEX_WAIT_S = 10.0
 
 
 def _switch_model_for_payload(payload) -> str:
@@ -3775,19 +3778,18 @@ def _loaded_satisfies(requested: str) -> bool:
     from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
     base, variant = split_model_ref(requested)
-    base = base.lower()
     llama_backend = get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
-        keys = {
-            candidate.lower()
+        candidates = [
+            candidate
             for candidate in (
                 getattr(llama_backend, "model_identifier", None),
                 getattr(llama_backend, "_openai_advertised_id", None),
                 _llama_public_model_id(llama_backend),
             )
             if candidate
-        }
-        if base not in keys:
+        ]
+        if not _matches_any(base, candidates):
             return False
         if not looks_like_quant(variant):
             # An Ollama-style tag (":latest", ":8b") names no file, so the repo is enough.
@@ -3799,7 +3801,33 @@ def _loaded_satisfies(requested: str) -> bool:
     # Only llama.cpp carries a quant identity, so this backend can only match on the repo.
     if looks_like_quant(variant):
         return False
-    return base in {active.lower(), (public_model_id(active) or "").lower()}
+    return _matches_any(base, [active, public_model_id(active)])
+
+
+def _matches_any(requested: str, candidates) -> bool:
+    """Whether *requested* names any of *candidates*.
+
+    A repo alias is case-insensitive, a filesystem path is not: lowercasing both
+    made /srv/models/foo.gguf and /srv/models/Foo.gguf the same weights, which is
+    the same trap _norm_path exists for one comparison further down.
+    """
+    lowered = requested.strip().lower()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if _looks_like_local_path(requested) or _looks_like_local_path(candidate):
+            if _norm_path(requested) == _norm_path(candidate):
+                return True
+            continue
+        if lowered == str(candidate).strip().lower():
+            return True
+    return False
+
+
+def _looks_like_local_path(value: str) -> bool:
+    """A filesystem path rather than a repo id, so case matters."""
+    text = str(value)
+    return text.startswith("/") or text.startswith("~") or ":\\" in text or "\\" in text
 
 
 def _norm_path(value: str) -> str:
@@ -3877,6 +3905,7 @@ async def _reject_unservable_model(
     base, variant = split_model_ref(requested_model)
     quantified = looks_like_quant(variant)
     from core.inference.local_model_resolver import (
+        index_is_built,
         recently_downloaded,
         resolve_local_gguf,
         warm_index_soon,
@@ -3893,8 +3922,22 @@ async def _reject_unservable_model(
             return
         # Refresh in the background and read the index as-is: scanning here would stall the
         # request, and a cold index only costs evidence (the gate below fails safe without it).
-        warm_index_soon()
-        resolved = resolve_local_gguf(requested_model, allow_scan = False)
+        if index_is_built():
+            warm_index_soon()
+            resolved = resolve_local_gguf(requested_model, allow_scan = False)
+        else:
+            # Before the first scan there is nothing cached to reason from, and falling
+            # through would answer a named model with the resident one. Pay the scan
+            # once, off the loop and bounded, rather than reading "not scanned yet" as
+            # "not here". Later requests take the cached branch above.
+            try:
+                resolved = await asyncio.wait_for(
+                    asyncio.to_thread(resolve_local_gguf, requested_model),
+                    _COLD_INDEX_WAIT_S,
+                )
+            except (TimeoutError, asyncio.TimeoutError):
+                warm_index_soon()
+                resolved = None
         # A manual load stores the on-disk path the resolver advertises under an alias, so
         # match on the path too.
         # Quants of one repo share a directory, so the path alone cannot tell them
@@ -10979,6 +11022,7 @@ def _quant_reference_resolves(model_id: Optional[str], quant: str) -> bool:
     the moment another model loads.
     """
     from core.inference.local_model_resolver import (
+        index_is_built,
         recently_downloaded,
         resolve_local_gguf,
         warm_index_soon,

@@ -1164,14 +1164,21 @@ def test_the_request_path_never_triggers_a_model_index_rescan(monkeypatch):
     assert warmed == [1, 1, 1]
 
 
-def test_a_cold_index_still_refuses_an_explicit_quant_and_warms_in_the_background(monkeypatch):
-    # A cold index has no evidence of what is on disk, but an explicit quant is evidence on
-    # its own; a bare name proves nothing. Either way the warm happens off this request.
+def test_a_cold_index_is_scanned_rather_than_read_as_nothing_here(monkeypatch):
+    # Before the first scan there is no cached evidence, and treating that as "not
+    # downloaded" answers a named local model with the resident one. The scan is paid
+    # once, off the loop; every later request reads the built index instead.
     from core.inference import local_model_resolver as resolver
 
-    warmed = []
+    entry = resolver._LocalGgufEntry("org/other", "/srv/models/org--other", ("Q4_K_M",))
+    scans = []
+
+    def _build():
+        scans.append(1)
+        return {"org/other": entry}
+
     monkeypatch.setattr(resolver, "_scan", (0.0, {}))
-    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
+    monkeypatch.setattr(resolver, "_build_index", _build)
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
     monkeypatch.setattr(
@@ -1180,11 +1187,46 @@ def test_a_cold_index_still_refuses_an_explicit_quant_and_warms_in_the_backgroun
         lambda: type("B", (), {"active_model_name": None})(),
     )
     monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+    monkeypatch.setattr(
+        "utils.openai_auto_switch_settings.get_openai_auto_switch_enabled", lambda: False
+    )
+
+    # The bug: a bare name that IS on disk used to fall through to the resident model.
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(inference_route._reject_unservable_model("unsloth/A-GGUF:Q8_0", _Req()))
+        asyncio.run(inference_route._reject_unservable_model("org/other", _Req()))
     assert excinfo.value.status_code == 404
+    assert scans == [1], "the cold index was not scanned"
+
+    # Built now, so the request path reads the cache and never scans again.
     assert asyncio.run(inference_route._reject_unservable_model("gpt-4", _Req())) is None
-    assert warmed == [1, 1]
+    assert scans == [1]
+
+
+def test_a_cold_scan_that_never_finishes_does_not_hang_the_request(monkeypatch):
+    # Correctness is worth one scan, not an unbounded wait: a pathological install
+    # falls through on the timeout rather than holding the request open.
+    import threading
+
+    from core.inference import local_model_resolver as resolver
+
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    monkeypatch.setattr(inference_route, "_COLD_INDEX_WAIT_S", 0.05)
+    released = threading.Event()
+    monkeypatch.setattr(resolver, "_build_index", lambda: (released.wait(5), {})[1])
+    warmed = []
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
+    loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    try:
+        assert asyncio.run(inference_route._reject_unservable_model("gpt-4", _Req())) is None
+        assert warmed == [1]
+    finally:
+        released.set()
 
 
 def test_warming_the_index_never_waits_on_the_scan_lock(monkeypatch):
@@ -1561,3 +1603,67 @@ def test_the_trust_probe_never_falls_back_to_the_server_identity(hub, monkeypatc
     auto_dl.reset_for_tests()
     _run("unsloth/x-GGUF:UD-Q5_K_XL", hf_token = "hf_caller")
     assert seen == ["hf_caller"], "the caller's own token must still be used"
+
+
+def test_a_foreign_label_is_not_told_to_wait_for_someone_elses_download(hub):
+    # The busy refusal fired before the probe, so any namespaced label a drop-in
+    # client sends (LiteLLM/OpenRouter style) was told to wait out a download that
+    # has nothing to do with it, for as long as that download runs.
+    assert _run("unsloth/first-GGUF").code == "model_downloading"
+
+    hub["info"] = _Info([_Sibling("README.md", 1024)])  # real repo, no GGUF
+    assert _run("anthropic/claude-3.5-sonnet") is None, "a foreign label was refused as busy"
+
+    # A label that really is another downloadable model still gets the busy refusal.
+    hub["info"] = _gguf_repo_info()
+    refusal = _run("unsloth/second-GGUF")
+    assert refusal.status == 503 and refusal.code == "model_download_busy"
+
+
+def test_a_failed_download_keeps_the_slot_until_someone_is_told(monkeypatch):
+    # The watcher freed the slot the moment it saw the error, but Retry-After is 30s
+    # and the poll is 2s, so the client came back to an empty slot and started the
+    # identical failing download again instead of being told it had failed.
+    monkeypatch.setattr(auto_dl, "_MAX_WATCH_S", 60.0)
+    monkeypatch.setattr(auto_dl, "_WATCH_POLL_S", 0.001)
+
+    async def _errored(repo, variant):
+        return "error", "disk exploded"
+
+    monkeypatch.setattr(auto_dl, "_job_state", _errored)
+    active = auto_dl._Active(repo_id = "org/x-GGUF", variant = "Q4_K_M")
+    auto_dl._active = active
+    asyncio.run(auto_dl._watch(active, None))
+    assert auto_dl._active is active, "the slot was freed before anyone was told"
+    assert active.error == "disk exploded"
+
+
+def test_the_retry_after_a_failure_is_told_instead_of_restarting_it(hub, monkeypatch):
+    # End of the same chain: the held failure has to reach the caller.
+    active = auto_dl._Active(
+        repo_id = "unsloth/x-GGUF",
+        variant = "UD-Q5_K_XL",
+        error = "disk exploded",
+        failed_at = 1.0,
+    )
+    auto_dl._active = active
+
+    async def _idle(repo, variant):
+        return "idle", None
+
+    monkeypatch.setattr(auto_dl, "_job_state", _idle)
+    refusal = _run("unsloth/x-GGUF:UD-Q5_K_XL")
+    assert refusal.status == 502 and "disk exploded" in refusal.message
+    assert hub["started"] == [], "the retry restarted the failing download"
+    # Told once, so the slot is free again for a fresh attempt.
+    assert auto_dl._active is None
+
+
+def test_a_completed_download_does_not_restage_the_scan_it_just_warmed(monkeypatch):
+    # finalize_worker_exit invalidates and warms. A second invalidation here marks
+    # that fresh scan stale and pushes a synchronous rescan onto the client's retry.
+    import inspect
+
+    src = inspect.getsource(auto_dl._watch)
+    complete_branch = src[src.index('if state == "complete"') :]
+    assert "invalidate_index" not in complete_branch

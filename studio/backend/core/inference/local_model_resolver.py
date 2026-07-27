@@ -363,6 +363,16 @@ def _index() -> dict[str, _LocalGgufEntry]:
         return fresh
 
 
+def index_is_built() -> bool:
+    """Whether a scan has ever completed, freshness aside.
+
+    Lock-free on purpose: ``_lock`` is held for the whole scan, so taking it here
+    would park the request path on the very scan it is trying to stay off. Reading
+    ``_scan[0]`` is safe because ``_scan`` is only ever rebound, never mutated.
+    """
+    return bool(_scan[0])
+
+
 def warm_index_soon() -> None:
     """(Re)build the index off the request path when it is missing or past its TTL.
 

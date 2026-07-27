@@ -4355,3 +4355,26 @@ def test_a_finished_dataset_is_not_recorded_as_a_local_model(monkeypatch):
     )
     assert not resolver.recently_downloaded("org/corpus")
     assert resolver._scan == (stamp, {"kept": "entry"}), "a dataset invalidated the index"
+
+
+def test_two_local_paths_differing_only_in_case_are_not_the_same_model(monkeypatch):
+    # _loaded_satisfies lowercased the request and every backend identifier, so on a
+    # case-sensitive filesystem /srv/models/foo.gguf counted as satisfied by a
+    # resident /srv/models/Foo.gguf and returned before the case-preserving compare
+    # further down ever ran. A repo alias must stay case-insensitive.
+    import os
+
+    loaded = _FakeBackend(loaded_id = "/srv/models/Foo.gguf")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    assert inference_route._loaded_satisfies("/srv/models/Foo.gguf") is True
+    same = os.path.normcase("A") == os.path.normcase("a")
+    assert inference_route._loaded_satisfies("/srv/models/foo.gguf") is same
+
+    alias = _FakeBackend(loaded_id = "unsloth/Qwen3-4B-GGUF")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: alias)
+    assert inference_route._loaded_satisfies("unsloth/qwen3-4b-gguf") is True
