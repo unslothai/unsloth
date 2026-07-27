@@ -10,12 +10,14 @@ through to the resident model.
 """
 
 import asyncio
+import time
 
 import pytest
 from fastapi import HTTPException
 
 import routes.inference as inference_route
 from core.inference import openai_auto_download as auto_dl
+from core.inference.local_model_resolver import warm_index_soon as _real_warm_index_soon
 from utils import openai_auto_switch_settings as settings
 
 
@@ -62,9 +64,15 @@ def _gguf_repo_info():
 
 @pytest.fixture(autouse = True)
 def _clean_slot():
+    from core.inference import local_model_resolver
+
     auto_dl.reset_for_tests()
+    # The hook warms the index in the background; drop it so one test's scan is
+    # never handed to the next one inside the TTL.
+    local_model_resolver.invalidate_index()
     yield
     auto_dl.reset_for_tests()
+    local_model_resolver.invalidate_index()
 
 
 def _repo_not_found_error():
@@ -677,7 +685,6 @@ def _reject(
         "get_inference_backend",
         lambda: type("B", (), {"active_model_name": None})(),
     )
-    monkeypatch.setattr("core.inference.local_model_resolver.index_is_built", lambda: True)
     monkeypatch.setattr(
         "core.inference.local_model_resolver.resolve_local_gguf",
         lambda name, **_kw: ("/p", None, name) if downloaded else None,
@@ -790,7 +797,6 @@ def test_a_diagnosis_failure_does_not_serve_the_wrong_model(monkeypatch):
     def _boom(name, **_kw):
         raise OSError("cache scan unavailable")
 
-    monkeypatch.setattr("core.inference.local_model_resolver.index_is_built", lambda: True)
     monkeypatch.setattr("core.inference.local_model_resolver.resolve_local_gguf", _boom)
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(inference_route._reject_unservable_model("unsloth/B-GGUF:UD-Q6_K_XL", _Req()))
@@ -820,7 +826,6 @@ def test_diagnosis_failure_never_breaks_a_servable_request(monkeypatch):
     def _boom(_name, **_kw):
         raise RuntimeError("scan exploded")
 
-    monkeypatch.setattr("core.inference.local_model_resolver.index_is_built", lambda: True)
     monkeypatch.setattr("core.inference.local_model_resolver.resolve_local_gguf", _boom)
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
     monkeypatch.setattr(
@@ -839,7 +844,6 @@ def test_anthropic_surface_gets_its_own_envelope(monkeypatch):
         "get_inference_backend",
         lambda: type("B", (), {"active_model_name": None})(),
     )
-    monkeypatch.setattr("core.inference.local_model_resolver.index_is_built", lambda: True)
     monkeypatch.setattr(
         "core.inference.local_model_resolver.resolve_local_gguf", lambda name, **_kw: None
     )
@@ -1025,7 +1029,6 @@ def test_a_slashless_local_model_is_still_a_concrete_reference(monkeypatch):
         "utils.openai_auto_switch_settings.get_openai_auto_switch_enabled", lambda: False
     )
 
-    monkeypatch.setattr("core.inference.local_model_resolver.index_is_built", lambda: True)
     monkeypatch.setattr(
         "core.inference.local_model_resolver.resolve_local_gguf",
         lambda name, **_kw: ("/p", None, name) if name.startswith("standalone-Q4_K_M") else None,
@@ -1035,7 +1038,6 @@ def test_a_slashless_local_model_is_still_a_concrete_reference(monkeypatch):
     assert excinfo.value.status_code == 404
 
     # A slashless name that is not here stays a foreign label.
-    monkeypatch.setattr("core.inference.local_model_resolver.index_is_built", lambda: True)
     monkeypatch.setattr(
         "core.inference.local_model_resolver.resolve_local_gguf", lambda name, **_kw: None
     )
@@ -1096,7 +1098,6 @@ def test_a_resolver_alias_for_the_resident_model_is_not_refused(monkeypatch):
         "get_inference_backend",
         lambda: type("B", (), {"active_model_name": None})(),
     )
-    monkeypatch.setattr("core.inference.local_model_resolver.index_is_built", lambda: True)
     monkeypatch.setattr(
         "core.inference.local_model_resolver.resolve_local_gguf",
         lambda name, **_kw: ("/models/publisher/model/weights.gguf", None, "publisher/model"),
@@ -1115,8 +1116,11 @@ def test_the_request_path_never_triggers_a_model_index_rescan(monkeypatch):
     from core.inference import local_model_resolver as resolver
 
     scans = []
+    warmed = []
     monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or {})
     monkeypatch.setattr(resolver, "_scan", (1.0, {}))
+    # Stub the warm: it is allowed to scan, just not on the thread serving the request.
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
     monkeypatch.setattr(
@@ -1134,15 +1138,18 @@ def test_the_request_path_never_triggers_a_model_index_rescan(monkeypatch):
         except HTTPException:
             pass
     assert scans == []
+    assert warmed == [1, 1, 1]
 
 
-def test_an_unbuilt_index_warms_instead_of_blocking(monkeypatch):
-    # Nothing to answer from yet: building it inline would stall this request
-    # for the length of the scan, so it falls through and warms in the back.
+def test_a_cold_index_still_refuses_an_explicit_quant_and_warms_in_the_background(monkeypatch):
+    # Before the first scan there is no evidence of what is on disk, but an explicit
+    # quant is evidence enough on its own: answering it from the resident model's own
+    # quant would be the wrong weights under the right name. A bare name proves
+    # nothing, so it still falls through. Either way the warm happens off this request.
     from core.inference import local_model_resolver as resolver
 
     warmed = []
-    monkeypatch.setattr(resolver, "index_is_built", lambda: False)
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
     monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
@@ -1151,7 +1158,56 @@ def test_an_unbuilt_index_warms_instead_of_blocking(monkeypatch):
         "get_inference_backend",
         lambda: type("B", (), {"active_model_name": None})(),
     )
-    assert (
-        asyncio.run(inference_route._reject_unservable_model("unsloth/B-GGUF:Q8_0", _Req())) is None
-    )
-    assert warmed == [1]
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route._reject_unservable_model("unsloth/A-GGUF:Q8_0", _Req()))
+    assert excinfo.value.status_code == 404
+    assert asyncio.run(inference_route._reject_unservable_model("gpt-4", _Req())) is None
+    assert warmed == [1, 1]
+
+
+def test_warming_the_index_never_waits_on_the_scan_lock(monkeypatch):
+    # _lock is held for the whole scan. If the request path contended for it, the
+    # first cold request would park every later one on the event loop for the length
+    # of the very scan it is meant to stay off.
+    import threading
+    import time as _time
+
+    from core.inference import local_model_resolver as resolver
+
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    released = threading.Event()
+    monkeypatch.setattr(resolver, "_build_index", lambda: (released.wait(5), {})[1])
+    _real_warm_index_soon()
+    try:
+        started = _time.perf_counter()
+        _real_warm_index_soon()
+        resolver.resolve_local_gguf("unsloth/A-GGUF", allow_scan = False)
+        elapsed = _time.perf_counter() - started
+    finally:
+        released.set()
+        # Join before the monkeypatches unwind, or the scan finishes against the real
+        # module state and publishes its stub result over it.
+        for _ in range(500):
+            if not resolver._warming:
+                break
+            _time.sleep(0.01)
+    assert elapsed < 0.5, f"request path blocked on the warm scan for {elapsed:.2f}s"
+
+
+def test_a_stale_index_is_refreshed_so_a_hub_download_becomes_visible(monkeypatch):
+    # Only the API auto-download watcher calls invalidate_index. A model fetched in
+    # the Hub UI has no such hook, so if the warm only ever ran once this path would
+    # never see it and would keep answering from the resident model.
+    from core.inference import local_model_resolver as resolver
+
+    scans = []
+    monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or {})
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic() - resolver._CACHE_TTL_S - 1, {}))
+    monkeypatch.setattr(resolver, "_last_scan_s", 0.0)
+    _real_warm_index_soon()
+    for _ in range(500):
+        if scans and not resolver._warming:
+            break
+        time.sleep(0.01)
+    assert scans == [1]

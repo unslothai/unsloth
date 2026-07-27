@@ -58,6 +58,20 @@ def pytest_addoption(parser):
 # E2E server fixtures
 
 
+@pytest.fixture(autouse = True)
+def _no_background_model_scan(monkeypatch):
+    """Keep the /v1 admission hook from scanning the real HF cache during tests.
+
+    The hook warms the local-model index on a background thread. That is right in a
+    server and wrong here: it walks the developer's actual caches, which on a large
+    install takes seconds, and the resulting I/O starves the loop under the
+    timing-sensitive streaming tests. Tests that exercise the warm patch it back.
+    """
+    from core.inference import local_model_resolver
+
+    monkeypatch.setattr(local_model_resolver, "warm_index_soon", lambda: None)
+
+
 @pytest.fixture(scope = "session")
 def studio_server(request):
     """Yield ``(base_url, api_key)`` for e2e tests.

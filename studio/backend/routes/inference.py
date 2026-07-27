@@ -3730,6 +3730,11 @@ async def _maybe_auto_download_model(
         return
     if not is_downloadable_ref(requested_model):
         return
+    # An Ollama-style tag (":latest", ":8b") names no quant, so the resolver misses it
+    # and we land here even when the resident model answers to it. Downloading would
+    # be wrong, and the quant match below would 404 a request that is already servable.
+    if _loaded_satisfies(requested_model):
+        return
     try:
         refusal = await maybe_auto_download(
             requested_model, hf_token = _auto_download_hf_token(fastapi_request)
@@ -3847,11 +3852,7 @@ async def _reject_unservable_model(
         return
     base, variant = split_model_ref(requested_model)
     quantified = looks_like_quant(variant)
-    from core.inference.local_model_resolver import (
-        index_is_built,
-        resolve_local_gguf,
-        warm_index_soon,
-    )
+    from core.inference.local_model_resolver import resolve_local_gguf, warm_index_soon
     from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
 
     try:
@@ -3862,13 +3863,12 @@ async def _reject_unservable_model(
             or getattr(get_inference_backend(), "active_model_name", None)
         ):
             return
-        if not index_is_built():
-            # Nothing to answer from yet, and building it here would stall the
-            # request for as long as the scan takes. Warm it for the next one.
-            warm_index_soon()
-            return
-        # Never rebuild from here (see resolve_local_gguf's allow_scan note), which
-        # also makes this a dict read, so it costs less than handing it to a thread.
+        # Refresh in the background when stale, and read whatever is there now. Never
+        # scan from here (see resolve_local_gguf's allow_scan note): a cold or stale
+        # index only costs evidence, and the gate below already fails safe without it,
+        # whereas scanning would stall this request for as long as it takes. Reading
+        # the built index is a dict lookup, cheaper than handing it to a thread.
+        warm_index_soon()
         resolved = resolve_local_gguf(requested_model, allow_scan = False)
         # A manual load stores the on-disk path that the resolver advertises under a
         # publisher/model alias (LM Studio, custom folders); match on the path too.

@@ -19,6 +19,19 @@ from core.inference import local_model_resolver as resolver
 from utils import openai_auto_switch_settings as settings
 
 
+@pytest.fixture(autouse = True)
+def _clean_resolver_index():
+    """Drop the scan cache around every test.
+
+    The /v1 admission hook warms the index in the background, so without this a
+    test that exercises the hook can publish its own fixture's scan and, inside the
+    TTL, hand it to the next test that expects a fresh one.
+    """
+    resolver.invalidate_index()
+    yield
+    resolver.invalidate_index()
+
+
 class _FakeBackend:
     effective_parallel_slots = 1
     _slot_save_binary = None
@@ -96,7 +109,6 @@ class _LoadRecorder:
 def _wire(monkeypatch, *, enabled, resolves_to, backend, recorder):
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
     monkeypatch.setattr(resolver, "resolve_local_gguf", lambda _m, **_kw: resolves_to)
-    monkeypatch.setattr(resolver, "index_is_built", lambda: True)
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     # Auto-switch loads via _load_model_impl (the /load route holds the lifecycle
     # gate that auto-switch already owns, so it calls the impl directly).

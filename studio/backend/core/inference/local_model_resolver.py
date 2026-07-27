@@ -34,7 +34,15 @@ class _LocalGgufEntry:
 _CACHE_TTL_S = 5.0
 _lock = threading.Lock()
 _scan: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
+# Separate from _lock on purpose: _lock is held for the whole scan, so sharing it
+# would make the request path wait on the very scan it is trying to stay off.
+_warm_lock = threading.Lock()
 _warming = False
+_last_scan_s = 0.0
+# Rescan for at most a tenth of the time. A big install can take longer to scan
+# than the TTL, and warming on the TTL alone would then keep one thread scanning
+# more or less continuously, starving the loop it was meant to keep free.
+_WARM_DUTY = 10.0
 
 
 def _is_abs_path_id(value: str) -> bool:
@@ -319,28 +327,35 @@ def _index() -> dict[str, _LocalGgufEntry]:
         return fresh
 
 
-def index_is_built() -> bool:
-    """Whether a scan has ever completed, freshness aside."""
-    with _lock:
-        return bool(_scan[0])
-
-
 def warm_index_soon() -> None:
-    """Build the index off the request path, once."""
+    """(Re)build the index off the request path when it is missing or past its TTL.
+
+    Callers that cannot afford the scan use this plus ``allow_scan=False``, so this
+    is the only thing that ever refreshes the index for them. It has to cover a
+    stale index and not just an absent one: a model downloaded through the Hub UI
+    or dropped into a scan folder has no invalidation hook, and would otherwise stay
+    invisible to those callers for the life of the process.
+
+    Never touches ``_lock``, which the scan holds throughout, and never blocks.
+    """
     global _warming
-    with _lock:
-        if _warming or _scan[0]:
+    if time.monotonic() - _scan[0] < max(_CACHE_TTL_S, _last_scan_s * _WARM_DUTY):
+        return
+    with _warm_lock:
+        if _warming:
             return
         _warming = True
 
     def _run() -> None:
-        global _warming
+        global _warming, _last_scan_s
+        started = time.monotonic()
         try:
             _index()
         except Exception:
             pass
         finally:
-            with _lock:
+            _last_scan_s = time.monotonic() - started
+            with _warm_lock:
                 _warming = False
 
     threading.Thread(target = _run, name = "local-model-index-warm", daemon = True).start()

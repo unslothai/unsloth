@@ -111,8 +111,10 @@ function lifecycleLabel(entry: ApiMonitorEntry): string {
         ? `Downloading model (${Math.round(pct)}%)`
         : "Downloading model";
     }
-    return entry.status === "completed"
-      ? "Model downloaded"
+    if (entry.status === "completed") return "Model downloaded";
+    // A cancel is deliberate, so saying it failed misreads the user's own action.
+    return entry.status === "cancelled"
+      ? "Model download cancelled"
       : "Model download failed";
   }
   if (entry.status === "running") {
