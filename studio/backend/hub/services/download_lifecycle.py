@@ -251,6 +251,7 @@ def finalize_worker_exit(
                 note_downloaded,
                 warm_index_soon,
             )
+
             note_downloaded(repo_id)
             invalidate_index()
             # Rebuild from here rather than from the first request that needs it,
