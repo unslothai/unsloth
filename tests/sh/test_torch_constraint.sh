@@ -104,31 +104,64 @@ assert_eq "torchvision ceiling variable defined once" "1" "$_count"
 _count=$(grep -c '_TORCHAUDIO_CEILING="2.12.0"' "$INSTALL_SH" || true)
 assert_eq "torchaudio ceiling variable defined once" "1" "$_count"
 
-_count=$(grep -c 'TORCH_CONSTRAINT="torch>=2.4,<${_TORCH_CEILING}"' "$INSTALL_SH" || true)
-assert_eq "default TORCH_CONSTRAINT composes the ceiling" "1" "$_count"
+# Each hardware branch assigns its own triple, so counting every occurrence made
+# adding a branch (gfx906 in #7354) a test edit. The default is the one assigned at
+# top level; a branch's is always indented, so anchor on that instead of counting.
+# The default no longer spells the ceiling out, it composes _TORCH_CEILING, so the
+# column-0 anchor goes on the composed form -- an indented branch pin, literal or
+# composed, still cannot satisfy it.
+_count=$(grep -c '^TORCH_CONSTRAINT="torch>=2.4,<${_TORCH_CEILING}"$' "$INSTALL_SH" || true)
+assert_eq "default TORCH_CONSTRAINT assignment exists at top level" "1" "$_count"
+
 _count=$(grep -c 'TORCH_CONSTRAINT="torch>=2.6,<${_TORCH_CEILING}"' "$INSTALL_SH" || true)
-assert_eq "tightened TORCH_CONSTRAINT composes the ceiling" "1" "$_count"
+_has=$([ "$_count" -ge 1 ] && echo "yes" || echo "no")
+assert_eq "tightened TORCH_CONSTRAINT assignment exists" "yes" "$_has"
 
 _count=$(grep -c '"\$TORCH_CONSTRAINT"' "$INSTALL_SH" || true)
 _has_var=$([ "$_count" -ge 1 ] && echo "yes" || echo "no")
 assert_eq "\$TORCH_CONSTRAINT used in pip install" "yes" "$_has_var"
 
-# No stray hardcoded default ranges outside the ceiling-composed assignments (the
-# curated ROCm >=2.11 floors are deliberately literal). A curated per-index override
-# may still cap literally -- the gfx906 / MI50 reroute drops back below 2.11 because
-# the rocm6.3 index tops out at torch 2.9.x -- but only on a TORCH_CONSTRAINT=
-# assignment, never on a pip/uv install line (those must pass "$TORCH_CONSTRAINT").
+# What the old "appears exactly once" count was really guarding: an install line that
+# spells the pin out ignores whatever the branch above it chose.
+_literal=$(grep -cE 'uv pip install .*"torch>=' "$INSTALL_SH" || true)
+assert_eq "no pip install hardcodes a torch pin" "0" "$_literal"
+
+# The same rule stated over the whole file rather than just install lines, and the two
+# are complementary: the check above sees through shell-escaped quotes (\"torch>=...\")
+# on an install or echoed command line, this one catches the two default ranges copied
+# anywhere that is not a TORCH_CONSTRAINT= assignment, e.g. into a second variable that
+# then silently diverges from the ceiling. A curated per-index override may still cap
+# literally -- the gfx906 / MI50 reroute drops back below 2.11 because the rocm6.3 index
+# tops out at torch 2.9.x, and the ROCm >=2.11 floors are deliberately literal -- so the
+# TORCH_CONSTRAINT= assignments are the one place the literal is allowed to live.
 _hardcoded=$(grep -E '"torch>=2\.4,<2\.11\.0"|"torch>=2\.4,<2\.12\.0"' "$INSTALL_SH" \
     | grep -c -v '^[[:space:]]*TORCH_CONSTRAINT=' || true)
 assert_eq "no hardcoded default torch range off a TORCH_CONSTRAINT= assignment" "0" "$_hardcoded"
-_count=$(grep -c 'TORCH_CONSTRAINT="torch>=2.4,<2.11.0"' "$INSTALL_SH" || true)
-assert_eq "gfx906 reroute caps torch below 2.11 for the rocm6.3 index" "1" "$_count"
 
-# Companions must be bounded to torch's window everywhere, never bare: torchaudio
-# 2.11 dropped its exact torch pin, so a bare companion can drift from a capped torch.
-_count=$(grep -c 'TORCHVISION_CONSTRAINT="torchvision>=0.19,<${_TORCHVISION_CEILING}"' "$INSTALL_SH" || true)
+# The gfx906 / MI50 reroute must keep its own sub-2.11 cap and must not be "fixed" to
+# track the ceiling. Existence of an indented assignment, not a count: another hardware
+# branch may legitimately add a second sub-2.11 cap without that being a test edit.
+_count=$(grep -cE '^[[:space:]]+TORCH_CONSTRAINT="torch>=2\.4,<2\.11\.0"$' "$INSTALL_SH" || true)
+_has_sub211_cap=$([ "$_count" -ge 1 ] && echo "yes" || echo "no")
+assert_eq "gfx906 reroute caps torch below 2.11 for the rocm6.3 index" "yes" "$_has_sub211_cap"
+
+# Companions must be bounded to torch's window everywhere, never bare: torchaudio 2.11
+# dropped its exact torch pin, so a bare companion next to a <2.11-capped torch resolves
+# a mismatched 2.11 build. Every assignment, not a fixed number of them. The upper bound
+# is a literal on the curated per-index pins and the composed ceiling on the defaults,
+# so accept either form -- what is checked is that a bound is present at all.
+_total=$(grep -cE '^[[:space:]]*TORCHVISION_CONSTRAINT="' "$INSTALL_SH" || true)
+_bounded=$(grep -cE '^[[:space:]]*TORCHVISION_CONSTRAINT="torchvision>=[0-9][0-9.]*,<([0-9][0-9.]*|[$][{]_TORCHVISION_CEILING[}])"$' "$INSTALL_SH" || true)
+assert_eq "every torchvision constraint is upper-bounded" "$_total" "$_bounded"
+_total=$(grep -cE '^[[:space:]]*TORCHAUDIO_CONSTRAINT="' "$INSTALL_SH" || true)
+_bounded=$(grep -cE '^[[:space:]]*TORCHAUDIO_CONSTRAINT="torchaudio>=[0-9][0-9.]*,<([0-9][0-9.]*|[$][{]_TORCHAUDIO_CEILING[}])"$' "$INSTALL_SH" || true)
+assert_eq "every torchaudio constraint is upper-bounded" "$_total" "$_bounded"
+
+# And the top-level companion defaults specifically compose their ceiling variable
+# rather than spelling a version out, so a ceiling bump stays a one-line change.
+_count=$(grep -c '^TORCHVISION_CONSTRAINT="torchvision>=0.19,<${_TORCHVISION_CEILING}"$' "$INSTALL_SH" || true)
 assert_eq "torchvision default composes the ceiling" "1" "$_count"
-_count=$(grep -c 'TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<${_TORCHAUDIO_CEILING}"' "$INSTALL_SH" || true)
+_count=$(grep -c '^TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<${_TORCHAUDIO_CEILING}"$' "$INSTALL_SH" || true)
 assert_eq "torchaudio default composes the ceiling" "1" "$_count"
 _count=$(grep -c 'TORCHVISION_CONSTRAINT="torchvision"$' "$INSTALL_SH" || true)
 assert_eq "no bare torchvision companion remains" "0" "$_count"
