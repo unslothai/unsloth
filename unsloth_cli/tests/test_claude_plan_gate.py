@@ -44,10 +44,13 @@ def test_plugin_registers_a_pretooluse_hook_on_the_editing_tool(tmp_path):
     assert start._CLAUDE_SUBAGENT_PLAN_TOOL not in json.dumps(hooks)
     [hook] = entry["hooks"]
     assert hook["type"] == "command"
-    assert str(plugin / "hooks" / "plan_gate.py") in hook["command"]
     assert sys.executable in hook["command"]
     # The interpreter is quoted: unquoted, any space in the path splits the command.
     assert f'"{sys.executable}"' in hook["command"]
+    # The gate path rides as base64, never as a literal the shell can expand.
+    encoded = start._b64_path(plugin / "hooks" / "plan_gate.py")
+    assert encoded in hook["command"]
+    assert str(plugin / "hooks" / "plan_gate.py") not in hook["command"]
     # A hook with no timeout stalls the parent for as long as it hangs.
     assert 0 < hook["timeout"] <= 30
 
@@ -150,3 +153,22 @@ def test_hook_command_survives_a_missing_gate_and_a_path_with_spaces(tmp_path):
     )
     assert gone.returncode != 2, "exit 2 blocks the tool in every mode"
     assert gone.stdout.strip() == ""
+
+
+@pytest.mark.parametrize("hostile", ["sub$(echo X)", "tick`echo X`", "var$HOME", "pct%TEMP%pct"])
+def test_gate_survives_shell_metacharacters_in_its_path(tmp_path, hostile):
+    # The hook command is run by a shell. A temp root holding these expands under
+    # sh (or cmd, for %VAR%) before Python sees the path, so the gate is not found
+    # and exits 1, which fails open and silently drops the routing message.
+    plugin = _plugin(tmp_path / hostile)
+    command = json.loads((plugin / "hooks" / "hooks.json").read_text())[
+        "hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+
+    denied = subprocess.run(
+        command, input = json.dumps({"permission_mode": "plan"}),
+        shell = True, capture_output = True, text = True, timeout = 60,
+    )
+
+    assert denied.returncode == 0, denied.stderr
+    decision = json.loads(denied.stdout)["hookSpecificOutput"]["permissionDecision"]
+    assert decision == "deny"

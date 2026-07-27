@@ -4,6 +4,7 @@
 """`unsloth start` — launch a coding agent against a running Unsloth server."""
 
 import atexit
+import base64
 import contextlib
 import json
 import os
@@ -2052,6 +2053,12 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
     return inline
 
 
+
+def _b64_path(path: Path) -> str:
+    """Path as base64, so it can cross a shell without being expanded."""
+    return base64.b64encode(str(path).encode("utf-8")).decode("ascii")
+
+
 _CLAUDE_PLAN_GATE_SCRIPT = '''\
 """Deny the editing agent while the parent session is in plan mode."""
 import json, sys
@@ -2141,9 +2148,15 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
                                     # ordinary traceback (exit 1, fails open) instead
                                     # of exit 2, which Claude treats as a blocking
                                     # error and would deny the tool in every mode.
+                                    # The path is base64'd because this string goes
+                                    # through a shell: a temp root holding $(..) or a
+                                    # backtick expands under sh, %VAR% under cmd, and
+                                    # the gate then silently fails open. base64's
+                                    # alphabet has no metacharacter in either.
                                     "command": (
                                         f'"{sys.executable}" -c '
-                                        f"\"import runpy; runpy.run_path(r'''{gate}''')\""
+                                        f'"import base64,runpy; runpy.run_path('
+                                        f"base64.b64decode('{_b64_path(gate)}').decode())\""
                                     ),
                                     # A hook with no timeout stalls the parent for as
                                     # long as it hangs; measured unbounded past 400s.
