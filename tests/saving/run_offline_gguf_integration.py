@@ -49,9 +49,7 @@ def run_tests():
         "tests/saving/test_offline_gguf_real_cache_integration.py",
         "-q",
     ]
-    raise SystemExit(
-        subprocess.call(cmd, cwd = str(Path(__file__).resolve().parents[2]), env = env)
-    )
+    raise SystemExit(subprocess.call(cmd, cwd = str(Path(__file__).resolve().parents[2]), env = env))
 
 
 def main():
