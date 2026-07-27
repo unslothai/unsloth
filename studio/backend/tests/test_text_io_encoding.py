@@ -25,7 +25,7 @@ BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 # Not Studio's own runtime source. Shipped plugins under plugins/*/src are, so
 # only their build artifacts are skipped.
-_SKIPPED_DIRS = ("node_modules", "build", "tests", "__pycache__", "sandbox_site")
+_SKIPPED_DIRS = ("node_modules", "build", "tests", "__pycache__")
 
 # Path.open() takes a mode first and only these keywords. fitz.open(stream=...)
 # and av.open(..., metadata_errors=...) are other libraries' open(), so matching
