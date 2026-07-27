@@ -362,7 +362,7 @@ def get_unsloth_version() -> str:
         for line in version_file.read_text(encoding = "utf-8").splitlines():
             if line.startswith("__version__ = "):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
     return "dev"
 

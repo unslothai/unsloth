@@ -100,7 +100,7 @@ def _json_rank_count_from_env(name: str) -> Optional[int]:
         else:
             with open(value, "r", encoding = "utf-8") as f:
                 data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
     if isinstance(data, list):
         return len(data)

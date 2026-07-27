@@ -536,7 +536,7 @@ def install_lock(lock_path: Path) -> Iterator[None]:
             except FileExistsError:
                 try:
                     raw = lock_path.read_text(encoding = "utf-8").strip()
-                except FileNotFoundError:
+                except (FileNotFoundError, UnicodeDecodeError):
                     continue
                 stale = False
                 if raw:
@@ -669,7 +669,7 @@ def load_metadata(install_dir: Path) -> dict | None:
         return None
     try:
         data = json.loads(path.read_text(encoding = "utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
     return data if isinstance(data, dict) else None
 

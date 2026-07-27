@@ -1079,7 +1079,7 @@ def install_lock(lock_path: Path) -> Iterator[None]:
                 stale = False
                 try:
                     raw = lock_path.read_text(encoding = "utf-8").strip()
-                except FileNotFoundError:
+                except (FileNotFoundError, UnicodeDecodeError):
                     # Lock vanished between our open and read -- retry
                     continue
                 if not raw:
@@ -2070,7 +2070,7 @@ def load_prebuilt_metadata(ops: ModuleOps, install_dir: Path) -> dict[str, Any] 
         return None
     try:
         payload = json.loads(path.read_text(encoding = "utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
 
