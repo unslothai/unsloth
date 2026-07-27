@@ -40,7 +40,19 @@ def _clean_env_and_state(monkeypatch):
     # runnability probe, so neither reaches the real install/exec path.
     monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
     monkeypatch.setattr(r, "_server_binary_runnable", lambda *_a, **_k: True)
-    yield
+    # The selection is module state, and several tests below set it by plain assignment (the point
+    # of those tests is what _activate does to it), so monkeypatch cannot undo it. Restore it here:
+    # a leaked ENGINE_SD_CPP left get_active_diffusion_engine() returning the sd.cpp backend for the
+    # rest of the process, and every later test whose route reads the active engine saw an unloaded
+    # model -- eight tests in test_openai_images_generations_route.py 503'd in a full-suite run
+    # while passing on their own.
+    saved_engine = r._active_engine_name
+    saved_reason = r._fallback_reason
+    try:
+        yield
+    finally:
+        r._active_engine_name = saved_engine
+        r._fallback_reason = saved_reason
 
 
 def _set_device(monkeypatch, backend):
