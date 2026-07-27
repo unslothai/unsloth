@@ -23,8 +23,7 @@ from typing import Dict, Iterable, List, Optional, Sequence
 
 import typer
 
-# unsloth_cli/_studio_deps.py -> one parent up is the package root (site-packages
-# after pip install, or the repo root for an editable install).
+# One parent up is the package root: site-packages, or the repo root if editable.
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 
 _MANIFEST_MODULE = None
@@ -168,21 +167,20 @@ def install_state(extra_roots: Sequence[Path] = ()) -> dict:
             "missing": [],
             "reason": "studio_install_manifest_missing",
         }
-    # An explicitly requested managed venv is the subject even though the helper
-    # above was loaded from this CLI's own tree.
+    # The requested managed venv is the subject, even though the helper above
+    # came from this CLI's own tree.
     root = _managed_root(extra_roots) or _venv_root_for_module(module)
     foreign = root is not None and _resolved(root) != _resolved(Path(sys.prefix))
     installed = _distributions_in(root) if foreign else None
     req_root = _requirements_root_in(root) if foreign else None
     try:
         if installed is not None and req_root is not None and _supports_foreign_root(module):
-            # That venv's own metadata: its package version and its installed
-            # packages are not readable through this interpreter.
+            # That venv's own metadata: unreadable through this interpreter.
             return module.verify_install(root = root, req_root = req_root, installed = installed)
         state = module.verify_install(root = root)
         if foreign and not state["deps_ok"]:
             # The manifest came from another venv but the dependency walk ran
-            # against this interpreter, so it says nothing about that venv.
+            # here, so it says nothing about that venv.
             state = dict(state, deps_ok = True, missing = [])
             state["ok"] = state["manifest_ok"]
             state["reason"] = None if state["ok"] else state["reason"]
@@ -209,9 +207,8 @@ def _missing_studio_packages() -> List[str]:
 
 
 # studio.txt names distributions, ModuleNotFoundError names the import. Only
-# pairs differing by more than PEP 503 normalisation need an entry, and every
-# import name below is itself a real but unrelated PyPI project, so offering it
-# installs the wrong package and leaves the backend just as broken.
+# pairs differing by more than PEP 503 normalisation need an entry, and each
+# import name below is itself a real but unrelated PyPI project.
 _IMPORT_TO_DISTRIBUTION = {
     "jwt": "pyjwt",
     "docx": "python-docx",
@@ -230,12 +227,11 @@ def studio_backend_imports(feature: str = "This command"):
         yield
     except ModuleNotFoundError as exc:
         studio_missing = _missing_studio_packages()
-        # The import that failed may not be a studio dependency at all: `train`
-        # reaches torch through the same wrapped import, and the studio extra
-        # does not carry it. Name it, and only offer the extra when it helps.
+        # The failed import may not be a studio dependency at all: `train`
+        # reaches torch through the same wrapper, so only offer the extra when
+        # it helps.
         trigger = exc.name or ""
-        # exc.name is an import, studio.txt names distributions. Match on the
-        # owning distribution, and never offer the import: `pip install jwt`
+        # Match on the owning distribution, never the import: `pip install jwt`
         # (or fastmcp.server) installs the wrong thing or nothing at all.
         top = trigger.split(".", 1)[0]
         needed = _IMPORT_TO_DISTRIBUTION.get(top, top)

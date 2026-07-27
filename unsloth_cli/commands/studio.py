@@ -2802,8 +2802,8 @@ def desktop_capabilities(
     state = _install_state()
     payload = {
         "desktop_protocol_version": 1,
-        # 2 adds studio_install_ok; the desktop treats < 2 as stale, so it never
-        # has to guess when the field is simply absent.
+        # 2 adds studio_install_ok; the desktop treats < 2 as stale rather than
+        # guess at an absent field.
         "desktop_manageability_version": 2,
         "supports_provision_desktop_auth": True,
         "supports_api_only": True,

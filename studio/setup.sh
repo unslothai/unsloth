@@ -1025,10 +1025,9 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
             substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         fi
-        # An interrupted install leaves $_PKG_NAME current (installed early)
-        # while studio.txt never finished, so the compare above says "up to
-        # date" and update -- plus the desktop Repair button that calls it --
-        # would no-op on a venv whose server dies on `import structlog`.
+        # An interrupted install leaves $_PKG_NAME current while studio.txt
+        # never finished, so the compare above says "up to date" and update --
+        # plus the desktop Repair button -- no-ops on a venv that cannot boot.
         if ! "$VENV_DIR/bin/python" -c "
 import sys
 sys.path.insert(0, sys.argv[1])

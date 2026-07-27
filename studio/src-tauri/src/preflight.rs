@@ -793,11 +793,10 @@ exit 1
 
     #[tokio::test]
     async fn legacy_manageability_same_root_backend_is_still_ready() {
-        // Same migration window as the owned-backend case: a server still running
-        // from the release before the CLI gained studio_install_ok reports
-        // manageability 1. That capability is CLI-side, so it must not turn a
-        // live, protocol-compatible backend into a conflict the user has to go
-        // and kill by hand.
+        // Same migration window as the owned-backend case: a server from the
+        // release before the CLI gained studio_install_ok reports manageability
+        // 1. That capability is CLI-side, so it must not turn a live,
+        // protocol-compatible backend into a conflict the user has to kill.
         let probe = probe_test_backend(
             format!(
                 r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,

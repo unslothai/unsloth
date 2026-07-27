@@ -42,8 +42,7 @@ TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
     "single-env/data-designer.txt",
 )
 
-# The import chain studio/backend/run.py walks on startup, so missing packages
-# are reported from this file.
+# The import chain studio/backend/run.py walks on startup.
 BOOT_REQUIREMENT_FILE = "studio.txt"
 
 
@@ -260,8 +259,8 @@ def verify_install(
     elif manifest.get("schema") != MANIFEST_SCHEMA:
         reason = "studio_install_manifest_schema"
     else:
-        # The manifest names what was installed: `update --package X` records X,
-        # so comparing against unsloth would report a permanent version change.
+        # `update --package X` records X, so comparing against unsloth would
+        # report a permanent version change.
         current = _installed_version(manifest.get("package") or package_name, installed)
         recorded = manifest.get("package_version")
         if current and recorded and current != recorded:

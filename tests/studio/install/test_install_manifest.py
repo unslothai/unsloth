@@ -78,8 +78,8 @@ def test_platform_gated_lines_are_skipped_when_the_marker_does_not_apply(tmp_pat
 
 
 def test_missing_requirements_matches_on_distribution_not_import_name(tmp_path):
-    # studio.txt lists PyJWT / python-docx / pymupdf, whose import names are jwt /
-    # docx / fitz. Checking import names would report installed packages missing.
+    # studio.txt lists PyJWT / python-docx / pymupdf, whose import names are
+    # jwt / docx / fitz, so matching on imports would look missing.
     req = tmp_path / "studio.txt"
     req.write_text("pytest\n", encoding = "utf-8")
     assert im.missing_requirements(req) == []
@@ -102,8 +102,8 @@ def test_missing_manifest_reports_incomplete(install_root, req_root):
 
 
 def test_interrupted_install_leaves_no_manifest(install_root, req_root):
-    # remove_manifest() runs before the dependency pass, so a run killed at any
-    # point after that cannot leave a stale-but-valid manifest behind.
+    # remove_manifest() runs before the dependency pass, so a later kill cannot
+    # leave a stale-but-valid manifest behind.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     assert im.manifest_path(install_root).is_file()
     assert im.remove_manifest(install_root) is True
@@ -118,9 +118,9 @@ def test_remove_manifest_reports_whether_the_marker_is_really_gone(
     # Nothing to remove is success: a first install has no manifest yet.
     assert im.remove_manifest(install_root) is True
 
-    # A marker that survives must be reported, not swallowed: the dependency
-    # pass would then run behind a manifest that still names this version and
-    # these digests, so a run killed part-way verifies as complete.
+    # A surviving marker must be reported, not swallowed: the dependency pass
+    # would then run behind a manifest that still verifies, so a part-way kill
+    # looks complete.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     path = im.manifest_path(install_root)
 
@@ -131,8 +131,7 @@ def test_remove_manifest_reports_whether_the_marker_is_really_gone(
     assert im.remove_manifest(install_root) is False
     monkeypatch.undo()
 
-    # The stale marker is still there and still verifies, which is why the
-    # installer has to stop instead of pressing on.
+    # The stale marker still verifies, which is why the installer has to stop.
     assert path.is_file()
     state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
     assert state["manifest_ok"] is True
@@ -160,7 +159,7 @@ def test_package_upgrade_invalidates_the_manifest(install_root, req_root):
 
 def test_verify_follows_the_package_the_manifest_names(install_root, req_root):
     # `studio update --package X` records X. Checking unsloth's version instead
-    # would report a version change on every probe and repair for ever.
+    # would report a change on every probe and repair for ever.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     state = im.verify_install(
         root = install_root,
@@ -171,8 +170,8 @@ def test_verify_follows_the_package_the_manifest_names(install_root, req_root):
 
 
 def test_edited_requirements_invalidate_the_manifest(install_root, req_root):
-    # The --local dev path: editing studio.txt must re-run the dependency pass
-    # rather than sit behind setup.sh's "up to date" fast path.
+    # The --local dev path: an edited studio.txt must re-run the dependency
+    # pass, not sit behind setup.sh's "up to date" fast path.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     (req_root / "studio.txt").write_text("pytest\nrich\n", encoding = "utf-8")
     state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")

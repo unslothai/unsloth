@@ -28,8 +28,7 @@ _BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(1, str(_BACKEND_DIR))
 
-# Always run as a script (setup.sh/setup.ps1 invoke it by path), so this file's
-# directory is sys.path[0] and the plain import resolves.
+# setup.sh/setup.ps1 invoke this by path, so its directory is sys.path[0].
 import install_manifest  # noqa: E402
 
 from backend.utils.wheel_utils import (
@@ -2713,10 +2712,9 @@ def install_python_stack() -> int:
             base_total += 2  # flash-attn + torch final repair (step 13), Linux
     _TOTAL = (base_total - 1) if skip_base else base_total
 
-    # Drop it up front: if this run is interrupted, the missing manifest is what
-    # tells the CLI, setup.sh and the preflight that the venv is half-built.
-    # Stop if it survives rather than mutate the venv behind a marker that still
-    # reads as valid; that is the half-installed launch this is meant to prevent.
+    # Drop it up front: a missing manifest is what tells the CLI, setup.sh and
+    # the preflight that an interrupted run left the venv half-built. Stop if it
+    # survives rather than mutate the venv behind a marker that still verifies.
     if not install_manifest.remove_manifest():
         print(
             f"error: could not remove the stale {install_manifest.MANIFEST_NAME} in "
@@ -3097,9 +3095,8 @@ def install_python_stack() -> int:
         **_windows_hidden_subprocess_kwargs(),
     )
 
-    # 15. Record success. Written last on purpose: an earlier kill leaves none.
-    # Exiting 0 without it would report a finished install that every later
-    # check reads as unfinished, which is a repair loop.
+    # 15. Record success. Written last so an earlier kill leaves none. Exiting 0
+    # without it reports a finished install every later check calls unfinished.
     if (
         install_manifest.write_manifest(
             req_root = REQ_ROOT,

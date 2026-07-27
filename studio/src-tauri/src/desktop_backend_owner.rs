@@ -1032,12 +1032,10 @@ mod tests {
 
     #[test]
     fn legacy_manageability_backend_stays_lifecycle_controllable() {
-        // A backend spawned by the previous app version reports manageability 1.
-        // studio_install_ok is a CLI capability, so it says nothing about this
-        // backend's HTTP contract: blocking here makes preflight answer
-        // ExternalConflict / can_auto_repair = false, and because the backend is
-        // then never adopted the app can never stop the process whose root id and
-        // ownership token already prove it is ours.
+        // A backend from the previous app version reports manageability 1.
+        // studio_install_ok is CLI-side, not part of this backend's HTTP
+        // contract: blocking makes preflight answer ExternalConflict and never
+        // adopt a process the root id and token already prove is ours.
         assert_eq!(lifecycle_control_block_reason(&owned_liveness(1)), None);
         assert_eq!(
             lifecycle_control_block_reason(&owned_liveness(

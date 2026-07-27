@@ -19,10 +19,9 @@ const FNV64_PRIME: u64 = 0x100000001b3;
 const HASHED_MARKER_MAX_BYTES: u64 = 64 * 1024;
 
 const FALLBACK_MARKER_NAMES: &[&str] = &[
-    // Must be in the fingerprint, not just in the cached answer: a repair
-    // reinstalling only studio.txt leaves every other marker untouched, so a
-    // cache entry written while healthy would still be served after the
-    // manifest was dropped. Name mirrors install_manifest.MANIFEST_NAME.
+    // In the fingerprint, not just the cached answer: a repair touching only
+    // studio.txt leaves every other marker alone, so a cache entry written
+    // while healthy would outlive the dropped manifest. Mirrors MANIFEST_NAME.
     "unsloth_install_manifest.json",
     "pyvenv.cfg",
     "uv.lock",
@@ -39,9 +38,8 @@ struct DesktopCapability {
     supports_provision_desktop_auth: Option<bool>,
     supports_desktop_backend_ownership: Option<bool>,
     desktop_auth_stale_reason: Option<String>,
-    // An installer killed part-way leaves a venv whose CLI answers `-h` fine but
-    // whose backend dies on `import structlog`, so readiness cannot be inferred
-    // from the CLI running.
+    // A part-way install leaves a CLI that answers `-h` and a backend that dies
+    // on `import structlog`, so a running CLI does not mean ready.
     studio_install_ok: Option<bool>,
     studio_install_reason: Option<String>,
     version: Option<String>,
@@ -123,9 +121,8 @@ fn site_packages_dirs(venv_dir: &Path) -> Vec<PathBuf> {
 
 /// Hash of the .dist-info / .egg-info names present, version included.
 ///
-/// pip rewrites nothing that is fingerprinted when it uninstalls a package, and
-/// the cached capability now answers studio_install_ok, so a venv that lost a
-/// studio.txt dependency would otherwise keep serving the healthy verdict.
+/// pip uninstall rewrites nothing else that is fingerprinted, so a venv that
+/// lost a studio.txt dependency would keep serving the healthy verdict.
 fn installed_distributions_hash(site_packages: &Path) -> Option<u64> {
     let mut names: Vec<String> = fs::read_dir(site_packages)
         .ok()?
@@ -571,9 +568,8 @@ mod tests {
 
     #[test]
     fn incomplete_install_is_stale_with_the_cli_reason() {
-        // The installer was killed during `studio deps`, so the venv has the CLI
-        // but not structlog. Preflight must repair instead of spawning a backend
-        // that cannot import.
+        // The venv has the CLI but not structlog, so preflight must repair
+        // rather than spawn a backend that cannot import.
         let mut capability = healthy_capability();
         capability.studio_install_ok = Some(false);
         capability.studio_install_reason = Some("studio_install_incomplete".to_string());
@@ -608,9 +604,8 @@ mod tests {
 
     #[test]
     fn older_cli_is_rejected_on_manageability_before_the_install_check() {
-        // A CLI predating this feature cannot answer studio_install_ok, so it is
-        // already stale for manageability; the more specific reason must win so
-        // the diagnostics name the real gap.
+        // A CLI predating this feature cannot answer studio_install_ok, so the
+        // more specific manageability reason must win in the diagnostics.
         let mut capability = healthy_capability();
         capability.desktop_manageability_version = Some(1);
         capability.studio_install_ok = None;
@@ -623,8 +618,7 @@ mod tests {
     #[test]
     fn a_stale_capability_is_never_served_from_cache() {
         // write_cached_capability runs before the ready check, so an incomplete
-        // install does get cached; cache_matches must refuse to reuse it, else a
-        // repaired venv would keep reporting the stale answer.
+        // install does get cached; reusing it would outlive the repair.
         let mut capability = healthy_capability();
         capability.studio_install_ok = Some(false);
         let cache = ManagedCapabilityCache {
@@ -695,10 +689,8 @@ mod tests {
     #[test]
     fn losing_a_studio_package_changes_the_fingerprint() {
         // pip uninstall rewrites no fingerprinted file: the manifest, pyvenv.cfg
-        // and the launcher all survive, and `unsloth -h` still exits 0. The
-        // cached capability now carries studio_install_ok, so without the
-        // installed distributions in the fingerprint a healthy answer is served
-        // forever and the backend is launched without fastmcp.
+        // and the launcher survive and `unsloth -h` still exits 0. Without the
+        // installed distributions in the fingerprint the healthy answer sticks.
         let venv = std::env::temp_dir().join(format!(
             "unsloth-fingerprint-deps-{}-{:?}",
             std::process::id(),

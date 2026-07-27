@@ -33,9 +33,8 @@ dependencies = [
     # Every CLI command imports studio.backend.*, which reaches structlog at
     # module level. The rest of the server stack lives in the studio extra.
     "structlog>=24.1.0",
-    # unsloth_cli/commands/start.py imports click, and unsloth_cli/__init__.py
-    # imports that, so every command needs it. typer supplied it until 0.27
-    # dropped the dependency, which left this satisfied only by chance.
+    # unsloth_cli/__init__.py reaches click via commands/start.py, so every
+    # command needs it. typer supplied it until 0.27 dropped the dependency.
     "click>=8.0",
 ]
 
@@ -75,7 +74,7 @@ include = ["unsloth*", "unsloth_cli*", "studio", "studio.backend*"]
 exclude = ["images*", "tests*", "*.node_modules", "*.node_modules.*"]
 
 [project.optional-dependencies]
-# Studio's server stack. Mirrors studio/backend/requirements/studio.txt;
+# Studio's server stack, mirroring studio/backend/requirements/studio.txt.
 # test_studio_extra_matches_requirements.py catches drift.
 studio = [
     "typer",

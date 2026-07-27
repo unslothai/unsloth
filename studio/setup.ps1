@@ -2963,10 +2963,9 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
             substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..." "Cyan"
             $SkipPythonDeps = $false
         }
-        # An interrupted install leaves $_PkgName current (installed early)
-        # while studio.txt never finished, so the compare above says "up to
-        # date" and update -- plus the desktop Repair button that calls it --
-        # would no-op on a venv whose server dies on `import structlog`.
+        # An interrupted install leaves $_PkgName current while studio.txt
+        # never finished, so the compare above says "up to date" and update --
+        # plus the desktop Repair button -- no-ops on a venv that cannot boot.
         $_studioInstallIncomplete = $false
         try {
             & python -c "
@@ -3031,9 +3030,8 @@ if ($script:PinChangedForceReinstall) { $SkipPythonDeps = $false }
 if (-not $SkipPythonDeps) {
 
 # install_python_stack.py drops the manifest before its own dependency pass, but
-# pip, torch and triton below are replaced first, so it is not the first mutation
-# here. Drop it now: a run killed during those must leave the venv marked
-# half-built, not behind a marker that still verifies as a finished install.
+# pip, torch and triton are replaced first here. Drop it now so a run killed in
+# those leaves the venv marked half-built, not behind a marker that verifies.
 $_ManifestDropped = $true
 try {
     & python -c "

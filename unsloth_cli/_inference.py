@@ -67,8 +67,8 @@ def configure_quiet_logging() -> None:
     level = getattr(logging, level_name, logging.WARNING)
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
-    # Quieting logs must not fail a command: without the studio extra this would
-    # abort before the import that actually needs structlog reports itself.
+    # Quieting logs must not fail a command before the import that really needs
+    # structlog gets to report itself.
     try:
         import structlog
     except ModuleNotFoundError:
