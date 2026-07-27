@@ -450,7 +450,7 @@ def _load_fp8_weight_map(
         index_path = None
     if index_path is not None:
         import json
-        with open(index_path, "r") as f:
+        with open(index_path, "r", encoding = "utf-8") as f:
             return json.load(f).get("weight_map", None)
 
     # Unsharded single file: map every tensor to it.
