@@ -124,6 +124,9 @@ PATH_METHODS = {
 ENCODING_POSITION = {"read_text": 0, "write_text": 1, "Path.open": 2, "open": 3}
 # Distinct from None so that "no mode argument at all" still means text.
 UNKNOWN_MODE = object()
+# Stand-in for a file whose imports are not to hand, so every helper can be
+# called on its own without pretending it knows what was imported.
+NO_MODULES: dict = {}
 
 
 def _is_main_guard(node: ast.AST) -> bool:
@@ -239,13 +242,27 @@ def _eagerly_consumed(tree: ast.Module) -> set:
     generator function. Neither runs its body until something pulls from it, so
     an unconsumed one has not happened yet.
     """
+    # `texts = (p.read_text() for p in ...)` then `list(texts)` consumes the
+    # generator through a name, so the name has to lead back to it.
+    named: dict = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name) and isinstance(node.value, ast.GeneratorExp):
+                named.setdefault(target.id, node.value)
+
+    def _resolve(node):
+        if isinstance(node, ast.Name) and node.id in named:
+            return named[node.id]
+        return node
+
     consumed = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and _is_eager_consumer(node.func):
-            consumed.update(id(a) for a in node.args)
-            consumed.update(id(k.value) for k in node.keywords)
+            consumed.update(id(_resolve(a)) for a in node.args)
+            consumed.update(id(_resolve(k.value)) for k in node.keywords)
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-            consumed.add(id(node.iter))  # the loop pulls every item
+            consumed.add(id(_resolve(node.iter)))  # the loop pulls every item
     return consumed
 
 
@@ -299,27 +316,50 @@ def _local_names(func) -> set:
     return names
 
 
-def _imported_names(tree: ast.Module) -> set:
-    """Every name an import binds anywhere in the file.
+def _imported_names(tree: ast.Module) -> dict:
+    """Every name an import binds, mapped to where it came from.
 
-    A receiver bound that way is a module, so `Image.open(...)` after
-    `from PIL import Image` and `tf.open(...)` after `import tarfile as tf` are
-    both somebody else's opener. Reading the imports instead of keeping a list
-    of module names is what makes aliases and unfamiliar libraries work.
+    The name alone is not enough in either direction. `import gzip as gz` binds
+    a name nobody would recognise to an opener that does take an encoding, and
+    `from PIL.Image import open` binds a name everybody recognises to one that
+    does not. Keeping the origin settles both.
     """
-    names = set()
+    bound = {}
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            names.update((a.asname or a.name).split(".")[0] for a in node.names)
-    return names
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bound[(alias.asname or alias.name).split(".")[0]] = alias.name
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                origin = f"{node.module}.{alias.name}" if node.module else alias.name
+                bound[alias.asname or alias.name] = origin
+    return bound
+
+
+def _origin_root(name, modules) -> str:
+    """The top-level module a bound name came from, or the name itself."""
+    return modules.get(name, name).split(".")[0]
+
+
+def _compressed_key(name, modules):
+    """The COMPRESSED_OPENERS entry this receiver resolves to, if any."""
+    for candidate in (name, _origin_root(name, modules)):
+        if candidate in COMPRESSED_OPENERS:
+            return candidate
+    return None
 
 
 def _is_module_receiver(name, modules) -> bool:
     """True for a receiver that is not itself a path."""
-    return name in modules or name in PATH_CLASSES or name in COMPRESSED_OPENERS or name == "io"
+    return (
+        name in modules
+        or name in PATH_CLASSES
+        or _compressed_key(name, modules) is not None
+        or _origin_root(name, modules) == "io"
+    )
 
 
-def _path_expr(call: ast.Call, modules = frozenset()):
+def _path_expr(call: ast.Call, modules = NO_MODULES):
     """The expression naming the file the call reads.
 
     Usually the receiver, but a module or the Path class in that slot means the
@@ -476,6 +516,32 @@ def _checked_in_locals(
         good = grown
 
 
+def _parametrized_values(func) -> dict:
+    """Parameter values supplied by @pytest.mark.parametrize.
+
+    pytest calls a parametrized test itself, so the decorator is the only call
+    site there is; without reading it every such parameter looks unprovable.
+    """
+    supplied: dict = {}
+    for decorator in func.decorator_list:
+        if not isinstance(decorator, ast.Call) or len(decorator.args) < 2:
+            continue
+        if not isinstance(decorator.func, ast.Attribute) or decorator.func.attr != "parametrize":
+            continue
+        names, values = decorator.args[0], decorator.args[1]
+        if not isinstance(names, ast.Constant) or not isinstance(names.value, str):
+            continue
+        if not isinstance(values, (ast.List, ast.Tuple, ast.Set)):
+            continue
+        argnames = [n.strip() for n in names.value.split(",") if n.strip()]
+        for element in values.elts:
+            paired = len(argnames) > 1 and isinstance(element, (ast.Tuple, ast.List))
+            row = element.elts if paired else [element]
+            for argname, value in zip(argnames, row):
+                supplied.setdefault(argname, []).append(value)
+    return supplied
+
+
 def _checked_in_params(tree: ast.Module, module_names: set) -> set:
     """(function, parameter) pairs that only ever receive a checked-in path.
 
@@ -504,6 +570,10 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
     good: set = set()
     while True:
         grown, bad = set(), set()
+        for fname, fnode in funcs.items():
+            for argname, values in _parametrized_values(fnode).items():
+                ok = all(_is_checked_in_root(v, module_names, ()) for v in values)
+                (grown if ok else bad).add((fname, argname))
         # What the calling function itself can prove, recomputed each pass so a
         # parameter resolved last time can feed a local this time.
         scope: dict = {}
@@ -535,7 +605,7 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
         good = grown
 
 
-def _checked_in_path_calls(tree: ast.Module, modules = frozenset()):
+def _checked_in_path_calls(tree: ast.Module, modules = NO_MODULES):
     """Yield calls, at any depth, whose path is provably a checked-in file.
 
     The import-time walk alone leaves test bodies unguarded, and a bare read
@@ -560,9 +630,10 @@ def _checked_in_path_calls(tree: ast.Module, modules = frozenset()):
     ):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             shadowed = shadowed | _local_names(node)
-            derived = _checked_in_locals(node, module_names, shadowed)
-            name = getattr(node, "name", None)
-            derived = derived | {p for f, p in params if f == name}
+            # Seed with the parameters first: `p = root / "x.py"` is only
+            # derivable once `root` is known to hold a checked-in path.
+            seeded = {p for f, p in params if f == getattr(node, "name", None)}
+            derived = _checked_in_locals(node, module_names, shadowed, seeded)
         elif _is_main_guard(node):
             # Never runs under pytest, so rule 1 skips it for the same reason.
             for child in node.orelse:
@@ -642,7 +713,7 @@ def _pins_encoding(call: ast.Call, position: int | None) -> bool:
     return _names_encoding(call)
 
 
-def _offender(call: ast.Call, modules = frozenset()) -> str | None:
+def _offender(call: ast.Call, modules = NO_MODULES) -> str | None:
     """The call's name if it reads text without an encoding, else None."""
     func = call.func
     if isinstance(func, ast.Attribute):
@@ -664,16 +735,20 @@ def _offender(call: ast.Call, modules = frozenset()) -> str | None:
         if func.attr == "open":
             # io.open IS the builtin, so it takes the builtin's argument
             # positions and carries the same platform default.
-            if receiver == "io":
+            if receiver is not None and _origin_root(receiver, modules) == "io":
                 if not _is_text(call, 1) or _pins_encoding(call, ENCODING_POSITION["open"]):
                     return None
                 return "io.open()"
-            if receiver in COMPRESSED_OPENERS:
+            compressed = _compressed_key(receiver, modules) if receiver else None
+            if compressed is not None:
                 mode = _open_mode(call, 1)
                 if mode is UNKNOWN_MODE or "t" not in str(mode):
                     return None  # "rb" default, so binary unless asked otherwise
-                position = COMPRESSED_OPENERS[receiver]
-                return None if _pins_encoding(call, position) else f"{receiver}.open()"
+                return (
+                    None
+                    if _pins_encoding(call, COMPRESSED_OPENERS[compressed])
+                    else f"{compressed}.open()"
+                )
             # Any other module receiver is somebody else's opener: tarfile.open
             # takes a compression mode, Image.open takes a binary file. Neither
             # has an encoding to name, so demanding one leaves no correct edit.
@@ -689,6 +764,11 @@ def _offender(call: ast.Call, modules = frozenset()) -> str | None:
         return None
     # Binary handles have no encoding to name.
     if isinstance(func, ast.Name) and func.id == "open" and _is_text(call, 1):
+        # `from PIL.Image import open` is not the builtin and takes no
+        # encoding; `from io import open` is the builtin under another roof.
+        origin = modules.get("open")
+        if origin is not None and origin.split(".")[0] != "io":
+            return None
         return None if _pins_encoding(call, ENCODING_POSITION["open"]) else "open()"
     return None
 
