@@ -77,6 +77,16 @@ def test_a_stored_checkpoint_needs_catalog_evidence():
     assert "autoSwitch ||\n" not in hook
 
 
+def test_the_pinned_quant_comes_from_the_catalog():
+    # Catalog membership proves the repo, not the saved quant. The stored one can
+    # name a file deleted while another quant of the same repo remains, and pinning
+    # it emitted repo:deleted-quant, a missing-quant 404 with a runnable one listed.
+    src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
+    hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
+    assert "const quant = catalog === null ? ggufVariant : entry?.quant;" in hook
+    assert "`${checkpoint}:${ggufVariant}`" not in hook
+
+
 def test_usage_examples_has_no_duplicate_auto_switch_control():
     # ModelAutoSwitchSection renders this setting just below and shares no state with it.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")

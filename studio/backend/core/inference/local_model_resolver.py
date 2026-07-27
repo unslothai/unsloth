@@ -36,6 +36,10 @@ _lock = threading.Lock()
 _scan: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
 # Not _lock: that is held for the whole scan, so the request path would wait on it.
 _warm_lock = threading.Lock()
+# Repos that finished downloading but are not in the published index yet. The
+# retained index covers what was already known; nothing covers the one that just
+# landed until the next scan, and the request path must not call it absent.
+_just_downloaded: set[str] = set()
 _warming = False
 _last_scan_s = 0.0
 # Rescan at most a tenth of the time: on the TTL alone a slow scan would run continuously.
@@ -310,6 +314,21 @@ def _sibling_revision_entries(raw_id: str, loader_id: str):
             yield sibling.name, entry
 
 
+def note_downloaded(repo_id: Optional[str]) -> None:
+    """Record a repo as present ahead of the scan that will index it."""
+    if not repo_id:
+        return
+    with _lock:
+        _just_downloaded.add(repo_id.strip().lower())
+
+
+def recently_downloaded(repo_id: str) -> bool:
+    """Whether *repo_id* finished downloading since the last completed scan."""
+    if not isinstance(repo_id, str) or not repo_id.strip():
+        return False
+    return repo_id.strip().lower() in _just_downloaded
+
+
 def invalidate_index() -> None:
     """Mark the cached scan stale so the next resolve sees a just-finished
     download, rather than waiting out the TTL.
@@ -339,6 +358,8 @@ def _index() -> dict[str, _LocalGgufEntry]:
         # an install with many local models can itself exceed the TTL, which would
         # store the cache already expired and make every request rebuild the index.
         _scan = (time.monotonic(), fresh)
+        # The scan supersedes the notes: whatever landed is in the index now.
+        _just_downloaded.clear()
         return fresh
 
 

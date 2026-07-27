@@ -440,10 +440,14 @@ function useExampleModelName(): string | null {
     const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));
     const backed = catalog === null || (!!entry && (entry.loaded || autoSwitch));
     if (usableCheckpoint && checkpoint && backed) {
-      if (ggufVariant && !checkpoint.includes(":")) {
-        return `${checkpoint}:${ggufVariant}`;
+      if (checkpoint.includes(":")) {
+        return checkpoint;
       }
-      return checkpoint;
+      // Pin the quant the catalog advertises, not the stored one: membership proves
+      // the repo, and the saved quant can name a file deleted while another quant of
+      // the same repo remains. Fall back to the store only before /v1/models answers.
+      const quant = catalog === null ? ggufVariant : entry?.quant;
+      return quant ? `${checkpoint}:${quant}` : checkpoint;
     }
     return fromCatalog();
   }, [autoSwitch, catalog, checkpoint, ggufVariant, usableCheckpoint]);

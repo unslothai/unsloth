@@ -4258,3 +4258,51 @@ def test_local_and_remote_agree_on_the_preferred_quant():
     labels = ("F16", "Q8_0", "UD-Q4_K_XL", "Q4_K_M")
     assert preferred_quant(labels) == _match_variant(None, dict.fromkeys(labels, 1))
     assert preferred_quant(labels) not in ("F16",)
+
+
+def test_a_just_downloaded_model_is_evidence_before_the_scan_indexes_it(monkeypatch):
+    # Retaining the old index covers what was already known, but nothing covers the
+    # model that just landed until the next scan finishes. A bare request for it in
+    # that window was answered by the unrelated resident model.
+    import logging
+
+    from hub.services import download_lifecycle
+
+    class _Proc:
+        stderr = None
+
+        def wait(self):
+            return 0
+
+    class _Registry:
+        def cancel_requested(self, key):
+            return False
+
+        def drop_process(self, key, proc):
+            return True
+
+        def get_job_metadata(self, key):
+            return None
+
+        def set_job(self, key, state):
+            pass
+
+    assert not resolver.recently_downloaded("org/fresh")
+    download_lifecycle.finalize_worker_exit(
+        _Registry(),
+        "org/fresh:Q4_K_M",
+        _Proc(),
+        hf_token = None,
+        label = "org/fresh",
+        log_prefix = "[test]",
+        logger = logging.getLogger(__name__),
+        repo_id = "org/fresh",
+    )
+    assert resolver.recently_downloaded("org/fresh"), "no evidence for the new model"
+    assert resolver.recently_downloaded("ORG/Fresh"), "evidence must be case-insensitive"
+    assert not resolver.recently_downloaded("org/other")
+
+    # The scan that indexes it supersedes the note.
+    monkeypatch.setattr(resolver, "_build_index", dict)
+    resolver._index()
+    assert not resolver.recently_downloaded("org/fresh")

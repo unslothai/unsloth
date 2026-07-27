@@ -1489,3 +1489,25 @@ def test_windows_style_paths_still_match_their_own_directory(monkeypatch):
     assert inference_route._resolves_to_resident("C:\\models\\repo") is True
     assert inference_route._resolves_to_resident("C:\\Models\\Repo") is True
     assert inference_route._resolves_to_resident("C:\\models\\other") is False
+
+
+def test_a_bare_request_for_a_just_downloaded_model_is_refused(monkeypatch):
+    # End of the same chain: the note has to reach admission, or a bare request in
+    # the window between the download landing and the scan is served by the resident
+    # model, which is the whole failure this hook exists to stop.
+    from core.inference import local_model_resolver as resolver
+
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {}))
+    monkeypatch.setattr(resolver, "_just_downloaded", {"org/fresh"})
+    loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route._reject_unservable_model("org/fresh", _Req()))
+    assert excinfo.value.status_code == 404
+    assert asyncio.run(inference_route._reject_unservable_model("org/never", _Req())) is None

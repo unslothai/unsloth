@@ -3876,7 +3876,11 @@ async def _reject_unservable_model(
         return
     base, variant = split_model_ref(requested_model)
     quantified = looks_like_quant(variant)
-    from core.inference.local_model_resolver import resolve_local_gguf, warm_index_soon
+    from core.inference.local_model_resolver import (
+        recently_downloaded,
+        resolve_local_gguf,
+        warm_index_soon,
+    )
     from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
 
     try:
@@ -3915,6 +3919,8 @@ async def _reject_unservable_model(
         here = (
             downloaded
             or advertised is not None
+            # Just landed, so no scan has indexed it yet and neither of the above sees it.
+            or recently_downloaded(base)
             or (variant is not None and resolve_local_gguf(base, allow_scan = False) is not None)
         )
         switchable = downloaded and get_openai_auto_switch_enabled()
@@ -10966,7 +10972,11 @@ def _quant_reference_resolves(model_id: Optional[str], quant: str) -> bool:
     such files with no quants at all, so advertising one hands out a pin that dies
     the moment another model loads.
     """
-    from core.inference.local_model_resolver import resolve_local_gguf, warm_index_soon
+    from core.inference.local_model_resolver import (
+        recently_downloaded,
+        resolve_local_gguf,
+        warm_index_soon,
+    )
 
     if not model_id:
         return False
