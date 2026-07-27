@@ -535,7 +535,7 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
                 raise RemoteCodeUnscannable(
                     f"{model_name}: present file {fn} could not be fetched ({exc})"
                 ) from exc
-            files[fn] = Path(fp).read_text(errors = "replace", encoding = "utf-8")
+            files[fn] = _read_python_source(Path(fp))
         # Code referenced from another repo executes too: scan it or fail closed.
         if not _add_external_refs(files, refs, hf_token, model_name):
             raise RemoteCodeUnscannable(f"{model_name}: external auto_map code unreachable")
@@ -717,5 +717,5 @@ def _add_external_refs(files: dict, refs, hf_token, model_name: str) -> bool:
                     exc,
                 )
                 return False
-            files[f"{repo}--{fn}"] = Path(fp).read_text(errors = "replace", encoding = "utf-8")
+            files[f"{repo}--{fn}"] = _read_python_source(Path(fp))
     return True

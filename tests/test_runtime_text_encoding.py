@@ -60,6 +60,8 @@ GUARDED_METHODS = {"read_text", "write_text"}
 PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
 # Values that re-select the platform default when passed as the encoding.
 PLATFORM_DEFAULT_ENCODINGS = (None, "locale")
+# Calls that return the platform default, so naming one pins nothing.
+PLATFORM_DEFAULT_CALLS = {"getdefaultencoding", "getencoding", "getpreferredencoding"}
 # Modules whose `open` IS the builtin: same signature, same platform default.
 BUILTIN_OPEN_MODULES = {"builtins", "io"}
 # These wrap the stream in a TextIOWrapper for a "t" mode, so they take an
@@ -100,8 +102,10 @@ def _names_encoding(call: ast.Call) -> bool:
             return True
         if kw.arg != "encoding":
             continue
-        if isinstance(kw.value, ast.Constant) and kw.value.value in (None, "locale"):
+        if isinstance(kw.value, ast.Constant) and kw.value.value in PLATFORM_DEFAULT_ENCODINGS:
             return False
+        if isinstance(kw.value, ast.Call) and _callee_name(kw.value.func) in PLATFORM_DEFAULT_CALLS:
+            return False  # locale.getencoding() is the default, spelled out
         return True
     return False
 
@@ -111,7 +115,45 @@ def _is_text(call: ast.Call, positional_index: int) -> bool:
     return mode is not UNKNOWN_MODE and "b" not in str(mode)
 
 
-def _imported_names(tree: ast.Module) -> dict:
+def _imports_at_each_call(tree: ast.Module) -> dict:
+    """The imports visible at every call, keyed by node id.
+
+    A function's own imports belong to that function. Treating them as the
+    module's would let one local `from PIL.Image import open` turn off the
+    builtin check for every other function in the file.
+    """
+    visible_at = {}
+
+    def walk(node, visible):
+        if isinstance(node, ast.Call):
+            visible_at[id(node)] = visible
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                walk(child, {**visible, **_imported_names(child)})
+            else:
+                walk(child, visible)
+
+    walk(tree, _imported_names(tree))
+    return visible_at
+
+
+def _foreign_names(tree: ast.Module) -> set:
+    """Names bound to an object another library built.
+
+    `z = zipfile.ZipFile(p)` then `z.open(name)` is a binary member stream that
+    takes no encoding, so demanding one leaves no correct edit.
+    """
+    modules = _imported_names(tree)
+    names = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+            continue
+        if _foreign_receiver(node.value, modules):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    return names
+
+
+def _imported_names(tree) -> dict:
     """Names this module's imports bind, mapped to where they came from.
 
     The name alone settles nothing in either direction: `import tarfile as tf`
@@ -121,14 +163,25 @@ def _imported_names(tree: ast.Module) -> dict:
     up to date.
     """
     bound = {}
-    for node in ast.walk(tree):
+    stack = list(ast.iter_child_nodes(tree))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue  # that function's business, not this scope's
         if isinstance(node, ast.Import):
             for a in node.names:
                 bound[(a.asname or a.name).split(".")[0]] = a.name
         elif isinstance(node, ast.ImportFrom):
             for a in node.names:
                 bound[a.asname or a.name] = f"{node.module}.{a.name}" if node.module else a.name
+        else:
+            stack.extend(ast.iter_child_nodes(node))
     return bound
+
+
+def _callee_name(func):
+    """The bare name a callee ends in, whether or not it is qualified."""
+    return func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
 
 
 def _origin_root(name, modules) -> str:
@@ -187,7 +240,11 @@ def _foreign_receiver(node, modules) -> bool:
     return root in modules and name not in PATH_CLASSES
 
 
-def _offender(call: ast.Call, modules = None) -> str | None:
+def _offender(
+    call: ast.Call,
+    modules = None,
+    foreign = (),
+) -> str | None:
     """The call's name if it does text I/O without pinning an encoding."""
     modules = {} if modules is None else modules
     func = call.func
@@ -224,7 +281,7 @@ def _offender(call: ast.Call, modules = None) -> str | None:
             # an encoding to name, so demanding one leaves no correct edit.
             if receiver is not None and receiver in modules and receiver not in PATH_CLASSES:
                 return None
-            if _foreign_receiver(func.value, modules):
+            if _foreign_receiver(func.value, modules) or receiver in foreign:
                 return None
             if not _is_text(call, shift):
                 return None
@@ -255,11 +312,12 @@ def _is_test_path(path: Path) -> bool:
 
 def _offenders_in(src: str, label: str = "<snippet>"):
     tree = ast.parse(src, filename = label)
-    modules = _imported_names(tree)
+    visible_at = _imports_at_each_call(tree)
+    foreign = _foreign_names(tree)
     found = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
-            name = _offender(node, modules)
+            name = _offender(node, visible_at.get(id(node), {}), foreign)
             if name is not None:
                 found.append((node.lineno, name))
     return found
@@ -302,10 +360,11 @@ def test_shipping_code_names_an_encoding():
         except SyntaxError:
             continue
         rel = path.relative_to(REPO).as_posix()
-        modules = _imported_names(tree)
+        visible_at = _imports_at_each_call(tree)
+        foreign = _foreign_names(tree)
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
-                name = _offender(node, modules)
+                name = _offender(node, visible_at.get(id(node), {}), foreign)
                 if name is not None:
                     offenders.append(f"{rel}:{node.lineno}: {name}")
     assert offenders == [], (

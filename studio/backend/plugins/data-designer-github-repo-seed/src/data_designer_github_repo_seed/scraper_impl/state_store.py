@@ -21,7 +21,9 @@ class StateStore:
         self._data: Dict[str, Any] = {}
         if self.path.exists():
             try:
-                with self.path.open(encoding = "utf-8") as f:
+                # errors="replace" so a file we chose not to migrate still yields
+                # every key; a mangled key is one possible duplicate, not a loss.
+                with self.path.open(encoding = "utf-8", errors = "replace") as f:
                     self._data = json.load(f)
             except Exception:
                 self._data = {}
@@ -70,7 +72,9 @@ class JsonlWriter:
         # Preload seen keys for dedup across resumes
         if self.path.exists() and self.path.stat().st_size > 0:
             try:
-                with self.path.open(encoding = "utf-8") as f:
+                # errors="replace" so a file we chose not to migrate still yields
+                # every key; a mangled key is one possible duplicate, not a loss.
+                with self.path.open(encoding = "utf-8", errors = "replace") as f:
                     for line in f:
                         try:
                             obj = json.loads(line)
@@ -97,7 +101,13 @@ class JsonlWriter:
             return
         except UnicodeDecodeError:
             pass
-        text = data.decode(locale.getpreferredencoding(False), errors = "replace")
+        legacy = locale.getpreferredencoding(False)
+        try:
+            text = data.decode(legacy)
+        except (LookupError, UnicodeDecodeError):
+            return  # cannot name the original encoding, so leave the file alone
+        if text.encode(legacy) != data:
+            return  # the guess does not round-trip, so rewriting would lose bytes
         tmp = self.path.with_suffix(self.path.suffix + ".mig")
         tmp.write_text(text, encoding = "utf-8")
         os.replace(tmp, self.path)
