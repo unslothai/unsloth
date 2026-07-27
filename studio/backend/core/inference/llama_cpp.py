@@ -127,6 +127,15 @@ LLAMA_SERVER_NOT_FOUND_DETAIL = (
     "then try again. (Advanced: set LLAMA_SERVER_PATH to an existing binary.)"
 )
 
+# Shared by the route, pre-teardown and post-metadata rejections (#7205).
+_VULKAN_DIFFUSION_GPU_IDS_ERROR = (
+    "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
+    "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
+    "its device by CUDA physical index, which has no defined mapping "
+    "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
+    "device."
+)
+
 
 # llama-server can serve HTTP 200 while running a model entirely on CPU when a
 # GPU backend fails to init (#5807 / #5106 / #5830). Classify the startup log so
@@ -237,7 +246,7 @@ def _wsl_system_rocm_lib_dirs() -> "list[str]":
         with open("/proc/version", encoding = "utf-8", errors = "replace") as fh:
             if "microsoft" not in fh.read().lower():
                 return []
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return []
     out: "list[str]" = []
     for d in ("/opt/rocm/lib", "/opt/rocm/lib64"):
@@ -560,11 +569,11 @@ def _load_swa_cache() -> dict:
         if _SWA_CACHE is not None:
             return _SWA_CACHE
         try:
-            with open(_swa_cache_path()) as f:
+            with open(_swa_cache_path(), encoding = "utf-8") as f:
                 _SWA_CACHE = json.load(f)
                 if not isinstance(_SWA_CACHE, dict):
                     _SWA_CACHE = {}
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+        except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeDecodeError):
             _SWA_CACHE = {}
         return _SWA_CACHE
 
@@ -574,10 +583,10 @@ def _save_swa_cache(cache: dict) -> None:
         path = _swa_cache_path()
         path.parent.mkdir(parents = True, exist_ok = True)
         tmp = path.with_suffix(".json.tmp")
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding = "utf-8") as f:
             json.dump(cache, f, indent = 2, sort_keys = True)
         tmp.replace(path)
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
 
 
@@ -611,7 +620,7 @@ def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
             repo_type = "model",
             cache_dir = active_hf_hub_cache(),
         )
-        with open(cfg_path) as f:
+        with open(cfg_path, encoding = "utf-8") as f:
             cfg = json.load(f)
     except Exception:
         return None
@@ -3587,7 +3596,7 @@ class LlamaCppBackend:
         except Exception:
             pass
         try:
-            with open("/proc/meminfo") as f:
+            with open("/proc/meminfo", encoding = "utf-8") as f:
                 for line in f:
                     if line.startswith("MemAvailable:"):
                         return int(line.split()[1]) // 1024  # kB -> MiB
@@ -4710,6 +4719,13 @@ class LlamaCppBackend:
         probe._read_gguf_metadata(gguf_path)
         return probe._is_diffusion
 
+    def _reject_vulkan_diffusion_gpu_ids_before_teardown(
+        self, gguf_path: str, model_identifier: str
+    ) -> None:
+        """Reject Vulkan + gpu_ids for diffusion GGUFs before Phase 1 teardown."""
+        if self._gguf_path_is_diffusion(gguf_path, model_identifier):
+            raise ValueError(_VULKAN_DIFFUSION_GPU_IDS_ERROR)
+
     def _read_gguf_metadata(self, gguf_path: str) -> None:
         """Read context_length, architecture params, and chat_template from a GGUF header.
 
@@ -5122,7 +5138,7 @@ class LlamaCppBackend:
             self._llama_log_path = log_dir / f"diffusion-{int(time.time())}-port-{self._port}.log"
             self._llama_log_fh = open(self._llama_log_path, "w", encoding = "utf-8", buffering = 1)
             logger.info(f"diffusion runner stdout/stderr -> {self._llama_log_path}")
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
             logger.debug(f"Could not open diffusion runner log file: {e}")
 
         # The shim (and its visual server) die with this backend process, so a
@@ -6339,7 +6355,7 @@ class LlamaCppBackend:
                 buffering = 1,
             )
             logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
             # Best-effort; never block the load on logging.
             logger.debug(f"Could not open llama-server log file: {e}")
             self._llama_log_path = None
@@ -6515,12 +6531,7 @@ class LlamaCppBackend:
                         f"present. Available Vulkan devices: {sorted(_pf_probed)}."
                     )
 
-            # A remote uncached GGUF may only reveal that it needs the
-            # single-device diffusion runner after download. On Vulkan, an
-            # explicit gpu_ids request cannot be mapped from ggml ordinals to
-            # that runner's CUDA physical index. Download and classify the main
-            # file before killing the healthy server so this late rejection is
-            # non-destructive. The Phase 2 call below reuses this cached path.
+            # Classify before killing the healthy server (#7205); Phase 2 reuses this path.
             _preflight_model_path = None
             if is_vulkan_backend and gpu_ids and hf_repo:
                 _resolved_repo = _resolve_repo_id_casing(hf_repo)
@@ -6537,14 +6548,17 @@ class LlamaCppBackend:
                         hf_variant = hf_variant,
                         hf_token = hf_token,
                     )
-                if self._gguf_path_is_diffusion(_preflight_model_path, model_identifier):
-                    raise ValueError(
-                        "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
-                        "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
-                        "its device by CUDA physical index, which has no defined mapping "
-                        "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
-                        "device."
-                    )
+                self._reject_vulkan_diffusion_gpu_ids_before_teardown(
+                    _preflight_model_path,
+                    model_identifier,
+                )
+            elif is_vulkan_backend and gpu_ids and gguf_path and not hf_repo:
+                if not Path(gguf_path).is_file():
+                    raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
+                self._reject_vulkan_diffusion_gpu_ids_before_teardown(
+                    gguf_path,
+                    model_identifier,
+                )
 
             # ── Phase 1: kill old process (under lock, fast) ──────────
             with self._lock:
@@ -6621,18 +6635,9 @@ class LlamaCppBackend:
             # Block-diffusion GGUFs (DiffusionGemma) cannot run on llama-server;
             # serve them with the diffusion runner (same OpenAI-compat interface).
             if self._is_diffusion:
-                # The diffusion runner pins its child by CUDA visibility mask, so a
-                # ggml Vulkan ordinal cannot be honored (wrong GPU / CPU fallback).
-                # Route and remote-download preflights reject before teardown; keep
-                # this as a final defense if classification ever disagrees.
+                # Final defense: route and pre-teardown preflights reject before Phase 1.
                 if is_vulkan_backend and gpu_ids:
-                    raise ValueError(
-                        "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
-                        "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
-                        "its device by CUDA physical index, which has no defined mapping "
-                        "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
-                        "device."
-                    )
+                    raise ValueError(_VULKAN_DIFFUSION_GPU_IDS_ERROR)
                 # Not a tensor/layer GGUF: clear any preserved-fallback flag from a
                 # prior load (this path skips the command builder that clears it).
                 self._layer_preserves_tensor_intent = False
@@ -8297,7 +8302,7 @@ class LlamaCppBackend:
                                 buffering = 1,
                             )
                             logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
-                        except OSError as e:
+                        except (OSError, UnicodeDecodeError) as e:
                             # Best-effort; never block the load on logging.
                             logger.debug(f"Could not open llama-server log file: {e}")
                             self._llama_log_path = None
@@ -9472,7 +9477,7 @@ class LlamaCppBackend:
             return
         try:
             path.parent.mkdir(parents = True, exist_ok = True)
-            path.write_text(f"{pid}:{cls._pid_start_identity(pid)}")
+            path.write_text(f"{pid}:{cls._pid_start_identity(pid)}", encoding = "utf-8")
         except Exception as e:
             logger.debug(f"Could not write llama-server pidfile: {e}")
 
@@ -9606,7 +9611,7 @@ class LlamaCppBackend:
         pid = -1
         identity = ""
         try:
-            pid_str, _, identity = path.read_text().strip().partition(":")
+            pid_str, _, identity = path.read_text(encoding = "utf-8").strip().partition(":")
             pid = int(pid_str)
         except Exception:
             pid = -1
