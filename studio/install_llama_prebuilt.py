@@ -6187,14 +6187,19 @@ def _hip_visible_device_mask_set() -> bool:
 def _windows_hip_gfx_targets(published_repo: str | None) -> frozenset[str]:
     """gfx targets the Windows HIP bundle of ``published_repo`` is actually built for.
 
-    The combined floor above is a union, so asking it "is this arch served?" is only
-    right for the fork. Planning against ggml-org directly (--published-repo) reaches
-    direct_upstream_release_plan(), whose AMD branch offers win-hip-radeon then CPU and
-    never Vulkan, so a fork-only arch answered "supported" there silently lands on CPU
-    instead of the Vulkan bundle that would actually run."""
-    if published_repo and published_repo.strip().lower() == UPSTREAM_REPO.lower():
-        return UPSTREAM_WINDOWS_HIP_GFX_TARGETS
-    return WINDOWS_HIP_PREBUILT_GFX_TARGETS
+    The combined floor above is a union of the FORK's windows-rocm bundles, and only the
+    fork is planned from a manifest: resolve_simple_install_release_plans() sends every
+    other --published-repo -- ggml-org itself, but equally any mirror carrying
+    upstream-standard assets -- to direct_upstream_release_plan(), whose AMD branch offers
+    win-hip-radeon then CPU and never Vulkan. Answering "supported" there for a fork-only
+    arch (gfx1034, gfx1103, gfx908, ...) silently lands it on HIP/CPU instead of the Vulkan
+    bundle that would actually run, so gate on the fork rather than exempting one repo.
+    Mirror that dispatch exactly, spelling included: it compares == DEFAULT_PUBLISHED_REPO
+    with an empty value defaulting to the fork, so a differently cased repo really does
+    take the upstream path and must be answered with upstream coverage."""
+    if (published_repo or DEFAULT_PUBLISHED_REPO) == DEFAULT_PUBLISHED_REPO:
+        return WINDOWS_HIP_PREBUILT_GFX_TARGETS
+    return UPSTREAM_WINDOWS_HIP_GFX_TARGETS
 
 
 def _gfx_is_windows_hip_supported(gfx: str, published_repo: str | None = None) -> bool:

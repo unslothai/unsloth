@@ -988,6 +988,29 @@ def test_auto_vulkan_is_repository_specific_for_fork_only_gfx():
     assert ilp._should_auto_vulkan_for_amd_windows(family, UPSTREAM) is False
 
 
+@pytest.mark.parametrize(
+    "repo", ["acme/llama.cpp-mirror", "GGML-ORG/llama.cpp", "unslothAI/llama.cpp"]
+)
+def test_fork_only_gfx_coverage_is_not_granted_to_other_repos(repo):
+    # Only the fork is planned from a manifest: resolve_simple_install_release_plans()
+    # compares == DEFAULT_PUBLISHED_REPO and sends everything else, mirrors and
+    # differently cased spellings alike, to direct_upstream_release_plan(). Granting a
+    # fork-only arch upstream coverage there lands it on win-hip-radeon or CPU instead
+    # of Vulkan, so the predicate must gate on the fork rather than exempt one name.
+    host = _windows_amd_host(rocm_gfx_target = "gfx1034", rocm_gfx_targets = ["gfx1034"])
+    assert ilp._should_auto_vulkan_for_amd_windows(host, repo) is True
+    supported = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
+    assert ilp._should_auto_vulkan_for_amd_windows(supported, repo) is False
+
+
+@pytest.mark.parametrize("repo", [None, ""])
+def test_empty_published_repo_gets_fork_coverage(repo):
+    # Negative control: the resolver defaults an empty repo to the fork, so the
+    # predicate must too, or the default install path loses its fork-only archs.
+    host = _windows_amd_host(rocm_gfx_target = "gfx1034", rocm_gfx_targets = ["gfx1034"])
+    assert ilp._should_auto_vulkan_for_amd_windows(host, repo) is False
+
+
 def test_upstream_windows_hip_targets_are_a_subset_of_the_combined_floor():
     # The combined floor must stay a superset, else auto-Vulkan would steal a host
     # upstream already builds for.
