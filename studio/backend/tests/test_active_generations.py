@@ -530,7 +530,14 @@ def test_unload_rechecks_active_generations_under_the_lifecycle_gate(monkeypatch
 
 
 def _run_unload(
-    inf_mod, monkeypatch, *, loaded_gguf, requested, force, torn_down, unload_model = None
+    inf_mod,
+    monkeypatch,
+    *,
+    loaded_gguf,
+    requested,
+    force,
+    torn_down,
+    unload_model = None,
 ):
     """Drive POST /unload against a backend pair with ``loaded_gguf`` resident.
 
@@ -609,7 +616,6 @@ def test_forced_unload_of_the_loaded_model_still_stops_its_chats(monkeypatch):
         assert ev.is_set()
     assert torn_down == ["gguf"]
     assert response.status == "unloaded"
-
 
 
 def test_forced_unload_lets_the_cancelled_chats_unwind_before_teardown(monkeypatch):
@@ -2131,7 +2137,6 @@ def test_anthropic_passthrough_non_stream_is_visible_to_the_swap_gate(monkeypatc
     assert seen["cancelled"] == 1
     # And it unregisters, or one message would 409 every later reload.
     assert active_generations.count() == 0
-
 
 
 def test_anthropic_passthrough_non_stream_stops_when_the_swap_cancels_it(monkeypatch):

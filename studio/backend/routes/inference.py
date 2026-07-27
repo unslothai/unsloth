@@ -3464,7 +3464,9 @@ def _switch_waiter_count() -> int:
 
 
 async def _wait_for_model_switch_idle(
-    *, current_request_counted: bool, cancel_pending: bool = False,
+    *,
+    current_request_counted: bool,
+    cancel_pending: bool = False,
     timeout_s: Optional[float] = None,
 ) -> None:
     """Wait until a model replacement cannot interrupt active inference.
@@ -3491,6 +3493,7 @@ async def _wait_for_model_switch_idle(
     still be refused, so they must not shorten the protection they provide.
     """
     from core.inference.llama_keepwarm import other_inference_request_count
+
     deadline = None if timeout_s is None else time.monotonic() + timeout_s
     while True:
         queued_switches = _switch_waiter_count()
@@ -4381,9 +4384,7 @@ async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) 
     from core.inference.llama_keepwarm import other_inference_request_count
 
     _raise_or_cancel_active_generations(force = True, action = "Installing a new transformers version")
-    deadline = time.monotonic() + (
-        _POST_CANCEL_DRAIN_TIMEOUT_S if timeout_s is None else timeout_s
-    )
+    deadline = time.monotonic() + (_POST_CANCEL_DRAIN_TIMEOUT_S if timeout_s is None else timeout_s)
     while other_inference_request_count(current_request_counted = False, include_pending = False) > 0:
         if time.monotonic() >= deadline:
             return
@@ -14805,7 +14806,9 @@ async def _anthropic_passthrough_non_streaming(
     _client = _cancelable_nonstreaming_client()
     _cancel_watcher = asyncio.create_task(
         _await_cancel_or_disconnect_then_close_client(
-            cancel_event = cancel_event, request = request, client = _client,
+            cancel_event = cancel_event,
+            request = request,
+            client = _client,
         )
     )
 
@@ -14929,7 +14932,9 @@ async def _anthropic_passthrough_non_streaming(
                     )
                 )
 
-        stop_reason = openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = bool(tool_calls))
+        stop_reason = openai_finish_to_anthropic_stop(
+            finish_reason, had_tool_calls = bool(tool_calls)
+        )
 
         usage = data.get("usage") or {}
         return _anthropic_message_json_response(

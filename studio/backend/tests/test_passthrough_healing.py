@@ -872,9 +872,7 @@ class TestNudgeRetryAnthropic:
         from routes.inference import _anthropic_passthrough_non_streaming
 
         client = ScriptedClient(bodies)
-        monkeypatch.setattr(
-            inf_mod, "_cancelable_nonstreaming_client", lambda: client
-        )
+        monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
         response = await _anthropic_passthrough_non_streaming(
             _llama_backend(),
             [{"role": "user", "content": "hi"}],
@@ -932,9 +930,7 @@ class TestAnthropicPassthroughHealingText:
         from routes.inference import _anthropic_passthrough_non_streaming
 
         client = ScriptedClient([upstream])
-        monkeypatch.setattr(
-            inf_mod, "_cancelable_nonstreaming_client", lambda: client
-        )
+        monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
         response = await _anthropic_passthrough_non_streaming(
             _llama_backend(),
             [{"role": "user", "content": "hi"}],
@@ -1180,9 +1176,7 @@ class TestAnthropicNonStreamingRoute:
         from routes.inference import _anthropic_passthrough_non_streaming
 
         client = ScriptedClient(bodies)
-        monkeypatch.setattr(
-            inf_mod, "_cancelable_nonstreaming_client", lambda: client
-        )
+        monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
         response = await _anthropic_passthrough_non_streaming(
             _llama_backend(),
             [{"role": "user", "content": "hi"}],

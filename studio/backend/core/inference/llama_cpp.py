@@ -6507,7 +6507,9 @@ class LlamaCppBackend:
                     "llama-server at %s has no --kv-unified, so %d parallel slots would "
                     "split the context window %d ways. Using 1 slot instead; update "
                     "llama.cpp to run chats in parallel.",
-                    binary, n_parallel, n_parallel,
+                    binary,
+                    n_parallel,
+                    n_parallel,
                 )
                 n_parallel = 1
 
@@ -12722,6 +12724,7 @@ class LlamaCppBackend:
             finished = threading.Event()
             watcher: Optional[threading.Thread] = None
             if cancel_event is not None:
+
                 def _close_when_cancelled() -> None:
                     while not finished.wait(0.05):
                         if cancel_event.is_set():
