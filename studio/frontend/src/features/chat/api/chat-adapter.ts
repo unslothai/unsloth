@@ -2221,7 +2221,9 @@ export function createOpenAIStreamAdapter(
         // a deleted conversation. Registered before the run exists, since the thread can be
         // stopped while createResearchRun is still in flight.
         let researchRunId: string | null = null;
+        let researchStopRequested = false;
         const researchServerCancel = () => {
+          researchStopRequested = true;
           if (researchRunId) {
             void cancelResearchRun(researchRunId).catch(() => {});
           }
@@ -2268,6 +2270,12 @@ export function createOpenAIStreamAdapter(
             },
           });
           researchRunId = createdRun.id;
+          if (researchStopRequested) {
+            // Stopped while createResearchRun was still in flight, so the handle had no
+            // id to act on. Replay it rather than following a run the user already ended.
+            void cancelResearchRun(createdRun.id).catch(() => {});
+            return;
+          }
           releaseResearchFollow = beginExternalResearchFollow(
             createdRun,
             detachResearchFollow,
