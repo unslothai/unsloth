@@ -56,12 +56,32 @@ _PROMPT_DELIMITER_TAGS = re.compile(
     re.IGNORECASE,
 )
 _QUERY_CREDENTIAL = re.compile(
-    r"""(?ix)(?<![A-Za-z0-9])(?:(?-i:[a-z][A-Za-z0-9]*(?:ClientSecret|RefreshToken
-    |SessionToken|SecretAccessKey))|api[\s_-]?key|access[\s_-]?(?:key|token)
+    r"""(?ix)(?<![A-Za-z0-9])(?:api[\s_-]?key|access[\s_-]?(?:key|token)
     |auth[\s_-]?token|bearer[\s_-]?token|client[\s_-]?secret|private[\s_-]?key
     |refresh[\s_-]?token|session[\s_-]?token|authorization|password|secret|token)\s*[:=]\s*
     (?:"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,;]+)"""
 )
+_QUERY_NAMED_ASSIGNMENT = re.compile(
+    r"""(?x)(?<![A-Za-z0-9])(?P<label>[A-Za-z][A-Za-z0-9_-]{0,100})\s*[:=]\s*
+    (?P<value>"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,;]+)"""
+)
+_QUERY_CREDENTIAL_SUFFIXES = (
+    "apikey",
+    "accesskey",
+    "accesstoken",
+    "authtoken",
+    "bearertoken",
+    "clientsecret",
+    "privatekey",
+    "refreshtoken",
+    "secretkey",
+    "sessiontoken",
+    "authorization",
+    "password",
+    "token",
+)
+_QUERY_PUBLIC_ASSIGNMENT_SUFFIXES = ("designtoken", "cancellationtoken")
+_WALL_CLOCK_TIMEOUT_CANCEL_MESSAGE = "research-wall-clock-timeout"
 # Bearer authorization tokens carry no key=value label, so the credential pattern above misses
 # them; the length floor keeps ordinary prose ("bearer of bad news") from matching.
 _QUERY_BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}")
@@ -330,7 +350,16 @@ def _shield_untrusted(text: str) -> str:
 
 
 def _sanitize_public_query(query: str) -> str:
+    def redact_named_assignment(match: re.Match) -> str:
+        label = re.sub(r"[^a-z0-9]", "", match.group("label").lower())
+        if label.endswith(_QUERY_CREDENTIAL_SUFFIXES) and not label.endswith(
+            _QUERY_PUBLIC_ASSIGNMENT_SUFFIXES
+        ):
+            return " "
+        return match.group(0)
+
     query = _QUERY_CREDENTIAL.sub(" ", query)
+    query = _QUERY_NAMED_ASSIGNMENT.sub(redact_named_assignment, query)
     query = _QUERY_BEARER.sub(" ", query)
     query = _QUERY_EMAIL.sub(" ", query)
     query = _QUERY_PRIVATE_ID.sub(" ", query)
@@ -565,13 +594,24 @@ def _fit_decision_inputs(
 ) -> tuple[str, str]:
     """Fit the decision question and plan while keeping the plan valid JSON."""
     full_plan = json.dumps(plan, ensure_ascii = False)
-    minimum_question_chars = min(len(question), _MIN_QUESTION_CHARS)
-    research_reserve = _MIN_SYNTHESIS_EVIDENCE_CHARS if total_budget is not None else 0
-    plan_budget = _trimmable_budget(
-        total_budget,
-        system_chars + minimum_question_chars + research_reserve,
-        len(full_plan),
-    )
+    if total_budget is None:
+        minimum_question_chars = min(len(question), _MIN_QUESTION_CHARS)
+        research_reserve = 0
+        plan_budget = len(full_plan)
+    else:
+        input_budget = max(0, total_budget - system_chars)
+        if input_budget < len("{}"):
+            raise ValueError("Loaded model context is too small for a research decision")
+        minimum_question_chars = min(
+            len(question),
+            _MIN_QUESTION_CHARS,
+            max(0, input_budget - len("{}")),
+        )
+        research_reserve = min(
+            _MIN_SYNTHESIS_EVIDENCE_CHARS,
+            max(0, input_budget - minimum_question_chars - len("{}")),
+        )
+        plan_budget = max(0, input_budget - minimum_question_chars - research_reserve)
     if len(full_plan) <= plan_budget:
         fitted_plan = full_plan
     else:
@@ -585,13 +625,10 @@ def _fit_decision_inputs(
             if len(candidate) > plan_budget:
                 break
             fitted_plan = candidate
-    question_budget = max(
-        minimum_question_chars,
-        _trimmable_budget(
-            total_budget,
-            system_chars + len(fitted_plan) + research_reserve,
-            _MAX_SYNTHESIS_EVIDENCE_CHARS,
-        ),
+    question_budget = _trimmable_budget(
+        total_budget,
+        system_chars + len(fitted_plan) + research_reserve,
+        _MAX_SYNTHESIS_EVIDENCE_CHARS,
     )
     return question[:question_budget], fitted_plan
 
@@ -614,13 +651,13 @@ async def _wall_clock_timeout(seconds: float) -> AsyncIterator[None]:
     def cancel() -> None:
         nonlocal expired
         expired = True
-        task.cancel()
+        task.cancel(_WALL_CLOCK_TIMEOUT_CANCEL_MESSAGE)
 
     handle = asyncio.get_running_loop().call_later(seconds, cancel)
     try:
         yield
     except asyncio.CancelledError as exc:
-        if expired:
+        if expired and exc.args == (_WALL_CLOCK_TIMEOUT_CANCEL_MESSAGE,):
             raise asyncio.TimeoutError from exc
         raise
     finally:
@@ -1959,7 +1996,10 @@ class ResearchSupervisor:
                 source_catalog,
                 _trimmable_budget(
                     decision_total,
-                    len(decision_system) + len(decision_question) + len(decision_plan_json),
+                    len(decision_system)
+                    + len(decision_question)
+                    + len(decision_plan_json)
+                    + _MIN_SYNTHESIS_EVIDENCE_CHARS,
                     len(source_catalog),
                 ),
             )

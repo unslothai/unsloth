@@ -75,6 +75,16 @@ def test_sanitize_query_keeps_public_terms():
         "oauthRefreshToken",
         "googleClientSecret",
         "awsSecretAccessKey",
+        "oauthAccessToken",
+        "openaiApiKey",
+        "googleAuthToken",
+        "servicePrivateKey",
+        "companyBearerToken",
+        "OAuthRefreshToken",
+        "apiToken",
+        "idToken",
+        "githubToken",
+        "secretKey",
         "access_key",
         "auth_token",
         "bearer_token",
@@ -99,6 +109,7 @@ def test_sanitize_query_redacts_namespaced_composite_credential_label():
         "OAuth client secret rotation and refresh token lifecycle",
         "client_secret configuration and refresh_token rotation",
         "token_count=128000 and secret_santa=history",
+        "designToken=blue and cancellationToken=none",
     ),
 )
 def test_sanitize_query_keeps_public_composite_terms(query):
@@ -233,6 +244,10 @@ def test_every_research_prompt_path_is_budgeted():
     # The catalog is unbounded as well, and is fitted by whole entries so URLs stay citable.
     assert "decision_catalog = _fit_source_catalog(" in src
     assert "decision_question, decision_plan_json = _fit_decision_inputs(" in src
+    catalog_budget = src.split("decision_catalog = _fit_source_catalog(", 1)[1].split(
+        "decision_scaffold =", 1
+    )[0]
+    assert "+ _MIN_SYNTHESIS_EVIDENCE_CHARS" in catalog_budget
 
 
 def test_prompt_budget_never_empties_the_question_or_evidence(monkeypatch):
@@ -317,8 +332,14 @@ def test_decision_plan_remains_valid_json_when_the_budget_is_tiny():
         2_100,
     )
 
-    assert len(fitted_question) == research_runs._MIN_QUESTION_CHARS
+    assert len(fitted_question) == 98
     assert json.loads(fitted_plan) == {}
+    assert 2_000 + len(fitted_question) + len(fitted_plan) == 2_100
+
+
+def test_decision_inputs_reject_an_impossible_budget():
+    with pytest.raises(ValueError, match = "context is too small"):
+        research_runs._fit_decision_inputs("question", {"title": "plan", "steps": []}, 100, 101)
 
 
 def _make_payload(**overrides) -> CreateResearchRun:
@@ -849,6 +870,28 @@ def test_wall_clock_timeout_supports_python_without_asyncio_timeout(monkeypatch)
 
     with pytest.raises(asyncio.TimeoutError):
         asyncio.run(run())
+
+
+def test_wall_clock_timeout_does_not_swallow_shutdown_cancellation(monkeypatch):
+    monkeypatch.delattr(research_runs.asyncio, "timeout")
+
+    async def run(cleanup_started: asyncio.Event):
+        async with research_runs._wall_clock_timeout(0.01):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_started.set()
+                await asyncio.sleep(1)
+
+    async def cancel_during_cleanup():
+        cleanup_started = asyncio.Event()
+        task = asyncio.create_task(run(cleanup_started))
+        await cleanup_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_during_cleanup())
 
 
 def test_stream_completion_model_waits_do_not_refund_transport_attempts(monkeypatch):
