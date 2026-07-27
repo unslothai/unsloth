@@ -121,6 +121,68 @@ def test_completed_execution_persists_when_replaced_job_cannot_verify_artifact(m
     assert user_assets_db.get_recipe_execution("owner", "r1", "e1").get("artifact_path") is None
 
 
+def test_completed_execution_preserves_previously_verified_artifact(monkeypatch):
+    user_assets_db.create_recipe("owner", recipe())
+    artifact_path = "recipes/recipe_r1"
+    monkeypatch.setattr(
+        user_assets_recipes,
+        "get_job_manager",
+        lambda: type(
+            "CompletedJobManager",
+            (),
+            {"get_owned_completed_artifact_path": lambda *_args: artifact_path},
+        )(),
+    )
+    saved = user_assets_recipes.upsert_recipe_execution(
+        "r1",
+        "e1",
+        ExecutionUpsertRequest(
+            **execution(
+                artifact_path = artifact_path,
+                jobId = "completed-job",
+                kind = "full",
+                run_name = "Finished run",
+                recipeSignature = "signature",
+                rows = 1,
+                datasetTotal = 1,
+                completed_columns = [],
+            )
+        ),
+        "owner",
+    )
+
+    monkeypatch.setattr(
+        user_assets_recipes,
+        "get_job_manager",
+        lambda: type(
+            "ReplacedJobManager",
+            (),
+            {"get_owned_completed_artifact_path": lambda *_args: None},
+        )(),
+    )
+    enriched = user_assets_recipes.upsert_recipe_execution(
+        "r1",
+        "e1",
+        ExecutionUpsertRequest(
+            **execution(
+                artifact_path = artifact_path,
+                jobId = "completed-job",
+                kind = "full",
+                run_name = "Finished run",
+                recipeSignature = "signature",
+                rows = 2,
+                datasetTotal = 2,
+                completed_columns = [],
+                revision = saved["revision"],
+            )
+        ),
+        "owner",
+    )
+
+    assert enriched["artifact_path"] == artifact_path
+    assert enriched["rows"] == 2
+
+
 def test_recipe_update_preserves_omitted_learning_linkage_and_can_clear_it():
     inserted = user_assets_db.create_recipe(
         "owner",

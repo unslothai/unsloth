@@ -543,6 +543,11 @@ export function saveRecipeExecution(
   syncSubject(owner.subjectKey);
   assertOwnerCurrent(owner, execution);
   const key = executionWriteKey(owner, execution.id);
+  const persistedKey = executionKey(
+    owner.subjectKey,
+    owner.recipeId,
+    execution.id,
+  );
   const state = writeStates.get(key) ?? {
     owner,
     latest: null,
@@ -550,18 +555,21 @@ export function saveRecipeExecution(
     timer: null,
     waiters: [],
   };
+  const previousJobId =
+    state.latest?.jobId ?? persistedExecutions.get(persistedKey)?.jobId;
+  const jobAttached = Boolean(execution.jobId) && !previousJobId;
   state.latest = execution;
   writeStates.set(key, state);
   const promise = new Promise<void>((resolve, reject) => {
     state.waiters.push({ resolve, reject });
   });
   const terminal = TERMINAL.has(execution.status);
-  if (terminal && state.timer) {
+  if ((terminal || jobAttached) && state.timer) {
     clearTimeout(state.timer);
     state.timer = null;
   }
   if (!state.running && !state.timer) {
-    if (terminal) void drainWrites(key, state);
+    if (terminal || jobAttached) void drainWrites(key, state);
     else state.timer = setTimeout(() => void drainWrites(key, state), 200);
   }
   return promise;

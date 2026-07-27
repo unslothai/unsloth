@@ -186,11 +186,16 @@ function sanitizeRecipeForPersistence(
       removedPaths.push([...path, normalizedKey].join("."));
       continue;
     }
-    output[key] = sanitizeRecipeForPersistence(
-      entry,
-      [...path, normalizedKey],
-      removedPaths,
-    );
+    Object.defineProperty(output, key, {
+      value: sanitizeRecipeForPersistence(
+        entry,
+        [...path, normalizedKey],
+        removedPaths,
+      ),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
   return output;
 }

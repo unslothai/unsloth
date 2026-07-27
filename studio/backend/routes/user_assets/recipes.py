@@ -185,7 +185,11 @@ def upsert_recipe_execution(
             # snapshot. Keep the terminal history in that race, but never
             # trust an artifact path that is no longer server-verifiable.
             if payload.status == "completed":
-                metadata.pop("artifact_path", None)
+                existing = user_assets_db.get_recipe_execution(
+                    current_subject, recipe_id, execution_id
+                )
+                if existing is None or existing.get("artifact_path") != payload.artifact_path:
+                    metadata.pop("artifact_path", None)
             else:
                 raise_validation(
                     UserAssetValidationError(

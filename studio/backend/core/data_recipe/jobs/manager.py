@@ -358,6 +358,14 @@ class JobManager:
                 "finished_at": job.finished_at,
             }
 
+    def get_status_for_control_plane(self, job_id: str) -> dict | None:
+        """Read the live job through the separately authenticated MCP control plane."""
+        with self._lock:
+            if self._job is None or self._job.job_id != job_id:
+                return None
+            owner_subject = self._job.owner_subject
+        return self.get_status(job_id, owner_subject)
+
     def get_current_status(self, owner_subject: str) -> dict | None:
         """Return owner details; other owners see only the busy bit used for 409 admission."""
         with self._lock:
@@ -430,6 +438,20 @@ class JobManager:
             return None
 
         return self.get_dataset_from_artifact(artifact_path, limit = limit, offset = offset)
+
+    def get_dataset_for_control_plane(
+        self,
+        job_id: str,
+        *,
+        limit: int,
+        offset: int = 0,
+    ) -> dict[str, Any] | None:
+        """Read live job data through the separately authenticated MCP control plane."""
+        with self._lock:
+            if self._job is None or self._job.job_id != job_id:
+                return None
+            owner_subject = self._job.owner_subject
+        return self.get_dataset(job_id, owner_subject, limit = limit, offset = offset)
 
     @staticmethod
     def get_dataset_from_artifact(

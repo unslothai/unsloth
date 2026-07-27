@@ -71,6 +71,19 @@ def _manager_with_active_job():
     return m
 
 
+def test_control_plane_reads_ui_owned_job_without_weakening_owner_checks():
+    manager = _manager_with_active_job()
+    manager._job.dataset = [{"value": 1}, {"value": 2}]
+
+    assert manager.get_status("job-test", "other-owner") is None
+    assert manager.get_dataset("job-test", "other-owner", limit = 1) is None
+    assert manager.get_status_for_control_plane("job-test")["job_id"] == "job-test"
+    assert manager.get_dataset_for_control_plane("job-test", limit = 1) == {
+        "dataset": [{"value": 1}],
+        "total": 2,
+    }
+
+
 def test_dead_worker_blocks_replacement_until_queued_completion_is_finalized():
     manager = _manager_with_active_job()
     old_job = manager._job
