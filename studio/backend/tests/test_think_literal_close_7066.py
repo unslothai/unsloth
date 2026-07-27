@@ -1465,9 +1465,7 @@ def test_an_executed_tool_result_keeps_its_id_paired_with_the_call():
                 for inner in ast.walk(node):
                     if isinstance(inner, ast.Name):
                         found.add(inner.id)
-                    elif isinstance(inner, ast.Call) and isinstance(
-                        inner.func, ast.Attribute
-                    ):
+                    elif isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute):
                         found.add(inner.func.attr)
         return found
 
@@ -1481,16 +1479,21 @@ def test_an_executed_tool_result_keeps_its_id_paired_with_the_call():
 
     # The pass itself keeps the pair matching, which is what that relies on.
     poisoned = "call<tool_call|>1"
-    out = neutralize_control_markup_in_messages([
-        {
-            "role": "assistant",
-            "tool_calls": [
-                {"id": poisoned, "type": "function",
-                 "function": {"name": "f", "arguments": "{}"}}
-            ],
-        },
-        {"role": "tool", "tool_call_id": poisoned, "name": "f", "content": "ok"},
-    ])
+    out = neutralize_control_markup_in_messages(
+        [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": poisoned,
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": poisoned, "name": "f", "content": "ok"},
+        ]
+    )
     assert out[0]["tool_calls"][0]["id"] == out[1]["tool_call_id"]
     assert "<tool_call|>" not in out[1]["tool_call_id"]
 
@@ -1504,6 +1507,7 @@ def test_a_held_marker_prefix_is_released_before_a_tool_call_opens():
     ``finish()`` emits it with a later output_index than the call and reverses
     the model's own output order (#7334).
     """
+
     def transcript(flush: bool) -> list:
         extractor = _ResponsesReasoningExtractor(parse_think_markers = True)
         out = []
@@ -1535,9 +1539,7 @@ def test_a_held_marker_prefix_is_released_before_a_tool_call_opens():
 
 def test_the_tool_call_branch_releases_both_holdbacks():
     """Flushing only the structured buffer leaves the raw one to reorder."""
-    src = (
-        Path(__file__).resolve().parents[1] / "routes/inference.py"
-    ).read_text(encoding = "utf-8")
+    src = (Path(__file__).resolve().parents[1] / "routes/inference.py").read_text(encoding = "utf-8")
     branch = src.split("# Tool-call delta: flush held reasoning first", 1)[1][:900]
     assert "extractor.flush_structured()" in branch
     assert "extractor.flush_pending()" in branch

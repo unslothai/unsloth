@@ -12450,9 +12450,7 @@ class LlamaCppBackend:
                     )
 
                     conversation.append(
-                        neutralize_control_markup_in_messages(
-                            [dict(completion.tool_message())]
-                        )[0]
+                        neutralize_control_markup_in_messages([dict(completion.tool_message())])[0]
                     )
 
                     if _forced_tool_call_pending:

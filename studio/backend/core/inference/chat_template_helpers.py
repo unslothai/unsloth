@@ -425,9 +425,7 @@ def neutralize_message_content_for_role(role: Optional[str], content):
         # Text of each part as the template will render it, so a marker cut
         # across two parts can be spotted before the parts are rewritten.
         texts = [
-            part
-            if isinstance(part, str)
-            else part.get("text") if isinstance(part, dict) else None
+            part if isinstance(part, str) else part.get("text") if isinstance(part, dict) else None
             for part in content
         ]
         changed = False
@@ -438,7 +436,7 @@ def neutralize_message_content_for_role(role: Optional[str], content):
             seam = ""
             if isinstance(texts[index], str):
                 ahead = next(
-                    (t for t in texts[index + 1:] if isinstance(t, str) and t.strip()),
+                    (t for t in texts[index + 1 :] if isinstance(t, str) and t.strip()),
                     "",
                 )
                 if _split_marker_boundary(texts[index], ahead, markers):
