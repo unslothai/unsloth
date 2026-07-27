@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import ast
 import inspect
+import logging
 import os
 import re
 import struct
 import sys
+import textwrap
 import threading
 import types as _types
 from pathlib import Path
@@ -62,6 +64,8 @@ from core.inference.llama_cpp import (
     _backfill_usage_from_timings,
     _build_ngram_mod_flags,
     _canonicalize_spec_mode,
+    _effective_spec_type,
+    _extra_args_requests_mtp,
     _extra_args_set_any_flag,
     _extra_args_set_spec_type,
     _is_mtp_model_name,
@@ -2511,3 +2515,269 @@ def test_adopted_extras_reach_the_replay_snapshot():
     assert guard < update
     # And derived from the one slicer, never a second derivation.
     assert body.count("_extras_after_startup_recovery") == 1
+
+
+# ── The MTP fallback rung reshapes the argv too ──
+#
+# The flash-attn rungs rewrite the extras in place. The MTP fallback instead
+# swaps the spec block out (which MOVES the extras) and appends a trailing
+# --spec-default (which, by llama.cpp's last-wins parsing, is what makes a
+# user's own --spec-type mtp inert). Both halves have to reach the reported and
+# the replayed extras, or the surviving server runs spec-default while /status
+# advertises MTP and every reload pays the crash and this fallback again.
+
+
+def _mtp_fallback_argv(typed, spec_flags):
+    """The argv the MTP fallback rung launches, and where the extras land in it.
+
+    Mirrors load_model: Unsloth's flags, the spec block at _spec_start, then the
+    extras last; the fallback swaps the block for a single --spec-default and
+    appends another when the extras still ask for MTP.
+    """
+    prefix = ["llama-server", "-m", "/m.gguf", "--flash-attn", "on"]
+    spec_start = len(prefix)
+    cmd = [*prefix, *spec_flags, *typed]
+    extras_start = len(cmd) - len(typed)
+    fallback = cmd[:spec_start] + ["--spec-default"] + cmd[spec_start + len(spec_flags) :]
+    extras_start += 1 - len(spec_flags)
+    override = []
+    # env is empty: the extras (or Unsloth's own block) own --spec-type here.
+    if _extra_args_requests_mtp(typed, {}):
+        fallback.append("--spec-default")
+        override = ["--spec-default"]
+    return fallback, extras_start, override
+
+
+def test_recovered_extras_fold_in_the_spec_override_the_fallback_appended():
+    typed = ["--spec-type", "mtp"]
+    # The user owns --spec-type, so Unsloth emits no block of its own.
+    assert _extra_args_set_spec_type(typed) is True
+    fallback, start, override = _mtp_fallback_argv(typed, spec_flags = [])
+    assert fallback[-1] == "--spec-default" and override == ["--spec-default"]
+
+    recovered = LlamaCppBackend._extras_after_startup_recovery(fallback, typed, start, override)
+    assert recovered == ["--spec-type", "mtp", "--spec-default"]
+    # Verbatim tail of the argv the surviving server ran, nothing invented.
+    assert recovered == fallback[start:]
+    # And it now means what that server does, so a reload stops re-requesting
+    # MTP instead of paying the crash and the fallback all over again.
+    assert _effective_spec_type(recovered, {}) == "default"
+    assert _extra_args_requests_mtp(recovered, {}) is False
+    assert _extra_args_requests_mtp(typed, {}) is True
+
+
+def test_recovered_extras_track_the_spec_block_swap_moving_the_window():
+    # Unsloth owns the spec block and the extras ask for nothing speculative, so
+    # no override is appended -- but the swap still shortens the argv ahead of
+    # the extras, and only the moved start reads them back.
+    typed = ["--no-mmap", "--cache-type-k", "q8_0"]
+    spec_flags = ["--spec-type", "mtp", "--spec-draft-n-max", "2"]
+    fallback, start, override = _mtp_fallback_argv(typed, spec_flags)
+    assert override == []
+    assert LlamaCppBackend._extras_after_startup_recovery(fallback, typed, start) == typed
+    # The pre-swap index is what load_model recorded before the first spawn.
+    stale = start + len(spec_flags) - 1
+    assert LlamaCppBackend._extras_after_startup_recovery(fallback, typed, stale) is None
+
+
+def test_recovered_extras_refuse_an_override_the_retry_never_appended():
+    # The rung names the override it added; if that is not literally the tail
+    # after the extras, the caller described the wrong rung and nothing is
+    # adopted rather than a token the server never saw being reported.
+    typed = ["--spec-type", "mtp"]
+    fallback, start, _ = _mtp_fallback_argv(typed, spec_flags = [])
+    assert LlamaCppBackend._extras_after_startup_recovery(fallback, typed, start, ["--fit"]) is None
+    # A window that already ends the argv has no room for one either.
+    assert (
+        LlamaCppBackend._extras_after_startup_recovery(
+            fallback[:-1], typed, start, ["--spec-default"]
+        )
+        is None
+    )
+    # No extras stays no adoption: an env-only MTP request must not have a
+    # --spec-default the user never typed appear in their custom args box.
+    assert (
+        LlamaCppBackend._extras_after_startup_recovery(fallback, [], start, ["--spec-default"])
+        is None
+    )
+
+
+def test_mtp_fallback_extras_reach_both_the_report_and_the_replay():
+    """Reporting and replay must agree on the flags the fallback left running.
+
+    Reporting is _extra_args (what /load and /status echo); replay is the
+    _last_load_kwargs snapshot the two respawn paths relaunch. The adopt helper
+    is the single place that can move both, so drive the real slicer and feed
+    its output through both consumers.
+    """
+    typed = ["--spec-type", "mtp"]
+    fallback, start, override = _mtp_fallback_argv(typed, spec_flags = [])
+    adopted = LlamaCppBackend._extras_after_startup_recovery(fallback, typed, start, override)
+    assert adopted is not None and adopted != typed
+
+    # Replay path 1: _respawn_if_dead.
+    b = _recovered_backend(snapshot_extras = adopted, reported_extras = adopted)
+    seen = {}
+
+    def _fake_load_model(**kwargs):
+        seen["extra_args"] = kwargs.get("extra_args")
+        return True
+
+    b.load_model = _fake_load_model
+    b._server_socket_is_open = lambda: False
+    assert b._respawn_if_dead() is True
+    assert seen["extra_args"] == adopted
+    # Replay path 2: the MTP-crash watchdog.
+    b2 = _recovered_backend(snapshot_extras = adopted, reported_extras = adopted)
+    seen2 = {}
+    done = threading.Event()
+
+    def _fake_load_model2(**kwargs):
+        seen2["extra_args"] = kwargs.get("extra_args")
+        done.set()
+        return True
+
+    b2.load_model = _fake_load_model2
+    assert b2._maybe_recover_from_mtp_crash(RuntimeError("server exited")) is True
+    assert done.wait(10), "the watchdog never reloaded"
+    assert seen2["extra_args"] == adopted
+    # Both replays, and the reported list, agree and no longer ask for MTP, so
+    # the relaunch cannot walk back into the configuration that just failed.
+    assert seen["extra_args"] == seen2["extra_args"] == b._extra_args
+    for replayed in (seen["extra_args"], seen2["extra_args"], b._extra_args):
+        assert _extra_args_requests_mtp(replayed, {}) is False
+
+
+def test_load_model_adopts_the_recovered_extras_at_the_mtp_fallback_rung():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    fallback = src.index("fallback_cmd = (")
+    spawn = src.index("_spawn_and_wait(fallback_cmd", fallback)
+    rung = src[fallback:spawn]
+
+    # The swap sits before the extras, so the recorded start moves with it --
+    # otherwise the flag-for-flag check silently adopts nothing.
+    assert "_extra_args_start += 1 - len(spec_flags)" in rung
+    # The trailing override is passed to the adopt, not just to the argv, and
+    # only when it was really appended.
+    append = rung.index('fallback_cmd.append("--spec-default")')
+    assert rung.index('_spec_override = ["--spec-default"]') > append
+    adopt = rung.index("_adopt_recovered_extras(fallback_cmd, _spec_override)")
+    assert rung.index("_extra_args_start += 1 - len(spec_flags)") < adopt
+
+
+def test_every_recovery_rung_relaunches_an_argv_it_adopted():
+    """Tripwire: a new rung cannot reintroduce the stale-report bug unnoticed.
+
+    Three rungs in a row shipped with the same defect (the flash-attn report,
+    the replay snapshot, the MTP fallback), so pin the whole set. Adding a rung
+    means a new argv name here, which fails this test until its author decides
+    -- and records -- whether it has to adopt.
+    """
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    relaunched = re.findall(r"(?:_spawn_and_wait|_start_llama_process)\((\w+)", src)
+    assert relaunched == [
+        "run_cmd",  # the spawn helper itself; the --fit retries append after the extras
+        "cmd",  # first spawn, the extras as typed
+        "_fa_cmd",  # flash-attn off at startup
+        "_fa_cmd",  # flash-attn off after the MTP decode probe
+        "fallback_cmd",  # MTP -> --spec-default
+        "cmd",  # text-only --mmproj strip, the last rung
+    ], "a recovery rung was added or removed: does it need _adopt_recovered_extras?"
+
+    # Every rebuilt argv is adopted before it is relaunched.
+    adopts = [m.start() for m in re.finditer(r"_adopt_recovered_extras\((?!retry_cmd)", src)]
+    spawns = [m.start() for m in re.finditer(r"_spawn_and_wait\((?:_fa_cmd|fallback_cmd)", src)]
+    assert len(adopts) == len(spawns) == 3
+    for adopt, spawn in zip(adopts, spawns):
+        assert adopt < spawn
+
+    # The exempt rung says why in place, so the exemption is a decision on the
+    # record rather than an omission.
+    strip = src.index("cmd = self._strip_mmproj_args(_last_spawn_cmd)")
+    assert "The only rung with nothing to adopt" in src[strip : strip + 600]
+
+
+def _lifted_block(src, first_line, stop):
+    """The shipped source of one block of load_model, dedented for re-hosting."""
+    start = src.rindex("\n", 0, src.index(first_line)) + 1
+    return textwrap.dedent(src[start : src.index(stop, start)])
+
+
+def _run_mtp_fallback_rung(typed, spec_flags):
+    """Run load_model's MTP fallback rung, shipped source and all, in isolation.
+
+    load_model is far too entangled to drive end to end, but the rung and the
+    adopt closure it calls are self-contained over their locals: the argv being
+    rebuilt, the recorded extras start, the ``extra_args`` the healthy commit
+    copies into _extra_args (the REPORTED list), and ``_pending_load_kwargs``
+    which it copies into _last_load_kwargs (the REPLAYED list). Re-hosting both
+    in a stand-in enclosing scope exercises the real code against all of them,
+    so this fails if the rung stops adopting, mis-tracks the start index, or
+    stops naming the override it appended.
+    """
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    closure = _lifted_block(src, "def _adopt_recovered_extras", "healthy = _spawn_and_wait(cmd)")
+    rung = _lifted_block(src, "fallback_cmd = (", "healthy = _spawn_and_wait(fallback_cmd")
+    wrapper = (
+        "def _run(self, logger, extra_args, _extra_args_start, _pending_load_kwargs,\n"
+        "         cmd, _spec_start, spec_flags, _launch_spec_env):\n"
+        + textwrap.indent(closure, "    ")
+        + textwrap.indent(rung, "    ")
+        + "    return fallback_cmd, _extra_args_start, extra_args\n"
+    )
+    ns = dict(vars(sys.modules["core.inference.llama_cpp"]))
+    exec(compile(wrapper, "<load_model MTP fallback rung>", "exec"), ns)
+
+    prefix = ["llama-server", "-m", "/m.gguf", "--flash-attn", "on"]
+    spec_start = len(prefix)
+    cmd = [*prefix, *spec_flags, *typed]
+    pending = {"model_identifier": "owner/model", "extra_args": list(typed)}
+    fallback, start, adopted = ns["_run"](
+        LlamaCppBackend,
+        logging.getLogger("test"),
+        list(typed),
+        len(cmd) - len(typed),
+        pending,
+        cmd,
+        spec_start,
+        list(spec_flags),
+        {},
+    )
+    return fallback, start, adopted, pending
+
+
+def test_the_mtp_fallback_rung_reports_and_replays_what_it_launched():
+    typed = ["--spec-type", "mtp"]
+    fallback, start, adopted, pending = _run_mtp_fallback_rung(typed, spec_flags = [])
+
+    # The argv the surviving server runs: the user's MTP request is still there,
+    # overridden by the trailing --spec-default that llama.cpp takes last.
+    assert fallback[-1] == "--spec-default"
+    launched = ["--spec-type", "mtp", "--spec-default"]
+    assert fallback[start:] == launched
+    # Reporting: the local the healthy commit copies into _extra_args, which
+    # /load, /status and the settings panel echo.
+    assert adopted == launched
+    # Replay: the snapshot the healthy commit copies into _last_load_kwargs,
+    # which _respawn_if_dead and _maybe_recover_from_mtp_crash relaunch.
+    assert pending["extra_args"] == launched
+    # Consistent with each other, and no longer asking for the MTP that just
+    # failed, so no reload walks back into it.
+    assert adopted == pending["extra_args"]
+    assert _extra_args_requests_mtp(typed, {}) is True
+    assert _extra_args_requests_mtp(adopted, {}) is False
+
+
+def test_the_mtp_fallback_rung_leaves_untouched_extras_alone():
+    # Unsloth's own spec block is swapped out and the extras say nothing about
+    # speculative decoding: nothing to adopt, so an ordinary load still reports
+    # and replays exactly what the caller asked for.
+    typed = ["--no-mmap", "--cache-type-k", "q8_0"]
+    spec_flags = ["--spec-type", "mtp", "--spec-draft-n-max", "2"]
+    fallback, start, adopted, pending = _run_mtp_fallback_rung(typed, spec_flags)
+
+    assert fallback[-1] != "--spec-default"
+    assert adopted == typed
+    assert pending["extra_args"] == typed
+    # The start still points at them even though the swap shortened the argv.
+    assert fallback[start:] == typed

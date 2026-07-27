@@ -35,6 +35,7 @@ from typing import (
     Mapping,
     MutableMapping,
     Optional,
+    Sequence,
     Union,
 )
 
@@ -6285,7 +6286,10 @@ class LlamaCppBackend:
 
     @staticmethod
     def _extras_after_startup_recovery(
-        retry_cmd: list[str], extra_args: Optional[List[str]], extras_start: int
+        retry_cmd: list[str],
+        extra_args: Optional[List[str]],
+        extras_start: int,
+        appended: Sequence[str] = (),
     ) -> Optional[List[str]]:
         """The user's pass-through args as a crash-recovery retry rewrote them.
 
@@ -6298,16 +6302,30 @@ class LlamaCppBackend:
         per-model config re-launches the flags that just crashed. Mirrors the
         manual-GPU strip, which already commits its rewritten extras.
 
-        The rewrite preserves the token count and edits in place, so the extras
-        still occupy ``[extras_start, extras_start + len(extra_args))``. None
-        when that window does not line up flag-for-flag, so the caller keeps the
-        original rather than reporting a mis-sliced list.
+        A recovery rung reshapes the argv in one of two ways, so both are read
+        back here:
+
+        * In place, preserving the token count (the flash-attn flip and its
+          V-cache reset). The extras stay in ``[extras_start, extras_start +
+          len(extra_args))``, and ``extras_start`` is unchanged.
+        * By splicing tokens outside that window. A splice BEFORE the extras
+          (the MTP fallback swapping the spec block, the text-only retry
+          dropping ``--mmproj``) moves them, so the caller passes the shifted
+          ``extras_start``; a rung that also APPENDS an override after them (the
+          MTP fallback's trailing ``--spec-default``) passes it as ``appended``,
+          because llama.cpp's last-wins parsing makes that token part of what
+          the user's flags effectively mean.
+
+        None when the window does not line up flag-for-flag, or when
+        ``appended`` is not literally the argv tail that follows it, so the
+        caller keeps the original rather than reporting a mis-sliced list.
         """
         if not extra_args:
             return None
         originals = [str(a) for a in extra_args]
         end = extras_start + len(originals)
-        if extras_start < 0 or end > len(retry_cmd):
+        suffix = [str(token) for token in appended]
+        if extras_start < 0 or end + len(suffix) > len(retry_cmd):
             return None
         window = [str(token) for token in retry_cmd[extras_start:end]]
         for original, rewritten in zip(originals, window):
@@ -6317,7 +6335,11 @@ class LlamaCppBackend:
                 rewritten.partition("=")[0]
             ):
                 return None
-        return window
+        # Only adopt an override the retry really appended right after the
+        # extras: anything else means the caller mis-described the rung.
+        if suffix and [str(t) for t in retry_cmd[end : end + len(suffix)]] != suffix:
+            return None
+        return window + suffix
 
     @staticmethod
     def _drop_env_quantized_v_cache(env: MutableMapping[str, str]) -> bool:
@@ -8467,17 +8489,25 @@ class LlamaCppBackend:
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
 
-                def _adopt_recovered_extras(retry_cmd):
+                def _adopt_recovered_extras(retry_cmd, appended = ()):
                     """Re-read the extras out of a recovery-rewritten argv.
 
                     Every rung below builds on retry_cmd, and the healthy-load
                     commit stores ``extra_args``, so adopting the rewrite here
                     keeps /load, /status and the settings panel on the flags the
                     surviving server runs.
+
+                    Called by EVERY rung that reshapes the argv, so none of them
+                    can leave the report and the replay on flags the surviving
+                    server never ran. The two moving parts are supplied by the
+                    rung itself: ``_extra_args_start`` is read live (a rung that
+                    splices tokens before the extras updates it in place, so a
+                    stale index can never be passed here), and ``appended`` names
+                    the override the rung added after them.
                     """
                     nonlocal extra_args
                     recovered = self._extras_after_startup_recovery(
-                        retry_cmd, extra_args, _extra_args_start
+                        retry_cmd, extra_args, _extra_args_start, appended
                     )
                     if recovered is None or recovered == [str(a) for a in extra_args or ()]:
                         return
@@ -8659,10 +8689,28 @@ class LlamaCppBackend:
                         + ["--spec-default"]
                         + cmd[_spec_start + len(spec_flags) :]
                     )
+                    # The swap replaces len(spec_flags) tokens with one, and sits
+                    # before the extras, so their window slides with it. Keep the
+                    # recorded start in step or _adopt_recovered_extras reads the
+                    # wrong tokens and (by its flag-for-flag check) silently
+                    # adopts nothing.
+                    _extra_args_start += 1 - len(spec_flags)
                     # User/env MTP survives in the tail; llama.cpp takes the last
                     # spec flag, so a trailing --spec-default overrides it too.
+                    _spec_override: list[str] = []
                     if _extra_args_requests_mtp(extra_args, env = _launch_spec_env):
                         fallback_cmd.append("--spec-default")
+                        # That trailing token is what makes the user's own
+                        # --spec-type mtp inert, so it belongs to the extras the
+                        # report and the replay carry: without it /status keeps
+                        # advertising MTP the surviving server is not running,
+                        # and the saved config re-requests MTP on every reload,
+                        # paying the crash and this fallback again each time.
+                        # Extras-only by construction: an env-only MTP request
+                        # leaves extra_args empty, and the recovery slicer
+                        # declines to invent a flag the user never typed.
+                        _spec_override = ["--spec-default"]
+                    _adopt_recovered_extras(fallback_cmd, _spec_override)
                     healthy = _spawn_and_wait(fallback_cmd, label = "-retry")
                     if healthy:
                         self._speculative_type = "default"
@@ -8701,6 +8749,12 @@ class LlamaCppBackend:
                                 "or check GPU/driver logs."
                             )
                         cmd = self._strip_mmproj_args(_last_spawn_cmd)
+                        # The only rung with nothing to adopt: it drops Unsloth's
+                        # own --mmproj pair and adds no override, so the extras
+                        # come through byte-for-byte and mean exactly what they
+                        # did at launch. It is also the last rung, so the shifted
+                        # _extra_args_start has no further reader. Any rung added
+                        # after this one must adopt (see _adopt_recovered_extras).
                         # This retry bypasses _spawn_and_wait, so refresh the
                         # launched-argv snapshot itself -- the zero-offload
                         # classification below must not see the stripped --mmproj.
