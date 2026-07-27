@@ -434,19 +434,38 @@ def test_webm_export_still_works_without_an_audio_encoder(monkeypatch):
     av = pytest.importorskip("av")
     import io
 
-    real_add_stream = av.container.OutputContainer.add_stream
+    # The refusal is injected by wrapping the container av.open() hands back, NOT by patching
+    # av.container.OutputContainer.add_stream: that is a C extension type, and on PyAV 17 (what the
+    # 3.10 CI leg resolves) setting an attribute on it raises "cannot set 'add_stream' attribute of
+    # immutable type". Modules stay patchable on every build.
+    real_open = av.open
 
-    def _no_opus(
-        self,
-        codec_name = None,
-        *args,
-        **kwargs,
-    ):
-        if codec_name == "libopus":
-            raise ValueError("unknown encoder 'libopus'")
-        return real_add_stream(self, codec_name, *args, **kwargs)
+    class _NoOpusContainer:
+        """Delegates to the real output container, but refuses the Opus encoder."""
 
-    monkeypatch.setattr(av.container.OutputContainer, "add_stream", _no_opus)
+        def __init__(self, inner):
+            self._inner = inner
+
+        def add_stream(self, codec_name = None, *args, **kwargs):
+            if codec_name == "libopus":
+                raise ValueError("unknown encoder 'libopus'")
+            return self._inner.add_stream(codec_name, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self._inner.__exit__(*exc)
+
+    def _open(file, mode = "r", *args, **kwargs):
+        inner = real_open(file, mode, *args, **kwargs)
+        return _NoOpusContainer(inner) if mode == "w" else inner
+
+    monkeypatch.setattr(av, "open", _open)
     record = gallery.save(_real_mp4_with_audio(), _meta())
     webm = gallery.transcode(record["id"], "webm")
     assert webm is not None and webm[:4] == b"\x1a\x45\xdf\xa3"

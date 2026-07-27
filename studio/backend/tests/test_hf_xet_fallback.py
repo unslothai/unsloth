@@ -44,6 +44,32 @@ import utils.hf_xet_fallback as xf
 DL_REPO, FILE = "ztest/xet-dl", "model-Q4_K_XL.gguf"
 
 
+@pytest.fixture(autouse = True)
+def _restore_shim_module_identity():
+    """Put BOTH bindings of the shim back after every test in this file.
+
+    The degraded-path tests below drop ``utils.hf_xet_fallback`` from ``sys.modules`` and import a
+    throwaway copy. Restoring only the ``sys.modules`` entry is not enough: the import machinery
+    also rebinds the module as an attribute of the ``utils`` PACKAGE, and that binding keeps
+    pointing at the throwaway. The two then disagree, and a later test in the same process
+    monkeypatches one copy (pytest resolves a dotted target through the package attribute) while
+    the code under test imports the other, so the patch silently does nothing and the real
+    downloader runs against the network. Caught by
+    tests/test_video_backend.py::test_fetch_te_prequant_only_reports_what_it_downloaded, which
+    reached the Hub and got a 401 when it ran after this file."""
+    import utils as _utils_pkg
+
+    original = sys.modules.get("utils.hf_xet_fallback")
+    original_attr = getattr(_utils_pkg, "hf_xet_fallback", None)
+    try:
+        yield
+    finally:
+        if original is not None:
+            sys.modules["utils.hf_xet_fallback"] = original
+        if original_attr is not None:
+            _utils_pkg.hf_xet_fallback = original_attr
+
+
 def _requires_shared():
     if shared is None:
         pytest.skip("unsloth_zoo.hf_xet_fallback is not installed in this environment")
