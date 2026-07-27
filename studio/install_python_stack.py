@@ -1175,9 +1175,32 @@ def _has_usable_nvidia_gpu() -> bool:
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
     if cvd is not None and cvd.strip() in ("", "-1"):
         return False
-    exe = shutil.which("nvidia-smi")
-    if not exe and IS_WINDOWS:
-        for _candidate in (
+    def _lists_a_gpu(exe: str) -> bool:
+        try:
+            result = subprocess.run(
+                [exe, "-L"],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 10,
+            )
+        except Exception:
+            return False
+        return result.returncode == 0 and "GPU " in result.stdout
+
+    # Try every candidate until one lists a GPU, rather than committing to the
+    # first executable found. A stale or driverless nvidia-smi on PATH exits
+    # non-zero listing nothing; stopping there would report the host as
+    # NVIDIA-free and route it into _ensure_rocm_torch() even though a working
+    # driver binary sits at a fixed location. install.ps1 and setup.ps1 both
+    # gate their fallback on the GPU check failing, not on the PATH lookup
+    # missing, so mirror that.
+    candidates = []
+    _path_exe = shutil.which("nvidia-smi")
+    if _path_exe:
+        candidates.append(_path_exe)
+    if IS_WINDOWS:
+        candidates.extend((
             os.path.join(
                 os.environ.get("ProgramFiles", r"C:\Program Files"),
                 "NVIDIA Corporation",
@@ -1189,23 +1212,12 @@ def _has_usable_nvidia_gpu() -> bool:
                 "System32",
                 "nvidia-smi.exe",
             ),
-        ):
-            if os.path.isfile(_candidate):
-                exe = _candidate
-                break
-    if exe:
-        try:
-            result = subprocess.run(
-                [exe, "-L"],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                timeout = 10,
-            )
-            if result.returncode == 0 and "GPU " in result.stdout:
-                return True
-        except Exception:
-            pass
+        ))
+    for _candidate in candidates:
+        if _candidate != _path_exe and not os.path.isfile(_candidate):
+            continue
+        if _lists_a_gpu(_candidate):
+            return True
     # Fallback: the NVIDIA driver exposes one subdirectory per GPU under
     # /proc/driver/nvidia/gpus/ on Linux regardless of nvidia-smi state.
     if sys.platform != "win32":
