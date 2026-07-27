@@ -417,10 +417,7 @@ async def _is_downloadable_model(repo_id: str, hf_token: Optional[str]) -> bool:
 
     def _probe():
         from huggingface_hub import HfApi
-
-        return HfApi(token = _hub_token(hf_token)).model_info(
-            repo_id, timeout = _MODEL_INFO_TIMEOUT_S
-        )
+        return HfApi(token = _hub_token(hf_token)).model_info(repo_id, timeout = _MODEL_INFO_TIMEOUT_S)
 
     try:
         info = await asyncio.to_thread(_probe)
