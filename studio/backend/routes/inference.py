@@ -14726,6 +14726,117 @@ async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
 # =====================================================================
 
 
+_JSON_SCHEMA_MAP_KEYWORDS = frozenset(
+    {
+        "$defs",
+        "definitions",
+        "dependentSchemas",
+        "patternProperties",
+        "properties",
+    }
+)
+_JSON_SCHEMA_SINGLE_KEYWORDS = frozenset(
+    {
+        "additionalProperties",
+        "contains",
+        "contentSchema",
+        "else",
+        "if",
+        "items",
+        "not",
+        "propertyNames",
+        "then",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+    }
+)
+_JSON_SCHEMA_LIST_KEYWORDS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
+_LLAMA_GRAMMAR_MAX_REPETITION = 2000
+_JSON_SCHEMA_REPETITION_KEYWORDS = frozenset(
+    {"maxItems", "maxLength", "minItems", "minLength"}
+)
+
+
+def _llama_compatible_tool_schema(schema):
+    """Return a llama.cpp-compatible copy of one JSON Schema node.
+
+    JSON Schema ``pattern`` expressions match anywhere in a string, so an
+    unanchored pattern is valid and cannot be made compatible by merely adding
+    ``^`` and ``$`` without changing its meaning. llama.cpp's grammar converter
+    currently rejects those patterns outright. Its grammar parser likewise
+    rejects repetition bounds above 2000. Omit only those unsupported
+    constraints from the local-backend copy; the agent retains and validates
+    its original schema, while every compatible constraint still reaches
+    llama.cpp.
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    compatible = dict(schema)
+    pattern = compatible.get("pattern")
+    if isinstance(pattern, str) and not (pattern.startswith("^") and pattern.endswith("$")):
+        compatible.pop("pattern")
+    # llama-grammar.cpp refuses repetition bounds above its sane-default
+    # threshold. Dropping the local-backend constraint preserves every value
+    # the client schema accepts; capping it would incorrectly reject otherwise
+    # valid tool arguments.
+    for keyword in _JSON_SCHEMA_REPETITION_KEYWORDS:
+        bound = compatible.get(keyword)
+        if (
+            isinstance(bound, int)
+            and not isinstance(bound, bool)
+            and bound > _LLAMA_GRAMMAR_MAX_REPETITION
+        ):
+            compatible.pop(keyword)
+
+    for keyword in _JSON_SCHEMA_MAP_KEYWORDS:
+        children = compatible.get(keyword)
+        if isinstance(children, dict):
+            compatible[keyword] = {
+                key: _llama_compatible_tool_schema(value) for key, value in children.items()
+            }
+
+    for keyword in _JSON_SCHEMA_SINGLE_KEYWORDS:
+        child = compatible.get(keyword)
+        if isinstance(child, dict):
+            compatible[keyword] = _llama_compatible_tool_schema(child)
+
+    for keyword in _JSON_SCHEMA_LIST_KEYWORDS:
+        children = compatible.get(keyword)
+        if isinstance(children, list):
+            compatible[keyword] = [
+                _llama_compatible_tool_schema(value) for value in children
+            ]
+
+    return compatible
+
+
+def _llama_compatible_tools(openai_tools):
+    if not isinstance(openai_tools, list):
+        return openai_tools
+
+    compatible_tools = []
+    for tool in openai_tools:
+        if not isinstance(tool, dict):
+            compatible_tools.append(tool)
+            continue
+        function = tool.get("function")
+        parameters = function.get("parameters") if isinstance(function, dict) else None
+        if not isinstance(parameters, dict):
+            compatible_tools.append(tool)
+            continue
+        compatible_tools.append(
+            {
+                **tool,
+                "function": {
+                    **function,
+                    "parameters": _llama_compatible_tool_schema(parameters),
+                },
+            }
+        )
+    return compatible_tools
+
+
 def _build_passthrough_payload(
     openai_messages,
     openai_tools,
@@ -14753,7 +14864,7 @@ def _build_passthrough_payload(
         "stream": stream,
     }
     if openai_tools:
-        body["tools"] = openai_tools
+        body["tools"] = _llama_compatible_tools(openai_tools)
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
     if seed is not None:

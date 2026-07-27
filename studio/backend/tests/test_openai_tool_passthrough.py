@@ -1191,6 +1191,41 @@ class TestBuildPassthroughPayloadToolChoice:
         body = _build_passthrough_payload(**self._args(), tool_choice = tc)
         assert body["tool_choice"] == tc
 
+    def test_llama_incompatible_tool_constraints_are_omitted(self):
+        args = self._args()
+        schema = args["openai_tools"][0]["function"]["parameters"]
+        schema["properties"] = {
+            "declarationKey": {"type": "string", "pattern": r"\S"},
+            "exactKey": {"type": "string", "pattern": r"^[A-Z]+$"},
+            "nested": {
+                "type": "array",
+                "items": {
+                    "anyOf": [
+                        {"type": "string", "pattern": "token"},
+                        {"type": "string", "pattern": "^fixed$"},
+                    ],
+                    "default": {"pattern": "annotation data"},
+                },
+            },
+            "largeScript": {"type": "string", "minLength": 1, "maxLength": 65536},
+            "boundedScript": {"type": "string", "maxLength": 2000},
+        }
+
+        body = _build_passthrough_payload(**args)
+        forwarded = body["tools"][0]["function"]["parameters"]["properties"]
+
+        assert forwarded["declarationKey"] == {"type": "string"}
+        assert forwarded["exactKey"]["pattern"] == r"^[A-Z]+$"
+        nested = forwarded["nested"]["items"]
+        assert nested["anyOf"][0] == {"type": "string"}
+        assert nested["anyOf"][1]["pattern"] == "^fixed$"
+        assert nested["default"] == {"pattern": "annotation data"}
+        assert forwarded["largeScript"] == {"type": "string", "minLength": 1}
+        assert forwarded["boundedScript"]["maxLength"] == 2000
+        assert schema["properties"]["declarationKey"]["pattern"] == r"\S"
+        assert schema["properties"]["nested"]["items"]["anyOf"][0]["pattern"] == "token"
+        assert schema["properties"]["largeScript"]["maxLength"] == 65536
+
     def test_stream_omits_usage_options_when_client_did_not_request_them(self):
         args = self._args()
         args["stream"] = True
