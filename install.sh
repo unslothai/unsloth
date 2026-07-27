@@ -210,15 +210,24 @@ run_install_cmd() {
         { "$@" 2>&1; printf '%s' "$?" > "$_rcf"; } | _redact_install_output
         _rc=$(cat "$_rcf" 2>/dev/null || echo 1)
         rm -f "$_rcf"
-        [ "${_rc:-1}" -eq 0 ] 2>/dev/null && return 0
+        if [ "${_rc:-1}" -eq 0 ] 2>/dev/null; then
+            tauri_clear_install_error "$_label recovered"
+            return 0
+        fi
         tauri_log "ERROR" "$_label failed (exit code $_rc)"
+        _TAURI_INSTALL_ERROR_PENDING=true
         step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
         return "$_rc"
     fi
     _log=$(mktemp)
-    "$@" >"$_log" 2>&1 && { rm -f "$_log"; return 0; }
+    "$@" >"$_log" 2>&1 && {
+        rm -f "$_log"
+        tauri_clear_install_error "$_label recovered"
+        return 0
+    }
     _rc=$?
     tauri_log "ERROR" "$_label failed (exit code $_rc)"
+    _TAURI_INSTALL_ERROR_PENDING=true
     step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
     _redact_install_output "$_log" >&2
     rm -f "$_log"
@@ -383,6 +392,14 @@ tauri_log() {
     if [ "$TAURI_MODE" = true ]; then
         echo "[TAURI:$1] $2"
     fi
+}
+
+tauri_clear_install_error() {
+    if [ "${_TAURI_INSTALL_ERROR_PENDING:-false}" = true ] && [ "$TAURI_MODE" = true ]; then
+        tauri_log "ERROR_CLEAR" "$1"
+        printf '[TAURI:ERROR_CLEAR] %s\n' "$1" >&2
+    fi
+    _TAURI_INSTALL_ERROR_PENDING=false
 }
 
 tauri_diag_marker() {

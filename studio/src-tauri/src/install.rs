@@ -49,26 +49,41 @@ struct InstallFailureContext {
 }
 
 impl InstallFailureContext {
-    fn observe_stdout(&mut self, text: &str) {
+    fn observe_stdout(&mut self, text: &str) -> bool {
+        if text.starts_with("[TAURI:ERROR_CLEAR] ") {
+            self.explicit_error = None;
+            return true;
+        }
         if let Some(message) = text.strip_prefix("[TAURI:ERROR] ") {
             let message = message.trim();
             if !message.is_empty() {
-                self.explicit_error = Some(message.to_string());
+                self.explicit_error = Some(Self::bounded_line(message));
             }
         }
+        false
     }
 
-    fn observe_stderr(&mut self, text: &str) {
+    fn observe_stderr(&mut self, text: &str) -> bool {
+        if text.starts_with("[TAURI:ERROR_CLEAR] ") {
+            self.stderr_tail.clear();
+            return true;
+        }
         let text = text.trim();
         if text.is_empty() {
-            return;
+            return false;
         }
-        let boundary =
-            diagnostics::valid_utf8_boundary(text, text.len().min(FAILURE_CONTEXT_LINE_BYTES));
-        self.stderr_tail.push_back(text[..boundary].to_string());
+        self.stderr_tail.push_back(Self::bounded_line(text));
         while self.stderr_tail.len() > FAILURE_CONTEXT_LINES {
             self.stderr_tail.pop_front();
         }
+        false
+    }
+
+    fn bounded_line(text: &str) -> String {
+        let text = diagnostics::redact_for_display(text);
+        let boundary =
+            diagnostics::valid_utf8_boundary(&text, text.len().min(FAILURE_CONTEXT_LINE_BYTES));
+        text[..boundary].to_string()
     }
 
     fn message(&self, code: i32) -> String {
@@ -78,17 +93,22 @@ impl InstallFailureContext {
                 .rev()
                 .find(|line| {
                     let lower = line.to_ascii_lowercase();
-                    lower.contains("error") || lower.contains("failed")
+                    (lower.contains("error") || lower.contains("failed"))
+                        && !lower.contains("cleanup")
+                        && !lower.contains("rollback")
+                        && !lower.contains("restoring")
+                })
+                .or_else(|| {
+                    self.stderr_tail.iter().rev().find(|line| {
+                        let lower = line.to_ascii_lowercase();
+                        lower.contains("error") || lower.contains("failed")
+                    })
                 })
                 .or_else(|| self.stderr_tail.back())
                 .map(String::as_str)
         });
         match detail {
-            Some(detail) => format!(
-                "Installation failed: {} (exit code {}).",
-                diagnostics::redact_for_display(detail),
-                code
-            ),
+            Some(detail) => format!("Installation failed: {}", detail),
             None => format!(
                 "Installation failed with exit code {}. Open the installer logs for details.",
                 code
@@ -291,7 +311,7 @@ fn spawn_script(
 // ── Stream ──
 
 /// Spawns reader threads for stdout/stderr.
-/// Parses [TAURI:*] lines from stdout for structured events.
+/// Parses structured events from stdout and failure controls from both streams.
 fn stream_output(
     app: &AppHandle,
     state: &InstallState,
@@ -323,8 +343,13 @@ fn stream_output(
                     Ok(_) => {
                         let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
                         diagnostics::append_phase_line(&attempt_clone.handle, "stdout", &text);
-                        if let Ok(mut context) = failure_context_clone.lock() {
-                            context.observe_stdout(&text);
+                        let is_failure_control = failure_context_clone
+                            .lock()
+                            .map(|mut context| context.observe_stdout(&text))
+                            .unwrap_or(false);
+                        if is_failure_control {
+                            info!("[install][stdout] {}", text);
+                            continue;
                         }
                         // Parse structured Tauri protocol lines
                         if let Some(packages) = text.strip_prefix("[TAURI:NEED_SUDO] ") {
@@ -392,8 +417,13 @@ fn stream_output(
                     Ok(_) => {
                         let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
                         diagnostics::append_phase_line(&attempt_clone.handle, "stderr", &text);
-                        if let Ok(mut context) = failure_context_clone.lock() {
-                            context.observe_stderr(&text);
+                        let is_failure_control = failure_context_clone
+                            .lock()
+                            .map(|mut context| context.observe_stderr(&text))
+                            .unwrap_or(false);
+                        if is_failure_control {
+                            info!("[install][stderr] {}", text);
+                            continue;
                         }
                         warn!("[install][stderr] {}", text);
                         let _ = app_clone.emit(event_mode.progress_event(), &text);
@@ -984,28 +1014,62 @@ mod tests {
         context.observe_stderr("rollback cleanup failed");
         assert_eq!(
             context.message(7),
-            "Installation failed: Failed to install PyTorch (exit code 7)."
+            "Installation failed: Failed to install PyTorch"
         );
+    }
+
+    #[test]
+    fn recovered_retry_clears_stale_installer_error() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:ERROR] install PyTorch failed (exit code 1)");
+        context.observe_stderr("ERROR: transient PyTorch download failure");
+        assert!(context.observe_stdout("[TAURI:ERROR_CLEAR] install PyTorch recovered after retry"));
+        assert!(context.observe_stderr("[TAURI:ERROR_CLEAR] install PyTorch recovered after retry"));
+        context.observe_stderr("ERROR: studio setup failed");
+        let message = context.message(7);
+        assert!(message.contains("studio setup failed"));
+        assert!(!message.contains("install PyTorch"));
+        assert!(!message.contains("transient PyTorch"));
+    }
+
+    #[test]
+    fn installer_exit_code_is_not_duplicated() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch (exit code 7)");
+        let message = context.message(7);
+        assert_eq!(
+            message,
+            "Installation failed: Failed to install PyTorch (exit code 7)"
+        );
+        assert_eq!(message.matches("exit code 7").count(), 1);
     }
 
     #[test]
     fn stderr_fallback_prefers_failure_line_and_redacts_secrets() {
         let mut context = InstallFailureContext::default();
         context.observe_stderr("ERROR: download failed for https://user:pass@example.com/package");
-        context.observe_stderr("restoring previous environment");
+        context.observe_stderr("rollback cleanup failed");
         let message = context.message(1);
         assert!(message.contains("ERROR: download failed"));
         assert!(message.contains("https://<redacted>@example.com/package"));
         assert!(!message.contains("user:pass"));
-        assert!(!message.contains("restoring previous environment"));
+        assert!(!message.contains("rollback cleanup failed"));
     }
 
     #[test]
     fn failure_context_is_bounded_and_utf8_safe() {
         let mut context = InstallFailureContext::default();
+        context.observe_stdout(&format!(
+            "[TAURI:ERROR] {}https://user:secret@example.com/package",
+            "é".repeat(500)
+        ));
         for index in 0..20 {
             context.observe_stderr(&format!("{index}: {}", "é".repeat(1_000)));
         }
+        let explicit_error = context.explicit_error.as_ref().unwrap();
+        assert!(explicit_error.len() <= FAILURE_CONTEXT_LINE_BYTES);
+        assert!(explicit_error.is_char_boundary(explicit_error.len()));
+        assert!(!explicit_error.contains("secret"));
         assert_eq!(context.stderr_tail.len(), FAILURE_CONTEXT_LINES);
         assert!(context
             .stderr_tail
