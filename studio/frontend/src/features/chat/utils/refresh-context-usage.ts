@@ -13,7 +13,23 @@ import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { MessageRecord } from "../types";
 import { listStoredChatMessages } from "./chat-history-storage";
 
-let refreshGeneration = 0;
+// Cancellation is per thread, not per module. Every mounted provider recounts
+// its own thread when its history loads, so in compare mode a hidden pane's
+// load would otherwise invalidate the visible thread's in-flight count, and
+// the pane's own result is then dropped by the activeThreadId guard -- leaving
+// the bar blank. Two calls for the SAME thread still supersede each other,
+// which is what this counter is for.
+const refreshGenerations = new Map<string | null, number>();
+
+function nextGeneration(threadKey: string | null): number {
+  const generation = (refreshGenerations.get(threadKey) ?? 0) + 1;
+  refreshGenerations.set(threadKey, generation);
+  return generation;
+}
+
+function superseded(threadKey: string | null, generation: number): boolean {
+  return refreshGenerations.get(threadKey) !== generation;
+}
 
 type RuntimeMessagesGetter = () => readonly ThreadMessage[];
 
@@ -234,12 +250,12 @@ export async function refreshContextUsage(options?: {
     return;
   }
 
-  // Bump only once this call is going to do work, so a call that bails here
-  // cannot cancel a recount that is already in flight.
-  const generation = ++refreshGeneration;
-
   const capturedThreadId = threadId ?? null;
   const capturedCheckpoint = checkpoint;
+
+  // Bump only once this call is going to do work, so a call that bails here
+  // cannot cancel a recount that is already in flight.
+  const generation = nextGeneration(capturedThreadId);
 
   if (!threadId) {
     // Show something immediately for a chat with no persisted thread, then let
@@ -252,7 +268,7 @@ export async function refreshContextUsage(options?: {
   try {
     let runMessages: readonly ThreadMessage[];
     const records = threadId ? await listStoredChatMessages(threadId) : [];
-    if (generation !== refreshGeneration) return;
+    if (superseded(capturedThreadId, generation)) return;
     if (useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint) {
       return;
     }
@@ -278,7 +294,7 @@ export async function refreshContextUsage(options?: {
       );
       if (
         savedUsage &&
-        generation === refreshGeneration &&
+        !superseded(capturedThreadId, generation) &&
         useChatRuntimeStore.getState().params.checkpoint === capturedCheckpoint &&
         (capturedThreadId == null ||
           useChatRuntimeStore.getState().activeThreadId === capturedThreadId)
@@ -297,7 +313,7 @@ export async function refreshContextUsage(options?: {
           : [];
     }
 
-    if (generation !== refreshGeneration) return;
+    if (superseded(capturedThreadId, generation)) return;
     if (useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint) {
       return;
     }
@@ -323,7 +339,7 @@ export async function refreshContextUsage(options?: {
       runMessages,
       payloadThreadId,
     );
-    if (generation !== refreshGeneration) return;
+    if (superseded(capturedThreadId, generation)) return;
     if (useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint) {
       return;
     }
@@ -347,7 +363,7 @@ export async function refreshContextUsage(options?: {
     // it to be ours. Older backends omit the field; keep counting for them.
     if (result.model != null && result.model !== capturedCheckpoint) return;
 
-    if (generation !== refreshGeneration) return;
+    if (superseded(capturedThreadId, generation)) return;
     if (useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint) {
       return;
     }
