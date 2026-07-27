@@ -19,6 +19,11 @@ const FNV64_PRIME: u64 = 0x100000001b3;
 const HASHED_MARKER_MAX_BYTES: u64 = 64 * 1024;
 
 const FALLBACK_MARKER_NAMES: &[&str] = &[
+    // Must be in the fingerprint, not just in the cached answer: a repair
+    // reinstalling only studio.txt leaves every other marker untouched, so a
+    // cache entry written while healthy would still be served after the
+    // manifest was dropped. Name mirrors install_manifest.MANIFEST_NAME.
+    "unsloth_install_manifest.json",
     "pyvenv.cfg",
     "uv.lock",
     "requirements.txt",
@@ -614,5 +619,29 @@ mod tests {
             marker_mtime_ms: None,
         };
         assert!(!cache_matches(&cache, &fingerprint));
+    }
+
+    #[test]
+    fn dropping_the_manifest_changes_the_fingerprint() {
+        // Otherwise a cache entry written while healthy outlives the manifest,
+        // and the probe returns Ready on the very venv this is meant to catch.
+        let venv = std::env::temp_dir().join(format!(
+            "unsloth-fingerprint-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let scripts = venv.join("bin");
+        fs::create_dir_all(&scripts).unwrap();
+        let bin = scripts.join("unsloth");
+        fs::write(&bin, "#!/bin/sh\nexit 0\n").unwrap();
+        let manifest = venv.join("unsloth_install_manifest.json");
+        fs::write(&manifest, "{}").unwrap();
+
+        let with_manifest = managed_bin_fingerprint(&bin).unwrap();
+        fs::remove_file(&manifest).unwrap();
+        let without_manifest = managed_bin_fingerprint(&bin).unwrap();
+
+        assert_ne!(with_manifest, without_manifest);
+        let _ = fs::remove_dir_all(&venv);
     }
 }
