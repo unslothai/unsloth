@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import gc
 import os
+import re
 import sys
 import threading
 import time
@@ -120,6 +121,29 @@ def _payload(**fields) -> AnthropicMessagesRequest:
     return AnthropicMessagesRequest(**base)
 
 
+
+def _record_admission_logs(monkeypatch):
+    """Capture _llama_admission_log output.
+
+    Through the logger rather than caplog: this one is a structlog bound logger,
+    so it never reaches the stdlib handlers caplog installs.
+    """
+    records = []
+
+    def _record(level):
+        return lambda fmt, *args: records.append((level, fmt % args))
+
+    monkeypatch.setattr(
+        inf_mod,
+        "logger",
+        SimpleNamespace(
+            debug = _record("debug"),
+            info = _record("info"),
+            warning = _record("warning"),
+        ),
+    )
+    return records
+
 def _snapshot(key = _KEY):
     return get_llama_admission_queue(key).snapshot()
 
@@ -187,25 +211,10 @@ def test_non_streaming_queue_full_returns_429(monkeypatch):
 
 
 def test_admission_events_are_logged_on_the_anthropic_surface(monkeypatch):
-    # The OpenAI passthrough logs queue-full/queued/granted-after-wait/timeout with a
-    # mode. Without the same on /v1/messages an operator debugging a slow Anthropic
-    # client has nothing to look at, and the pool is shared, so it is the same triage.
-    # Records through the logger rather than caplog: this one is a structlog bound
-    # logger, so it never reaches the stdlib handlers caplog installs.
-    records = []
-
-    def _record(level):
-        return lambda fmt, *args: records.append((level, fmt % args))
-
-    monkeypatch.setattr(
-        inf_mod,
-        "logger",
-        SimpleNamespace(
-            debug = _record("debug"),
-            info = _record("info"),
-            warning = _record("warning"),
-        ),
-    )
+    # The OpenAI passthrough logs these with a mode; without the same on /v1/messages
+    # an operator debugging a slow Anthropic client has nothing to look at, and the
+    # pool is shared, so it is the same triage.
+    records = _record_admission_logs(monkeypatch)
     monkeypatch.setenv(ADMISSION_MAX_QUEUE_ENV, "1")
     _install_backend(monkeypatch, slots = 1)
 
@@ -220,10 +229,84 @@ def test_admission_events_are_logged_on_the_anthropic_surface(monkeypatch):
             lease.release()
 
     asyncio.run(_run())
-    full = [msg for level, msg in records if "queue-full" in msg]
+    full = [msg for _level, msg in records if "queue-full" in msg]
     assert full, records
     assert "llama admission queue-full" in full[0]
     assert "mode=anthropic_nonstream" in full[0]
+
+
+def test_streaming_admission_waiting_is_logged(monkeypatch):
+    # queued and granted-after-wait were both emitted with nothing asserting them.
+    records = _record_admission_logs(monkeypatch)
+    monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.05")
+    _install_backend(monkeypatch, slots = 1)
+
+    async def _run():
+        held = _occupy(_KEY, 1, 1)
+        response = await anthropic_messages(
+            _payload(stream = True), request = _Request(), current_subject = "t"
+        )
+        task = asyncio.create_task(_consume(response))
+        await asyncio.sleep(0.15)
+        for lease in held:
+            lease.release()
+        await asyncio.wait_for(task, timeout = 5)
+
+    asyncio.run(_run())
+    events = [msg for _level, msg in records if "llama admission" in msg]
+    # "llama admission queued", not "queued": every line carries a queued=N field,
+    # so the bare substring matches any admission log at all.
+    assert any(
+        "llama admission queued" in m and "mode=anthropic_stream" in m for m in events
+    ), events
+    granted = [m for m in events if "granted-after-wait" in m]
+    assert granted, events
+    # wait_ms is the point of the event: a grant that reports nothing is useless.
+    assert re.search(r"wait_ms=\d+", granted[0]), granted
+
+
+def test_streaming_admission_timeout_is_logged(monkeypatch):
+    records = _record_admission_logs(monkeypatch)
+    monkeypatch.setenv(ADMISSION_QUEUE_TIMEOUT_ENV, "0.15")
+    monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.05")
+    _install_backend(monkeypatch, slots = 1)
+
+    async def _run():
+        held = _occupy(_KEY, 1, 1)  # never released, so the waiter times out
+        response = await anthropic_messages(
+            _payload(stream = True), request = _Request(), current_subject = "t"
+        )
+        await _consume(response)
+        for lease in held:
+            lease.release()
+
+    asyncio.run(_run())
+    timeouts = [msg for level, msg in records if "timeout" in msg and level == "warning"]
+    assert timeouts, records
+    assert "mode=anthropic_stream" in timeouts[0]
+
+
+def test_streaming_give_up_while_queued_is_logged(monkeypatch):
+    # cancelled-before-upstream is the one that tells an operator a client walked
+    # away rather than the backend being slow.
+    records = _record_admission_logs(monkeypatch)
+    monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.05")
+    _install_backend(monkeypatch, slots = 1)
+
+    async def _run():
+        held = _occupy(_KEY, 1, 1)
+        response = await anthropic_messages(
+            _payload(stream = True),
+            request = _Request(disconnected = True),
+            current_subject = "t",
+        )
+        await _consume(response)
+        for lease in held:
+            lease.release()
+
+    asyncio.run(_run())
+    events = [msg for _level, msg in records if "llama admission" in msg]
+    assert any("llama admission cancelled-before-upstream" in m for m in events), events
 
 
 def test_non_streaming_times_out_returns_503(monkeypatch):

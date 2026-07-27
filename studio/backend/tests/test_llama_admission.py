@@ -801,3 +801,49 @@ def test_snapshot_free_never_exceeds_what_can_be_admitted():
             lease.release()
 
     asyncio.run(_run())
+
+
+def test_a_newcomer_does_not_barge_past_a_parked_waiter():
+    # Anti-starvation, pinned as behaviour rather than as the `if not self._waiters`
+    # check: _take_slot_locked consults _can_admit_locked anyway, so either alone
+    # refuses the newcomer. This fails if both ever go.
+    async def _run():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+
+        held = queue.reserve(capacity = 1, config = config).lease_nowait()
+        parked = queue.reserve(capacity = 1, config = config)
+        assert parked.lease_nowait() is None
+
+        held.release()
+        newcomer = queue.reserve(capacity = 1, config = config)
+        assert newcomer.lease_nowait() is None, "newcomer barged past the parked waiter"
+        assert (await parked.wait(0.1)) is not None
+
+    asyncio.run(_run())
+
+
+def test_dead_waiters_stop_counting_against_the_queue_limit():
+    # A future cancelled out of band leaves the entry in the deque: cancel() is not
+    # called, so only the prune drops it. Without that, depth, is_idle() and the
+    # queue-full limit all drift for the life of the queue.
+    async def _run():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig(max_queue = 2)
+
+        held = queue.reserve(capacity = 1, config = config).lease_nowait()
+        first = queue.reserve(capacity = 1, config = config)
+        second = queue.reserve(capacity = 1, config = config)
+        assert queue.snapshot().queued == 2
+        with pytest.raises(LlamaAdmissionQueueFull):
+            queue.reserve(capacity = 1, config = config)
+
+        first._waiter.future.cancel()
+        second._waiter.future.cancel()
+        assert queue.snapshot().queued == 0, "dead waiters still occupy the line"
+        # The freed depth is usable again, and an idle queue is evictable.
+        queue.reserve(capacity = 1, config = config).cancel()
+        held.release()
+        assert queue.is_idle()
+
+    asyncio.run(_run())

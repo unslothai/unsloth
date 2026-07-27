@@ -160,17 +160,6 @@ def _positive_float_env(name: str, default: float) -> float:
     return parsed if parsed > 0 else default
 
 
-def _optional_positive_int_env(name: str, default: Optional[int]) -> Optional[int]:
-    value = _raw_env(name)
-    if value is None or not value.strip():
-        return default
-    try:
-        parsed = int(value.strip())
-    except ValueError:
-        return default
-    return parsed if parsed > 0 else None
-
-
 def _queue_limits_from_env() -> tuple[Optional[int], Optional[int], Optional[int]]:
     """(max_queue, queue_per_slot, min_queue) from the environment.
 
