@@ -29,7 +29,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 import hashlib
 import json
 import threading
@@ -1486,6 +1486,7 @@ def detect_mtp_file(
     path: str,
     search_root: Optional[str] = None,
     skip_root: bool = False,
+    accept: Optional[Callable[[str], bool]] = None,
 ) -> Optional[str]:
     """Find the separate MTP drafter (``mtp-*.gguf``) for a local GGUF model.
 
@@ -1505,6 +1506,9 @@ def detect_mtp_file(
 
     ``skip_root`` scans only ``MTP/``, for callers that must discard an
     out-of-bounds root drafter and still want the subdir copy (native loads).
+    ``accept`` filters candidates in preference order, so a caller with extra
+    rules (a native lease) keeps scanning instead of treating the first
+    rejection as no drafter at all.
     """
 
     def _pairing_stem(name: str) -> str:
@@ -1594,10 +1598,14 @@ def detect_mtp_file(
                 if not _matches_weight(f):
                     continue
                 try:
-                    if f.is_file() and _launchable(f):
-                        return _drafter_launch_path(f)
+                    if not (f.is_file() and _launchable(f)):
+                        continue
+                    launch = _drafter_launch_path(f)
                 except OSError:
                     continue
+                if accept is not None and not accept(launch):
+                    continue
+                return launch
 
     subdir_candidates: list[Path] = []
     for d in dirs:
@@ -1646,6 +1654,8 @@ def detect_mtp_file(
         try:
             resolved = _drafter_launch_path(candidate)
         except OSError:
+            continue
+        if accept is not None and not accept(resolved):
             continue
         logger.info(f"Detected MTP subdirectory drafter: {resolved}")
         return resolved

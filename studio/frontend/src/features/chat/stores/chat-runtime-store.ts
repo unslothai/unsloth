@@ -1538,7 +1538,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           maxTokens: nextMaxTokens,
         },
         activeGgufVariant: ggufVariant ?? null,
-        ...(checkpointChanged ? { contextUsage: null } : {}),
+        // Provenance and the spec-fallback reason both describe the model
+        // being replaced, so they go together on a real change. Dropping only
+        // one leaves the settings sheet pairing a stale reason with the wrong
+        // recovery text. The load or status response reseeds both.
+        ...(checkpointChanged
+          ? {
+              contextUsage: null,
+              activeModelIsLocal: false,
+              specFallbackReason: null,
+            }
+          : {}),
       };
     }),
   setActiveThreadId: (activeThreadId) =>

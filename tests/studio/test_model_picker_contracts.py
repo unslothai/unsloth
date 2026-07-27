@@ -357,6 +357,14 @@ def test_local_mtp_warning_covers_path_and_native_gguf_sources():
     # repository id. activeModelIsLocal is the backend's own answer for both.
     assert "activeNativePathToken" not in local.group(0)
     assert ".gguf" not in local.group(0)
+
+    # Switching models must drop both together: a kept flag would classify the
+    # newly selected model by the old one's provenance.
+    store = _read("features/chat/stores/chat-runtime-store.ts")
+    reset = re.search(r"setCheckpoint: \(modelId, ggufVariant\) =>.*?\}\),", store, re.S)
+    assert reset
+    assert "activeModelIsLocal: false" in reset.group(0)
+    assert "specFallbackReason: null" in reset.group(0)
     assert "isLocalGguf" in src.split('specFallbackReason === "drafter_not_found"', 1)[1]
 
 

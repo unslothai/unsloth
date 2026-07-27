@@ -19,6 +19,8 @@ from routes.inference import _validate_native_gguf_companion
 from routes.inference import _request_matches_loaded_settings
 from routes.inference import _validate_native_mtp_drafter
 from routes.inference import _loaded_is_local_model
+from routes.inference import _native_gguf_companion_usable
+from utils.models.model_config import detect_mtp_file
 from core.inference.llama_cpp import LlamaCppBackend
 from models.inference import LoadRequest
 
@@ -334,3 +336,51 @@ def test_status_provenance_survives_deleted_model_directory(tmp_path, monkeypatc
     stale = LlamaCppBackend()
     assert not _loaded_is_local_model(stale, False, "unsloth/gemma-4-12b")
     assert _loaded_is_local_model(stale, True, None)
+
+
+def test_native_load_skips_rejected_mtp_candidate_for_next_one(tmp_path):
+    """MTP/ can hold several compatible copies. If the size-preferred one is
+    out of the grant, the next must be tried instead of disabling MTP."""
+    quant_dir = tmp_path / "Q4_0"
+    quant_dir.mkdir()
+    weight = quant_dir / "model.gguf"
+    weight.write_bytes(b"model")
+    outside = tmp_path.parent / "outside-blob.gguf"
+    outside.write_bytes(b"d")
+    companion_dir = tmp_path / "MTP"
+    companion_dir.mkdir()
+    try:
+        (companion_dir / "mtp-model-Q4_0.gguf").symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    larger = companion_dir / "mtp-model-Q8_0.gguf"
+    larger.write_bytes(b"d" * 5000)
+
+    def _usable(candidate: str) -> bool:
+        return _native_gguf_companion_usable(candidate, str(weight), mtp_search_root = str(tmp_path))
+
+    # Preferred by size, but it resolves out of the permitted directory.
+    assert not _usable(detect_mtp_file(str(weight), str(tmp_path), skip_root = True))
+    assert detect_mtp_file(str(weight), str(tmp_path), skip_root = True, accept = _usable) == str(
+        larger.resolve()
+    )
+
+
+def test_native_load_returns_none_when_no_candidate_passes(tmp_path):
+    quant_dir = tmp_path / "Q4_0"
+    quant_dir.mkdir()
+    weight = quant_dir / "model.gguf"
+    weight.write_bytes(b"model")
+    outside = tmp_path.parent / "outside-only.gguf"
+    outside.write_bytes(b"d")
+    companion_dir = tmp_path / "MTP"
+    companion_dir.mkdir()
+    try:
+        (companion_dir / "mtp-model-Q4_0.gguf").symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    def _usable(candidate: str) -> bool:
+        return _native_gguf_companion_usable(candidate, str(weight), mtp_search_root = str(tmp_path))
+
+    assert detect_mtp_file(str(weight), str(tmp_path), skip_root = True, accept = _usable) is None

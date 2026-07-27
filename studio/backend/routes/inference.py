@@ -3423,18 +3423,18 @@ def _request_matches_loaded_settings(
                 # copy and, failing that, to no drafter at all. An ordinary
                 # load reaches the root drafter, so it keeps root-first
                 # detection and reloads when one appears.
-                if detected and not _native_gguf_companion_usable(
-                    detected, llama_backend.gguf_path, mtp_search_root = companion_root
-                ):
+                def _usable(candidate: str) -> bool:
+                    return _native_gguf_companion_usable(
+                        candidate, llama_backend.gguf_path, mtp_search_root = companion_root
+                    )
+
+                if detected and not _usable(detected):
                     detected = detect_mtp_file(
                         llama_backend.gguf_path,
                         search_root = companion_root,
                         skip_root = True,
+                        accept = _usable,
                     )
-                    if detected and not _native_gguf_companion_usable(
-                        detected, llama_backend.gguf_path, mtp_search_root = companion_root
-                    ):
-                        detected = None
             stored = llama_backend.mtp_draft_path
             try:
                 detected_resolved = Path(detected).resolve() if detected else None
@@ -4777,21 +4777,21 @@ async def _load_model_impl(
 
                         if not _mtp_allowed(config.gguf_mtp_file):
                             # The preferred root drafter is out of bounds for a
-                            # grant on a quant subdir, but its MTP/ copy may
-                            # not be. Use that before dropping MTP entirely.
+                            # grant on a quant subdir, but an MTP/ copy may not
+                            # be. Scan them in preference order rather than
+                            # dropping MTP on the first rejection.
                             fallback = detect_mtp_file(
                                 config.gguf_file,
                                 search_root = mtp_search_root,
                                 skip_root = True,
+                                accept = _mtp_allowed,
                             )
-                            if fallback and _mtp_allowed(fallback):
+                            if fallback:
                                 logger.info(
                                     "Using MTP subdirectory drafter for native load: %s",
                                     fallback,
                                 )
-                                config.gguf_mtp_file = fallback
-                            else:
-                                config.gguf_mtp_file = None
+                            config.gguf_mtp_file = fallback
                 _source_load_kwargs = dict(
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
