@@ -52,9 +52,8 @@ dependencies = [
     "pydantic",
     "pyyaml",
     "nest-asyncio",
-    # train / export / chat / inference / studio all import studio.backend.*,
-    # and every one of those chains reaches structlog at module level. It is the
-    # only hard import they share; the server stack lives in the studio extra.
+    # Every CLI command imports studio.backend.*, which reaches structlog at
+    # module level. The rest of the server stack lives in the studio extra.
     "structlog>=24.1.0",
 ]
 
@@ -94,10 +93,8 @@ include = ["unsloth*", "unsloth_cli*", "studio", "studio.backend*"]
 exclude = ["images*", "tests*", "*.node_modules", "*.node_modules.*"]
 
 [project.optional-dependencies]
-# Studio's server stack, for `pip install "unsloth[studio]"`. Mirrors
-# studio/backend/requirements/studio.txt (what install.sh installs);
-# tests/studio/install/test_studio_extra_matches_requirements.py catches drift.
-# structlog is also a core dependency, since the CLI needs it without a server.
+# Studio's server stack. Mirrors studio/backend/requirements/studio.txt;
+# test_studio_extra_matches_requirements.py catches drift.
 studio = [
     "typer",
     "fastapi",

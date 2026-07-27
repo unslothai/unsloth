@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The studio extra must stay a mirror of studio/backend/requirements/studio.txt.
+"""The studio extra must mirror studio/backend/requirements/studio.txt.
 
-`pip install "unsloth[studio]"` is the only way to get the server stack without
-install.sh, so it has to describe the same environment. Nothing else keeps them
-in sync: the extra is hand-maintained while the installer reads the requirements
-file, and drift reintroduces #4701 / #5260 / #7147.
+Nothing else keeps them in sync, and drift reintroduces #4701 / #5260 / #7147.
 """
 
 from __future__ import annotations
@@ -20,9 +17,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 STUDIO_TXT = REPO_ROOT / "studio" / "backend" / "requirements" / "studio.txt"
 
-# Reached by `unsloth train` / `export` / `chat` / `inference` / `studio` at
-# import time even with no server involved, so a plain `pip install unsloth`
-# must provide them. Keep in step with unsloth_cli/_studio_deps.py.
+# Imported at module scope by the studio.backend chain every CLI command walks.
 CORE_RUNTIME_PACKAGES = ("structlog",)
 
 
@@ -44,7 +39,7 @@ def _requirement_lines(path: pathlib.Path) -> list[str]:
 
 
 def _normalise(name: str) -> str:
-    """PEP 503 name normalisation, so pyjwt/PyJWT and nest_asyncio/nest-asyncio match."""
+    """PEP 503 normalisation, so PyJWT/pyjwt and nest_asyncio/nest-asyncio match."""
     head = name
     for sep in ("===", "==", ">=", "<=", "~=", "!=", ">", "<", "[", ";", " "):
         idx = head.find(sep)
@@ -57,8 +52,7 @@ def test_studio_extra_exists():
     extras = _load_pyproject()["project"]["optional-dependencies"]
     assert "studio" in extras, (
         "pyproject.toml has no `studio` extra. The wheel ships studio/ and "
-        "studio.backend*, so there must be a supported way to pip-install the "
-        "dependencies those modules import."
+        "studio.backend*, so their dependencies need a pip-installable home."
     )
 
 
@@ -84,8 +78,7 @@ def test_studio_extra_matches_requirements_file():
 def test_cli_runtime_packages_are_core_dependencies(package):
     core = [_normalise(entry) for entry in _load_pyproject()["project"]["dependencies"]]
     assert _normalise(package) in core, (
-        f"{package} is imported at module scope by the studio.backend chain that "
-        f"`unsloth train` / `unsloth export` walk, so a plain `pip install unsloth` "
-        f"must provide it. Without it those commands fail with "
-        f"ModuleNotFoundError before doing any work."
+        f"{package} is imported at module scope by the studio.backend chain "
+        f"`unsloth train` / `unsloth export` walk, so a plain `pip install "
+        f"unsloth` must provide it or they die with ModuleNotFoundError."
     )
