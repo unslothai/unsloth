@@ -3158,6 +3158,7 @@ $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR
 # goes through $ROCmIndexUrl; on failure the fallback uses the CPU index, not the ROCm pin.
 $TorchInstallIndexUrl = if ($ROCmIndexUrl) { "$PyTorchWhlBase/cpu" } elseif ($PinnedTorchIndexUrl) { $PinnedTorchIndexUrl } else { "$PyTorchWhlBase/$CuTag" }
 
+if (-not $NoTorchMode) {
 $ROCmCpuFallback = $false
 if ($ROCmIndexUrl) {
     substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."
@@ -3267,6 +3268,9 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     } else {
         substep "Triton for Windows installed (enables torch.compile)"
     }
+}
+} else {
+    substep "skipping direct PyTorch and Triton installation (no-torch mode)." "Yellow"
 }
 
 # No unsloth.exe rename needed. setup.ps1 runs *via* unsloth.exe, so renaming the
