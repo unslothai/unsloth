@@ -215,6 +215,47 @@ def test_delete_image_cleans_sidecar_and_thumb(client, ds_root):
     assert not list((folder / ".thumbs").glob("x.png_*.jpg"))
 
 
+def test_delete_keeps_a_caption_a_same_stem_sibling_still_uses(client, ds_root):
+    # cat.jpg and cat.png share cat.txt: the trainer's pair discovery and the labeling grid both
+    # resolve either image to it. Deleting one image must not strip the survivor's caption and
+    # silently change what the next run trains on.
+    folder = ds_root / "d"
+    folder.mkdir()
+    _write_png(folder / "cat.png")
+    Image.new("RGB", (8, 8), (9, 9, 9)).save(folder / "cat.jpg", format = "JPEG")
+    (folder / "cat.txt").write_text("a cat", encoding = "utf-8")
+
+    r = client.delete("/api/train/diffusion/dataset/d/image/cat.jpg")
+    assert r.status_code == 200, r.text
+    assert not (folder / "cat.jpg").exists()
+    assert (folder / "cat.txt").read_text(encoding = "utf-8") == "a cat"
+    # The survivor is still reported as captioned.
+    info = client.get("/api/train/diffusion/info").json()
+    row = [d for d in info["datasets"] if d["name"] == "d"][0]
+    assert (row["image_count"], row["caption_count"]) == (1, 1)
+
+    # Deleting the last image with that stem does take the sidecar.
+    r = client.delete("/api/train/diffusion/dataset/d/image/cat.png")
+    assert r.status_code == 200, r.text
+    assert not (folder / "cat.txt").exists()
+
+
+def test_delete_removes_a_caption_no_other_image_shares(client, ds_root):
+    # A same-stem NON-image file must not keep the sidecar alive.
+    folder = ds_root / "d"
+    folder.mkdir()
+    _write_png(folder / "cat.png")
+    (folder / "cat.txt").write_text("a cat", encoding = "utf-8")
+    (folder / "cat.caption").write_text("also a cat", encoding = "utf-8")
+    (folder / "cat.json").write_text("{}", encoding = "utf-8")
+
+    r = client.delete("/api/train/diffusion/dataset/d/image/cat.png")
+    assert r.status_code == 200, r.text
+    assert not (folder / "cat.txt").exists()
+    assert not (folder / "cat.caption").exists()
+    assert (folder / "cat.json").exists()
+
+
 def test_thumb_cache_key_distinguishes_same_stem_extensions(client, ds_root):
     # sample.png and sample.jpg share a stem; each must get its OWN thumbnail cache file, so the grid
     # never serves one image's thumbnail for the other.
@@ -714,13 +755,18 @@ def test_delete_image_with_glob_chars_only_removes_own_thumbs(client, ds_root):
 
 
 def test_import_preserves_unrelated_files_when_folder_not_empty(client, ds_root, monkeypatch):
-    # If the target folder already holds unrelated NON-image files (so image_count is still 0 and the
-    # import runs), the atomic rmdir refuses and the code falls back to a per-file move: the images
-    # are imported AND the pre-existing file is preserved.
+    # A target folder holding unrelated NON-image files still has image_count 0, so the import runs.
+    # Those files are folded into the staging dir and promoted with it: the images are imported, the
+    # pre-existing file survives, and the promotion stays a single atomic rename (it used to fall
+    # back to a per-file move into the live folder, which is what makes a partial import possible).
     _install_fake_load_dataset(monkeypatch, n_rows = 3)
     folder = ds_root / "my-tux"
     folder.mkdir(parents = True)
     (folder / "notes.md").write_text("keep me", encoding = "utf-8")
+    # The promoted folder is the staging dir renamed into place, so its inode changes. A per-file
+    # move into the live folder would keep the original directory, which is how this pins that the
+    # promotion really was one atomic rename rather than a loop.
+    inode_before = folder.stat().st_ino
     r = client.post(
         "/api/train/diffusion/dataset/import-example",
         json = {"id": "tuxemon", "name": "my-tux"},
@@ -729,6 +775,45 @@ def test_import_preserves_unrelated_files_when_folder_not_empty(client, ds_root,
     assert r.json()["imported"] == 3
     assert sorted(p.name for p in folder.glob("*.png")) == [f"img_{i:04d}.png" for i in range(3)]
     assert (folder / "notes.md").read_text(encoding = "utf-8") == "keep me"
+    assert folder.stat().st_ino != inode_before
+    # No staging dir left behind, so the folder that is there is the promoted one.
+    assert [d.name for d in ds_root.glob(".my-tux.import-*")] == []
+
+
+def test_import_promotes_atomically_over_a_thumbs_cache(client, ds_root, monkeypatch):
+    # .thumbs is the case that actually shows up: a folder whose images were deleted keeps the
+    # thumbnail cache, which used to force the non-atomic per-file promote.
+    _install_fake_load_dataset(monkeypatch, n_rows = 2)
+    folder = ds_root / "my-tux"
+    (folder / ".thumbs").mkdir(parents = True)
+    (folder / ".thumbs" / "old.png_32.jpg").write_bytes(b"stale")
+    r = client.post(
+        "/api/train/diffusion/dataset/import-example",
+        json = {"id": "tuxemon", "name": "my-tux"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["imported"] == 2
+    assert sorted(p.name for p in folder.glob("*.png")) == ["img_0000.png", "img_0001.png"]
+    assert (folder / ".thumbs" / "old.png_32.jpg").read_bytes() == b"stale"
+    assert [d.name for d in ds_root.glob(".my-tux.import-*")] == []
+
+
+def test_import_replaces_a_pre_existing_file_the_import_also_writes(client, ds_root, monkeypatch):
+    # Same name on both sides -- here a stray caption sidecar with no image, so image_count is still
+    # 0 and the import runs. The imported file wins, which is what the old per-file move did by
+    # overwriting; the point is that the outcome did not change with the atomic promote.
+    _install_fake_load_dataset(monkeypatch, n_rows = 2)
+    folder = ds_root / "my-tux"
+    folder.mkdir(parents = True)
+    (folder / "img_0000.txt").write_text("stale caption", encoding = "utf-8")
+    r = client.post(
+        "/api/train/diffusion/dataset/import-example",
+        json = {"id": "tuxemon", "name": "my-tux"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["imported"] == 2
+    assert (folder / "img_0000.txt").read_text(encoding = "utf-8") == "caption 0"
+    assert [d.name for d in ds_root.glob(".my-tux.import-*")] == []
 
 
 def test_a_second_concurrent_import_of_the_same_name_is_refused(client, ds_root, monkeypatch):

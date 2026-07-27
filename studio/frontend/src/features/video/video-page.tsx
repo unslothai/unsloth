@@ -134,7 +134,14 @@ const galleryCache: {
   hasMore: boolean;
   selectedId: string | null;
   quant: string | null;
-  srcById: Map<string, string>;
+  // id -> the signed link and when it was minted. The link is short-lived (the backend expires it,
+  // and its signing secret is per-process, so a server restart invalidates every outstanding one),
+  // while this cache deliberately survives navigation -- so an entry has to be re-mintable rather
+  // than final, or playback, seeking and Save would 401 until a full page reload.
+  srcById: Map<string, { url: string; mintedAt: number }>;
+  // Ids re-minted once after a media error already, so a clip that is broken for any other reason
+  // cannot spin in a mint/error loop.
+  refreshed: Set<string>;
   // Ids with a mint in flight, so concurrent ensureSrc calls don't double-request.
   inflight: Set<string>;
   // Ids deleted while their link was still being minted, so a reply that lands after the delete
@@ -148,10 +155,15 @@ const galleryCache: {
   selectedId: null,
   quant: null,
   srcById: new Map(),
+  refreshed: new Set(),
   inflight: new Set(),
   deleted: new Set(),
   epoch: 0,
 };
+
+// Re-mint a cached link once it is this old. Comfortably inside the backend's own expiry, so a
+// long-lived tab keeps working without waiting for a 401 to tell it the link died.
+const VIDEO_LINK_REFRESH_MS = 6 * 60 * 60 * 1000;
 
 // Videos loaded per infinite-scroll page.
 const PAGE_SIZE = 50;
@@ -574,7 +586,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     if (!active) previewRef.current?.pause();
   }, [active]);
   const [srcById, setSrcById] = useState<Record<string, string>>(() =>
-    Object.fromEntries(galleryCache.srcById),
+    Object.fromEntries([...galleryCache.srcById].map(([id, e]) => [id, e.url])),
   );
   // Guards a "load more" so a fast scroll can't fire several at once.
   const loadingMore = useRef(false);
@@ -696,7 +708,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   // which streams ranges as it plays, so a clip starts on its first seconds instead of after a
   // full download and seeking works.
   const ensureSrc = useCallback(async (video: GalleryVideo) => {
-    if (galleryCache.srcById.has(video.id) || galleryCache.inflight.has(video.id)) return;
+    const cached = galleryCache.srcById.get(video.id);
+    if (cached && Date.now() - cached.mintedAt < VIDEO_LINK_REFRESH_MS) return;
+    if (galleryCache.inflight.has(video.id)) return;
     galleryCache.inflight.add(video.id);
     const epochAtStart = galleryCache.epoch;
     try {
@@ -704,7 +718,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       // The record can be deleted (or the gallery cleared) while the link is being minted;
       // caching it then would leave an entry for a card that no longer exists.
       if (galleryCache.deleted.has(video.id) || galleryCache.epoch !== epochAtStart) return;
-      galleryCache.srcById.set(video.id, url);
+      galleryCache.srcById.set(video.id, { url, mintedAt: Date.now() });
       // The URL is cached above either way; skip the state update after unmount
       // (matches the other async callbacks in this file).
       if (isMounted.current) setSrcById((prev) => ({ ...prev, [video.id]: url }));
@@ -714,6 +728,18 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       galleryCache.inflight.delete(video.id);
     }
   }, []);
+
+  // A media error on a clip that was playing means its link died early -- the server restarted, so
+  // its signing secret changed. Drop the entry and mint a fresh one, once per clip per session.
+  const remintSrc = useCallback(
+    (video: GalleryVideo) => {
+      if (galleryCache.refreshed.has(video.id)) return;
+      galleryCache.refreshed.add(video.id);
+      galleryCache.srcById.delete(video.id);
+      void ensureSrc(video);
+    },
+    [ensureSrc],
+  );
 
   // A card's poster frame only appears once its src lands, and each src costs a request, so a
   // full gallery page (PAGE_SIZE records) minted up front would queue PAGE_SIZE requests ahead
@@ -832,6 +858,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       return;
     }
     galleryCache.srcById.delete(id);
+    galleryCache.refreshed.delete(id);
     // A mint still in flight for this id must throw its link away rather than cache it.
     galleryCache.deleted.add(id);
     setSrcById((prev) => {
@@ -851,6 +878,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       return;
     }
     galleryCache.srcById.clear();
+    galleryCache.refreshed.clear();
     // Every mint in flight now belongs to a cleared gallery, so their links are discarded on
     // arrival. The epoch covers ids this page never listed too.
     galleryCache.epoch += 1;
@@ -1788,6 +1816,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                       void e.currentTarget.play();
                     }
                   }}
+                  onError={() => remintSrc(selected)}
                   className="max-h-full max-w-full rounded-xl object-contain shadow-sm"
                 />
                 {selected.has_audio && (
@@ -1916,6 +1945,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                       muted
                       playsInline
                       preload="metadata"
+                      onError={() => remintSrc(video)}
                       className="absolute inset-0 size-full object-cover"
                     />
                   ) : (

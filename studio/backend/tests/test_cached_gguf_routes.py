@@ -1654,6 +1654,56 @@ def test_repo_has_pipeline_index_requires_root_model_index(tmp_path):
     assert models_route._repo_has_pipeline_index(repo_root) is True
 
 
+def test_pipeline_scans_read_the_snapshot_the_loader_will_open(tmp_path):
+    # A repo cached twice -- an older complete snapshot plus a newer companion-only one, the shape a
+    # GGUF load leaves when it prefetches the base repo's VAE / text encoder and skips the
+    # transformer -- must be judged on the snapshot from_pretrained resolves, i.e. the newest by
+    # mtime. Scanning every revision let the OLD snapshot's transformer satisfy completeness, so the
+    # row read as on-device while the load would fail offline or silently pull multi-GB weights.
+    import os
+
+    import hub.utils.inventory_scan as scan
+
+    repo_dir = tmp_path / "models--Org--Repo"
+    old_snap = repo_dir / "snapshots" / "old"
+    new_snap = repo_dir / "snapshots" / "new"
+    for d in (old_snap / "transformer", new_snap / "vae"):
+        d.mkdir(parents = True)
+    (old_snap / "model_index.json").write_text("{}", encoding = "utf-8")
+    (new_snap / "model_index.json").write_text("{}", encoding = "utf-8")
+    # Make "new" unambiguously newer than "old" for the mtime rule both this and the loader use.
+    os.utime(old_snap, (1_000_000, 1_000_000))
+    os.utime(new_snap, (2_000_000, 2_000_000))
+
+    def _rev(snap, files):
+        return SimpleNamespace(
+            snapshot_path = snap,
+            last_modified = float(snap.stat().st_mtime),
+            files = [
+                SimpleNamespace(file_name = Path(f).name, file_path = snap / f) for f in files
+            ],
+        )
+
+    info = SimpleNamespace(
+        repo_id = "Org/Repo",
+        repo_path = repo_dir,
+        revisions = [
+            _rev(old_snap, ["model_index.json", "transformer/diffusion_pytorch_model.safetensors"]),
+            _rev(new_snap, ["model_index.json", "vae/diffusion_pytorch_model.safetensors"]),
+        ],
+    )
+    assert scan.repo_has_pipeline_index(info) is True
+    assert scan.repo_pipeline_missing_denoiser(info) is True
+
+    # The reverse cache (the complete snapshot is the newer one) still reports complete.
+    os.utime(old_snap, (3_000_000, 3_000_000))
+    info.revisions = [
+        _rev(old_snap, ["model_index.json", "transformer/diffusion_pytorch_model.safetensors"]),
+        _rev(new_snap, ["model_index.json", "vae/diffusion_pytorch_model.safetensors"]),
+    ]
+    assert scan.repo_pipeline_missing_denoiser(info) is False
+
+
 def test_list_cached_models_flags_single_file_diffusion_repos(monkeypatch, tmp_path):
     # A diffusion-tagged repo with NO top-level model_index.json is a single-file checkpoint, so it
     # carries single_file=True; a full pipeline repo and a chat repo carry no flag.

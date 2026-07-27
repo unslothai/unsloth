@@ -2342,8 +2342,20 @@ async def delete_diffusion_dataset_image(
         import glob as _glob
 
         image_path.unlink(missing_ok = True)
-        for ext in (".txt", ".caption"):
-            image_path.with_suffix(ext).unlink(missing_ok = True)
+        # Sidecars are keyed on the STEM, so cat.jpg and cat.png share cat.txt: both the trainer's
+        # pair discovery and the labeling grid resolve either image to it. Deleting it with one of
+        # them would silently strip the survivor's caption and change what the next run trains on.
+        # New collisions are refused at upload, but hand-made and legacy folders still have them.
+        stem_still_used = any(
+            p.is_file()
+            and p != image_path
+            and p.stem == image_path.stem
+            and p.suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS
+            for p in folder.iterdir()
+        )
+        if not stem_still_used:
+            for ext in (".txt", ".caption"):
+                image_path.with_suffix(ext).unlink(missing_ok = True)
         thumbs_dir = folder / _THUMBS_DIRNAME
         if thumbs_dir.is_dir():
             # Thumbs are keyed on the full filename (stem + extension), so match that here too; a stem-only
@@ -2681,18 +2693,39 @@ async def import_diffusion_dataset_example(
                         status_code = 502,
                         detail = f"No images found in '{entry['repo']}'.",
                     )
-                # Promote the fully-materialized staging dir as a UNIT. A per-file move loop is not atomic: a hard
-                # process death mid-loop would leave SOME images, which the image_count>0 idempotency check would
-                # accept as complete on retry. The folder was created empty here, so a single same-filesystem
-                # rename is atomic. If it holds unrelated non-image files (rmdir refuses), fall back to a per-file
-                # move rather than abort.
+                # Promote the fully-materialized staging dir as a UNIT: a same-filesystem rename is
+                # atomic, so a hard process death leaves either the old folder or the finished
+                # import, never a half-filled one that the image_count>0 check above would accept as
+                # complete on retry. rmdir needs an empty target, and an image-empty folder can still
+                # hold files (a .thumbs cache, or a metadata.jsonl / captions from an earlier
+                # upload), so fold those INTO the staging dir first and keep one atomic promotion.
+                # Moving them one by one into a live folder instead -- the old fallback -- gave up
+                # exactly the atomicity this whole staging dance exists for.
+                for p in sorted(folder.iterdir()):
+                    dest = staging / p.name
+                    if dest.exists():
+                        # Same name in both: the import's own file wins, exactly as the previous
+                        # per-file move did by overwriting it. Drop the old one so the folder can
+                        # still be emptied for the rename.
+                        if p.is_dir():
+                            shutil.rmtree(p, ignore_errors = True)
+                        else:
+                            p.unlink(missing_ok = True)
+                        continue
+                    shutil.move(str(p), str(dest))
                 try:
                     os.rmdir(folder)
-                except OSError:
-                    for p in staging.iterdir():
-                        shutil.move(str(p), str(folder / p.name))
-                else:
-                    os.replace(str(staging), str(folder))
+                except OSError as e:
+                    # Something landed in the folder in the meantime. Fail with the dataset
+                    # untouched rather than promoting it piecemeal.
+                    raise HTTPException(
+                        status_code = 409,
+                        detail = (
+                            f"'{folder.name}' changed while the example was being imported "
+                            f"({e.strerror or e}). Nothing was written; try again."
+                        ),
+                    )
+                os.replace(str(staging), str(folder))
             finally:
                 shutil.rmtree(staging, ignore_errors = True)
         return _import_response(entry, folder, imported = imported)

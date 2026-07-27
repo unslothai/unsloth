@@ -457,6 +457,38 @@ def is_snapshot_partial(
     )
 
 
+def _current_revisions(repo_info):
+    """The revisions to judge a cached repo by: just the one the loader will actually open.
+
+    ``from_pretrained`` resolves the newest snapshot by mtime (:func:`latest_snapshot_dir`), so a
+    repo cached twice -- an older complete snapshot plus a newer companion-only scoped one -- must
+    be judged on the newer one. Scanning every revision let the old snapshot's denoiser satisfy the
+    completeness check, so the row read as complete while the snapshot the loader picks has no
+    transformer/unet: offline loads then fail and online loads silently pull the multi-GB weight.
+
+    Falls back to the newest revision by ``last_modified``, then to every revision, so a cache
+    layout this cannot resolve behaves as before rather than reporting nothing.
+    """
+    revisions = list(getattr(repo_info, "revisions", ()) or ())
+    if len(revisions) <= 1:
+        return revisions
+    repo_path = getattr(repo_info, "repo_path", None)
+    if repo_path is not None:
+        latest = latest_snapshot_dir(Path(repo_path))
+        if latest is not None:
+            scoped = [
+                rev for rev in revisions
+                if getattr(rev, "snapshot_path", None) is not None
+                and Path(rev.snapshot_path) == latest
+            ]
+            if scoped:
+                return scoped
+    dated = [rev for rev in revisions if getattr(rev, "last_modified", None) is not None]
+    if dated:
+        return [max(dated, key = lambda rev: rev.last_modified)]
+    return revisions
+
+
 def repo_has_pipeline_index(repo_info) -> bool:
     """Whether the cached snapshot carries a ROOT model_index.json, i.e. is loadable
     as a full diffusers pipeline (from_pretrained reads only the repo root). A nested
@@ -465,7 +497,7 @@ def repo_has_pipeline_index(repo_info) -> bool:
     a name match alone would also claim nested copies -- scope by file_path when the
     scan provides it."""
     try:
-        for rev in repo_info.revisions:
+        for rev in _current_revisions(repo_info):
             snapshot = getattr(rev, "snapshot_path", None)
             for f in rev.files:
                 name = str(getattr(f, "file_name", "") or "")
@@ -494,7 +526,7 @@ def repo_pipeline_missing_denoiser(repo_info) -> bool:
     _DENOISER_DIRS = ("transformer", "unet")
     _WEIGHT_SUFFIXES = (".safetensors", ".bin")
     try:
-        for rev in repo_info.revisions:
+        for rev in _current_revisions(repo_info):
             snapshot = getattr(rev, "snapshot_path", None)
             for f in rev.files:
                 name = str(getattr(f, "file_name", "") or "")

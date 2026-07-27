@@ -3985,3 +3985,82 @@ def test_download_plan_keeps_the_dense_encoder_when_the_precast_repo_is_unavaila
     base = next(e for e in plan["entries"] if e["repo_id"] == "black-forest-labs/FLUX.1-dev")
     assert "text_encoder/model.safetensors" in base["files"]
     assert not any(e["repo_id"] == "unsloth/does-not-exist" for e in plan["entries"])
+
+
+# ── teardown fence ────────────────────────────────────────────────────────────
+
+
+def test_unload_fences_queued_generations_while_it_waits(fake_runtime, tmp_path):
+    # A generation queued behind the active one holds no cancel event, so unload's signal cannot
+    # reach it. Python locks are not FIFO, so when the active denoise released _generate_lock the
+    # queued request could get in ahead of the unload, see the still-loaded pipeline, and run a
+    # whole new denoise after the model was told to go away.
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo",
+        family_override = "z-image",
+    )
+
+    seen: list[int] = []
+    real_unload_locked = backend._unload_locked
+
+    def _record_then_unload():
+        # Sampled at the moment unload holds both locks, i.e. exactly the window a queued
+        # generation could have slipped through.
+        seen.append(backend._teardown_waiters)
+        real_unload_locked()
+
+    backend._unload_locked = _record_then_unload
+    backend.unload()
+
+    assert seen == [1]                     # the fence was up for the whole wait
+    assert backend._teardown_waiters == 0  # and released once the pipeline was gone
+
+
+def test_generation_refuses_while_a_teardown_is_waiting(fake_runtime, tmp_path):
+    # The fence's effect: with a teardown waiting on _generate_lock, a generation that wins the
+    # lock refuses instead of denoising on a pipeline that is being freed.
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    assert backend.generate(prompt = "before", steps = 2)["images"]
+
+    backend._teardown_waiters = 1
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        backend.generate(prompt = "during", steps = 2)
+    # Still loaded: the refusal is about the pending teardown, not a missing model.
+    assert backend._state is not None
+
+    backend._teardown_waiters = 0
+    assert backend.generate(prompt = "after", steps = 2)["images"]
+
+
+def test_a_superseding_load_fences_queued_generations_too(fake_runtime, tmp_path):
+    # begin_load frees the old pipeline behind the same barrier, so it needs the same fence: a
+    # queued generation would otherwise run on the pipe the new load is about to drop.
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo",
+        family_override = "z-image",
+    )
+
+    seen: list[int] = []
+    real_unload_locked = backend._unload_locked
+
+    def _record_then_unload():
+        seen.append(backend._teardown_waiters)
+        real_unload_locked()
+
+    backend._unload_locked = _record_then_unload
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo",
+        family_override = "z-image",
+    )
+
+    assert seen == [1]
+    assert backend._teardown_waiters == 0

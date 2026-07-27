@@ -554,6 +554,13 @@ class DiffusionBackend:
         self._cancel_event = threading.Event()
         # Cancel Event of the in-flight generation; per-generation so a cancel can't be lost or leak.
         self._active_generate_cancel: Optional[threading.Event] = None
+        # How many unloads / superseding loads are waiting on _generate_lock to free this pipeline.
+        # A generation queued behind the active one holds no cancel event yet, so the cancel they
+        # signal cannot reach it: without this fence it could win the lock as the active denoise
+        # released it, see a still-loaded _state, and run a whole new denoise after the model was
+        # told to go away -- stalling a chat/video GPU handoff for minutes and painting an image
+        # after an eject. A count, not a flag, so concurrent teardowns each own their own release.
+        self._teardown_waiters = 0
         # Written by the callback, read lock-free by generate_progress().
         self._gen: Optional[_GenState] = None
         # img2img/inpaint pipes built via from_pipe (shared modules, no extra VRAM); cleared on unload.
@@ -1368,14 +1375,22 @@ class DiffusionBackend:
                 raise RuntimeError("Diffusion load was cancelled.")
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
+            # Same fence unload() takes: a generation queued behind the active denoise would
+            # otherwise slip in here and run on the pipeline this load is about to free.
+            self._teardown_waiters += 1
         with self._generate_lock:
             with self._lock:
-                # Re-check: a newer load/unload may have superseded this one while we waited.
-                if _load_token is not None and _load_token != self._load_token:
-                    raise RuntimeError("Diffusion load was cancelled.")
+                try:
+                    # Re-check: a newer load/unload may have superseded this one while we waited.
+                    if _load_token is not None and _load_token != self._load_token:
+                        raise RuntimeError("Diffusion load was cancelled.")
 
-                # Free the old pipeline before allocating the new one (never two in VRAM).
-                self._unload_locked()
+                    # Free the old pipeline before allocating the new one (never two in VRAM).
+                    self._unload_locked()
+                finally:
+                    # Released here, not at the end of the load: the old pipe is gone (or this load
+                    # bailed), and the rest of the load holds _generate_lock anyway.
+                    self._teardown_waiters -= 1
 
                 # Single-file kinds resolve a checkpoint path; the pipeline kind has none.
                 single_file_path = (
@@ -2816,6 +2831,11 @@ class DiffusionBackend:
         cancel = threading.Event()
         with self._generate_lock:
             with self._lock:
+                # An unload / superseding load signalled the active denoise and is waiting for this
+                # lock. Python locks are not FIFO, so this request can get in first; refuse instead
+                # of starting a denoise on a pipeline that is already being torn down.
+                if self._teardown_waiters:
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 state = self._state
                 if state is None:
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
@@ -3280,6 +3300,9 @@ class DiffusionBackend:
             # Abort an in-flight denoise via ITS cancel event.
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
+            # Fence queued generations too: they hold no cancel event yet, so the signal above
+            # cannot reach them.
+            self._teardown_waiters += 1
             # Cancel any in-flight load (its worker checks this token) and drop the marker.
             self._load_token += 1
             self._loading = None
@@ -3289,6 +3312,9 @@ class DiffusionBackend:
         with self._generate_lock:
             with self._lock:
                 self._unload_locked()
+                # Teardown is done: _state is None, so the fence has nothing left to protect and
+                # the next generation gets the plain not-loaded message.
+                self._teardown_waiters -= 1
         return self.status()
 
     def _unload_locked(self) -> None:
