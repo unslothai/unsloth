@@ -3583,13 +3583,9 @@ def _last_user_text(conversation: list[dict]) -> str:
 
 
 def rag_autoinject_permitted(rag_scope: dict | None) -> bool:
-    """Whether ``build_rag_autoinject`` would attempt a retrieval for this scope.
-
-    The cheap half of that function's entry gate: no embedding, no vector search,
-    no document read. Callers that must know whether a generation would splice in
-    retrieved passages -- without paying for the retrieval -- use this, so the
-    answer stays defined in one place.
-    """
+    """Whether ``build_rag_autoinject`` would retrieve for this scope: the cheap half
+    of its entry gate (no embedding, vector search or document read), so callers can
+    tell whether a generation would splice in passages without paying for retrieval."""
     if not rag_scope:
         return False
     enabled = rag_scope.get("autoinject")

@@ -3474,9 +3474,8 @@ def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Opt
 
 
 def _llama_status_model_ids(llama_backend) -> tuple[Optional[str], Optional[str]]:
-    """The ``(active_model, model_identifier)`` pair ``/api/inference/status``
-    publishes for a loaded GGUF. A native-lease load reports only the display
-    label, never the leased on-disk path."""
+    """The ``(active_model, model_identifier)`` pair ``/api/inference/status`` publishes for a
+    loaded GGUF; a native-lease load reports the display label, never the on-disk path."""
     model_id = getattr(llama_backend, "model_identifier", None)
     native_grant_backed = getattr(llama_backend, "_native_grant_backed", False)
     display_model_id = getattr(
@@ -3493,10 +3492,9 @@ def _llama_status_model_ids(llama_backend) -> tuple[Optional[str], Optional[str]
 
 
 def _llama_status_checkpoint_id(llama_backend) -> Optional[str]:
-    """The exact string a Studio client holds as ``params.checkpoint`` for the
-    loaded GGUF: ``status.model_identifier ?? status.active_model``. Built from
-    the same pair the status handler returns so the two cannot drift, letting a
-    client compare an identity we hand back against its own captured one."""
+    """The string a Studio client holds as ``params.checkpoint`` for the loaded GGUF:
+    ``status.model_identifier ?? status.active_model``, built from the same pair the
+    status handler returns so a client's captured identity cannot drift from ours."""
     display_model_id, model_identifier = _llama_status_model_ids(llama_backend)
     return display_model_id if model_identifier is None else model_identifier
 
@@ -12943,13 +12941,10 @@ async def chat_count_tokens(
 ):
     """Count prompt tokens for OpenAI-form chat messages using the loaded tokenizer.
 
-    Unlike the /v1 count endpoints this one never auto-switches models: ``model``
-    here is informational (the active model is used), and the caller is a
-    background recount with no abort signal, so a count for the model that was
-    loaded when it started could otherwise land after the user picked another one
-    and drag the backend back -- a server-side reload the frontend's own
-    checkpoint guards cannot undo. Count against whatever is loaded now.
-    """
+    Unlike the /v1 count endpoints this never auto-switches: ``model`` is informational,
+    the active model is used. The caller is a background recount with no abort signal, so
+    switching could drag the backend back to the model loaded when the count started, a
+    server-side reload the frontend's checkpoint guards cannot undo."""
     # /apply-template swaps every image for a short media marker, so an image thread
     # would count short by the whole embedding. Refuse rather than undercount; the
     # caller keeps the usage it already has.
