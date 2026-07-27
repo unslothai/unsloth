@@ -2385,12 +2385,15 @@ def _refresh_windows_path() -> None:
 
 
 def _managed_node_tools() -> Optional[tuple[Path, Path, bool]]:
+    # Best-effort probe on the launch path: reaching the backend for the managed Node must
+    # never break a launch, so any failure (missing package, unreadable home, degraded env)
+    # just means "no managed Node" and falls back to the system runtime.
     try:
         ensure_studio_backend_path()
         from utils.node_runtime import managed_node_binary, resolve_node_executable
 
         node = Path(managed_node_binary())
-    except (ImportError, OSError, TypeError, ValueError):
+    except Exception:
         return None
     npm = node.with_name("npm.cmd" if os.name == "nt" else "npm")
     try:
