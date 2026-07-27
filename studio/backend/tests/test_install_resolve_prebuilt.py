@@ -1208,9 +1208,9 @@ def test_windows_hip_gfx_floor_covers_every_fork_windows_rocm_bundle():
         if artifact.gfx_target and artifact.gfx_target.lower() not in concrete
     }
     unfloored = sorted(concrete - ilp.WINDOWS_HIP_PREBUILT_GFX_TARGETS)
-    assert not unfloored, (
-        f"auto-Vulkan would steal windows-rocm archs published in {FORK}@{tag}: {unfloored}"
-    )
+    assert (
+        not unfloored
+    ), f"auto-Vulkan would steal windows-rocm archs published in {FORK}@{tag}: {unfloored}"
     unlabelled = sorted(labels - ilp.WINDOWS_ROCM_FAMILY_GFX_LABELS)
     assert not unlabelled, (
         f"update markers forward family labels {FORK}@{tag} publishes but "
