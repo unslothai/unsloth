@@ -556,15 +556,13 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     # Prepare LoRA
     # state_dict = convert_lora_modules(self, dtype = dtype)
 
-    # FlashAttention cannot use the forced static-cache path below: unfilled cache
-    # slots are not masked during decoding. Preserve inference setup and processor
-    # normalization above, then delegate before static-cache and compile handling.
+    # FlashAttention breaks on the forced static cache below (unfilled slots stay
+    # unmasked while decoding), so delegate after normalization but before it.
     _clear_generation_caches(self)
     if _uses_flash_attention_for_generation(self.config):
-        # Pin "dynamic": a static cache still arrives via the caller's kwargs, their
-        # generation_config (TRL) or the model default, and None is merged back to that
-        # default. Set the kwarg, which generation_config.update applies last so it wins.
-        # Skip when a cache is supplied, since generate rejects both together.
+        # Pin the literal "dynamic": None is merged back to the model default, and a
+        # static cache still arrives via kwargs / the caller's generation_config (TRL).
+        # The kwarg wins (update runs last); skip it when the caller passed a cache.
         if kwargs.get("past_key_values") is None:
             kwargs["cache_implementation"] = "dynamic"
         try:
