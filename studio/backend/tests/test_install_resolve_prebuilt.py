@@ -110,12 +110,18 @@ def test_macos_upstream_pin_only_for_explicit_pre26_upstream():
     assert ilp.pinned_macos_release_tag(tahoe, UPSTREAM) is None
 
 
-def _run_resolve(monkeypatch, capsys, plans_or_exc, *, host = None, extra_args = ()):
+def _run_resolve(
+    monkeypatch,
+    capsys,
+    plans_or_exc,
+    *,
+    host = None,
+    extra_args = (),
+):
     monkeypatch.setattr(
         ilp,
         "detect_host",
-        lambda: host
-        or _host(system = "Darwin", is_macos = True, is_arm64 = True, machine = "arm64"),
+        lambda: host or _host(system = "Darwin", is_macos = True, is_arm64 = True, machine = "arm64"),
     )
 
     def _resolver(tag, host, repo, published_release_tag):
@@ -456,8 +462,7 @@ def _published_vulkan_bundle(*install_kinds):
         release_tag = "release",
         upstream_tag = "b9925",
         assets = {
-            artifact.asset_name: f"https://example/{artifact.asset_name}"
-            for artifact in artifacts
+            artifact.asset_name: f"https://example/{artifact.asset_name}" for artifact in artifacts
         },
         artifacts = artifacts,
     )
@@ -469,14 +474,9 @@ def test_fork_linux_intel_prefers_published_vulkan_bundle():
         _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True),
         bundle,
     )
-    assert [attempt.install_kind for attempt in attempts] == [
-        "linux-vulkan",
-        "linux-cpu",
-    ]
+    assert [attempt.install_kind for attempt in attempts] == ["linux-vulkan", "linux-cpu"]
     assert attempts[0].source_label == "published"
-    assert ["llama-diffusion-gemma-visual-server"] in ilp.runtime_payload_health_groups(
-        attempts[0]
-    )
+    assert ["llama-diffusion-gemma-visual-server"] in ilp.runtime_payload_health_groups(attempts[0])
 
 
 def test_fork_windows_intel_prefers_published_vulkan_bundle():
@@ -506,14 +506,11 @@ def test_fork_windows_intel_prefers_published_vulkan_bundle():
         bundle,
         checksums,
     )
-    assert [attempt.install_kind for attempt in attempts] == [
-        "windows-vulkan",
-        "windows-cpu",
-    ]
+    assert [attempt.install_kind for attempt in attempts] == ["windows-vulkan", "windows-cpu"]
     assert attempts[0].source_label == "published"
-    assert [
-        "llama-diffusion-gemma-visual-server.exe"
-    ] in ilp.runtime_payload_health_groups(attempts[0])
+    assert ["llama-diffusion-gemma-visual-server.exe"] in ilp.runtime_payload_health_groups(
+        attempts[0]
+    )
 
 
 def test_linux_vulkan_health_glob_matches_bare_cpu_lib():

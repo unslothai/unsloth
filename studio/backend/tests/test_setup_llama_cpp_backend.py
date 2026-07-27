@@ -220,7 +220,7 @@ def test_ps1_backend_vulkan_is_accepted(value):
 
 def test_ps1_forced_vulkan_fails_closed_on_windows_arm64():
     ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
-    arm64_guard = ps1.index('elseif ($windowsArm64)')
+    arm64_guard = ps1.index("elseif ($windowsArm64)")
     vulkan_flag = ps1.index(
         '$prebuiltArgs += @("--llama-backend", "vulkan")',
         arm64_guard,

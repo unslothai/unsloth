@@ -601,9 +601,7 @@ def test_staged_gpu_pick_reconciles_with_async_namespace_discovery():
     assert "reconcileConfigGpuSelection(" in page
     assert "gpuIndexKind" in page
     assert "pinnableDevices" in page
-    assert "reconciled.ids === null ? undefined : reconciled.indexKind" in " ".join(
-        page.split()
-    )
+    assert "reconciled.ids === null ? undefined : reconciled.indexKind" in " ".join(page.split())
     assert "selectsAll ? null : next" not in page
     gpu_info = _read("hooks/use-gpu-info.ts")
     assert 'inferenceGpu?.backend === "vulkan"' in gpu_info

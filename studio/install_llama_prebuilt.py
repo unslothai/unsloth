@@ -6003,9 +6003,7 @@ def validate_prebuilt_choice(
     if choice.install_kind in VULKAN_INSTALL_KINDS and not runtime_payload_is_healthy(
         install_dir, host, choice
     ):
-        raise PrebuiltFallback(
-            f"Vulkan bundle {choice.name} omitted a required runtime component"
-        )
+        raise PrebuiltFallback(f"Vulkan bundle {choice.name} omitted a required runtime component")
     preflight_linux_installed_binaries((server_path, quantize_path), install_dir, host)
     preflight_macos_installed_binaries((server_path, quantize_path), install_dir, host)
     ensure_repo_shape(install_dir)
