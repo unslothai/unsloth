@@ -59,8 +59,7 @@ import {
   shortExampleLabel,
 } from "./example-dataset-cards";
 
-// The families the Train tab can train, in the popularity order the user asked for. This is
-// the fallback used when the backend's /info does not yet report families (older backend);
+// The families the Train tab can train, in popularity order; a fallback for an older backend whose /info does not report families. When it does, its list wins and these labels/notes fill gaps.
 // when it does, its list wins and these labels/notes fill any gaps.
 type FamilyPreset = {
   name: string;
@@ -105,11 +104,9 @@ const FAMILY_PRESETS: FamilyPreset[] = [
 
 const CUSTOM_BASE = "__custom__";
 const UPLOAD_DATASET = "__upload__";
-// The dense DiT base precisions: they load a dense (bf16) base and quantise/cast it, so the
-// backend rejects them for an already-quantised bnb-4bit repo. "nf4"/"auto" stay valid.
+// Dense DiT base precisions: they load a dense (bf16) base and quantise/cast it, so the backend rejects them for an already-quantised bnb-4bit repo. "nf4"/"auto" stay valid.
 const DENSE_PRECISIONS = new Set(["bf16", "int8", "fp8", "mxfp8"]);
-// Mirror the backend's repo_is_prequantized heuristic: a repo whose name marks a
-// bitsandbytes 4-bit build already ships a quantised transformer and cannot serve the dense
+// Mirror the backend repo_is_prequantized heuristic: a bitsandbytes 4-bit repo already ships a quantised transformer and cannot serve the dense base precisions. Keep in sync with diffusion_train_common.repo_is_prequantized.
 // base precisions. Kept in sync with diffusion_train_common.repo_is_prequantized.
 function repoIsPrequantized(baseModel: string): boolean {
   const name = baseModel.toLowerCase();
@@ -123,15 +120,13 @@ function repoIsPrequantized(baseModel: string): boolean {
 // Dataset-select option value prefix for a not-yet-imported example; picking it imports.
 const EXAMPLE_PREFIX = "example:";
 const DATASET_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.bmp,.txt,.caption,.jsonl";
-// min-w-0 + a truncating value: a long option would otherwise set the grid
-// column's min width and push into its neighbour.
+// min-w-0 + a truncating value: a long option would otherwise set the grid column min width and push into its neighbour.
 const selectClass =
   "h-8 w-full min-w-0 text-xs *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:truncate";
 // Every settings cell is a grid item, so it needs min-w-0 to be allowed to shrink.
 const fieldClass = "grid min-w-0 gap-2";
 
-// Merge the backend's reported families (if any) over the presets, keeping the preset
-// ordering (popularity) and filling labels/notes/defaults the backend omits.
+// Merge the backend reported families (if any) over the presets, keeping the preset ordering (popularity) and filling labels/notes/defaults the backend omits.
 function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
   if (!reported || reported.length === 0) return FAMILY_PRESETS;
   const byName = new Map(reported.map((f) => [f.name, f]));
@@ -170,9 +165,7 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
   return merged;
 }
 
-// A full-page training workspace: left = configure (family, dataset, labeling, settings), right
-// = live run (progress, loss/grad-norm charts, completion + deploy). Kept mounted with the page
-// so a long run survives tab switches; polling is gated on `active`.
+// A full-page training workspace: left = configure (family, dataset, labeling, settings), right = live run (progress, loss/grad-norm charts, completion + deploy). Kept mounted with the page so a long run survives tab switches; polling is gated on `active`.
 export function DiffusionTrainPanel({
   active,
   loadedFamily,
@@ -186,12 +179,10 @@ export function DiffusionTrainPanel({
   onFamiliesChange,
 }: {
   active: boolean;
-  // The currently loaded generation model's family / base repo, to preselect a matching
-  // training base when it is one we can train.
+  // The currently loaded generation model family / base repo, to preselect a matching training base when it is one we can train.
   loadedFamily?: string | null;
   loadedBaseRepo?: string | null;
-  // Family + base are controlled by the page: the top bar picks the training base while
-  // Train is showing, and these selects stay in sync with it.
+  // Family + base are controlled by the page: the top bar picks the training base while Train is showing, and these selects stay in sync with it.
   familyName: string;
   onFamilyNameChange: (name: string) => void;
   baseChoice: string;
@@ -219,27 +210,20 @@ export function DiffusionTrainPanel({
     () => families.find((f) => f.name === familyName) ?? families[0],
     [families, familyName],
   );
-  // The raw backend family record (precision_modes / recommended_precision / supports_compile
-  // live only here, not on the preset). Absent on an older backend -> the DiT speed controls
-  // fall back to a sensible default list.
+  // The raw backend family record (precision_modes / recommended_precision / supports_compile live only here, not on the preset). Absent on an older backend -> the DiT speed controls fall back to a sensible default list.
   const reportedFamily = useMemo(
     () => info?.families?.find((f) => f.name === familyName),
     [info?.families, familyName],
   );
-  // sdxl trains the U-Net in mixed precision (no quantised base), so it uses the
-  // mixed_precision control instead of base_precision. Everything else is a DiT family.
+  // sdxl trains the U-Net in mixed precision (no quantised base), so it uses the mixed_precision control instead of base_precision. Everything else is a DiT family.
   const isDiT = familyName !== "sdxl";
-  // An EMPTY precision_modes list on a DiT family is the backend's signal that this host can't
-  // train it at all (a non-bf16 CUDA GPU fails the preflight for every mode, so /info advertises
-  // no precision rather than a start that always 400s; the reason rides in vram_note). Only an
-  // ABSENT field means an older backend, falling back to the default modes. SDXL reports [] too
-  // but isn't precision-gated (it keeps its mixed_precision lever), hence the isDiT scope.
+  // An EMPTY precision_modes list on a DiT family is the backend signal that this host cannot train it at all (a non-bf16 CUDA GPU fails the preflight for every mode, so /info advertises no precision rather than a start that always 400s; the reason rides in vram_note).
+  // Only an ABSENT field means an older backend, falling back to the default modes. SDXL reports [] too but is not precision-gated (it keeps its mixed_precision lever), hence the isDiT scope.
   const familyUntrainable =
     isDiT &&
     reportedFamily?.precision_modes != null &&
     reportedFamily.precision_modes.length === 0;
-  // The quantised base precisions this family can train in, with a stable fallback when the
-  // backend does not report them (older backend, or a preset-only family).
+  // The quantised base precisions this family can train in, with a stable fallback when the backend does not report them (older backend, or a preset-only family).
   const precisionModes = useMemo<
     Array<"nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto">
   >(() => {
@@ -249,13 +233,10 @@ export function DiffusionTrainPanel({
         m === "nf4" || m === "bf16" || m === "int8" || m === "fp8" || m === "mxfp8",
     );
     if (reported && reported.length > 0) return ["auto", ...reported];
-    // Fallback without a backend report: the GPU-independent modes only (mxfp8 needs a
-    // Blackwell probe, so it is offered strictly when the backend advertises it).
+    // Fallback without a backend report: the GPU-independent modes only (mxfp8 needs a Blackwell probe, so it is offered strictly when the backend advertises it).
     return ["auto", "nf4", "bf16", "int8", "fp8"];
   }, [reportedFamily?.precision_modes, familyUntrainable]);
-  // Whether to show the torch.compile control. The backend advertises this per family
-  // (the SDXL U-Net path compiles regionally too now); default on for DiT families when
-  // an older backend does not report it.
+  // Whether to show the torch.compile control. The backend advertises this per family (the SDXL U-Net path compiles regionally too now); default on for DiT families when an older backend does not report it.
   const supportsCompile = reportedFamily?.supports_compile ?? isDiT;
 
   const setBaseChoice = onBaseChoiceChange;
@@ -276,8 +257,7 @@ export function DiffusionTrainPanel({
   const [instancePrompt, setInstancePrompt] = useState("");
 
   const [steps, setSteps] = useState(500);
-  // Run length is set in either steps or epochs; the trainer resolves epochs -> steps once
-  // the dataset size is known (num_epochs overrides train_steps on the backend).
+  // Run length is set in either steps or epochs; the trainer resolves epochs -> steps once the dataset size is known (num_epochs overrides train_steps on the backend).
   const [durationUnit, setDurationUnit] = useState<"steps" | "epochs">("steps");
   const [epochs, setEpochs] = useState(10);
   const [learningRate, setLearningRate] = useState(family?.defaults.lr ?? 0.0001);
@@ -286,20 +266,16 @@ export function DiffusionTrainPanel({
   const [batchSize, setBatchSize] = useState(1);
   const [gradAccum, setGradAccum] = useState(1);
   const [seed, setSeed] = useState(42);
-  // LR schedule (PR E wired get_scheduler into the loop, so the LR follows the chosen curve).
-  // Warmup only applies to the non-constant schedules; plain "constant" ignores it.
+  // LR schedule. Warmup only applies to the non-constant schedules; plain "constant" ignores it.
   const [lrScheduler, setLrScheduler] = useState<
     "constant" | "constant_with_warmup" | "cosine" | "linear"
   >("constant");
   const [lrWarmupSteps, setLrWarmupSteps] = useState(0);
   // Gradient checkpointing trades ~20-30% step time for a large activation-VRAM saving.
   const [gradCheckpoint, setGradCheckpoint] = useState(true);
-  // sdxl (U-Net) trains in a mixed-precision autocast; the DiT families quantise the frozen
-  // base weights instead (base_precision) and ignore this. Both are surfaced in Advanced.
+  // sdxl (U-Net) trains in a mixed-precision autocast; the DiT families quantise the frozen base weights (base_precision) and ignore this. Both are surfaced in Advanced.
   const [precision, setPrecision] = useState<"bf16" | "fp16" | "no">("bf16");
-  // Quantised base precision for DiT families (nf4 QLoRA default, or a speed tier). "auto"
-  // lets the backend pick the family's recommended mode. Re-seeded to the family's
-  // recommendation on family change (unless the user picked one).
+  // Quantised base precision for DiT families (nf4 QLoRA default, or a speed tier). "auto" lets the backend pick the family recommended mode. Re-seeded to the family recommendation on family change (unless the user picked one).
   const [basePrecision, setBasePrecision] = useState<
     "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto"
   >("auto");
@@ -307,31 +283,24 @@ export function DiffusionTrainPanel({
   const [compileTransformer, setCompileTransformer] = useState<"off" | "on" | "auto">(
     "auto",
   );
-  // Track whether the user hand-edited the numeric settings; if not, a family change
-  // re-seeds them from that family's defaults.
+  // Track whether the user hand-edited the numeric settings; if not, a family change re-seeds them from that family defaults.
   const settingsDirty = useRef(false);
-  // Track whether the user hand-picked a base precision; if not, a family change re-seeds it
-  // from that family's recommended_precision.
+  // Track whether the user hand-picked a base precision; if not, a family change re-seeds it from that family recommended_precision.
   const precisionDirty = useRef(false);
   // Same for the base repo: once the user picks one, only a real family change may re-seed it.
-  // `family` is a fresh object after every refreshInfo() (mergeFamilies rebuilds the list from the
-  // new info), so the seeding effect below re-runs on an unrelated dataset refresh (upload, import,
-  // caption save) too; without this the user's chosen base was silently replaced by the family
-  // default and the run started on a different model. The family the base was last seeded for is
-  // tracked by name, since the object identity is not stable.
+  // `family` is a fresh object after every refreshInfo() (mergeFamilies rebuilds the list), so the seeding effect below re-runs on an unrelated dataset refresh too; without this the user chosen base was silently replaced by the family default and the run started on a different model.
+  // The family the base was last seeded for is tracked by name, since the object identity is not stable.
   const baseDirty = useRef(false);
   const seededBaseFamily = useRef<string | null>(null);
 
   const [starting, setStarting] = useState(false);
   const [status, setStatus] = useState<DiffusionTrainingStatus | null>(null);
-  // Persisted previous runs (terminal), listed on the idle view; selecting one loads its
-  // full record (config + metric logs) and re-plots its charts read-only.
+  // Persisted previous runs (terminal), listed on the idle view; selecting one loads its full record (config + metric logs) and re-plots its charts read-only.
   const [prevRuns, setPrevRuns] = useState<DiffusionTrainingRunSummary[]>([]);
   const [viewRun, setViewRun] = useState<DiffusionTrainingRunDetail | null>(null);
   // The confirm-stop dialog (mirrors the LLM Train tab): Continue / Stop / Stop and save.
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
-  // Set when the user confirms a stop; the button reads "Stopping..." until the run ends.
-  // Clamped to the running state at read time (below) so a fresh run never inherits it.
+  // Set when the user confirms a stop; the button reads "Stopping..." until the run ends. Clamped to the running state at read time (below) so a fresh run never inherits it.
   const [stopRequestedLocal, setStopRequestedLocal] = useState(false);
 
   const refreshInfo = useCallback(async (): Promise<DiffusionTrainingInfo | null> => {
@@ -344,8 +313,7 @@ export function DiffusionTrainPanel({
     }
   }, []);
 
-  // On first activation, load the dataset list and preselect a base matching the loaded
-  // generation model when it is a trainable family.
+  // On first activation, load the dataset list and preselect a base matching the loaded generation model when it is a trainable family.
   useEffect(() => {
     if (!active) return;
     void refreshInfo().then((i) => {
@@ -356,8 +324,7 @@ export function DiffusionTrainPanel({
     });
   }, [active, refreshInfo]);
 
-  // Load the curated example list once (for the dropdown group + the cards). Best-effort:
-  // an older backend without the endpoint just yields no examples.
+  // Load the curated example list once (for the dropdown group + the cards). Best-effort: an older backend without the endpoint just yields no examples.
   useEffect(() => {
     if (!active) return;
     let cancelled = false;
@@ -373,9 +340,7 @@ export function DiffusionTrainPanel({
     };
   }, [active]);
 
-  // Examples whose folder is not on disk yet: shown in the dropdown's Examples group and as
-  // cards. An example imports into a folder named after its id, so a matching dataset name
-  // means it is already imported (and appears as a normal dataset instead).
+  // Examples whose folder is not on disk yet: shown in the dropdown Examples group and as cards. An example imports into a folder named after its id, so a matching dataset name means it is already imported (and appears as a normal dataset instead).
   const importedNames = useMemo(
     () => new Set((info?.datasets ?? []).map((d) => d.name)),
     [info?.datasets],
@@ -385,8 +350,7 @@ export function DiffusionTrainPanel({
     [examples, importedNames],
   );
 
-  // Import a curated example, then select the resulting folder. Seeds the trigger prompt from
-  // the example only when the field is meaningful (the import has no captions of its own).
+  // Import a curated example, then select the resulting folder. Seeds the trigger prompt from the example only when the field is meaningful (the import has no captions of its own).
   const importExample = useCallback(
     async (ex: DiffusionDatasetExample) => {
       setImportingId(ex.id);
@@ -408,8 +372,7 @@ export function DiffusionTrainPanel({
     [refreshInfo, instancePrompt],
   );
 
-  // If the loaded generation model is a trainable family, jump the family selector to it
-  // once (only when the panel first sees a loaded family).
+  // If the loaded generation model is a trainable family, jump the family selector to it once (only when the panel first sees a loaded family).
   const seededFromLoaded = useRef(false);
   useEffect(() => {
     if (seededFromLoaded.current) return;
@@ -420,18 +383,15 @@ export function DiffusionTrainPanel({
     }
   }, [loadedFamily, families]);
 
-  // Re-seed base + numeric settings from the family's defaults on family change (unless the
-  // user edited the numbers). Prefer the loaded base repo when it belongs to this family.
+  // Re-seed base + numeric settings from the family defaults on family change (unless the user edited the numbers). Prefer the loaded base repo when it belongs to this family.
   useEffect(() => {
     if (!family) return;
-    // A NEW family invalidates any earlier base pick (another family's repo is not selectable
-    // here); a mere info refresh does not, so compare by name rather than object identity.
+    // A NEW family invalidates any earlier base pick (another family repo is not selectable here); a mere info refresh does not, so compare by name rather than object identity.
     if (seededBaseFamily.current !== family.name) {
       seededBaseFamily.current = family.name;
       baseDirty.current = false;
     }
-    // An already-valid base wins: the top bar sets family and base together, so this must
-    // not snap the pick back to the family's first repo.
+    // An already-valid base wins: the top bar sets family and base together, so this must not snap the pick back to the family first repo.
     const preferLoaded = family.base_repos.includes(baseChoice)
       ? baseChoice
       : loadedBaseRepo && family.base_repos.includes(loadedBaseRepo)
@@ -443,8 +403,7 @@ export function DiffusionTrainPanel({
       setRank(family.defaults.rank);
       setResolution(family.defaults.resolution);
     }
-    // Re-seed the DiT base precision from the family's recommendation (unless the user picked
-    // one). "auto" is always a safe default when the backend has no recommendation.
+    // Re-seed the DiT base precision from the family recommendation (unless the user picked one). "auto" is always a safe default when the backend has no recommendation.
     if (!precisionDirty.current) {
       const rec = reportedFamily?.recommended_precision;
       setBasePrecision(
@@ -455,34 +414,25 @@ export function DiffusionTrainPanel({
     }
   }, [family, loadedBaseRepo, reportedFamily?.recommended_precision]);
 
-  // mixed_precision is an SDXL-only lever (hidden for DiT families). A dense DiT base precision
-  // (bf16/int8/fp8) requires bf16 compute, and every DiT family trains in bf16, so reset
-  // precision to bf16 on a change to a DiT family. Without this, an fp16/no value left from SDXL
-  // rides along in the DiT start payload and the backend rejects it (dense modes need
-  // mixed_precision=bf16). Kept in its own effect so it doesn't re-trigger the reseed above.
+  // mixed_precision is an SDXL-only lever (hidden for DiT families). A dense DiT base precision (bf16/int8/fp8) requires bf16 compute, and every DiT family trains in bf16, so reset precision to bf16 on a change to a DiT family.
+  // Without this, an fp16/no value left from SDXL rides along in the DiT start payload and the backend rejects it. Kept in its own effect so it does not re-trigger the reseed above.
   useEffect(() => {
     if (isDiT) setPrecision("bf16");
   }, [isDiT]);
 
-  // The base actually used everywhere (request, deploy, select value). baseChoice can briefly
-  // hold another family's repo between a family switch and the reseed effect (or if it's
-  // skipped); a raw <select value> would then DISPLAY the first option while the request carried
-  // the stale repo -- the user saw FLUX's gated error while another family looked selected. Clamp
-  // to the current family's repos.
+  // The base actually used everywhere (request, deploy, select value). baseChoice can briefly hold another family repo between a family switch and the reseed effect (or if it is skipped);
+  // a raw <select value> would then DISPLAY the first option while the request carried the stale repo. Clamp to the current family repos.
   const effectiveBase =
     baseChoice === CUSTOM_BASE || (family?.base_repos ?? []).includes(baseChoice)
       ? baseChoice
       : family?.base_repos[0] ?? CUSTOM_BASE;
 
-  // The resolved base repo/path the request will carry, and whether it looks prequantized
-  // (bnb-4bit etc.). The dense base precisions are invalid for such a repo, so we gate them.
+  // The resolved base repo/path the request will carry, and whether it looks prequantized (bnb-4bit etc.). The dense base precisions are invalid for such a repo, so we gate them.
   const resolvedBase = (effectiveBase === CUSTOM_BASE ? customBase : effectiveBase).trim();
   const basePrequantized = isDiT && repoIsPrequantized(resolvedBase);
 
-  // A prequantized base cannot serve the dense precisions; auto-flip a dense selection back
-  // to "auto" (which resolves to nf4 for such a repo) so the run does not fail at the backend
-  // validator. Reuses the precisionDirty ref so a later family change still re-seeds from the
-  // recommendation. The dense options are also disabled in the select below.
+  // A prequantized base cannot serve the dense precisions; auto-flip a dense selection back to "auto" (which resolves to nf4 for such a repo) so the run does not fail at the backend validator.
+  // Reuses the precisionDirty ref so a later family change still re-seeds from the recommendation. The dense options are also disabled in the select below.
   useEffect(() => {
     if (basePrequantized && DENSE_PRECISIONS.has(basePrecision)) {
       precisionDirty.current = false;
@@ -506,14 +456,12 @@ export function DiffusionTrainPanel({
     return () => window.clearInterval(id);
   }, [active, poll]);
 
-  // "Train another" dismisses the completed run's card locally (the backend keeps the
-  // terminal "completed" status until the next start, so we can't rely on it clearing).
+  // "Train another" dismisses the completed run card locally (the backend keeps the terminal "completed" status until the next start, so we cannot rely on it clearing).
   const [dismissedJobId, setDismissedJobId] = useState<string | null>(null);
   const running = Boolean(status?.active) || status?.status === "running";
   const completed =
     status?.status === "completed" && status.job_id !== dismissedJobId;
-  // "Stop and save" ends the run as "stopped" WITH a saved partial adapter; it must get
-  // the same ready-to-deploy card as a full run (only a no-save stop has nothing to show).
+  // "Stop and save" ends the run as "stopped" WITH a saved partial adapter; it must get the same ready-to-deploy card as a full run (only a no-save stop has nothing to show).
   const stoppedWithAdapter =
     status?.status === "stopped" &&
     Boolean(status?.lora_path) &&
@@ -523,14 +471,11 @@ export function DiffusionTrainPanel({
       ? Math.min(100, Math.round((status.step / status.total_steps) * 100))
       : 0;
 
-  // The pending-stop flag only matters while a run is active; clamping at read time (rather
-  // than resetting in an effect) means a fresh run never inherits a stale "Stopping..." state.
+  // The pending-stop flag only matters while a run is active; clamping at read time (rather than resetting in an effect) means a fresh run never inherits a stale "Stopping..." state.
   const stopRequested = running && stopRequestedLocal;
 
-  // Whether there is a run to show live: running, or ANY terminal run (completed /
-  // stopped / error) the user has not dismissed yet. Dismissing must cover every
-  // terminal status, or "Train another" after a stop (and any error) would trap the
-  // run view with no way back to the settings.
+  // Whether there is a run to show live: running, or ANY terminal run (completed / stopped / error) the user has not dismissed yet.
+  // Dismissing must cover every terminal status, or "Train another" after a stop (and any error) would trap the run view with no way back to the settings.
   const terminalStatuses = ["completed", "stopped", "error"];
   const hasRun = Boolean(
     status &&
@@ -538,11 +483,8 @@ export function DiffusionTrainPanel({
       !(terminalStatuses.includes(status.status) && status.job_id === dismissedJobId),
   );
 
-  // Notify the parent once per run that produced an adapter (full completion or stop-and-save)
-  // so it rescans the LoRA picker. The flag is re-armed both here (when a new run is seen
-  // "running") and in onStart (when a start is requested), so a second run still notifies even if
-  // the poll never catches the intermediate "running" state; onStart also guards the double-fire
-  // when the poll re-observes the same terminal status before the new run begins.
+  // Notify the parent once per run that produced an adapter (full completion or stop-and-save) so it rescans the LoRA picker.
+  // The flag is re-armed both here (when a new run is seen "running") and in onStart, so a second run still notifies even if the poll never catches the intermediate "running" state; onStart also guards the double-fire when the poll re-observes the same terminal status.
   const notifiedComplete = useRef(false);
   useEffect(() => {
     const producedAdapter =
@@ -558,8 +500,7 @@ export function DiffusionTrainPanel({
 
   const selectedDataset =
     dataset !== UPLOAD_DATASET ? info?.datasets.find((d) => d.name === dataset) : undefined;
-  // A dataset where every image already ships a caption needs no trigger prompt; hide the
-  // field and explain why. Partial/no captions (or upload mode) still show it.
+  // A dataset where every image already ships a caption needs no trigger prompt; hide the field and explain why. Partial/no captions (or upload mode) still show it.
   const fullyCaptioned = Boolean(
     selectedDataset &&
       selectedDataset.image_count > 0 &&
@@ -580,8 +521,7 @@ export function DiffusionTrainPanel({
       .filter((p): p is TrainingSeriesPoint => p.value != null);
   }, [status?.metric_history]);
 
-  // Refresh the previous-runs list whenever the service is not mid-run (on mount and
-  // right after a run terminates, when its record has just been persisted).
+  // Refresh the previous-runs list whenever the service is not mid-run (on mount and right after a run terminates, when its record has just been persisted).
   useEffect(() => {
     if (!active) return;
     if (status?.status === "running") return;
@@ -594,10 +534,8 @@ export function DiffusionTrainPanel({
         .catch(() => {});
     };
     refetch();
-    // The service exposes a terminal status before the pump has necessarily finished
-    // writing the run's JSON record, so the one-shot refetch above can win that race and
-    // miss the just-finished run. A short delayed second refetch after a terminal
-    // transition lets the record land so the newest run reliably appears.
+    // The service exposes a terminal status before the pump has necessarily finished writing the run JSON record, so the one-shot refetch above can win that race and miss the just-finished run.
+    // A short delayed second refetch after a terminal transition lets the record land so the newest run reliably appears.
     let delayed: ReturnType<typeof setTimeout> | undefined;
     if (status?.status === "completed" || status?.status === "stopped" || status?.status === "error") {
       delayed = setTimeout(refetch, 1500);
@@ -674,9 +612,7 @@ export function DiffusionTrainPanel({
       toast.error("Name the adapter (this becomes its folder under Studio outputs).");
       return;
     }
-    // Require a trigger prompt whenever ANY image lacks a caption, not only when none
-    // have one: without an instance_prompt the backend discovery silently skips every
-    // uncaptioned image, so a partially captioned dataset would train on a subset.
+    // Require a trigger prompt whenever ANY image lacks a caption, not only when none have one: without an instance_prompt the backend discovery silently skips every uncaptioned image, so a partially captioned dataset would train on a subset.
     if (
       selectedDataset &&
       selectedDataset.caption_count < selectedDataset.image_count &&
@@ -706,13 +642,9 @@ export function DiffusionTrainPanel({
     if (learningRate <= 0) return toast.error("Learning rate must be greater than 0.");
     if (lrWarmupSteps < 0) return toast.error("Warmup steps cannot be negative.");
     setStarting(true);
-    // A previous run's confirmed stop must not leak into this run: without the reset the
-    // read-time clamp (running && stopRequestedLocal) re-arms the moment the new run goes
-    // active, rendering a permanently disabled "Stopping..." button.
+    // A previous run confirmed stop must not leak into this run: without the reset the read-time clamp (running && stopRequestedLocal) re-arms the moment the new run goes active, rendering a permanently disabled "Stopping..." button.
     setStopRequestedLocal(false);
-    // Re-arm the completion notification for this run. Resetting here (not only when the
-    // poll later sees "running") means a second run still notifies even if its "running"
-    // phase is never observed, and prevents the prior run's terminal status re-firing it.
+    // Re-arm the completion notification for this run. Resetting here (not only when the poll later sees "running") means a second run still notifies even if its "running" phase is never observed, and prevents the prior run terminal status re-firing it.
     notifiedComplete.current = false;
     // A history view must not shadow the new live run.
     setViewRun(null);
@@ -724,8 +656,7 @@ export function DiffusionTrainPanel({
         output_dir: outputDir.trim(),
         instance_prompt: instancePrompt.trim() || undefined,
         resolution,
-        // Epochs mode overrides train_steps on the backend, so send num_epochs and omit
-        // train_steps (the backend default is unused when num_epochs > 0).
+        // Epochs mode overrides train_steps on the backend, so send num_epochs and omit train_steps.
         train_steps: durationUnit === "epochs" ? undefined : steps,
         num_epochs: durationUnit === "epochs" ? epochs : undefined,
         learning_rate: learningRate,
@@ -737,8 +668,7 @@ export function DiffusionTrainPanel({
         lr_warmup_steps: lrScheduler === "constant" ? 0 : lrWarmupSteps,
         lora_rank: rank,
         mixed_precision: precision,
-        // DiT families quantise the base weights (base_precision); sdxl uses mixed_precision
-        // above and ignores this. Only send compile for families that support it.
+        // DiT families quantise the base weights (base_precision); sdxl uses mixed_precision above and ignores this. Only send compile for families that support it.
         base_precision: isDiT ? basePrecision : undefined,
         compile_transformer: supportsCompile ? compileTransformer : undefined,
         hf_token: hfApiToken(getHfToken()) || undefined,
@@ -778,9 +708,7 @@ export function DiffusionTrainPanel({
     poll,
   ]);
 
-  // Confirm-then-stop, mirroring the LLM Train tab. `save` writes the current adapter before
-  // halting ("Stop and save"); false discards it ("Stop"). Closes the dialog and marks the
-  // stop as requested so the button reads "Stopping..." until the backend reports it stopped.
+  // Confirm-then-stop, mirroring the LLM Train tab. `save` writes the current adapter before halting ("Stop and save"); false discards it ("Stop"). Marks the stop as requested so the button reads "Stopping..." until the backend reports it stopped.
   const onStop = useCallback(
     async (save: boolean) => {
       setStopDialogOpen(false);
@@ -801,11 +729,8 @@ export function DiffusionTrainPanel({
     [poll],
   );
 
-  // Resolve the repo an adapter should be PREVIEWED on. Krea (and any family that trains on one
-  // checkpoint but runs adapters on another) declares a deploy_base: preview the adapter there
-  // instead of the training checkpoint, so the default Krea train-on-Raw flow doesn't load the
-  // adapter on Raw's non-distilled recipe. Only a recognised training base is overridden; a
-  // custom typed repo is respected as-is.
+  // Resolve the repo an adapter should be PREVIEWED on. Krea (and any family that trains on one checkpoint but runs adapters on another) declares a deploy_base: preview the adapter there instead of the training checkpoint.
+  // Only a recognised training base is overridden; a custom typed repo is respected as-is.
   const deployBaseFor = useCallback(
     (trainedBase: string, famName: string): string => {
       const rec = info?.families?.find((f) => f.name === famName);
@@ -850,8 +775,7 @@ export function DiffusionTrainPanel({
         value={value}
         onChange={(e) => {
           settingsDirty.current = true;
-          // Only fall back when the input parses to NaN (empty/invalid); a real 0 is a
-          // legal value for zero-legal fields (Seed, LR warmup steps) and must be kept.
+          // Only fall back when the input parses to NaN (empty/invalid); a real 0 is legal for zero-legal fields (Seed, LR warmup steps) and must be kept.
           const parsed = Number(e.target.value);
           set(Number.isNaN(parsed) ? fallback : parsed);
         }}
@@ -860,8 +784,7 @@ export function DiffusionTrainPanel({
     </div>
   );
 
-  // Run length: a number paired with a compact unit select (Steps / Epochs). Epochs mode
-  // trains for that many full passes over the dataset; the backend resolves it to steps.
+  // Run length: a number paired with a compact unit select (Steps / Epochs). Epochs mode trains for that many full passes; the backend resolves it to steps.
   const durationField = (
     <div className={fieldClass}>
       <Label className="text-xs">{durationUnit === "epochs" ? "Epochs" : "Steps"}</Label>
@@ -908,9 +831,7 @@ export function DiffusionTrainPanel({
     return "fp8 (experimental)";
   };
 
-  // The training settings, shown as the run area's MAIN content before a run starts
-  // (settings are set once, up front); once training starts the run view (progress +
-  // charts) replaces them. Laid out as a wide grid for the center column.
+  // The training settings, shown as the run area MAIN content before a run starts; once training starts the run view (progress + charts) replaces them.
   const trainingSettings = (
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-2 gap-x-6 gap-y-5 lg:grid-cols-3">
@@ -999,8 +920,7 @@ export function DiffusionTrainPanel({
             </Select>
             <p className="text-ui-11 leading-snug text-muted-foreground">
               {familyUntrainable ? (
-                // The reason itself (the backend's bf16-preflight text) already shows in
-                // the family picker's vram_note line above.
+                // The reason itself (the backend bf16-preflight text) already shows in the family picker vram_note line above.
                 <>This GPU cannot train this model family.</>
               ) : (
                 <>
@@ -1062,8 +982,7 @@ export function DiffusionTrainPanel({
 
   return (
     <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[1100px] flex-1 overflow-hidden px-5 pt-9 sm:px-8">
-      {/* Left: configure. No cards: both panes sit on the page background, split by a
-          rule that runs the full page height. */}
+      {/* Left: configure. No cards: both panes sit on the page background, split by a full-height rule. */}
       <div className="flex w-[392px] min-w-0 shrink-0 flex-col overflow-hidden border-r border-border/60">
         {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
         <div className="hover-scrollbar flex min-h-0 flex-col gap-5 overflow-y-auto overflow-x-hidden pb-7 pl-0.5 pr-7">
@@ -1185,8 +1104,7 @@ export function DiffusionTrainPanel({
                   aria-label="New dataset name"
                 />
                 <div className="flex items-center gap-2">
-                  {/* The native input is the file picker but never the control the
-                      user sees, so the row keeps the app's button styling. */}
+                  {/* The native input is the file picker but never the control the user sees, so the row keeps the app button styling. */}
                   <input
                     ref={fileInputRef}
                     type="file"
@@ -1268,8 +1186,7 @@ export function DiffusionTrainPanel({
             />
           </div>
 
-          {/* Trigger + adapter name (trigger first: it describes the dataset, the name
-              just labels the output) */}
+          {/* Trigger + adapter name (trigger first: it describes the dataset, the name just labels the output) */}
           {fullyCaptioned ? (
             <p className="text-ui-11 leading-snug text-muted-foreground">
               All {selectedDataset?.image_count} images have captions, so no trigger prompt
@@ -1323,12 +1240,8 @@ export function DiffusionTrainPanel({
         </div>
       </div>
 
-      {/* Right: the run area. Before a run it shows the training settings (set once, up
-          front) plus the previous-runs history; during/after a run the live view takes
-          over (progress with Stop, then the saved-adapter card ABOVE the charts).
-          Selecting a previous run re-plots its persisted logs read-only. */}
-      {/* Sections here carry no card of their own: spacing and a rule separate them.
-          p-1.5 keeps the chart cards' outer ring from being clipped. */}
+      {/* Right: the run area. Before a run: training settings + previous-runs history; during/after: the live view (progress with Stop, then the saved-adapter card ABOVE the charts). Selecting a previous run re-plots its persisted logs read-only. */}
+      {/* Sections carry no card of their own: spacing and a rule separate them. p-1.5 keeps the chart cards outer ring from being clipped. */}
       <div className="hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 overflow-y-auto p-1.5 pb-7 pl-6">
         {viewRun && !hasRun ? (
           <>
@@ -1509,8 +1422,7 @@ export function DiffusionTrainPanel({
                   {stopRequested ? "Stopping..." : "Stop training"}
                 </Button>
               )}
-              {/* Terminal runs WITHOUT an adapter card (error, or a stop that discarded
-                  the run) still need a way back to the settings. */}
+              {/* Terminal runs WITHOUT an adapter card (error, or a discarded stop) still need a way back to the settings. */}
               {!running &&
                 status &&
                 terminalStatuses.includes(status.status) &&
@@ -1575,11 +1487,7 @@ export function DiffusionTrainPanel({
               finishes first.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {/* flex-wrap keeps all three buttons visible when the sm:flex-row row is wider than
-              the dialog at narrow widths (down to ~480px); it wraps instead of clipping the
-              last button past the right edge. items-center + a real label on the destructive
-              action: a bare "Stop" rendered as a stubby pill between two wide ones and read
-              as misaligned. */}
+          {/* flex-wrap keeps all three buttons visible when the row is wider than the dialog at narrow widths; items-center + a real label on the destructive action, since a bare "Stop" read as misaligned between two wide buttons. */}
           <AlertDialogFooter className="flex-wrap items-center">
             <AlertDialogCancel>Continue training</AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={() => void onStop(false)}>

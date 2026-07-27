@@ -74,8 +74,7 @@ from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 logger = get_logger(__name__)
 
-# A sampling-progress line ("4/4", "[ 12/ 28]", "sampling: 50%|...| 14/28"). Only a match whose
-# denominator equals the requested step count is trusted, so a stray "1/100" can't move the bar.
+# A sampling-progress line ("4/4", "[ 12/ 28]", "sampling: 50%|...| 14/28"). Only a match whose denominator equals the requested step count is trusted, so a stray "1/100" cannot move the bar.
 _STEP_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
 
 # Serialises the one-time binary install so concurrent first-loads don't race.
@@ -119,8 +118,7 @@ def _server_binary_runnable(binary: str) -> bool:
         return False  # cannot exec at all (wrong arch / no execute bit / missing loader)
     except Exception:  # noqa: BLE001 -- don't block on a flaky probe (timeout etc.)
         return True
-    # Negative return code = signal death (e.g. -4 SIGILL from an incompatible prebuilt on an older
-    # CPU): launches then crashes, so treat as unavailable and fall back to diffusers.
+    # Negative return code = signal death (e.g. -4 SIGILL from an incompatible prebuilt on an older CPU): launches then crashes, so treat as unavailable and fall back to diffusers.
     return proc.returncode >= 0 and proc.returncode not in (126, 127)
 
 
@@ -248,9 +246,7 @@ class _SdState:
     mode: str = "server"
     # Token kept so LoRA adapters selected at generate time can be fetched from the Hub.
     hf_token: Optional[str] = None
-    # The GGUF basename this load committed, so companion resolution reproduces the load identity:
-    # some variants pick their encoder by filename and a local *klein-9B*.gguf carries that keyword
-    # only in the basename, not the repo id.
+    # The GGUF basename this load committed, so companion resolution reproduces the load identity: some variants pick their encoder by filename and a local *klein-9B*.gguf carries that keyword only in the basename, not the repo id.
     gguf_filename: Optional[str] = None
 
 
@@ -325,21 +321,17 @@ class SdCppDiffusionBackend:
         self._lock = threading.Lock()
         self._generate_lock = threading.Lock()
         self._engine = engine  # resolved lazily on first load so import stays cheap
-        # An injected engine (test seam / escape hatch) pins one-shot mode; a fallback-cached engine
-        # must NOT, so a now-available server can still be used on the next load.
+        # An injected engine (test seam / escape hatch) pins one-shot mode; a fallback-cached engine must NOT, so a now-available server can still be used on the next load.
         self._engine_injected = engine is not None
         self._state: Optional[_SdState] = None
         self._loading: Optional[_SdLoading] = None
         self._load_token = 0
         self._cancel_event = threading.Event()
         self._active_generate_cancel: Optional[threading.Event] = None
-        # sd-server started for an in-flight load, before it commits to _state; tracked so an unload /
-        # superseding load can stop it mid-startup instead of waiting out the timeout.
+        # sd-server started for an in-flight load, before it commits to _state; tracked so an unload / superseding load can stop it mid-startup instead of waiting out the timeout.
         self._pending_server: Optional[SdCppServer] = None
         self._gen: Optional[_SdGen] = None
-        # Set once this load's graph proved unrunnable on the GPU backend (a ggml unsupported-op
-        # abort), so the CPU restart happens once per load and every later generation goes straight
-        # to the backend that works. Cleared by each load.
+        # Set once this load graph proved unrunnable on the GPU backend (a ggml unsupported-op abort), so the CPU restart happens once per load and every later generation goes straight to the backend that works. Cleared by each load.
         self._cpu_backend_forced = False
 
     @property
@@ -369,8 +361,7 @@ class SdCppDiffusionBackend:
         """
         if self._engine_injected and self._engine is not None:
             return "oneshot", None, self._resolve_engine()
-        # Install the server build matching the resolved backend (ROCm/Vulkan/CUDA), not the default CPU
-        # build. Lazy import avoids an import cycle with the router.
+        # Install the server build matching the resolved backend (ROCm/Vulkan/CUDA), not the default CPU build. Lazy import avoids an import cycle with the router.
         from core.inference.diffusion_engine_router import _install_accelerator_for
 
         accelerator = _install_accelerator_for(
@@ -399,8 +390,7 @@ class SdCppDiffusionBackend:
         cpu_offload: bool = False,
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
-        # diffusers-only knobs accepted for a uniform call and ignored (sd.cpp has no torchao quant /
-        # SDPA dispatcher / fbcache).
+        # diffusers-only knobs accepted for a uniform call and ignored (sd.cpp has no torchao quant / SDPA dispatcher / fbcache).
         text_encoder_quant: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         transformer_quant_fast_accum: Optional[bool] = None,
@@ -410,8 +400,7 @@ class SdCppDiffusionBackend:
         transformer_cache_threshold: Optional[float] = None,
         # Accepted for interface parity; native is GGUF-only (router forces diffusers otherwise).
         model_kind: Optional[str] = None,
-        # Parity with the diffusers engine's load-time LoRA bake; native applies LoRA at generation time
-        # through sd-cli, so a load-time selection is ignored here.
+        # Parity with the diffusers engine load-time LoRA bake; native applies LoRA at generation time through sd-cli, so a load-time selection is ignored here.
         loras: Optional[list[tuple[str, float]]] = None,
     ) -> dict[str, Any]:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
@@ -421,8 +410,7 @@ class SdCppDiffusionBackend:
             raise ValueError(
                 "gguf_filename is required: the native engine loads single-file GGUF checkpoints only."
             )
-        # Filename-fallback detector (as the route validated) so a local .gguf whose family keyword lives
-        # only in the basename doesn't dead-end here on a native-routed host.
+        # Filename-fallback detector (as the route validated) so a local .gguf whose family keyword lives only in the basename does not dead-end here on a native-routed host.
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         if fam is None:
             raise ValueError(
@@ -437,8 +425,7 @@ class SdCppDiffusionBackend:
         with self._lock:
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")
-            # A superseding load must stop any in-flight generation, else the old run can still persist an
-            # image after the new load starts (matches unload()'s cancel).
+            # A superseding load must stop any in-flight generation, else the old run can still persist an image after the new load starts (matches unload() cancel).
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
             self._load_token += 1
@@ -487,12 +474,10 @@ class SdCppDiffusionBackend:
         _load_token: int,
     ) -> None:
         try:
-            # Resolve mode (server preferred, one-shot fallback) + binary up front so an install /
-            # missing-binary failure surfaces before the multi-GB asset pull.
+            # Resolve mode (server preferred, one-shot fallback) + binary up front so an install / missing-binary failure surfaces before the multi-GB asset pull.
             mode, server_binary, engine = self._resolve_backend()
             if mode == "server":
-                # Probe the server binary before the pull: a present-but-unrunnable build would download
-                # everything then fail. Fall back to one-shot if usable.
+                # Probe the server binary before the pull: a present-but-unrunnable build would download everything then fail. Fall back to one-shot if usable.
                 assert server_binary is not None
                 if not _server_binary_runnable(server_binary):
                     logger.warning(
@@ -526,17 +511,14 @@ class SdCppDiffusionBackend:
                 qwen2vl = paths.get("qwen2vl"),
             )
             device = resolve_diffusion_device_target().device
-            # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are
-            # no-ops).
+            # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are no-ops).
             offload: tuple[str, ...] = ()
             if device != "cpu":
                 offload = tuple(offload_flags(_memory_policy(memory_mode, cpu_offload)))
             native_speed = _native_speed_for(speed_mode)
 
-            # Tear down the old model then commit the new one under _generate_lock: abort and WAIT for any
-            # generation that started during the download, so a stale run can't persist an image and two
-            # resident servers never coexist. The lock is taken only now, so the download never serialises
-            # generation.
+            # Tear down the old model then commit the new one under _generate_lock: abort and WAIT for any generation that started during the download, so a stale run cannot persist an image and two resident servers never coexist.
+            # The lock is taken only now, so the download never serialises generation.
             with self._lock:
                 if self._load_token != _load_token:
                     return  # superseded / cancelled
@@ -550,15 +532,13 @@ class SdCppDiffusionBackend:
                     self._state = None  # the old model is being torn down
                 if old_state is not None and old_state.server is not None:
                     old_state.server.stop()
-                # A new checkpoint earns a fresh attempt on the GPU backend: the previous one's
-                # abort says nothing about this graph.
+                # A new checkpoint earns a fresh attempt on the GPU backend: the previous one abort says nothing about this graph.
                 self._cpu_backend_forced = False
                 server: Optional[SdCppServer] = None
                 if mode == "server":
                     assert server_binary is not None
                     server = SdCppServer(server_binary)
-                    # Publish the uncommitted server so unload() / a superseding load can stop it mid-startup
-                    # (stop() aborts the readiness wait) instead of waiting out the full startup timeout.
+                    # Publish the uncommitted server so unload() / a superseding load can stop it mid-startup (stop() aborts the readiness wait) instead of waiting out the full startup timeout.
                     with self._lock:
                         self._pending_server = server
                     try:
@@ -662,13 +642,11 @@ class SdCppDiffusionBackend:
             )
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         if fam is None or not family_sd_cpp_supported(fam):
-            # Unreachable through the route (it only plans natively for a family the router would
-            # send to sd.cpp), but a direct caller gets the same message begin_load would raise.
+            # Unreachable through the route (it only plans natively for a family the router would send to sd.cpp), but a direct caller gets the same message begin_load would raise.
             raise ValueError(f"'{repo_id}' has no native sd.cpp asset mapping.")
 
         specs = self._asset_specs(repo_id, gguf_filename, fam)
-        # Group by repo so a family whose VAE and encoder live in one repo yields one entry, and
-        # keep first-seen order (transformer first) so the manager fetches the big file first.
+        # Group by repo so a family whose VAE and encoder live in one repo yields one entry, keeping first-seen order (transformer first) so the manager fetches the big file first.
         by_repo: dict[str, list[str]] = {}
         for repo, filename, kind in specs:
             # A local GGUF directory is already on disk; nothing to stage for it.
@@ -689,8 +667,7 @@ class SdCppDiffusionBackend:
                     "repo_id": repo,
                     "files": names,
                     "bytes": repo_bytes,
-                    # Only the transformer entry carries the GGUF filename; the VAE / encoder
-                    # entries are plain single files.
+                    # Only the transformer entry carries the GGUF filename; the VAE / encoder entries are plain single files.
                     "gguf_filename": gguf_filename if repo == repo_id else None,
                 }
             )
@@ -822,9 +799,7 @@ class SdCppDiffusionBackend:
             repos = [state.repo_id, state.base_repo]
             if fam.sd_cpp_vae:
                 repos.append(fam.sd_cpp_vae[0])
-            # Same per-variant selection as _asset_specs (keyed on repo id AND GGUF filename) so the
-            # cache-deletion guard protects the encoder repo this load downloaded; dropping the filename
-            # would fall back to the 4B default and protect the wrong repo.
+            # Same per-variant selection as _asset_specs (keyed on repo id AND GGUF filename) so the cache-deletion guard protects the encoder repo this load downloaded; dropping the filename would fall back to the 4B default and protect the wrong repo.
             repos.extend(
                 terepo
                 for terepo, _f, _k in sd_cpp_text_encoders_for(
@@ -846,19 +821,16 @@ class SdCppDiffusionBackend:
         guidance: float = 0.0,
         seed: Optional[int] = None,
         batch_size: int = 1,
-        # Batched prompt/seed lists are diffusers-engine features (one batched DiT forward); accepted for
-        # interface parity and rejected clearly below, since sd-cli would silently render them serially.
+        # Batched prompt/seed lists are diffusers-engine features (one batched DiT forward); accepted for interface parity and rejected clearly below, since sd-cli would silently render them serially.
         prompts: Optional[list[str]] = None,
         seeds: Optional[list[int]] = None,
-        # Accepted for interface parity; native is text-to-image only, so image-conditioned requests are
-        # rejected clearly below rather than silently dropped.
+        # Accepted for interface parity; native is text-to-image only, so image-conditioned requests are rejected clearly below rather than silently dropped.
         init_image: Optional[str] = None,
         mask_image: Optional[str] = None,
         strength: Optional[float] = None,
         upscale: Optional[float] = None,  # needs an init image; rejected by the guard below
         reference_images: Optional[list[str]] = None,  # GPU/diffusers-only (FLUX.2)
-        # LoRA (id, weight) pairs; resolved up front then applied per path: prompt tags for one-shot
-        # sd-cli, structured `lora` for sd-server. None/empty = no LoRA.
+        # LoRA (id, weight) pairs; resolved up front then applied per path: prompt tags for one-shot sd-cli, structured `lora` for sd-server. None/empty = no LoRA.
         loras: Optional[list[tuple[str, float]]] = None,
         # ControlNet is diffusers-only; rejected by the guard below (accepted for parity).
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
@@ -900,8 +872,7 @@ class SdCppDiffusionBackend:
                 state = self._state
                 if state is None:
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
-                # A resident server can exit while idle; drop stale state and report not-loaded so the client
-                # gets the recoverable reload path, not a 500 from img_gen.
+                # A resident server can exit while idle; drop stale state and report not-loaded so the client gets the recoverable reload path, not a 500 from img_gen.
                 if (
                     state.mode == "server"
                     and state.server is not None
@@ -910,9 +881,7 @@ class SdCppDiffusionBackend:
                     self._state = None
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
                 self._active_generate_cancel = cancel
-                # Publish an active (step 0) state before the slow pre-generate setup (LoRA listing/download) so
-                # a reload's progress probe doesn't read idle while this generation holds _generate_lock.
-                # Mirrors DiffusionBackend.generate; sd-cli progress lines advance this count.
+                # Publish an active (step 0) state before the slow pre-generate setup (LoRA listing/download) so a reload progress probe does not read idle while this generation holds _generate_lock. Mirrors DiffusionBackend.generate; sd-cli progress lines advance this count.
                 self._gen = _SdGen(total_steps = int(steps))
             try:
                 if seed is None:
@@ -920,8 +889,7 @@ class SdCppDiffusionBackend:
                 else:
                     seed = int(seed)
                 cfg_scale, flux_guidance = _map_guidance(state.family, guidance)
-                # Resolve selected LoRAs up front (a bad id gives a clear 400 before generating). Drop weight-0
-                # rows BEFORE the support gate so an only-disabled request stays a no-op even without native LoRA.
+                # Resolve selected LoRAs up front (a bad id gives a clear 400 before generating). Drop weight-0 rows BEFORE the support gate so an only-disabled request stays a no-op even without native LoRA.
                 lora_resolved: list = []
                 active_loras = [(i, w) for (i, w) in (loras or []) if w != 0]
                 if active_loras:
@@ -1032,8 +1000,7 @@ class SdCppDiffusionBackend:
         base_seed = int(seed) & ((1 << 63) - 1)
         images: list = []
         seeds: list[int] = []
-        # Stage LoRAs into a per-request subdir of the server's lora-model-dir (so a prior request's
-        # adapters can't leak in), referenced by path relative to that dir; removed after.
+        # Stage LoRAs into a per-request subdir of the server lora-model-dir (so a prior request adapters cannot leak in), referenced by path relative to that dir; removed after.
         lora_payload: Optional[list[dict]] = None
         lora_stage: Optional[Path] = None
         if lora_resolved:
@@ -1048,10 +1015,8 @@ class SdCppDiffusionBackend:
                     }
                     for m in materialized
                 ]
-        # One deadline for the whole request, shared by its chunks: a batch is chunked only because
-        # the server caps images per job, so giving each chunk its own full budget would let a batch
-        # run for a multiple of the window the page is still waiting on. Each chunk gets whatever is
-        # left, so a slow single image can use all of it and a long batch still ends on time.
+        # One deadline for the whole request, shared by its chunks: a batch is chunked only because the server caps images per job, so giving each chunk its own full budget would let a batch run for a multiple of the window the page is still waiting on.
+        # Each chunk gets whatever is left, so a slow single image can use all of it and a long batch still ends on time.
         deadline = time.monotonic() + NATIVE_GENERATION_TIMEOUT_S
         try:
             for offset in range(0, total, _MAX_SERVER_BATCH):
@@ -1081,10 +1046,7 @@ class SdCppDiffusionBackend:
                         total_timeout = max(deadline - time.monotonic(), 1.0),
                     )
                 except RuntimeError as exc:
-                    # A ggml unsupported-op abort killed the server: this graph cannot run on the
-                    # GPU backend at all, so re-running it there would abort identically. Restart
-                    # the model on the CPU backend once and retry this chunk. Any other death
-                    # propagates unchanged.
+                    # A ggml unsupported-op abort killed the server: this graph cannot run on the GPU backend at all, so re-running it there would abort identically. Restart the model on the CPU backend once and retry this chunk. Any other death propagates unchanged.
                     server = self._restart_server_on_cpu_backend(state, str(exc), cancel)
                     if server is None:
                         raise
@@ -1219,8 +1181,7 @@ class SdCppDiffusionBackend:
             for index in range(max(1, int(batch_size))):
                 if cancel.is_set():
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-                # Distinct reproducible seed per image; mask to int64 (not 53 bits, which would truncate large
-                # explicit seeds and collide distinct ones).
+                # Distinct reproducible seed per image; mask to int64 (not 53 bits, which would truncate large explicit seeds and collide distinct ones).
                 seed_i = (seed + index) & ((1 << 63) - 1)
                 out_path = str(Path(tmpdir) / f"img_{index}.png")
                 params = SdCppGenParams(
@@ -1297,22 +1258,19 @@ class SdCppDiffusionBackend:
             # Grab a mid-start() uncommitted server too so we can stop it (startup is abortable).
             pending = self._pending_server
             self._pending_server = None
-        # Stop the resident server outside the lock (terminate can take seconds); a mid-flight generation
-        # had its cancel set above and unwinds as the process goes away.
+        # Stop the resident server outside the lock (terminate can take seconds); a mid-flight generation had its cancel set above and unwinds as the process goes away.
         if state is not None and state.server is not None:
             state.server.stop()
         if pending is not None and pending is not (state.server if state else None):
             pending.stop()
-        # Barrier: wait for a signalled one-shot generation to exit before reporting unloaded, since
-        # callers treat this return as "device is free" (as DiffusionBackend.unload does).
+        # Barrier: wait for a signalled one-shot generation to exit before reporting unloaded, since callers treat this return as "device is free" (as DiffusionBackend.unload does).
         with self._generate_lock:
             pass
         return self.status()
 
     def status(self) -> dict[str, Any]:
         state = self._state
-        # A resident sd-server can exit after load (OOM/crash while idle); drop stale state so status
-        # reports not-loaded and clients reload, instead of a 500 per generation on a dead process.
+        # A resident sd-server can exit after load (OOM/crash while idle); drop stale state so status reports not-loaded and clients reload, instead of a 500 per generation on a dead process.
         if (
             state is not None
             and state.mode == "server"

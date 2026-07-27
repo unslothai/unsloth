@@ -26,9 +26,7 @@ from core.inference.diffusion import (
     _resolve_diffusion_compute_dtype,
 )
 
-# diffusion.py imports the compile/arch patch modules LAZILY (they pull torch at module level).
-# Import them here at collection time, under the real torch, so they are cached in sys.modules
-# before the fake-torch fixtures swap it out.
+# diffusion.py imports the compile/arch patch modules LAZILY (they pull torch at module level), so import them at collection time under the real torch, cached in sys.modules before the fake-torch fixtures swap it out.
 import core.inference.diffusion_eager_patches  # noqa: E402,F401
 import core.inference.diffusion_arch_patches  # noqa: E402,F401
 from core.inference.diffusion_families import (
@@ -43,9 +41,7 @@ from core.inference.diffusion_families import (
 
 
 def test_clamp_max_side_bounds_oversized_init():
-    # img2img / inpaint derive OUTPUT size from the uploaded image, and an oversized upload (up to the
-    # 4096/side decode cap) drives an OOM-scale latent. _clamp_max_side bounds the longest side to
-    # 2048, preserving aspect ratio.
+    # img2img / inpaint derive OUTPUT size from the uploaded image, and an oversized upload (up to the 4096/side decode cap) drives an OOM-scale latent. _clamp_max_side bounds the longest side to 2048, preserving aspect ratio.
     from PIL import Image
 
     # A 12MP landscape photo: longest side clamped to 2048, 4:3 aspect preserved.
@@ -71,8 +67,7 @@ def test_detect_family_from_repo_id():
     assert klein.cfg_kwarg == "guidance_scale"
     # Both klein sizes share the one family (base repo resolved per-variant).
     assert detect_family("unsloth/FLUX.2-klein-9B-GGUF").name == "flux.2-klein"
-    # FLUX.2-dev is the Mistral-based Flux2Pipeline, a distinct family from klein, and must not
-    # collide with it.
+    # FLUX.2-dev is the Mistral-based Flux2Pipeline, a distinct family from klein, and must not collide with it.
     dev = detect_family("unsloth/FLUX.2-dev-GGUF")
     assert dev.name == "flux.2-dev"
     assert dev.pipeline_class == "Flux2Pipeline"
@@ -81,15 +76,13 @@ def test_detect_family_from_repo_id():
     # Qwen-Image guides via true_cfg_scale, not guidance_scale.
     assert detect_family("unsloth/Qwen-Image-2512-GGUF").cfg_kwarg == "true_cfg_scale"
     assert detect_family("unsloth/Z-Image-GGUF").cfg_kwarg == "guidance_scale"
-    # Qwen-Image-Edit is a SUPPORTED instruction-editing family; the most-specific match wins so it
-    # doesn't fall back to the generic qwen-image.
+    # Qwen-Image-Edit is a SUPPORTED instruction-editing family; the most-specific match wins so it does not fall back to the generic qwen-image.
     edit = detect_family("unsloth/Qwen-Image-Edit-2511-GGUF")
     assert edit.name == "qwen-image-edit"
     assert edit.pipeline_class == "QwenImageEditPlusPipeline"
     assert edit.edit is True
     assert detect_family("unsloth/Qwen-Image-Edit-2509-GGUF").name == "qwen-image-edit"
-    # FLUX Kontext is a SUPPORTED editing family: the "kontext" keyword is un-rejected for it, and it
-    # must win over the generic "flux.1" match.
+    # FLUX Kontext is a SUPPORTED editing family: the "kontext" keyword is un-rejected for it, and it must win over the generic "flux.1" match.
     kontext = detect_family("unsloth/FLUX.1-Kontext-dev-GGUF")
     assert kontext.name == "flux.1-kontext"
     assert kontext.pipeline_class == "FluxKontextPipeline"
@@ -111,8 +104,7 @@ def test_detect_family_from_repo_id():
 
 
 def test_detect_family_matches_reject_and_alias_by_segment():
-    # Reject keywords and short aliases must match whole path/name segments, not raw substrings, so
-    # an unrelated word containing one doesn't misroute a valid base model.
+    # Reject keywords and short aliases must match whole path/name segments, not raw substrings, so an unrelated word containing one does not misroute a valid base model.
     assert detect_family("/models/edited/z-image-turbo-Q4_K_M.gguf").name == "z-image"
     assert detect_family("unsloth/Z-Image-Edition-GGUF").name == "z-image"
     assert detect_family("/models/kontextual/z-image-turbo-Q4_K_M.gguf").name == "z-image"
@@ -127,8 +119,7 @@ def test_detect_family_matches_reject_and_alias_by_segment():
 def test_detect_family_edit_keyword_scoped_to_basename():
     from core.inference.diffusion_families import detect_family_for_pick
 
-    # A parent directory named `edit`/`inpaint` must NOT poison a valid pick: only the model id /
-    # filename basename is scanned for reject keywords.
+    # A parent directory named `edit`/`inpaint` must NOT poison a valid pick: only the model id / filename basename is scanned for reject keywords.
     assert detect_family("/models/edit") is None  # the dir alone is ambiguous
     assert detect_family_for_pick("/models/edit", "Z-Image-Turbo-Q4.gguf").name == "z-image"
     assert detect_family_for_pick("/models/inpaint", "qwen-image-2512-Q4.gguf").name == "qwen-image"
@@ -243,8 +234,7 @@ class _FakePipe:
     def enable_vae_slicing(self) -> None:
         self.vae_sliced = True
 
-    # Explicit signature (not just **kwargs) so generate()'s signature-gated guards take effect: a
-    # **kwargs-only fake would make `"negative_prompt" in signature` always False.
+    # Explicit signature (not just **kwargs) so generate() signature-gated guards take effect: a **kwargs-only fake would make `"negative_prompt" in signature` always False.
     def __call__(
         self,
         *,
@@ -265,8 +255,7 @@ class _FakePipe:
             "cfg_trunc_ratio": cfg_trunc_ratio,
             **kwargs,
         }
-        # Mirror diffusers batching: a prompt LIST yields one image per prompt, and num_images_per_prompt
-        # fans each prompt out.
+        # Mirror diffusers batching: a prompt LIST yields one image per prompt, and num_images_per_prompt fans each prompt out.
         n = kwargs.get("num_images_per_prompt", 1)
         if isinstance(prompt, list):
             n *= len(prompt)
@@ -403,16 +392,13 @@ def fake_runtime(monkeypatch):
     diffusers.QwenImageInpaintPipeline = _FakeInpaintPipeline
     # Instruction-editing pipeline (Qwen-Image-Edit): its own pipeline IS the loaded one.
     diffusers.QwenImageEditPlusPipeline = _FakePipeline
-    # Ideogram 4, so its guidance_scale/guidance_schedule pairing is exercisable. It loads only as a
-    # full pipeline (two DiTs), so stub the assembly to a fake pipe.
+    # Ideogram 4, so its guidance_scale/guidance_schedule pairing is exercisable. It loads only as a full pipeline (two DiTs), so stub the assembly to a fake pipe.
     diffusers.Ideogram4Pipeline = _FakePipeline
     diffusers.Ideogram4Transformer2DModel = _FakeTransformer
-    # Lumina 2, so the cfg_trunc_ratio special case is exercisable (the fake pipe's signature carries
-    # the kwarg, mirroring the real Lumina2Pipeline).
+    # Lumina 2, so the cfg_trunc_ratio special case is exercisable (the fake pipe signature carries the kwarg, mirroring the real Lumina2Pipeline).
     diffusers.Lumina2Pipeline = _FakePipeline
     diffusers.Lumina2Transformer2DModel = _FakeTransformer
-    # SDXL: a U-Net family whose single-file checkpoint is the whole pipeline, so the pipeline class
-    # carries from_single_file and UNet2DConditionModel is the denoiser class.
+    # SDXL: a U-Net family whose single-file checkpoint is the whole pipeline, so the pipeline class carries from_single_file and UNet2DConditionModel is the denoiser class.
     diffusers.StableDiffusionXLPipeline = _FakePipeline
     diffusers.UNet2DConditionModel = _FakeTransformer
     diffusers.StableDiffusionXLImg2ImgPipeline = _FakeImg2ImgPipeline
@@ -425,8 +411,7 @@ def fake_runtime(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "diffusers", diffusers)
-    # The backend imports clear_gpu_cache by reference; no-op it so unload doesn't run real hardware
-    # detection against the stubbed torch.
+    # The backend imports clear_gpu_cache by reference; no-op it so unload does not run real hardware detection against the stubbed torch.
     monkeypatch.setattr("core.inference.diffusion.clear_gpu_cache", lambda: None)
     _FakePipeline.last = {}
     _FakePipeline.last_single_file = {}
@@ -469,8 +454,7 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     assert gen["seed"] == 4242  # random seed reported back
     assert gen["repo_id"] == str(tmp_path)  # echoed so the route can record the model
     assert len(gen["images"]) == 1  # PIL images handed to the route for persistence
-    # z-image guides via guidance_scale (not true_cfg_scale); the signature-gated negative_prompt and
-    # per-step callback both reach the pipeline call.
+    # z-image guides via guidance_scale (not true_cfg_scale); the signature-gated negative_prompt and per-step callback both reach the pipeline call.
     call = backend._state.pipe.last_kwargs
     assert call["guidance_scale"] == 3.0 and call["true_cfg_scale"] is None
     assert call["negative_prompt"] == "blurry"
@@ -479,8 +463,7 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     gen2 = backend.generate(prompt = "again", seed = 99)
     assert gen2["seed"] == 99
 
-    # batch_size produces that many images in one call, seeded base..base+2 per image (matching the
-    # native engine) so each batch member replays alone from its recipe.
+    # batch_size produces that many images in one call, seeded base..base+2 per image (matching the native engine) so each batch member replays alone from its recipe.
     batch = backend.generate(prompt = "batch", seed = 7, batch_size = 3)
     assert len(batch["images"]) == 3 and batch["seed"] == 7
     assert batch["seeds"] == [7, 8, 9]
@@ -490,8 +473,7 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
 
 
 def test_generate_progress_active_during_setup(fake_runtime, tmp_path, monkeypatch):
-    # A generation must report active from the moment it holds the lock, before the slow pre-denoise
-    # setup. _apply_loras runs inside that window, so probe generate_progress() from there.
+    # A generation must report active from the moment it holds the lock, before the slow pre-denoise setup. _apply_loras runs inside that window, so probe generate_progress() from there.
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
     backend.load_pipeline(
@@ -523,8 +505,7 @@ def test_generate_progress_active_during_setup(fake_runtime, tmp_path, monkeypat
 
 
 def test_generate_progress_cleared_on_setup_error(fake_runtime, tmp_path, monkeypatch):
-    # A setup-time failure skips the inner finally that nulls _gen, so the outer finally must clear
-    # the published progress; otherwise a crashed generation leaves the UI stuck "active".
+    # A setup-time failure skips the inner finally that nulls _gen, so the outer finally must clear the published progress; otherwise a crashed generation leaves the UI stuck "active".
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
     backend.load_pipeline(
@@ -547,9 +528,7 @@ def test_generate_progress_cleared_on_setup_error(fake_runtime, tmp_path, monkey
 
 
 def test_generate_progress_active_through_compile_cache_save(fake_runtime, tmp_path, monkeypatch):
-    # Post-denoise work (the compile-cache save) still runs before the route persists the image, so
-    # progress must stay active through it, else a reload's mount probe reads idle and refreshes the
-    # gallery before the result exists.
+    # Post-denoise work (the compile-cache save) still runs before the route persists the image, so progress must stay active through it, else a reload mount probe reads idle and refreshes the gallery before the result exists.
     from core.inference import diffusion as dmod
 
     (tmp_path / "model.gguf").write_bytes(b"weights")
@@ -580,8 +559,7 @@ def test_generate_progress_active_through_compile_cache_save(fake_runtime, tmp_p
 
 
 def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_path, monkeypatch):
-    # Dense models with speed unset stay bit-identical eager for the first two generations; the 3rd
-    # engages the `default` profile mid-session, upgrading attention alongside it.
+    # Dense models with speed unset stay bit-identical eager for the first two generations; the 3rd engages the `default` profile mid-session, upgrading attention alongside it.
     from core.inference import diffusion as dmod
 
     monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
@@ -637,9 +615,7 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
 
 
 def test_deferred_speed_skips_when_lora_requested(fake_runtime, tmp_path, monkeypatch):
-    # A compiled transformer rejects LoRA, and _apply_loras raises before its unchanged-selection
-    # no-op, so engaging the deferred compile on a LoRA generation would permanently break every LoRA
-    # generation on this load. The deferral must skip while a LoRA is requested.
+    # A compiled transformer rejects LoRA, and _apply_loras raises before its unchanged-selection no-op, so engaging the deferred compile on a LoRA generation would permanently break every LoRA generation on this load. The deferral must skip while a LoRA is requested.
     from core.inference import diffusion as dmod
 
     monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
@@ -672,9 +648,7 @@ def test_deferred_speed_skips_when_lora_requested(fake_runtime, tmp_path, monkey
 
 
 def test_deferred_speed_skips_while_adapter_attached(fake_runtime, tmp_path, monkeypatch):
-    # Even a NO-LoRA generation must defer while an adapter from a PRIOR generation is still
-    # attached: _apply_loras runs AFTER the engage, so compiling here would bake the resident adapter
-    # into the graph and the later (swallowed) unload would leave it active forever.
+    # Even a NO-LoRA generation must defer while an adapter from a PRIOR generation is still attached: _apply_loras runs AFTER the engage, so compiling here would bake the resident adapter into the graph and the later (swallowed) unload would leave it active forever.
     from core.inference import diffusion as dmod
 
     monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
@@ -713,9 +687,7 @@ def test_deferred_speed_skips_while_adapter_attached(fake_runtime, tmp_path, mon
 
 
 def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, monkeypatch):
-    # A dense model loaded with Speed on Auto but Attention explicitly pinned must KEEP that choice
-    # when the 3rd generation engages the deferred profile: the auto cuDNN upgrade applies only when
-    # attention was left on auto.
+    # A dense model loaded with Speed on Auto but Attention explicitly pinned must KEEP that choice when the 3rd generation engages the deferred profile: the auto cuDNN upgrade applies only when attention was left on auto.
     from core.inference import diffusion as dmod
 
     monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
@@ -726,8 +698,7 @@ def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, mon
     )
     monkeypatch.setattr(dmod, "apply_attention_backend", lambda pipe, backend, logger = None: backend)
 
-    # A select mock that HONORS an explicit request: "native" stays on the default even under a speed
-    # profile, and only an unset request upgrades to cuDNN.
+    # A select mock that HONORS an explicit request: "native" stays on the default even under a speed profile, and only an unset request upgrades to cuDNN.
     def fake_select(
         target,
         requested,
@@ -762,8 +733,7 @@ def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, mon
     assert status["resolved"]["attention_backend"]["value"] == "native"
     assert status["resolved"]["attention_backend"]["source"] == "explicit"
 
-    # Control: with attention left on auto the same deferral DOES upgrade to cuDNN, so the assertion
-    # above is not vacuously passing.
+    # Control: with attention left on auto the same deferral DOES upgrade to cuDNN, so the assertion above is not vacuously passing.
     backend.unload()
     backend.load_pipeline(
         str(tmp_path),
@@ -797,8 +767,7 @@ def test_generate_img2img_uses_from_pipe(fake_runtime, tmp_path):
     backend.load_pipeline(
         str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
     )
-    # The loaded family advertises the image-conditioned workflows for UI gating (upscale rides the
-    # img2img pipeline, so it appears whenever img2img does).
+    # The loaded family advertises the image-conditioned workflows for UI gating (upscale rides the img2img pipeline, so it appears whenever img2img does).
     assert backend.status()["workflows"] == ["txt2img", "img2img", "upscale", "inpaint", "outpaint"]
 
     loaded_pipe = backend._state.pipe
@@ -813,8 +782,7 @@ def test_generate_img2img_uses_from_pipe(fake_runtime, tmp_path):
     assert len(out["images"]) == 1
     # from_pipe was handed the loaded text-to-image pipe (component reuse, no reload).
     assert _FakeImg2ImgPipeline.built_from is loaded_pipe
-    # ...and with torch_dtype=None so from_pipe SKIPS its default float32 recast, which upcasts the
-    # reused bf16 modules and crashes on torchao-quantized weights.
+    # ...and with torch_dtype=None so from_pipe SKIPS its default float32 recast, which upcasts the reused bf16 modules and crashes on torchao-quantized weights.
     assert _FakeImg2ImgPipeline.from_pipe_kwargs.get("torch_dtype", "MISSING") is None
     call = _FakeImg2ImgPipe.last_kwargs
     assert call["image"] is not None  # decoded source image passed through
@@ -831,8 +799,7 @@ def test_generate_img2img_unsupported_family_raises(fake_runtime, tmp_path, monk
     an init_image with a clear error rather than failing deep in the pipeline."""
     from core.inference.diffusion_families import DiffusionFamily
 
-    # A synthetic txt2img-only family: no img2img/inpaint pipeline, not edit, not reference (every
-    # shipped family now supports some image workflow).
+    # A synthetic txt2img-only family: no img2img/inpaint pipeline, not edit, not reference (every shipped family now supports some image workflow).
     plain = DiffusionFamily(
         name = "plain-test",
         pipeline_class = "ZImagePipeline",
@@ -1038,8 +1005,7 @@ def test_generate_reference_uses_loaded_pipe_at_slider_size(fake_runtime, tmp_pa
         base_repo = "base/repo",
         family_override = "flux.2-klein",
     )
-    # FLUX.2-klein: txt2img + reference (own pipe) + inpaint (dedicated pipe). No img2img class, so
-    # no img2img/upscale.
+    # FLUX.2-klein: txt2img + reference (own pipe) + inpaint (dedicated pipe). No img2img class, so no img2img/upscale.
     assert backend.status()["workflows"] == ["txt2img", "reference", "inpaint"]
 
     loaded_pipe = backend._state.pipe
@@ -1062,8 +1028,7 @@ def test_generate_reference_uses_loaded_pipe_at_slider_size(fake_runtime, tmp_pa
     # Guidance flows via guidance_scale (FLUX.2 default behaviour).
     assert call["guidance_scale"] == 4.0
 
-    # Multi-reference: extra reference_images are combined with init_image into a LIST so the model
-    # can blend several references.
+    # Multi-reference: extra reference_images are combined with init_image into a LIST so the model can blend several references.
     backend.generate(
         prompt = "combine these",
         steps = 6,
@@ -1076,8 +1041,7 @@ def test_generate_reference_uses_loaded_pipe_at_slider_size(fake_runtime, tmp_pa
     img_arg = loaded_pipe.last_kwargs["image"]
     assert isinstance(img_arg, list) and len(img_arg) == 3  # primary + 2 extras
 
-    # Branch ordering: an init image + MASK on a reference family must route to inpaint, NOT be
-    # swallowed by the reference branch (which ignores the mask).
+    # Branch ordering: an init image + MASK on a reference family must route to inpaint, NOT be swallowed by the reference branch (which ignores the mask).
     backend.generate(
         prompt = "repaint here",
         steps = 6,
@@ -1373,9 +1337,7 @@ def test_load_sdxl_rejects_untrusted_repo(fake_runtime):
 
 
 def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
-    # A companion base_repo also loads via from_pretrained, so a trusted GGUF model_path must not
-    # smuggle in an arbitrary remote base: base_repo clears the same trust bar, before any GPU
-    # handoff.
+    # A companion base_repo also loads via from_pretrained, so a trusted GGUF model_path must not smuggle in an arbitrary remote base: base_repo clears the same trust bar, before any GPU handoff.
     backend = DiffusionBackend()
     with pytest.raises(ValueError, match = "base_repo"):
         backend.validate_load_request(
@@ -1384,9 +1346,7 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
             model_kind = "gguf",
             base_repo = "evil/companions",
         )
-    # A local base_repo dir that is NOT a diffusers pipeline is rejected HERE, before the GPU handoff:
-    # it passes the any-existing-path trust check but from_pretrained needs model_index.json, so it
-    # would otherwise evict the resident model and only then fail.
+    # A local base_repo dir that is NOT a diffusers pipeline is rejected HERE, before the GPU handoff: it passes the any-existing-path trust check but from_pretrained needs model_index.json, so it would otherwise evict the resident model and only then fail.
     bad_base = tmp_path / "bare-base"
     bad_base.mkdir()
     with pytest.raises(ValueError, match = "model_index.json"):
@@ -1408,8 +1368,7 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
 
 
 def test_resolve_local_single_file(tmp_path):
-    # A bare single-file safetensors directory resolves to that checkpoint's basename, so the images
-    # load route can reinterpret an On-Device "pipeline" pick as a single_file load.
+    # A bare single-file safetensors directory resolves to that checkpoint basename, so the images load route can reinterpret an On-Device "pipeline" pick as a single_file load.
     from core.inference.diffusion import resolve_local_single_file
 
     d = tmp_path / "solo"
@@ -1431,9 +1390,7 @@ def test_resolve_local_single_file(tmp_path):
     # A remote repo id (not a local dir) -> None.
     assert resolve_local_single_file("unsloth/Qwen-Image-2512-GGUF") is None
 
-    # A PEFT adapter folder, even with a family-token name, is NOT a base checkpoint: from_single_file
-    # would fail on the adapter weights AFTER eviction, so it must not be reinterpreted as single_file
-    # (the pipeline pick then 400s in validation, before the handoff).
+    # A PEFT adapter folder, even with a family-token name, is NOT a base checkpoint: from_single_file would fail on the adapter weights AFTER eviction, so it must not be reinterpreted as single_file (the pipeline pick then 400s in validation, before the handoff).
     adapter = tmp_path / "flux-style-lora"
     adapter.mkdir()
     (adapter / "adapter_config.json").write_text("{}")
@@ -1447,9 +1404,7 @@ def test_resolve_local_single_file(tmp_path):
 
 
 def test_resolve_base_repo_drops_untrusted_card_tag(monkeypatch):
-    # With no base_repo the base comes from the GGUF repo's base_model card tag -- attacker-controlled
-    # metadata -- then loads via from_pretrained. An untrusted tag must be dropped for the curated
-    # family default.
+    # With no base_repo the base comes from the GGUF repo base_model card tag -- attacker-controlled metadata -- then loads via from_pretrained. An untrusted tag must be dropped for the curated family default.
     import core.inference.diffusion as dmod
 
     fam = detect_family("unsloth/FLUX.1-dev-GGUF")
@@ -1464,8 +1419,7 @@ def test_resolve_base_repo_drops_untrusted_card_tag(monkeypatch):
         _resolve_base_repo("unsloth/FLUX.1-dev-GGUF", None, fam, None)
         == "black-forest-labs/FLUX.1-dev"
     )
-    # An explicit trusted base_repo wins over the card tag; an untrusted one is caught earlier at
-    # validate_load_request.
+    # An explicit trusted base_repo wins over the card tag; an untrusted one is caught earlier at validate_load_request.
     assert (
         _resolve_base_repo("unsloth/FLUX.1-dev-GGUF", "unsloth/custom-base", fam, None)
         == "unsloth/custom-base"
@@ -1473,8 +1427,7 @@ def test_resolve_base_repo_drops_untrusted_card_tag(monkeypatch):
 
 
 def test_detect_family_rejects_layered():
-    # Qwen-Image-Layered needs a dedicated pipeline (additional_t_cond), so it must be rejected at
-    # load instead of crashing at the first denoise step.
+    # Qwen-Image-Layered needs a dedicated pipeline (additional_t_cond), so it must be rejected at load instead of crashing at the first denoise step.
     assert detect_family("unsloth/Qwen-Image-Layered-GGUF") is None
     assert detect_family("unsloth/qwen_image_layered") is None
 
@@ -1542,9 +1495,7 @@ def test_generate_without_load_raises(fake_runtime):
 
 
 def test_failed_load_restores_backend_flags(fake_runtime, tmp_path, monkeypatch):
-    # A failure AFTER apply_speed_optims (here an OOM in apply_memory_plan) must go through the
-    # load's try/finally and restore the process-global TF32 / cudnn flags, so a later `off` load is
-    # still bit-identical, and must not commit partial state.
+    # A failure AFTER apply_speed_optims (here an OOM in apply_memory_plan) must go through the load try/finally and restore the process-global TF32 / cudnn flags, so a later `off` load is still bit-identical, and must not commit partial state.
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
 
@@ -1598,8 +1549,7 @@ def test_resolve_base_repo_prefers_caller_then_hf_tag_then_fallback(monkeypatch)
 
 def test_load_without_gguf_raises():
     backend = DiffusionBackend()
-    # No gguf_filename means a full-pipeline load, gated to unsloth/*; a non-unsloth repo is rejected
-    # before any GPU/network work.
+    # No gguf_filename means a full-pipeline load, gated to unsloth/*; a non-unsloth repo is rejected before any GPU/network work.
     with pytest.raises(ValueError, match = "unsloth"):
         backend.load_pipeline("some-org/Z-Image-bnb-4bit")
 
@@ -1648,8 +1598,7 @@ def test_base_file_downloaded_excludes_undownloaded():
     assert _base_file_downloaded("model_index.json")
     assert _base_file_downloaded("text_encoder/model-00001-of-00003.safetensors")
     assert _base_file_downloaded("vae/diffusion_pytorch_model.safetensors")
-    # Excluded: the GGUF supplies the transformer, and docs/assets are never downloaded, so counting
-    # them would peg the bar short of 100%.
+    # Excluded: the GGUF supplies the transformer, and docs/assets are never downloaded, so counting them would peg the bar short of 100%.
     assert not _base_file_downloaded(
         "transformer/diffusion_pytorch_model-00001-of-00003.safetensors"
     )
@@ -1659,8 +1608,7 @@ def test_base_file_downloaded_excludes_undownloaded():
 
 
 def test_load_progress_fraction_clamped(monkeypatch):
-    # The cache scan can exceed the estimate (e.g. a second cached quant); the reported fraction must
-    # still clamp to 1.0.
+    # The cache scan can exceed the estimate (e.g. a second cached quant); the reported fraction must still clamp to 1.0.
     backend = DiffusionBackend()
     backend._loading = _LoadingState(repo_id = "r", base_repo = "b", expected_bytes = 1000)
     monkeypatch.setattr(DiffusionBackend, "_cache_bytes", staticmethod(lambda repo: 900))
@@ -1698,16 +1646,13 @@ def test_generate_qwen_uses_true_cfg_scale(fake_runtime, tmp_path):
 
 
 def _load_ideogram(backend, tmp_path):
-    # Ideogram 4 loads only as a full pipeline (its two DiTs are assembled per-component by the
-    # stubbed loader), so a local pipeline dir is enough here.
+    # Ideogram 4 loads only as a full pipeline (its two DiTs are assembled per-component by the stubbed loader), so a local pipeline dir is enough here.
     (tmp_path / "model_index.json").write_text("{}")
     backend.load_pipeline(str(tmp_path), family_override = "ideogram-4")
 
 
 def test_ideogram_rejects_single_file_and_gguf_kinds(fake_runtime, tmp_path):
-    # Ideogram 4 needs two DiTs assembled per-component, so there is no transformer-only single-file
-    # or GGUF load: the explicit kinds must be rejected up front, not assembled into a pipeline
-    # missing its second DiT.
+    # Ideogram 4 needs two DiTs assembled per-component, so there is no transformer-only single-file or GGUF load: the explicit kinds must be rejected up front, not assembled into a pipeline missing its second DiT.
     backend = DiffusionBackend()
     (tmp_path / "model.gguf").write_bytes(b"x")
     with pytest.raises(ValueError, match = "full diffusers pipeline"):
@@ -1725,9 +1670,7 @@ def test_ideogram_rejects_single_file_and_gguf_kinds(fake_runtime, tmp_path):
 
 
 def test_generate_ideogram_defaults_keep_recommended_schedule(fake_runtime, tmp_path):
-    # Ideogram 4's pipeline defaults to its tapered guidance_schedule (valid only at 48 steps) and
-    # REJECTS guidance_scale while the schedule is set, so at the advertised defaults the backend must
-    # drop the constant.
+    # Ideogram 4 pipeline defaults to its tapered guidance_schedule (valid only at 48 steps) and REJECTS guidance_scale while the schedule is set, so at the advertised defaults the backend must drop the constant.
     backend = DiffusionBackend()
     _load_ideogram(backend, tmp_path)
     backend.generate(prompt = "a sloth", steps = 48, guidance = 7.0)
@@ -1737,8 +1680,7 @@ def test_generate_ideogram_defaults_keep_recommended_schedule(fake_runtime, tmp_
 
 
 def test_generate_ideogram_custom_guidance_nulls_schedule(fake_runtime, tmp_path):
-    # Any non-default request must broadcast the constant legally: guidance_scale set AND
-    # guidance_schedule explicitly nulled (the pipeline raises when both are set).
+    # Any non-default request must broadcast the constant legally: guidance_scale set AND guidance_schedule explicitly nulled (the pipeline raises when both are set).
     backend = DiffusionBackend()
     _load_ideogram(backend, tmp_path)
     backend.generate(prompt = "a sloth", steps = 20, guidance = 5.0)
@@ -1754,8 +1696,7 @@ def _load_lumina(backend, tmp_path):
 
 
 def test_generate_lumina2_passes_cfg_trunc_ratio(fake_runtime, tmp_path):
-    # The card recipe truncates the CFG double-forward to the first quarter of the trajectory, while
-    # the pipeline default (1.0) applies it everywhere, so the backend passes the card value.
+    # The card recipe truncates the CFG double-forward to the first quarter of the trajectory, while the pipeline default (1.0) applies it everywhere, so the backend passes the card value.
     backend = DiffusionBackend()
     _load_lumina(backend, tmp_path)
     backend.generate(prompt = "a sloth", steps = 50, guidance = 4.0)
@@ -1765,8 +1706,7 @@ def test_generate_lumina2_passes_cfg_trunc_ratio(fake_runtime, tmp_path):
 
 
 def test_generate_other_family_never_passes_cfg_trunc_ratio(fake_runtime, tmp_path):
-    # The kwarg is family-gated, not just signature-gated: another family whose pipeline accepts
-    # cfg_trunc_ratio must not inherit Lumina's recipe constant.
+    # The kwarg is family-gated, not just signature-gated: another family whose pipeline accepts cfg_trunc_ratio must not inherit Lumina recipe constant.
     backend = DiffusionBackend()
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend.load_pipeline(
@@ -1798,9 +1738,7 @@ def test_begin_load_rejects_concurrent(monkeypatch):
 
 
 def test_unload_cancels_in_flight_load(fake_runtime):
-    # An unload (or arbiter eviction, which calls unload) while a load's worker is still
-    # resolving/downloading must cancel it: load_pipeline sees the bumped token and aborts, so the
-    # evicted load never resurrects a pipeline into VRAM.
+    # An unload (or arbiter eviction, which calls unload) while a load worker is still resolving/downloading must cancel it: load_pipeline sees the bumped token and aborts, so the evicted load never resurrects a pipeline into VRAM.
     backend = DiffusionBackend()
     fam = detect_family("unsloth/Z-Image-Turbo-GGUF")
     token = 7
@@ -1817,9 +1755,7 @@ def test_unload_cancels_in_flight_load(fake_runtime):
 
 
 def test_superseded_load_does_not_cancel_live_generation(fake_runtime):
-    # A superseded background load that finally reaches load_pipeline must bail WITHOUT signalling the
-    # current model's in-flight generation: the token check must run before the cancel is set, or a
-    # stale worker aborts an unrelated, still-live denoise.
+    # A superseded background load that finally reaches load_pipeline must bail WITHOUT signalling the current model in-flight generation: the token check must run before the cancel is set, or a stale worker aborts an unrelated, still-live denoise.
     import threading as _threading
 
     backend = DiffusionBackend()
@@ -1858,12 +1794,10 @@ def test_unload_sets_cancel_event(fake_runtime):
 
 
 def test_prefetch_aborts_when_cancelled(tmp_path):
-    # A prefetch interrupted by unload raises rather than downloading the whole base, so the load can
-    # be preempted mid-download.
+    # A prefetch interrupted by unload raises rather than downloading the whole base, so the load can be preempted mid-download.
     backend = DiffusionBackend()
     backend._cancel_event.set()
-    # Local gguf path so the transformer download is skipped; the base loop hits the cancel check on
-    # its first file (no network).
+    # Local gguf path so the transformer download is skipped; the base loop hits the cancel check on its first file (no network).
     (tmp_path / "model.gguf").write_bytes(b"x")
     with pytest.raises(RuntimeError, match = "Cancelled"):
         backend._prefetch_files(
@@ -1928,8 +1862,7 @@ def test_resolve_compute_dtype_promotes_fp16_for_zimage(fake_runtime):
 
 def test_load_promotes_fp16_to_fp32_for_zimage_only(fake_runtime, monkeypatch, tmp_path):
     torch = sys.modules["torch"]
-    # Pre-Ampere CUDA resolves to fp16, so the guard must promote Z-Image (and only Z-Image) to fp32
-    # or it renders a black image.
+    # Pre-Ampere CUDA resolves to fp16, so the guard must promote Z-Image (and only Z-Image) to fp32 or it renders a black image.
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True, raising = False)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (7, 5), raising = False)
     (tmp_path / "m.gguf").write_bytes(b"x")
@@ -1948,8 +1881,7 @@ def test_load_promotes_fp16_to_fp32_for_zimage_only(fake_runtime, monkeypatch, t
 
 
 def test_bad_mode_strings_fail_before_eviction(fake_runtime):
-    # Every mode normalizer that can raise runs BEFORE the load evicts the previous pipeline, so a bad
-    # request never costs the user their working model.
+    # Every mode normalizer that can raise runs BEFORE the load evicts the previous pipeline, so a bad request never costs the user their working model.
     backend = DiffusionBackend()
     fam = detect_family("unsloth/Z-Image-GGUF")
     backend._state = _LoadState(
@@ -2019,9 +1951,7 @@ def test_generate_lock_split_keeps_status_and_unload_responsive(fake_runtime):
     cancel_ref = backend._active_generate_cancel
     assert cancel_ref is not None
 
-    # unload() signals THIS generation's cancel event, then waits for the denoise to exit before
-    # returning: callers treat its return as "VRAM is free". Release the pipe once the cancel lands,
-    # standing in for a real pipeline's step callback.
+    # unload() signals THIS generation cancel event, then waits for the denoise to exit before returning: callers treat its return as "VRAM is free". Release the pipe once the cancel lands, standing in for a real pipeline step callback.
     releaser = threading.Thread(target = lambda: (cancel_ref.wait(5), release.set()))
     releaser.start()
     backend.unload()
@@ -2030,8 +1960,7 @@ def test_generate_lock_split_keeps_status_and_unload_responsive(fake_runtime):
     assert backend.status()["loaded"] is False
 
     t.join(5)
-    # The cancelled generation raised rather than returning a now-evicted image, and had already
-    # exited (deregistering its cancel) before unload() returned.
+    # The cancelled generation raised rather than returning a now-evicted image, and had already exited (deregistering its cancel) before unload() returned.
     assert "exc" in out and "cancelled" in str(out["exc"]).lower()
     assert backend._active_generate_cancel is None
 
@@ -2094,8 +2023,7 @@ def test_callback_cancellation_interrupts_denoise(fake_runtime):
     backend._active_generate_cancel.set()
     resume.set()
     t.join(5)
-    # The next step's callback saw the cancel, flipped pipe._interrupt and broke the loop, so the
-    # generation raised instead of returning a partial image.
+    # The next step callback saw the cancel, flipped pipe._interrupt and broke the loop, so the generation raised instead of returning a partial image.
     assert pipe._interrupt is True
     assert pipe.steps_run < 8
     assert "exc" in out and "cancelled" in str(out["exc"]).lower()
@@ -2121,16 +2049,14 @@ def test_validate_load_request(tmp_path):
         backend.validate_load_request("some-org/Z-Image", gguf_filename = "model.safetensors")
     with pytest.raises(ValueError, match = "family"):
         backend.validate_load_request("meta/Llama-3", gguf_filename = "q.gguf")
-    # A family-looking repo paired with a non-GGUF single-file name is rejected here, BEFORE the route
-    # evicts chat (else the background load would be the first to notice README.md is no checkpoint).
+    # A family-looking repo paired with a non-GGUF single-file name is rejected here, BEFORE the route evicts chat (else the background load would be the first to notice README.md is no checkpoint).
     with pytest.raises(ValueError, match = r"\.gguf"):
         backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "README.md")
     assert (
         backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "q.gguf").name
         == "z-image"
     )
-    # A kind/extension mismatch fails fast here, before the route evicts chat and grabs the GPU only
-    # to fail in the background from_single_file path.
+    # A kind/extension mismatch fails fast here, before the route evicts chat and grabs the GPU only to fail in the background from_single_file path.
     with pytest.raises(ValueError, match = ".gguf"):
         backend.validate_load_request(
             "unsloth/Z-Image-Turbo-GGUF", gguf_filename = "model.safetensors", model_kind = "gguf"
@@ -2139,8 +2065,7 @@ def test_validate_load_request(tmp_path):
         backend.validate_load_request(
             "unsloth/Qwen-Image-2512-FP8", gguf_filename = "q.gguf", model_kind = "single_file"
         )
-    # A remote "*-GGUF" repo loaded as a full pipeline is a single-file GGUF repo, so from_pretrained
-    # finds no manifest and fails after chat is evicted; reject it before the GPU handoff.
+    # A remote "*-GGUF" repo loaded as a full pipeline is a single-file GGUF repo, so from_pretrained finds no manifest and fails after chat is evicted; reject it before the GPU handoff.
     with pytest.raises(ValueError, match = "GGUF"):
         backend.validate_load_request("unsloth/Z-Image-Turbo-GGUF", model_kind = "pipeline")
     # A local path with a missing child fails here (before any GPU/network work).
@@ -2155,8 +2080,7 @@ def test_validate_load_request(tmp_path):
         ).name
         == "z-image"
     )
-    # A path-shaped repo_id that does not exist is rejected here (it would otherwise be treated as
-    # remote, evict chat, and only fail in the background load).
+    # A path-shaped repo_id that does not exist is rejected here (it would otherwise be treated as remote, evict chat, and only fail in the background load).
     with pytest.raises(FileNotFoundError):
         backend.validate_load_request(
             "/tmp/unsloth-definitely-missing-model",
@@ -2166,9 +2090,7 @@ def test_validate_load_request(tmp_path):
 
 
 def test_replacement_load_waits_for_inflight_generation(fake_runtime, tmp_path):
-    # A superseding load must signal the in-flight generation's cancel AND wait for it to release
-    # _generate_lock before allocating, so two pipelines never sit in VRAM at once (unlike unload(),
-    # which returns promptly).
+    # A superseding load must signal the in-flight generation cancel AND wait for it to release _generate_lock before allocating, so two pipelines never sit in VRAM at once (unlike unload(), which returns promptly).
     import threading
 
     backend = DiffusionBackend()
@@ -2214,8 +2136,7 @@ def test_replacement_load_waits_for_inflight_generation(fake_runtime, tmp_path):
     lt = threading.Thread(target = _load)
     lt.start()
 
-    # The load must NOT finish while the generation still holds _generate_lock; it has signalled the
-    # cancel and is waiting to allocate.
+    # The load must NOT finish while the generation still holds _generate_lock; it has signalled the cancel and is waiting to allocate.
     assert not load_done.wait(0.5)
     assert backend._active_generate_cancel is not None
     assert backend._active_generate_cancel.is_set()
@@ -2232,8 +2153,7 @@ def test_replacement_load_waits_for_inflight_generation(fake_runtime, tmp_path):
 
 
 def test_load_reports_memory_plan_fields_on_cpu(fake_runtime, tmp_path):
-    # The default stub resolves to a CPU target: no offload is possible, but VAE tiling is on (no
-    # separate device pool), and status carries the new fields.
+    # The default stub resolves to a CPU target: no offload is possible, but VAE tiling is on (no separate device pool), and status carries the new fields.
     (tmp_path / "m.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
     status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
@@ -2252,9 +2172,7 @@ def _force_cuda_target(backend, monkeypatch):
 
 
 def test_load_memory_mode_balanced_streams_or_falls_back(fake_runtime, tmp_path, monkeypatch):
-    # balanced requests streamed block-level (group) offload. Under the stub there is no real
-    # diffusers.hooks, so group can't engage and the applier falls back to whole-module offload,
-    # reporting the policy actually engaged.
+    # balanced requests streamed block-level (group) offload. Under the stub there is no real diffusers.hooks, so group cannot engage and the applier falls back to whole-module offload, reporting the policy actually engaged.
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
     _force_cuda_target(backend, monkeypatch)
@@ -2267,8 +2185,7 @@ def test_load_memory_mode_balanced_streams_or_falls_back(fake_runtime, tmp_path,
 
 
 def test_load_memory_mode_low_vram_engages_model_offload(fake_runtime, tmp_path, monkeypatch):
-    # low_vram offloads every component; whole-module offload is the robust path and engages directly
-    # (no streaming, so no diffusers.hooks needed).
+    # low_vram offloads every component; whole-module offload is the robust path and engages directly (no streaming, so no diffusers.hooks needed).
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
     _force_cuda_target(backend, monkeypatch)
@@ -2283,8 +2200,7 @@ def test_load_memory_mode_low_vram_engages_model_offload(fake_runtime, tmp_path,
 def test_load_explicit_cpu_offload_engages_model_offload_on_cuda(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # cpu_offload=True with no mode: auto would stay resident (budget unknown under the stub), but
-    # the explicit flag forces whole-module offload.
+    # cpu_offload=True with no mode: auto would stay resident (budget unknown under the stub), but the explicit flag forces whole-module offload.
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
     _force_cuda_target(backend, monkeypatch)
@@ -2295,8 +2211,7 @@ def test_load_explicit_cpu_offload_engages_model_offload_on_cuda(
 
 
 def test_load_speed_mode_gguf_auto_defaults_and_explicit(fake_runtime, tmp_path):
-    # No speed_mode on a GGUF model resolves to auto `default`. compile only engages on CUDA, so on
-    # this CPU stub no optim engages, but the resolved mode is `default`.
+    # No speed_mode on a GGUF model resolves to auto `default`. compile only engages on CUDA, so on this CPU stub no optim engages, but the resolved mode is `default`.
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
     status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
@@ -2311,8 +2226,7 @@ def test_load_speed_mode_gguf_auto_defaults_and_explicit(fake_runtime, tmp_path)
         str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", speed_mode = "max"
     )
     assert status2["speed_mode"] == "max"
-    # Text-encoder quant defaults off; a requested mode threads through (actual engagement is
-    # GPU-verified, since it needs real torch/torchao).
+    # Text-encoder quant defaults off; a requested mode threads through (actual engagement is GPU-verified, since it needs real torch/torchao).
     assert status2["text_encoder_quant"] is None
     status3 = backend.load_pipeline(
         str(tmp_path),
@@ -2354,8 +2268,7 @@ def _stub_dense_quant(monkeypatch, *, scheme = "fp8"):
 
     monkeypatch.setattr(_FakeTransformer, "from_pretrained", _from_pretrained, raising = False)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
-    # Resolve the scheme without the real GPU smoke probe, and configure no pre-quant checkpoint so
-    # the dense materialise+quantise branch is exercised.
+    # Resolve the scheme without the real GPU smoke probe, and configure no pre-quant checkpoint so the dense materialise+quantise branch is exercised.
     monkeypatch.setattr(
         dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: scheme
     )
@@ -2371,8 +2284,7 @@ def _stub_dense_quant(monkeypatch, *, scheme = "fp8"):
 
 
 def test_default_load_autos_dense_gate_and_falls_back(fake_runtime, tmp_path, monkeypatch):
-    # UNSET Dtype defaults to the hardware ladder: the dense gate IS consulted, and a device without
-    # dense support falls back to the GGUF build.
+    # UNSET Dtype defaults to the hardware ladder: the dense gate IS consulted, and a device without dense support falls back to the GGUF build.
     from core.inference import diffusion as dmod
 
     consulted = {"n": 0}
@@ -2391,8 +2303,7 @@ def test_default_load_autos_dense_gate_and_falls_back(fake_runtime, tmp_path, mo
 
 
 def test_explicit_off_load_skips_dense_quant_path(fake_runtime, tmp_path, monkeypatch):
-    # An EXPLICIT "none" pins running the GGUF as-is: the dense gate is never consulted, so the
-    # pinned-off contract cannot regress.
+    # An EXPLICIT "none" pins running the GGUF as-is: the dense gate is never consulted, so the pinned-off contract cannot regress.
     from core.inference import diffusion as dmod
 
     monkeypatch.setattr(
@@ -2413,8 +2324,7 @@ def test_explicit_off_load_skips_dense_quant_path(fake_runtime, tmp_path, monkey
 
 
 def test_speed_off_load_suppresses_auto_dtype_quant(fake_runtime, tmp_path, monkeypatch):
-    # An explicit Speed="off" load with an UNSET dtype must stay GGUF-as-is: the auto dtype default
-    # must NOT promote it to a quantized + compiled build. The dense gate must never be consulted.
+    # An explicit Speed="off" load with an UNSET dtype must stay GGUF-as-is: the auto dtype default must NOT promote it to a quantized + compiled build. The dense gate must never be consulted.
     from core.inference import diffusion as dmod
 
     monkeypatch.setattr(
@@ -2436,8 +2346,7 @@ def test_speed_off_load_suppresses_auto_dtype_quant(fake_runtime, tmp_path, monk
 
 
 def test_transformer_quant_dense_path_engaged(fake_runtime, tmp_path, monkeypatch):
-    # transformer_quant + a CUDA resident plan: load the DENSE transformer from the base repo, place
-    # it, quantise it, and report the engaged scheme.
+    # transformer_quant + a CUDA resident plan: load the DENSE transformer from the base repo, place it, quantise it, and report the engaged scheme.
     backend = DiffusionBackend()
     _force_cuda_target(backend, monkeypatch)
     calls = _stub_dense_quant(monkeypatch, scheme = "fp8")
@@ -2449,8 +2358,7 @@ def test_transformer_quant_dense_path_engaged(fake_runtime, tmp_path, monkeypatc
         transformer_quant = "fp8",
     )
     assert status["transformer_quant"] == "fp8"
-    # No speed_mode was given, but a quantized transformer is ~30x slower eager, so the backend
-    # promotes it to `default` (regional compile) instead of the dense `off`.
+    # No speed_mode was given, but a quantized transformer is ~30x slower eager, so the backend promotes it to `default` (regional compile) instead of the dense `off`.
     assert status["speed_mode"] == "default"
     assert calls["from_pretrained"] == 1 and calls["quantize"] == 1
     assert calls["quant_mode"] == "fp8"
@@ -2463,8 +2371,7 @@ def test_transformer_quant_dense_path_engaged(fake_runtime, tmp_path, monkeypatc
 
 
 def test_transformer_quant_prequant_path_engaged(fake_runtime, tmp_path, monkeypatch):
-    # A configured pre-quant checkpoint loads the already-quantized transformer directly; the dense
-    # from_pretrained and the on-device quantize_transformer are NOT used.
+    # A configured pre-quant checkpoint loads the already-quantized transformer directly; the dense from_pretrained and the on-device quantize_transformer are NOT used.
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -2513,8 +2420,7 @@ def test_transformer_quant_prequant_path_engaged(fake_runtime, tmp_path, monkeyp
 def test_transformer_quant_prequant_load_fails_falls_back_to_dense(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # A configured prequant source whose load returns None must fall back to the dense
-    # materialise+quantise path (not straight to GGUF), preserving the fast mode.
+    # A configured prequant source whose load returns None must fall back to the dense materialise+quantise path (not straight to GGUF), preserving the fast mode.
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -2536,8 +2442,7 @@ def test_transformer_quant_prequant_load_fails_falls_back_to_dense(
 
 
 def test_transformer_quant_falls_back_to_gguf_on_failure(fake_runtime, tmp_path, monkeypatch):
-    # A dense/quant failure (here quantize returns None) must fall back to the GGUF build, not error;
-    # status reports no transformer_quant engaged.
+    # A dense/quant failure (here quantize returns None) must fall back to the GGUF build, not error; status reports no transformer_quant engaged.
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -2563,8 +2468,7 @@ def test_transformer_quant_falls_back_to_gguf_on_failure(fake_runtime, tmp_path,
 
 
 def test_transformer_quant_skipped_when_plan_offloads(fake_runtime, tmp_path, monkeypatch):
-    # The dense bf16 transformer only fits resident, so when the memory plan would offload (low_vram)
-    # the fast path is skipped and GGUF loads instead.
+    # The dense bf16 transformer only fits resident, so when the memory plan would offload (low_vram) the fast path is skipped and GGUF loads instead.
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -2592,16 +2496,13 @@ def test_transformer_quant_skipped_when_plan_offloads(fake_runtime, tmp_path, mo
 def test_dense_quant_skipped_when_dense_transformer_does_not_fit(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # The GGUF fits resident (plan `none`), but the DENSE bf16 transformer the fast path materializes
-    # does not. The fast path must be skipped up front (preflighted against the dense transformer),
-    # and GGUF loads RESIDENT -- not evicted, OOMed, then offloaded.
+    # The GGUF fits resident (plan `none`), but the DENSE bf16 transformer the fast path materializes does not. The fast path must be skipped up front (preflighted against the dense transformer), and GGUF loads RESIDENT -- not evicted, OOMed, then offloaded.
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
-    # A scheme resolves and there is no prequant, so the dense bf16 is materialized and the dense-fit
-    # re-check runs against a large (won't-fit) dense transformer.
+    # A scheme resolves and there is no prequant, so the dense bf16 is materialized and the dense-fit re-check runs against a large (will-not-fit) dense transformer.
     monkeypatch.setattr(
         dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
     )
@@ -2646,9 +2547,7 @@ def test_dense_quant_skipped_when_dense_transformer_does_not_fit(
 def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # With a prequant checkpoint the fast path loads the small quantized file, so a dense misfit must
-    # NOT decline it -- but the dense re-check still runs to gate the in-loader fallback: if the
-    # prequant later fails, the loader must raise to GGUF (allow_dense_fallback=False).
+    # With a prequant checkpoint the fast path loads the small quantized file, so a dense misfit must NOT decline it -- but the dense re-check still runs to gate the in-loader fallback: if the prequant later fails, the loader must raise to GGUF (allow_dense_fallback=False).
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -2657,8 +2556,7 @@ def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
     monkeypatch.setattr(
         dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
     )
-    # usable_ (not resolve_): the re-check site only honours a source the loader would accept, so the
-    # fake must present a USABLE one.
+    # usable_ (not resolve_): the re-check site only honours a source the loader would accept, so the fake must present a USABLE one.
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: "prequant/path")
     # Large dense shards cached: if the re-check ran, it would wrongly decline the fast path.
     monkeypatch.setattr(
@@ -2703,9 +2601,7 @@ def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
 def test_dense_quant_replan_retries_once_on_transient_free_undercount(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # A transient foreign allocation at snapshot time makes an empty card look full and the candidate
-    # replan declines resident -- but the candidate FITS total capacity, so the loader must retry the
-    # replan once with a fresh settled snapshot instead of falling back to GGUF-as-is.
+    # A transient foreign allocation at snapshot time makes an empty card look full and the candidate replan declines resident -- but the candidate FITS total capacity, so the loader must retry the replan once with a fresh settled snapshot instead of falling back to GGUF-as-is.
     import dataclasses
 
     from core.inference import diffusion as dmod
@@ -2873,8 +2769,7 @@ def _decline_dense_quant(backend, monkeypatch, tmp_path):
 def test_declined_dense_with_baked_loras_fails_instead_of_silent_drop(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # transformer_quant + adapters, dense build declined for capacity: the GGUF fallback cannot bake
-    # the adapters, so completing it would silently generate WITHOUT them behind an HTTP success.
+    # transformer_quant + adapters, dense build declined for capacity: the GGUF fallback cannot bake the adapters, so completing it would silently generate WITHOUT them behind an HTTP success.
     backend = DiffusionBackend()
     _decline_dense_quant(backend, monkeypatch, tmp_path)
     with pytest.raises(RuntimeError, match = "LoRA adapters could not be applied"):
@@ -2888,8 +2783,7 @@ def test_declined_dense_with_baked_loras_fails_instead_of_silent_drop(
 
 
 def test_declined_dense_without_loras_still_falls_back_to_gguf(fake_runtime, tmp_path, monkeypatch):
-    # The plain decline (no adapters requested) keeps the silent GGUF fallback: weight-0 adapters
-    # count as "none".
+    # The plain decline (no adapters requested) keeps the silent GGUF fallback: weight-0 adapters count as "none".
     backend = DiffusionBackend()
     _decline_dense_quant(backend, monkeypatch, tmp_path)
     result = backend.load_pipeline(
@@ -2923,9 +2817,7 @@ class _BakePipe:
 
 
 def test_dense_quant_lora_bake_attaches_before_quantize(fake_runtime, monkeypatch):
-    # A LoRA bake must (a) skip the prequant shortcut (adapters need the DENSE transformer),
-    # (b) attach the adapters BEFORE quantize_transformer (peft's post-quant torchao dispatch
-    # TypeErrors on a manually quantized module), and (c) mark the pipe as baked.
+    # A LoRA bake must (a) skip the prequant shortcut (adapters need the DENSE transformer), (b) attach the adapters BEFORE quantize_transformer (peft post-quant torchao dispatch TypeErrors on a manually quantized module), and (c) mark the pipe as baked.
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -2993,8 +2885,7 @@ def _quant_lora_state(pipe, quant = "int8"):
 
 
 def test_apply_loras_quant_unbaked_requires_reload(monkeypatch):
-    # A quantized pipe built WITHOUT adapters cannot take one at generation time (topology frozen
-    # after quantize_ + compile): a clean 400 telling the client to reload.
+    # A quantized pipe built WITHOUT adapters cannot take one at generation time (topology frozen after quantize_ + compile): a clean 400 telling the client to reload.
     backend = DiffusionBackend()
     pipe = _BakePipe()
     with pytest.raises(ValueError, match = "Reload the model with the adapter selection"):
@@ -3005,8 +2896,7 @@ def test_apply_loras_quant_unbaked_requires_reload(monkeypatch):
 
 
 def test_apply_loras_quant_baked_matrix(monkeypatch):
-    # Baked pipe: same set is a no-op; weight-only change calls set_adapters; empty scales all to 0
-    # (reproducing the quantized base); a different adapter set errors.
+    # Baked pipe: same set is a no-op; weight-only change calls set_adapters; empty scales all to 0 (reproducing the quantized base); a different adapter set errors.
     backend = DiffusionBackend()
     monkeypatch.setattr(
         DiffusionBackend,
@@ -3047,8 +2937,7 @@ def test_apply_loras_quant_baked_matrix(monkeypatch):
 
 
 def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
-    # krea's repo ships transformers-5.x configs and no top-level tokenizer files, so from_pretrained
-    # dies in the tokenizer. The quant fast path must assemble per-component via load_krea2_pipeline.
+    # krea repo ships transformers-5.x configs and no top-level tokenizer files, so from_pretrained dies in the tokenizer. The quant fast path must assemble per-component via load_krea2_pipeline.
     from core.inference import diffusion as dmod
 
     calls: dict = {}
@@ -3091,9 +2980,7 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
 
 
 def test_dense_quant_unusable_prequant_path_runs_dense_refit(fake_runtime, tmp_path, monkeypatch):
-    # A request-supplied transformer_prequant_path the loader refuses resolves to NO usable prequant
-    # source, so the dense-transformer fit re-check MUST run: it declines the fast path up front
-    # instead of evicting the resident pipeline and OOMing in the dense bf16 fallback.
+    # A request-supplied transformer_prequant_path the loader refuses resolves to NO usable prequant source, so the dense-transformer fit re-check MUST run: it declines the fast path up front instead of evicting the resident pipeline and OOMing in the dense bf16 fallback.
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -3102,8 +2989,7 @@ def test_dense_quant_unusable_prequant_path_runs_dense_refit(fake_runtime, tmp_p
     monkeypatch.setattr(
         dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
     )
-    # The REAL usable_prequant_source refuses a non-allowlisted path (unit-tested elsewhere);
-    # returning None here pins that outcome at this site.
+    # The REAL usable_prequant_source refuses a non-allowlisted path (unit-tested elsewhere); returning None here pins that outcome at this site.
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: None)
     monkeypatch.setattr(
         DiffusionBackend,
@@ -3143,9 +3029,7 @@ def test_dense_quant_unusable_prequant_path_runs_dense_refit(fake_runtime, tmp_p
 def test_transformer_quant_unsupported_scheme_skips_dense_download(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # An explicit unsupported scheme must fail the dense path BEFORE materialising the multi-GB dense
-    # transformer, then fall back to GGUF -- else the download runs under the load lock after the old
-    # model was evicted, only to fail at quantize.
+    # An explicit unsupported scheme must fail the dense path BEFORE materialising the multi-GB dense transformer, then fall back to GGUF -- else the download runs under the load lock after the old model was evicted, only to fail at quantize.
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -3174,8 +3058,7 @@ def test_transformer_quant_unsupported_scheme_skips_dense_download(
 
 
 def test_base_file_downloaded_include_transformer_flag():
-    # Default: transformer/ shards are the GGUF's job, so they are excluded from the prefetch list;
-    # the dense transformer-quant path opts them back in.
+    # Default: transformer/ shards are the GGUF job, so they are excluded from the prefetch list; the dense transformer-quant path opts them back in.
     from core.inference.diffusion import _base_file_downloaded
 
     assert _base_file_downloaded("transformer/diffusion_pytorch_model-00001.safetensors") is False
@@ -3191,9 +3074,7 @@ def test_base_file_downloaded_include_transformer_flag():
 
 
 def test_dense_quant_prefetch_capacity_gate(fake_runtime, monkeypatch):
-    # On a device that cannot hold even the candidate's post-quant resident set, the re-plan is
-    # certain to decline the dense path, so widening would fetch the multi-GB base transformer/ shards
-    # only to run the GGUF as-is. The gate compares steady_total against TOTAL capacity.
+    # On a device that cannot hold even the candidate post-quant resident set, the re-plan is certain to decline the dense path, so widening would fetch the multi-GB base transformer/ shards only to run the GGUF as-is. The gate compares steady_total against TOTAL capacity.
     from core.inference import diffusion as dmod
     from core.inference import diffusion_memory as dmem
 
@@ -3227,9 +3108,7 @@ def test_dense_quant_prefetch_capacity_gate(fake_runtime, monkeypatch):
 
 
 def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
-    # The transformer/ prefetch widens exactly when load_pipeline takes the dense-quant path: it
-    # defers to resolve_dense_quant_candidate (quant requested + device supported + scheme resolvable
-    # + no prequant checkpoint + disk). An explicit Speed="off" load never widens.
+    # The transformer/ prefetch widens exactly when load_pipeline takes the dense-quant path: it defers to resolve_dense_quant_candidate (quant requested + device supported + scheme resolvable + no prequant checkpoint + disk). An explicit Speed="off" load never widens.
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -3249,8 +3128,7 @@ def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
         logger = None,
     ):
         seen.append(requested)
-        # A real (non-prequant) dense-quant candidate: scheme resolves AND disk fits, so the loader takes
-        # the dense build that needs the base repo's bf16 transformer/ shards.
+        # A real (non-prequant) dense-quant candidate: scheme resolves AND disk fits, so the loader takes the dense build that needs the base repo bf16 transformer/ shards.
         return types.SimpleNamespace(prequant = False)
 
     monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", fake_candidate)
@@ -3261,9 +3139,7 @@ def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
     # UNSET defaults to the hardware ladder, so it widens, threading auto.
     assert backend._dense_quant_prefetch_needed(fam, {}) is True
     assert seen[-1] == "auto"
-    # A definite-offload memory policy forces load_pipeline onto offload regardless of the candidate's
-    # smaller footprint, so the widened prefetch would download shards the offloaded GGUF path never
-    # uses (and a disk-full there has no GGUF fallback). balanced / low_vram must NOT widen.
+    # A definite-offload memory policy forces load_pipeline onto offload regardless of the candidate smaller footprint, so the widened prefetch would download shards the offloaded GGUF path never uses (and a disk-full there has no GGUF fallback). balanced / low_vram must NOT widen.
     before = len(seen)
     assert (
         backend._dense_quant_prefetch_needed(
@@ -3283,8 +3159,7 @@ def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
     )
     # The gate short-circuits BEFORE resolving the candidate (no wasted resolve).
     assert len(seen) == before
-    # An explicit memory_mode still consulting the candidate: fast/auto can flip resident, so they
-    # widen when the candidate is dense-viable.
+    # An explicit memory_mode still consulting the candidate: fast/auto can flip resident, so they widen when the candidate is dense-viable.
     assert (
         backend._dense_quant_prefetch_needed(
             fam, {"transformer_quant": "fp8", "memory_mode": "fast"}
@@ -3305,36 +3180,30 @@ def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
         backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8", "speed_mode": "off"})
         is False
     )
-    # A PREQUANT candidate loads the small pre-quantized checkpoint, NOT the base repo's dense shards,
-    # so the widened prefetch must NOT fire -- else it defeats the prequant savings and can hard-fail
-    # begin_load on a disk-full.
+    # A PREQUANT candidate loads the small pre-quantized checkpoint, NOT the base repo dense shards, so the widened prefetch must NOT fire -- else it defeats the prequant savings and can hard-fail begin_load on a disk-full.
     monkeypatch.setattr(
         dmod, "resolve_dense_quant_candidate", lambda **kw: types.SimpleNamespace(prequant = True)
     )
     assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
-    # No viable candidate (unsupported scheme / no disk room) never widens. The disk guard averts
-    # filling the cache volume and hard-failing instead of falling back to GGUF.
+    # No viable candidate (unsupported scheme / no disk room) never widens. The disk guard averts filling the cache volume and hard-failing instead of falling back to GGUF.
     monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", lambda **kw: None)
     assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
 
 
 def test_diffusion_status_response_carries_resolved():
-    # The backend records per-control auto-policy provenance on state.resolved; the response model
-    # must DECLARE the field or Pydantic's extra='ignore' drops it, leaving that plumbing dead.
+    # The backend records per-control auto-policy provenance on state.resolved; the response model must DECLARE the field or Pydantic extra="ignore" drops it, leaving that plumbing dead.
     from models.inference import DiffusionStatusResponse
 
     rec = {"transformer_quant": {"value": "fp8", "source": "auto", "reason": "blackwell"}}
     resp = DiffusionStatusResponse(loaded = True, resolved = rec)
-    # The typed field coerces the plain record into DiffusionResolvedControl objects; the serialized
-    # form must round-trip back, proving the field is DECLARED.
+    # The typed field coerces the plain record into DiffusionResolvedControl objects; the serialized form must round-trip back, proving the field is DECLARED.
     assert resp.model_dump()["resolved"] == rec
     # Absent by default (nothing resolved / native engine).
     assert DiffusionStatusResponse(loaded = False).resolved is None
 
 
 def test_companion_cache_bytes_local_dir_excludes_transformer(tmp_path):
-    # A LOCAL diffusers base: sum the on-disk VAE / text-encoder weights so auto memory planning sees
-    # the resident companions, but exclude transformer/ (the GGUF supplies it) and non-weight files.
+    # A LOCAL diffusers base: sum the on-disk VAE / text-encoder weights so auto memory planning sees the resident companions, but exclude transformer/ (the GGUF supplies it) and non-weight files.
     (tmp_path / "vae").mkdir()
     (tmp_path / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"x" * 100)
     (tmp_path / "text_encoder").mkdir()
@@ -3347,25 +3216,21 @@ def test_companion_cache_bytes_local_dir_excludes_transformer(tmp_path):
 
 
 def test_plan_memory_dense_replan_does_not_double_count_prefetched_transformer(monkeypatch):
-    # Re-planning the dense transformer-quant candidate: the dense path prefetches the base repo's
-    # transformer/ shards into the SAME blob cache _companion_cache_bytes sums, so reading that cache
-    # would count the transformer TWICE and force offload even when the quantised artifact fits. Here
-    # the cache is stubbed to the inflated value; the plan must still stay resident.
+    # Re-planning the dense transformer-quant candidate: the dense path prefetches the base repo transformer/ shards into the SAME blob cache _companion_cache_bytes sums, so reading that cache would count the transformer TWICE and force offload even when the quantised artifact fits.
+    # Here the cache is stubbed to the inflated value; the plan must still stay resident.
     from core.inference import diffusion as dmod
     from core.inference.diffusion_memory import OFFLOAD_NONE, DeviceMemory
 
     backend = DiffusionBackend()
     target = types.SimpleNamespace(device = "cuda", backend = "cuda", supports_model_cpu_offload = True)
-    # 40 GiB discrete card: comfortably fits transformer + real companions + headroom, but NOT a
-    # second copy of the bf16 transformer.
+    # 40 GiB discrete card: comfortably fits transformer + real companions + headroom, but NOT a second copy of the bf16 transformer.
     monkeypatch.setattr(
         dmod,
         "settled_snapshot_device_memory",
         lambda t: DeviceMemory("cuda", "cuda", "discrete_vram", 40000, 40960),
     )
     monkeypatch.setattr(dmod, "estimate_image_runtime_mib", lambda **kw: 4000)
-    # The cache is inflated by the prefetched bf16 transformer on top of the real companions; if the
-    # re-plan consulted it the plan would offload.
+    # The cache is inflated by the prefetched bf16 transformer on top of the real companions; if the re-plan consulted it the plan would offload.
     monkeypatch.setattr(
         DiffusionBackend,
         "_companion_cache_bytes",
@@ -3383,15 +3248,12 @@ def test_plan_memory_dense_replan_does_not_double_count_prefetched_transformer(m
         transformer_resident_override_mib = 12000,  # int8 candidate transient (~half bf16)
         companion_override_mib = 8000,  # auto-policy text-encoder + VAE estimate
     )
-    # 12000 + 8000 + 4000 + 2048 overhead = 26048 MiB, fits the ~36 GiB budget. A double-count would
-    # have exceeded it and offloaded.
+    # 12000 + 8000 + 4000 + 2048 overhead = 26048 MiB, fits the ~36 GiB budget. A double-count would have exceeded it and offloaded.
     assert plan.offload_policy == OFFLOAD_NONE
 
 
 def test_reset_step_cache_helper_is_best_effort():
-    # Prefers the real diffusers CacheMixin hook (_reset_stateful_cache): reset_stateful_hooks lives
-    # only on the HookRegistry, so the old lookup was a silent no-op that left stale FBCache
-    # residuals for the next generation.
+    # Prefers the real diffusers CacheMixin hook (_reset_stateful_cache): reset_stateful_hooks lives only on the HookRegistry, so the old lookup was a silent no-op that left stale FBCache residuals for the next generation.
     calls = []
     pipe = types.SimpleNamespace(
         transformer = types.SimpleNamespace(_reset_stateful_cache = lambda: calls.append("real"))
@@ -3421,8 +3283,7 @@ def test_reset_step_cache_helper_is_best_effort():
 
 
 def test_generate_resets_step_cache_only_when_engaged(fake_runtime, tmp_path):
-    # FBCache residuals live on the resident transformer across generations, so each generate() must
-    # reset the stateful cache first -- but only when a cache is engaged.
+    # FBCache residuals live on the resident transformer across generations, so each generate() must reset the stateful cache first -- but only when a cache is engaged.
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
     backend.load_pipeline(
@@ -3432,8 +3293,7 @@ def test_generate_resets_step_cache_only_when_engaged(fake_runtime, tmp_path):
         family_override = "z-image",
     )
     resets = []
-    # Use the real diffusers CacheMixin entry point; a genuine Flux/QwenImage transformer exposes
-    # this, not reset_stateful_hooks.
+    # Use the real diffusers CacheMixin entry point; a genuine Flux/QwenImage transformer exposes this, not reset_stateful_hooks.
     backend._state.pipe.transformer = types.SimpleNamespace(
         _reset_stateful_cache = lambda: resets.append(True)
     )
@@ -3448,8 +3308,7 @@ def test_generate_resets_step_cache_only_when_engaged(fake_runtime, tmp_path):
 
 
 def test_prefetch_returns_snapshot_dir_for_manifest(monkeypatch):
-    # The prefetched pipeline manifest's directory is the local snapshot root; a config-only base list
-    # returns None so the hub id stays in use.
+    # The prefetched pipeline manifest directory is the local snapshot root; a config-only base list returns None so the hub id stays in use.
     backend = DiffusionBackend()
     monkeypatch.setattr(
         "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback",
@@ -3465,8 +3324,7 @@ def test_prefetch_returns_snapshot_dir_for_manifest(monkeypatch):
 
 
 def test_pipeline_load_uses_predownloaded_dir(fake_runtime, tmp_path):
-    # With a prefetched snapshot, from_pretrained must receive the local dir -- its own hub sweep
-    # would re-download the root packaged singles the scoped prefetch skips (24 GB per FLUX.1).
+    # With a prefetched snapshot, from_pretrained must receive the local dir -- its own hub sweep would re-download the root packaged singles the scoped prefetch skips (24 GB per FLUX.1).
     backend = DiffusionBackend()
     backend.load_pipeline(
         "unsloth/Qwen-Image-2512-bnb-4bit",
@@ -3478,8 +3336,7 @@ def test_pipeline_load_uses_predownloaded_dir(fake_runtime, tmp_path):
 
 
 def test_unload_waits_for_in_flight_denoise_before_teardown():
-    # Regression: unload() must wait for a running denoise to exit (acquire _generate_lock) before
-    # _unload_locked() tears down process-wide state the denoise still depends on.
+    # Regression: unload() must wait for a running denoise to exit (acquire _generate_lock) before _unload_locked() tears down process-wide state the denoise still depends on.
     import threading
 
     backend = DiffusionBackend()
@@ -3579,8 +3436,7 @@ def test_generate_prompt_list_with_matching_seed_list(fake_runtime, tmp_path):
 
 
 def test_generate_single_image_keeps_scalar_generator(fake_runtime, tmp_path):
-    # The single-image call shape is the bit-identical reference path: scalar prompt, ONE scalar
-    # generator (not a 1-list), num_images_per_prompt=1.
+    # The single-image call shape is the bit-identical reference path: scalar prompt, ONE scalar generator (not a 1-list), num_images_per_prompt=1.
     backend = _load_zimage_backend(tmp_path)
     out = backend.generate(prompt = "one", seed = 5)
     call = backend._state.pipe.last_kwargs
@@ -3591,8 +3447,7 @@ def test_generate_single_image_keeps_scalar_generator(fake_runtime, tmp_path):
 
 
 def test_generate_batched_seed_matches_solo_replay(fake_runtime, tmp_path):
-    # Per-image reproducibility: image i of a batched call is driven by the exact generator seed a
-    # solo replay of that image uses.
+    # Per-image reproducibility: image i of a batched call is driven by the exact generator seed a solo replay of that image uses.
     backend = _load_zimage_backend(tmp_path)
     backend.generate(prompt = "p", seeds = [3, 9])
     batched = [g.manual for g in backend._state.pipe.last_kwargs["generator"]]
@@ -3678,9 +3533,7 @@ def test_generate_non_oom_error_is_not_retried(fake_runtime, tmp_path):
 
 
 def test_generate_broadcasts_negative_prompt_across_a_mixed_prompt_batch(fake_runtime, tmp_path):
-    # A prompt LIST must carry a matching negative-prompt LIST: ZImagePipeline.encode_prompt asserts
-    # equal lengths, and the pipes that encode the negative separately would build batch-1 negative
-    # embeds against batch-N latents and fail in the transformer's txt/img concat.
+    # A prompt LIST must carry a matching negative-prompt LIST: ZImagePipeline.encode_prompt asserts equal lengths, and the pipes that encode the negative separately would build batch-1 negative embeds against batch-N latents and fail in the transformer txt/img concat.
     backend = _load_zimage_backend(tmp_path)
     backend.generate(prompt = "fallback", prompts = ["a", "b", "c"], negative_prompt = "blurry")
     call = backend._state.pipe.last_kwargs
@@ -3692,8 +3545,7 @@ def test_generate_broadcasts_negative_prompt_across_a_mixed_prompt_batch(fake_ru
 
 
 def test_generate_keeps_a_scalar_negative_prompt_off_the_list_paths(fake_runtime, tmp_path):
-    # Uniform-prompt and single-image forwards pass a SCALAR prompt, so the negative prompt must stay
-    # scalar too (a list would mismatch the batch-1 positive encode).
+    # Uniform-prompt and single-image forwards pass a SCALAR prompt, so the negative prompt must stay scalar too (a list would mismatch the batch-1 positive encode).
     backend = _load_zimage_backend(tmp_path)
     backend.generate(prompt = "a sloth", seeds = [1, 2, 3], negative_prompt = "blurry")
     assert backend._state.pipe.last_kwargs["prompt"] == "a sloth"
@@ -3727,10 +3579,8 @@ class _TracingPipe(_CountingPipe):
 
 
 def test_generate_resets_the_step_cache_before_an_oom_retry(fake_runtime, tmp_path):
-    # A forward that RAISES skips the pipeline's end-of-call maybe_free_model_hooks(), so its FBCache
-    # residual stays on the resident transformer. Without a reset before each retry the halved chunk
-    # compares a batch-2 residual against the stale batch-4 one, turning a recoverable OOM into a
-    # hard failure.
+    # A forward that RAISES skips the pipeline end-of-call maybe_free_model_hooks(), so its FBCache residual stays on the resident transformer.
+    # Without a reset before each retry the halved chunk compares a batch-2 residual against the stale batch-4 one, turning a recoverable OOM into a hard failure.
     backend = _load_zimage_backend(tmp_path)
     trace: list = []
     pipe = _TracingPipe(trace, max_images = 2)
@@ -3774,8 +3624,7 @@ class _FakeInfo:
 
 
 GB = 1024**3
-# A FLUX-shaped base repo: the packaged root single and the transformer shards are what a plain
-# snapshot_download would drag in and the loader never opens.
+# A FLUX-shaped base repo: the packaged root single and the transformer shards are what a plain snapshot_download would drag in and the loader never opens.
 _FLUX_BASE_SIBLINGS = [
     _FakeSibling("model_index.json", 1000),
     _FakeSibling("flux1-dev.safetensors", 24 * GB),
@@ -3804,8 +3653,7 @@ def _fake_hf_api(monkeypatch, repos):
 
 
 def test_download_plan_scopes_the_base_repo_files(monkeypatch):
-    # The plan drives the Hub download manager, so its file list must match what the loader actually
-    # reads. A full snapshot would add the 24 GB root single and the shards the GGUF replaces.
+    # The plan drives the Hub download manager, so its file list must match what the loader actually reads. A full snapshot would add the 24 GB root single and the shards the GGUF replaces.
     _fake_hf_api(
         monkeypatch,
         {
@@ -3871,10 +3719,8 @@ def test_download_plan_is_empty_for_a_local_path(tmp_path, monkeypatch):
 
 
 def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monkeypatch):
-    # An fp8 text-encoder request loads a hosted PRE-CAST checkpoint, so the plan must stage that
-    # file and NOT the base repo's dense encoder shards. Without this the manager downloaded tens of
-    # GB the load never opens, and the load then pulled the pre-cast file inline, outside the
-    # manager's progress and disk preflight.
+    # An fp8 text-encoder request loads a hosted PRE-CAST checkpoint, so the plan must stage that file and NOT the base repo dense encoder shards.
+    # Without this the manager downloaded tens of GB the load never opens, and the load then pulled the pre-cast file inline, outside the manager progress and disk preflight.
     _fake_hf_api(
         monkeypatch,
         {
@@ -3918,8 +3764,7 @@ def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monke
     assert "unsloth/FLUX.1-schnell-FP8" in by_repo
     assert by_repo["unsloth/FLUX.1-schnell-FP8"]["files"] == ["text_encoder_2-fp8.pt"]
     base = by_repo["black-forest-labs/FLUX.1-dev"]
-    # text_encoder_2's dense weights are gone; text_encoder (no hosted artifact here) stays, and so
-    # do the non-weight files the pre-cast loader still meta-inits from.
+    # text_encoder_2 dense weights are gone; text_encoder (no hosted artifact here) stays, and so do the non-weight files the pre-cast loader still meta-inits from.
     assert not any(
         f.startswith("text_encoder_2/") and f.endswith(".safetensors") for f in base["files"]
     )
@@ -3953,8 +3798,7 @@ def test_download_plan_keeps_the_dense_encoder_without_an_fp8_request(monkeypatc
 
 
 def test_download_plan_keeps_the_dense_encoder_when_the_precast_repo_is_unavailable(monkeypatch):
-    # A gated / renamed / unpublished artifact must NOT cost the dense encoder: the load falls back
-    # to the dense weights, so the plan has to stage them.
+    # A gated / renamed / unpublished artifact must NOT cost the dense encoder: the load falls back to the dense weights, so the plan has to stage them.
     _fake_hf_api(
         monkeypatch,
         {
