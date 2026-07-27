@@ -1226,6 +1226,18 @@ _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
 _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
+_source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
+_source_legacy_force_vulkan="$(printf '%s' "${UNSLOTH_FORCE_VULKAN:-}" | awk '{$1=$1; print tolower($0)}')"
+_explicit_vulkan_source_build=false
+if [ "$_HOST_SYSTEM" != "Darwin" ] && [ "$_source_backend_choice" != "cpu" ]; then
+    if [ "$_source_backend_choice" = "vulkan" ]; then
+        _explicit_vulkan_source_build=true
+    else
+        case "$_source_legacy_force_vulkan" in
+            1|true|yes|on) _explicit_vulkan_source_build=true ;;
+        esac
+    fi
+fi
 
 # Pick the release repo install_llama_prebuilt.py plans against. Every host this
 # installer supports now pulls its llama.cpp prebuilt from the unslothai fork: it
@@ -1361,6 +1373,10 @@ fi
 
 if [ "$_LOCAL_LLAMA_CPP_LINKED" = true ]; then
     : # local directory linked above; skip prebuilt install
+elif [ "$_explicit_vulkan_source_build" = true ] && [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
+    step "llama.cpp" "Vulkan was explicitly requested, but this installation requires a source build" "$C_ERR"
+    substep "Vulkan source builds are not supported by this installer; use the prebuilt Vulkan bundle or unset the Vulkan override"
+    exit 1
 elif [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     step "llama.cpp" "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt" "$C_WARN"
     _NEED_LLAMA_SOURCE_BUILD=true

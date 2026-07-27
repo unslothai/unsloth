@@ -128,6 +128,29 @@ def test_explicit_vulkan_prebuilt_failure_does_not_change_backend():
     assert "exit 1" in guarded
 
 
+def test_explicit_vulkan_source_build_fails_closed():
+    sh = _SETUP_SH.read_text(encoding = "utf-8")
+    local_branch = sh.index('if [ "$_LOCAL_LLAMA_CPP_LINKED" = true ]; then')
+    prebuilt_branch = sh.index('elif [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then', local_branch)
+    guarded = sh[local_branch:prebuilt_branch]
+    assert (
+        'elif [ "$_explicit_vulkan_source_build" = true ] && '
+        '[ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then'
+    ) in guarded
+    assert "Vulkan source builds are not supported" in guarded
+    assert "exit 1" in guarded
+
+    ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
+    local_branch = ps1.index("if ($LocalLlamaCppLinked) {")
+    prebuilt_branch = ps1.index(
+        '} elseif ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {', local_branch
+    )
+    guarded = ps1[local_branch:prebuilt_branch]
+    assert "} elseif ($explicitVulkanSourceBuild -and $NeedLlamaSourceBuild) {" in guarded
+    assert "Vulkan source builds are not supported" in guarded
+    assert "exit 1" in guarded
+
+
 def test_legacy_force_vulkan_gets_the_same_strict_fallback():
     sh = _SETUP_SH.read_text(encoding = "utf-8")
     assert "_legacy_force_vulkan=" in sh

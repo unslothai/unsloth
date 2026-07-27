@@ -226,6 +226,7 @@ def can_load_chat_during_training(
     requested_gpu_ids: Optional[List[int]],
     is_gguf: bool = False,
     gpu_ids_are_vulkan_ordinals: bool = False,
+    vulkan_free_vram_gb: Optional[Dict[int, float]] = None,
     required_override_gb: Optional[float] = None,
     single_device_gpu: Optional[str] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
@@ -284,7 +285,8 @@ def can_load_chat_during_training(
             }
 
         # Explicit GPUs, or GGUF: size directly and check live free VRAM.
-        if requested_gpu_ids and gpu_ids_are_vulkan_ordinals:
+        uses_vulkan_memory = vulkan_free_vram_gb is not None
+        if is_gguf and uses_vulkan_memory:
             mode = "gguf_vulkan"
         elif single_device_gpu is not None:
             mode = "single_device"
@@ -298,11 +300,13 @@ def can_load_chat_during_training(
         if required_gb is None:
             return False, {"mode": mode, "reason": "estimate_unavailable"}
 
-        free_by_index = _free_vram_by_index(get_visible_gpu_utilization().get("devices", []))
+        free_by_index = (
+            vulkan_free_vram_gb
+            if uses_vulkan_memory
+            else _free_vram_by_index(get_visible_gpu_utilization().get("devices", []))
+        )
         if requested_gpu_ids and gpu_ids_are_vulkan_ordinals:
-            # Use the safest N-device bound because Vulkan and CUDA IDs do not map.
-            visible_free = sorted(free_by_index.values())
-            free_vals = visible_free[: min(len(requested_gpu_ids), len(visible_free))]
+            free_vals = [free_by_index.get(int(gpu_id), 0.0) for gpu_id in requested_gpu_ids]
         elif single_device_gpu is not None:
             token = str(single_device_gpu).strip()
             if not token:
@@ -348,7 +352,7 @@ def can_load_chat_during_training(
         min_free_gb = min(free_vals)
         per_gpu_fits = True
         per_gpu_needed_gb = None
-        if mode == "gguf_vulkan":
+        if mode == "gguf_vulkan" and requested_gpu_ids:
             per_gpu_needed_gb = needed_gb / len(requested_gpu_ids)
         elif mode == "explicit" and len(free_vals) > 1:
             per_gpu_needed_gb = needed_gb / len(free_vals)

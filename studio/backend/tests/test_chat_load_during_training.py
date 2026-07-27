@@ -170,6 +170,7 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         single_device_gpu = None,
         gpu_ids = None,
         gpu_ids_are_vulkan_ordinals = False,
+        vulkan_free_vram_gb = None,
     ):
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
@@ -186,6 +187,7 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
                 requested_gpu_ids = gpu_ids,
                 is_gguf = True,
                 gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
+                vulkan_free_vram_gb = vulkan_free_vram_gb,
                 required_override_gb = required_override,
                 single_device_gpu = single_device_gpu,
             )
@@ -233,25 +235,28 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(blocked_info["usable_gb"], 10.0)
 
     def test_vulkan_pin_takes_precedence_over_unknown_diffusion_fallback(self):
-        # Do not reinterpret a Vulkan ordinal as a speculative CUDA device.
+        # Use the Vulkan probe, not unrelated CUDA telemetry or a speculative
+        # CUDA diffusion device.
         ok, info, _ = self._run(
-            devices = _devices((0, 80, 0), (1, 80, 78)),
+            devices = _devices((0, 80, 0)),
             required_override = 20.0,
             single_device_gpu = "0",
             gpu_ids = [0],
             gpu_ids_are_vulkan_ordinals = True,
+            vulkan_free_vram_gb = {0: 2.0, 1: 80.0},
         )
         self.assertFalse(ok)
         self.assertEqual(info["mode"], "gguf_vulkan")
         self.assertEqual(info["usable_gb"], 2.0)
 
     def test_vulkan_multi_gpu_guard_counts_requested_devices(self):
-        # An unknown mapping uses the least-free two-card subset.
+        # Vulkan ordinals select the same entries reported by the Vulkan probe.
         ok, info, _ = self._run(
-            devices = _devices((0, 80, 70), (1, 80, 70), (2, 80, 0)),
+            devices = _devices((0, 80, 0)),
             required_override = 10.0,
             gpu_ids = [0, 1],
             gpu_ids_are_vulkan_ordinals = True,
+            vulkan_free_vram_gb = {0: 10.0, 1: 10.0, 2: 80.0},
         )
         self.assertTrue(ok)
         self.assertEqual(info["mode"], "gguf_vulkan")
@@ -260,14 +265,25 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
     def test_vulkan_multi_gpu_enforces_per_device_floor(self):
         # Aggregate capacity clears 15.5 GB, but one shard has less than half.
         ok, info, _ = self._run(
-            devices = _devices((0, 80, 60), (1, 80, 78)),
+            devices = _devices((0, 80, 0), (1, 80, 0)),
             required_override = 10.0,
             gpu_ids = [0, 1],
             gpu_ids_are_vulkan_ordinals = True,
+            vulkan_free_vram_gb = {0: 20.0, 1: 2.0},
         )
         self.assertFalse(ok)
         self.assertEqual(info["per_gpu_needed_gb"], 7.75)
         self.assertEqual(info["min_free_gb"], 2.0)
+
+    def test_vulkan_auto_uses_full_vulkan_pool(self):
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 79)),
+            required_override = 20.0,
+            vulkan_free_vram_gb = {0: 30.0, 1: 30.0},
+        )
+        self.assertTrue(ok)
+        self.assertEqual(info["mode"], "gguf_vulkan")
+        self.assertEqual(info["usable_gb"], 55.5)
 
     def test_single_device_unresolved_token_sizes_against_worst_device(self):
         # Unknown single-device tokens use the least-free visible GPU.
@@ -573,6 +589,11 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         with (
             patch.object(self.route, "_classify_diffusion_gguf", return_value = None),
             patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_get_gpu_memory",
+                return_value = [(0, 2048, 8192), (1, 4096, 8192)],
+            ),
         ):
             self._guard(
                 config = config,
@@ -584,7 +605,34 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             )
         self.assertEqual(len(captured), 1)
         self.assertTrue(captured[0]["gpu_ids_are_vulkan_ordinals"])
+        self.assertEqual(captured[0]["vulkan_free_vram_gb"], {0: 2.0, 1: 4.0})
         self.assertIsNone(captured[0]["single_device_gpu"])
+
+    def test_auto_vulkan_uses_vulkan_probe_for_training_budget(self):
+        captured = []
+        config = SimpleNamespace(is_gguf = True)
+        with (
+            patch.object(self.route, "_classify_diffusion_gguf", return_value = False),
+            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_find_llama_server_binary",
+                return_value = "/tmp/llama-server",
+            ),
+            patch.object(self.route.LlamaCppBackend, "_is_vulkan_backend", return_value = True),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_get_gpu_memory",
+                return_value = [(0, 3072, 8192)],
+            ),
+        ):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {"mode": "gguf_vulkan"}),
+            )
+        self.assertEqual(captured[0]["vulkan_free_vram_gb"], {0: 3.0})
 
     def test_refuses_with_headroom_number(self):
         info = {"required_gb": 30.0, "usable_gb": 6.0, "needed_gb": 39.0, "mode": "auto"}

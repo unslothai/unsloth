@@ -3475,6 +3475,16 @@ $ResolvedSourceUrl = $LlamaSource
 $ResolvedSourceRef = $RequestedLlamaTag
 $ResolvedSourceRefKind = "tag"
 $ResolvedLlamaTag = $RequestedLlamaTag
+$sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
+$sourceLegacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()
+$explicitVulkanSourceBuild = (
+    -not $IsMacOS -and
+    $sourceLlamaBackend -ne "cpu" -and
+    (
+        $sourceLlamaBackend -eq "vulkan" -or
+        $sourceLegacyForceVulkan -in @("1", "true", "yes", "on")
+    )
+)
 
 if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     $NeedLlamaSourceBuild = $true
@@ -3632,6 +3642,11 @@ if ($LocalLlamaCppSrc) {
 
 if ($LocalLlamaCppLinked) {
     # local directory linked above; skip prebuilt install
+} elseif ($explicitVulkanSourceBuild -and $NeedLlamaSourceBuild) {
+    Write-Host ""
+    step "llama.cpp" "Vulkan was explicitly requested, but this installation requires a source build" "Red"
+    substep "Vulkan source builds are not supported by this installer; use the prebuilt Vulkan bundle or unset the Vulkan override" "Yellow"
+    exit 1
 } elseif ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     Write-Host ""
     substep "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt llama.cpp install" "Yellow"
