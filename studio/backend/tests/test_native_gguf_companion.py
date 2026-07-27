@@ -215,7 +215,7 @@ def test_reload_dedup_accepts_native_subdir_fallback(tmp_path, monkeypatch):
     backend._mtp_draft_path = str(companion)
 
     request = LoadRequest(model_path = str(weight))
-    assert _request_matches_loaded_settings(request, backend)
+    assert _request_matches_loaded_settings(request, backend, None, native_grant_backed = True)
 
 
 def test_reload_dedup_still_reloads_when_drafter_disappears(tmp_path, monkeypatch):
@@ -237,3 +237,32 @@ def test_reload_dedup_still_reloads_when_drafter_disappears(tmp_path, monkeypatc
     companion.unlink()
     request = LoadRequest(model_path = str(weight))
     assert not _request_matches_loaded_settings(request, backend)
+
+
+def test_reload_dedup_reloads_for_ordinary_load_when_root_drafter_appears(tmp_path, monkeypatch):
+    """The native fallback exception must not swallow a newly added root
+    drafter on an ordinary local load, which can reach it."""
+    quant_dir = tmp_path / "Q4_0"
+    quant_dir.mkdir()
+    weight = quant_dir / "model.gguf"
+    weight.write_bytes(b"model")
+    companion_dir = tmp_path / "MTP"
+    companion_dir.mkdir()
+    companion = companion_dir / "mtp-model-Q4_0.gguf"
+    companion.write_bytes(b"draft")
+
+    monkeypatch.setattr(LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 0))
+    backend = LlamaCppBackend()
+    backend._gguf_path = str(weight)
+    backend._mtp_draft_path = str(companion)
+
+    request = LoadRequest(model_path = str(weight))
+    # No root drafter yet: both routes dedupe.
+    assert _request_matches_loaded_settings(request, backend, None, native_grant_backed = True)
+    assert _request_matches_loaded_settings(request, backend, None, native_grant_backed = False)
+
+    (tmp_path / "mtp-model.gguf").write_bytes(b"root drafter")
+    # Native cannot reach the root drafter, so the subdir copy stays current.
+    assert _request_matches_loaded_settings(request, backend, None, native_grant_backed = True)
+    # An ordinary load would pick the root drafter, so it must reload.
+    assert not _request_matches_loaded_settings(request, backend, None, native_grant_backed = False)

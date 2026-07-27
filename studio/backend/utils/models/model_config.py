@@ -1573,7 +1573,11 @@ def detect_mtp_file(
 
     for candidate in sorted(dict.fromkeys(subdir_candidates), key = _smallest_first):
         try:
-            resolved = candidate.resolve()
+            # A split copy keeps its snapshot path: resolving to the blob
+            # drops the sibling shard names llama-server needs to find.
+            resolved = (
+                candidate if _GGUF_SPLIT_FILE_RE.match(candidate.name) else candidate.resolve()
+            )
         except OSError:
             continue
         logger.info(f"Detected MTP subdirectory drafter: {resolved}")

@@ -3215,6 +3215,7 @@ def _request_matches_loaded_settings(
     request: LoadRequest,
     llama_backend: LlamaCppBackend,
     effective_chat_template_override: Optional[str] = None,
+    native_grant_backed: bool = False,
 ) -> bool:
     """True iff every runtime setting on the request matches the loaded server.
     Caller has already checked model+variant+is_loaded. See #5401.
@@ -3368,7 +3369,11 @@ def _request_matches_loaded_settings(
                 # A native load whose root drafter was out of bounds runs the
                 # MTP/ fallback instead, so root-first detection never equals
                 # what launched. Accept the subdir copy as current too, else
-                # that layout reloads on every apply.
+                # that layout reloads on every apply. Native only: an ordinary
+                # load can reach the root drafter, so a newly added one must
+                # still reload.
+                if not native_grant_backed:
+                    return False
                 fallback = detect_mtp_file(
                     llama_backend.gguf_path, search_root = companion_root, skip_root = True
                 )
@@ -4419,6 +4424,7 @@ async def _load_model_impl(
                     request,
                     llama_backend,
                     effective_chat_template_override,
+                    native_grant_backed = native_grant_backed,
                 )
                 # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
