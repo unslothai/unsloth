@@ -1885,12 +1885,17 @@ def test_a_dispatcher_started_mid_stream_still_reaches_the_direct_reader():
 
     read_one, _drain, release = o._direct_reader("direct-1")
     try:
-        _dispatch(o, [
-            {"type": "token", "request_id": "direct-1", "text": "hi"},
-            {"type": "gen_done", "request_id": "direct-1"},
-        ])
+        _dispatch(
+            o,
+            [
+                {"type": "token", "request_id": "direct-1", "text": "hi"},
+                {"type": "gen_done", "request_id": "direct-1"},
+            ],
+        )
         assert read_one(timeout = 0.1) == {
-            "type": "token", "request_id": "direct-1", "text": "hi"
+            "type": "token",
+            "request_id": "direct-1",
+            "text": "hi",
         }, "the dispatcher must route to the direct reader, not drop"
         assert read_one(timeout = 0.1)["type"] == "gen_done"
     finally:
