@@ -284,20 +284,21 @@ export const en = {
         sectionTitle: "Model auto-switch (OpenAI API)",
         enable: "Switch model by request",
         enableDescription:
-          "When an OpenAI-compatible request names a different downloaded GGUF, load it before serving. Off by default; unknown names keep serving the loaded model.",
+          "Load a downloaded GGUF named in an API request before serving. Off by default.",
+        autoDownload: "Download missing models",
+        autoDownloadDescription:
+          "Fetch a GGUF named in an API request that is not downloaded yet. Anyone with an API key can then use disk and bandwidth.",
         idleUnload: "Idle auto-unload",
         idleUnloadDescription:
-          "Unload the model after this many idle seconds to free VRAM; the next request reloads it. 0 keeps it loaded. Minimum 60 seconds.",
-        idleNeedsEnable:
-          "Turn on Switch model by request so an unloaded model reloads on next use.",
-        idleActiveViaEnv:
-          "Idle auto-unload is active via the UNSLOTH_MODEL_IDLE_TTL environment variable.",
+          "Free VRAM after this many idle seconds. 0 keeps it loaded, minimum 60.",
+        idleNeedsEnable: "Turn on Switch model by request first.",
+        idleActiveViaEnv: "Active via UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Failed to load model auto-switch settings.",
         saveError: "Failed to save model auto-switch settings.",
         idleError: "Enter 0 to keep the model loaded, or at least 60 seconds.",
         keepKv: "Keep chat context across idle unload",
         keepKvDescription:
-          "Save the model's KV cache to disk before an idle unload and restore it on reload, so resumed chats skip re-reading their history. Chat context is written to disk (up to 10 GB) until it is restored or cleaned up.",
+          "Save the KV cache before an idle unload so resumed chats skip re-reading history. Up to 10 GB on disk.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",
@@ -818,6 +819,8 @@ export const en = {
       copyAccessToken: "Copy access token",
       copyNow: "Copy now - this won't be shown again.",
       usageExamples: "Usage examples",
+      usageNoModel:
+        "Load or download a model to see runnable examples. This server has no model to name yet.",
       usageTools: "Tools",
       exampleCurlTools: "curl + tools",
       examplePythonTools: "Python + tools",
