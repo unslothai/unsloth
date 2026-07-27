@@ -84,7 +84,14 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
 function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
   // The backend declares whether its device indices are pinnable.
   const pinnableBackend = data?.gpu?.gguf_gpu_ids_supported !== false;
-  return (data?.gpu?.devices ?? [])
+  // A llama.cpp build that pins in its own index space (Vulkan ordinals) publishes
+  // those candidates separately, so gpu.devices can keep describing the PyTorch
+  // accelerators that useGpuInfo() sums for fit badges and training sizing. Older
+  // backends omit the key and pin in the gpu.devices space.
+  const pinCandidates = data?.gpu?.gguf_gpu_devices?.length
+    ? data.gpu.gguf_gpu_devices
+    : data?.gpu?.devices;
+  return (pinCandidates ?? [])
     .filter((d) => typeof d.index === "number")
     .map((d) => ({
       index: d.index as number,

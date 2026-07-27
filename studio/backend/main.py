@@ -1196,6 +1196,11 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
 
         # Vulkan ordinals are a compact space of their own, independent of torch and
         # CUDA_VISIBLE_DEVICES: report the ggml probe records /load pins as --device VulkanN.
+        # They ride a separate key so `devices` keeps describing the PyTorch-visible
+        # accelerators. Everything else sums that list (VRAM monitor, Hub fit filtering,
+        # training model sizing), and a Vulkan-only iGPU or a device outside PyTorch's
+        # visibility mask would inflate those numbers for a backend that cannot use it.
+        gguf_gpu_devices: list[dict[str, Any]] = []
         try:
             from core.inference.llama_cpp import LlamaCppBackend
             from utils.hardware import DeviceType, get_device
@@ -1203,8 +1208,7 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             is_vulkan = LlamaCppBackend._is_vulkan_backend()
             vulkan_devices = LlamaCppBackend._get_vulkan_gpu_info() if is_vulkan else []
             if vulkan_devices:
-                enriched_devices = vulkan_devices
-                visibility_info = {**visibility_info, "available": True, "backend": "vulkan"}
+                gguf_gpu_devices = vulkan_devices
                 gpu_ids_supported = True
             elif is_vulkan:
                 # Probe unreachable (no ICD, timeout): keep torch's list for the VRAM
@@ -1223,6 +1227,9 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             "available": visibility_info.get("available", False),
             "devices": enriched_devices,
             "backend": visibility_info.get("backend"),
+            # Additive: pre-#7164 clients keep reading `devices`, and the GGUF picker
+            # prefers this list when the pin namespace is not the PyTorch one.
+            "gguf_gpu_devices": gguf_gpu_devices,
             "gguf_gpu_ids_supported": gpu_ids_supported,
         }
         _system_gpu_cache = (time.monotonic(), gpu_info)

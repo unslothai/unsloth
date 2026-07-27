@@ -29,6 +29,7 @@ _RUNTIME_HOOK = _FRONTEND_SRC / "features/chat/hooks/use-chat-model-runtime.ts"
 _HUB_IDENTITY = _FRONTEND_SRC / "features/hub/lib/model-identity.ts"
 _MODEL_IDENTITY = _FRONTEND_SRC / "features/model-picker/model-config/model-identity.ts"
 _APPLY_CONFIG = _FRONTEND_SRC / "features/model-picker/model-config/apply-per-model-config.ts"
+_GPU_INFO = _FRONTEND_SRC / "hooks/use-gpu-info.ts"
 
 
 def _require_node():
@@ -61,6 +62,13 @@ def _extract_function(source: str, name: str) -> str:
                 break
         index += 1
     return source[start : index + 1].replace("export function", "function", 1)
+
+
+def _extract_module_function(source: str, name: str) -> str:
+    """Same slice for a module-private helper (no ``export`` keyword)."""
+    return _extract_function(
+        source.replace(f"\nfunction {name}(", f"\nexport function {name}(", 1), name
+    )
 
 
 def _write_harness(workdir: Path, script: str) -> None:
@@ -457,3 +465,70 @@ console.log("RESULT " + JSON.stringify(out));
         # The backend rule, transcribed from routes/inference.py.
         expected = "diffusiongemma" in re.sub(r"[^a-z0-9]+", "", name.lower())
         assert result[name] is expected, name
+
+
+def test_gguf_pin_candidates_read_their_own_channel(tmp_path):
+    """/api/system publishes the llama.cpp pin space separately from the PyTorch devices.
+
+    The GGUF picker must follow ``gguf_gpu_devices`` when the backend sends it, while the
+    aggregate every other feature sizes against (Hub fit filtering, training model sizing,
+    the VRAM monitor) keeps summing ``devices``. Older backends omit the new key, so the
+    picker has to fall back to ``devices`` there. Runs the REAL selectors under node.
+    """
+    source = _GPU_INFO.read_text()
+    _start = source.index("const DEFAULT_GPU")
+    default_gpu = source[_start : source.index("\n};", _start) + 3]
+    script = (
+        default_gpu
+        + "\n"
+        + _extract_module_function(source, "toGpuInfo")
+        + "\n"
+        + _extract_module_function(source, "toGpuDevices")
+        + """
+const torchDevices = [
+  { index: 0, index_kind: "physical", name: "GPU0", memory_total_gb: 8 },
+  { index: 1, index_kind: "physical", name: "GPU1", memory_total_gb: 8 },
+];
+// A shared-memory iGPU only ggml can see, four times the real accelerator budget.
+const vulkanDevices = [
+  { index: 0, index_kind: "vulkan", name: "iGPU", memory_total_gb: 64 },
+  { index: 1, index_kind: "vulkan", name: "dGPU", memory_total_gb: 8 },
+];
+const base = { cpu: {}, memory: {} };
+const forcedVulkan = { ...base, gpu: {
+  available: true, backend: "cuda", devices: torchDevices,
+  gguf_gpu_devices: vulkanDevices, gguf_gpu_ids_supported: true,
+} };
+const oldBackend = { ...base, gpu: {
+  available: true, backend: "cuda", devices: torchDevices, gguf_gpu_ids_supported: true,
+} };
+const probeFailed = { ...base, gpu: {
+  available: true, backend: "cuda", devices: torchDevices,
+  gguf_gpu_devices: [], gguf_gpu_ids_supported: false,
+} };
+console.log("RESULT " + JSON.stringify({
+  forced_pin_kinds: toGpuDevices(forcedVulkan).map((d) => d.indexKind),
+  forced_pin_names: toGpuDevices(forcedVulkan).map((d) => d.name),
+  forced_sizing_gb: toGpuInfo(forcedVulkan).memoryTotalGb,
+  old_pin_kinds: toGpuDevices(oldBackend).map((d) => d.indexKind),
+  old_sizing_gb: toGpuInfo(oldBackend).memoryTotalGb,
+  probe_failed_pinnable: toGpuDevices(probeFailed).map((d) => d.pinnable),
+  probe_failed_names: toGpuDevices(probeFailed).map((d) => d.name),
+}));
+"""
+    )
+    result = _run(tmp_path, script)
+
+    # The picker pins in ggml's ordinal space...
+    assert result["forced_pin_kinds"] == ["vulkan", "vulkan"]
+    assert result["forced_pin_names"] == ["iGPU", "dGPU"]
+    # ...while everything sized against the training backend keeps the PyTorch total.
+    assert result["forced_sizing_gb"] == 16
+
+    # An older backend sends no pin channel: fall back to devices, unchanged.
+    assert result["old_pin_kinds"] == ["physical", "physical"]
+    assert result["old_sizing_gb"] == 16
+
+    # Vulkan probe unreachable: the picker is hidden, the devices still list.
+    assert result["probe_failed_pinnable"] == [False, False]
+    assert result["probe_failed_names"] == ["GPU0", "GPU1"]

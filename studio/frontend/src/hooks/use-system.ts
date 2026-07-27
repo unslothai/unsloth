@@ -45,7 +45,11 @@ export interface SystemInfoResponse {
     backend_cuda_visible_devices?: string | null;
     parent_visible_gpu_ids?: number[];
     index_kind?: string;
+    /** PyTorch-visible accelerators: what training and non-GGUF inference use. */
     devices: GpuDevice[];
+    /** GGUF pin candidates when llama.cpp pins in its own index space (Vulkan
+     * ordinals). Absent or empty means the pin space is `devices`. */
+    gguf_gpu_devices?: GpuDevice[];
   };
   ml_packages: {
     torch?: string;

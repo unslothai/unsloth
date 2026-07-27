@@ -1021,6 +1021,65 @@ def test_physical_ids_never_reinterpreted_as_vulkan_ordinals(tmp_path):
         )
 
 
+def _ids_mismatch_backend(tmp_path, killed, *, downloads = None):
+    """A normal GGUF the route mislabeled diffusion (name hint), teardown observable."""
+    gguf = tmp_path / "diffusiongemma-derivative.gguf"
+    _write_minimal_gguf(gguf)
+
+    def _download(**_kwargs):
+        if downloads is not None:
+            downloads.append(True)
+        return str(gguf)
+
+    backend = LlamaCppBackend()
+    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend._is_vulkan_backend = lambda _binary = None: True
+    backend._download_gguf = _download
+    backend._kill_process = lambda *a, **k: killed.append(True)
+    backend._start_diffusion_server = lambda **_kwargs: pytest.fail("not a diffusion GGUF")
+    return backend, gguf
+
+
+def test_local_physical_id_mismatch_rejected_before_teardown(tmp_path):
+    """The disagreement is known from the preflight header, so rejecting it must not
+    cost the live model: classify before Phase 1 like the other header-dependent
+    rejects (#7205) instead of killing a healthy server and then failing."""
+    killed: list[bool] = []
+    backend, gguf = _ids_mismatch_backend(tmp_path, killed)
+
+    with pytest.raises(ValueError, match = "validated as CUDA physical"):
+        backend.load_model(
+            gguf_path = str(gguf),
+            model_identifier = "/models/DiffusionGemma/chat.gguf",
+            speculative_type = "off",
+            gpu_ids = [1],
+            gpu_ids_are_vulkan_ordinals = False,
+        )
+
+    assert killed == []
+
+
+def test_remote_physical_id_mismatch_rejected_before_teardown(tmp_path):
+    """Same for an HF repo whose id carries the DiffusionGemma name hint."""
+    killed: list[bool] = []
+    downloads: list[bool] = []
+    backend, _ = _ids_mismatch_backend(tmp_path, killed, downloads = downloads)
+
+    with pytest.raises(ValueError, match = "validated as CUDA physical"):
+        backend.load_model(
+            hf_repo = "owner/DiffusionGemma-derivative",
+            hf_variant = "Q4_K_M",
+            model_identifier = "owner/DiffusionGemma-derivative",
+            speculative_type = "off",
+            gpu_ids = [1],
+            gpu_ids_are_vulkan_ordinals = False,
+        )
+
+    assert killed == []
+    # The pre-Phase-1 classification is the same fetch Phase 2 would have made.
+    assert downloads == [True]
+
+
 def test_remote_diffusion_rejects_explicit_memory_mode_after_download(tmp_path):
     gguf = tmp_path / "renamed.gguf"
     _write_minimal_gguf(gguf, arch = "diffusion-gemma")

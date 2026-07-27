@@ -128,8 +128,8 @@ def _system_gpu_ids_supported(
 ):
     """Drive /api/system's picker gate with the host fully spoofed."""
     devices = [
-        {"index": 0, "index_kind": "physical", "name": "GPU0"},
-        {"index": 1, "index_kind": "physical", "name": "GPU1"},
+        {"index": 0, "index_kind": "physical", "name": "GPU0", "memory_total_gb": 8.0},
+        {"index": 1, "index_kind": "physical", "name": "GPU1", "memory_total_gb": 8.0},
     ]
     # Resolve the real bundle layout BEFORE patching the classifier, so the stub can't recurse.
     lacks_gpu_lib = LlamaCppBackend._backend_lacks_gpu_lib(binary)
@@ -231,8 +231,9 @@ def test_vulkan_bundle_matrix(tmp_path, route, main_mod, os_name, gpu_name):
             vulkan_devices = probed,
         )
         assert info["gguf_gpu_ids_supported"] is True
-        assert info["backend"] == "vulkan"
-        assert [d["index_kind"] for d in info["devices"]] == ["vulkan", "vulkan"]
+        assert [d["index_kind"] for d in info["gguf_gpu_devices"]] == ["vulkan", "vulkan"]
+        # The picker list is additive: the general metrics keep describing PyTorch.
+        assert [d["index_kind"] for d in info["devices"]] == ["physical", "physical"]
 
 
 @pytest.mark.parametrize("os_name", ["windows", "linux", "wsl"])
@@ -248,6 +249,49 @@ def test_vulkan_probe_failure_keeps_devices_and_hides_picker(tmp_path, route, ma
     assert info["gguf_gpu_ids_supported"] is False
     assert info["available"] is True
     assert len(info["devices"]) == 2
+    assert info["gguf_gpu_devices"] == []
+
+
+def test_vulkan_ordinals_never_replace_the_pytorch_gpu_metrics(tmp_path, main_mod):
+    """A forced-Vulkan llama.cpp build on a CUDA/ROCm host must not rewrite the general
+    device list: `devices` is summed for the VRAM monitor, Hub fit filtering and training
+    model sizing, none of which run on ggml's Vulkan devices."""
+    binary = _make_bundle(tmp_path, "linux", ("cpu", "vulkan"))
+    # A shared-memory iGPU torch cannot see, four times the real accelerator budget.
+    probed = [
+        {"index": 0, "index_kind": "vulkan", "name": "iGPU", "memory_total_gb": 64.0},
+    ]
+
+    with patch.object(sys, "platform", "linux"):
+        info = _system_gpu_ids_supported(
+            main_mod, binary = binary, vulkan = True, device = "CUDA", vulkan_devices = probed
+        )
+
+    assert [d["name"] for d in info["devices"]] == ["GPU0", "GPU1"]
+    assert sum(d["memory_total_gb"] for d in info["devices"]) == 16.0
+    assert info["backend"] != "vulkan", "the general metrics still describe PyTorch"
+    # The ordinals the picker needs are published on their own channel.
+    assert info["gguf_gpu_devices"] == probed
+    assert info["gguf_gpu_ids_supported"] is True
+
+
+def test_system_gpu_payload_stays_additive_for_pre_feature_clients(tmp_path, main_mod):
+    """The Vulkan build only adds a key: `available`, `backend` and `devices` read exactly
+    as they do without one, so a pre-#7164 frontend is unaffected by the picker feature."""
+    binary = _make_bundle(tmp_path, "linux", ("cpu", "vulkan"))
+    probed = [{"index": 0, "index_kind": "vulkan", "name": "iGPU", "memory_total_gb": 64.0}]
+
+    with patch.object(sys, "platform", "linux"):
+        without = _system_gpu_ids_supported(
+            main_mod, binary = binary, vulkan = False, device = "CUDA"
+        )
+        with_vulkan = _system_gpu_ids_supported(
+            main_mod, binary = binary, vulkan = True, device = "CUDA", vulkan_devices = probed
+        )
+
+    for key in ("available", "backend", "devices"):
+        assert with_vulkan[key] == without[key], f"{key} must keep its pre-feature meaning"
+    assert with_vulkan["gguf_gpu_devices"] == probed
 
 
 # ── Pre-existing paths this feature must not disturb ────────────────
@@ -367,7 +411,7 @@ def test_diffusion_on_a_vulkan_bundle_resolves_physical_ids(tmp_path, route, mai
         )
         # The picker is offered ggml Vulkan ordinals, with no model in the loop.
         assert info["gguf_gpu_ids_supported"] is True
-        assert [d["index_kind"] for d in info["devices"]] == ["vulkan", "vulkan"]
+        assert [d["index_kind"] for d in info["gguf_gpu_devices"]] == ["vulkan", "vulkan"]
 
         _ids, normal_vulkan = _resolve(
             route, [1], binary = binary, vulkan = True, device = "CUDA", diffusion = False

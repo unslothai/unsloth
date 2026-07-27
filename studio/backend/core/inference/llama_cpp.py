@@ -129,6 +129,17 @@ LLAMA_SERVER_NOT_FOUND_DETAIL = (
 )
 
 
+def _vulkan_physical_ids_mismatch_error(gpu_ids) -> str:
+    """Shared by the pre-teardown reject and its post-metadata defense, so both spell
+    the same disagreement (route said CUDA physical, the GGUF header says not diffusion)."""
+    return (
+        f"Requested gpu_ids {sorted(int(x) for x in gpu_ids)} were validated "
+        "as CUDA physical IDs for a diffusion model, but this GGUF is not "
+        "diffusion. On a Vulkan llama.cpp build, omit gpu_ids or re-pick by "
+        "Vulkan ordinal."
+    )
+
+
 # llama-server can serve HTTP 200 while running a model entirely on CPU when a
 # GPU backend fails to init (#5807 / #5106 / #5830). Classify the startup log so
 # Unsloth can warn. Priority: explicit "offloaded N/M layers to GPU" counts
@@ -6675,7 +6686,9 @@ class LlamaCppBackend:
             _vulkan_gpu_ids_pin = bool(is_vulkan_backend and gpu_ids)
             _needs_diffusion_preflight = _vulkan_gpu_ids_pin or _explicit_memory_mode
             _preflight_model_path = None
-            _preflight_is_diffusion = False
+            # Tri-state: None until a header is actually read, so an unclassified load
+            # never trips the disagreement reject below.
+            _preflight_is_diffusion: Optional[bool] = None
             if _needs_diffusion_preflight and hf_repo:
                 _resolved_repo = _resolve_repo_id_casing(hf_repo)
                 if _resolved_repo != hf_repo:
@@ -6714,6 +6727,17 @@ class LlamaCppBackend:
                         "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
                         "device."
                     )
+            elif (
+                _preflight_is_diffusion is False
+                and _vulkan_gpu_ids_pin
+                and gpu_ids_are_vulkan_ordinals is False
+            ):
+                # The route classified these ids as CUDA physical (diffusion by name hint on
+                # a header it could not read), but the header just read disagrees, so the
+                # Vulkan pin would reinterpret them as ggml ordinals. The disagreement is
+                # known here, so reject before Phase 1 replaces the live model; the
+                # post-metadata copy below stays as a final defense.
+                raise ValueError(_vulkan_physical_ids_mismatch_error(gpu_ids))
 
             # Reject stale Vulkan ordinals before replacing the live model.
             if (
@@ -6842,14 +6866,10 @@ class LlamaCppBackend:
 
             # The route validated these as CUDA physical IDs (diffusion by name hint on an
             # uncached remote GGUF); the header disagrees, so the Vulkan pin below would
-            # reinterpret them as ggml ordinals.
+            # reinterpret them as ggml ordinals. The pre-teardown check above already
+            # rejects this; keep it as a final defense if classification ever disagrees.
             if is_vulkan_backend and gpu_ids and gpu_ids_are_vulkan_ordinals is False:
-                raise ValueError(
-                    f"Requested gpu_ids {sorted(int(x) for x in gpu_ids)} were validated "
-                    "as CUDA physical IDs for a diffusion model, but this GGUF is not "
-                    "diffusion. On a Vulkan llama.cpp build, omit gpu_ids or re-pick by "
-                    "Vulkan ordinal."
-                )
+                raise ValueError(_vulkan_physical_ids_mismatch_error(gpu_ids))
 
             if not binary:
                 # distinguish a transiently locked binary (antivirus / in-flight
