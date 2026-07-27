@@ -914,6 +914,9 @@ fn finish_elevation_failure(
     exit_status: Option<String>,
     message: String,
 ) {
+    // Terminal, like a cancelled prompt: the run the code 2 exit left the
+    // marker for is not happening.
+    clear_install_marker_best_effort();
     if let Some(attempt) = attempt {
         diagnostics::finish_attempt(
             diagnostics,
