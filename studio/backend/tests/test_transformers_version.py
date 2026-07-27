@@ -5000,9 +5000,7 @@ class TestImpossible510ScanIsSkipped:
         """Negative control: re-adding a 5.10-only module must reopen the fast-path scan."""
         import utils.transformers_version as tv
 
-        monkeypatch.setattr(
-            tv, "_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS", (self._FUTURE_MARKER,)
-        )
+        monkeypatch.setattr(tv, "_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS", (self._FUTURE_MARKER,))
         monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda *a, **k: None)
         log: list = []
         monkeypatch.setattr(
@@ -5017,9 +5015,7 @@ class TestImpossible510ScanIsSkipped:
         """Negative control: the reopened scan must not promote a repo that lacks it."""
         import utils.transformers_version as tv
 
-        monkeypatch.setattr(
-            tv, "_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS", (self._FUTURE_MARKER,)
-        )
+        monkeypatch.setattr(tv, "_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS", (self._FUTURE_MARKER,))
         monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda *a, **k: None)
         log: list = []
         monkeypatch.setattr(
