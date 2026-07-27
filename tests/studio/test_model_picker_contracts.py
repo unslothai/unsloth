@@ -590,11 +590,11 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     src = " ".join(_read("hooks/use-gpu-info.ts").split())
     # The Vulkan inventory is consulted first, and only when it has devices.
     assert (
-        'const inference = data?.inference_gpu; '
+        "const inference = data?.inference_gpu; "
         'if (inference?.backend === "vulkan" && (inference.devices ?? []).length) {' in src
     )
     # Pinnable on the ggml ordinal space, gated on the backend's own support flag.
-    assert 'const picksAccepted = inference.gguf_gpu_ids_supported !== false;' in src
+    assert "const picksAccepted = inference.gguf_gpu_ids_supported !== false;" in src
     assert 'physicalIndex: picksAccepted && d.index_kind === "vulkan",' in src
     # The torch fallback keeps its physical-only gate and the XPU ban.
     assert 'data?.device_backend !== "xpu" &&' in src

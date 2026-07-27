@@ -198,10 +198,20 @@ def test_vulkan_inference_gpu_uses_real_device_names_and_igpu_flag(monkeypatch):
         "vulkan_device_inventory",
         staticmethod(
             lambda binary = None: [
-                {"index": 0, "name": "AMD Radeon RX 9070 XT", "free_mib": 15 * 1024,
-                 "total_mib": 16 * 1024, "is_igpu": False},
-                {"index": 1, "name": "AMD Radeon(TM) 8060S Graphics", "free_mib": 89 * 1024,
-                 "total_mib": 91 * 1024, "is_igpu": True},
+                {
+                    "index": 0,
+                    "name": "AMD Radeon RX 9070 XT",
+                    "free_mib": 15 * 1024,
+                    "total_mib": 16 * 1024,
+                    "is_igpu": False,
+                },
+                {
+                    "index": 1,
+                    "name": "AMD Radeon(TM) 8060S Graphics",
+                    "free_mib": 89 * 1024,
+                    "total_mib": 91 * 1024,
+                    "is_igpu": True,
+                },
             ]
         ),
     )
