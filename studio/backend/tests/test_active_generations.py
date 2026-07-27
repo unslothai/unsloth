@@ -529,8 +529,14 @@ def test_unload_rechecks_active_generations_under_the_lifecycle_gate(monkeypatch
     assert not ev.is_set()
 
 
-def _run_unload(inf_mod, monkeypatch, *, loaded_gguf, requested, force, torn_down):
-    """Drive POST /unload against a backend pair with ``loaded_gguf`` resident."""
+def _run_unload(
+    inf_mod, monkeypatch, *, loaded_gguf, requested, force, torn_down, unload_model = None
+):
+    """Drive POST /unload against a backend pair with ``loaded_gguf`` resident.
+
+    ``unload_model`` overrides the GGUF teardown so a caller can observe what the
+    world looked like at the moment of teardown, not just afterwards.
+    """
     import asyncio
     from types import SimpleNamespace
 
@@ -542,7 +548,7 @@ def _run_unload(inf_mod, monkeypatch, *, loaded_gguf, requested, force, torn_dow
             is_active = True,
             is_loaded = True,
             model_identifier = loaded_gguf,
-            unload_model = lambda: torn_down.append("gguf"),
+            unload_model = unload_model or (lambda: torn_down.append("gguf")),
         ),
         # Nothing on the standard backend: the GGUF above is what is resident.
         backend = SimpleNamespace(
@@ -602,6 +608,83 @@ def test_forced_unload_of_the_loaded_model_still_stops_its_chats(monkeypatch):
         )
         assert ev.is_set()
     assert torn_down == ["gguf"]
+    assert response.status == "unloaded"
+
+
+
+def test_forced_unload_lets_the_cancelled_chats_unwind_before_teardown(monkeypatch):
+    # /load drains after cancelling; /unload used to cancel and tear down on the
+    # next line, so a stream that had been told to stop but had not finished lost
+    # its server underneath it and the client saw a dropped connection instead of
+    # a clean end. Order matters, so assert it: the count must reach zero before
+    # unload_model runs, not merely by the time the route returns.
+    _route_gate()  # skips when the inference stack is unavailable
+    import core.inference.llama_keepwarm as keepwarm
+    import routes.inference as inf_mod
+
+    inflight = {"n": 1}
+    seen = {}
+
+    def _count(current_request_counted = True, *, include_pending = True):
+        # Unwinds one poll after the cancel, like a stream noticing its event.
+        if inflight["n"] > 0:
+            inflight["n"] -= 1
+        return inflight["n"]
+
+    monkeypatch.setattr(keepwarm, "other_inference_request_count", _count)
+    monkeypatch.setattr(inf_mod, "_switch_waiter_count", lambda: 0)
+
+    torn_down: list[str] = []
+    ev = threading.Event()
+
+    def _record_teardown():
+        seen["inflight_at_teardown"] = inflight["n"]
+        torn_down.append("gguf")
+
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        response = _run_unload(
+            inf_mod,
+            monkeypatch,
+            loaded_gguf = "org/A-GGUF",
+            requested = "org/A-GGUF",
+            force = True,
+            torn_down = torn_down,
+            unload_model = _record_teardown,
+        )
+        assert ev.is_set()
+
+    assert torn_down == ["gguf"]
+    assert seen["inflight_at_teardown"] == 0
+    assert response.status == "unloaded"
+
+
+def test_unload_does_not_drain_when_it_cancelled_nothing(monkeypatch):
+    # The drain is gated on the cancel having cancelled something. An idle unload
+    # must not poll the in-flight count at all, or every Eject on a quiet server
+    # pays for a wait that protects nothing.
+    _route_gate()  # skips when the inference stack is unavailable
+    import core.inference.llama_keepwarm as keepwarm
+    import routes.inference as inf_mod
+
+    polls = {"n": 0}
+
+    def _count(current_request_counted = True, *, include_pending = True):
+        polls["n"] += 1
+        return 0
+
+    monkeypatch.setattr(keepwarm, "other_inference_request_count", _count)
+
+    torn_down: list[str] = []
+    response = _run_unload(
+        inf_mod,
+        monkeypatch,
+        loaded_gguf = "org/A-GGUF",
+        requested = "org/A-GGUF",
+        force = True,
+        torn_down = torn_down,
+    )
+    assert torn_down == ["gguf"]
+    assert polls["n"] == 0
     assert response.status == "unloaded"
 
 
@@ -2021,8 +2104,12 @@ def test_anthropic_passthrough_non_stream_is_visible_to_the_swap_gate(monkeypatc
     inf_mod = _anthropic_route_stubs(monkeypatch)
     transport = httpx.MockTransport(handler)
     real_async_client = httpx.AsyncClient
+    # The pass-through takes a per-request client, not the pooled one, so a Stop
+    # or a forced swap can close it mid-POST.
     monkeypatch.setattr(
-        inf_mod, "nonstreaming_client", lambda: real_async_client(transport = transport)
+        inf_mod,
+        "_cancelable_nonstreaming_client",
+        lambda: real_async_client(transport = transport),
     )
 
     # enable_tools False keeps the server-tool loop out, so the declared client tool
@@ -2043,6 +2130,55 @@ def test_anthropic_passthrough_non_stream_is_visible_to_the_swap_gate(monkeypatc
     assert seen["snapshot"][0]["model"] == "org/M-GGUF"
     assert seen["cancelled"] == 1
     # And it unregisters, or one message would 409 every later reload.
+    assert active_generations.count() == 0
+
+
+
+def test_anthropic_passthrough_non_stream_stops_when_the_swap_cancels_it(monkeypatch):
+    # Registering is only half the job: the pooled client cannot be closed, so
+    # before this the gate could cancel this run and the POST carried on to
+    # completion regardless. The watcher now closes a per-request client, which
+    # surfaces as a transport error, and a set event turns that into a cancel.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    import httpx
+
+    from models.inference import AnthropicMessagesRequest
+
+    seen = {}
+
+    def handler(request):
+        # Stand in for a forced swap landing mid-decode: cancel, then fail the
+        # transport exactly as closing the client would.
+        seen["cancelled"] = active_generations.cancel_all()
+        raise httpx.ConnectError("client closed")
+
+    inf_mod = _anthropic_route_stubs(monkeypatch)
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        inf_mod,
+        "_cancelable_nonstreaming_client",
+        lambda: real_async_client(transport = transport),
+    )
+
+    payload = AnthropicMessagesRequest(
+        max_tokens = 16,
+        messages = [{"role": "user", "content": "hi"}],
+        enable_tools = False,
+        tools = [{"name": "lookup", "input_schema": {"type": "object", "properties": {}}}],
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            inf_mod.anthropic_messages(
+                payload, request = _MessagesRequest(), current_subject = "tester"
+            )
+        )
+
+    assert seen["cancelled"] == 1
+    # Cancelled or not, the entry must go, or one message 409s every later reload.
     assert active_generations.count() == 0
 
 
@@ -2217,7 +2353,7 @@ def test_a_confirmed_install_that_cannot_drain_refuses_instead_of_swapping(monke
     stuck = threading.Event()
     stuck.set()  # already "cancelled", yet still counted: it never unwinds
     inf_mod, calls = _stub_install_route(monkeypatch, in_flight_events = [ev, stuck])
-    monkeypatch.setattr(inf_mod, "_SIDECAR_SWAP_DRAIN_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(inf_mod, "_POST_CANCEL_DRAIN_TIMEOUT_S", 0.05)
 
     def _never_unwinds(current_request_counted = True, *, include_pending = True):
         return 1
@@ -2226,14 +2362,97 @@ def test_a_confirmed_install_that_cannot_drain_refuses_instead_of_swapping(monke
 
     monkeypatch.setattr(keepwarm, "other_inference_request_count", _never_unwinds)
 
+    async def _install():
+        # Deadline in the test, not just in the code under test: without it a
+        # regression that drops the drain's bound hangs the suite instead of
+        # failing, which reads as CI being slow rather than as this bug.
+        return await asyncio.wait_for(
+            inf_mod.install_latest_transformers_route(
+                InstallLatestTransformersRequest(version = "5.0.0", force_cancel_active = True),
+                "tester",
+            ),
+            timeout = 5,
+        )
+
     with active_generations.ActiveGeneration(ev, thread_id = "t1"):
         with pytest.raises(HTTPException) as exc:
-            asyncio.run(
-                inf_mod.install_latest_transformers_route(
-                    InstallLatestTransformersRequest(version = "5.0.0", force_cancel_active = True),
-                    "tester",
-                )
-            )
+            asyncio.run(_install())
 
     assert exc.value.status_code == 409
     assert calls["installed"] == []
+
+
+# ── draining before teardown ──────────────────────────────────────────
+
+
+def _drain_with_counts(monkeypatch, counts, **kwargs):
+    """Run _wait_for_model_switch_idle against a scripted in-flight count.
+
+    ``counts`` is consumed one entry per poll; the last value repeats, so a
+    trailing non-zero stands for a request that never unwinds.
+    """
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    import core.inference.llama_keepwarm as keepwarm
+    import routes.inference as inf_mod
+
+    remaining = list(counts)
+    polls = {"n": 0}
+
+    def _count(current_request_counted = True, *, include_pending = True):
+        polls["n"] += 1
+        return remaining.pop(0) if len(remaining) > 1 else remaining[0]
+
+    monkeypatch.setattr(keepwarm, "other_inference_request_count", _count)
+    monkeypatch.setattr(inf_mod, "_switch_waiter_count", lambda: 0)
+
+    async def _run():
+        # Hard test-side deadline: a drain that regresses to waiting forever must
+        # fail this test red, not hang the suite until CI's own timeout kills it.
+        await asyncio.wait_for(
+            inf_mod._wait_for_model_switch_idle(current_request_counted = False, **kwargs),
+            timeout = 5,
+        )
+
+    asyncio.run(_run())
+    return polls["n"]
+
+
+def test_forced_swap_does_not_wait_out_the_generations_it_is_about_to_cancel(monkeypatch):
+    # cancel_pending discounts the registered generations from the in-flight
+    # count, because the caller cancels them immediately after this drain. Drop
+    # the discount and the drain waits for a count only that pending cancel can
+    # lower, i.e. it never returns. Nothing else in the suite calls the drain
+    # with cancel_pending=True, so without this the deadlock ships silently.
+    ev = threading.Event()
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        polls = _drain_with_counts(monkeypatch, [1], cancel_pending = True)
+    assert polls == 1
+
+
+def test_the_same_drain_without_the_discount_would_keep_waiting(monkeypatch):
+    # The other half of the claim: the count above is genuinely blocking, so
+    # the previous test passes because of the discount and not because the
+    # scripted count happened to be idle. Bounded so a regression fails red
+    # instead of hanging the suite.
+    ev = threading.Event()
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        polls = _drain_with_counts(monkeypatch, [1], timeout_s = 0.05)
+    assert polls > 1
+
+
+def test_post_cancel_drain_gives_up_on_a_request_that_never_unwinds(monkeypatch):
+    # TTS on the subprocess backend observes no cancel event, so a forced swap
+    # can cancel it and still see it counted forever. The post-cancel drains
+    # hold the lifecycle gate, so they must expire and proceed rather than pin
+    # every load, unload and new request behind one audio generation.
+    polls = _drain_with_counts(monkeypatch, [1], timeout_s = 0.05)
+    assert polls > 1
+
+
+def test_drain_returns_as_soon_as_the_cancelled_requests_unwind(monkeypatch):
+    # The bound is a backstop, not the normal path: once the count drops the
+    # drain returns immediately instead of sitting out the rest of the timeout.
+    polls = _drain_with_counts(monkeypatch, [2, 1, 0], timeout_s = 30)
+    assert polls == 3

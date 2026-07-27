@@ -6493,6 +6493,24 @@ class LlamaCppBackend:
             binary = self._find_llama_server_binary()
             is_vulkan_backend = self._is_vulkan_backend(binary)
 
+            # Without --kv-unified an explicit --parallel N splits -c into windows of
+            # -c/N, so on a build lacking the flag the new default of 4 would quarter
+            # every context window for a feature it cannot serve. Fall back to the one
+            # slot such a build already behaved as. Ahead of the KV estimates so the
+            # fit matches what launches; capabilities are cached per binary+mtime.
+            if (
+                n_parallel > 1
+                and binary
+                and not self.probe_server_capabilities(binary).get("supports_kv_unified")
+            ):
+                logger.warning(
+                    "llama-server at %s has no --kv-unified, so %d parallel slots would "
+                    "split the context window %d ways. Using 1 slot instead; update "
+                    "llama.cpp to run chats in parallel.",
+                    binary, n_parallel, n_parallel,
+                )
+                n_parallel = 1
+
             # ── Vulkan-ordinal preflight (BEFORE the Phase 1 kill) ────────
             # An explicit Vulkan pin the ggml probe never enumerated cannot be honored.
             # Validate it ABOVE the kill so an invalid selection leaves the live model
@@ -12663,10 +12681,15 @@ class LlamaCppBackend:
         min_p: float = 0.0,
         max_new_tokens: int = 2048,
         repetition_penalty: float = 1.1,
+        cancel_event: Optional[threading.Event] = None,
     ) -> tuple:
         """
         Generate TTS audio via llama-server /completion + codec decode.
         Returns (wav_bytes, sample_rate).
+
+        ``cancel_event`` lets a Stop or a forced model swap end the request: the
+        decode is one blocking POST, so a watcher closes the client out from under
+        it rather than polling. Raises RuntimeError once cancelled.
         """
         if audio_type not in self._TTS_PROMPTS:
             raise RuntimeError(f"GGUF TTS does not support '{audio_type}' codec.")
@@ -12688,14 +12711,45 @@ class LlamaCppBackend:
         if need_ids:
             payload["n_probs"] = 1
 
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("Audio generation cancelled")
+
         with httpx.Client(
             timeout = httpx.Timeout(300, connect = 10),
             headers = self._auth_headers,
             trust_env = False,
         ) as client:
-            resp = client.post(f"{self.base_url}/completion", json = payload)
+            finished = threading.Event()
+            watcher: Optional[threading.Thread] = None
+            if cancel_event is not None:
+                def _close_when_cancelled() -> None:
+                    while not finished.wait(0.05):
+                        if cancel_event.is_set():
+                            # Closing mid-request makes the blocking post raise
+                            # httpx.RequestError, which is the only way out of it.
+                            with contextlib.suppress(Exception):
+                                client.close()
+                            return
+
+                watcher = threading.Thread(target = _close_when_cancelled, daemon = True)
+                watcher.start()
+            try:
+                resp = client.post(f"{self.base_url}/completion", json = payload)
+            except httpx.RequestError:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("Audio generation cancelled") from None
+                raise
+            finally:
+                finished.set()
+                if watcher is not None:
+                    watcher.join(timeout = 0.5)
             if resp.status_code != 200:
                 raise RuntimeError(f"llama-server returned {resp.status_code}: {resp.text}")
+
+        # The codec decode below is GPU work with no interruption point, so check
+        # here: cancelling after this only wastes the decode it cannot stop.
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("Audio generation cancelled")
 
         data = resp.json()
         token_ids = (

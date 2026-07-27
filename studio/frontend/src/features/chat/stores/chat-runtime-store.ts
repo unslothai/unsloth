@@ -905,7 +905,10 @@ type ChatRuntimeStore = {
    * it started. Keyed by thread, or one chat's tool call shows above every
    * other composer; the timestamp keeps the counter across a thread switch.
    */
-  toolStatusByThreadId: Record<string, { status: string; startedAt: number }>;
+  toolStatusByThreadId: Record<
+    string,
+    { status: string; startedAt: number; owner?: () => void }
+  >;
   /** Live stdout/stderr from running tools, keyed by toolCallId. Transient:
    *  appended by tool_output, cleared on tool_end or run end. */
   toolLiveOutput: Record<string, string>;
@@ -1091,7 +1094,16 @@ type ChatRuntimeStore = {
   setRagAutoInjectMinScore: (score: number) => void;
   setRagOcrScanned: (enabled: boolean) => void;
   setRagCaptionFigures: (enabled: boolean) => void;
-  setToolStatus: (threadId: string, status: string | null) => void;
+  /**
+   * `owner` is the run's identity token, as for `setThreadRunning`. Unresolved
+   * threads share "__default", so without it one run's cleanup clears the status
+   * a concurrent run is still showing.
+   */
+  setToolStatus: (
+    threadId: string,
+    status: string | null,
+    owner?: () => void,
+  ) => void;
   appendToolLiveOutput: (toolCallId: string, text: string) => void;
   /** Clear one tool's live output, or all when no id is given. */
   clearToolLiveOutput: (toolCallId?: string) => void;
@@ -1987,18 +1999,22 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveBool(CHAT_RAG_CAPTION_KEY, ragCaptionFigures);
       return { ragCaptionFigures };
     }),
-  setToolStatus: (threadId, status) =>
+  setToolStatus: (threadId, status, owner) =>
     set((state) => {
       const next = { ...state.toolStatusByThreadId };
+      const current = next[threadId];
       if (!status) {
-        if (next[threadId] === undefined) return state;
+        // Only the run that put this status up may take it down, so a finishing
+        // run cannot blank the status a concurrent one behind the same key is
+        // still showing. Same rule as setThreadRunning. Undefined matches
+        // undefined, so an ownerless clear still removes an ownerless entry.
+        if (current === undefined || current.owner !== owner) return state;
         delete next[threadId];
       } else {
-        // Same text means the same tool call, so keep startedAt: only a new
-        // tool restarts the counter.
-        const current = next[threadId];
-        if (current?.status === status) return state;
-        next[threadId] = { status, startedAt: Date.now() };
+        // Same text from the same run means the same tool call, so keep
+        // startedAt: only a new tool restarts the counter.
+        if (current?.status === status && current.owner === owner) return state;
+        next[threadId] = { status, startedAt: Date.now(), owner };
       }
       return { toolStatusByThreadId: next };
     }),

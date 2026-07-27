@@ -181,6 +181,17 @@ class LlamaAdmissionReservation:
     def is_cancelled(self) -> bool:
         return self._lease is None and self._waiter is None
 
+    @property
+    def queue(self) -> Optional["LlamaAdmissionQueue"]:
+        """The queue this reservation was taken from.
+
+        Callers that park and unpark must use this rather than re-resolving by
+        key: queues are keyed by ``base_url``, which carries a fresh ephemeral
+        port on every model load, so a reload between park and unpark would
+        unpark a different queue and hand a stolen slot to whoever holds it.
+        """
+        return self._queue
+
     def lease_nowait(self) -> Optional[LlamaAdmissionLease]:
         if self._lease is not None:
             return self._lease

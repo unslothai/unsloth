@@ -2055,10 +2055,12 @@ export function createOpenAIStreamAdapter(
       const toolConfirmationIdsByBackendId = new Map<string, string>();
       // Local tool ids ("call_0") repeat across turns, panes and conversations,
       // so scope by pane AND thread; the cards read the same key through
-      // useToolPaneScope(). Prefer unstable_threadId: the id the reader sees.
+      // useToolPaneScope(). unstable_threadId alone, with no activeThreadId
+      // fallback: the reader has only threadListItem.remoteId, which is exactly
+      // this value, so falling back to a different id would key the two apart.
       const toolOutputPaneScope = toolThreadScope(
         toolPaneScope(options.modelType, options.pairId),
-        unstable_threadId ?? resolvedThreadId,
+        unstable_threadId,
       );
       const scopedToolOutputKey = (id: string) =>
         toolOutputKey(toolOutputPaneScope, id);
@@ -3310,7 +3312,11 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolStatus?: string }
               )._toolStatus;
               if (toolStatusText !== undefined) {
-                runtime.setToolStatus(threadKey, toolStatusText || null);
+                runtime.setToolStatus(
+                  threadKey,
+                  toolStatusText || null,
+                  serverCancel,
+                );
                 continue;
               }
 
@@ -4202,8 +4208,10 @@ export function createOpenAIStreamAdapter(
           confirmStore.clearToolConfirmation(part.toolCallId);
         }
         runtime.setGeneratingStatus(null);
-        // Scoped: a global clear wiped the badge of every other running chat.
-        runtime.setToolStatus(threadKey, null);
+        // Scoped by thread AND by run: a global clear wiped the badge of every
+        // other running chat, and an unowned one wiped a concurrent run's badge
+        // behind the same key.
+        runtime.setToolStatus(threadKey, null, serverCancel);
         // Clear only this run's live keys (a concurrent pane owns its own). A
         // key still here streamed stdout but never reached tool_end (SSE drop or
         // cancel), so promote it to full output first, else the partial

@@ -36,10 +36,16 @@ export const ToolPaneScopeContext = createContext<string>(toolPaneScope());
  * Store-key scope for the conversation this component renders in. Takes the
  * thread id from the surrounding runtime, the same id the adapter writes
  * under, so reader and writer agree without threading a prop through.
+ *
+ * `remoteId`, not `id`: the adapter gets `unstable_threadId`, which assistant-ui
+ * sources from `remoteId`, and a not-yet-initialized thread has `id` but no
+ * `remoteId`. Reading `id` here split the two keys apart for the first turn of
+ * every New Chat, so live tool output never reached the card. Uninitialized,
+ * both sides fall back to the pane-wide scope this key used to be.
  */
 export function useToolPaneScope(): string {
   const paneScope = useContext(ToolPaneScopeContext);
-  const threadId = useAuiState(({ threadListItem }) => threadListItem.id);
+  const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   return toolThreadScope(paneScope, threadId);
 }
 
