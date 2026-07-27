@@ -77,6 +77,21 @@ def is_main_gguf_variant_path(path: str, variant: str) -> bool:
     )
 
 
+def main_gguf_variant_labels(expected_files: Sequence[ExpectedFile]) -> list[str]:
+    """Quant labels of the main GGUFs in a manifest or plan, i.e. the candidates
+    ``is_main_gguf_variant_path`` would accept for some variant. Feeds
+    ``compatible_base_quant_label`` when a stored key predates #7460."""
+    labels: list[str] = []
+    for file in expected_files:
+        path = file.path
+        if not is_gguf_filename(path) or is_companion_gguf_path(path):
+            continue
+        label = extract_quant_label(path)
+        if not is_big_endian_gguf_path(path, label):
+            labels.append(label)
+    return labels
+
+
 def _gguf_rfilename(sibling) -> Optional[str]:
     """The sibling's rfilename when it is a GGUF, else None."""
     name = getattr(sibling, "rfilename", None)

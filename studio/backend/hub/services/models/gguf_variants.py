@@ -26,6 +26,7 @@ from hub.utils.hf_cache_state import (
     repo_cache_dir_name,
 )
 from hub.utils.gguf import (
+    compatible_base_quant_label,
     extract_quant_label,
     iter_hf_cache_snapshots,
     is_big_endian_gguf_path,
@@ -49,6 +50,7 @@ from hub.utils.gguf_plan import (
     GgufVariantPlan as _GgufVariantRequirement,
     build_gguf_variant_plans,
     is_main_gguf_variant_path,
+    main_gguf_variant_labels,
 )
 
 logger = get_logger(__name__)
@@ -185,7 +187,13 @@ def gguf_variant_requirements(
     if cached is not None:
         return cached
     requirements = _fetch_gguf_variant_requirements(repo_id, hf_token)
-    return requirements.get(variant.lower())
+    exact = requirements.get(variant.lower())
+    if exact is not None:
+        return exact
+    # Pre-#7460 keys stored the base quant. Same fallback the worker's
+    # _gguf_variant_target_plan applies to these very plans.
+    compatible = compatible_base_quant_label(variant, requirements)
+    return requirements[compatible] if compatible is not None else None
 
 
 def _fetch_gguf_variant_requirements(
@@ -246,6 +254,19 @@ def _manifest_variant_blob_hashes(
     if manifest is None:
         return frozenset()
     variant_key = variant.lower()
+    if not include_companions and not any(
+        is_main_gguf_variant_path(expected.path, variant_key)
+        for expected in manifest.expected_files
+    ):
+        # Manifest written before #7460: its main file is recorded as
+        # model-Q6_K-MTP.gguf under the key Q6_K, so the exact predicate below
+        # would report no main hashes at all.
+        compatible = compatible_base_quant_label(
+            variant,
+            main_gguf_variant_labels(manifest.expected_files),
+        )
+        if compatible is not None:
+            variant_key = compatible
     hashes: set[str] = set()
     for expected in manifest.expected_files:
         if not expected.sha256:

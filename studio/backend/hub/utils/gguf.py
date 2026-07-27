@@ -9,7 +9,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 from loggers import get_logger
 
@@ -229,6 +229,23 @@ def _quant_with_disambiguating_suffix(stem: str, match: re.Match) -> str:
 
 def _base_quant_for_preference(label: str) -> str:
     return _POST_QUANT_VARIANT_SUFFIX_RE.sub("", label).upper()
+
+
+def compatible_base_quant_label(variant: str, labels: Iterable[str]) -> Optional[str]:
+    """The lone flavored label in *labels* whose base quant is *variant*, lowercased.
+
+    Keys stored before #7460 hold the base quant (``Q6_K``) where the file now
+    labels itself ``Q6_K-MTP``, so every reader that looks a stored key up against
+    current labels needs this. None when nothing matches, when the match is exact
+    (the caller's own lookup already covers it), or when two flavors share the
+    base quant and the intent is ambiguous."""
+    key = variant.strip().lower()
+    matches = {
+        lowered
+        for label in labels
+        if (lowered := label.lower()) != key and _base_quant_for_preference(label).lower() == key
+    }
+    return next(iter(matches)) if len(matches) == 1 else None
 
 
 def _full_base_label(match: re.Match) -> str:

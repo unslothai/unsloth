@@ -44,6 +44,7 @@ from hub.utils.snapshot_filters import (
 from hub.utils.gguf_plan import (
     GgufVariantPlan,
     build_gguf_variant_plans,
+    main_gguf_variant_labels,
     plan_from_expected_files,
     sibling_sha256,
 )
@@ -545,10 +546,10 @@ def _gguf_variant_target_plan(
     if key in plans:
         return plans[key]
     # Pre-#7460 keys stored the base quant, so resume a lone flavored sibling.
-    from hub.utils.gguf import _base_quant_for_preference
+    from hub.utils.gguf import compatible_base_quant_label
 
-    by_base = [k for k in plans if k != key and _base_quant_for_preference(k).lower() == key]
-    return plans[by_base[0]] if len(by_base) == 1 else None
+    compatible = compatible_base_quant_label(variant, plans)
+    return plans[compatible] if compatible is not None else None
 
 
 def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mode: str) -> None:
@@ -595,6 +596,19 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
             )
             sys.exit(1)
         plan = plan_from_expected_files(variant, manifest.expected_files)
+        if not plan.main_filenames:
+            # Same base-quant compatibility the metadata path applies: a manifest
+            # written before #7460 files model-Q6_K-MTP.gguf under the key Q6_K,
+            # which the exact predicate above no longer matches. Without this the
+            # plan carries no main hashes and the resume aborts below.
+            from hub.utils.gguf import compatible_base_quant_label
+
+            compatible = compatible_base_quant_label(
+                variant,
+                main_gguf_variant_labels(manifest.expected_files),
+            )
+            if compatible is not None:
+                plan = plan_from_expected_files(compatible, manifest.expected_files)
         targets = list(plan.target_filenames)
         expected_files = list(plan.expected_files)
         download_manifest.write_manifest(

@@ -1379,6 +1379,155 @@ def test_download_gguf_variant_manifest_resume_purges_only_main_quant_hashes(mon
     assert snapshot_calls[0]["allow_patterns"] == ["model-Q4_K_M.gguf", "mmproj-F16.gguf"]
 
 
+def _pre_7460_manifest(*main_files: tuple[str, str]):
+    """Manifest a pre-#7460 download wrote for base quant Q6_K: the label the
+    file carries now (Q6_K-MTP) is not the key the manifest is filed under."""
+    return download_manifest.Manifest(
+        repo_type = "model",
+        repo_id = "Org/Gemma",
+        variant = "Q6_K",
+        started_at = "",
+        expected_files = (
+            *(
+                download_manifest.ExpectedFile(path = path, size = 10, sha256 = sha)
+                for path, sha in main_files
+            ),
+            download_manifest.ExpectedFile(
+                path = "mmproj-F16.gguf",
+                size = 5,
+                sha256 = "shared-mmproj",
+            ),
+        ),
+        transport = "http",
+    )
+
+
+def _offline_variant_download(monkeypatch, tmp_path, manifest):
+    """Run the metadata-unavailable resume branch over *manifest* with partial
+    blobs on disk. Returns (prepare_calls, snapshot_calls)."""
+    prepare_calls: list = []
+    snapshot_calls: list = []
+
+    def _metadata_unavailable(*_args, **_kwargs):
+        raise RuntimeError("metadata down")
+
+    monkeypatch.setattr(hf_download, "_gguf_variant_target_plan", _metadata_unavailable)
+    monkeypatch.setattr(download_manifest, "read_manifest", lambda *_args, **_kwargs: manifest)
+    monkeypatch.setattr(download_manifest, "write_manifest", lambda *_args: True)
+    monkeypatch.setattr(download_manifest, "clear_cancel_marker", lambda *_args: None)
+    monkeypatch.setattr(hf_cache_state, "has_active_incomplete_blobs", lambda *_a, **_kw: True)
+    monkeypatch.setattr(
+        download_registry,
+        "prepare_cache_for_transport",
+        lambda *args, **kwargs: prepare_calls.append((args, kwargs)) or 0,
+    )
+    monkeypatch.setattr(hf_download, "_verify_completed_download", lambda *_a, **_kw: None)
+    monkeypatch.setattr(deletion, "reclaim_replaced_gguf_variant", lambda *_a, **_kw: {})
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(
+            snapshot_download = lambda **kwargs: snapshot_calls.append(kwargs) or str(tmp_path)
+        ),
+    )
+
+    hf_download._download_gguf_variant("Org/Gemma", "Q6_K", None, "http")
+    return prepare_calls, snapshot_calls
+
+
+def test_download_gguf_variant_manifest_resume_matches_pre_7460_base_quant(monkeypatch, tmp_path):
+    # The offline branch rebuilds the plan from the manifest with an exact
+    # variant predicate, so a relabeled main file resolved no main hashes and
+    # the resume aborted instead of ranging over the surviving .incomplete blob.
+    prepare_calls, snapshot_calls = _offline_variant_download(
+        monkeypatch,
+        tmp_path,
+        _pre_7460_manifest(("model-Q6_K-MTP.gguf", "q6-main")),
+    )
+
+    assert prepare_calls == [
+        (
+            ("model", "Org/Gemma", "http", "Q6_K"),
+            {
+                "only_blob_hashes": frozenset({"q6-main"}),
+                "companion_blob_hashes": frozenset({"shared-mmproj"}),
+                "protected_blob_hashes": frozenset(),
+            },
+        )
+    ]
+    assert snapshot_calls[0]["allow_patterns"] == ["model-Q6_K-MTP.gguf", "mmproj-F16.gguf"]
+
+
+def test_download_gguf_variant_manifest_resume_rejects_ambiguous_base_quant(monkeypatch, tmp_path):
+    # Two flavors share the base quant, so which one Q6_K meant is unknowable:
+    # stop rather than purge or resume the wrong shard.
+    with pytest.raises(SystemExit) as exc:
+        _offline_variant_download(
+            monkeypatch,
+            tmp_path,
+            _pre_7460_manifest(
+                ("model-Q6_K-MTP.gguf", "q6-mtp"),
+                ("model-Q6_K-PT-MTP.gguf", "q6-pt-mtp"),
+            ),
+        )
+
+    assert exc.value.code == 1
+
+
+def test_manifest_variant_main_hashes_match_pre_7460_base_quant(monkeypatch):
+    # Same manifest read by the deletion/progress path: main-only hashes drive
+    # unlinking a partial variant while a sibling downloads.
+    monkeypatch.setattr(
+        gguf_variants.download_manifest,
+        "read_manifest",
+        lambda *_args, **_kwargs: _pre_7460_manifest(("model-Q6_K-MTP.gguf", "q6-main")),
+    )
+
+    assert gguf_variants._manifest_variant_blob_hashes(
+        "Org/Gemma",
+        "Q6_K",
+        include_companions = False,
+    ) == frozenset({"q6-main"})
+
+
+def test_gguf_variant_requirements_match_pre_7460_base_quant(monkeypatch):
+    # Service-side twin of the worker's _gguf_variant_target_plan fallback.
+    with gguf_variants._VARIANT_HASH_LOCK:
+        gguf_variants._VARIANT_HASH_CACHE.clear()
+        gguf_variants._VARIANT_REQUIREMENT_CACHE.clear()
+    siblings = [
+        _sibling("model-Q6_K-MTP.gguf", 10, "q6-main"),
+        _sibling("mmproj-F16.gguf", 5, "shared-mmproj"),
+    ]
+    monkeypatch.setattr(
+        gguf_variants,
+        "_fetch_gguf_variant_requirements",
+        lambda _repo_id, _hf_token = None: gguf_variants._build_gguf_variant_requirements(siblings),
+    )
+
+    requirement = gguf_variants.gguf_variant_requirements("Org/Gemma", "Q6_K", None)
+
+    assert requirement is not None
+    assert requirement.main_hashes == frozenset({"q6-main"})
+
+
+def test_gguf_variant_requirements_reject_ambiguous_base_quant(monkeypatch):
+    with gguf_variants._VARIANT_HASH_LOCK:
+        gguf_variants._VARIANT_HASH_CACHE.clear()
+        gguf_variants._VARIANT_REQUIREMENT_CACHE.clear()
+    siblings = [
+        _sibling("model-Q6_K-MTP.gguf", 10, "q6-mtp"),
+        _sibling("model-Q6_K-PT-MTP.gguf", 10, "q6-pt-mtp"),
+    ]
+    monkeypatch.setattr(
+        gguf_variants,
+        "_fetch_gguf_variant_requirements",
+        lambda _repo_id, _hf_token = None: gguf_variants._build_gguf_variant_requirements(siblings),
+    )
+
+    assert gguf_variants.gguf_variant_requirements("Org/Gemma", "Q6_K", None) is None
+
+
 def test_download_snapshot_recovers_manifest_after_metadata_fallback(monkeypatch, tmp_path):
     metadata_calls = []
     written = []
