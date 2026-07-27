@@ -16,10 +16,13 @@ interface StopRunningChatsDialogStore {
   titles: string[];
   /** What the user is about to do, e.g. "Loading a different model". */
   action: string;
+  /** The set includes an embeddings/completions/audio request, which is not a chat. */
+  hasNonChat: boolean;
   requestConfirm: (args: {
     count: number;
     titles?: string[];
     action?: string;
+    hasNonChat?: boolean;
   }) => Promise<boolean>;
   resolve: (confirmed: boolean) => void;
 }
@@ -30,16 +33,17 @@ export const useStopRunningChatsDialogStore =
     count: 0,
     titles: [],
     action: "",
-    requestConfirm: ({ count, titles = [], action = "" }) =>
+    hasNonChat: false,
+    requestConfirm: ({ count, titles = [], action = "", hasNonChat = false }) =>
       new Promise<boolean>((resolve) => {
         pendingResolver?.(false);
         pendingResolver = resolve;
-        set({ open: true, count, titles, action });
+        set({ open: true, count, titles, action, hasNonChat });
       }),
     resolve: (confirmed) => {
       const resolver = pendingResolver;
       pendingResolver = null;
-      set({ open: false, count: 0, titles: [], action: "" });
+      set({ open: false, count: 0, titles: [], action: "", hasNonChat: false });
       resolver?.(confirmed);
     },
   }));

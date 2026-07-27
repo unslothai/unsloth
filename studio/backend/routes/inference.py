@@ -2219,10 +2219,16 @@ class _TrackedCancel:
         *keys,
         thread_id = None,
         model = None,
+        kind = "chat",
     ):
         self.event = event
         self.keys = tuple(k for k in keys if k)
-        self._active = active_generations.ActiveGeneration(event, thread_id = thread_id, model = model)
+        # kind reaches the swap prompt: embeddings and raw completions have no
+        # conversation, so calling them chats there would offer to stop something
+        # the user cannot see and did not start from a thread.
+        self._active = active_generations.ActiveGeneration(
+            event, thread_id = thread_id, model = model, kind = kind
+        )
 
     @classmethod
     def for_payload(cls, event: threading.Event, payload, *keys):
@@ -6549,6 +6555,7 @@ async def generate_audio(
         _audio_cancel,
         thread_id = getattr(payload, "thread_id", None),
         model = model_name,
+        kind = "audio",
     ):
         # Stop in the UI aborts the fetch and nothing more, and this route has no
         # cancel id to address, so without watching the disconnect llama-server
@@ -11264,7 +11271,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # the relay through the check it already polls. Entered inside the body
             # generator, so a response whose body never starts leaves nothing behind (see
             # _responses_stream). No thread_id: public API surface, not a Studio chat.
-            _tracker = _TrackedCancel(disconnect_event, model = monitor_model)
+            _tracker = _TrackedCancel(
+                disconnect_event, model = monitor_model, kind = "completions"
+            )
             _tracker.__enter__()
             try:
                 req = client.build_request(
@@ -11365,7 +11374,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         # event to signal. Unpooled client so a cancel-close hits this call only.
         _cancel_event = threading.Event()
         _client = _cancelable_nonstreaming_client()
-        _tracker = _TrackedCancel(_cancel_event, model = monitor_model)
+        _tracker = _TrackedCancel(
+            _cancel_event, model = monitor_model, kind = "completions"
+        )
         _tracker.__enter__()
         _cancel_watcher = asyncio.create_task(
             _await_cancel_or_disconnect_then_close_client(
@@ -11505,6 +11516,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     _tracker = _TrackedCancel(
         _cancel_event,
         model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default"),
+        kind = "embeddings",
     )
     _tracker.__enter__()
     _cancel_watcher = asyncio.create_task(

@@ -23,9 +23,18 @@ export function StopRunningChatsDialog() {
   const count = useStopRunningChatsDialogStore((s) => s.count);
   const titles = useStopRunningChatsDialogStore((s) => s.titles);
   const action = useStopRunningChatsDialogStore((s) => s.action);
+  const hasNonChat = useStopRunningChatsDialogStore((s) => s.hasNonChat);
   const resolve = useStopRunningChatsDialogStore((s) => s.resolve);
 
-  const plural = count === 1 ? "chat" : "chats";
+  // Embeddings, raw completions and audio share the model but are not conversations,
+  // so name them generically rather than offering to stop chats that do not exist.
+  const noun = hasNonChat
+    ? count === 1
+      ? "request"
+      : "requests"
+    : count === 1
+      ? "chat"
+      : "chats";
   const shown = titles.slice(0, 5);
   const remaining = Math.max(0, titles.length - shown.length);
 
@@ -40,13 +49,13 @@ export function StopRunningChatsDialog() {
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>
-            Stop {count} running {plural}?
+            Stop {count} running {noun}?
           </AlertDialogTitle>
           <AlertDialogDescription>
             {action ? `${action} reloads the model, ` : "Reloading the model "}
-            which every open conversation shares, so{" "}
-            {count === 1 ? "this" : "these"} {plural} will stop generating.
-            Replies produced so far are kept.
+            which every open {hasNonChat ? "request" : "conversation"} shares,
+            so {count === 1 ? "this" : "these"} {noun} will stop
+            {hasNonChat ? "" : " generating"}. Work produced so far is kept.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {shown.length > 0 && (

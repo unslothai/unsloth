@@ -30,6 +30,7 @@ export async function confirmStopRunningChatsIfNeeded(
     .filter(([threadId, on]) => on && localRunByThreadId[threadId])
     .map(([threadId]) => threadId);
   let count = running.length;
+  let hasNonChat = false;
 
   // Always merge the backend snapshot: runningByThreadId is this tab's memory, empty after
   // a reload and blind to a second tab, while force_cancel_active cancels every backend
@@ -44,6 +45,11 @@ export async function confirmStopRunningChatsIfNeeded(
     // A first turn started before its id was persisted is counted but not named, so
     // never claim fewer chats than the backend reports.
     count = Math.max(active.count ?? 0, running.length);
+    // Embeddings / completions / audio share the model but are not conversations, so the
+    // prompt must not offer to stop chats that do not exist.
+    hasNonChat = (active.active ?? []).some(
+      (entry) => (entry.kind ?? "chat") !== "chat",
+    );
   } catch {
     // Backend unreachable / older build: fall back to the local map only.
   }
@@ -64,7 +70,7 @@ export async function confirmStopRunningChatsIfNeeded(
 
   const confirmed = await useStopRunningChatsDialogStore
     .getState()
-    .requestConfirm({ count, titles, action });
+    .requestConfirm({ count, titles, action, hasNonChat });
 
   if (!confirmed) {
     return { proceed: false, forceCancelActive: false };

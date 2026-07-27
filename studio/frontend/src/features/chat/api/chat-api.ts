@@ -134,6 +134,9 @@ export interface ActiveGenerationsResponse {
   /** Conversations with a generation in flight. Shorter than `count` when a
    *  first turn started before its thread id was persisted. */
   thread_ids: string[];
+  /** One entry per in-flight request. `kind` is "chat" unless it is an
+   *  embeddings / completions / audio call, which has no conversation. */
+  active?: { thread_id: string | null; kind?: string }[];
   parallel_slots: number;
 }
 

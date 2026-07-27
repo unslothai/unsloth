@@ -85,7 +85,11 @@ import { requestPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
-const pendingRunStartReadyByMessageId = new Map<string, Promise<void>>();
+// Resolves to the thread id assigned when this message's chat was first persisted.
+const pendingRunStartReadyByMessageId = new Map<
+  string,
+  Promise<string | undefined>
+>();
 
 type TitleResponse = {
   choices?: Array<{
@@ -839,8 +843,8 @@ function trackHistoryAppend(
 
 function trackRunStartReady(
   messageId: string,
-  ready: Promise<void>,
-): Promise<void> {
+  ready: Promise<string | undefined>,
+): Promise<string | undefined> {
   pendingRunStartReadyByMessageId.set(messageId, ready);
   const cleanup = () => {
     setTimeout(() => {
@@ -855,7 +859,7 @@ function trackRunStartReady(
 
 async function waitForRunStartHistoryAppend(
   messages: Parameters<ChatModelAdapter["run"]>[0]["messages"],
-): Promise<void> {
+): Promise<string | undefined> {
   // Deep Research reserves an assistant placeholder before invoking the model
   // adapter, so the user message is not necessarily the final entry here.
   const userMessage = [...messages]
@@ -866,15 +870,16 @@ async function waitForRunStartHistoryAppend(
   }
   const runStartReady = pendingRunStartReadyByMessageId.get(userMessage.id);
   const historyAppendReady = pendingHistoryAppendByMessageId.get(userMessage.id);
-  const pending = [runStartReady, historyAppendReady].filter(
-    (ready): ready is Promise<void> => ready !== undefined,
-  );
-  if (pending.length === 0) {
-    return;
+  if (runStartReady === undefined && historyAppendReady === undefined) {
+    return undefined;
   }
   let didBecomeReady = false;
+  let adoptedThreadId: string | undefined;
   try {
-    await Promise.all(pending);
+    [adoptedThreadId] = await Promise.all([
+      runStartReady ?? Promise.resolve(undefined),
+      historyAppendReady?.then(() => undefined),
+    ]);
     didBecomeReady = true;
   } finally {
     if (
@@ -885,14 +890,22 @@ async function waitForRunStartHistoryAppend(
       pendingRunStartReadyByMessageId.delete(userMessage.id);
     }
   }
+  return adoptedThreadId;
 }
 
 function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter {
   return {
     ...adapter,
     async *run(options) {
-      await waitForRunStartHistoryAppend(options.messages);
-      const result = adapter.run(options);
+      const adoptedThreadId = await waitForRunStartHistoryAppend(options.messages);
+      // The thread has an id by the time that resolves, but assistant-ui bound
+      // unstable_threadId before the await. Hand the run its real id so a first turn
+      // never files its handles under the unresolved key that concurrent runs share.
+      const result = adapter.run(
+        !options.unstable_threadId && adoptedThreadId
+          ? { ...options, unstable_threadId: adoptedThreadId }
+          : options,
+      );
       if (!result) {
         return;
       }
@@ -1190,7 +1203,10 @@ function useStudioRuntimeAdapters(
 
       append({ parentId, message }: ExportedMessageRepositoryItem) {
         const initializeThread = aui.threadListItem().initialize();
-        trackRunStartReady(message.id, initializeThread.then(() => undefined));
+        trackRunStartReady(
+          message.id,
+          initializeThread.then(({ remoteId }) => remoteId),
+        );
         const write = (async () => {
           const { remoteId } = await initializeThread;
           if (isChatThreadDeleted(remoteId)) {
