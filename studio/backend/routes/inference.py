@@ -16197,6 +16197,37 @@ async def load_diffusion_model(
 _diffusion_persist_active = 0
 
 
+_GENERATE_FAILURE_FALLBACK = "Image generation failed."
+# Failure classes worth naming in the UI, as FIXED text. The engine's own message can embed local
+# paths and argv (a native tail, a Metal abort backtrace), so none of it is echoed: only the class
+# is reported, and the full text stays in the server log.
+_GENERATE_FAILURE_CLASSES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        ("out of memory", "outofmemory", "oom"),
+        "The device ran out of memory. Try a smaller size, fewer steps, or a smaller batch.",
+    ),
+    (
+        ("sd-server connection lost", "sd-cli exited", "process exited", "ggml_abort", "signal"),
+        "The native image renderer stopped unexpectedly. Switch the engine to diffusers, or see "
+        "the server log for its output.",
+    ),
+)
+
+
+def _generate_failure_detail(message: str) -> str:
+    """A user-facing reason for a failed generation, built only from fixed text.
+
+    The bare literal left a real failure undiagnosable from the UI: on a Metal host the native
+    renderer aborts inside its own text encoder, and the page showed "Image generation failed."
+    with nothing to act on. Naming the CLASS of failure keeps the message useful without echoing
+    the engine's text, which can carry local paths and argv."""
+    text = str(message or "").lower()
+    for needles, detail in _GENERATE_FAILURE_CLASSES:
+        if any(n in text for n in needles):
+            return f"{_GENERATE_FAILURE_FALLBACK} {detail}"
+    return _GENERATE_FAILURE_FALLBACK
+
+
 @studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)
 async def generate_diffusion_image(
     request: DiffusionGenerateRequest, current_subject: str = Depends(get_current_subject)
@@ -16254,7 +16285,7 @@ async def generate_diffusion_image(
         if msg in (DIFFUSION_NOT_LOADED_MSG, DIFFUSION_CANCELLED_MSG):
             raise HTTPException(status_code = 409, detail = msg)
         logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
-        raise HTTPException(status_code = 500, detail = "Image generation failed.")
+        raise HTTPException(status_code = 500, detail = _generate_failure_detail(msg))
     except Exception as exc:
         logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")

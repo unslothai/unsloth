@@ -515,18 +515,47 @@ def test_generate_without_load_returns_409(client):
 
 def test_generate_pipeline_error_returns_sanitized_500(client, monkeypatch):
     # A loaded model that fails mid-pipeline (CUDA OOM, a RuntimeError) is a server failure: 500 with
-    # a generic message, not a 409 echoing the raw exception.
+    # a message built from FIXED text, not a 409 and not the raw exception. The class of failure is
+    # named so the page can suggest something; none of the engine's own text is echoed, since it can
+    # carry local paths and argv.
     backend = diffusion_module.get_diffusion_backend()
     backend.loaded = True
 
     def _oom(**kwargs):
-        raise RuntimeError("CUDA out of memory. Tried to allocate 20.00 GiB (24.00 GiB total)")
+        raise RuntimeError(
+            "CUDA out of memory. Tried to allocate 20.00 GiB at /home/u/models/x.safetensors"
+        )
 
     monkeypatch.setattr(backend, "generate", _oom)
     resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
     assert resp.status_code == 500
-    assert resp.json()["detail"] == "Image generation failed."
-    assert "CUDA" not in resp.json()["detail"]
+    detail = resp.json()["detail"]
+    assert detail.startswith("Image generation failed.")
+    assert "ran out of memory" in detail
+    for leak in ("CUDA", "20.00 GiB", "/home/u", "safetensors"):
+        assert leak not in detail
+
+
+def test_generate_native_process_death_names_the_engine_not_its_output(client, monkeypatch):
+    # What a Metal host hits: the native renderer aborts inside its own text encoder. The page used
+    # to show only "Image generation failed."; it now says which component died, while the abort
+    # backtrace (full of local paths) stays in the server log.
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _abort(**kwargs):
+        raise RuntimeError(
+            "sd-server connection lost during img_gen poll (process exited, code -6)\n"
+            "Last output:\n0 sd-server ggml_abort + 156 at /Users/me/.cache/sd-cli"
+        )
+
+    monkeypatch.setattr(backend, "generate", _abort)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "native image renderer stopped" in detail
+    for leak in ("ggml_abort", "/Users/me", "img_gen", "code -6"):
+        assert leak not in detail
 
 
 def test_generate_execution_error_with_cancelled_substring_is_sanitized_500(client, monkeypatch):
@@ -541,8 +570,9 @@ def test_generate_execution_error_with_cancelled_substring_is_sanitized_500(clie
     monkeypatch.setattr(backend, "generate", _fail)
     resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
     assert resp.status_code == 500
-    assert resp.json()["detail"] == "Image generation failed."
-    assert "cancelled" not in resp.json()["detail"] and "models" not in resp.json()["detail"]
+    detail = resp.json()["detail"]
+    assert detail.startswith("Image generation failed.")
+    assert "cancelled" not in detail and "models" not in detail and "/home/u" not in detail
 
 
 def test_generate_user_cancellation_returns_409(client, monkeypatch):
