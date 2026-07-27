@@ -114,18 +114,18 @@ logger = get_logger(__name__)
 
 PUBLIC_IP_PROBE_ENV_VAR = "UNSLOTH_STUDIO_PUBLIC_IP_PROBE"
 PUBLIC_IP_PROBE_URL = "https://ifconfig.me"
+METADATA_HOST = "169.254.169.254"
 
 
 def public_ip_probe_enabled(env = None) -> bool:
-    """True when the user has opted in to the third-party public-IP lookup.
+    """True when the user has opted in to the third-party startup probes.
 
-    Off by default: the lookup tells an outside operator that this machine is
-    running Unsloth, which the user never asked for. Only "1"/"true"/"yes"/"on"
-    (case-insensitive) enable it, so a typo leaves the private default in place
-    rather than silently opting the user in.
+    Gates both the ifconfig.me public-IP lookup and the check-host.net
+    reachability probe (#7307 Problem 8). Off by default: each tells an outside
+    operator that this machine is running Unsloth, which the user never asked
+    for. Only "1"/"true"/"yes"/"on" (case-insensitive) enable them, so a typo
+    leaves the private default in place rather than silently opting the user in.
     """
-    import os
-
     env = os.environ if env is None else env
     raw = env.get(PUBLIC_IP_PROBE_ENV_VAR)
     if raw is None:
@@ -133,35 +133,84 @@ def public_ip_probe_enabled(env = None) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _metadata_public_ip() -> str:
+    """Public IP from the cloud link-local metadata service, or "".
+
+    Tries GCE, AWS (IMDSv2) then Azure on 169.254.169.254. Link-local, so no
+    third party learns anything, which is what lets the ifconfig.me lookup be
+    opt-in without costing cloud users their shareable address.
+    """
+    import time
+    import urllib.request
+
+    def _get(path, headers, data = None, method = None):
+        req = urllib.request.Request(
+            f"http://{METADATA_HOST}{path}", headers = headers, data = data, method = method
+        )
+        with urllib.request.urlopen(req, timeout = 1) as resp:
+            return resp.read().decode().strip()
+
+    started = time.monotonic()
+    try:
+        ip = _get(
+            "/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip",
+            {"Metadata-Flavor": "Google"},
+        )
+        if ip:
+            return ip
+    except Exception:
+        pass
+    # A full-timeout failure means nothing is listening; do not pay it twice more.
+    if time.monotonic() - started > 0.9:
+        return ""
+
+    try:
+        token = _get(
+            "/latest/api/token",
+            {"X-aws-ec2-metadata-token-ttl-seconds": "60"},
+            data = b"",
+            method = "PUT",
+        )
+        ip = _get("/latest/meta-data/public-ipv4", {"X-aws-ec2-metadata-token": token})
+        if ip:
+            return ip
+    except Exception:
+        pass
+
+    try:
+        ip = _get(
+            "/metadata/instance/network/interface/0/ipv4/ipAddress/0/publicIpAddress"
+            "?api-version=2021-02-01",
+            {"Metadata": "true"},
+        )
+        if ip:
+            return ip
+    except Exception:
+        pass
+    return ""
+
+
 def _resolve_external_ip() -> str:
     """Resolve the machine's external IP address.
 
     Tries, in order:
-    1. GCE metadata server (link-local, never leaves the host)
+    1. Cloud metadata: GCE, AWS, Azure (link-local 169.254.169.254)
     2. ifconfig.me, OPT-IN ONLY via UNSLOTH_STUDIO_PUBLIC_IP_PROBE
     3. LAN IP via UDP socket trick (fallback)
 
     Step 2 is the only one that discloses anything to a third party, so it is
     off unless the user opts in (#7307 Problem 8). Steps 1 and 3 stay
-    unconditional: the metadata server is link-local (169.254.169.254), and the
-    UDP "connect" only asks the kernel which local address would route to
-    8.8.8.8, it never puts a packet on the wire.
+    unconditional: metadata is link-local, and the UDP "connect" only asks the
+    kernel which local address would route to 8.8.8.8, it never puts a packet on
+    the wire.
     """
     import urllib.request
     import socket
 
-    # 1. GCE metadata server (<10ms on GCE, times out fast elsewhere).
-    try:
-        req = urllib.request.Request(
-            "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip",
-            headers = {"Metadata-Flavor": "Google"},
-        )
-        with urllib.request.urlopen(req, timeout = 1) as resp:
-            ip = resp.read().decode().strip()
-            if ip:
-                return ip
-    except Exception:
-        pass
+    # 1. Cloud metadata (<10ms on a cloud VM, times out fast elsewhere).
+    ip = _metadata_public_ip()
+    if ip:
+        return ip
 
     # 2. Public IP service. Opt-in: this is an outbound request to a third party
     # that reveals this machine's public IP to whoever runs it.
@@ -344,9 +393,11 @@ def _print_localhost_ipv6_mismatch_warning(local_url: str, port: int) -> None:
 
 def _verify_global_reachability(display_host: str, port: int) -> None:
     """Probe check-host.net to confirm display_host:port is reachable from the
-    public internet. Synchronous so output lands between the banner URLs and the
-    stop hint. Bounded at ~15s; failures swallowed (verifier failing != Unsloth
-    failing). Only meaningful for a wildcard bind."""
+    public internet. Opt-in via UNSLOTH_STUDIO_PUBLIC_IP_PROBE: it hands this
+    machine's address and port to a third party and asks its nodes to connect
+    (#7307 Problem 8). Synchronous so output lands between the banner URLs and
+    the stop hint. Bounded at ~15s; failures swallowed (verifier failing !=
+    Unsloth failing). Only meaningful for a wildcard bind."""
     global _public_reachable
     # Reset to "unknown" each run; set True/False only when the probe decides.
     _public_reachable = None
@@ -370,21 +421,29 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
 
     url = f"http://{_url_host(display_host)}:{port}"
 
-    # Private/loopback/link-local addresses aren't globally routable.
+    # Private/loopback/link-local addresses aren't globally routable. Leave
+    # _public_reachable None: a NAT or cloud firewall can still forward the port,
+    # so this is "not verified", not "verified private".
     try:
         addr = ipaddress.ip_address(display_host)
         if addr.is_loopback or addr.is_private or addr.is_link_local:
-            _public_reachable = False
             print(
-                f"{dim}  Note: {display_host} is a private/LAN address -- "
-                f"reachable on this network only, not from the public internet."
-                f"{reset}",
+                f"{dim}  Note: {display_host} is a private/LAN address; "
+                f"public reachability not checked.{reset}",
                 flush = True,
             )
             return
     except ValueError:
         # Not an IP literal; probe by hostname.
         pass
+
+    # Opt-in: hands display_host:port to check-host.net and asks it to connect.
+    if not public_ip_probe_enabled():
+        logger.debug(
+            "Skipping the check-host.net reachability probe. Set %s=1 to enable it.",
+            PUBLIC_IP_PROBE_ENV_VAR,
+        )
+        return
 
     try:
         qs = urllib.parse.urlencode({"host": f"{display_host}:{port}", "max_nodes": 3})
@@ -916,7 +975,8 @@ _cloudflare_url = None
 # Public reachability from the last _verify_global_reachability run, read by the
 # Cloudflare banner line. True when the public ip:port probe confirmed reachable,
 # False when it confirmed NOT reachable, None when the probe did not run or could
-# not decide (timeout, blocked, private address).
+# not decide (opted out, timeout, blocked, private address). None is the safe
+# default: the banner then warns that reachability was not verified.
 _public_reachable = None
 
 _cloudflare_requested = False
