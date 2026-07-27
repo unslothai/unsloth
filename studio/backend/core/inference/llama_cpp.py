@@ -12315,14 +12315,23 @@ class LlamaCppBackend:
                         )
                         continue
 
+                    # The model wrote this call, and it goes back to llama-server on
+                    # the next pass, where Gemma-4 renders name/arguments inside its
+                    # <|tool_call> block; neutralize before it re-enters the prompt
+                    # exactly as the tool result below is (#7066).
+                    from core.inference.chat_template_helpers import (
+                        neutralize_tool_call_arguments,
+                    )
+
+                    _asst_tc = neutralize_tool_call_arguments(
+                        [decision.as_assistant_tool_call()]
+                    )
                     if not assistant_appended:
-                        assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
+                        assistant_msg["tool_calls"] = list(_asst_tc)
                         conversation.append(assistant_msg)
                         assistant_appended = True
                     else:
-                        assistant_msg.setdefault("tool_calls", []).append(
-                            decision.as_assistant_tool_call()
-                        )
+                        assistant_msg.setdefault("tool_calls", []).extend(_asst_tc)
 
                     # Bypass wins here too, so a direct internal caller with both
                     # flags never prompts. "auto" pauses only high-risk calls;

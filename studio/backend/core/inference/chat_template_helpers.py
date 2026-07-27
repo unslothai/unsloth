@@ -164,6 +164,11 @@ _TURN_BOUNDARY_NAMES = frozenset(
         "<|end|>",
         "<|turn>",
         "<turn|>",
+        # Zephyr / Phi-3 open a turn with these alone, so they are that
+        # template's turn boundary and must not survive assistant replay.
+        "<|user|>",
+        "<|assistant|>",
+        "<|system|>",
     }
 )
 _TURN_BOUNDARY_MARKERS: tuple[tuple[str, str], ...] = tuple(
@@ -434,8 +439,11 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
         # early. Its `content` still keeps real structural tags (#7066).
         # ``tool_call_id`` travels with the same rewrite as the ``id`` of the
         # call it answers, so the pair still matches after neutralization.
+        # ``name`` is the tool-result fallback the Gemma-4 templates splice into
+        # their tool_response block when no call id matches, and it gets the same
+        # rewrite as ``tool_calls[].function.name`` so the two still agree.
         scalar_updates = {}
-        for field in (*_ASSISTANT_REASONING_FIELDS, "tool_call_id"):
+        for field in (*_ASSISTANT_REASONING_FIELDS, "tool_call_id", "name"):
             value = msg.get(field)
             if isinstance(value, str) and value:
                 new_value = neutralize_non_assistant_control_markup(value)

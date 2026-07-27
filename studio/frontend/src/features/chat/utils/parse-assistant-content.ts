@@ -472,6 +472,10 @@ function findStructuralThinkClose(
         // whole visible answer in the drawer for '"</think>"The answer is 42.'
         // (#7334). Mirrors the backend's _quoted_close_opens_answer.
         const quoteAt = raw[closeEnd] === "\\" ? closeEnd + 1 : closeEnd;
+        // That deciding char is the one the next delta may still supply, and
+        // reading it as absent flips the verdict, so nothing may resume past
+        // this tag until it lands -- the tail update below included (#7334).
+        if (quoteAt + 1 >= raw.length) resumable = false;
         // The leading quote is literal only when it OPENS a span, i.e. an odd
         // count of that char since the reasoning start.
         literal =

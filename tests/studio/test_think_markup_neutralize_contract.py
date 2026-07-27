@@ -154,6 +154,11 @@ const RESUME_CASES = [
   "<think>a `</think>` b `</think>` c </think>done",
   "<think>```\\n</think>\\n```\\n```\\n</think>\\n```\\ntail</think>answer",
   '<think>mixed `</think>" and "</think>` then </think>visible',
+  // A close whose literal verdict needs the char AFTER the trailing quote: the
+  // word char here makes the quote an answer opener, not a closing flank, so
+  // the tag is structural. A delta ending exactly on that quote leaves the
+  // verdict unsettled and must stay re-readable next delta (#7334).
+  '<think>reason "</think>"Answer',
   '<think>he wrote \\\\"</think>\\\\" and then ```\\n</think>\\n``` </think>ok',
 ];
 const resumeMismatches = [];
