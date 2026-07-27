@@ -58,6 +58,7 @@ def spawn_worker(
     use_xet: bool,
     protected_blob_hashes: Optional[frozenset[str]] = None,
     cache_env: Optional[Mapping[str, str]] = None,
+    allow_ambient_token: bool = True,
 ) -> subprocess.Popen:
     """Spawn the download worker.
 
@@ -83,7 +84,8 @@ def spawn_worker(
     env["HF_HUB_DISABLE_XET"] = "0" if use_xet else "1"
     # No token in Unsloth settings: fall back to the backend's own HF_TOKEN so
     # private repos stay downloadable (needed while inkling repos are private).
-    if not hf_token:
+    # Not for a repo an API caller named: that would lend them the owner's identity.
+    if not hf_token and allow_ambient_token:
         hf_token = os.environ.get("HF_TOKEN") or None
     env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0" if hf_token else "1"
     # hf_transfer's parallel Range chunks can leave sparse partials even in
@@ -239,13 +241,31 @@ def finalize_worker_exit(
     state = classify_exit(rc, cancel_requested = cancel_requested)
     if state == "complete":
         registry.set_job(key, "complete")
+        # Where /v1 learns a new model exists: its resolver answers from a cached scan
+        # with no watcher, so it would report the model absent and serve whatever is
+        # resident. Models only: noting a dataset id as a local model would refuse a
+        # bare request naming it instead of letting a foreign id fall through.
+        if repo_type == "model":
+            try:
+                from core.inference.local_model_resolver import (
+                    invalidate_index,
+                    note_downloaded,
+                    warm_index_soon,
+                )
+
+                note_downloaded(repo_id)
+                invalidate_index()
+                # Rebuild here, not on the first request, to keep the scan off the
+                # request path.
+                warm_index_soon()
+            except Exception:
+                pass
         if transport == download_registry.TRANSPORT_HTTP:
             registry.update_job_transport(key, download_registry.TRANSPORT_HTTP)
         if stderr_text:
             if download_manifest.MANIFEST_DEGRADED_MARKER in stderr_text:
                 logger.warning(
-                    f"{log_prefix} complete with degraded diagnostics for "
-                    f"{label}: {stderr_text}"
+                    f"{log_prefix} complete with degraded diagnostics for {label}: {stderr_text}"
                 )
             else:
                 logger.info(f"{log_prefix} worker diagnostics for {label}: {stderr_text}")

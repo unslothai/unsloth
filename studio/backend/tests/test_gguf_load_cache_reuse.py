@@ -809,7 +809,9 @@ class TestLoadHubDownloadExclusion:
         asyncio.run(scenario())
 
     def test_load_marker_precedes_hub_guard_and_unload(self):
-        source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
+        source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+            encoding = "utf-8"
+        )
         # _load_model_impl has more than one `if config.is_gguf:`, so anchor on
         # the branch that actually owns the load marker rather than the first
         # one in the file, which belongs to an earlier check.
@@ -832,7 +834,7 @@ class TestLoadHubDownloadExclusion:
         )
         llama_source = (
             Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-        ).read_text()
+        ).read_text(encoding = "utf-8")
         assert "@_with_gguf_load_marker\n    def load_model(" in llama_source
 
     def _capture_hub_guard_require_mmproj(

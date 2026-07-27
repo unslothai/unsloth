@@ -587,7 +587,9 @@ def test_write_codex_config_profile(tmp_path, monkeypatch):
     assert catalog["models"][0]["supports_reasoning_summary_parameter"] is False
     assert catalog["models"][0]["supports_parallel_tool_calls"] is False
 
-    assert catalog["models"][0]["base_instructions"] == start._CODEX_FALLBACK_PROMPT.read_text()
+    assert catalog["models"][0]["base_instructions"] == start._CODEX_FALLBACK_PROMPT.read_text(
+        encoding = "utf-8"
+    )
     config = _parse_toml((tmp_path / "config.toml").read_text())
     assert config["model_providers"]["unsloth_api"]["env_key"] == "UNSLOTH_STUDIO_AUTH_TOKEN"
 
@@ -631,7 +633,7 @@ def test_write_codex_subagent_bridge_keeps_parent_credentials_out(tmp_path, monk
         tmp_path,
         yolo = False,
     )
-    assert json.loads(path.read_text()) == {
+    assert json.loads(path.read_text(encoding = "utf-8")) == {
         "api_key": "private-token",
         "codex_home": str(tmp_path / "child"),
         "bypass_permissions": False,
@@ -885,8 +887,9 @@ def test_subagent_model_id_warns_when_status_unavailable(monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("agent", ["openclaw", "hermes"])
-def test_unsupported_agents_reject_as_subagent(agent):
-    result = CliRunner().invoke(start.start_app, [agent, "--as-subagent"])
+@pytest.mark.parametrize("flag", ["--as-subagent", "--as-subagent=true", "--as-subagent=false"])
+def test_unsupported_agents_reject_as_subagent(agent, flag):
+    result = CliRunner().invoke(start.start_app, [agent, flag])
     assert result.exit_code == 1
     assert f"--as-subagent is not supported for {agent}." in result.output
 
@@ -1294,6 +1297,66 @@ def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch, cap
     assert any(c[1].endswith("/api/inference/load") for c in calls)
     output = capsys.readouterr().out
     assert "please wait" not in output
+
+
+def test_resolve_model_matches_snapshot_path_by_public_id(monkeypatch):
+    """A GGUF loaded by snapshot path is advertised by its basename, not the path."""
+    snapshot = "/home/u/.cache/legacy/models--Org--Model/snapshots/abc123"
+    state = {"loaded": False}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/v1/models"):
+            return {"data": [{"id": "abc123"}] if state["loaded"] else []}
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            # The load echoes the path it was given, which /v1/models never lists.
+            return {"model": snapshot, "display_name": snapshot}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", snapshot, start.LoadOptions())
+
+    assert entry["id"] == "abc123"
+
+
+def test_subagent_model_id_warns_when_a_path_load_cannot_pin_the_quant(capsys):
+    """A path is advertised as a bare basename, so the quant cannot be recorded."""
+    model_id = start._subagent_model_id(BASE, "sk-test", {"id": "abc123"}, None, "UD-Q4_K_XL")
+
+    assert model_id == "abc123"
+    assert "cannot pin the UD-Q4_K_XL quant" in capsys.readouterr().err
+
+
+def test_subagent_model_id_pins_the_quant_for_repo_ids(capsys):
+    model_id = start._subagent_model_id(
+        BASE, "sk-test", {"id": "unsloth/gemma-4-E4B-it-GGUF"}, None, "UD-Q4_K_XL"
+    )
+
+    assert model_id == "unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL"
+    assert capsys.readouterr().err == ""
+
+
+def test_public_model_id_leaves_repo_ids_alone():
+    """Only a path gets reduced; a repo id must not match some unrelated model.
+
+    Relative and multi-segment paths are covered too: _looks_like_path is defined
+    twice in this module (the WSLENV one wins), so this must use its own classifier.
+    """
+    assert start._public_model_id("unsloth/gemma-4-E4B-it-GGUF") is None
+    assert start._public_model_id("org/model") is None
+    assert start._public_model_id("/srv/models/Qwen3-Q4_K_M.gguf") == "Qwen3-Q4_K_M"
+    assert start._public_model_id("/a/b/snapshots/rev1") == "rev1"
+    assert start._public_model_id("./models/foo") == "foo"
+    assert start._public_model_id("cache/snapshots/rev") == "rev"
+    assert start._public_model_id("a/b/c") == "c"
 
 
 def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
@@ -1930,6 +1993,7 @@ def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch
     start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
     cmd, env = captured["command"], captured["kwargs"]["env"]
     assert "--disable-tools" in cmd and "--enable-tools" not in cmd
+    assert "--gpu-memory-mode" not in cmd
     assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
 
@@ -2141,6 +2205,59 @@ def test_connect_load_knobs_reach_server_even_when_id_loaded(fake_studio):
     assert loads == [
         ("POST", f"{BASE}/api/inference/load", {"model_path": MODEL["id"], "gguf_variant": "Q8_0"})
     ]
+
+
+@pytest.mark.parametrize(
+    "command_name", ["claude", "codex", "openclaw", "opencode", "hermes", "pi"]
+)
+def test_start_agents_expose_gpu_memory_mode_option(command_name):
+    import inspect
+
+    command = getattr(start, command_name)
+    opt = inspect.signature(command).parameters["gpu_memory_mode"].default
+    assert set(getattr(opt, "param_decls", None) or []) == {"--gpu-memory-mode"}
+    assert getattr(opt, "default", None) is None
+    assert getattr(opt, "rich_help_panel", None) == start._PANEL_MODEL
+
+
+@pytest.mark.parametrize(
+    "mode,expected",
+    [
+        ("auto", {"model_path": MODEL["id"], "gpu_memory_mode": "auto"}),
+        (
+            "manual",
+            {
+                "model_path": MODEL["id"],
+                "gpu_memory_mode": "manual",
+                "gpu_layers": -1,
+            },
+        ),
+    ],
+)
+def test_start_gpu_memory_mode_reaches_running_server(fake_studio, mode, expected):
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "claude",
+            "--no-launch",
+            "--model",
+            MODEL["id"],
+            "--gpu-memory-mode",
+            mode,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    loads = [call for call in fake_studio if call[1].endswith("/api/inference/load")]
+    assert loads == [("POST", f"{BASE}/api/inference/load", expected)]
+
+
+def test_start_rejects_invalid_gpu_memory_mode(fake_studio):
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--no-launch", "--gpu-memory-mode", "invalid"],
+    )
+    assert result.exit_code != 0
+    assert "Invalid value for '--gpu-memory-mode'" in result.output
 
 
 def test_connect_model_variant_suffix_loads_split_repo(fake_studio):
@@ -2554,7 +2671,11 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
         "http://127.0.0.1:8888",
         "unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL",
         start.LoadOptions(
-            gguf_variant = "UD-Q4_K_XL", max_seq_length = 8192, load_in_4bit = True, tensor_parallel = True
+            gguf_variant = "UD-Q4_K_XL",
+            max_seq_length = 8192,
+            load_in_4bit = True,
+            tensor_parallel = True,
+            gpu_memory_mode = "manual",
         ),
     )
     cmd = captured["command"]
@@ -2564,6 +2685,7 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     assert cmd[cmd.index("--gguf-variant") + 1] == "UD-Q4_K_XL"
     assert cmd[cmd.index("--context-length") + 1] == "8192"
     assert "--tensor-parallel" in cmd
+    assert cmd[cmd.index("--gpu-memory-mode") + 1] == "manual"
     assert "--start-api-key-marker" not in cmd
     assert captured["kwargs"]["env"][start._START_API_KEY_MARKER_ENV] == "1"
     assert start.os.environ[start._START_API_KEY_MARKER_ENV] == "parent"
@@ -3296,9 +3418,13 @@ def test_write_opencode_config_as_subagent_preserves_parent_model(tmp_path):
 
 def test_opencode_subagent_inline_keeps_parent_provider_filters(monkeypatch, tmp_path):
     config_path = tmp_path / "opencode.json"
-    inherited = {"theme": "tokyonight"}
+    inherited = {
+        "theme": "tokyonight",
+        "enabled_providers": ["anthropic"],
+    }
     monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", json.dumps(inherited))
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: "/usr/bin/opencode")
+    monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: None)
     captured = {}
 
     def run(command, **kwargs):
@@ -3324,7 +3450,11 @@ def test_opencode_subagent_inline_keeps_parent_provider_filters(monkeypatch, tmp
     assert captured["env"]["OPENCODE_CONFIG"] == str(config_path)
     assert inline == {
         "theme": "tokyonight",
-        "enabled_providers": ["opencode-go", start._OPENCODE_PROVIDER],
+        "enabled_providers": [
+            "anthropic",
+            "opencode-go",
+            start._OPENCODE_PROVIDER,
+        ],
         "disabled_providers": ["ollama"],
         "subagent_depth": 1,
         "permission": permission,
@@ -3721,21 +3851,26 @@ def test_connect_pi_no_launch(fake_studio, tmp_path):
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
 
 
-def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
+@pytest.mark.parametrize("yolo", [False, True])
+def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, yolo):
+    args = [
+        "pi",
+        "--as-subagent",
+        "--no-launch",
+        "--model",
+        MODEL["id"] + ":UD-Q4_K_XL",
+    ]
+    if yolo:
+        args.insert(2, "--yolo")
     result = CliRunner().invoke(
         start.start_app,
-        [
-            "pi",
-            "--as-subagent",
-            "--no-launch",
-            "--model",
-            MODEL["id"] + ":UD-Q4_K_XL",
-        ],
+        args,
     )
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
     assert command[:2] == ["pi", "--extension"]
     assert command[2].endswith("unsloth_cli/pi_subagent.ts")
+    assert ("--approve" in command) is yolo
     assert "--provider" not in command
     assert "--model" not in command
     assert "PI_CODING_AGENT_DIR" not in result.output
@@ -3750,6 +3885,7 @@ def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
         "model": MODEL["id"] + ":UD-Q4_K_XL",
         "contextWindow": 4096,
         "maxTokens": 1024,
+        "approve": yolo,
     }
     assert "Ask Pi to spawn an Unsloth or local agent." in result.output
 
