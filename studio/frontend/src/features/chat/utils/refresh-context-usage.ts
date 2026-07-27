@@ -34,7 +34,15 @@ type RuntimeMessagesGetter = () => readonly ThreadMessage[];
 const runtimeMessagesGetters: RuntimeMessagesGetter[] = [];
 
 function currentRuntimeMessagesGetter(): RuntimeMessagesGetter | null {
-  return runtimeMessagesGetters.at(-1) ?? null;
+  // Registration records no owner, so the newest getter is only unambiguously
+  // the active thread's when it is the only one mounted. With compare panes up,
+  // the newest may belong to a sibling, and the caller's guard checks the thread
+  // it asked for rather than the getter's owner, so it would not catch that.
+  // Decline instead: an unowned recount prices the template alone, while the
+  // wrong pane's messages report a confident, wrong number (#7453).
+  return runtimeMessagesGetters.length === 1
+    ? (runtimeMessagesGetters[0] ?? null)
+    : null;
 }
 
 /** Register the mounted runtime's message list; returns its own disposer. */

@@ -2135,6 +2135,33 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
     return policy is not False and (payload.enable_tools is True or bool(payload.mcp_enabled))
 
 
+def _takes_tool_passthrough(payload, llama_backend) -> bool:
+    """True when a GGUF request is forwarded to llama-server verbatim.
+
+    The passthrough sends the caller's own tools and neither a built-in schema
+    nor the tool nudge, so the token counter has to reach this same verdict
+    before it applies the process tool policy: `unsloth run --enable-tools` sets
+    that policy without asking for Unsloth's tool loop, and counting the catalog
+    it selects would price a prompt the next completion never sends.
+    """
+    supports_tools = getattr(llama_backend, "supports_tools", False)
+    if supports_tools and _explicit_studio_tool_loop_requested(payload):
+        return False
+    # A count request carries no tool_choice and usually no response_format, so
+    # read both defensively: absent means the caller withdrew neither.
+    has_client_contract = (
+        bool(payload.tools) and getattr(payload, "tool_choice", None) != "none"
+    ) or _has_openai_tool_history(payload.messages)
+    supports_passthrough = getattr(
+        llama_backend, "supports_tool_passthrough", supports_tools
+    )
+    if supports_passthrough and has_client_contract:
+        return True
+    if not hasattr(payload, "response_format"):
+        return False
+    return _extract_response_format(payload) is not None
+
+
 def _permission_mode_confirm(payload) -> bool:
     """Effective confirm-gate intent for Unsloth's own local tool loop.
 
@@ -7999,7 +8026,6 @@ async def openai_chat_completions(
     # kwarg, so the schema gets silently dropped and data_designer falls back to
     # free-form sampling. Guided decoding does not require ``supports_tools`` --
     # the grammar machinery is independent of tool-call parsing.
-    _has_response_format = _extract_response_format(payload) is not None
     _has_tool_catalog = bool(payload.tools and len(payload.tools) > 0)
     _has_active_tool_catalog = _has_tool_catalog and payload.tool_choice != "none"
     _has_client_tool_contract = _has_active_tool_catalog or _has_tool_messages
@@ -8013,7 +8039,6 @@ async def openai_chat_completions(
     _supports_tool_passthrough = getattr(
         llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
     )
-    _tools_passthrough = _supports_tool_passthrough and _has_client_tool_contract
     if (
         using_gguf
         and not _studio_tool_loop_requested
@@ -8032,11 +8057,9 @@ async def openai_chat_completions(
                 param = "tools" if payload.tools else "messages",
             ),
         )
-    if (
-        using_gguf
-        and not _studio_tool_loop_requested
-        and (_tools_passthrough or _has_response_format)
-    ):
+    # Same verdict the token counter reaches, from the one helper, so a count
+    # can never describe a route the completion does not take.
+    if using_gguf and _takes_tool_passthrough(payload, llama_backend):
         if _wants_multiple_choices(payload):
             raise _reject_unsupported_n("GGUF tool or response_format passthrough")
         if payload.audio_base64:
@@ -12975,9 +12998,24 @@ async def chat_count_tokens(
     from state.tool_policy import get_tool_policy as _get_tool_policy_ct
 
     _cli_policy = _get_tool_policy_ct()
-    _tools_on = _effective_enable_tools(payload)
-    _mcp_allowed = bool(payload.mcp_enabled) and _cli_policy is not False
-    if (_tools_on or _mcp_allowed) and llama_backend.supports_tools:
+    # Decide the route before applying the process policy, exactly as the
+    # completion does. A client tool catalog, tool history or response_format
+    # goes to the llama-server passthrough, which sends neither a built-in tool
+    # schema nor the tool nudge, so counting them would report a prompt the next
+    # request never sends. `--enable-tools` alone does not take that route back:
+    # it sets the policy, while the passthrough turns on an explicit per-request
+    # `enable_tools` / `mcp_enabled`.
+    _takes_passthrough = _takes_tool_passthrough(payload, llama_backend)
+    _client_disabled_tool_calls = getattr(payload, "tool_choice", None) == "none" and not (
+        _explicit_studio_tool_loop_requested(payload) and llama_backend.supports_tools
+    )
+    _tools_on = False if _client_disabled_tool_calls else _effective_enable_tools(payload)
+    _mcp_allowed = (
+        not _client_disabled_tool_calls
+        and bool(payload.mcp_enabled)
+        and _cli_policy is not False
+    )
+    if not _takes_passthrough and (_tools_on or _mcp_allowed) and llama_backend.supports_tools:
         tools_to_use = await _select_request_tools(
             payload,
             tools_on = _tools_on,
