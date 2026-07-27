@@ -276,9 +276,7 @@ def test_stream_external_local_tool_loop_rejects_disabled_tool(monkeypatch):
     assert not [e for e in events if e.get("type") in ("tool_start", "tool_end")]
     # The model is still told why, on the follow-up (tools-free) pass.
     follow_up = client.requests[1]["messages"]
-    assert any(
-        m.get("role") == "tool" and "not enabled" in m.get("content", "") for m in follow_up
-    )
+    assert any(m.get("role") == "tool" and "not enabled" in m.get("content", "") for m in follow_up)
 
 
 def test_stream_external_local_tool_loop_rejects_fabricated_mcp_tool(monkeypatch):
@@ -329,9 +327,7 @@ def test_stream_external_local_tool_loop_rejects_fabricated_mcp_tool(monkeypatch
     events = _parse_events(lines)
     assert not [e for e in events if e.get("type") in ("tool_start", "tool_end")]
     follow_up = client.requests[1]["messages"]
-    assert any(
-        m.get("role") == "tool" and "not enabled" in m.get("content", "") for m in follow_up
-    )
+    assert any(m.get("role") == "tool" and "not enabled" in m.get("content", "") for m in follow_up)
 
 
 def test_stream_external_local_tool_loop_awaiting_confirmation(monkeypatch):
@@ -1608,15 +1604,10 @@ def test_stream_external_local_tool_loop_keeps_prose_when_budget_runs_out(monkey
     synthesis_msgs = client.requests[2]["messages"]
     assert synthesis_msgs[-1] == {"role": "user", "content": BUDGET_EXHAUSTED_NUDGE}
     # The dropped round's text is in the transcript the synthesis pass continues from.
-    assert synthesis_msgs[-2] == {
-        "role": "assistant",
-        "content": "PROSE_THAT_MAY_DUPLICATE",
-    }
+    assert synthesis_msgs[-2] == {"role": "assistant", "content": "PROSE_THAT_MAY_DUPLICATE"}
     # The abandoned third call left no orphan tool_call in the transcript.
     assert not any(
-        tc.get("id") == "c3"
-        for m in synthesis_msgs
-        for tc in (m.get("tool_calls") or [])
+        tc.get("id") == "c3" for m in synthesis_msgs for tc in (m.get("tool_calls") or [])
     )
 
 
@@ -1697,7 +1688,6 @@ def test_stream_external_local_tool_loop_keepalive_while_awaiting_confirmation(m
 
     def slow_decision(*_a, **_k):
         import time as _t
-
         _t.sleep(0.3)
         return "allow"
 
