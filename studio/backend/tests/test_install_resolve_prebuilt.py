@@ -1488,3 +1488,76 @@ def test_marker_records_no_backend_when_vulkan_fell_back_to_cpu(tmp_path):
     )
     marker = json.loads((tmp_path / "UNSLOTH_PREBUILT_INFO.json").read_text())
     assert marker["llama_backend"] == "vulkan"
+
+
+# UNSLOTH_LLAMA_CPP_BACKEND (setup.sh/setup.ps1, "auto"|"cpu") and
+# UNSLOTH_LLAMA_BACKEND (this module, a backend name) are different variables at
+# different layers, and both accept "cpu". setup translates its own =cpu into
+# --force-cpu to pin the CPU-only bundle on a GPU host, which is what keeps Intel
+# iGPU Vulkan crashes away (#7213). Vulkan is opt-in here, so no trigger it adds
+# may outrank that flag on any host.
+_SIM_PLATFORMS = {
+    # WSL presents as Linux to this resolver, so it rides the Linux row.
+    "Linux": dict(system = "Linux", is_windows = False, is_linux = True, is_macos = False,
+                  machine = "x86_64", is_x86_64 = True, is_arm64 = False),
+    "Windows": dict(system = "Windows", is_windows = True, is_linux = False, is_macos = False,
+                    machine = "amd64", is_x86_64 = True, is_arm64 = False),
+    "macOS": dict(system = "Darwin", is_windows = False, is_linux = False, is_macos = True,
+                  machine = "arm64", is_x86_64 = False, is_arm64 = True),
+}
+_SIM_GPUS = {
+    "nvidia": dict(has_physical_nvidia = True, has_usable_nvidia = True, has_rocm = False,
+                   has_intel_gpu = False, nvidia_smi = "/usr/bin/nvidia-smi",
+                   driver_cuda_version = "12.4", compute_caps = ["8.9"]),
+    "amd": dict(has_physical_nvidia = False, has_usable_nvidia = False, has_rocm = True,
+                has_intel_gpu = False, nvidia_smi = None, driver_cuda_version = None,
+                compute_caps = [], rocm_gfx_target = "gfx803", rocm_gfx_targets = ["gfx803"]),
+    "intel": dict(has_physical_nvidia = False, has_usable_nvidia = False, has_rocm = False,
+                  has_intel_gpu = True, nvidia_smi = None, driver_cuda_version = None,
+                  compute_caps = []),
+    "cpu_only": dict(has_physical_nvidia = False, has_usable_nvidia = False, has_rocm = False,
+                     has_intel_gpu = False, nvidia_smi = None, driver_cuda_version = None,
+                     compute_caps = []),
+}
+
+
+def _sim_host(platform_name, gpu_name):
+    base = dict(visible_cuda_devices = None)
+    base.update(_SIM_PLATFORMS[platform_name])
+    base.update(_SIM_GPUS[gpu_name])
+    return ilp.HostInfo(**base)
+
+
+@pytest.mark.parametrize("platform_name", sorted(_SIM_PLATFORMS))
+@pytest.mark.parametrize("gpu_name", sorted(_SIM_GPUS))
+@pytest.mark.parametrize("backend_env", [None, "vulkan", "hip", "rocm", "cpu"])
+def test_forced_cpu_outranks_every_vulkan_trigger(
+    monkeypatch, platform_name, gpu_name, backend_env
+):
+    """A deliberate CPU install stays CPU on every host, whatever asks for Vulkan."""
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    if backend_env is None:
+        monkeypatch.delenv("UNSLOTH_LLAMA_BACKEND", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", backend_env)
+    # The legacy switch too, so a stale one cannot smuggle Vulkan past --force-cpu.
+    monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
+
+    repo, tag = "unslothai/llama.cpp-prebuilt", "latest"
+    _, out_repo, _, persist = ilp._route_to_vulkan_prebuilt(
+        _sim_host(platform_name, gpu_name), repo, tag,
+        force_cpu = True, llama_backend = "vulkan",
+    )
+    assert out_repo == repo, (platform_name, gpu_name, backend_env)
+    assert persist is None, (platform_name, gpu_name, backend_env)
+
+
+def test_the_forced_cpu_guard_is_not_vacuous():
+    """The same host DOES take Vulkan once the CPU pin is gone, or the check above
+    would pass on a resolver that had stopped routing to Vulkan entirely."""
+    repo, tag = "unslothai/llama.cpp-prebuilt", "latest"
+    _, out_repo, _, persist = ilp._route_to_vulkan_prebuilt(
+        _sim_host("Linux", "amd"), repo, tag,
+        force_cpu = False, llama_backend = "vulkan",
+    )
+    assert out_repo != repo or persist == "vulkan"
