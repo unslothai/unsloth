@@ -127,6 +127,15 @@ LLAMA_SERVER_NOT_FOUND_DETAIL = (
     "then try again. (Advanced: set LLAMA_SERVER_PATH to an existing binary.)"
 )
 
+# Shared by the route, pre-teardown and post-metadata rejections (#7205).
+_VULKAN_DIFFUSION_GPU_IDS_ERROR = (
+    "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
+    "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
+    "its device by CUDA physical index, which has no defined mapping "
+    "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
+    "device."
+)
+
 
 # llama-server can serve HTTP 200 while running a model entirely on CPU when a
 # GPU backend fails to init (#5807 / #5106 / #5830). Classify the startup log so
@@ -4710,6 +4719,13 @@ class LlamaCppBackend:
         probe._read_gguf_metadata(gguf_path)
         return probe._is_diffusion
 
+    def _reject_vulkan_diffusion_gpu_ids_before_teardown(
+        self, gguf_path: str, model_identifier: str
+    ) -> None:
+        """Reject Vulkan + gpu_ids for diffusion GGUFs before Phase 1 teardown."""
+        if self._gguf_path_is_diffusion(gguf_path, model_identifier):
+            raise ValueError(_VULKAN_DIFFUSION_GPU_IDS_ERROR)
+
     def _read_gguf_metadata(self, gguf_path: str) -> None:
         """Read context_length, architecture params, and chat_template from a GGUF header.
 
@@ -6515,12 +6531,7 @@ class LlamaCppBackend:
                         f"present. Available Vulkan devices: {sorted(_pf_probed)}."
                     )
 
-            # A remote uncached GGUF may only reveal that it needs the
-            # single-device diffusion runner after download. On Vulkan, an
-            # explicit gpu_ids request cannot be mapped from ggml ordinals to
-            # that runner's CUDA physical index. Download and classify the main
-            # file before killing the healthy server so this late rejection is
-            # non-destructive. The Phase 2 call below reuses this cached path.
+            # Classify before killing the healthy server (#7205); Phase 2 reuses this path.
             _preflight_model_path = None
             if is_vulkan_backend and gpu_ids and hf_repo:
                 _resolved_repo = _resolve_repo_id_casing(hf_repo)
@@ -6537,14 +6548,17 @@ class LlamaCppBackend:
                         hf_variant = hf_variant,
                         hf_token = hf_token,
                     )
-                if self._gguf_path_is_diffusion(_preflight_model_path, model_identifier):
-                    raise ValueError(
-                        "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
-                        "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
-                        "its device by CUDA physical index, which has no defined mapping "
-                        "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
-                        "device."
-                    )
+                self._reject_vulkan_diffusion_gpu_ids_before_teardown(
+                    _preflight_model_path,
+                    model_identifier,
+                )
+            elif is_vulkan_backend and gpu_ids and gguf_path and not hf_repo:
+                if not Path(gguf_path).is_file():
+                    raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
+                self._reject_vulkan_diffusion_gpu_ids_before_teardown(
+                    gguf_path,
+                    model_identifier,
+                )
 
             # ── Phase 1: kill old process (under lock, fast) ──────────
             with self._lock:
@@ -6621,18 +6635,9 @@ class LlamaCppBackend:
             # Block-diffusion GGUFs (DiffusionGemma) cannot run on llama-server;
             # serve them with the diffusion runner (same OpenAI-compat interface).
             if self._is_diffusion:
-                # The diffusion runner pins its child by CUDA visibility mask, so a
-                # ggml Vulkan ordinal cannot be honored (wrong GPU / CPU fallback).
-                # Route and remote-download preflights reject before teardown; keep
-                # this as a final defense if classification ever disagrees.
+                # Final defense: route and pre-teardown preflights reject before Phase 1.
                 if is_vulkan_backend and gpu_ids:
-                    raise ValueError(
-                        "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
-                        "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
-                        "its device by CUDA physical index, which has no defined mapping "
-                        "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
-                        "device."
-                    )
+                    raise ValueError(_VULKAN_DIFFUSION_GPU_IDS_ERROR)
                 # Not a tensor/layer GGUF: clear any preserved-fallback flag from a
                 # prior load (this path skips the command builder that clears it).
                 self._layer_preserves_tensor_intent = False
