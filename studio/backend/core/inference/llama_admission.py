@@ -262,7 +262,12 @@ class LlamaAdmissionLease:
         if self._queue is not None:
             self._queue.unpark()
 
-    async def unpark_async(self, *, cancel_event = None, poll_s: float = 0.02) -> None:
+    async def unpark_async(
+        self,
+        *,
+        cancel_event = None,
+        poll_s: float = 0.02,
+    ) -> None:
         """Take a slot back, waiting until the pool has room.
 
         ``park`` gave the slot to a waiter, so by the time the user answers the
