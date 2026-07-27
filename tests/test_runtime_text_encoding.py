@@ -188,8 +188,7 @@ def _offender(call: ast.Call, modules = None) -> str | None:
         if func.attr == "open":
             if receiver is not None and _origin_root(receiver, modules) in BUILTIN_OPEN_MODULES:
                 return (
-                    None if not _is_text(call, 1) or _names_encoding(call)
-                    else f"{receiver}.open()"
+                    None if not _is_text(call, 1) or _names_encoding(call) else f"{receiver}.open()"
                 )
             compressed = _compressed_key(receiver, modules) if receiver else None
             if compressed is not None:
