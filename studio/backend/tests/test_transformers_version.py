@@ -3839,6 +3839,11 @@ class TestProbeFalseSkipsAutoMapScan:
         monkeypatch.setattr(
             tv, "_load_config_json", lambda name, tok = None: cfg if "qwen3.5" in name else None
         )
+        # The stub returns a config without recording how it was obtained, and a config is
+        # only conclusive when the real loader cached it or the Hub gave an access answer.
+        # Stand that bookkeeping in too, the way the sibling scan tests stub
+        # _config_json_is_definitive, so this stays a test of the activation path.
+        monkeypatch.setattr(tv, "_config_json_answer_is_definitive", lambda name, tok = None: True)
         monkeypatch.setattr(
             tv, "_list_hub_repo_py_files", lambda repo, tok = None: ({"modeling_custom.py"}, True)
         )
@@ -3997,6 +4002,92 @@ class TestUnreadableAutoMapConfigIsInconclusive:
         monkeypatch.setattr("utils.transformers_version._hub_urlopen", _urlopen)
         assert tv._remote_auto_map_scan_result("org/plain-model") == (False, True)
         assert _remote_auto_map_tier_cache  # definitive, so memoized
+
+
+class TestCachedConfigFallbackStaysInconclusive:
+    """A hub-cache config served after a failed fetch is not a reading of the current one.
+
+    ``_load_config_json`` answers a transient failure from an older snapshot and deliberately
+    does not cache it, so the next call retries. ``_load_repo_json_checked`` still called that
+    fallback definitive purely because it was non-None, so a snapshot taken before the repo
+    gained its ``auto_map`` memoized a definitive default tier without the live remote code
+    ever being scanned. Being a process-lifetime memo, it then kept routing the model to
+    4.57.x after connectivity recovered, for the life of the worker.
+    """
+
+    def setup_method(self):
+        _clear_scan_caches()
+        import utils.transformers_version as tv
+        tv._config_json_absent.clear()
+
+    @staticmethod
+    def _hub(monkeypatch, tmp_path, state):
+        """Serve the CURRENT config (with auto_map) except while ``state["down"]``."""
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty-hub"))
+        current = json.dumps(
+            {"model_type": "custom", "auto_map": {"AutoModel": "modeling_custom.Model"}}
+        ).encode()
+
+        def _urlopen(req, timeout = 10):
+            url = req.full_url
+            if url.endswith("/config.json"):
+                if state["down"]:
+                    raise OSError("temporary Hub outage")
+                return _PagedResponse(current)
+            if "/tree/" in url:
+                return _PagedResponse(
+                    json.dumps([{"type": "file", "path": "modeling_custom.py"}]).encode()
+                )
+            if url.endswith("modeling_custom.py"):
+                return _PagedResponse(_V5_IMPORT.encode())
+            raise _http_error(url, 404)
+
+        monkeypatch.setattr(tv, "_hub_urlopen", _urlopen)
+        # The stale snapshot on disk, downloaded before auto_map was added.
+        monkeypatch.setattr(
+            tv, "_config_json_from_hf_cache", lambda name: {"model_type": "custom"}
+        )
+        monkeypatch.setattr(tv, "_hf_cache_snapshot_dir", lambda name: None)
+
+    def test_stale_snapshot_answer_is_not_definitive(self, monkeypatch, tmp_path):
+        import utils.transformers_version as tv
+
+        self._hub(monkeypatch, tmp_path, {"down": True})
+        cfg, definitive = tv._load_repo_json_checked("org/newly-remote", "config.json")
+        assert cfg == {"model_type": "custom"}  # the snapshot still answers the caller
+        assert definitive is False  # but it is not a read of the live config
+
+    def test_outage_does_not_memoize_a_default_tier(self, monkeypatch, tmp_path):
+        import utils.transformers_version as tv
+
+        state = {"down": True}
+        self._hub(monkeypatch, tmp_path, state)
+        assert tv._remote_auto_map_tier("org/newly-remote") == ("default", False)
+        assert not _remote_auto_map_tier_cache  # nothing memoized off the snapshot
+
+        state["down"] = False
+        assert tv._remote_auto_map_tier("org/newly-remote") == ("530", True)
+
+    def test_a_real_read_is_still_definitive(self, monkeypatch, tmp_path):
+        """Negative control: a config the Hub actually served must stay conclusive."""
+        import utils.transformers_version as tv
+
+        self._hub(monkeypatch, tmp_path, {"down": False})
+        cfg, definitive = tv._load_repo_json_checked("org/newly-remote", "config.json")
+        assert definitive is True and "auto_map" in cfg
+        assert tv._remote_auto_map_tier("org/newly-remote") == ("530", True)
+
+    def test_local_path_answer_is_still_definitive(self, monkeypatch, tmp_path):
+        """Negative control: only a Hub id can fall back to a snapshot."""
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setattr(tv, "_looks_like_hf_id", lambda name: False)
+        monkeypatch.setattr(tv, "_load_config_json", lambda name, tok = None: None)
+        assert tv._load_repo_json_checked("./nowhere", "config.json") == (None, True)
 
 
 class TestProcessorOnlyAutoMapIsScanned:
@@ -5296,6 +5387,107 @@ class TestAttributeReadOffADynamicImport:
         assert _remote_auto_map_tier(str(tmp_path))[0] == "530"
 
 
+class TestConstantGetattrReadsTheExport:
+    """``getattr(transformers, "X")`` reads the same export as ``transformers.X``.
+
+    The call walker saw no dynamic import (the first argument is a name, not a string) and the
+    attribute walker saw no ``ast.Attribute`` at all, so only the bare module was recorded.
+    The static spelling promotes, so this one, which raises the very same ``AttributeError``
+    on a sidecar without the export, has to promote too.
+    """
+
+    MARKERS = ("transformers.TokenizersBackend", "transformers.utils.output_capturing")
+
+    def setup_method(self):
+        _clear_scan_caches()
+
+    def _matches(self, src: str) -> bool:
+        import utils.transformers_version as tv
+        return tv._remote_auto_map_py_matches(self.MARKERS, [src])
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            'import transformers\nb = getattr(transformers, "TokenizersBackend")\n',
+            'import transformers\ngetattr(transformers, "TokenizersBackend")()\n',
+            # An alias resolves through the file's own bindings, like the static spelling.
+            'import transformers as tf\nb = getattr(tf, "TokenizersBackend")\n',
+            # Reading further off the result reads the export first.
+            'import transformers\ngetattr(transformers, "TokenizersBackend").from_file("t")\n',
+            # Mixed spellings along one path, in both orders.
+            'import transformers\nb = getattr(transformers.utils, "output_capturing")\n',
+            'import transformers\nb = getattr(transformers, "utils").output_capturing\n',
+            # Nested constant getattr walks the same chain.
+            'import transformers\nb = getattr(getattr(transformers, "utils"), '
+            '"output_capturing")\n',
+            # Off a dynamic import, the spelling the attribute chain already handles.
+            "import importlib\n"
+            'b = getattr(importlib.import_module("transformers"), "TokenizersBackend")\n',
+        ],
+    )
+    def test_constant_getattr_promotes(self, src):
+        assert self._matches(src) is True
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            # Computed name: never resolved to a literal, so nothing is known to be read.
+            "import transformers\nb = getattr(transformers, name)\n",
+            "import transformers\nb = getattr(transformers, prefix + suffix)\n",
+            'import transformers\nb = getattr(transformers, f"Tokenizers{x}")\n',
+            # A different export proves nothing about the marker.
+            'import transformers\nb = getattr(transformers, "AutoModel")\n',
+            # Never imported here, so the root binds to nothing.
+            'b = getattr(mystery, "TokenizersBackend")\n',
+            'import mypkg\nb = getattr(mypkg, "TokenizersBackend")\n',
+            # The guard body does not run.
+            "from typing import TYPE_CHECKING\nimport transformers\n"
+            "if TYPE_CHECKING:\n"
+            '    b = getattr(transformers, "TokenizersBackend")\n',
+            # hasattr answers False on 4.57.x instead of raising.
+            'import transformers\nif hasattr(transformers, "TokenizersBackend"):\n    pass\n',
+            # Not a builtin attribute read at all.
+            'import transformers\nb = obj.getattr(transformers, "TokenizersBackend")\n',
+        ],
+    )
+    def test_unread_or_safe_getattr_does_not_promote(self, src):
+        """Negative control: only a constant name really read off a real import counts."""
+        assert self._matches(src) is False
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            'import transformers\nb = getattr(transformers, "TokenizersBackend", None)\n',
+            "import transformers\n"
+            'b = getattr(transformers, "TokenizersBackend", FallbackBackend)\n',
+            'import transformers\nb = getattr(transformers, "TokenizersBackend", None).x\n',
+        ],
+    )
+    def test_defaulted_getattr_does_not_promote(self, src):
+        """A supplied default is the idiom for handling the export being absent.
+
+        Three-argument ``getattr`` cannot raise, so the module really does load on 4.57.x and
+        the repo does not need a sidecar. Promoting it would strand every version-portable
+        repo on 5.x, the opposite of what its author wrote. Same rule as ``if TYPE_CHECKING:``:
+        an access that cannot fail must not raise the tier.
+        """
+        assert self._matches(src) is False
+
+    def test_constant_getattr_reaches_the_tier(self, tmp_path: Path):
+        _auto_map_checkpoint(
+            tmp_path,
+            'import transformers\nb = getattr(transformers, "TokenizersBackend")\n',
+        )
+        assert _remote_auto_map_tier(str(tmp_path)) == ("530", True)
+
+    def test_defaulted_getattr_leaves_the_tier_alone(self, tmp_path: Path):
+        _auto_map_checkpoint(
+            tmp_path,
+            'import transformers\nb = getattr(transformers, "TokenizersBackend", None)\n',
+        )
+        assert _remote_auto_map_tier(str(tmp_path)) == ("default", True)
+
+
 class TestImpossible510ScanIsSkipped:
     """The name fast path must not pay Hub I/O for an answer it cannot use.
 
@@ -5970,6 +6162,97 @@ class TestRemoteScanDownloadsAreBounded:
         _, complete = tv._collect_external_py_sources(refs, None, tv._RemoteScanBudget())
         assert len(fetched) == tv._REMOTE_SCAN_MAX_FILES
         assert complete is False
+
+    @staticmethod
+    def _counted_listings(monkeypatch, tree: set):
+        """Count repo tree listings, serving every repo the same *tree*."""
+        import utils.transformers_version as tv
+
+        listed: list[str] = []
+        monkeypatch.setattr(
+            tv,
+            "_list_hub_repo_py_files",
+            lambda repo, tok = None: (listed.append(repo), (set(tree), True))[1],
+        )
+        monkeypatch.setattr(tv, "_read_repo_text_file", lambda repo, fn, tok = None: "import torch\n")
+        monkeypatch.setattr(tv, "_hf_cache_snapshot_dir", lambda name: None)
+        return listed
+
+    def test_listings_stop_once_the_download_budget_is_spent(self, monkeypatch):
+        """Listing a repo pages its whole tree before ``take_file`` is consulted.
+
+        The loop kept calling ``_fetch_hub_py_sources`` for every named repo after the shared
+        budget was gone, so each one still paid a full recursive listing (up to
+        ``_HF_API_MAX_PAGES`` authenticated 10s-timeout requests) for sources it could no
+        longer keep, all ahead of the remote-code consent gate.
+        """
+        import utils.transformers_version as tv
+
+        listed = self._counted_listings(monkeypatch, {f"m{i:05d}.py" for i in range(1000)})
+        refs = {(f"evil/repo{i:04d}", "modeling.py") for i in range(500)}
+        _, complete = tv._collect_external_py_sources(refs, None, tv._RemoteScanBudget())
+        # The first repo alone spends the file budget, so no other repo is worth listing.
+        assert listed == ["evil/repo0000"]
+        assert complete is False
+
+    def test_repo_count_is_capped_when_no_file_budget_is_spent(self, monkeypatch):
+        """A repo holding no ``.py`` charges no file slot, so the file cap bounds nothing."""
+        import utils.transformers_version as tv
+
+        listed = self._counted_listings(monkeypatch, set())
+        refs = {(f"evil/repo{i:04d}", "modeling.py") for i in range(500)}
+        budget = tv._RemoteScanBudget()
+        _, complete = tv._collect_external_py_sources(refs, None, budget)
+        assert len(listed) == tv._REMOTE_SCAN_MAX_EXTERNAL_REPOS
+        assert budget.files_left == tv._REMOTE_SCAN_MAX_FILES  # nothing was downloadable
+        assert budget.truncated is True
+        # A capped closure is incomplete, so no negative is memoized off it.
+        assert complete is False
+
+    def test_a_realistic_closure_is_listed_in_full(self, monkeypatch):
+        """Negative control: the cap must not truncate a real auto_map closure.
+
+        An ``auto_map`` names an external repo to borrow a base implementation, so real
+        closures reach a couple of repos and must still be scanned completely.
+        """
+        import utils.transformers_version as tv
+
+        listed = self._counted_listings(monkeypatch, {"modeling_base.py"})
+        refs = {("org/base", "modeling_base.Model"), ("org/vision", "modeling_vision.Tower")}
+        sources, complete = tv._collect_external_py_sources(refs, None, tv._RemoteScanBudget())
+        assert listed == ["org/base", "org/vision"]
+        assert len(sources) == 2 and complete is True
+
+    def test_the_bound_holds_from_the_tier_entry_point(self, monkeypatch, tmp_path):
+        """The cap has to hold on the path a selected model actually takes."""
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty-hub"))
+        cfg = json.dumps(
+            {
+                "model_type": "custom",
+                "auto_map": {
+                    f"AutoModel{i}": f"evil/repo{i:04d}--modeling_x.Klass" for i in range(500)
+                },
+            }
+        ).encode()
+        trees = []
+
+        def _urlopen(req, timeout = 10):
+            url = req.full_url
+            if url.endswith("/config.json"):
+                return _PagedResponse(cfg)
+            if "/tree/" in url:
+                trees.append(url)
+                return _PagedResponse(b"[]")
+            raise _http_error(url, 404)
+
+        monkeypatch.setattr(tv, "_hub_urlopen", _urlopen)
+        monkeypatch.setattr(tv, "_hf_cache_snapshot_dir", lambda name: None)
+        assert tv._remote_auto_map_tier("org/hostile") == ("default", False)
+        # One listing for the model's own repo, then the external cap.
+        assert len(trees) == tv._REMOTE_SCAN_MAX_EXTERNAL_REPOS + 1
 
     def test_one_enormous_source_is_not_read_into_memory(self, monkeypatch):
         """The aggregate cap can only charge a file already read, so bound the read."""

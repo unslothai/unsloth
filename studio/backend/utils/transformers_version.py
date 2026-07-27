@@ -906,6 +906,11 @@ def _list_hub_repo_py_files(repo_id: str, hf_token: str | None = None) -> tuple[
 _REMOTE_SCAN_MAX_FILES = 128
 _REMOTE_SCAN_MAX_TOTAL_CHARS = 16 * 1024 * 1024
 _REMOTE_SCAN_MAX_FILE_BYTES = 4 * 1024 * 1024
+# Enumerating one repo costs a recursive tree listing (up to ``_HF_API_MAX_PAGES`` requests)
+# before a single ``.py`` is charged, so the caps above do not bound how many repos a config
+# can send the scan to. An ``auto_map`` names an external repo only to borrow a base
+# implementation, which is one or two entries; this leaves an order of magnitude of headroom.
+_REMOTE_SCAN_MAX_EXTERNAL_REPOS = 16
 
 
 class _RemoteScanBudget:
@@ -918,11 +923,12 @@ class _RemoteScanBudget:
     positive from a partial closure.
     """
 
-    __slots__ = ("files_left", "chars_left", "truncated")
+    __slots__ = ("files_left", "chars_left", "repos_left", "truncated")
 
     def __init__(self) -> None:
         self.files_left = _REMOTE_SCAN_MAX_FILES
         self.chars_left = _REMOTE_SCAN_MAX_TOTAL_CHARS
+        self.repos_left = _REMOTE_SCAN_MAX_EXTERNAL_REPOS
         self.truncated = False
 
     def take_file(self) -> bool:
@@ -931,6 +937,21 @@ class _RemoteScanBudget:
             self.truncated = True
             return False
         self.files_left -= 1
+        return True
+
+    def take_repo(self) -> bool:
+        """Reserve one external repo. False once the repo, file or aggregate budget is spent.
+
+        Charged before the repo is listed, because the listing is the expensive part and it
+        runs before ``take_file`` is ever consulted. Spending the file or character budget also
+        closes this gate: once nothing more can be downloaded, listing another repo can only
+        cost requests. A repo holding no ``.py`` charges no file slot at all, so without a
+        count of its own an ``auto_map`` naming N repos buys N full tree listings for free.
+        """
+        if self.repos_left <= 0 or self.files_left <= 0 or self.chars_left <= 0:
+            self.truncated = True
+            return False
+        self.repos_left -= 1
         return True
 
     def spend(self, size: int) -> None:
@@ -1020,13 +1041,28 @@ def _collect_external_py_sources(
     4.57.x for code it cannot import. ``complete`` stays False whenever the Hub was not read,
     snapshot or not: an on-disk copy is not proof the Hub repo still matches it, so the
     closure never becomes definitive and no negative is memoized.
+
+    ``budget.take_repo`` is charged BEFORE :func:`_fetch_hub_py_sources`, which lists the whole
+    repo tree before consulting ``take_file``. Without that the loop kept listing repos after
+    the download budget was spent, and a config naming many repos (or repos holding no ``.py``,
+    which charge no file slot) bought an unbounded run of authenticated 10s-timeout Hub
+    requests ahead of the remote-code consent gate.
     """
     external_repos = {repo for repo, _ in refs if repo is not None}
     if not external_repos:
         return [], True
     sources: list[str] = []
     complete = True
-    for repo in sorted(external_repos):
+    ordered = sorted(external_repos)
+    for index, repo in enumerate(ordered):
+        if budget is not None and not budget.take_repo():
+            logger.debug(
+                "Remote scan budget spent before '%s'; %d external repo(s) left unlisted",
+                repo,
+                len(ordered) - index,
+            )
+            complete = False
+            break
         repo_sources, ok = _fetch_hub_py_sources(repo, hf_token, budget)
         sources.extend(repo_sources)
         if not ok:
@@ -1166,12 +1202,21 @@ def _load_repo_json_checked(
     ``_load_config_json``: that process-lifetime cache would serve pre-rewrite contents to the
     rescan a changed scan signature just forced (a staged checkpoint writing code first and
     ``auto_map`` afterwards), memoizing a fresh negative under the new signature.
+
+    For a Hub id the ``config.json`` verdict is ``_config_json_answer_is_definitive`` whether
+    or not a config came back, because a non-None one is not proof it is the current one:
+    ``_load_config_json`` answers a transient network failure from an older hub-cache
+    snapshot, and deliberately does not cache that fallback so the next call retries. Calling
+    it definitive let a snapshot predating a newly added ``auto_map`` memoize a default tier in
+    :func:`_remote_auto_map_tier` without the live code ever being scanned, and that memo then
+    outlived the outage for the life of the worker, routing the model to 4.57.x long after
+    connectivity came back.
     """
     if filename == "config.json" and not _safe_is_dir(Path(model_name)):
         cfg = _load_config_json(model_name, hf_token)
-        if cfg is not None or not _looks_like_hf_id(model_name):
+        if not _looks_like_hf_id(model_name):
             return cfg, True
-        return None, _config_json_answer_is_definitive(model_name, hf_token)
+        return cfg, _config_json_answer_is_definitive(model_name, hf_token)
     local_path = Path(model_name) / filename
     if _safe_is_file(local_path):
         try:
@@ -1292,6 +1337,12 @@ def _parsed_dotted_imports(src: str) -> set[str] | None:
     import (``importlib.import_module("transformers").X``). Aliases (including an aliased
     ``import_module``) resolve through the file's own bindings, so a never-imported name
     contributes nothing.
+
+    Two-argument ``getattr(transformers, "X")`` is that same qualified access with the name in
+    a string, and raises the same ``AttributeError`` on a sidecar without the export, so it
+    counts identically. The three-argument form does not: a supplied default is the idiom for
+    code that handles the export being absent, that code loads fine on 4.57.x, and promoting
+    it would strand every version-portable repo on a sidecar it never asked for.
     """
     import ast
 
@@ -1383,13 +1434,44 @@ def _parsed_dotted_imports(src: str) -> set[str] | None:
         # A leading dot is relative, skipped for the same reason as ImportFrom.
         return None if arg.value.startswith(".") else (called, arg.value)
 
+    def _const_getattr(node) -> tuple[object, str] | None:
+        """``(object node, attribute name)`` for two-argument ``getattr(x, "name")``, else None.
+
+        Exactly two arguments. The three-argument form supplies a default, so it CANNOT raise
+        when the export is missing and the module really does load on 4.57.x; promoting on it
+        would push every repo using that portability idiom onto a sidecar it does not need.
+        Same rule as the ``if TYPE_CHECKING:`` bodies above: an access that cannot fail must
+        not raise the tier. ``hasattr`` is left alone for the same reason.
+        """
+        if not isinstance(node, ast.Call) or node.keywords or len(node.args) != 2:
+            return None
+        func = node.func
+        if not isinstance(func, ast.Name) or func.id != "getattr":
+            return None
+        attr = node.args[1]
+        if not isinstance(attr, ast.Constant) or not isinstance(attr.value, str):
+            return None
+        return node.args[0], attr.value
+
     def _chain_root(node) -> tuple[object, str]:
-        """``(innermost non-attribute node, dotted attribute path)`` for ``a.b.c``."""
+        """``(innermost non-attribute node, dotted attribute path)`` for ``a.b.c``.
+
+        ``getattr(x, "b")`` unwraps like ``x.b``: it reads the same attribute at runtime and
+        raises the same ``AttributeError`` on a sidecar that lacks the export, so the two
+        spellings have to reach the same tier. Only a constant name unwraps, so a computed
+        ``getattr(x, name)`` stays invisible, as it must.
+        """
         parts: list[str] = []
-        while isinstance(node, ast.Attribute):
-            parts.append(node.attr)
-            node = node.value
-        return node, ".".join(reversed(parts))
+        while True:
+            if isinstance(node, ast.Attribute):
+                parts.append(node.attr)
+                node = node.value
+                continue
+            target = _const_getattr(node)
+            if target is None:
+                return node, ".".join(reversed(parts))
+            node, attr = target
+            parts.append(attr)
 
     def _attribute_chain(node) -> tuple[str, str] | None:
         """``(root name, dotted attribute path)`` for ``a.b.c``, else ``None``."""
@@ -1446,7 +1528,9 @@ def _parsed_dotted_imports(src: str) -> set[str] | None:
         if isinstance(node, ast.If) and _is_type_checking(node.test):
             stack.extend(node.orelse)
             continue
-        if isinstance(node, ast.Attribute):
+        # A constant ``getattr`` is an attribute read spelled as a call, so it takes the
+        # attribute branch; the call branch below would only look for an import in it.
+        if isinstance(node, ast.Attribute) or _const_getattr(node) is not None:
             chain = _attribute_chain(node)
             if chain is not None:
                 chains.add(chain)
