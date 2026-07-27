@@ -458,8 +458,7 @@ def _run_llama_phase(
         logger.info("llama update: installing", cmd = " ".join(cmd))
         env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
         # Preserve a Vulkan install across updates: detect_host on a CUDA/ROCm box would
-        # otherwise re-route and silently replace it. Re-assert via the same env/CLI flags
-        # setup uses (mirrors _rocm_install_args).
+        # otherwise re-route and silently replace it. Re-assert via setup's env/CLI flags.
         if llama_backend == "vulkan" or (asset and "vulkan" in asset.lower()):
             env["UNSLOTH_FORCE_VULKAN"] = "1"
             env["UNSLOTH_LLAMA_BACKEND"] = "vulkan"

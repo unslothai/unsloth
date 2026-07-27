@@ -64,12 +64,11 @@ EXIT_FALLBACK = 2
 EXIT_ERROR = 1
 EXIT_BUSY = 3
 
-# Every gfx a Windows AMD host can already be served: ggml-org release.yml windows-hip
-# GPU_TARGETS plus the fork's windows-rocm bundles (gfx103X adds gfx1034, gfx110X adds
-# gfx1103; gfx908 / gfx90a ship standalone). Must stay a superset of the manifest's
-# windows-rocm mapped_targets, else auto-Vulkan steals a host the fork already builds
-# for. Below this floor (e.g. gfx803 / RX 480) HIP has no prebuilt and Vulkan is the
-# practical llama-server backend on Windows (#7357).
+# Every gfx a Windows AMD host can be served: ggml-org release.yml windows-hip GPU_TARGETS
+# plus the fork's windows-rocm bundles. Must stay a superset of the manifest's windows-rocm
+# mapped_targets, else auto-Vulkan steals a host the fork already builds for. Below this
+# floor (e.g. gfx803 / RX 480) HIP has no prebuilt and Vulkan is the practical Windows
+# llama-server backend (#7357).
 WINDOWS_HIP_PREBUILT_GFX_TARGETS = frozenset(
     {
         "gfx908",
@@ -91,9 +90,8 @@ WINDOWS_HIP_PREBUILT_GFX_TARGETS = frozenset(
 # Family labels forwarded by update markers / --rocm-gfx (gfx110X.zip assets).
 WINDOWS_ROCM_FAMILY_GFX_LABELS = frozenset({"gfx103x", "gfx110x", "gfx120x"})
 
-# Exactly ggml-org release.yml's windows-hip "radeon" gpu_targets. The set above adds
-# the fork-only bundles on top (gfx1034 via gfx103X, gfx1103 via gfx110X, standalone
-# gfx908 / gfx90a), so those four are served only when planning against the fork.
+# Exactly ggml-org release.yml's windows-hip "radeon" gpu_targets. The set above adds the
+# fork-only bundles (gfx1034, gfx1103, gfx908, gfx90a), served only against the fork.
 UPSTREAM_WINDOWS_HIP_GFX_TARGETS = frozenset(
     {
         "gfx1030",
@@ -109,9 +107,9 @@ UPSTREAM_WINDOWS_HIP_GFX_TARGETS = frozenset(
     }
 )
 
-# install_kinds that really are a Vulkan bundle. Upstream ships no Vulkan archive for
-# Windows arm64 and x64 falls through to CPU when the Vulkan one is missing or fails
-# validation, so a Vulkan request can end on a CPU bundle; keeps the marker honest (#7357).
+# install_kinds that really are a Vulkan bundle. A Vulkan request can still end on a CPU
+# bundle (no Vulkan archive on Windows arm64; x64 falls through when it is missing or fails
+# validation), so check against this to keep the marker honest (#7357).
 VULKAN_INSTALL_KINDS = frozenset({"linux-vulkan", "windows-vulkan"})
 
 # DiskPart-prompt suppression. RunAsInvoker does NOT stop amd-smi's runtime
@@ -2196,9 +2194,9 @@ def run_capture(
 def _list_rocm_gfx_targets(out: str) -> list[str]:
     """List gfx targets rocminfo / hipinfo report, one entry per physical GPU.
 
-    Both print the same gfx token several times per GPU (Name, ISA, marketing-name),
-    so split on per-GPU section headers to keep two entries on a dual same-arch host;
-    flat strings and test stubs fall back to insertion-order dedup.
+    Both repeat the same gfx token per GPU (Name, ISA, marketing-name), so split on per-GPU
+    section headers to keep two entries on a dual same-arch host; flat strings and test stubs
+    fall back to insertion-order dedup.
     """
     _sections = re.split(
         r"(?mi)^\s*\*+\s*$\s*agent\s+\d+\s*$|\bdevice\s*#\s*\d+\b",
@@ -2219,10 +2217,9 @@ def _list_rocm_gfx_targets(out: str) -> list[str]:
 def _pick_rocm_gfx_target(out: str) -> str | None:
     """Choose the gfx target rocminfo / hipinfo report for the active GPU.
 
-    A bare first-match picked the wrong device on mixed APU + dGPU hosts (e.g. Strix
-    Halo gfx1151 + discrete RX 7900 gfx1100), so honour HIP_VISIBLE_DEVICES /
-    ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES; no env var means the first GPU, and
-    empty / "-1" means no AMD GPU is visible to HIP (None).
+    A bare first-match picked the wrong device on mixed APU + dGPU hosts (Strix Halo gfx1151
+    + RX 7900 gfx1100), so honour HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES /
+    CUDA_VISIBLE_DEVICES; no env var means the first GPU, empty / "-1" means none (None).
     """
     _tokens = _list_rocm_gfx_targets(out)
     if not _tokens:
@@ -2602,13 +2599,12 @@ def _apply_host_overrides(
     force_cpu: bool = False,
 ) -> HostInfo:
     """Fold setup.sh/setup.ps1's forwarded detection into the host profile.
-    A forwarded gfx (--rocm-gfx or UNSLOTH_ROCM_GFX_ARCH) implies ROCm: the
-    installer's own hipinfo/amd-smi probe can miss the arch on amd-smi-only hosts
-    or when setup inferred it from the GPU name, leaving rocm_gfx_target None and
-    no per-gfx ROCm prebuilt selected. It fills that gap, and stays authoritative
-    except for the two advisory shapes narrowed below. force_cpu is the opposite explicit
-    signal (arm64 Linux GPU host whose source build failed): drop GPU attributes
-    so the CPU prebuilt for this OS/arch is selected."""
+    A forwarded gfx (--rocm-gfx or UNSLOTH_ROCM_GFX_ARCH) implies ROCm and fills the gap
+    where our own hipinfo/amd-smi probe misses the arch (amd-smi-only hosts, or setup
+    inferring it from the GPU name), leaving no per-gfx ROCm prebuilt selected; it stays
+    authoritative except for the two advisory shapes narrowed below. force_cpu is the
+    opposite explicit signal (arm64 Linux GPU host whose source build failed): drop GPU
+    attributes so the CPU prebuilt for this OS/arch is selected."""
     if force_cpu:
         return dataclasses_replace(
             host,
@@ -2621,25 +2617,18 @@ def _apply_host_overrides(
         )
     gfx = _normalize_forwarded_gfx(override_rocm_gfx)
     if gfx:
-        # setup.ps1 picks the arch from its own probe, and that pick is not fully
-        # visible-device aware: neither its hipinfo nor its amd-smi branch reads
-        # CUDA_VISIBLE_DEVICES, and the amd-smi branch matches a bare integer only,
-        # so a comma-separated mask ("1,0") also falls back to GPU 0.
-        # _pick_rocm_gfx_target() honours all three vars with HIP's semantics, so
-        # when detect_host() resolved an active arch, keep it: replacing it with
-        # GPU 0's arch makes _should_auto_vulkan_for_amd_windows() read a
-        # HIP-supported GPU the user masked off, installing an unusable HIP bundle
-        # instead of Vulkan.
-        # Narrow that to the two shapes a forward can only be advisory in:
-        #   * the arch is another GPU the probe saw ON THIS HOST, i.e. setup picked a
-        #     different physical GPU of the same box;
-        #   * the arch is a family label (gfx110X), which is a bundle name emitted by
-        #     the update path from the marker asset, never a real GPU arch. Letting it
-        #     replace a concrete probed arch would upgrade an in-generation-but-unbuilt
-        #     GPU (gfx1033) into the family bundle it must not be served.
-        # Anything else is an arch the probe never reported, so it is not a GPU-0
-        # mispick -- it is an operator override for a host whose arch the probe gets
-        # wrong or stale, which is exactly what --rocm-gfx documents, and it stays
+        # setup.ps1's pick is not fully visible-device aware (neither branch reads
+        # CUDA_VISIBLE_DEVICES; amd-smi matches a bare integer only, so "1,0" falls back to
+        # GPU 0), while _pick_rocm_gfx_target() honours all three vars with HIP's semantics.
+        # So keep a probed active arch when the forward is only advisory, else
+        # _should_auto_vulkan_for_amd_windows() reads a HIP-supported GPU the user masked
+        # off and installs an unusable HIP bundle instead of Vulkan. Advisory means:
+        #   * another GPU the probe saw ON THIS HOST, i.e. setup picked a different card;
+        #   * a family label (gfx110X), a bundle name the update path emits from the marker
+        #     asset and never a real arch -- it would upgrade an in-generation-but-unbuilt
+        #     GPU (gfx1033) into a bundle it must not be served.
+        # Anything else the probe never reported is an operator override for a host whose
+        # arch the probe gets wrong or stale, exactly what --rocm-gfx documents, so it stays
         # authoritative. UNSLOTH_ROCM_GFX_ARCH also still wins.
         _manual = _normalize_forwarded_gfx(os.environ.get("UNSLOTH_ROCM_GFX_ARCH"))
         _physical = _host_rocm_gfx_targets(host)
@@ -2651,14 +2640,13 @@ def _apply_host_overrides(
             host,
             has_rocm = True,
             rocm_gfx_target = gfx,
-            # ADD the forwarded arch to the probe's per-GPU list, never replace it.
-            # That list is the PHYSICAL inventory _should_auto_vulkan_for_amd_windows()
-            # reads, and a forwarded arch says which GPU HIP should target, not which
-            # cards exist: dropping a probe-confirmed GPU would let a stale or
-            # name-inferred below-floor forward auto-route a box whose probe saw a
-            # HIP-capable card to Vulkan, which then enumerates that card regardless of
-            # HIP_VISIBLE_DEVICES. An empty probe still yields [gfx] -- the driver-only
-            # host the forward exists for keeps its auto-Vulkan fallback.
+            # ADD the forwarded arch to the probe's per-GPU list, never replace it: that
+            # list is the PHYSICAL inventory _should_auto_vulkan_for_amd_windows() reads,
+            # and a forward says which GPU HIP should target, not which cards exist.
+            # Dropping a probe-confirmed GPU would let a stale below-floor forward
+            # auto-route a box with a HIP-capable card to Vulkan, which then enumerates
+            # that card regardless of HIP_VISIBLE_DEVICES. An empty probe still yields
+            # [gfx], so the driver-only host the forward exists for keeps auto-Vulkan.
             rocm_gfx_targets = list(dict.fromkeys([*_physical, gfx])),
         )
     if override_has_rocm and not host.has_rocm:
@@ -5536,11 +5524,10 @@ def _fork_manifest_release_plans(
 def persisted_llama_backend(llama_backend: str | None, choice: AssetChoice) -> str | None:
     """The backend to record for an install that actually landed ``choice``.
 
-    A Vulkan request can end on a non-Vulkan bundle: Windows arm64 has no upstream
-    Vulkan archive (release.yml builds vulkan for x64, opencl-adreno for arm64), and
-    x64 falls through to win-cpu-x64 when the Vulkan archive is missing or fails
-    validation. Recording "vulkan" there would make the updater re-assert a backend
-    that was never installed. Mirrors force_cpu: persist the real outcome only."""
+    A Vulkan request can end on a non-Vulkan bundle (no upstream Vulkan archive for Windows
+    arm64; x64 falls through to win-cpu-x64 when it is missing or fails validation), and
+    recording "vulkan" there would make the updater re-assert a backend that was never
+    installed. Mirrors force_cpu: persist the real outcome only."""
     if llama_backend == "vulkan" and choice.install_kind not in VULKAN_INSTALL_KINDS:
         return None
     return llama_backend
@@ -6119,8 +6106,8 @@ def llama_backend_from_env() -> str | None:
     """Read an explicit llama.cpp backend preference from the environment.
 
     Only ``UNSLOTH_LLAMA_BACKEND`` is honored. ``UNSLOTH_LLAMA_CPP_BACKEND`` is a separate
-    setup variable meaning ``auto``/``cpu`` (not a backend name) that setup.sh/setup.ps1 warn
-    about and ignore otherwise, so reading it here would force Vulkan behind that warning.
+    setup variable meaning ``auto``/``cpu`` (not a backend name) that setup warns about and
+    otherwise ignores, so reading it here would force Vulkan behind that warning.
     """
     return _normalized_llama_backend(os.environ.get("UNSLOTH_LLAMA_BACKEND"))
 
@@ -6140,8 +6127,8 @@ def force_vulkan_requested(llama_backend: str | None = None) -> bool:
     """
     backend = resolved_llama_backend(llama_backend)
     if backend is not None:
-        # Authoritative, so =hip is a real opt-out and not overruled by a stale
-        # UNSLOTH_FORCE_VULKAN.
+        # Authoritative, so =hip is a real opt-out a stale UNSLOTH_FORCE_VULKAN cannot
+        # overrule.
         return backend == "vulkan"
     return os.environ.get("UNSLOTH_FORCE_VULKAN", "").strip().lower() in (
         "1",
@@ -6168,16 +6155,13 @@ def _active_rocm_gfx_target(host: HostInfo) -> str | None:
 def _hip_visible_device_mask_set() -> bool:
     """Whether a HIP visible-device mask is in force for this process.
 
-    The Windows arch probe is hipinfo, itself a HIP application, and AMD documents these
-    as "only devices whose index is present in the sequence are visible to HIP" (with
-    HIP_VISIBLE_DEVICES the Windows spelling), so under a mask it enumerates the VISIBLE
-    devices, not the physical ones. Presence is the whole test: a partial mask leaves the
-    inventory unknowable, and an all-hiding "" / "-1" is the strongest form of the same
-    signal rather than an exemption -- the probe reports no arch there, but --rocm-gfx
-    can still supply one (setup's name inference reads the display adapter, which no HIP
-    mask touches), so the guard would otherwise auto-route a host on which the user hid
-    every AMD GPU. Same first-var-wins order as _pick_rocm_gfx_target, which reads the
-    identical three, so the two cannot disagree about the host."""
+    The Windows arch probe is hipinfo, itself a HIP application, so under a mask it
+    enumerates the VISIBLE devices, not the physical ones. Presence is the whole test: a
+    partial mask leaves the inventory unknowable, and an all-hiding "" / "-1" is the
+    strongest form of that, not an exemption, since --rocm-gfx can still supply an arch
+    (setup infers it from the display adapter, which no HIP mask touches) and would
+    auto-route a host on which the user hid every AMD GPU. Reads the same three vars as
+    _pick_rocm_gfx_target, so the two cannot disagree about the host."""
     return any(
         os.environ.get(_env) is not None
         for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
@@ -6187,16 +6171,15 @@ def _hip_visible_device_mask_set() -> bool:
 def _windows_hip_gfx_targets(published_repo: str | None) -> frozenset[str]:
     """gfx targets the Windows HIP bundle of ``published_repo`` is actually built for.
 
-    The combined floor above is a union of the FORK's windows-rocm bundles, and only the
-    fork is planned from a manifest: resolve_simple_install_release_plans() sends every
-    other --published-repo -- ggml-org itself, but equally any mirror carrying
-    upstream-standard assets -- to direct_upstream_release_plan(), whose AMD branch offers
-    win-hip-radeon then CPU and never Vulkan. Answering "supported" there for a fork-only
-    arch (gfx1034, gfx1103, gfx908, ...) silently lands it on HIP/CPU instead of the Vulkan
-    bundle that would actually run, so gate on the fork rather than exempting one repo.
-    Mirror that dispatch exactly, spelling included: it compares == DEFAULT_PUBLISHED_REPO
-    with an empty value defaulting to the fork, so a differently cased repo really does
-    take the upstream path and must be answered with upstream coverage."""
+    The combined floor above includes the FORK's windows-rocm bundles, and only the fork is
+    planned from a manifest: resolve_simple_install_release_plans() sends every other
+    --published-repo (ggml-org, but equally any mirror of upstream-standard assets) to
+    direct_upstream_release_plan(), whose AMD branch offers win-hip-radeon then CPU and never
+    Vulkan. Answering "supported" there for a fork-only arch would silently land it on
+    HIP/CPU instead of the Vulkan bundle that would actually run, so gate on the fork rather
+    than exempting one repo, mirroring that dispatch exactly, spelling included: an empty
+    value defaults to the fork, and a differently cased repo really does take the upstream
+    path and must be answered with upstream coverage."""
     if (published_repo or DEFAULT_PUBLISHED_REPO) == DEFAULT_PUBLISHED_REPO:
         return WINDOWS_HIP_PREBUILT_GFX_TARGETS
     return UPSTREAM_WINDOWS_HIP_GFX_TARGETS
@@ -6205,9 +6188,9 @@ def _windows_hip_gfx_targets(published_repo: str | None) -> frozenset[str]:
 def _gfx_is_windows_hip_supported(gfx: str, published_repo: str | None = None) -> bool:
     token = gfx.lower().strip()
     if token in WINDOWS_ROCM_FAMILY_GFX_LABELS:
-        # A family label names a fork bundle whose members are all built by upstream's
-        # windows-hip targets too (gfx103X -> gfx1030..1032, gfx110X -> gfx1100..1102,
-        # gfx120X -> gfx1200/1201), so HIP serves it whichever repo is planned against.
+        # A family label names a fork bundle whose members upstream's windows-hip targets
+        # all build too (gfx103X -> gfx1030..1032 etc), so HIP serves it against either
+        # repo.
         return True
     return token in _windows_hip_gfx_targets(published_repo)
 
@@ -6233,23 +6216,20 @@ def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | No
         and not host.has_physical_nvidia
     ):
         return False
-    # Every PHYSICAL AMD gfx, not just the active one. HIP_VISIBLE_DEVICES /
-    # ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES choose `active`, but the Vulkan
-    # runtime honours none of them: it enumerates through GGML_VK_VISIBLE_DEVICES and
-    # Vulkan ordinals (LlamaCppBackend._get_gpu_free_memory_vulkan). So masking down to
-    # a below-floor card must not route the install to Vulkan -- the installed backend
-    # would happily enumerate the HIP-capable card the user deliberately hid, possibly
-    # one reserved for another workload. Auto-fall back only when no AMD device on the
-    # box can be exposed to HIP; an explicit vulkan opt-in is unaffected.
+    # Judge every PHYSICAL AMD gfx, not just the active one. The visible-device vars choose
+    # `active`, but the Vulkan runtime honours none of them (it enumerates through
+    # GGML_VK_VISIBLE_DEVICES and Vulkan ordinals), so masking down to a below-floor card
+    # must not route the install to Vulkan: the installed backend would happily enumerate
+    # the HIP-capable card the user deliberately hid, possibly one reserved for another
+    # workload. Auto-fall back only when no AMD device on the box can be exposed to HIP; an
+    # explicit vulkan opt-in is unaffected.
     #
-    # Under a mask the probe cannot supply that inventory at all: hipinfo is a HIP
-    # application, so it enumerates only the visible devices and rocm_gfx_targets lists
-    # what survived the mask rather than what is installed. "No AMD GPU here reaches the
-    # floor" is then unprovable, and guessing wrong is the same reserved-card handover,
-    # so decline to guess. An all-hiding "" / "-1" is included: the probe reports no arch
-    # there, but a forwarded --rocm-gfx still reconstructs one, and auto-routing then
-    # hands Vulkan every AMD GPU the user hid. The mask is only ever set deliberately,
-    # and the driver-only single-GPU host this fallback exists for does not set one.
+    # Under a mask the probe cannot supply that inventory at all (hipinfo sees only visible
+    # devices), so "no AMD GPU here reaches the floor" is unprovable and guessing wrong is
+    # the same reserved-card handover. An all-hiding "" / "-1" is included: a forwarded
+    # --rocm-gfx still reconstructs an arch there, and auto-routing would then hand Vulkan
+    # every AMD GPU the user hid. A mask is only ever set deliberately, and the driver-only
+    # single-GPU host this fallback exists for does not set one.
     if _hip_visible_device_mask_set():
         return False
     targets = list(dict.fromkeys([*_host_rocm_gfx_targets(host), active]))
@@ -6259,9 +6239,9 @@ def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | No
 def _has_no_vulkan_prebuilt(host: HostInfo) -> bool:
     """Platforms that ship no Vulkan prebuilt at all, so routing there is pointless.
 
-    Upstream release.yml builds win-vulkan for x64 only; Windows arm64 gets win-cpu-arm64
-    plus win-opencl-adreno-arm64, so rewriting it to Vulkan-only would just swap the
-    published bundle for the upstream CPU one. macOS is handled separately (Metal)."""
+    Upstream builds win-vulkan for x64 only; Windows arm64 gets CPU plus opencl-adreno, so
+    rewriting it to Vulkan-only would just swap the published bundle for the upstream CPU
+    one. macOS is handled separately (Metal)."""
     return host.is_windows and host.is_arm64
 
 
@@ -6294,19 +6274,19 @@ def _route_to_vulkan_prebuilt(
 ) -> tuple[HostInfo, str, str, str | None]:
     """Point a Vulkan-capable host at the upstream ggml-org Vulkan prebuilt.
 
-    The unsloth published repo ships only CUDA/ROCm/CPU assets, so Vulkan comes
-    from UPSTREAM_REPO. Three triggers route here, all suppressed when a CPU flag
-    (--cpu-fallback or --force-cpu, folded into force_cpu) wins:
+    The unsloth published repo ships only CUDA/ROCm/CPU assets, so Vulkan comes from
+    UPSTREAM_REPO. Three triggers route here, all suppressed when a CPU flag (--cpu-fallback
+    or --force-cpu, folded into force_cpu) wins:
       * ``UNSLOTH_LLAMA_BACKEND=vulkan`` / ``UNSLOTH_FORCE_VULKAN`` / ``--llama-backend
         vulkan`` forces Vulkan over the detected CUDA/ROCm backend;
       * Windows AMD with no HIP-prebuilt gfx arch auto-falls back to Vulkan (#7357);
-      * an auto-detected Intel GPU with NO physical NVIDIA/ROCm -- the purpose
-        of the has_intel_gpu probe, since the fork manifest ships no Vulkan asset.
-    Applied by BOTH the install path and the --resolve-prebuilt probe so the
-    "is a prebuilt available" answer matches what actually gets installed.
+      * an auto-detected Intel GPU with NO physical NVIDIA/ROCm, the purpose of the
+        has_intel_gpu probe, since the fork manifest ships no Vulkan asset.
+    Applied by BOTH the install path and the --resolve-prebuilt probe so the "is a prebuilt
+    available" answer matches what actually gets installed.
 
-    Returns the (possibly rewritten) host, repo, release tag, and a backend
-    value to persist in the install marker when updates must re-assert Vulkan.
+    Returns the (possibly rewritten) host, repo, release tag, and a backend to persist in
+    the install marker when updates must re-assert Vulkan.
     """
     forced = force_vulkan_requested(llama_backend)
     # Auto-fall back only when the run named no backend: an explicit hip/cpu is the opt-out.
@@ -6316,7 +6296,6 @@ def _route_to_vulkan_prebuilt(
     )
     # No PHYSICAL NVIDIA, not merely no usable one: Vulkan ignores CUDA_VISIBLE_DEVICES, so
     # auto-routing a host that hides its NVIDIA card would let it grab the reserved GPU.
-    # An explicit Vulkan opt-in still overrides.
     auto_intel = host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm
     if force_cpu or not (forced or auto_intel or auto_no_hip):
         return host, published_repo, published_release_tag, None
