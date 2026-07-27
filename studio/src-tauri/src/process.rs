@@ -90,13 +90,18 @@ impl OwnedBackendHandle {
         }
     }
 
-    fn remove_owner_metadata(self) {
+    fn cleanup_after_exit(self) {
         match self {
             Self::Spawned {
-                owner: Some(owner), ..
+                mut child,
+                owner,
+                pid,
+                ..
+            } => {
+                terminate_exited_backend_tree(pid, &mut child);
+                remove_optional_owner(owner);
             }
-            | Self::Adopted { owner, .. } => owner.remove(),
-            Self::Spawned { owner: None, .. } => {}
+            Self::Adopted { owner, .. } => owner.remove(),
         }
     }
 }
@@ -316,6 +321,146 @@ pub(crate) fn trim_line_endings(bytes: &[u8]) -> &[u8] {
     &bytes[..end]
 }
 
+#[cfg(unix)]
+fn unix_process_group_exists(pid: u32) -> bool {
+    if pid > i32::MAX as u32 {
+        return false;
+    }
+    let result = unsafe { libc::kill(-(pid as i32), 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(unix)]
+fn terminate_exited_backend_tree(pid: u32, _child: &mut Box<dyn ChildWrapper + Send>) {
+    if !unix_process_group_exists(pid) {
+        return;
+    }
+
+    info!("Stopping surviving backend process group (pid {})", pid);
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGTERM);
+    }
+    for _ in 0..50 {
+        if !unix_process_group_exists(pid) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    warn!(
+        "Backend descendants did not exit gracefully, force killing group (pid {})",
+        pid
+    );
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGKILL);
+    }
+}
+
+#[cfg(windows)]
+fn terminate_exited_backend_tree(pid: u32, child: &mut Box<dyn ChildWrapper + Send>) {
+    info!("Stopping surviving backend job (pid {})", pid);
+    if let Err(error) = child.kill() {
+        warn!("Failed to terminate backend job (pid {}): {}", pid, error);
+        return;
+    }
+    if let Err(error) = child.wait() {
+        warn!("Failed to wait for backend job (pid {}): {}", pid, error);
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn terminate_exited_backend_tree(_pid: u32, _child: &mut Box<dyn ChildWrapper + Send>) {}
+
+struct BackendExit {
+    owned: OwnedBackendHandle,
+    status: String,
+    intentional: bool,
+}
+
+enum BackendExitPoll {
+    Running,
+    Exited(BackendExit),
+    Stop,
+    QueryFailed(String),
+}
+
+fn poll_spawned_backend_exit(state: &BackendState, generation: u64) -> BackendExitPoll {
+    let mut proc = match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if proc.generation != generation {
+        return BackendExitPoll::Stop;
+    }
+    let intentional = proc.intentional_stop;
+    let status = match proc
+        .owned
+        .as_mut()
+        .and_then(OwnedBackendHandle::spawned_child_mut)
+    {
+        Some(child) => match child.try_wait() {
+            Ok(Some(status)) => status.to_string(),
+            Ok(None) => return BackendExitPoll::Running,
+            Err(error) => return BackendExitPoll::QueryFailed(error.to_string()),
+        },
+        None => return BackendExitPoll::Stop,
+    };
+
+    let Some(owned) = proc.owned.take() else {
+        return BackendExitPoll::Stop;
+    };
+    proc.port = None;
+    proc.diagnostics_session = None;
+    proc.adopted_watchdog_generation = None;
+    BackendExitPoll::Exited(BackendExit {
+        owned,
+        status,
+        intentional,
+    })
+}
+
+fn monitor_spawned_backend_exit(
+    app: AppHandle,
+    state: BackendState,
+    diagnostics_state: DiagnosticsState,
+    backend_log: BackendLog,
+    generation: u64,
+) {
+    let mut query_failure_reported = false;
+    loop {
+        match poll_spawned_backend_exit(&state, generation) {
+            BackendExitPoll::Running => {
+                query_failure_reported = false;
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            BackendExitPoll::QueryFailed(error) => {
+                if !query_failure_reported {
+                    warn!("Failed to query backend process status: {}", error);
+                    query_failure_reported = true;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            BackendExitPoll::Stop => return,
+            BackendExitPoll::Exited(exit) => {
+                info!("Backend exited with status: {}", exit.status);
+                exit.owned.cleanup_after_exit();
+                diagnostics::record_backend_exit(
+                    &diagnostics_state,
+                    &backend_log.session_id,
+                    Some(exit.status),
+                    exit.intentional,
+                    None,
+                );
+                if !exit.intentional {
+                    error!("Backend process exited unexpectedly (crash detected)");
+                    let _ = app.emit("server-crashed", ());
+                }
+                return;
+            }
+        }
+    }
+}
+
 /// Windows `CREATE_NO_WINDOW` flag — suppresses console windows for child processes.
 #[cfg(windows)]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -444,6 +589,119 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn spawned_backend_exit_cleans_surviving_process_group() {
+        use std::os::unix::process::CommandExt;
+
+        let mut command = Command::new("sh");
+        command.args(["-c", "trap '' HUP; sleep 1; sleep 30 & exit 7"]);
+        command.process_group(0);
+        let child = command.spawn().unwrap();
+        let pid = child.id();
+        let state = new_backend_state();
+        {
+            let mut proc = state.lock().unwrap();
+            proc.generation = 4;
+            proc.owned = Some(OwnedBackendHandle::spawned(Box::new(child), None, pid, 4));
+        }
+
+        assert!(matches!(
+            poll_spawned_backend_exit(&state, 4),
+            BackendExitPoll::Running
+        ));
+
+        let exit = loop {
+            match poll_spawned_backend_exit(&state, 4) {
+                BackendExitPoll::Running => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                BackendExitPoll::Exited(exit) => break exit,
+                BackendExitPoll::QueryFailed(error) => panic!("{error}"),
+                BackendExitPoll::Stop => panic!("monitor stopped before observing exit"),
+            }
+        };
+        assert!(exit.status.contains('7'));
+        assert!(!exit.intentional);
+        let group_survived = unix_process_group_exists(pid);
+        exit.owned.cleanup_after_exit();
+        assert!(group_survived);
+        assert!(!unix_process_group_exists(pid));
+
+        assert!(matches!(
+            poll_spawned_backend_exit(&state, 4),
+            BackendExitPoll::Stop
+        ));
+        assert!(!state.lock().unwrap().has_owned_backend());
+    }
+
+    #[cfg(windows)]
+    fn windows_process_is_alive(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+        };
+
+        unsafe {
+            let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let status = WaitForSingleObject(handle, 0);
+            let _ = CloseHandle(handle);
+            status == WAIT_TIMEOUT
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn spawned_backend_exit_cleans_surviving_job() {
+        let temp = temp_studio_dir("backend-job-cleanup");
+        let pid_file = temp.join("descendant.pid");
+        let quoted_path = pid_file.to_string_lossy().replace('\'', "''");
+        let script = format!(
+            "$child = Start-Process \"$env:SystemRoot\\System32\\ping.exe\" \
+             -ArgumentList '-n','30','127.0.0.1' -WindowStyle Hidden -PassThru; \
+             Set-Content -LiteralPath '{quoted_path}' -Value $child.Id -NoNewline; exit 7"
+        );
+        let mut command = Command::new("powershell.exe");
+        command.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        let child = spawn_backend_command(command).unwrap();
+        let pid = child.id();
+        let state = new_backend_state();
+        {
+            let mut proc = state.lock().unwrap();
+            proc.generation = 4;
+            proc.owned = Some(OwnedBackendHandle::spawned(child, None, pid, 4));
+        }
+
+        let exit = loop {
+            match poll_spawned_backend_exit(&state, 4) {
+                BackendExitPoll::Running => std::thread::sleep(Duration::from_millis(50)),
+                BackendExitPoll::Exited(exit) => break exit,
+                BackendExitPoll::QueryFailed(error) => panic!("{error}"),
+                BackendExitPoll::Stop => panic!("monitor stopped before observing exit"),
+            }
+        };
+        let descendant_pid = fs::read_to_string(&pid_file)
+            .unwrap()
+            .parse::<u32>()
+            .unwrap();
+        let descendant_survived = windows_process_is_alive(descendant_pid);
+        exit.owned.cleanup_after_exit();
+
+        assert!(exit.status.contains('7'));
+        assert!(descendant_survived);
+        for _ in 0..20 {
+            if !windows_process_is_alive(descendant_pid) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!windows_process_is_alive(descendant_pid));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
     fn listening_non_studio_port() -> (u16, mpsc::Sender<()>, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -548,6 +806,29 @@ fn backend_args(port: u16) -> Vec<String> {
     .collect()
 }
 
+fn spawn_backend_command(cmd: Command) -> std::io::Result<Box<dyn ChildWrapper + Send>> {
+    let mut wrap = CommandWrap::from(cmd);
+
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::Threading::{
+            CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW as WINDOWS_CREATE_NO_WINDOW,
+        };
+
+        // Keep this backend tree independently terminable after its leader exits.
+        wrap.wrap(CreationFlags(
+            CREATE_NEW_PROCESS_GROUP | WINDOWS_CREATE_NO_WINDOW,
+        ));
+        wrap.wrap(JobObject);
+    }
+
+    #[cfg(unix)]
+    wrap.wrap(ProcessGroup::leader());
+
+    let child: Box<dyn ChildWrapper + Send> = wrap.spawn()?;
+    Ok(child)
+}
+
 /// Spawn the backend process and wire up stdout/stderr reader threads.
 pub fn start_backend(
     app: &AppHandle,
@@ -634,46 +915,17 @@ pub fn start_backend(
 
         let backend_log = diagnostics::begin_backend_session(diagnostics_state, port, generation);
 
-        // On Windows, launch the backend directly with hidden-window flags.
-        // The app process is assigned to a KILL_ON_JOB_CLOSE job in main.rs, so
-        // children inherit crash-safe cleanup without the buggy per-child JobObject wrapper.
-        #[cfg(windows)]
-        let mut child: Box<dyn ChildWrapper + Send> = {
-            use std::os::windows::process::CommandExt;
-
-            const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
-            let child = cmd.spawn().map_err(|e| {
-                let msg = format!("Failed to spawn backend: {}", e);
-                diagnostics::record_backend_start_failure(
-                    diagnostics_state,
-                    Some(port),
-                    Some(generation),
-                    "spawn_backend",
-                    &msg,
-                );
-                msg
-            })?;
-            Box::new(child)
-        };
-
-        #[cfg(unix)]
-        let mut child: Box<dyn ChildWrapper + Send> = {
-            // Keep the backend tree in a process group on Unix for cleanup.
-            let mut wrap = CommandWrap::from(cmd);
-            wrap.wrap(ProcessGroup::leader());
-            wrap.spawn().map_err(|e| {
-                let msg = format!("Failed to spawn backend: {}", e);
-                diagnostics::record_backend_start_failure(
-                    diagnostics_state,
-                    Some(port),
-                    Some(generation),
-                    "spawn_backend",
-                    &msg,
-                );
-                msg
-            })?
-        };
+        let mut child = spawn_backend_command(cmd).map_err(|e| {
+            let msg = format!("Failed to spawn backend: {}", e);
+            diagnostics::record_backend_start_failure(
+                diagnostics_state,
+                Some(port),
+                Some(generation),
+                "spawn_backend",
+                &msg,
+            );
+            msg
+        })?;
 
         let backend_pid = child.id();
         let stdout = child.stdout().take();
@@ -726,6 +978,22 @@ pub fn start_backend(
                 &diagnostics_clone,
                 &backend_log_clone,
                 true,
+                generation,
+            );
+        });
+    }
+
+    {
+        let app_handle = app.clone();
+        let state_clone = Arc::clone(state);
+        let diagnostics_clone = diagnostics_state.clone();
+        let backend_log_clone = backend_log.clone();
+        std::thread::spawn(move || {
+            monitor_spawned_backend_exit(
+                app_handle,
+                state_clone,
+                diagnostics_clone,
+                backend_log_clone,
                 generation,
             );
         });
@@ -897,7 +1165,7 @@ async fn validate_candidate_port(
 
 /// Read lines from a child process stream (stdout or stderr).
 /// For stdout, parse TAURI_PORT=(\d+) candidates for async validation.
-/// When stdout closes and the stop was not intentional, emit server-crashed.
+/// Process lifecycle is owned by monitor_spawned_backend_exit.
 fn read_output_stream<R: std::io::Read>(
     stream: R,
     app: &AppHandle,
@@ -993,63 +1261,6 @@ fn read_output_stream<R: std::io::Read>(
             }
         }
     }
-
-    // Stream closed. Only the stdout reader checks for crashes.
-    if !is_stderr {
-        let mut exit_record: Option<(String, bool)> = None;
-        let mut emit_crash = false;
-        if let Ok(mut proc) = state.lock() {
-            if proc.generation != generation {
-                return;
-            }
-            let intentional = proc.intentional_stop;
-            let exited = if let Some(child) = proc
-                .owned
-                .as_mut()
-                .and_then(OwnedBackendHandle::spawned_child_mut)
-            {
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        info!("Backend stdout stream ended with status: {}", status);
-                        exit_record = Some((status.to_string(), intentional));
-                        true
-                    }
-                    Ok(None) => {
-                        warn!("Backend stdout stream ended, but process is still running");
-                        false
-                    }
-                    Err(e) => {
-                        warn!("Failed to query backend status after stdout closed: {}", e);
-                        false
-                    }
-                }
-            } else {
-                false
-            };
-
-            if exited {
-                if let Some(owned) = proc.owned.take() {
-                    owned.remove_owner_metadata();
-                }
-                proc.port = None;
-                proc.diagnostics_session = None;
-                emit_crash = !intentional;
-            }
-        }
-        if let Some((status, intentional)) = exit_record {
-            diagnostics::record_backend_exit(
-                diagnostics_state,
-                &backend_log.session_id,
-                Some(status),
-                intentional,
-                None,
-            );
-        }
-        if emit_crash {
-            error!("Backend process stdout closed unexpectedly (crash detected)");
-            let _ = app.emit("server-crashed", ());
-        }
-    }
 }
 
 fn wait_for_child_exit(child: &mut Box<dyn ChildWrapper + Send>, label: &str) -> bool {
@@ -1128,6 +1339,7 @@ fn stop_spawned_backend(
             && try_exact_port_http_shutdown(port, "Spawned backend")
             && wait_for_child_exit(&mut child, "Backend")
         {
+            terminate_exited_backend_tree(pid, &mut child);
             remove_optional_owner(owner);
             return Ok(());
         }
@@ -1158,6 +1370,7 @@ fn stop_spawned_backend(
     }
 
     if wait_for_child_exit(&mut child, "Backend") {
+        terminate_exited_backend_tree(pid, &mut child);
         remove_optional_owner(owner);
         return Ok(());
     }
