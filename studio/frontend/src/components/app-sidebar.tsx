@@ -1038,9 +1038,8 @@ export function AppSidebar() {
           data-thread-type={item.type}
           data-thread-id={item.id}
           isActive={activeThreadId === item.id}
-          // Only while a selection is live, when the row acts as a toggle: the
-          // tint alone tells a screen reader nothing, but a plain navigation row
-          // must not be announced as an unpressed toggle either.
+          // Only while a selection is live: the tint alone tells a screen reader
+          // nothing, but a plain nav row must not read as an unpressed toggle.
           aria-pressed={
             isSelectableRecent && chatRecentsSelection.isSelectionActive
               ? isSelected
@@ -1928,8 +1927,7 @@ export function AppSidebar() {
                     count={runRecentsSelection.selectedCount}
                     onClear={runRecentsSelection.clearSelection}
                     onDelete={() => {
-                      // Drop running runs here so the confirmation count is
-                      // exactly what gets deleted.
+                      // Drop running runs so the confirmed count is what gets deleted.
                       const selected = runItems.filter((run) =>
                         runRecentsSelection.isItemSelected(run.id),
                       );

@@ -16,7 +16,7 @@ const AUTO_SCROLL_STEP_PX = 10;
 
 type DragState = {
   anchorIndex: number;
-  // By id, since the list can reorder or reload mid-drag and shift every index.
+  // By id: the list can reorder mid-drag and shift every index.
   anchorId: string | null;
   pointerId: number;
   pointerType: string;
@@ -75,8 +75,8 @@ export function useSidebarListSelection({
   const dragRef = useRef<DragState | null>(null);
   const autoScrollRef = useRef<number | null>(null);
   const autoScrollDirectionRef = useRef<-1 | 1 | null>(null);
-  // By id, not index: the list reorders and resizes, so a stored index would
-  // silently re-point a later shift+click at a different row.
+  // By id, not index: the list reorders, so an index would silently re-point
+  // a later shift+click at a different row.
   const anchorIdRef = useRef<string | null>(null);
   const suppressClickRef = useRef(false);
   const updateDragSelectionRef = useRef<(clientY: number) => void>(() => undefined);
@@ -91,9 +91,8 @@ export function useSidebarListSelection({
     anchorIdRef.current = null;
   }, []);
 
-  // Drop stale selections when the list changes. Bail out unless something is
-  // genuinely stale: itemIds is rebuilt on most renders, so an unconditional
-  // setState re-arms this effect every commit and trips the nested-update limit.
+  // Drop stale selections when the list changes. Bail out unless truly stale:
+  // itemIds is rebuilt most renders, so an unconditional setState loops.
   useEffect(() => {
     if (selectedIds.size === 0) return;
     const valid = new Set(itemIds);
@@ -221,9 +220,8 @@ export function useSidebarListSelection({
 
       drag.lastClientY = event.clientY;
       event.preventDefault();
-      // Through the ref, not the closure: depending on the callback identity
-      // re-runs this effect every render, and its cleanup would kill the
-      // auto-scroll interval one tick after it starts.
+      // Through the ref, not the closure: a callback dep would re-run this
+      // effect every render and kill the auto-scroll interval on cleanup.
       updateDragSelectionRef.current(event.clientY);
     };
 
@@ -265,8 +263,8 @@ export function useSidebarListSelection({
       if (!listRoot) return;
       const target = event.target instanceof Element ? event.target : null;
       if (target && listRoot.contains(target)) return;
-      // The confirm dialog is portaled to document.body, so its buttons read as
-      // "outside": clearing there would drop the batch it is confirming.
+      // The confirm dialog is portaled out of the list, so clearing on its
+      // buttons would drop the batch it is confirming.
       if (target?.closest('[role="dialog"], [role="alertdialog"]')) return;
       clearSelection();
     };
@@ -276,8 +274,8 @@ export function useSidebarListSelection({
 
   const handleItemPointerDown = useCallback(
     (index: number, event: ReactPointerEvent) => {
-      // A drag released off the list never reaches an item click, so a stale
-      // flag would otherwise swallow the next real one.
+      // A drag released off the list never reaches a click; a stale flag would
+      // then swallow the next real one.
       suppressClickRef.current = false;
       if (event.button !== 0 || event.pointerType !== "mouse") return;
       dragRef.current = {

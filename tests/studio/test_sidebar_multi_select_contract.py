@@ -49,9 +49,9 @@ def test_drag_selection_is_gated_to_mouse_pointers():
 
 def test_auto_scroll_updates_selection_and_follows_the_active_edge():
     block = _between(_hook(), "const startAutoScroll", "const updateDragSelection")
-    # Rows revealed past the fold join the range without another pointermove.
+    # Rows revealed past the fold join the range, and flipping edges restarts
+    # the interval instead of scrolling away.
     assert "updateDragSelectionRef.current(drag.lastClientY)" in block
-    # Flipping edges restarts the interval instead of scrolling away.
     assert "autoScrollDirectionRef.current === direction" in block
     assert "autoScrollDirectionRef.current = direction" in block
 
