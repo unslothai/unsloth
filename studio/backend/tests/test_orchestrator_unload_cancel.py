@@ -1942,3 +1942,52 @@ def test_a_direct_mailbox_is_not_mistaken_for_compare_activity():
         assert "direct-1" in o._direct_mailboxes
     finally:
         release()
+
+
+def test_replacing_the_subprocess_clears_worker_scoped_state():
+    # Ownership is keyed only by cancel-event identity, so a consumer still blocked on its
+    # mailbox when the worker was replaced stayed recorded as the executor. A generation on
+    # the fresh worker then failed _owns_worker and could not be stopped.
+    import queue as _queue
+
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    dead = threading.Event()
+    o._mailboxes = {"compare-1": _queue.Queue()}
+    o._direct_mailboxes = {"direct-1": _queue.Queue()}
+    o._request_cancel_events = {"compare-1": dead}
+    o._claim_worker(dead)
+    o._mark_worker_started(dead)
+    assert o._owns_worker(dead)
+
+    o._reset_worker_scoped_state()
+
+    assert o._mailboxes == {} and o._direct_mailboxes == {}
+    assert o._request_cancel_events == {}
+    assert o._active_cancel_events == [] and o._executing_cancel_events == []
+    # A generation on the fresh worker owns it rather than being refused by a ghost.
+    fresh = threading.Event()
+    o._claim_worker(fresh)
+    assert o._owns_worker(fresh), "the dead worker's request must not outrank a live one"
+
+
+def test_audio_input_claims_the_worker_before_sending():
+    # Unclaimed, a compare request queued behind an audio-input generation looked like the
+    # oldest owner, so stopping that queued request signalled the worker and killed this.
+    import ast
+    import pathlib
+
+    src = pathlib.Path(orch_mod.__file__).read_text(encoding = "utf-8")
+    tree = ast.parse(src)
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_generate_audio_input_inner"
+    )
+    body = ast.get_source_segment(src, fn) or ""
+    claim = body.find("self._claim_worker(cancel_event)")
+    send = body.find("self._send_cmd(cmd)")
+    assert claim != -1, "_generate_audio_input_inner must claim the worker"
+    assert send != -1
+    assert claim < send, "the claim has to happen before the command is enqueued"
+    assert "with self._send_order_lock:" in body, "claim and send must be one critical section"
+    assert "self._release_worker(cancel_event)" in body

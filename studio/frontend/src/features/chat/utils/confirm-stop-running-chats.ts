@@ -61,8 +61,20 @@ export async function confirmStopRunningChatsIfNeeded(
   let titles: string[] = [];
   try {
     const threads = await listStoredChatThreads();
-    const byId = new Map(threads.map((t) => [t.id, t.title]));
-    titles = running.map((id) => byId.get(id) || "Untitled chat");
+    const byId = new Map(threads.map((t) => [t.id, t]));
+    // A compare conversation runs two pane threads, and the sidebar and the route both
+    // treat it as one chat. Counting the raw ids asked to stop two and listed its title
+    // twice. Fold panes onto their pairId, keeping the count the backend reported when
+    // it is higher (a first turn it can see but cannot name).
+    const seen = new Set<string>();
+    for (const id of running) {
+      const thread = byId.get(id);
+      const key = thread?.pairId ?? id;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      titles.push(thread?.title || "Untitled chat");
+    }
+    count = Math.max(seen.size, count - (running.length - seen.size));
   } catch {
     // Titles are decoration; the count alone is enough to make the choice.
     titles = [];

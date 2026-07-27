@@ -2216,7 +2216,19 @@ export function createOpenAIStreamAdapter(
             : undefined;
 
         const threadKey = resolvedThreadId;
-        runtime.setThreadRunning(threadKey, true);
+        // The run is durable on the server and survives navigating away, but Stop,
+        // archive and delete reach a background thread only through this map. Without a
+        // handle here the supervisor kept planning and calling tools against a
+        // conversation the user had already removed. Registered before the run exists,
+        // since the thread can be stopped while createResearchRun is still in flight.
+        let researchRunId: string | null = null;
+        const researchServerCancel = () => {
+          if (researchRunId) {
+            void cancelResearchRun(researchRunId).catch(() => {});
+          }
+        };
+        runtime.registerThreadServerCancel(threadKey, researchServerCancel);
+        runtime.setThreadRunning(threadKey, true, { owner: researchServerCancel });
         let report = "";
         let releaseResearchFollow: (() => void) | null = null;
         const researchFollowController = new AbortController();
@@ -2256,6 +2268,7 @@ export function createOpenAIStreamAdapter(
               blockedDomains: [...runtime.researchWebsitePolicy.blockedDomains],
             },
           });
+          researchRunId = createdRun.id;
           releaseResearchFollow = beginExternalResearchFollow(
             createdRun,
             detachResearchFollow,
@@ -2314,7 +2327,8 @@ export function createOpenAIStreamAdapter(
         } finally {
           abortSignal.removeEventListener("abort", forwardAdapterAbort);
           releaseResearchFollow?.();
-          runtime.setThreadRunning(threadKey, false);
+          runtime.clearThreadServerCancel(threadKey, researchServerCancel);
+          runtime.setThreadRunning(threadKey, false, { owner: researchServerCancel });
         }
         return;
       }

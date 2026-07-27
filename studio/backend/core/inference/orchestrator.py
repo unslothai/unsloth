@@ -336,8 +336,26 @@ class InferenceOrchestrator:
         self._resp_queue = None
         self._cancel_event = None
         self._drain_event = None
+        self._reset_worker_scoped_state()
         logger.info("Inference subprocess shut down")
         return True
+
+    def _reset_worker_scoped_state(self) -> None:
+        """Drop bookkeeping that only means anything for the worker that just died.
+
+        Ownership is scoped by cancel-event identity alone, so a consumer still blocked
+        on its mailbox when the process was replaced stayed recorded as the executor. A
+        generation on the fresh worker then failed _owns_worker and could not be stopped.
+        Mailboxes go too: nothing will ever route to them, and a stale one reads as
+        compare activity to the unload path.
+        """
+        with self._active_cancel_lock:
+            self._active_cancel_events.clear()
+            self._executing_cancel_events.clear()
+        with self._mailbox_lock:
+            self._mailboxes.clear()
+            self._direct_mailboxes.clear()
+            self._request_cancel_events.clear()
 
     def _cleanup(self):
         """atexit handler."""
@@ -1996,7 +2014,12 @@ class InferenceOrchestrator:
             read_one, drain, release_mailbox = self._direct_reader(request_id)
             try:
                 try:
-                    self._send_cmd(cmd)
+                    # Claim under the send lock, like _generate_inner: unclaimed, a compare
+                    # request queued behind this looked like the oldest owner, so stopping
+                    # that queued request signalled the worker and killed this one.
+                    with self._send_order_lock:
+                        self._claim_worker(cancel_event)
+                        self._send_cmd(cmd)
                 except RuntimeError as exc:
                     yield GenStreamError(f"Error: {exc}")
                     return
@@ -2008,6 +2031,7 @@ class InferenceOrchestrator:
                     cancel_event = cancel_event,
                 )
             finally:
+                self._release_worker(cancel_event)
                 release_mailbox()
 
     # ------------------------------------------------------------------
