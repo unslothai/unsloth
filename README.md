@@ -263,7 +263,7 @@ unsloth studio -H 0.0.0.0 -p 8888
 ```
 The Cloudflare tunnel is **off by default**: `-H 0.0.0.0` exposes the raw port only, not a public internet URL. Pair the wildcard bind with `--cloudflare` (`unsloth studio -H 0.0.0.0 --cloudflare`) to also publish a public `https://*.trycloudflare.com` link, or prefer `--secure` (above), which keeps the raw port private. `--cloudflare` has no effect on a loopback bind.
 
-On a wildcard bind Unsloth prints an address to share. It reads that address from the cloud metadata service (GCE, AWS, Azure) when there is one, and otherwise falls back to your LAN address. Both are local to the machine. Set `UNSLOTH_STUDIO_PUBLIC_IP_PROBE=1` to additionally allow two third-party lookups at startup: `ifconfig.me` for the public IP, and `check-host.net` to test whether the port is reachable from the internet. Both are off by default because they tell an outside service that this machine is running Unsloth.
+On a wildcard bind Unsloth works out the address to share by asking `ifconfig.me` for the public IP, then asks `check-host.net` whether that port is reachable so it can tell you if a firewall is in the way. Both contact a third party. Set `UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK=1` to skip them; the banner then shows the LAN address and no reachability line.
 
 The first time Unsloth is published on a public URL (`--secure` or `--cloudflare`) with the auto-generated admin password still in place, it asks for a new admin password in the terminal (masked input with confirmation) before the public link goes up. Without an attached terminal it warns instead and keeps the bootstrap deadline: Unsloth shuts down after `UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT` (default 1 hour) unless the password is changed in the web UI.
 

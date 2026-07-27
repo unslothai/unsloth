@@ -924,9 +924,7 @@ def test_argparse_cloudflare_default_off():
     assert _argparse_default(_RUN_PY.read_text(), "--cloudflare") is None
 
 
-def test_verify_global_reachability_leaves_private_address_unverified():
-    """A private address means "not verified", not "verified private": a NAT or
-    cloud firewall can still forward the port, so the banner must keep warning."""
+def test_verify_global_reachability_marks_private_address_unreachable():
     src = _RUN_PY.read_text()
     tree = ast.parse(src)
     func_src = next(
@@ -936,7 +934,7 @@ def test_verify_global_reachability_leaves_private_address_unverified():
     )
     captured = []
     ns = {
-        "_public_reachable": True,
+        "_public_reachable": None,
         "_stdout_color_ok": lambda: False,
         "_url_host": lambda host: host,
         "print": lambda *a, **k: captured.append(" ".join(str(x) for x in a)),
@@ -944,7 +942,7 @@ def test_verify_global_reachability_leaves_private_address_unverified():
     exec(compile(func_src, "<verify_global_reachability>", "exec"), ns)
     ns["_verify_global_reachability"]("192.168.1.10", 8888)
 
-    assert ns["_public_reachable"] is None
+    assert ns["_public_reachable"] is False
     assert "private/LAN address" in "\n".join(captured)
 
 
