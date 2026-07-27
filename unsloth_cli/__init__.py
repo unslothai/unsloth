@@ -5,16 +5,19 @@ import os as _os
 import sys as _sys
 
 # Typer renders help via rich, whose box characters cp1252 and cp437 cannot encode,
-# so `unsloth --help` dies once stdout is a pipe or a file. unsloth/__init__ guards
-# this too, but the CLI skips it; must run before typer binds the stream encoding.
+# so `unsloth --help` dies once stdout is a pipe or a file. Windows gets UTF-8, as
+# unsloth/__init__ already does; elsewhere the caller's encoding is kept and only
+# the error handler is relaxed, so an explicit PYTHONIOENCODING still picks the
+# bytes and only loses unencodable glyphs. Before typer, which binds the stream.
+_to_utf8 = _sys.platform == "win32"
 for _name in ("stdout", "stderr"):
     _stream = getattr(_sys, _name, None)
     try:
         if "utf" not in (_stream.encoding or "").lower():
-            _stream.reconfigure(encoding = "utf-8", errors = "replace")
+            _stream.reconfigure(encoding = "utf-8" if _to_utf8 else None, errors = "replace")
     except Exception:
         pass
-del _name, _stream
+del _name, _stream, _to_utf8
 
 import typer
 from importlib.metadata import version as package_version, PackageNotFoundError

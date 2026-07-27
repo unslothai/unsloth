@@ -118,6 +118,8 @@ GUARDED_METHODS = {"read_text", "write_text"}
 # platform default exactly like builtin open. Unlike open they default to "rb",
 # so only an explicit text mode is in scope. lzma takes encoding keyword-only.
 COMPRESSED_OPENERS = {"bz2": 3, "gzip": 3, "lzma": None}
+# Wrappers that stay lazy, so draining one drains what it was given.
+LAZY_ADAPTERS = {"enumerate", "filter", "islice", "map", "reversed", "zip"}
 # Callables that drain a generator argument immediately.
 EAGER_CONSUMERS = {
     "all",
@@ -143,6 +145,16 @@ PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
 BUILTIN_OPEN_MODULES = {"builtins", "io"}
 # Receivers `self.SOURCE` and `cls.SOURCE` reach a class attribute through.
 SELF_NAMES = {"cls", "self"}
+# A module-level name is normally an anchor, since a fixture cannot reach one.
+# These build a directory the run owns, so a name rooted in one is temp I/O
+# however it is spelled, and the platform default there is harmless.
+TEMP_FACTORIES = {
+    "NamedTemporaryFile",
+    "TemporaryDirectory",
+    "gettempdir",
+    "mkdtemp",
+    "mkstemp",
+}
 # Functions that hand back a path still pointing at their first argument. An
 # unlisted call is left unresolved: a helper may well return a temp copy of what
 # it was given, and following it would put test-created files back in scope.
@@ -211,6 +223,11 @@ def _live_branches(node: ast.AST):
                 break
         return live if len(live) < len(node.values) else None
     return None
+
+
+def _callee_name(func: ast.AST):
+    """The bare name a callee ends in, whether or not it is qualified."""
+    return func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
 
 
 def _is_main_guard(node: ast.AST) -> bool:
@@ -351,7 +368,35 @@ def _eagerly_consumed(tree: ast.Module) -> set:
             consumed.update(id(_resolve(k.value)) for k in node.keywords)
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
             consumed.add(id(_resolve(node.iter)))  # the loop pulls every item
+    # `list(enumerate(_paths()))` drains _paths() as well, one wrapper down.
+    by_id = {id(n): n for n in ast.walk(tree)}
+    queue = [by_id[i] for i in list(consumed) if i in by_id]
+    while queue:
+        node = queue.pop()
+        if isinstance(node, ast.Call) and _callee_name(node.func) in LAZY_ADAPTERS:
+            for arg in node.args:
+                target = _resolve(arg)
+                if id(target) not in consumed:
+                    consumed.add(id(target))
+                    queue.append(target)
     return consumed
+
+
+def _non_path_names(tree: ast.Module) -> set:
+    """Module-level names bound to a call that plainly does not make a path.
+
+    `response = requests.get(...)` then `response.read_text()` at import is not
+    pathlib I/O, and demanding an encoding there leaves no compliant edit.
+    """
+    names = set()
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+            continue
+        func = node.value.func
+        if _is_path_preserving(func) or _callee_name(func) in PATH_METHODS:
+            continue
+        names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    return names
 
 
 def _is_generator(func) -> bool:
@@ -383,12 +428,22 @@ def _module_level_names(tree: ast.Module) -> set:
         elif isinstance(target, ast.Starred):
             yield from _bound(target.value)
 
+    def _is_temp(value) -> bool:
+        return value is not None and any(
+            isinstance(n, ast.Call) and _callee_name(n.func) in TEMP_FACTORIES
+            for n in ast.walk(value)
+        )
+
     names = set()
     for node in tree.body:
         if isinstance(node, ast.Assign):
+            if _is_temp(node.value):
+                continue  # TMP = Path(tempfile.mkdtemp()) is not checked in
             for target in node.targets:
                 names.update(_bound(target))
         elif isinstance(node, ast.AnnAssign):
+            if _is_temp(node.value):
+                continue
             names.update(_bound(node.target))
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             # `start._CODEX_FALLBACK_PROMPT` is a path another module defines at
@@ -445,36 +500,46 @@ def _imported_names(node) -> dict:
         item = stack.pop()
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             continue
-        if isinstance(item, ast.Import):
-            for alias in item.names:
-                bound[(alias.asname or alias.name).split(".")[0]] = alias.name
-        elif isinstance(item, ast.ImportFrom):
-            for alias in item.names:
-                origin = f"{item.module}.{alias.name}" if item.module else alias.name
-                bound[alias.asname or alias.name] = origin
+        if isinstance(item, (ast.Import, ast.ImportFrom)):
+            bound.update(_import_bindings(item))
         else:
             stack.extend(ast.iter_child_nodes(item))
     return bound
+
+
+def _import_bindings(node) -> dict:
+    """What one import statement binds, mapped to where each name came from."""
+    if isinstance(node, ast.Import):
+        return {(a.asname or a.name).split(".")[0]: a.name for a in node.names}
+    return {
+        a.asname or a.name: (f"{node.module}.{a.name}" if node.module else a.name)
+        for a in node.names
+    }
 
 
 def _imports_at_each_call(tree: ast.Module) -> dict:
     """The imports visible at every call, keyed by node id.
 
     A function's own imports are added on the way in and go out of view again
-    on the way out, which is what keeps a local alias local.
+    on the way out, which is what keeps a local alias local. Within a scope they
+    accumulate in statement order, so `DATA = open(p)` above a later
+    `from gzip import open` still resolves to the builtin it actually called.
     """
     visible_at = {}
 
     def walk(node, visible):
         if isinstance(node, ast.Call):
-            visible_at[id(node)] = visible
+            visible_at[id(node)] = dict(visible)
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            visible.update(_import_bindings(node))
+            return
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-                walk(child, {**visible, **_imported_names(child)})
+                walk(child, dict(visible))  # its own scope, so its own copy
             else:
                 walk(child, visible)
 
-    walk(tree, _imported_names(tree))
+    walk(tree, {})
     return visible_at
 
 
@@ -521,10 +586,13 @@ def _is_path_class(name, modules) -> bool:
 
 
 def _is_path_preserving(func) -> bool:
-    """True for a call whose result still points at its first argument."""
-    if isinstance(func, ast.Name):
-        return func.id in PATH_CLASSES or func.id in PATH_FUNCTIONS
-    return isinstance(func, ast.Attribute) and func.attr in PATH_FUNCTIONS
+    """True for a call whose result still points at its first argument.
+
+    Qualified spellings count: `pathlib.Path(p)` and `os.path.join(p, x)` are
+    the same constructors as the bare names.
+    """
+    name = _callee_name(func)
+    return name in PATH_CLASSES or name in PATH_FUNCTIONS
 
 
 def _is_module_receiver(name, modules) -> bool:
@@ -760,6 +828,18 @@ def _checked_in_locals(
         good = grown
 
 
+def _unwrap_param(node: ast.AST) -> ast.AST:
+    """`pytest.param(SOURCE, id = "x")` is a wrapper around the real value."""
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "param"
+        and node.args
+    ):
+        return node.args[0]
+    return node
+
+
 def _parametrized_values(func) -> dict:
     """Parameter values supplied by @pytest.mark.parametrize.
 
@@ -782,7 +862,7 @@ def _parametrized_values(func) -> dict:
             paired = len(argnames) > 1 and isinstance(element, (ast.Tuple, ast.List))
             row = element.elts if paired else [element]
             for argname, value in zip(argnames, row):
-                supplied.setdefault(argname, []).append(value)
+                supplied.setdefault(argname, []).append(_unwrap_param(value))
     return supplied
 
 
@@ -836,6 +916,26 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
             _mark(child, child if nested else owning)
 
     _mark(tree, None)
+    # Which class body each call sits in, so `self._read(...)` resolves to that
+    # class's method and not a same-named one in a sibling class.
+    in_class: dict = {}
+
+    def _mark_class(node, cls):
+        if isinstance(node, ast.Call):
+            in_class[id(node)] = cls
+        for child in ast.iter_child_nodes(node):
+            _mark_class(child, child if isinstance(child, ast.ClassDef) else cls)
+
+    _mark_class(tree, None)
+
+    def _method(cls, name):
+        if cls is None:
+            return None
+        for stmt in cls.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and stmt.name == name:
+                return stmt
+        return None
+
     good: set = set()
     while True:
         grown, bad = set(), set()
@@ -847,10 +947,21 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
         # parameter resolved last time can feed a local this time.
         scope: dict = {}
         for call in ast.walk(tree):
-            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+            if not isinstance(call, ast.Call):
                 continue
             caller = owner.get(id(call))
-            func = _lookup(call.func.id, caller if caller is not None else tree)
+            callee, bound = call.func, False
+            if isinstance(callee, ast.Name):
+                func = _lookup(callee.id, caller if caller is not None else tree)
+            elif (
+                isinstance(callee, ast.Attribute)
+                and isinstance(callee.value, ast.Name)
+                and callee.value.id in SELF_NAMES
+            ):
+                # `self._read(ROOT / "x.py")` seeds `_read`'s path parameter too.
+                func, bound = _method(in_class.get(id(call)), callee.attr), True
+            else:
+                continue
             if func is None or any(isinstance(a, ast.Starred) for a in call.args):
                 continue
             if caller is None:
@@ -862,6 +973,8 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
                 here = _checked_in_locals(caller, module_names, _local_names(caller), params)
                 scope[id(caller)] = here
             positional = [a.arg for a in [*func.args.posonlyargs, *func.args.args]]
+            if bound:
+                positional = positional[1:]  # the receiver already fills `self`
             # A keyword-only parameter never takes a positional slot, so it is
             # matched by name alone.
             params = positional + [a.arg for a in func.args.kwonlyargs]
@@ -1070,7 +1183,16 @@ def _scan(tree: ast.Module, rel: str):
     visible_at = _imports_at_each_call(tree)
     calls = {id(c): c for c in _import_time_calls(tree)}
     calls.update({id(c): c for c in _checked_in_path_calls(tree, modules, visible_at)})
+    not_paths = _non_path_names(tree)
     for call in sorted(calls.values(), key = lambda c: (c.lineno, c.col_offset)):
+        func = call.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr in GUARDED_METHODS
+            and isinstance(func.value, ast.Name)
+            and func.value.id in not_paths
+        ):
+            continue
         name = _offender(call, visible_at.get(id(call), modules))
         if name is not None:
             yield f"{rel}:{call.lineno}: {name}"
