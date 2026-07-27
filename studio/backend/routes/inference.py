@@ -4497,6 +4497,35 @@ async def _load_model_impl(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
+        # A background auto-load promises on-device-only resolution, but a
+        # cache populated outside Studio can pass the partial check while
+        # missing shards, and from_pretrained on a repo id would download the
+        # gaps. Rewriting the load path to the locally resolved snapshot keeps
+        # the registry identity (config.identifier) intact while forcing the
+        # weight load to the files actually on disk, so an incomplete cache
+        # fails over to the next candidate instead of fetching.
+        from utils.paths import is_local_path
+
+        if (
+            request.local_files_only
+            and not config.is_gguf
+            and not is_local_path(config.path)
+        ):
+            from hub.utils.local_snapshot import resolve_local_snapshot_path
+
+            local_snapshot = await asyncio.to_thread(
+                resolve_local_snapshot_path, config.path, request.hf_token
+            )
+            if local_snapshot is None:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        f"Model '{model_log_label}' is not available on device; "
+                        "select it explicitly to download it."
+                    ),
+                )
+            config.path = local_snapshot
+
         # Normalize gpu_ids: empty list means auto-selection, same as None
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
 

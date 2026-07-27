@@ -1531,8 +1531,13 @@ function isAutoLoadableLocalRow(
   // auto-load must never start. Adapters stay interactive-only.
   if (row.model_format === "adapter") return false;
   if (isHiddenModelId(row.model_id, row.id, row.path)) return false;
+  // The name-based big-endian marker only applies to direct .gguf files: a
+  // DIRECTORY named e.g. /models/foo-be says nothing about the files inside
+  // it, and those are already filtered per-file by isAutoLoadableGgufVariant
+  // when the folder's quants are resolved.
   if (
     row.model_format === "gguf" &&
+    row.path.toLowerCase().endsWith(".gguf") &&
     hasBigEndianGgufMarker(row.path, row.format_variant)
   ) {
     return false;
@@ -1596,10 +1601,11 @@ function normalizeLoadTargetKey(value: string): string {
 const AUTO_LOAD_VARIANT_SCAN_CONCURRENCY = 4;
 
 // How long after the bounded inventory calls resolve the best-effort
-// hidden-model matcher fetch may still be waited on. It usually settles
-// while the inventory requests run; past this bound the static needles
-// filter alone rather than letting an unbounded request stall Send.
-const HIDDEN_MATCHERS_GRACE_MS = 1_000;
+// prefetches (hidden-model matchers, platform snapshot) may still be
+// waited on. Both use unbounded fetches of their own, so past this bound
+// their client-side fallbacks apply (static needles; boot-detected
+// platform) rather than letting a stalled request hang Send.
+const BEST_EFFORT_PREFETCH_GRACE_MS = 1_000;
 
 // Settle window before the fallback starts consuming resolved candidates:
 // when scans finish quickly (the common case) the pool is complete first and
@@ -1884,6 +1890,11 @@ export async function autoLoadOnDeviceModel(): Promise<{
       load_in_4bit: true,
       is_lora: false,
       gguf_variant: candidate.ggufVariant,
+      // A background load never downloads: the backend resolves a cached
+      // repo id against the local snapshot only, so a cache populated
+      // outside Studio with missing shards fails over to the next
+      // candidate instead of silently fetching the gaps.
+      local_files_only: true,
       trust_remote_code: trustRemoteCode,
       chat_template_override: effectiveChatTemplateOverride,
       cache_type_kv: config.kvCacheDtype,
@@ -2032,14 +2043,25 @@ export async function autoLoadOnDeviceModel(): Promise<{
     const hiddenMatchersReady = ensureHiddenModelMatchers().catch(
       () => undefined,
     );
+    // The platform fetch behind the picker's format gates is unbounded
+    // too (raw fetch, no signal); run it alongside as well. Past the
+    // grace, the store's boot-detected client-side platform applies.
+    const platformReady: Promise<void> = fetchDeviceType().then(
+      () => undefined,
+      () => undefined,
+    );
     const [cachedGguf, cachedModels, localList] = await Promise.all([
       listCachedGguf(hfToken),
       listCachedModels(hfToken),
       listLocalModels(),
     ]);
+    const bestEffortPrefetches = Promise.all([
+      hiddenMatchersReady,
+      platformReady,
+    ]);
     await new Promise<void>((resolve) => {
-      const matcherTimer = setTimeout(resolve, HIDDEN_MATCHERS_GRACE_MS);
-      hiddenMatchersReady.then(() => {
+      const matcherTimer = setTimeout(resolve, BEST_EFFORT_PREFETCH_GRACE_MS);
+      bestEffortPrefetches.then(() => {
         clearTimeout(matcherTimer);
         resolve();
       });
@@ -2063,10 +2085,9 @@ export async function autoLoadOnDeviceModel(): Promise<{
     };
   }
 
-  // Resolve the platform snapshot the picker's format gates key on. Cached
-  // after the app's boot fetch and never throws (falls back to client-side
-  // detection when the backend is not ready).
-  await fetchDeviceType();
+  // The platform snapshot the picker's format gates key on: hydrated by the
+  // bounded best-effort prefetch above, else the store's boot-detected
+  // client-side values (the same defaults the whole UI uses pre-hydration).
   const platformState = usePlatformStore.getState();
   const platform: AutoLoadPlatform = {
     chatOnly: platformState.isChatOnly(),

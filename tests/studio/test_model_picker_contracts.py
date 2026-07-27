@@ -660,6 +660,10 @@ def test_autoload_filters_match_picker_policy():
     # the implicit remote fetch a background auto-load must never trigger.
     assert 'row.model_format === "adapter"' in local_fn
     assert "isHiddenModelId(row.model_id, row.id, row.path)" in local_fn
+    # The name-based marker only applies to direct .gguf files; a directory
+    # named e.g. /models/foo-be says nothing about the files inside it, which
+    # are filtered per-file during variant resolution.
+    assert 'row.path.toLowerCase().endsWith(".gguf") &&' in local_fn
     assert "hasBigEndianGgufMarker(row.path, row.format_variant)" in local_fn
     cached_fn = src.split("function isAutoLoadableCachedRepo", 1)[1]
     cached_fn = cached_fn.split("\nconst ", 1)[0]
@@ -952,8 +956,12 @@ def test_hidden_matcher_fetch_never_blocks_send_unbounded():
     auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
     assert "await ensureHiddenModelMatchers()" not in auto_load
     assert "const hiddenMatchersReady = ensureHiddenModelMatchers().catch(" in auto_load
-    assert "const HIDDEN_MATCHERS_GRACE_MS" in src
-    assert "setTimeout(resolve, HIDDEN_MATCHERS_GRACE_MS)" in auto_load
+    # The platform probe backing the picker's format gates is unbounded too
+    # (raw fetch, no signal), so it joins the same bounded prefetch wait.
+    assert "await fetchDeviceType();" not in auto_load
+    assert "const platformReady: Promise<void> = fetchDeviceType().then(" in auto_load
+    assert "const BEST_EFFORT_PREFETCH_GRACE_MS" in src
+    assert "setTimeout(resolve, BEST_EFFORT_PREFETCH_GRACE_MS)" in auto_load
     assert "clearTimeout(matcherTimer)" in auto_load
 
 
@@ -983,8 +991,9 @@ def test_local_rows_apply_picker_platform_gate():
     assert "localRowIsGgufLike(row)" in local_fn
     assert "platform.isMac && localRowIsMlxNamed(row)" in local_fn
     auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
-    # The platform snapshot hydrates through the cached, non-throwing fetch.
-    assert "await fetchDeviceType();" in auto_load
+    # The platform snapshot hydrates through the bounded best-effort prefetch
+    # (see test_hidden_matcher_fetch_never_blocks_send_unbounded).
+    assert "fetchDeviceType().then(" in auto_load
     # Cascade seeding of cached non-GGUF repos mirrors the picker's
     # chat-only exclusion; the remembered lookup above it stays unfiltered.
     assert "platform.chatOnly ? [] : modelRepos" in auto_load
@@ -1024,3 +1033,42 @@ def test_local_variant_scans_bounded_concurrency():
     auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
     assert "Math.min(AUTO_LOAD_VARIANT_SCAN_CONCURRENCY, resolutionJobs.length)" in auto_load
     assert "await Promise.all(\n        cascadeLocalRows.map(" not in auto_load
+
+
+BACKEND = WORKDIR / "studio" / "backend"
+
+
+def _read_backend(rel: str) -> str:
+    path = BACKEND / rel
+    assert path.exists(), f"missing backend source file: {path}"
+    return path.read_text()
+
+
+def test_background_loads_resolve_local_files_only():
+    """A cache populated outside Studio can pass the partial check while
+    missing shard files, and from_pretrained on a repo id downloads the gaps.
+    Background auto-loads therefore send local_files_only and the load route
+    rewrites the path to the locally resolved snapshot (identity intact), so
+    an incomplete cache fails over to the next candidate instead of
+    downloading on Send."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    load_fn = src.split("async function loadAutoLoadCandidate", 1)[1]
+    load_fn = load_fn.split("loadAttempts += 1;", 1)[1]
+    assert "local_files_only: true," in load_fn
+    types = _read("features/chat/types/api.ts")
+    assert "local_files_only?: boolean;" in types
+
+    request_model = _read_backend("models/inference.py")
+    assert "local_files_only: bool = Field(" in request_model
+
+    route = _read_backend("routes/inference.py")
+    assert "request.local_files_only" in route
+    assert "resolve_local_snapshot_path" in route
+    assert "config.path = local_snapshot" in route
+    # Uncached repos fail closed with a conflict, never a download.
+    rewrite = route.split("request.local_files_only", 1)[1]
+    rewrite = rewrite.split("config.path = local_snapshot", 1)[0]
+    assert "status_code = 409" in rewrite
+
+    helper = _read_backend("hub/utils/local_snapshot.py")
+    assert "local_files_only = True" in helper

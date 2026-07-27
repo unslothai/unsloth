@@ -41,6 +41,9 @@ export interface LoadModelRequest {
   load_in_4bit: boolean;
   is_lora: boolean;
   gguf_variant?: string | null;
+  /** Resolve a cached repo id against the local snapshot only and never
+   *  download missing files (background auto-loads). */
+  local_files_only?: boolean;
   /** Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust. */
   trust_remote_code?: boolean;
   /** sha256 fingerprint pinning user approval of this exact custom-code version. */
