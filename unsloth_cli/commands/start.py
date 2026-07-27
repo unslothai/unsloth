@@ -2657,6 +2657,20 @@ def _agents_config_root() -> Path:
     return auth_root() / "agents"
 
 
+def _ephemeral_session_parent(agent: str) -> Optional[Path]:
+    """Return a non-system-temp parent when an agent needs one."""
+    if os.name != "nt" or agent != "codex":
+        return None
+    # Codex creates a deeply nested curated-plugin checkout below CODEX_HOME.
+    # A normal %TEMP%\unsloth-codex-* home can exceed legacy Windows path
+    # limits during startup, and Codex also refuses to create its PATH helpers
+    # below the system temp directory. Keep the throwaway home short but still
+    # private to the current user; _session_config removes it on exit.
+    root = Path.home() / ".unsloth" / ".tmp"
+    root.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    return root
+
+
 @contextlib.contextmanager
 def _session_config(
     agent: str,
@@ -2672,7 +2686,13 @@ def _session_config(
     resumed next time. Either way the user's real ~/.<agent> config is left untouched.
     """
     if launch and not persist:
-        path = Path(tempfile.mkdtemp(prefix = f"unsloth-{agent}-"))
+        parent = _ephemeral_session_parent(agent)
+        path = Path(
+            tempfile.mkdtemp(
+                prefix = "u-codex-" if parent is not None else f"unsloth-{agent}-",
+                dir = parent,
+            )
+        )
         try:
             yield path
         finally:

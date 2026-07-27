@@ -4706,6 +4706,25 @@ def test_session_config_default_launch_is_ephemeral():
     assert not home.exists()
 
 
+def test_session_config_codex_uses_short_ephemeral_parent(monkeypatch, tmp_path):
+    # Windows Codex checks out its curated plugins under CODEX_HOME/.tmp/plugins.
+    # Put its throwaway home outside the longer system temp path so that checkout
+    # stays below legacy MAX_PATH and Codex does not reject temp-dir PATH helpers.
+    short_parent = tmp_path / "u"
+    short_parent.mkdir()
+    monkeypatch.setattr(
+        start,
+        "_ephemeral_session_parent",
+        lambda agent: short_parent if agent == "codex" else None,
+    )
+
+    with start._session_config("codex", launch = True) as home:
+        assert home.parent == short_parent
+        assert home.name.startswith("u-codex-")
+        assert home.exists()
+    assert not home.exists()
+
+
 # The temp-dir agents: --persist points each one's home/state env at the stable dir;
 # without it, at an ephemeral temp path. opencode is handled separately (only its
 # config overlay is relocated; its session data was never in the temp dir).
