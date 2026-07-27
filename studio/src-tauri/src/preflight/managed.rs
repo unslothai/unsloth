@@ -303,6 +303,11 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> bool {
     }
 }
 
+/// A hung binary, kept out of the fallback below: an older CLI rejects the
+/// unknown command at once, so only a broken one reaches the timeout, and
+/// running two more probes on it would treble the wait before repair.
+const RUNTIME_PROBE_TIMEOUT: &str = "studio_runtime_probe_timeout";
+
 /// True when the CLI is older than `desktop-runtime-check` yet still launches.
 /// Such a CLI exits with a usage error and no JSON, which is indistinguishable
 /// from a crashed probe; `--help` resolves the command without running it, and
@@ -367,7 +372,7 @@ async fn probe_cli_runtime(bin: &Path) -> Result<(), String> {
                 "Managed runtime probe timed out in {}ms",
                 started.elapsed().as_millis()
             );
-            return Err("studio_runtime_probe_failed".to_string());
+            return Err(RUNTIME_PROBE_TIMEOUT.to_string());
         }
     };
 
@@ -605,4 +610,14 @@ pub(super) async fn probe_managed_install() -> ManagedProbe {
 
 pub async fn managed_install_ready() -> bool {
     matches!(probe_managed_install().await, ManagedProbe::Ready { .. })
+}
+
+/// Ready, or the reason it is not, so repair can tell an unrepairable cause
+/// apart from a stale install rather than reinstalling over both.
+pub async fn managed_install_state() -> Result<(), Option<String>> {
+    match probe_managed_install().await {
+        ManagedProbe::Ready { .. } => Ok(()),
+        ManagedProbe::Stale { reason, .. } => Err(Some(reason)),
+        _ => Err(None),
+    }
 }

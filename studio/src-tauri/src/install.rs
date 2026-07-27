@@ -82,11 +82,12 @@ fn clear_install_in_progress_marker() -> Result<(), String> {
     clear_install_in_progress_marker_at(&path)
 }
 
-/// The marker means "a run started and never reported an outcome", so every
-/// terminal outcome clears it, failures included. The runtime probe is the
-/// backstop for a broken venv, whereas a marker left behind by a failed update
-/// pins a working install into a repair it may not be able to finish offline.
-/// Never fatal: losing the marker costs a fast path, not correctness.
+/// Clear only where the script provably never touched the venv: it failed to
+/// spawn, or it exited asking for elevation, which install.sh decides (:1931)
+/// before it creates the venv (:2120). Once the script is running, any failure
+/// can leave pip part-way through replacing a package, and the runtime probe
+/// does not reach transitive dependencies, so the marker is the only signal
+/// left. Never fatal: losing it costs a fast path, not correctness.
 fn clear_install_marker_best_effort() {
     if let Err(msg) = clear_install_in_progress_marker() {
         warn!("[install] {}", msg);
@@ -578,7 +579,8 @@ fn run_install_with_event_mode(
                 let _ = app.emit(event_mode.needs_elevation_event(), &packages);
                 Err("NEEDS_ELEVATION".to_string())
             } else {
-                clear_install_marker_best_effort();
+                // Keep the marker: the script ran, so pip may have replaced or
+                // removed packages before it failed.
                 let msg = format!("Installer exited with code {}", code);
                 diagnostics::finish_attempt(
                     &diagnostics,
@@ -601,7 +603,7 @@ fn run_install_with_event_mode(
             Err(msg)
         }
         Err(msg) => {
-            clear_install_marker_best_effort();
+            // Same: the wait failed but the script was already running.
             diagnostics::finish_attempt(&diagnostics, &attempt, None, false, Some(msg.clone()));
             clear_current_attempt(&state);
             if event_mode.emit_terminal_events() {

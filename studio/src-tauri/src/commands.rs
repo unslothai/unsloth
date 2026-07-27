@@ -18,6 +18,21 @@ async fn managed_install_ready_after_repair() -> bool {
     crate::preflight::managed_install_ready().await
 }
 
+/// The update can install the newer CLI and only then reach a rejected
+/// environment value. No reinstall changes that, so report it instead of
+/// running the bundled installer over a healthy tree.
+fn unrepairable_after_update(reason: Option<&str>) -> Option<String> {
+    match reason {
+        Some(crate::preflight::STUDIO_RUNTIME_STARTUP_FAILED) => Some(
+            "Unsloth is installed, but the backend refuses to start with the current \
+             environment settings (for example UNSLOTH_CPU_THREADS). Fix or unset them, \
+             then try again."
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
 fn should_emit_repair_failed(msg: &str) -> bool {
     !msg.contains("NEEDS_ELEVATION")
 }
@@ -555,8 +570,27 @@ pub async fn start_managed_repair(
         .await
         .map_err(|e| format!("Repair update task panicked: {e}"))?;
 
+        let post_update = if matches!(update_result, Ok(())) {
+            Some(crate::preflight::managed_install_state().await)
+        } else {
+            None
+        };
+        if let Some(Err(reason)) = post_update.as_ref() {
+            if let Some(msg) = unrepairable_after_update(reason.as_deref()) {
+                warn!("Managed repair stopping: {}", msg);
+                diagnostics::finish_repair_group(
+                    &diagnostics_state,
+                    &repair_group_id,
+                    "failed",
+                    Some(msg.clone()),
+                );
+                let _ = app.emit("repair-failed", &msg);
+                return Err(msg);
+            }
+        }
+
         match update_result {
-            Ok(()) if managed_install_ready_after_repair().await => {
+            Ok(()) if matches!(post_update, Some(Ok(()))) => {
                 info!("Managed repair complete after update");
                 diagnostics::finish_repair_group(
                     &diagnostics_state,
@@ -757,6 +791,21 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("Directory does not exist"));
     }
+    #[test]
+    fn rejected_settings_stop_repair_instead_of_reinstalling() {
+        // The update can install the newer CLI and only then reach the bad
+        // value, so this arm is the one that would otherwise reinstall over a
+        // healthy tree and fail again the same way.
+        let msg =
+            super::unrepairable_after_update(Some(crate::preflight::STUDIO_RUNTIME_STARTUP_FAILED))
+                .expect("a rejected setting must stop repair");
+        assert!(msg.contains("UNSLOTH_CPU_THREADS"));
+        assert!(
+            super::unrepairable_after_update(Some("studio_runtime_missing_dependency")).is_none()
+        );
+        assert!(super::unrepairable_after_update(None).is_none());
+    }
+
     #[test]
     fn repair_elevation_is_not_a_terminal_repair_failure() {
         assert!(!super::should_emit_repair_failed("NEEDS_ELEVATION"));

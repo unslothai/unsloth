@@ -8,8 +8,8 @@ use crate::desktop_backend_owner::{
 };
 use backend::probe_existing_backends;
 use log::warn;
-pub use managed::managed_install_ready;
 use managed::probe_managed_install;
+pub use managed::{managed_install_ready, managed_install_state};
 use std::path::PathBuf;
 use types::{BackendProbe, ManagedProbe};
 pub use types::{DesktopPreflightDisposition, DesktopPreflightResult, ExternalBackendConflict};
@@ -678,6 +678,35 @@ exit 1
                 (probe, expected) => panic!("unexpected probe {probe:?}, expected {expected:?}"),
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hung_cli_is_stale_without_running_the_legacy_fallback() {
+        // An older CLI rejects the unknown command at once, so only a broken one
+        // reaches the timeout. Retrying it with two more 10s probes would treble
+        // the wait before repair on exactly the installs that need it soonest.
+        let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
+        let _cache_home = ManagedCapabilityCacheHome::new("runtime-hang");
+        remove_managed_capability_cache();
+
+        let fake = fake_cli(
+            "runtime-hang",
+            r#"#!/bin/sh
+sleep 120
+"#,
+        );
+        let started = std::time::Instant::now();
+        let probe = probe_managed_bin(fake.bin.clone()).await;
+        assert!(
+            matches!(&probe, ManagedProbe::Stale { reason, .. } if reason == "studio_runtime_probe_timeout"),
+            "a hung CLI must be stale on the timeout, got {probe:?}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "the legacy fallback ran after the timeout, tripling the wait"
+        );
+        remove_managed_capability_cache();
     }
 
     #[cfg(unix)]
