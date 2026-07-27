@@ -34,6 +34,7 @@ class _LocalGgufEntry:
 _CACHE_TTL_S = 5.0
 _lock = threading.Lock()
 _scan: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
+_warming = False
 
 
 def _is_abs_path_id(value: str) -> bool:
@@ -318,7 +319,36 @@ def _index() -> dict[str, _LocalGgufEntry]:
         return fresh
 
 
-def resolve_local_gguf(requested: str) -> Optional[tuple[str, Optional[str], str]]:
+def index_is_built() -> bool:
+    """Whether a scan has ever completed, freshness aside."""
+    with _lock:
+        return bool(_scan[0])
+
+
+def warm_index_soon() -> None:
+    """Build the index off the request path, once."""
+    global _warming
+    with _lock:
+        if _warming or _scan[0]:
+            return
+        _warming = True
+
+    def _run() -> None:
+        global _warming
+        try:
+            _index()
+        except Exception:
+            pass
+        finally:
+            with _lock:
+                _warming = False
+
+    threading.Thread(target = _run, name = "local-model-index-warm", daemon = True).start()
+
+
+def resolve_local_gguf(
+    requested: str, *, allow_scan: bool = True
+) -> Optional[tuple[str, Optional[str], str]]:
     """Return ``(load_path, gguf_variant, loader_id)`` for a local match, else None.
 
     ``load_path`` is the concrete on-disk path to hand /load (so it never fetches
@@ -326,12 +356,18 @@ def resolve_local_gguf(requested: str) -> Optional[tuple[str, Optional[str], str
     ``requested`` is ``repo`` or ``repo:VARIANT``. An exact id match wins first
     (so ids containing a colon still resolve); else the last ``:VARIANT`` is split
     off and resolves only when that quant is on disk.
+
+    ``allow_scan=False`` answers from the last built index and never rebuilds,
+    for callers on the request path: the scan walks several model dirs and HF
+    caches, takes seconds on a large install, and holds a lock every other
+    caller queues behind. A stale answer is fine there, since what is on disk
+    barely moves and a finished download calls :func:`invalidate_index`.
     """
     if not isinstance(requested, str) or not requested.strip():
         return None
     requested = requested.strip()
     try:
-        index = _index()
+        index = _index() if allow_scan else _scan[1]
         entry = index.get(requested.lower())
         if entry is not None:
             variant = entry.variants[0] if entry.variants else None

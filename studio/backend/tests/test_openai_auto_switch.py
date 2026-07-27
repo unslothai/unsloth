@@ -95,7 +95,8 @@ class _LoadRecorder:
 
 def _wire(monkeypatch, *, enabled, resolves_to, backend, recorder):
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
-    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda _m: resolves_to)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda _m, **_kw: resolves_to)
+    monkeypatch.setattr(resolver, "index_is_built", lambda: True)
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     # Auto-switch loads via _load_model_impl (the /load route holds the lifecycle
     # gate that auto-switch already owns, so it calls the impl directly).
@@ -3409,7 +3410,7 @@ def _wire_unloaded_chat(
         return [{"id": mid} for mid in catalog]
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
-    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda _m: None)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda _m, **_kw: None)
     monkeypatch.setattr(
         resolver, "describe_local_miss", lambda _m: (resolver.MISS_MODEL_NOT_FOUND, ())
     )
