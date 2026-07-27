@@ -4264,3 +4264,143 @@ def test_request_used_api_key_distinguishes_key_from_session():
     # A malformed request object must read as "not an API key", never raise, since
     # this runs on the hot path of every tracked request.
     assert inference_route._request_used_api_key(object()) is False
+
+
+def test_case_fallback_never_applies_to_a_posix_path(monkeypatch):
+    # Two files that differ only in case are two different models on Linux, so a
+    # near miss must load defaults rather than another model's context and GPU pin.
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("/models/foo.gguf", max_seq_length = 8192, gpu_ids = [1])
+    assert settings.get_model_override("/models/Foo.gguf") == {}
+    assert settings.get_model_override("/models/foo.gguf")["max_seq_length"] == 8192
+
+
+def test_case_fallback_never_applies_to_a_windows_path(monkeypatch):
+    _mock_override_store(monkeypatch)
+    settings.set_model_override(r"C:\models\foo.gguf", max_seq_length = 8192)
+    assert settings.get_model_override(r"C:\models\FOO.gguf") == {}
+
+
+def test_case_fallback_still_covers_repo_ids(monkeypatch):
+    # The migration case this fallback exists for.
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("unsloth/qwen3-8b-gguf:q4_k_m", max_seq_length = 8192)
+    assert settings.get_model_override("unsloth/Qwen3-8B-GGUF:Q4_K_M")["max_seq_length"] == 8192
+
+
+def test_explicit_remove_wins_over_config_fields_in_the_same_payload(monkeypatch):
+    # remove is the operation discriminator, so a stale form field alongside it
+    # must not quietly turn "forget this model" into an update.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("unsloth/B-GGUF", max_seq_length = 4096)
+    resp = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(
+            model_id = "unsloth/B-GGUF", remove = True, max_seq_length = 8192, tensor_parallel = True
+        ),
+        "tester",
+    )
+    assert "unsloth/B-GGUF" not in resp.overrides
+
+
+def test_posix_colon_in_a_path_is_not_treated_as_a_quant(monkeypatch):
+    # "/models/foo:bar.gguf" is one valid POSIX filename, not repo + quant.
+    # Splitting it would graft /models/foo's launch flags onto a different model.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("/models/foo", llama_extra_args = ["--flash-attn"])
+    resp = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(model_id = "/models/foo:bar.gguf", max_seq_length = 4096),
+        "tester",
+    )
+    assert "llama_extra_args" not in resp.overrides["/models/foo:bar.gguf"]
+
+
+def test_real_quant_suffix_on_a_path_still_carries_flags_over(monkeypatch):
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("/models/x.gguf", llama_extra_args = ["--flash-attn"])
+    resp = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(model_id = "/models/x.gguf:Q4_K_M", max_seq_length = 4096),
+        "tester",
+    )
+    assert resp.overrides["/models/x.gguf:Q4_K_M"]["llama_extra_args"] == ["--flash-attn"]
+
+
+def test_load_retries_without_gpu_ids_when_the_loader_rejects_the_pin(monkeypatch):
+    # The pre-flight check cannot mirror every rule the loader applies (a Vulkan
+    # diffusion GGUF refuses GPU selection outright). A stale placement preference
+    # must never be the reason a request cannot be served.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        settings, "get_model_override", lambda mid: {"gpu_ids": [0], "max_seq_length": 4096}
+    )
+
+    async def _usable(ids):
+        return True
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
+
+    calls = {"n": 0}
+
+    async def _load(request, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise HTTPException(
+                status_code = 400,
+                detail = "GPU selection (gpu_ids) is not supported for a DiffusionGemma GGUF",
+            )
+        return await rec(request, *args, **kwargs)
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _load)
+
+    _run_hook("unsloth/B-GGUF")
+    assert calls["n"] == 2
+    served = rec.calls[-1]
+    assert not served.gpu_ids
+    assert served.max_seq_length == 4096
+
+
+def test_a_non_gpu_load_failure_is_not_retried(monkeypatch):
+    from fastapi import HTTPException
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0]})
+
+    async def _usable(ids):
+        return True
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
+
+    calls = {"n": 0}
+
+    async def _load(request, *args, **kwargs):
+        calls["n"] += 1
+        raise HTTPException(status_code = 400, detail = "Corrupt GGUF header")
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _load)
+
+    with pytest.raises(HTTPException):
+        _run_hook("unsloth/B-GGUF")
+    assert calls["n"] == 1

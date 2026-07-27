@@ -426,6 +426,14 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
     return kwargs
 
 
+def _looks_like_filesystem_path(model_id: str) -> bool:
+    """True for an absolute path id, as the ./models and LM Studio scanners emit."""
+    if model_id.startswith(("/", "\\")):
+        return True
+    # Windows drive letter, e.g. "C:\models\x.gguf".
+    return len(model_id) >= 3 and model_id[1] == ":" and model_id[2] in ("\\", "/")
+
+
 def get_model_overrides() -> dict[str, dict]:
     """Per-model launch configs keyed by model id (see normalize_model_override)."""
     raw = _cached_setting(MODEL_OVERRIDES_SETTING_KEY, None)
@@ -447,6 +455,11 @@ def get_model_override(model_id: str) -> dict:
     if isinstance(override, dict):
         return override
     if not isinstance(model_id, str):
+        return {}
+    # Only repo-style ids fold. A POSIX path is case-sensitive and names a
+    # different file, so matching "/models/Foo.gguf" against an entry saved for
+    # "/models/foo.gguf" would replay another model's context and GPU pin.
+    if _looks_like_filesystem_path(model_id):
         return {}
     folded = model_id.casefold()
     matches = [

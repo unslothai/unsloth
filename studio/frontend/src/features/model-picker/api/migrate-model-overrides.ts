@@ -47,7 +47,10 @@ export async function backfillModelOverrides(): Promise<void> {
     return;
   }
   const local = listPerModelConfigs().filter(
-    (entry) => !isDefaultConfig(entry.config),
+    // A quant means it is a GGUF, which is the only thing API auto-switch
+    // resolves. Backfilling a safetensors config would claim an API behaviour
+    // that does not exist.
+    (entry) => entry.ggufVariant != null && !isDefaultConfig(entry.config),
   );
   if (local.length === 0) {
     markRan();

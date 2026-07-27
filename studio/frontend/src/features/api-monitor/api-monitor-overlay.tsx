@@ -168,8 +168,17 @@ export function ApiMonitorOverlay(): ReactElement | null {
     const ids = data.entries.map((entry) => entry.id);
     if (!seededRef.current) {
       seededRef.current = true;
-      seenIdsRef.current = new Set(ids);
-      return;
+      // Seed finished requests only. A request that is still running when the
+      // first snapshot lands started while Studio was loading, so it is live
+      // traffic the user has not seen, not history to adopt silently.
+      seenIdsRef.current = new Set(
+        data.entries
+          .filter((entry) => entry.status !== "running")
+          .map((entry) => entry.id),
+      );
+      if (!data.entries.some((e) => e.via_api_key && e.status === "running")) {
+        return;
+      }
     }
     const seen = seenIdsRef.current;
     // Only API-key traffic counts. Studio's own chat goes through these same

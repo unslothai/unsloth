@@ -886,7 +886,10 @@ export function ModelConfigPage({
     // Skipped when the local write failed (quota, a future-schema entry): the
     // browser and the server would otherwise permanently disagree about this
     // model, with no way for the user to tell which one the next load used.
-    if (!saveFailed) {
+    // GGUF only: the API auto-switch resolver indexes GGUFs, so mirroring a
+    // safetensors config to the server would advertise settings on the monitor's
+    // "applied on API load" list that no API request can ever apply.
+    if (!saveFailed && target.isGguf) {
       syncModelOverride(
         target.id,
         target.ggufVariant,

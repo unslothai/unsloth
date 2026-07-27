@@ -486,6 +486,7 @@ export function ApiMonitorPage(): ReactElement {
   const selectedUpdatedAt = selected?.updated_at ?? null;
   const selectedIsMissing = selectedId_ != null && details[selectedId_] == null;
   const lastFetchedRef = useRef<string | null>(null);
+  const [retryTick, setRetryTick] = useState(0);
   useEffect(() => {
     if (selectedId_ == null) {
       return;
@@ -500,8 +501,21 @@ export function ApiMonitorPage(): ReactElement {
     // guard can refuse, and recording it anyway skips that revision for good.
     if (requestDetail(selectedId_)) {
       lastFetchedRef.current = revision;
+      setRetryTick(0);
+    } else {
+      // Refused because an older fetch is still running. Nothing in this effect's
+      // deps will change when that one settles, so without a nudge a revision
+      // rejected here is never fetched, and a terminal reply stays truncated.
+      const timer = window.setTimeout(() => setRetryTick((n) => n + 1), 250);
+      return () => window.clearTimeout(timer);
     }
-  }, [selectedId_, selectedUpdatedAt, selectedIsMissing, requestDetail]);
+  }, [
+    selectedId_,
+    selectedUpdatedAt,
+    selectedIsMissing,
+    requestDetail,
+    retryTick,
+  ]);
 
   // The desktop webview's origin is tauri://, not the API server, and the
   // packaged app picks its port dynamically. Same source as the Agents tab.

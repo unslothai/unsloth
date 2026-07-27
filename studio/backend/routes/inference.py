@@ -3779,12 +3779,39 @@ async def _maybe_auto_switch_model(
                         # Reuse the load impl so its dedup, tensor fallback, and threading
                         # apply. Call the impl directly: we already hold the lifecycle gate
                         # the /load route would otherwise take, so the route would deadlock.
-                        await _load_model_impl(
-                            LoadRequest(**load_kwargs),
-                            fastapi_request,
-                            current_subject,
-                            current_request_counted = True,
-                        )
+                        try:
+                            await _load_model_impl(
+                                LoadRequest(**load_kwargs),
+                                fastapi_request,
+                                current_subject,
+                                current_request_counted = True,
+                            )
+                        except HTTPException as exc:
+                            # The pre-flight check above cannot mirror every rule the
+                            # loader applies to gpu_ids (a Vulkan diffusion GGUF refuses
+                            # GPU selection outright, and the rules move). Rather than
+                            # duplicating them, retry once without the saved pin: a
+                            # stale placement preference must never be the reason an
+                            # API request cannot be served.
+                            if not (
+                                exc.status_code == 400
+                                and load_kwargs.get("gpu_ids")
+                                and "gpu" in str(exc.detail).lower()
+                            ):
+                                raise
+                            logger.warning(
+                                "Retrying %s without saved gpu_ids %s: %s",
+                                override_id,
+                                load_kwargs.get("gpu_ids"),
+                                exc.detail,
+                            )
+                            load_kwargs.pop("gpu_ids", None)
+                            await _load_model_impl(
+                                LoadRequest(**load_kwargs),
+                                fastapi_request,
+                                current_subject,
+                                current_request_counted = True,
+                            )
                         # Advertise the repo id (not the concrete load path) as the loaded
                         # model's public id and override key for /v1/models and idle stash.
                         get_llama_cpp_backend()._openai_advertised_id = override_id

@@ -126,8 +126,10 @@ class OpenAIAutoSwitchResponse(BaseModel):
     auto_unload_keep_kv: bool = DEFAULT_AUTO_UNLOAD_KEEP_KV
 
 
-# A quant suffix, as modelOverrideKey builds it: no path separator and short.
-# Guards against splitting "C:\\models\\x.gguf", where the colon is a drive letter.
+# A quant suffix, as modelOverrideKey builds it. Matched against the loader's own
+# quant pattern rather than a length heuristic: a POSIX path may legitimately
+# contain a colon ("/models/foo:bar.gguf"), and treating "bar.gguf" as a quant
+# would graft an unrelated model's launch flags onto this one.
 _MAX_VARIANT_SUFFIX_LEN = 64
 
 # A local model's id is its filesystem path, optionally with a quant suffix, and
@@ -342,10 +344,15 @@ def get_openai_auto_switch_overrides(
 
 def _bare_model_id(model_id: str) -> Optional[str]:
     """``repo`` for a ``repo:QUANT`` key, or None when there is no quant suffix."""
+    from core.inference.llama_cpp import _GGUF_KNOWN_QUANT_RE
+
     head, sep, tail = model_id.rpartition(":")
     if not sep or not head or not tail:
         return None
     if len(tail) > _MAX_VARIANT_SUFFIX_LEN or "/" in tail or "\\" in tail:
+        return None
+    # Must actually look like a quant, not just like a short path segment.
+    if _GGUF_KNOWN_QUANT_RE.fullmatch(tail) is None:
         return None
     return head
 
@@ -382,21 +389,28 @@ def update_openai_auto_switch_override(
                 if bare_id:
                     requested_extra_args = get_model_override(bare_id).get("llama_extra_args")
         extra_args = validate_extra_args(requested_extra_args)
-        set_model_override(
-            payload.model_id,
-            llama_extra_args = extra_args,
-            max_seq_length = payload.max_seq_length,
-            custom_context_length = payload.custom_context_length,
-            kv_cache_dtype = payload.kv_cache_dtype,
-            speculative_type = payload.speculative_type,
-            spec_draft_n_max = payload.spec_draft_n_max,
-            tensor_parallel = payload.tensor_parallel,
-            chat_template_override = payload.chat_template_override,
-            gpu_memory_mode = payload.gpu_memory_mode,
-            gpu_layers = payload.gpu_layers,
-            n_cpu_moe = payload.n_cpu_moe,
-            gpu_ids = payload.gpu_ids,
-        )
+        if payload.remove is True:
+            # An explicit remove wins over anything else in the payload: a stale
+            # form field must not turn "forget this model" into an update that
+            # keeps it. Only the explicit flag short-circuits; the legacy
+            # inferred path still just gates launch-flag carry-over.
+            set_model_override(payload.model_id, llama_extra_args = [], max_seq_length = None)
+        else:
+            set_model_override(
+                payload.model_id,
+                llama_extra_args = extra_args,
+                max_seq_length = payload.max_seq_length,
+                custom_context_length = payload.custom_context_length,
+                kv_cache_dtype = payload.kv_cache_dtype,
+                speculative_type = payload.speculative_type,
+                spec_draft_n_max = payload.spec_draft_n_max,
+                tensor_parallel = payload.tensor_parallel,
+                chat_template_override = payload.chat_template_override,
+                gpu_memory_mode = payload.gpu_memory_mode,
+                gpu_layers = payload.gpu_layers,
+                n_cpu_moe = payload.n_cpu_moe,
+                gpu_ids = payload.gpu_ids,
+            )
     except ValueError as exc:
         raise log_and_http_error(
             exc,

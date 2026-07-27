@@ -23,6 +23,7 @@ import {
 } from "@/features/model-picker";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo } from "@/hooks/use-gpu-info";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
@@ -1276,10 +1277,19 @@ export function ModelsPage() {
               downloaded[0]?.quant ??
               null;
           } catch {
-            // Offline or an unreadable cache: fall through with no variant. The
-            // settings page still works, it just cannot pin a specific quant.
             ggufVariant = null;
           }
+        }
+        if (!ggufVariant) {
+          // A model that needs a quant cannot be configured without one: the
+          // picker matches variants exactly and would never find the saved
+          // config, while the API falls back to the bare key and would apply it.
+          // Opening the editor here would quietly create that mismatch.
+          toast.error("Couldn't determine which quant to configure.", {
+            description:
+              "Settings for this model are per quant. Check the connection or the model's cache, then try again.",
+          });
+          return;
         }
       }
       // The variant lookup above is async, so a second row opened while it was
@@ -1349,6 +1359,9 @@ export function ModelsPage() {
   const openSelectedModelSettings = useCallback(
     (ggufVariant: string | null) => {
       if (!selectedModel) return;
+      // Share the sequence with openModelSettings: a row's variant lookup may
+      // still be pending, and it must not land on top of this one.
+      settingsOpenSeq.current += 1;
       const id = selectedModel.resource.runId;
       const leaf = id.split(/[\\/]/).filter(Boolean).pop() ?? id;
       setSettingsTarget({
@@ -1751,7 +1764,10 @@ export function ModelsPage() {
 
         {splitMode ? (
           detailOpen ? (
-            <div className="hub-canvas z-20 flex min-h-0 flex-col max-lg:absolute max-lg:inset-0 lg:relative lg:min-w-0 lg:flex-1">
+            <div
+              className="hub-canvas z-20 flex min-h-0 flex-col max-lg:absolute max-lg:inset-0 lg:relative lg:min-w-0 lg:flex-1"
+              inert={settingsTarget !== null || undefined}
+            >
               <HubDetailView
                 model={selectedModel}
                 isDataset={isDatasetMode}
@@ -1770,7 +1786,10 @@ export function ModelsPage() {
           )
         ) : (
           detailOpen && (
-            <div className="hub-canvas absolute inset-0 z-20 flex min-h-0 flex-col">
+            <div
+              className="hub-canvas absolute inset-0 z-20 flex min-h-0 flex-col"
+              inert={settingsTarget !== null || undefined}
+            >
               <HubDetailView
                 model={selectedModel}
                 isDataset={isDatasetMode}
