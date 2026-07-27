@@ -21,7 +21,7 @@ def _powershell_block(source: str, marker: str) -> str:
 
 
 def test_windows_direct_torch_installs_are_skipped_in_no_torch_mode():
-    source = SETUP_PS1.read_text(encoding="utf-8")
+    source = SETUP_PS1.read_text(encoding = "utf-8")
     guarded = _powershell_block(source, "if (-not $NoTorchMode) {")
 
     for install_path in (
