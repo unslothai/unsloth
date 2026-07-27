@@ -121,7 +121,6 @@ def _payload(**fields) -> AnthropicMessagesRequest:
     return AnthropicMessagesRequest(**base)
 
 
-
 def _record_admission_logs(monkeypatch):
     """Capture _llama_admission_log output.
 
@@ -143,6 +142,7 @@ def _record_admission_logs(monkeypatch):
         ),
     )
     return records
+
 
 def _snapshot(key = _KEY):
     return get_llama_admission_queue(key).snapshot()
