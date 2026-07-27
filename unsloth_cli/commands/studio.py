@@ -270,11 +270,17 @@ def _load_run_module():
     return _RUN_MODULE
 
 
-def _missing_studio_requirement(run_mod):
-    from importlib.metadata import PackageNotFoundError, distribution
+def _canonical_distribution_name(name: str) -> str:
+    """PEP 503 normalisation, so PyJWT / pyjwt / py_jwt compare equal."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _studio_requirement_roots(run_mod):
+    """Requirements studio.txt names directly, markers already applied."""
     from packaging.requirements import InvalidRequirement, Requirement
 
     requirements = Path(run_mod.__file__).with_name("requirements") / "studio.txt"
+    roots = []
     for line in requirements.read_text(encoding = "utf-8").splitlines():
         line = line.partition("#")[0].strip()
         # pip flags (-r, --extra-index-url) are not requirements. Skipping them
@@ -288,6 +294,29 @@ def _missing_studio_requirement(run_mod):
             continue
         if requirement.marker and not requirement.marker.evaluate():
             continue
+        roots.append(requirement)
+    return roots
+
+
+def _missing_studio_requirement(run_mod):
+    """First requirement studio.txt needs that this venv cannot supply.
+
+    Walks dependencies too: starlette is imported by studio/backend/main.py but
+    reaches the venv only as a FastAPI dependency, and main is imported inside
+    run_server, so a direct-only check calls the install ready and the server
+    still dies on startup. Metadata only, no imports, ~80ms on a full venv.
+    """
+    from importlib.metadata import PackageNotFoundError, distribution
+    from packaging.requirements import InvalidRequirement, Requirement
+
+    pending = [(root, True) for root in reversed(_studio_requirement_roots(run_mod))]
+    seen = set()
+    while pending:
+        requirement, is_root = pending.pop()
+        key = _canonical_distribution_name(requirement.name)
+        if key in seen:
+            continue
+        seen.add(key)
         try:
             installed = distribution(requirement.name)
         except PackageNotFoundError:
@@ -298,11 +327,23 @@ def _missing_studio_requirement(run_mod):
         # landed. RECORD is written last, so its absence marks that unpack.
         if installed.files is None:
             return requirement.name
+        # Only studio.txt pins are enforced. install_python_stack installs torch
+        # and friends with --no-deps, so a transitive bound can read unsatisfied
+        # in a venv that works, and repair reinstalls studio.txt either way.
         # prereleases=True: a prerelease satisfying a floor is not a broken install.
-        if requirement.specifier and not requirement.specifier.contains(
+        if is_root and requirement.specifier and not requirement.specifier.contains(
             installed.version, prereleases = True
         ):
             return requirement.name
+        for dependency in installed.requires or []:
+            try:
+                parsed = Requirement(dependency)
+            except InvalidRequirement:
+                continue
+            # No extra is requested, so extras-only dependencies do not apply.
+            if parsed.marker and not parsed.marker.evaluate({"extra": ""}):
+                continue
+            pending.append((parsed, False))
     return None
 
 

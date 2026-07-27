@@ -94,7 +94,7 @@ def test_desktop_runtime_check_accepts_a_prerelease_over_a_floor(monkeypatch, ca
     monkeypatch.setattr(
         importlib.import_module("importlib.metadata"),
         "distribution",
-        lambda _name: SimpleNamespace(version = "2.0.0b1", files = []),
+        lambda _name: SimpleNamespace(version = "2.0.0b1", files = [], requires = None),
     )
 
     studio.desktop_runtime_check(_json_output = True)
@@ -113,7 +113,7 @@ def test_desktop_runtime_check_rejects_version_mismatch(monkeypatch, capsys, tmp
     monkeypatch.setattr(
         importlib.import_module("importlib.metadata"),
         "distribution",
-        lambda _name: SimpleNamespace(version = "1.0", files = []),
+        lambda _name: SimpleNamespace(version = "1.0", files = [], requires = None),
     )
 
     with pytest.raises(typer.Exit):
@@ -139,7 +139,7 @@ def test_desktop_runtime_check_rejects_metadata_without_an_unpacked_package(
     monkeypatch.setattr(
         importlib.import_module("importlib.metadata"),
         "distribution",
-        lambda _name: SimpleNamespace(version = "0.140.5", files = None),
+        lambda _name: SimpleNamespace(version = "0.140.5", files = None, requires = None),
     )
 
     with pytest.raises(typer.Exit):
@@ -148,6 +148,67 @@ def test_desktop_runtime_check_rejects_metadata_without_an_unpacked_package(
     payload = json.loads(capsys.readouterr().out)
     assert payload["reason"] == "missing_dependency"
     assert payload["module"] == "fastapi"
+
+
+def _fake_distributions(monkeypatch, installed):
+    metadata = importlib.import_module("importlib.metadata")
+
+    def _distribution(name):
+        try:
+            version, requires = installed[name]
+        except KeyError:
+            raise metadata.PackageNotFoundError(name) from None
+        return SimpleNamespace(version = version, files = [], requires = requires)
+
+    monkeypatch.setattr(metadata, "distribution", _distribution)
+
+
+def test_desktop_runtime_check_rejects_a_missing_transitive_dependency(
+    monkeypatch, capsys, tmp_path
+):
+    """starlette reaches the venv only as a FastAPI dependency, and the backend
+    imports it from main.py, which run.py imports inside run_server. A
+    direct-only check calls the install ready and the server dies on start."""
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    backend = tmp_path / "backend"
+    requirements = backend / "requirements"
+    requirements.mkdir(parents = True)
+    (requirements / "studio.txt").write_text("fastapi>=0.115\n", encoding = "utf-8")
+    run_mod = SimpleNamespace(__file__ = str(backend / "run.py"))
+    monkeypatch.setattr(studio, "_load_run_module", lambda: run_mod)
+    _fake_distributions(monkeypatch, {"fastapi": ("0.140.5", ["starlette>=0.40"])})
+
+    with pytest.raises(typer.Exit):
+        studio.desktop_runtime_check(_json_output = True)
+
+    assert json.loads(capsys.readouterr().out)["module"] == "starlette"
+
+
+def test_desktop_runtime_check_ignores_optional_and_circular_dependencies(
+    monkeypatch, capsys, tmp_path
+):
+    """No extra is requested, so an extras-only dependency is not missing, and a
+    dependency cycle must terminate rather than walk forever."""
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    backend = tmp_path / "backend"
+    requirements = backend / "requirements"
+    requirements.mkdir(parents = True)
+    (requirements / "studio.txt").write_text("fastapi\n", encoding = "utf-8")
+    run_mod = SimpleNamespace(__file__ = str(backend / "run.py"))
+    monkeypatch.setattr(studio, "_load_run_module", lambda: run_mod)
+    _fake_distributions(
+        monkeypatch,
+        {
+            "fastapi": ("0.140.5", ['uvicorn; extra == "standard"', "starlette"]),
+            # Transitive bounds are not enforced: install_python_stack installs
+            # with --no-deps, so an unmet one can describe a working venv.
+            "starlette": ("0.1", ["fastapi>=99"]),
+        },
+    )
+
+    studio.desktop_runtime_check(_json_output = True)
+
+    assert json.loads(capsys.readouterr().out) == {"runtime_ready": True}
 
 
 def test_desktop_runtime_check_reports_a_rejected_setting_instead_of_exiting(monkeypatch, capsys):
