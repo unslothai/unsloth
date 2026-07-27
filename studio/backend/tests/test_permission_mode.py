@@ -1051,6 +1051,55 @@ def test_terminal_classifier(command, unsafe):
         ('sed "s/$old/$new/g" f', False),
         ('sed -n "1,${n}p" f', False),
         ('sed -n "1,$((n + 1))p" f', False),  # arithmetic, not a substitution
+        # --- `find -exec CMD ... +` / `... ;` is a COMPLETE action, so the sed
+        # argument scan has to stop at the terminator. Running past it read the
+        # next predicate's `-e safe` as a sed program flag, which threw away the
+        # real script: the payload went unseen and, worse, the phantom program
+        # left over made an ordinary two-action find ask ---
+        ("find . -exec sed '1e rm -f victim' {} + -exec grep -e safe {} +", True),
+        ("find . -exec grep -e safe {} + -exec sed '1e rm -f victim' {} +", True),
+        ("find . -exec sed '1e rm -f victim' {} \\; -exec grep -e safe {} \\;", True),
+        ("find . -exec sed -n '1,3p' {} + -exec grep -e safe {} +", False),
+        ("find . -exec sed -i.bak 's/a/b/' {} + -exec chmod 644 {} +", False),
+        # --- prompt: a wrapper option whose value is a SEPARATE token consumes
+        # that token, so the command behind it is the one that runs. Without
+        # that, `env -u FOO sed ...` reported FOO as the command ---
+        ("find . -exec env -u FOO sed '1e rm -f victim' {} +", True),
+        ("find . -exec env --unset FOO sed '1e rm -f victim' {} +", True),
+        ("find . -exec stdbuf -o L sed '1e rm -f victim' {} +", True),
+        ("find . -exec nice -n 5 sed '1e rm -f victim' {} +", True),
+        ("find . -exec timeout -s KILL 5 sed '1e rm -f victim' {} +", True),
+        ("find . -exec env -u FOO sed -n '1,3p' {} +", False),
+        ("find . -exec stdbuf -o L sed -n '1,3p' {} +", False),
+        # --- prompt: a script held in a VARIABLE is only a program once the
+        # reference is resolved, and only the pass that keeps the quoted newline
+        # sees the comment end (the blanket one reads the whole value as one
+        # long comment, which is genuinely inert there) ---
+        ("p='# harmless\ne rm -f victim'; sed \"$p\" input", True),
+        ("p='# harmless\ne rm -f victim'; sed \"${p}\" input", True),
+        ('p=e; sed "$p rm -f victim" input', True),
+        ("p='1,3p'; sed -n \"$p\" input", False),
+        ("p='s/old/new/g'; sed \"$p\" input", False),
+        ("p='# harmless'; sed \"$p\" input", False),
+        # --- prompt: bash resolves a command-position GLOB after this scan, so
+        # a pattern that could be sed is treated as sed ---
+        ("/usr/bin/s[e]d '1e rm -f victim' input", True),
+        ("/usr/bin/s*d '1e rm -f victim' input", True),
+        # any command glob already asks, sed or not, so this one is not a claim
+        # about the script -- it is the blanket fail-closed rule
+        ("/usr/bin/s[e]d -n '1,3p' input", True),
+        # --- run: inside double quotes a backslash quotes `$` and a backtick,
+        # so `\$(CC)` is a literal dollar and opens no substitution. Reading it
+        # as one made an everyday Makefile edit ask; real bash passes it through
+        # and sed executes nothing (verified: it prints CC=cc) ---
+        ('sed "s/\\$(CC)/gcc/" Makefile', False),
+        ('sed -i "s/\\$(PREFIX)/opt/" Makefile', False),
+        ('sed "s/\\`date\\`/x/" NOTES.md', False),
+        ('sed "s/x/\\$(y)/" f', False),
+        # ...but an UNescaped one still generates the program, and a doubled
+        # backslash is a literal backslash followed by a LIVE substitution
+        ('sed "s/@X@/$(date)/" f', True),
+        ("sed \"\\\\$(printf 'e rm -f victim')\" input", True),
         # --- prompt: setpriv execs what follows, after changing privilege ---
         ("setpriv --nnp rm -f victim", True),
         ("setpriv --reuid=1000 rm -rf build", True),
