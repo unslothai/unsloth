@@ -462,7 +462,7 @@ def _read_marker_value(marker: Path) -> Optional[str]:
     try:
         if not marker.exists():
             return None
-        value = marker.read_text().strip()
+        value = marker.read_text(encoding = "utf-8").strip()
     except OSError:
         return None
     return value if value in VALID_TRANSPORTS else None
@@ -473,7 +473,7 @@ def _write_marker_value(marker: Path, mode: str) -> None:
         # tmp + rename so a SIGKILL mid-write can't leave a half-written marker.
         # The tmp name is per-process so concurrent writers don't clobber tmps.
         tmp = marker.with_name(f"{marker.name}.tmp-{os.getpid()}")
-        tmp.write_text(mode)
+        tmp.write_text(mode, encoding = "utf-8")
         os.replace(tmp, marker)
     except OSError:
         # Best-effort: a missing marker next run purges the partial defensively,
