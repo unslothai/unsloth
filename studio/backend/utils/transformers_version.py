@@ -1194,7 +1194,22 @@ def _remote_auto_map_scan_result(model_name: str, hf_token: str | None = None) -
 
 
 def _check_remote_auto_map_needs_510(model_name: str, hf_token: str | None = None) -> bool:
-    """True when auto_map remote code imports transformers>=5.10-only symbols."""
+    """True when auto_map remote code imports transformers>=5.10-only symbols.
+
+    While ``_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS`` is empty the answer is False for every
+    repo, so the scan is skipped instead of run: it would read each remote-code config, page
+    the repo tree and fetch every ``.py`` only to reach the answer it already has. That cost
+    lands on the name fast path, where common Qwen/Ministral/... activations otherwise pay a
+    string of Hub round trips that cannot move the tier.
+
+    Gated on the tuple rather than removed at the call site, so re-adding a 5.10-only module
+    restores the scan everywhere by itself. The 5.3 classification the same scan produces is
+    not lost: callers that need it go through :func:`_remote_auto_map_tier` directly, and
+    :func:`_check_config_needs_510` still calls :func:`_remote_auto_map_scan_result` for the
+    ``definitive`` flag that decides whether its negative may be cached.
+    """
+    if not _TRANSFORMERS_510_REMOTE_IMPORT_MARKERS:
+        return False
     needs, _ = _remote_auto_map_scan_result(model_name, hf_token)
     return needs
 

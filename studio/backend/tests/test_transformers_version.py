@@ -3799,9 +3799,21 @@ class TestProbeFalseSkipsAutoMapScan:
         assert needs_transformers_5("Qwen/Qwen3.5-9B") is True
 
     def test_probe_true_still_runs_the_auto_map_scan(self, monkeypatch):
+        """probe=True scans -- once a 5.10-only marker makes the answer reachable.
+
+        The scan is gated on ``_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS``, empty today, so the
+        marker is patched in here to assert the activation path still reaches the repo. With
+        the tuple empty the fast path deliberately makes no request; that half of the
+        contract is covered by ``TestImpossible510ScanIsSkipped``.
+        """
         import utils.transformers_version as tv
 
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setattr(
+            tv,
+            "_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS",
+            ("transformers.models.some_future_510_only",),
+        )
         cfg = {
             "model_type": "custom_remote",
             "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
@@ -4914,3 +4926,112 @@ class TestDynamicImportsOfVersionedModules:
         assert tv._parsed_dotted_imports("def broken(:\n") is None
         assert tv._parsed_dotted_imports("x = 1\n") == set()
         assert tv._parsed_dotted_imports('log("transformers.anything")\n') == set()
+
+
+class TestImpossible510ScanIsSkipped:
+    """The name fast path must not pay Hub I/O for an answer it cannot use.
+
+    ``_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS`` is empty, so the auto_map scan cannot
+    classify anything as 5.10: on a ``_tier_from_name`` hit with ``probe=True`` it would read
+    every remote-code config, page the repo tree and fetch each ``.py`` only to return the
+    tier the name already produced. The skip is gated on the tuple, never on the call site,
+    so re-adding a 5.10-only module restores the scan by itself (proved below).
+    """
+
+    _FUTURE_MARKER = "transformers.models.some_future_510_only"
+
+    def setup_method(self):
+        _clear_scan_caches()
+
+    def _fake_hub(self, py_body: str, log: list):
+        """urlopen stand-in for a Hub repo whose config.json declares an auto_map."""
+        import urllib.error
+
+        cfg = {
+            "model_type": "ministral",
+            "auto_map": {"AutoModelForCausalLM": "modeling_custom.Model"},
+        }
+
+        class _Resp:
+            def __init__(self, body: bytes):
+                self._body = body
+                self.headers = {"Link": None}
+
+            def read(self):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def _urlopen(req, timeout = 10):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            log.append(url)
+            if "/api/models/" in url and "/tree/" in url:
+                tree = [{"type": "file", "path": "modeling_custom.py"}]
+                return _Resp(json.dumps(tree).encode())
+            if url.endswith("/config.json"):
+                return _Resp(json.dumps(cfg).encode())
+            if url.endswith(".py"):
+                return _Resp(py_body.encode())
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+        return _urlopen
+
+    def test_name_fast_path_makes_no_hub_request(self, monkeypatch):
+        """A 5.3 name match with probe=True must resolve with zero Hub round trips."""
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda *a, **k: None)
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            tier = get_transformers_tier("mistralai/Ministral-3-8B-Instruct-2512", probe = True)
+        assert tier == "530"
+        mock_urlopen.assert_not_called()
+
+    def test_helper_is_false_without_reading_the_repo(self):
+        """The 5.10 question is answerable offline while no 5.10-only marker exists."""
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            assert _check_remote_auto_map_needs_510("org/custom-remote") is False
+        mock_urlopen.assert_not_called()
+
+    def test_a_future_marker_restores_the_scan(self, monkeypatch):
+        """Negative control: re-adding a 5.10-only module must reopen the fast-path scan."""
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(
+            tv, "_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS", (self._FUTURE_MARKER,)
+        )
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda *a, **k: None)
+        log: list = []
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            self._fake_hub(f"from {self._FUTURE_MARKER} import Thing\n", log),
+        )
+        tier = get_transformers_tier("mistralai/Ministral-3-8B-Instruct-2512", probe = True)
+        assert tier == "510"
+        assert log, "the scan must run once a 5.10-only marker exists"
+
+    def test_a_future_marker_that_does_not_match_keeps_the_name_tier(self, monkeypatch):
+        """Negative control: the reopened scan must not promote a repo that lacks it."""
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(
+            tv, "_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS", (self._FUTURE_MARKER,)
+        )
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda *a, **k: None)
+        log: list = []
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            self._fake_hub("from transformers.modeling_utils import PreTrainedModel\n", log),
+        )
+        tier = get_transformers_tier("mistralai/Ministral-3-8B-Instruct-2512", probe = True)
+        assert tier == "530"
+        assert log, "the scan must still run; it simply finds no 5.10 marker"
+
+    def test_the_5_3_classification_is_untouched(self, tmp_path: Path):
+        """Skipping the 5.10 question must not disturb the 5.3 answer the same scan gives."""
+        _auto_map_checkpoint(tmp_path, _V5_IMPORT)
+        assert _check_remote_auto_map_needs_510(str(tmp_path)) is False
+        assert _remote_auto_map_tier(str(tmp_path)) == ("530", True)
