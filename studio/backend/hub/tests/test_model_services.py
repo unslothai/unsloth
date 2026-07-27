@@ -1550,9 +1550,7 @@ def test_gguf_variant_requirements_cache_pre_7460_base_quant_key(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "huggingface_hub",
-        SimpleNamespace(
-            HfApi = lambda *_args, **_kwargs: SimpleNamespace(model_info = _model_info)
-        ),
+        SimpleNamespace(HfApi = lambda *_args, **_kwargs: SimpleNamespace(model_info = _model_info)),
     )
 
     first = gguf_variants.gguf_variant_requirements("Org/Gemma", "Q6_K", None)
