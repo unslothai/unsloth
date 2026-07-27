@@ -4,6 +4,7 @@
 """`unsloth start` — launch a coding agent against a running Unsloth server."""
 
 import atexit
+import base64
 import contextlib
 import json
 import os
@@ -571,11 +572,18 @@ def _subagent_model_id(
             )
         if status.get("is_gguf"):
             variant = status.get("gguf_variant")
-    return (
-        _display_model_spec(model_id, str(variant))
-        if variant and _is_hub_model_id(model_id)
-        else model_id
-    )
+    if variant and _is_hub_model_id(model_id):
+        return _display_model_spec(model_id, str(variant))
+    if variant:
+        # A path load is advertised as a bare basename with no ":variant" channel,
+        # so the quant cannot be recorded and a later reload picks for itself.
+        typer.echo(
+            f"Warning: {model_id} loaded from a path, so the subagent config cannot "
+            f"pin the {variant} quant; a reload may choose a different one. Load the "
+            "model by repository id to pin it.",
+            err = True,
+        )
+    return model_id
 
 
 def _fail(message: str) -> NoReturn:
@@ -584,9 +592,8 @@ def _fail(message: str) -> NoReturn:
 
 
 def _reject_as_subagent(agent: str, args: list) -> None:
-    # Reject early; otherwise the flag reaches the agent binary and fails after
-    # Studio has already loaded the model.
-    if "--as-subagent" in args:
+    # Reject early, or the flag reaches the agent binary after Studio loaded the model.
+    if any(arg == "--as-subagent" or arg.startswith("--as-subagent=") for arg in args):
         _fail(f"--as-subagent is not supported for {agent}.")
 
 
@@ -1400,6 +1407,37 @@ def _is_hub_model_id(value: object) -> bool:
     return True
 
 
+def _is_model_path(value: str) -> bool:
+    """Mirrors core.inference.model_ids._looks_like_path: a repo id is exactly
+    ``org/model``; anything else with a separator, drive, prefix or .gguf is a path.
+
+    Deliberately not named _looks_like_path: that name is taken further down by the
+    WSLENV classifier, which only matches absolute paths and would shadow this one.
+    """
+    if value.lower().endswith(".gguf"):
+        return True
+    if value.startswith(("/", "\\", "./", "../", ".\\", "..\\", "~")):
+        return True
+    if len(value) >= 2 and value[1] == ":":
+        return True
+    return value.count("/") >= 2 or "\\" in value
+
+
+def _public_model_id(value: Optional[str]) -> Optional[str]:
+    """The id Unsloth advertises for a model loaded by path.
+
+    /v1/models never echoes a host path: it reports the file or directory name
+    with any .gguf suffix stripped (core.inference.model_ids.public_model_id), so
+    a path we asked to load has to be matched by that name too.
+    """
+    if not value or not _is_model_path(value):
+        return None
+    name = os.path.basename(value.replace("\\", "/").rstrip("/"))
+    if name.lower().endswith(".gguf"):
+        name = name[: -len(".gguf")]
+    return name or None
+
+
 def _model_id_matches(
     actual: object,
     requested: object,
@@ -1508,7 +1546,7 @@ def _resolve_model(
         # casing) that /v1/models echoes but which may differ from the path we
         # passed; match on the id the load reports so we don't silently fall
         # through to models[0] and connect to a different loaded model.
-        wanted = {requested}
+        wanted = {requested, _public_model_id(requested)} - {None}
         if isinstance(loaded, dict):
             wanted |= {loaded.get("model"), loaded.get("display_name")} - {None}
         models = _loaded_models(base, key)
@@ -1976,7 +2014,15 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
     def merge_provider_filters(effective_config: dict) -> None:
         enabled = effective_config.get("enabled_providers")
         if isinstance(enabled, list):
-            inline["enabled_providers"] = list(dict.fromkeys([*enabled, _OPENCODE_PROVIDER]))
+            inherited_enabled = inline.get("enabled_providers")
+            if not isinstance(inherited_enabled, list):
+                inherited_enabled = []
+            providers = [
+                provider
+                for provider in [*inherited_enabled, *enabled]
+                if provider != _OPENCODE_PROVIDER
+            ]
+            inline["enabled_providers"] = list(dict.fromkeys([*providers, _OPENCODE_PROVIDER]))
         disabled = effective_config.get("disabled_providers")
         if isinstance(disabled, list) and _OPENCODE_PROVIDER in disabled:
             inline["disabled_providers"] = [
@@ -2029,6 +2075,32 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
     return inline
 
 
+def _b64_path(path: Path) -> str:
+    """Path as base64, so it can cross a shell without being expanded."""
+    return base64.b64encode(str(path).encode("utf-8")).decode("ascii")
+
+
+_CLAUDE_PLAN_GATE_SCRIPT = '''\
+"""Deny the editing agent while the parent session is in plan mode."""
+import json, sys
+
+try:
+    mode = (json.load(sys.stdin) or {}).get("permission_mode")
+except Exception:
+    sys.exit(0)  # fail open: a hook error must never block the parent session
+if mode == "plan":
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": (
+            "Plan mode is active. Call the read-only Unsloth plan agent "
+            "(unsloth_plan_agent) instead of unsloth_agent."
+        ),
+    }}))
+sys.exit(0)
+'''
+
+
 def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
     """Write a session plugin that exposes the local Claude child through MCP."""
     plugin = path / "unsloth-local-agent"
@@ -2071,6 +2143,52 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
             }
         },
     )
+    # Claude already refuses the editing tool in plan mode, since it advertises
+    # readOnlyHint false. This PreToolUse hook replaces that dead end with a reason
+    # naming the read-only tool to call instead. Skipped under the WSL bridge, where
+    # the gate is a Linux path but the hook would run beside the Windows claude.
+    gate = plugin / "hooks" / "plan_gate.py"
+    if command == "wsl.exe":
+        # A persisted plugin dir may still hold a gate from an earlier non-WSL run.
+        for stale in (gate, plugin / "hooks" / "hooks.json"):
+            stale.unlink(missing_ok = True)
+    else:
+        _write_private_text(gate, _CLAUDE_PLAN_GATE_SCRIPT)
+        _write_private_json(
+            plugin / "hooks" / "hooks.json",
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": _CLAUDE_SUBAGENT_TOOL,
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    # Run through runpy rather than handing the path to
+                                    # the interpreter: a missing gate is then an
+                                    # ordinary traceback (exit 1, fails open) instead
+                                    # of exit 2, which Claude treats as a blocking
+                                    # error and would deny the tool in every mode.
+                                    # The path is base64'd because this string goes
+                                    # through a shell: a temp root holding $(..) or a
+                                    # backtick expands under sh, %VAR% under cmd, and
+                                    # the gate then silently fails open. base64's
+                                    # alphabet has no metacharacter in either.
+                                    "command": (
+                                        f'"{sys.executable}" -c '
+                                        f'"import base64,runpy; runpy.run_path('
+                                        f"base64.b64decode('{_b64_path(gate)}').decode())\""
+                                    ),
+                                    # A hook with no timeout stalls the parent for as
+                                    # long as it hangs; measured unbounded past 400s.
+                                    "timeout": 10,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            },
+        )
     skill = plugin / "skills" / "local-agent" / "SKILL.md"
     skill.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
     skill.write_text(
@@ -2893,7 +3011,13 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
         typer.echo(f"Updated {path}")
 
 
-def write_pi_subagent_config(base: str, key: str, model: dict, path: Path) -> None:
+def write_pi_subagent_config(
+    base: str,
+    key: str,
+    model: dict,
+    path: Path,
+    approve: bool = False,
+) -> None:
     """Write private bootstrap data for the bundled Pi extension."""
     window = model.get("context_length") or model.get("max_context_length")
     window = int(window) if window else 32768
@@ -2905,6 +3029,7 @@ def write_pi_subagent_config(base: str, key: str, model: dict, path: Path) -> No
             "model": model["id"],
             "contextWindow": window,
             "maxTokens": min(window // 4, 8192),
+            "approve": approve,
         },
     )
 
@@ -3480,7 +3605,13 @@ def pi(
         extension = _agent_config_path(_PI_SUBAGENT_EXTENSION, ["pi"])
         with _session_config("pi-subagent", launch, persist = persist) as config:
             config_path = config / "subagent.json"
-            write_pi_subagent_config(base, key, subagent_model, config_path)
+            write_pi_subagent_config(
+                base,
+                key,
+                subagent_model,
+                config_path,
+                approve = yolo,
+            )
             command = [
                 "pi",
                 "--extension",

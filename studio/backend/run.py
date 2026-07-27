@@ -111,13 +111,26 @@ from startup_banner import print_studio_access_banner, print_studio_stop_hint
 
 logger = get_logger(__name__)
 
+DISABLE_PUBLIC_CHECK_ENV = "UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK"
+
+
+def public_check_disabled() -> bool:
+    """True when the operator has turned off the third-party startup lookups.
+
+    On a wildcard bind Unsloth asks ifconfig.me for the public IP and check-host.net
+    whether the port is reachable. Both are useful for sharing a Studio but both tell
+    an outside service this machine is running one, which lab and privacy-sensitive
+    deployments do not want (#7307 Problem 8). Set the var to opt out.
+    """
+    return os.environ.get(DISABLE_PUBLIC_CHECK_ENV, "").strip().lower() in {"1", "true", "yes"}
+
 
 def _resolve_external_ip() -> str:
     """Resolve the machine's external IP address.
 
     Tries, in order:
     1. GCE metadata server (instant on Google Cloud VMs)
-    2. ifconfig.me (anywhere with internet)
+    2. ifconfig.me (anywhere with internet, skipped by UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK)
     3. LAN IP via UDP socket trick (fallback)
     """
     import urllib.request
@@ -136,14 +149,15 @@ def _resolve_external_ip() -> str:
     except Exception:
         pass
 
-    # 2. Public IP service.
-    try:
-        with urllib.request.urlopen("https://ifconfig.me", timeout = 3) as resp:
-            ip = resp.read().decode().strip()
-            if ip:
-                return ip
-    except Exception:
-        pass
+    # 2. Public IP service. Third-party, so skippable; the LAN address below still works.
+    if not public_check_disabled():
+        try:
+            with urllib.request.urlopen("https://ifconfig.me", timeout = 3) as resp:
+                ip = resp.read().decode().strip()
+                if ip:
+                    return ip
+        except Exception:
+            pass
 
     # 3. Fallback: LAN IP via UDP socket trick
     try:
@@ -304,7 +318,8 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
     """Probe check-host.net to confirm display_host:port is reachable from the
     public internet. Synchronous so output lands between the banner URLs and the
     stop hint. Bounded at ~15s; failures swallowed (verifier failing != Unsloth
-    failing). Only meaningful for a wildcard bind."""
+    failing). Only meaningful for a wildcard bind, and skipped entirely by
+    UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK."""
     global _public_reachable
     # Reset to "unknown" each run; set True/False only when the probe decides.
     _public_reachable = None
@@ -343,6 +358,11 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
     except ValueError:
         # Not an IP literal; probe by hostname.
         pass
+
+    # The probe hands display_host:port to a third party and asks it to connect.
+    if public_check_disabled():
+        logger.debug("Skipping the check-host.net probe (%s).", DISABLE_PUBLIC_CHECK_ENV)
+        return
 
     try:
         qs = urllib.parse.urlencode({"host": f"{display_host}:{port}", "max_nodes": 3})
@@ -754,7 +774,7 @@ def _write_pid_file():
     """Write the current process PID to the studio PID file."""
     try:
         _PID_FILE.parent.mkdir(parents = True, exist_ok = True)
-        _PID_FILE.write_text(str(os.getpid()))
+        _PID_FILE.write_text(str(os.getpid()), encoding = "utf-8")
     except OSError:
         pass
 
@@ -763,10 +783,10 @@ def _remove_pid_file():
     """Remove the PID file if it belongs to this process."""
     try:
         if _PID_FILE.is_file():
-            stored = _PID_FILE.read_text().strip()
+            stored = _PID_FILE.read_text(encoding = "utf-8").strip()
             if stored == str(os.getpid()):
                 _PID_FILE.unlink(missing_ok = True)
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
 
 
@@ -914,7 +934,7 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
             for finder in sp.glob("__editable___*_finder.py"):
                 try:
                     src = finder.read_text(encoding = "utf-8")
-                except OSError:
+                except (OSError, UnicodeDecodeError):
                     continue
                 # Tolerate single/multi-line dict literals; [^}]* rejects nested
                 # dicts, which the setuptools editable template never emits.
@@ -991,8 +1011,86 @@ class _TeeStream:
         except Exception:
             pass
 
+    def close(self):
+        # We do NOT own the console stream (it is the terminal / Jupyter kernel
+        # stream we wrapped), so closing the tee must never take the server down.
+        # Flush the log copy, then forward close() to the wrapped stream
+        # best-effort: on Colab that stream is an ipykernel OutStream whose
+        # close() can raise (see _harden_console_close / ipython/ipykernel#867).
+        try:
+            self._log_fh.flush()
+        except Exception:
+            pass
+        try:
+            self._stream.close()
+        except Exception:
+            pass
+
     def __getattr__(self, name):
         return getattr(self._stream, name)
+
+
+_WATCH_FD_THREAD_ATTR = "watch_fd_thread"
+
+
+def _is_missing_watch_fd_thread(exc):
+    """True only for ipython/ipykernel#867's missing-``watch_fd_thread`` error.
+
+    ``AttributeError.name`` exists from Python 3.10; the message carries the
+    attribute name on every version (possibly with a "Did you mean" tail), so
+    check both and let every other AttributeError through.
+    """
+    if getattr(exc, "name", None) == _WATCH_FD_THREAD_ATTR:
+        return True
+    return _WATCH_FD_THREAD_ATTR in str(exc)
+
+
+def _harden_console_close(stream):
+    """Stop a displaced console stream's close() from aborting Studio startup.
+
+    ``_setup_server_disk_logging`` replaces ``sys.stdout``/``sys.stderr`` with a
+    tee. That changes the object identity of the console stream, so a third-party
+    logging handler that captured the ORIGINAL stream (notably Colab's ``absl``
+    logging handler, whose ``close()`` skips ``sys.stdout``/``sys.stderr`` but not
+    a stream that is no longer either) treats it as an ordinary stream and calls
+    ``close()`` on it during logging teardown -- ``uvicorn.Config()`` ->
+    ``logging.config.dictConfig()`` -> ``logging.shutdown()``.
+
+    A Jupyter/Colab ``ipykernel`` ``OutStream`` created with ``watchfd=False``
+    (the Colab default, and every in-process kernel) never gains a
+    ``watch_fd_thread``, yet the ``OutStream.close()`` shipped in the affected
+    ipykernel versions joins that thread unconditionally and raises
+    ``AttributeError: 'OutStream' object has no attribute 'watch_fd_thread'``
+    (ipython/ipykernel#867). That AttributeError propagates out of
+    ``uvicorn.Config(...)`` and aborts startup ("Unsloth Studio failed to start").
+
+    Wrap the stream's ``close()`` in a transparent pass-through that swallows
+    ONLY that specific teardown AttributeError. A healthy close() (a real console
+    stream, or an OutStream with fd-watching on) runs to completion exactly as
+    before and any other error still propagates, so nothing changes off Colab. A
+    stream whose ``close`` cannot be reassigned keeps its original close().
+    """
+    try:
+        _orig_close = stream.close
+    except Exception:
+        return
+
+    def _safe_close(*args, **kwargs):
+        try:
+            return _orig_close(*args, **kwargs)
+        except AttributeError as exc:
+            if not _is_missing_watch_fd_thread(exc):
+                # A real teardown failure; never hide it.
+                raise
+            # ipython/ipykernel#867: watchfd=False OutStream.close() joins a
+            # thread that was never created. Nothing to clean up; keep going.
+            return None
+
+    try:
+        stream.close = _safe_close
+    except (AttributeError, TypeError):
+        # A stream that forbids setting instance attributes; leave it as-is.
+        pass
 
 
 def _setup_server_disk_logging():
@@ -1036,6 +1134,11 @@ def _setup_server_disk_logging():
     # Children (training workers) inherit: their native-crash stacks land on
     # the stderr the server already captures.
     os.environ.setdefault("PYTHONFAULTHANDLER", "1")
+
+    # Replacing the console streams orphans them from third-party "is this the
+    # live console?" checks, so guard their close() first (ipython/ipykernel#867).
+    _harden_console_close(sys.stdout)
+    _harden_console_close(sys.stderr)
 
     sys.stdout = _TeeStream(sys.stdout, log_fh)
     sys.stderr = _TeeStream(sys.stderr, log_fh)
@@ -1803,6 +1906,12 @@ def _build_arg_parser():
         help = "Force server-side tools off for every request.",
     )
     parser.add_argument(
+        "--disable-dns-pinning",
+        action = "store_true",
+        help = "Allow hostname-based web fetches for enterprise proxies. WARNING: weakens "
+        "DNS-rebinding protection; hostname and redirect validation remain enabled.",
+    )
+    parser.add_argument(
         "--parallel",
         "--n-parallel",
         type = int,
@@ -1841,6 +1950,10 @@ if __name__ == "__main__":
         parser.error(
             "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare"
         )
+    if args.disable_dns_pinning:
+        os.environ["UNSLOTH_STUDIO_DISABLE_DNS_PINNING"] = "1"
+    else:
+        os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "0")
 
     kwargs = dict(
         host = args.host,

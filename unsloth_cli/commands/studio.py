@@ -335,7 +335,7 @@ def _iter_editable_studio_source_roots(venv_dir: Path):
             for finder in sp.glob("__editable___*_finder.py"):
                 try:
                     src = finder.read_text(encoding = "utf-8")
-                except OSError:
+                except (OSError, UnicodeDecodeError):
                     continue
                 # Tolerate single- or multi-line dict literals; [^}]* still
                 # rejects nested dicts, which the setuptools template never
@@ -719,7 +719,7 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
             # credential after a later reset-password deletes auth.db. Mirrors
             # backend clear_bootstrap_password().
             try:
-                stale_path.write_text("")
+                stale_path.write_text("", encoding = "utf-8")
                 cleared = True
             except OSError:
                 cleared = False
@@ -1289,6 +1289,12 @@ def studio_default(
         help = "Force server-side tools (web search, code execution) on or off for "
         "every request. Default: on for every bind, with the per-chat UI toggle honored.",
     ),
+    disable_dns_pinning: bool = typer.Option(
+        False,
+        "--disable-dns-pinning",
+        help = "Allow hostname-based web fetches for enterprise proxies. WARNING: weakens "
+        "DNS-rebinding protection; hostname and redirect validation remain enabled.",
+    ),
     password: str = typer.Option(
         "",
         "--password",
@@ -1358,6 +1364,15 @@ def studio_default(
                 err = True,
             )
             raise typer.Exit(2)
+        if disable_dns_pinning:
+            typer.echo(
+                "Error: --disable-dns-pinning on `unsloth studio` applies to the "
+                f"plain-server path only. For `unsloth studio {ctx.invoked_subcommand}`, "
+                f"put it after the subcommand: `unsloth studio {ctx.invoked_subcommand} "
+                "--disable-dns-pinning ...`",
+                err = True,
+            )
+            raise typer.Exit(2)
         # Same for --api-only: dropping it here would silently serve the UI.
         if api_only:
             typer.echo(
@@ -1402,6 +1417,10 @@ def studio_default(
     # default (plain-server path; the `run` subcommand has its own --verbose).
     if verbose:
         _enable_verbose_access_logs()
+    if disable_dns_pinning:
+        os.environ["UNSLOTH_STUDIO_DISABLE_DNS_PINNING"] = "1"
+    else:
+        os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "0")
 
     # Use the studio venv if present and not already in it. Resolve the child
     # launcher BEFORE the gate: a headless gate strips the seeded
@@ -1753,6 +1772,13 @@ def run(
             "every request. Default: on for every bind."
         ),
     ),
+    disable_dns_pinning: bool = typer.Option(
+        False,
+        "--disable-dns-pinning",
+        rich_help_panel = _RUN_PANEL_TOOLS,
+        help = "Allow hostname-based web fetches for enterprise proxies. WARNING: weakens "
+        "DNS-rebinding protection; hostname and redirect validation remain enabled.",
+    ),
     tool_call_healing: Optional[bool] = typer.Option(
         None,
         "--enable-tool-call-healing/--disable-tool-call-healing",
@@ -1958,6 +1984,10 @@ def run(
         _enable_verbose_access_logs()
         if not any(a in ("--verbose", "-v", "--log-verbose") for a in extra_llama_args):
             extra_llama_args.append("--log-verbose")
+    if disable_dns_pinning:
+        os.environ["UNSLOTH_STUDIO_DISABLE_DNS_PINNING"] = "1"
+    else:
+        os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "0")
 
     # Promote legacy exact `-m`/`-hfr`/`-f` back into typer params;
     # clusters stay in extras.
@@ -2393,7 +2423,7 @@ def stop():
         typer.echo("No running Unsloth server found (no PID file).")
         raise typer.Exit(0)
 
-    pid_text = _PID_FILE.read_text().strip()
+    pid_text = _PID_FILE.read_text(encoding = "utf-8").strip()
     if not pid_text.isdigit():
         typer.echo(f"Invalid PID file contents: {pid_text}")
         _PID_FILE.unlink(missing_ok = True)
@@ -2850,7 +2880,7 @@ def reset_password():
             path.unlink(missing_ok = True)
         except OSError:
             try:
-                path.write_text("")
+                path.write_text("", encoding = "utf-8")
             except OSError as exc:
                 typer.echo(
                     f"Error: could not remove or clear {path.name} ({exc}); delete "
