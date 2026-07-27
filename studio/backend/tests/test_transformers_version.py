@@ -644,7 +644,11 @@ class TestCheckConfigNeeds510:
         }
         (tmp_path / "tokenizer_config.json").write_text(json.dumps(tc))
 
-        def _fake_fetch(repo_id, hf_token = None, budget = None):
+        def _fake_fetch(
+            repo_id,
+            hf_token = None,
+            budget = None,
+        ):
             if repo_id == "other/tokenizer-repo":
                 return [
                     "from transformers.tokenization_utils_tokenizers import TokenizersBackend\n"
@@ -1102,7 +1106,11 @@ class TestGetTransformersTier:
         }
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
-        def _fake_fetch(repo_id, hf_token = None, budget = None):
+        def _fake_fetch(
+            repo_id,
+            hf_token = None,
+            budget = None,
+        ):
             if repo_id == "evilorg/evilrepo":
                 return [
                     "from .helper import run\n",
@@ -5466,27 +5474,49 @@ class TestPaginationOriginNormalizesDefaultPorts:
             # The bug: an endpoint's own authority spelled with its default port.
             ("https://mirror.internal", "https://mirror.internal:443/api/x", True, "https default"),
             ("http://mirror.internal", "http://mirror.internal:80/api/x", True, "http default"),
-            ("https://mirror.internal:443", "https://mirror.internal/api/x", True, "other way round"),
+            (
+                "https://mirror.internal:443",
+                "https://mirror.internal/api/x",
+                True,
+                "other way round",
+            ),
             # Negative controls: normalizing the default port must not widen the guard.
             ("https://mirror.internal", "https://mirror.internal:8443/api/x", False, "other port"),
-            ("https://mirror.internal:8443", "https://mirror.internal/api/x", False, "port dropped"),
-            ("https://mirror.internal", "http://mirror.internal:443/api/x", False, "scheme differs"),
+            (
+                "https://mirror.internal:8443",
+                "https://mirror.internal/api/x",
+                False,
+                "port dropped",
+            ),
+            (
+                "https://mirror.internal",
+                "http://mirror.internal:443/api/x",
+                False,
+                "scheme differs",
+            ),
             ("https://mirror.internal", "https://evil.example:443/api/x", False, "other host"),
-            ("https://mirror.internal", "https://mirror.internal.evil.example/api", False, "suffix"),
+            (
+                "https://mirror.internal",
+                "https://mirror.internal.evil.example/api",
+                False,
+                "suffix",
+            ),
             # ``hostname`` drops userinfo, so it must be rejected before the compare: urllib
             # sends the whole ``user@host`` string as the connection host.
             ("https://mirror.internal", "https://mirror.internal@evil.example/api", False, "decoy"),
-            ("https://mirror.internal", "https://evil.example@mirror.internal/api", False, "userinfo"),
+            (
+                "https://mirror.internal",
+                "https://evil.example@mirror.internal/api",
+                False,
+                "userinfo",
+            ),
             # A port that ``urlsplit`` refuses to parse must not raise out of the guard.
             ("https://mirror.internal", "https://mirror.internal:notaport/api", False, "bad port"),
             ("https://mirror.internal", "https://mirror.internal:99999/api", False, "port range"),
         ],
     )
-    def test_origin_predicate_uses_effective_port(
-        self, monkeypatch, endpoint, url, expected, why
-    ):
+    def test_origin_predicate_uses_effective_port(self, monkeypatch, endpoint, url, expected, why):
         import utils.transformers_version as tv
-
         monkeypatch.setenv("HF_ENDPOINT", endpoint)
         assert tv._is_same_hub_origin(url) is expected, why
 
@@ -5499,9 +5529,7 @@ class TestPaginationOriginNormalizesDefaultPorts:
 
         def _urlopen(req, timeout = 10):
             if "cursor=2" in req.full_url:
-                return _PagedResponse(
-                    json.dumps([{"type": "file", "path": "b.py"}]).encode()
-                )
+                return _PagedResponse(json.dumps([{"type": "file", "path": "b.py"}]).encode())
             return _PagedResponse(
                 json.dumps([{"type": "file", "path": "a.py"}]).encode(),
                 # Same origin, spelled with the port the scheme already implies.
@@ -5548,7 +5576,7 @@ class TestLinkRelIsFoundAtAnyParameterPosition:
         [
             (f'<{_NEXT}>; rel="next"', _NEXT, "the shape the real Hub sends"),
             (f'<{_NEXT}>; type="application/json"; rel="next"', _NEXT, "rel is not first"),
-            (f'<{_NEXT}>; rel=next', _NEXT, "rel as an unquoted token"),
+            (f"<{_NEXT}>; rel=next", _NEXT, "rel as an unquoted token"),
             (f'<{_NEXT}>; rel="prev next"', _NEXT, "rel holds a relation list"),
             (f'<{_NEXT}>; rel="NEXT"', _NEXT, "relation types are case-insensitive"),
             (f'<{_NEXT}>; title="a,b"; rel="next"', _NEXT, "comma inside a quoted value"),
@@ -5559,19 +5587,17 @@ class TestLinkRelIsFoundAtAnyParameterPosition:
             ('<https://h/p>; rel="nextpage"', None, "relation must not substring-match"),
             ('<https://h/p>; type="next"', None, "next as some other parameter's value"),
             ('<https://h/p>; rel="prev"; rel="next"', None, "only the first rel counts"),
-            ('<https://h/p>', None, "entry with no parameters"),
+            ("<https://h/p>", None, "entry with no parameters"),
             ("", None, "empty header"),
             ("garbage", None, "unparseable header"),
         ],
     )
     def test_parse_link_next(self, header, expected, why):
         import utils.transformers_version as tv
-
         assert tv._parse_link_next(header) == expected, why
 
     def test_no_header_is_the_last_page(self):
         import utils.transformers_version as tv
-
         assert tv._parse_link_next(None) is None
 
     def test_later_page_marker_is_not_truncated_away(self, monkeypatch):
@@ -5582,7 +5608,11 @@ class TestLinkRelIsFoundAtAnyParameterPosition:
         monkeypatch.delenv("HF_ENDPOINT", raising = False)
 
         class _Resp:
-            def __init__(self, payload, link = None):
+            def __init__(
+                self,
+                payload,
+                link = None,
+            ):
                 self._payload = payload
                 self.headers = {"Link": link} if link else {}
 
@@ -5625,32 +5655,36 @@ class TestPublicReExportOf5xSymbolIsRecognized:
             ("from transformers import TokenizersBackend\n", True, "public re-export"),
             (
                 "from transformers import AutoModel, TokenizersBackend\n",
-                True, "public re-export beside a 4.x name",
+                True,
+                "public re-export beside a 4.x name",
             ),
             (_V5_TOK_IMPORT, True, "defining submodule still matches"),
             (
                 "import importlib\nTB = importlib.import_module('transformers').TokenizersBackend\n",
-                False, "attribute access is not an import of the symbol",
+                False,
+                "attribute access is not an import of the symbol",
             ),
             # Negative controls: only 5.x-only names may promote the tier.
             ("from transformers import AutoModel\n", False, "4.57.x public name"),
             (
                 "from transformers import PreTrainedTokenizerFast\n",
-                False, "re-exported by 5.x from the same module but present in 4.57.x",
+                False,
+                "re-exported by 5.x from the same module but present in 4.57.x",
             ),
             (
                 '"""Docs mention transformers.TokenizersBackend."""\nimport torch\n',
-                False, "a docstring is not an import",
+                False,
+                "a docstring is not an import",
             ),
             (
                 "from .transformers import TokenizersBackend\n",
-                False, "a repo's own same-named helper is relative",
+                False,
+                "a repo's own same-named helper is relative",
             ),
         ],
     )
     def test_marker_match(self, src, expected, why):
         import utils.transformers_version as tv
-
         got = tv._remote_auto_map_py_matches(tv._TRANSFORMERS_5_REMOTE_IMPORT_MARKERS, [src])
         assert got is expected, why
 
@@ -5678,11 +5712,13 @@ class TestRemoteScanDownloadsAreBounded:
         advertised = tv._REMOTE_SCAN_MAX_FILES * 10
         fetched = []
         monkeypatch.setattr(
-            tv, "_list_hub_repo_py_files",
+            tv,
+            "_list_hub_repo_py_files",
             lambda repo, tok = None: ({f"m{i:05d}.py" for i in range(advertised)}, True),
         )
         monkeypatch.setattr(
-            tv, "_read_repo_text_file",
+            tv,
+            "_read_repo_text_file",
             lambda repo, fn, tok = None: (fetched.append(fn), "import torch\n")[1],
         )
         budget = tv._RemoteScanBudget()
@@ -5700,11 +5736,13 @@ class TestRemoteScanDownloadsAreBounded:
         chunk = "x" * (tv._REMOTE_SCAN_MAX_TOTAL_CHARS // 4)
         fetched = []
         monkeypatch.setattr(
-            tv, "_list_hub_repo_py_files",
+            tv,
+            "_list_hub_repo_py_files",
             lambda repo, tok = None: ({f"m{i:03d}.py" for i in range(64)}, True),
         )
         monkeypatch.setattr(
-            tv, "_read_repo_text_file",
+            tv,
+            "_read_repo_text_file",
             lambda repo, fn, tok = None: (fetched.append(fn), chunk)[1],
         )
         budget = tv._RemoteScanBudget()
@@ -5717,11 +5755,13 @@ class TestRemoteScanDownloadsAreBounded:
 
         fetched = []
         monkeypatch.setattr(
-            tv, "_list_hub_repo_py_files",
+            tv,
+            "_list_hub_repo_py_files",
             lambda repo, tok = None: ({f"m{i:05d}.py" for i in range(1000)}, True),
         )
         monkeypatch.setattr(
-            tv, "_read_repo_text_file",
+            tv,
+            "_read_repo_text_file",
             lambda repo, fn, tok = None: (fetched.append((repo, fn)), "import torch\n")[1],
         )
         refs = {(f"org/ext{i}", "modeling.py") for i in range(5)}
@@ -5760,11 +5800,14 @@ class TestRemoteScanDownloadsAreBounded:
 
         src = "import torch\n" * 20_000  # ~260 KiB, above the largest real single file
         monkeypatch.setattr(
-            tv, "_list_hub_repo_py_files",
+            tv,
+            "_list_hub_repo_py_files",
             lambda repo, tok = None: ({f"m{i:02d}.py" for i in range(26)}, True),
         )
         monkeypatch.setattr(
-            tv, "_read_repo_text_file", lambda repo, fn, tok = None: src,
+            tv,
+            "_read_repo_text_file",
+            lambda repo, fn, tok = None: src,
         )
         budget = tv._RemoteScanBudget()
         sources, complete = tv._fetch_hub_py_sources("org/big-but-real", None, budget)
@@ -5775,11 +5818,14 @@ class TestRemoteScanDownloadsAreBounded:
         import utils.transformers_version as tv
 
         monkeypatch.setattr(
-            tv, "_list_hub_repo_py_files",
+            tv,
+            "_list_hub_repo_py_files",
             lambda repo, tok = None: ({f"m{i:04d}.py" for i in range(300)}, True),
         )
         monkeypatch.setattr(
-            tv, "_read_repo_text_file", lambda repo, fn, tok = None: "import torch\n",
+            tv,
+            "_read_repo_text_file",
+            lambda repo, fn, tok = None: "import torch\n",
         )
         sources, complete = tv._fetch_hub_py_sources("org/m", None)
         assert len(sources) == 300 and complete is True

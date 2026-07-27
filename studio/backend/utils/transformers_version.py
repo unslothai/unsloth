@@ -752,7 +752,9 @@ def _is_same_hub_origin(url: str) -> bool:
     except ValueError:
         return False  # out-of-range or non-numeric port
     return (nxt_scheme, (nxt.hostname or "").lower(), nxt_port) == (
-        base_scheme, (base.hostname or "").lower(), base_port,
+        base_scheme,
+        (base.hostname or "").lower(),
+        base_port,
     )
 
 
@@ -776,7 +778,7 @@ def _iter_link_entries(header: str):
             end = header.find(">", i)
             if end == -1:
                 return  # unterminated URI: the rest of the header cannot be split reliably
-            uri = header[i + 1:end].strip()
+            uri = header[i + 1 : end].strip()
             i = end + 1
         else:
             start = i
@@ -974,7 +976,9 @@ def _fetch_hub_py_sources(
     for fn in sorted(py_files):
         if budget is not None and not budget.take_file():
             logger.debug(
-                "Remote scan budget spent at '%s'; %d .py left unread", repo_id, len(py_files),
+                "Remote scan budget spent at '%s'; %d .py left unread",
+                repo_id,
+                len(py_files),
             )
             complete = False
             break
@@ -1112,7 +1116,9 @@ def _read_repo_text_file(
         if len(raw) > _REMOTE_SCAN_MAX_FILE_BYTES:
             logger.debug(
                 "Skipping oversized remote source %s for '%s' (over %d bytes)",
-                filename, model_name, _REMOTE_SCAN_MAX_FILE_BYTES,
+                filename,
+                model_name,
+                _REMOTE_SCAN_MAX_FILE_BYTES,
             )
             return None
         return _decode_source_bytes(raw)
