@@ -18,8 +18,8 @@ from auth.authentication import create_access_token, create_refresh_token  # noq
 
 storage.ensure_default_admin()
 subject = storage.DEFAULT_ADMIN_USERNAME
-# The seeded account carries must_change_password, so get_current_subject 403s any
-# token without the desktop claim. Mint with the desktop exemption instead.
+# The seeded account carries must_change_password, so get_current_subject 403s any token
+# without the desktop claim. Mint with the desktop exemption instead.
 print(
     json.dumps(
         {

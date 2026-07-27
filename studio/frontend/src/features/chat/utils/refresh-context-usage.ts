@@ -13,9 +13,8 @@ import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { MessageRecord } from "../types";
 import { listStoredChatMessages } from "./chat-history-storage";
 
-// Cancellation is per thread, not per module: in compare mode a hidden pane's history
-// load would otherwise invalidate the visible thread's in-flight count and then have
-// its own result dropped, blanking the bar. Same-thread calls still supersede.
+// Cancellation is per thread, not per module: in compare mode a hidden pane's history load
+// would otherwise invalidate the visible thread's count, blanking the bar. Same-thread wins.
 const refreshGenerations = new Map<string | null, number>();
 
 function nextGeneration(threadKey: string | null): number {
@@ -30,9 +29,8 @@ function superseded(threadKey: string | null, generation: number): boolean {
 
 type RuntimeMessagesGetter = () => readonly ThreadMessage[];
 
-// Compare mode mounts several providers at once, so this is a stack, not a slot:
-// unmounting the newest uncovers the one underneath. Callers that know which records
-// they want search it; the rest fall back to the newest mount.
+// Compare mode mounts several providers at once, so this is a stack, not a slot: unmounting
+// the newest uncovers the one underneath. Callers that know which records they want search it.
 const runtimeMessagesGetters: RuntimeMessagesGetter[] = [];
 
 function currentRuntimeMessagesGetter(): RuntimeMessagesGetter | null {
@@ -126,12 +124,10 @@ function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
 const ROLE_ORDER: Record<string, number> = { system: 0, user: 1, assistant: 2 };
 
 /**
- * Reproduce the branch the runtime actually displays for a stored thread.
- *
- * Mirrors the history adapter: sort by (createdAt, role, id), parent legacy records
- * to the previous one, then take the ancestor chain of the last record, since an
- * import without a headId resets the head there. A greedy newest-child descent picks
- * a different branch and drops pre-parentId history.
+ * Reproduce the branch the runtime displays for a stored thread, as the history adapter does:
+ * sort by (createdAt, role, id), parent legacy records to the previous one, then take the
+ * ancestor chain of the last record (an import without a headId resets the head there). A
+ * greedy newest-child descent picks a different branch and drops pre-parentId history.
  */
 function orderBySelectedBranch<T extends MessageRecord>(messages: T[]): T[] {
   const sorted = messages.slice().sort((a, b) => {
@@ -165,21 +161,19 @@ function orderBySelectedBranch<T extends MessageRecord>(messages: T[]): T[] {
 }
 
 /**
- * The branch on screen, which a post-load recount follows instead of re-deriving one
- * from storage: after stepping back to an earlier retry sibling, the newest stored
- * record is on a branch nobody is looking at. Post-load only, since the history
- * adapter's own recount runs mid-import when the getter still holds the old thread.
- * Ids are unique, so the displayed tail identifies the provider showing these records;
- * getters parked on another thread are skipped, and no match at all falls back.
+ * The branch on screen, which a post-load recount follows instead of re-deriving one from
+ * storage: after stepping back to a retry sibling, the newest stored record is on a branch
+ * nobody is looking at. Post-load only, since the history adapter's own recount runs mid-import
+ * while the getter still holds the old thread. Ids are unique, so the displayed tail identifies
+ * the provider; getters parked on another thread are skipped, and no match at all falls back.
  */
 function runtimeSelectedBranch(
   records: MessageRecord[],
 ): readonly ThreadMessage[] | null {
   const recordIds = new Set(records.map((record) => record.id));
-  // Walk the whole stack, not just its top: with two panes mounted the newest is
-  // often the other thread, and reading only that one falls back to the storage
-  // branch, the wrong retry sibling. Newest-first keeps the single-provider order,
-  // and a provider throwing mid-teardown is skipped rather than aborting.
+  // Walk the whole stack, not just its top: with two panes mounted the newest is often the
+  // other thread, and reading only that falls back to the storage branch, the wrong sibling.
+  // Newest-first keeps single-provider order; a provider throwing mid-teardown is skipped.
   for (let index = runtimeMessagesGetters.length - 1; index >= 0; index--) {
     let runtimeMessages: readonly ThreadMessage[] | undefined;
     try {
@@ -238,13 +232,12 @@ export async function refreshContextUsage(options?: {
   const capturedThreadId = threadId ?? null;
   const capturedCheckpoint = checkpoint;
 
-  // Bump only once this call is going to do work, so a call that bails here
-  // cannot cancel a recount that is already in flight.
+  // Bump only once this call will do work, so a bail-out cannot cancel an in-flight recount.
   const generation = nextGeneration(capturedThreadId);
 
   if (!threadId) {
-    // Show something immediately for a chat with no persisted thread; the count below
-    // refines it, since a system prompt or enabled tools are already in the request.
+    // Show something immediately for a chat with no persisted thread; the count below refines
+    // it, since a system prompt or enabled tools are already in the request.
     useChatRuntimeStore.getState().setContextUsage(zeroContextUsage());
   }
 
@@ -260,9 +253,8 @@ export async function refreshContextUsage(options?: {
       const runtimeBranch = options?.afterModelLoad
         ? runtimeSelectedBranch(records)
         : null;
-      // Scope the fallback to the branch being counted: a global reverse scan picks
-      // the newest assistant, possibly on a sibling branch, and that stale value is
-      // what stays on the bar whenever the recount does not land.
+      // Scope the fallback to the branch being counted: a global reverse scan picks the newest
+      // assistant, maybe on a sibling branch, and that stale value sticks if the recount misses.
       const branchRecords = runtimeBranch
         ? recordsForRuntimeBranch(records, runtimeBranch)
         : orderBySelectedBranch(records);
@@ -284,9 +276,8 @@ export async function refreshContextUsage(options?: {
         useChatRuntimeStore.getState().setContextUsage(savedUsage);
       }
     } else {
-      // A persisted-but-empty read (incognito thread) keeps its messages only in the
-      // mounted runtime. The getter is shared, so trust it only for the active thread;
-      // a compare pane would otherwise read the other pane's branch.
+      // A persisted-but-empty read (incognito thread) keeps messages only in the mounted
+      // runtime. The getter is shared, so trust it only for the active thread, not a pane's.
       runMessages =
         threadId &&
         threadId === useChatRuntimeStore.getState().activeThreadId
@@ -299,20 +290,17 @@ export async function refreshContextUsage(options?: {
       return;
     }
 
-    // The real request replays the newest user audio as audio_base64, but
-    // toOpenAIMessages has no audio branch, so counting would price a text-only
-    // prompt. Decline as the endpoint does for images and keep the usage on the bar.
+    // The real request replays the newest user audio as audio_base64 but toOpenAIMessages has
+    // no audio branch, so counting would price a text-only prompt. Decline as images do.
     if (findLatestUserAudioBase64(runMessages)) return;
 
-    // A completion finishing mid-count writes exact usage for a turn this count
-    // predates, so drop the recount rather than roll the bar backwards. Sampled as
-    // soon as runMessages is fixed (after our own saved-usage write): the payload
-    // build awaits storage and lookups, and a completion landing in that window
-    // would otherwise be captured here and compare equal.
+    // A completion finishing mid-count writes exact usage for a turn this count predates, so
+    // drop the recount rather than roll the bar backwards. Sampled as soon as runMessages is
+    // fixed (after our own saved-usage write): the payload build awaits storage, and a
+    // completion landing in that window would otherwise be captured here and compare equal.
     const usageBeforeCount = useChatRuntimeStore.getState().contextUsage;
 
-    // undefined, not null: a chat with no persisted thread has no project to
-    // resolve instructions or a RAG scope from.
+    // undefined, not null: a chat with no persisted thread has no project to resolve from.
     const payloadThreadId = threadId ?? undefined;
     const outbound = await buildOutboundMessagesForTokenCount(
       runMessages,
@@ -325,8 +313,8 @@ export async function refreshContextUsage(options?: {
 
     const toolExtras = await buildLocalTokenCountExtras(payloadThreadId, outbound);
 
-    // Always ask the server, even with nothing to send: the template itself has tokens,
-    // and `unsloth run --enable-tools` injects schemas the client cannot see.
+    // Always ask the server: the template itself has tokens, and `unsloth run --enable-tools`
+    // injects schemas the client cannot see.
     const result = await countChatInputTokens({
       model: capturedCheckpoint,
       messages: outbound,
@@ -334,17 +322,15 @@ export async function refreshContextUsage(options?: {
     });
     const inputTokens = result.input_tokens;
 
-    // The endpoint counts whatever is loaded now, so a switch by another API client is
-    // invisible to the checkpoint guards below, which only see our own store. When the
-    // backend names the tokenizer, require it to be ours; older ones omit the field.
+    // The endpoint counts whatever is loaded now, so another client's switch is invisible to
+    // the checkpoint guards below. When the backend names the tokenizer, require it to be ours.
     if (result.model != null && result.model !== capturedCheckpoint) return;
 
     if (superseded(capturedThreadId, generation)) return;
     if (useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint) {
       return;
     }
-    // Compared even when null: a count started on a chat with no persisted
-    // thread must not land on a thread the user has since opened.
+    // Compared even when null: a count started with no thread must not land on one since opened.
     if (useChatRuntimeStore.getState().activeThreadId !== capturedThreadId) {
       return;
     }

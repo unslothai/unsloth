@@ -1123,14 +1123,12 @@ function useStudioRuntimeAdapters(
                 modelId?: string;
               }
             | undefined;
-          // Window check applies only when a local GGUF window is known; external
-          // providers have ggufContextLength === null.
+          // Only when a local GGUF window is known; external providers have a null window.
           const withinLocalLimit =
             !store.ggufContextLength ||
             (savedUsage?.totalTokens ?? 0) <= store.ggufContextLength;
-          // Legacy unscoped usage (no modelId) is trusted only when a known local
-          // window bounds the totals, so an old local turn can't be misattributed
-          // to a newly-selected external provider.
+          // Legacy unscoped usage (no modelId) is trusted only when a known local window
+          // bounds the totals, so an old local turn can't be misattributed to an external one.
           const modelMatches = savedUsage?.modelId
             ? savedUsage.modelId === store.params.checkpoint
             : typeof store.ggufContextLength === "number" &&

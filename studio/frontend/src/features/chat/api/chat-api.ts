@@ -155,8 +155,8 @@ export async function countChatInputTokens(payload: {
   mcp_enabled?: boolean;
   rag_scope?: Record<string, unknown>;
   auto_heal_tool_calls?: boolean;
-  // Response `model` names the tokenizer that counted, in the shape
-  // `/api/inference/status` publishes. Absent from older backends.
+  // Names the tokenizer that counted, in the `/api/inference/status` shape. Absent on
+  // older backends.
 }): Promise<{ input_tokens: number; model?: string | null }> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
     method: "POST",

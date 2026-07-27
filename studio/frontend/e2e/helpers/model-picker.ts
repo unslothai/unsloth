@@ -14,8 +14,8 @@ export async function unloadInferenceModel(
     throw new Error("E2E_ACCESS_TOKEN is required to unload models.");
   }
   const headers = { Authorization: `Bearer ${token}` };
-  // UnloadRequest.model_path is required, so ask the backend which model to name
-  // (an empty body 422s and leaves it loaded) and skip when nothing is loaded.
+  // UnloadRequest.model_path is required (an empty body 422s), so ask the backend which
+  // model is loaded, and skip when none is.
   const statusResponse = await request.get(
     `${backendUrl}/api/inference/status`,
     { headers },
@@ -133,9 +133,8 @@ export async function ensureLocalModelLoaded(
     }
   }
 
-  // Arm the waiter before the load: waitForResponse only sees later responses, and
-  // the recount fires as soon as the load ends. A brand-new chat has no thread and
-  // never calls count_tokens, so race the bar rather than time the response out.
+  // Arm the waiter before the load: waitForResponse only sees later responses and the
+  // recount fires at load end. A brand-new chat never calls count_tokens, so race the bar.
   const tokenCount = waitForContextTokenCount(page).catch(() => undefined);
   await selectLocalModelByName(page, displayName);
   await Promise.race([tokenCount, waitForContextUsageBar(page)]);

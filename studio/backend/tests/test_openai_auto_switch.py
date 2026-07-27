@@ -3090,8 +3090,8 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
 
 
 def test_chat_count_tokens_refuses_image_messages(monkeypatch):
-    # /apply-template replaces images with a short media marker, so counting one would
-    # undercount by the whole embedding. Refuse, and refuse before the auto-switch.
+    # Images become a short /apply-template marker, so counting undercounts: refuse, and
+    # refuse before the auto-switch.
     from fastapi import HTTPException
 
     from models.inference import ChatCountTokensRequest, ChatMessage
@@ -3158,8 +3158,8 @@ def test_chat_count_tokens_still_counts_text_only_messages(monkeypatch):
 
 
 def test_chat_count_tokens_strips_stale_tool_xml_from_history(monkeypatch):
-    # The GGUF and Anthropic tool paths strip stale tool-call markup from replayed
-    # assistant turns, so the count must too or it prices text never sent.
+    # Other tool paths strip stale tool-call markup from replayed turns; else we price
+    # text that is never sent.
     from models.inference import ChatCountTokensRequest, ChatMessage
 
     backend = _FakeBackend("org/A-GGUF")
@@ -3206,8 +3206,8 @@ def test_chat_count_tokens_strips_stale_tool_xml_from_history(monkeypatch):
 
 
 def test_chat_count_tokens_honours_auto_heal_off(monkeypatch):
-    # With Auto-Heal off the real prompt keeps the markup, so stripping here would
-    # count a different prompt than the next completion.
+    # With Auto-Heal off the real prompt keeps the markup, so stripping would count a
+    # different prompt than the next completion.
     from models.inference import ChatCountTokensRequest, ChatMessage
 
     backend = _FakeBackend("org/A-GGUF")
@@ -3254,8 +3254,7 @@ def test_chat_count_tokens_honours_auto_heal_off(monkeypatch):
 
 
 def test_chat_count_tokens_collapses_system_turns(monkeypatch):
-    # The completion path joins every system/developer turn into one leading system
-    # message; the count must render the same shape.
+    # The completion path joins every system/developer turn into one; the count must match.
     from models.inference import ChatCountTokensRequest, ChatMessage
 
     backend = _FakeBackend("org/A-GGUF")
@@ -3294,8 +3293,8 @@ def test_chat_count_tokens_collapses_system_turns(monkeypatch):
 
 
 def test_chat_count_tokens_never_switches_the_loaded_model(monkeypatch):
-    # The recount has no abort signal, so naming the model loaded when it started must
-    # not drag the backend back after the user moved on: count whatever is loaded.
+    # The recount has no abort signal, so naming a stale model must not drag the backend
+    # back after the user moved on: count whatever is loaded.
     from models.inference import ChatCountTokensRequest, ChatMessage
 
     backend = _FakeBackend("org/B-GGUF")
@@ -3402,8 +3401,7 @@ _TEMPLATE_TOOLS = [{"type": "function", "function": {"name": "web_search"}}]
 
 
 def test_count_chat_tokens_strict_refuses_the_text_only_fallback():
-    # A failed /apply-template drops role markers and tool schemas, so the fallback
-    # is an estimate. Strict callers publish the number, so they get an error.
+    # A failed /apply-template makes the fallback an estimate, so strict callers get an error.
     with _StubLlamaServer(fail_status = 500) as server:
         backend = _real_counter_backend(server)
         with pytest.raises(Exception):
@@ -3430,8 +3428,7 @@ def test_count_chat_tokens_keeps_the_fallback_for_best_effort_callers():
 
 
 def test_chat_count_tokens_declines_when_the_template_will_not_render(monkeypatch):
-    # The recount replaces the usage the frontend saved, so an unrenderable template
-    # must 503 and leave the existing number on the bar.
+    # The recount replaces saved usage, so an unrenderable template must 503 and leave the bar.
     from fastapi import HTTPException
 
     from models.inference import ChatCountTokensRequest, ChatMessage
@@ -3491,9 +3488,8 @@ def _rag_tools(monkeypatch, names = ("search_knowledge_base",)):
 
 
 def test_chat_count_tokens_declines_pending_turn_that_would_retrieve(monkeypatch):
-    # With auto-injection permitted, the next generation for a thread ending in an
-    # unanswered user turn splices in retrieved passages, so a count without them can
-    # call a turn that does not fit fitting. Decline rather than publish that.
+    # With auto-injection permitted, the next generation for a thread ending in an unanswered
+    # user turn splices in passages, so a count without them can call a too-big turn fitting.
     import pytest as _pytest
     from fastapi import HTTPException
 
@@ -3517,9 +3513,8 @@ def test_chat_count_tokens_declines_pending_turn_that_would_retrieve(monkeypatch
 
 
 def test_chat_count_tokens_counts_answered_thread_with_rag(monkeypatch):
-    # Negative control: the same RAG thread ending in an assistant turn still counts.
-    # Its next retrieval query does not exist yet, so declining would blank the bar
-    # for the ordinary case.
+    # Negative control: the same RAG thread ending in an assistant turn still counts - its
+    # next retrieval query does not exist yet, so declining would blank the ordinary case.
     import json
 
     from models.inference import ChatCountTokensRequest, ChatMessage
@@ -3541,8 +3536,7 @@ def test_chat_count_tokens_counts_answered_thread_with_rag(monkeypatch):
 
 
 def test_chat_count_tokens_declines_pending_tool_result(monkeypatch):
-    # Same divergence one shape over: a loop interrupted after the tool ran
-    # leaves a trailing tool result, and resuming it re-runs the auto-injection.
+    # One shape over: a trailing tool result resumes the loop and re-runs auto-injection.
     import pytest as _pytest
     from fastapi import HTTPException
 
@@ -3567,8 +3561,7 @@ def test_chat_count_tokens_declines_pending_tool_result(monkeypatch):
 
 
 def test_chat_count_tokens_counts_pending_turn_when_autoinject_off(monkeypatch):
-    # Negative control: auto-injection off injects nothing, so a pending user turn is
-    # fully countable.
+    # Negative control: auto-injection off injects nothing, so a pending user turn counts.
     import json
 
     from models.inference import ChatCountTokensRequest, ChatMessage
@@ -3587,8 +3580,7 @@ def test_chat_count_tokens_counts_pending_turn_when_autoinject_off(monkeypatch):
 
 
 def test_chat_count_tokens_counts_pending_turn_without_rag_tool(monkeypatch):
-    # Negative control: no search_knowledge_base means no retrieval, so a pending user
-    # turn counts as before.
+    # Negative control: no search_knowledge_base means no retrieval, so a pending turn counts.
     import json
 
     from models.inference import ChatCountTokensRequest, ChatMessage
@@ -3632,8 +3624,8 @@ def test_rag_autoinject_permitted_matches_build_rag_autoinject_gate(monkeypatch)
 
 
 def test_chat_count_tokens_reports_the_tokenizer_that_counted(monkeypatch):
-    # Another client can auto-switch the backend after the caller's last status refresh,
-    # so name the tokenizer that counted, in the shape /api/inference/status publishes.
+    # Another client can auto-switch mid-session, so name the tokenizer that counted, in the
+    # shape /api/inference/status publishes.
     import json
 
     from models.inference import ChatCountTokensRequest, ChatMessage
@@ -3648,8 +3640,8 @@ def test_chat_count_tokens_reports_the_tokenizer_that_counted(monkeypatch):
 
 
 def test_chat_count_tokens_identity_matches_status_for_native_lease(monkeypatch):
-    # A native lease reports no model_identifier, so the client's checkpoint is the
-    # display label; the count must name it or every leased recount is discarded.
+    # A native lease reports no model_identifier, so the count must name the display label
+    # or every leased recount is discarded.
     import json
 
     from models.inference import ChatCountTokensRequest, ChatMessage
@@ -3696,8 +3688,7 @@ def test_chat_count_tokens_declines_when_model_swaps_mid_count(monkeypatch):
 
 
 def test_inference_status_publishes_the_shared_model_ids(monkeypatch):
-    # Status and count must derive the identity from one place, else the captured
-    # checkpoint and the count's model drift and every recount is discarded.
+    # Status and count must derive identity from one place, else every recount is discarded.
     import inspect
 
     src = inspect.getsource(inference_route.get_status)

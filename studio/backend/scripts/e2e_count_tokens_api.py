@@ -64,8 +64,8 @@ def main() -> int:
         return 1
 
     storage.ensure_default_admin()
-    # Seeded account carries must_change_password, so mint with the desktop exemption
-    # (same as the Playwright issuer) or every protected route answers 403.
+    # Seeded account carries must_change_password, so mint with the desktop exemption (as
+    # the Playwright issuer does) or every protected route answers 403.
     token = create_access_token(storage.DEFAULT_ADMIN_USERNAME, desktop = True)
 
     print("== 1. Auth status ==")

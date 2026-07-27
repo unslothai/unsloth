@@ -12571,9 +12571,8 @@ class LlamaCppBackend:
                 except Exception:
                     apply_template_failed = True
 
-                # The fallback drops role markers, special tokens and rendered tool
-                # schemas: ~30% of the real prompt on a six-turn chat with two tools.
-                # A strict caller publishes the number, so error rather than undercount.
+                # The fallback drops role markers, special tokens and tool schemas (~30% of a
+                # six-turn two-tool prompt), so a strict caller errors rather than undercount.
                 if strict and apply_template_failed:
                     raise RuntimeError("llama-server could not render the chat template")
 

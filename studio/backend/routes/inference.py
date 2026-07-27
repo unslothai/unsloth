@@ -12945,9 +12945,8 @@ async def chat_count_tokens(
     the active model is used. The caller is a background recount with no abort signal, so
     switching could drag the backend back to the model loaded when the count started, a
     server-side reload the frontend's checkpoint guards cannot undo."""
-    # /apply-template swaps every image for a short media marker, so an image thread
-    # would count short by the whole embedding. Refuse rather than undercount; the
-    # caller keeps the usage it already has.
+    # /apply-template swaps every image for a short media marker, so an image thread would
+    # count short by the whole embedding. Refuse rather than undercount.
     if _request_has_image(payload):
         raise HTTPException(
             status_code = 503,
@@ -12968,8 +12967,7 @@ async def chat_count_tokens(
             )
         )
     )
-    # Same system-turn normalization the completion path applies, so the prompt here
-    # renders exactly as the next request will.
+    # Normalize system turns as the completion path does, so this renders as the next request.
     _system_prompt, _, _ = _extract_content_parts(payload.messages)
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
     openai_tools = payload.tools or None
@@ -12988,13 +12986,11 @@ async def chat_count_tokens(
         )
         if tools_to_use:
             openai_tools = tools_to_use
-            # A pending turn (unanswered user message or tool result) is the one shape
-            # whose next generation runs on exactly these messages, with whatever
-            # build_rag_autoinject splices in -- possibly thousands of tokens this count
-            # never sees, so it would report a turn as fitting when it does not.
-            # Retrieval is not this endpoint's job, so decline like the image case. Any
-            # other shape ends in an assistant turn, whose retrieval query does not
-            # exist yet.
+            # A pending turn (unanswered user message or tool result) is the one shape whose
+            # next generation runs on exactly these messages plus whatever build_rag_autoinject
+            # splices in, so a count without it would report a turn as fitting when it is not.
+            # Decline like the image case; any other shape ends in an assistant turn, whose
+            # retrieval query does not exist yet.
             if (
                 "search_knowledge_base"
                 in {(t.get("function") or {}).get("name") for t in tools_to_use}
@@ -13021,10 +13017,9 @@ async def chat_count_tokens(
             if _nudge:
                 openai_messages = _append_to_system_message(openai_messages, _nudge)
 
-            # Same stale tool-call XML strip the GGUF and Anthropic tool paths run over
-            # replayed history, gated on enabled tool names so documented inactive
-            # examples survive. Auto-Heal off keeps the markup in the real prompt, so
-            # the count keeps it too.
+            # Same stale tool-call XML strip the GGUF and Anthropic tool paths run over replayed
+            # history, gated on enabled tool names so documented inactive examples survive. With
+            # Auto-Heal off the markup stays in the real prompt, so the count keeps it too.
             _count_auto_heal = (
                 payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
             )
@@ -13038,9 +13033,8 @@ async def chat_count_tokens(
                         enabled_tool_names = _count_history_gate,
                     ).strip()
 
-    # Whose tokenizer this is, in the shape the status endpoint publishes, so the caller
-    # can drop a result that is not its model: another client's auto-switch can move the
-    # tokenizer without the caller's captured checkpoint ever changing.
+    # Whose tokenizer counted, in the shape the status endpoint publishes: another client's
+    # auto-switch can move the tokenizer without the caller's captured checkpoint changing.
     _tokenizer_model = _llama_status_checkpoint_id(llama_backend)
     try:
         count = await asyncio.to_thread(
