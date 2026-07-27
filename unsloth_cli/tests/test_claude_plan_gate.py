@@ -161,12 +161,17 @@ def test_gate_survives_shell_metacharacters_in_its_path(tmp_path, hostile):
     # sh (or cmd, for %VAR%) before Python sees the path, so the gate is not found
     # and exits 1, which fails open and silently drops the routing message.
     plugin = _plugin(tmp_path / hostile)
-    command = json.loads((plugin / "hooks" / "hooks.json").read_text())[
-        "hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    command = json.loads((plugin / "hooks" / "hooks.json").read_text())["hooks"]["PreToolUse"][0][
+        "hooks"
+    ][0]["command"]
 
     denied = subprocess.run(
-        command, input = json.dumps({"permission_mode": "plan"}),
-        shell = True, capture_output = True, text = True, timeout = 60,
+        command,
+        input = json.dumps({"permission_mode": "plan"}),
+        shell = True,
+        capture_output = True,
+        text = True,
+        timeout = 60,
     )
 
     assert denied.returncode == 0, denied.stderr

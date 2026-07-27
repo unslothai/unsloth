@@ -2053,7 +2053,6 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
     return inline
 
 
-
 def _b64_path(path: Path) -> str:
     """Path as base64, so it can cross a shell without being expanded."""
     return base64.b64encode(str(path).encode("utf-8")).decode("ascii")
