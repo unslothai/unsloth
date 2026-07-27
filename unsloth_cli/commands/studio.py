@@ -331,8 +331,10 @@ def _missing_studio_requirement(run_mod):
         # and friends with --no-deps, so a transitive bound can read unsatisfied
         # in a venv that works, and repair reinstalls studio.txt either way.
         # prereleases=True: a prerelease satisfying a floor is not a broken install.
-        if is_root and requirement.specifier and not requirement.specifier.contains(
-            installed.version, prereleases = True
+        if (
+            is_root
+            and requirement.specifier
+            and not requirement.specifier.contains(installed.version, prereleases = True)
         ):
             return requirement.name
         for dependency in installed.requires or []:
