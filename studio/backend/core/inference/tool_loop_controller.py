@@ -217,7 +217,13 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
             # URLs the fetch layer accepts.
             from core.inference.tools import _normalize_url_scheme
 
-            parsed = urlparse(_normalize_url_scheme(url))
+            try:
+                parsed = urlparse(_normalize_url_scheme(url))
+            except ValueError:
+                # This runs in prepare_call, before the fetch, and is not inside
+                # its exception handler: raising here kills the turn instead of
+                # letting _fetch_url_raw return the blocked message.
+                return "Reading page..."
             if parsed.scheme in ("http", "https") and parsed.hostname:
                 host = parsed.hostname
                 if host.startswith("www."):

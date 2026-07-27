@@ -107,6 +107,12 @@ def test_status_and_provenance_match_local_event_conventions():
         # still generic for what the fetch layer refuses
         ("/login", "Reading page..."),
         ("javascript:alert(1)", "Reading page..."),
+        # urlparse raises on these, and this runs before the fetch and outside
+        # its handler, so it must degrade rather than kill the turn
+        ("https://[::1", "Reading page..."),
+        ("https://::1]", "Reading page..."),
+        ("//exam／ple.com", "Reading page..."),
+        ("//example.com＠", "Reading page..."),
     ],
 )
 def test_status_names_the_host_for_schemeless_urls(url, expected):
