@@ -158,6 +158,27 @@ def test_vulkan_selection_uses_ordinals_and_owns_device_flags(tmp_path):
     assert backend.gpu_ids == [1]
 
 
+def test_vulkan_auto_fit_and_launch_share_discrete_pool(tmp_path):
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 24_000, 0), (1, 8_000, 16_000)],
+    )
+    planned = []
+
+    def fallback(_model_size, gpus, *args, **kwargs):
+        planned.append(list(gpus))
+        return None, True
+
+    backend._select_gpus = fallback
+    result = _launch(backend, gguf)
+
+    assert planned
+    assert all(gpus == [(1, 8_000)] for gpus in planned)
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--device") + 1] == "Vulkan1"
+
+
 def test_cuda_selection_uses_visibility_and_removes_environment_placement(tmp_path, monkeypatch):
     monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA0")
     monkeypatch.setenv("LLAMA_ARG_MAIN_GPU", "0")

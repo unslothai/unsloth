@@ -623,7 +623,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             patch.object(
                 self.route.LlamaCppBackend,
                 "_get_gpu_memory",
-                return_value = [(0, 3072, 8192)],
+                return_value = [(0, 3072, 0), (1, 2048, 8192)],
             ),
         ):
             self._guard(
@@ -632,7 +632,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
                 training_active = True,
                 decision = (True, {"mode": "gguf_vulkan"}),
             )
-        self.assertEqual(captured[0]["vulkan_free_vram_gb"], {0: 3.0})
+        self.assertEqual(captured[0]["vulkan_free_vram_gb"], {1: 2.0})
 
     def test_refuses_with_headroom_number(self):
         info = {"required_gb": 30.0, "usable_gb": 6.0, "needed_gb": 39.0, "mode": "auto"}
