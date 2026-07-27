@@ -1248,3 +1248,61 @@ def test_an_advertised_alias_for_the_resident_weights_is_still_served(monkeypatc
         lambda: type("B", (), {"active_model_name": None})(),
     )
     assert asyncio.run(inference_route._reject_unservable_model("publisher/Qwen3", _Req())) is None
+
+
+def test_a_rejected_token_says_so_instead_of_asking_for_a_retry(hub):
+    # Hugging Face answers an expired or invalid X-Unsloth-HF-Token with 401. Only
+    # 403 and 404 were handled, so it fell through to "could not reach Hugging Face"
+    # with a 503, telling the caller to retry something that cannot start working.
+    from types import SimpleNamespace
+
+    from huggingface_hub.utils import HfHubHTTPError
+
+    err = HfHubHTTPError("unauthorized")
+    err.response = SimpleNamespace(status_code = 401)
+    hub["raise"] = err
+    refusal = _run("unsloth/x-GGUF:UD-Q5_K_XL", hf_token = "hf_expired")
+    assert refusal.status == 401 and refusal.code == "model_access_denied"
+    assert "token" in refusal.message.lower()
+    assert hub["started"] == []
+
+
+def test_an_image_request_does_not_download_a_text_only_model(hub):
+    # The capability guard only ever sees an already-local target, so without this
+    # an image request would spend gigabytes on weights that cannot answer it and
+    # then 400 on every retry.
+    gb = 1024**3
+    hub["info"] = _Info([_Sibling("model-UD-Q5_K_XL.gguf", 5 * gb)])
+    refusal = asyncio.run(
+        auto_dl.maybe_auto_download("unsloth/text-GGUF:UD-Q5_K_XL", require_vision = True)
+    )
+    assert refusal.status == 400 and refusal.code == "invalid_value"
+    assert "mmproj" in refusal.message
+    assert hub["started"] == []
+    # The stock fixture repo ships mmproj-F16.gguf, so that one is allowed to start.
+    hub["info"] = _gguf_repo_info()
+    assert (
+        asyncio.run(
+            auto_dl.maybe_auto_download("unsloth/x-GGUF:UD-Q5_K_XL", require_vision = True)
+        ).code
+        == "model_downloading"
+    )
+    assert len(hub["started"]) == 1
+
+
+def test_two_models_differing_only_in_case_are_not_the_same_weights(monkeypatch):
+    # Lowercasing paths made /srv/models/Foo and /srv/models/foo compare equal, so
+    # on a case-sensitive filesystem a request for one was answered by the other.
+    import os
+
+    loaded = _Loaded("/srv/models/Foo/model.gguf")
+    loaded.gguf_path = "/srv/models/Foo/model.gguf"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    assert inference_route._resolves_to_resident("/srv/models/Foo") is True
+    same = os.path.normcase("A") == os.path.normcase("a")
+    assert inference_route._resolves_to_resident("/srv/models/foo") is same

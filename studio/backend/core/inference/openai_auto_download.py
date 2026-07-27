@@ -369,12 +369,16 @@ def _downloading_refusal(label: str, percent: Optional[float]) -> AutoDownloadRe
 
 
 async def maybe_auto_download(
-    requested_model: str, *, hf_token: Optional[str] = None
+    requested_model: str, *, hf_token: Optional[str] = None, require_vision: bool = False
 ) -> Optional[AutoDownloadRefusal]:
     """Start (or report on) a background fetch of *requested_model*.
 
     Returns None when the request should carry on unchanged, or a refusal the
     caller must raise. Only called after the local resolver has already missed.
+
+    ``require_vision`` refuses a target with no mmproj companion rather than
+    spending gigabytes on weights that cannot answer the request that asked for
+    them; the local capability guard only ever sees an already-downloaded model.
     """
     global _active
 
@@ -432,7 +436,7 @@ async def maybe_auto_download(
 
     try:
         return await _admit_and_start(
-            repo_id, wanted_variant, requested_model, hf_token, provisional
+            repo_id, wanted_variant, requested_model, hf_token, provisional, require_vision
         )
     except BaseException:
         # Not `except Exception`: a cancel mid-probe would otherwise wedge the provisional slot.
@@ -446,6 +450,7 @@ async def _admit_and_start(
     requested_model: str,
     hf_token: Optional[str],
     active: _Active,
+    require_vision: bool = False,
 ) -> Optional[AutoDownloadRefusal]:
     from hub.utils.hf_errors import hf_error_status
 
@@ -460,6 +465,15 @@ async def _admit_and_start(
     except Exception as exc:
         _release(active)
         status = hf_error_status(exc)
+        if status == 401:
+            return AutoDownloadRefusal(
+                status = 401,
+                code = "model_access_denied",
+                message = (
+                    f"Hugging Face rejected the token sent for '{repo_id}'. Replace the "
+                    "X-Unsloth-HF-Token header with a valid token; retrying will not help."
+                ),
+            )
         if status == 403:
             return _gated_refusal(repo_id)
         if status == 404:
@@ -546,6 +560,18 @@ async def _admit_and_start(
     plan = build_gguf_variant_plans(list(getattr(info, "siblings", None) or [])).get(
         variant.lower()
     )
+    if require_vision and not (plan and plan.mmproj_filenames):
+        _release(active)
+        return AutoDownloadRefusal(
+            status = 400,
+            code = "invalid_value",
+            message = (
+                f"'{_public_label(repo_id, variant)}' ships no mmproj companion, so it "
+                "cannot answer the image or audio input in this request. It was not "
+                "downloaded."
+            ),
+        )
+
     need_bytes = _remaining_bytes(repo_id, plan, expected_bytes)
     fits, free = _enough_disk(need_bytes)
     if not fits:

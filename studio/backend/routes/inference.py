@@ -3713,7 +3713,7 @@ def _auto_download_hf_token(fastapi_request: Optional[Request]) -> Optional[str]
 
 
 async def _maybe_auto_download_model(
-    requested_model: str, fastapi_request: Optional[Request]
+    requested_model: str, fastapi_request: Optional[Request], *, require_vision: bool = False
 ) -> None:
     """Opt-in: start fetching a named GGUF this server doesn't have.
 
@@ -3734,7 +3734,9 @@ async def _maybe_auto_download_model(
         return
     try:
         refusal = await maybe_auto_download(
-            requested_model, hf_token = _auto_download_hf_token(fastapi_request)
+            requested_model,
+            hf_token = _auto_download_hf_token(fastapi_request),
+            require_vision = require_vision,
         )
     except Exception as exc:
         # Never turn a servable request into a 500 over the download attempt.
@@ -3797,11 +3799,19 @@ def _loaded_satisfies(requested: str) -> bool:
     return base in {active.lower(), (public_model_id(active) or "").lower()}
 
 
+def _norm_path(value: str) -> str:
+    """Compare-ready path. normcase, not lower: on a case-sensitive filesystem
+    /srv/models/Foo and /srv/models/foo are different models."""
+    import os
+
+    return os.path.normcase(str(value).replace("\\", "/").rstrip("/"))
+
+
 def _resolves_to_resident(load_path: Optional[str]) -> bool:
     """Whether a resolved on-disk path is what is already loaded."""
     if not load_path:
         return False
-    target = str(load_path).replace("\\", "/").rstrip("/").lower()
+    target = _norm_path(load_path)
     llama_backend = get_llama_cpp_backend()
     for candidate in (
         getattr(llama_backend, "gguf_path", None)
@@ -3814,7 +3824,7 @@ def _resolves_to_resident(load_path: Optional[str]) -> bool:
     ):
         if not candidate:
             continue
-        current = str(candidate).replace("\\", "/").rstrip("/").lower()
+        current = _norm_path(candidate)
         if (
             current == target
             or current.startswith(f"{target}/")
@@ -3980,7 +3990,9 @@ async def _maybe_auto_switch_model(
         if resolved is None:
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
             if auto_switch_on and not reload_only:
-                await _maybe_auto_download_model(requested_model, fastapi_request)
+                await _maybe_auto_download_model(
+                    requested_model, fastapi_request, require_vision = require_vision
+                )
             # Idle-unload may have freed the model; reload exactly what it freed
             # (path + quant + advertised id) so an alias/unknown name stays servable
             # and keeps the override keyed by the advertised id, not the load path.
@@ -10923,13 +10935,15 @@ def _quant_reference_resolves(model_id: Optional[str], quant: str) -> bool:
 
     A standalone .gguf takes its quant from the filename, but the resolver stores
     such files with no quants at all, so advertising one hands out a pin that dies
-    the moment another model loads. Only downgrade on a definite answer: the id
-    itself indexed, that quant not among what it has.
+    the moment another model loads.
     """
-    from core.inference.local_model_resolver import resolve_local_gguf
+    from core.inference.local_model_resolver import resolve_local_gguf, warm_index_soon
 
-    if not model_id or resolve_local_gguf(model_id, allow_scan = False) is None:
-        return True
+    if not model_id:
+        return False
+    # Cold index proves nothing, and publishing on no proof is what hands out the
+    # dead pin; warm so the next response carries the quant.
+    warm_index_soon()
     return resolve_local_gguf(f"{model_id}:{quant}", allow_scan = False) is not None
 
 

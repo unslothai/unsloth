@@ -269,6 +269,12 @@ def test_a_standalone_gguf_does_not_advertise_a_quant_that_stops_resolving(monke
     llama.model_identifier = "org/Foo"
     assert inf._openai_model_objects()[0]["quant"] == "Q4_K_M"
 
+    # A cold index cannot prove the reference either, and publishing on no proof is
+    # exactly what hands out the pin that later fails to resolve.
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    assert "quant" not in inf._openai_model_objects()[0]
+
 
 def test_an_alias_for_the_resident_weights_is_not_listed_as_unloaded(monkeypatch):
     # A GGUF loaded by absolute path keys the resident entry by basename, so an id-only dedup
