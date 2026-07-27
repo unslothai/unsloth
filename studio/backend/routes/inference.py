@@ -13662,13 +13662,8 @@ async def chat_count_tokens(
     from state.tool_policy import get_tool_policy as _get_tool_policy_ct
 
     _cli_policy = _get_tool_policy_ct()
-    # Decide the route before applying the process policy, exactly as the
-    # completion does. A client tool catalog, tool history or response_format
-    # goes to the llama-server passthrough, which sends neither a built-in tool
-    # schema nor the tool nudge, so counting them would report a prompt the next
-    # request never sends. `--enable-tools` alone does not take that route back:
-    # it sets the policy, while the passthrough turns on an explicit per-request
-    # `enable_tools` / `mcp_enabled`.
+    # Route already decided above; see _takes_tool_passthrough for why it has to
+    # come before the process policy.
     _client_disabled_tool_calls = getattr(payload, "tool_choice", None) == "none" and not (
         _explicit_studio_tool_loop_requested(payload) and llama_backend.supports_tools
     )
