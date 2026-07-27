@@ -237,7 +237,7 @@ def _foreign_receiver(node, modules) -> bool:
         root = name = func.id
     else:
         return False
-    return root in modules and name not in PATH_CLASSES
+    return root in modules and not _is_path_class(name, modules)
 
 
 def _offender(

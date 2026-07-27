@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import locale
 import os
 import threading
 from pathlib import Path
@@ -21,9 +20,7 @@ class StateStore:
         self._data: Dict[str, Any] = {}
         if self.path.exists():
             try:
-                # errors="replace" so a file we chose not to migrate still yields
-                # every key; a mangled key is one possible duplicate, not a loss.
-                with self.path.open(encoding = "utf-8", errors = "replace") as f:
+                with self.path.open(encoding = "utf-8") as f:
                     self._data = json.load(f)
             except Exception:
                 self._data = {}
@@ -66,14 +63,13 @@ class JsonlWriter:
         self.path = Path(path)
         self.path.parent.mkdir(parents = True, exist_ok = True)
         self._lock = threading.Lock()
-        self._migrate_legacy_encoding()
         self._fh = self.path.open("a", buffering = 1, encoding = "utf-8")
         self._count_seen_keys: set[str] = set()
         # Preload seen keys for dedup across resumes
         if self.path.exists() and self.path.stat().st_size > 0:
             try:
-                # errors="replace" so a file we chose not to migrate still yields
-                # every key; a mangled key is one possible duplicate, not a loss.
+                # A file an older build wrote in the operator's locale is left as
+                # is; no guess is safe, so just read past what will not decode.
                 with self.path.open(encoding = "utf-8", errors = "replace") as f:
                     for line in f:
                         try:
@@ -85,32 +81,6 @@ class JsonlWriter:
                             pass
             except Exception:
                 pass
-
-    def _migrate_legacy_encoding(self) -> None:
-        """Rewrite a file an older build wrote in the operator's locale as utf-8.
-
-        Appending utf-8 to locale-encoded lines would leave one file in two
-        encodings, and the dedup preload would stop at the first byte it cannot
-        decode and re-append every record after it.
-        """
-        if not self.path.exists() or self.path.stat().st_size == 0:
-            return
-        data = self.path.read_bytes()
-        try:
-            data.decode("utf-8")
-            return
-        except UnicodeDecodeError:
-            pass
-        legacy = locale.getpreferredencoding(False)
-        try:
-            text = data.decode(legacy)
-        except (LookupError, UnicodeDecodeError):
-            return  # cannot name the original encoding, so leave the file alone
-        if text.encode(legacy) != data:
-            return  # the guess does not round-trip, so rewriting would lose bytes
-        tmp = self.path.with_suffix(self.path.suffix + ".mig")
-        tmp.write_text(text, encoding = "utf-8")
-        os.replace(tmp, self.path)
 
     def _key(self, obj: dict) -> str | None:
         for k in ("id", "node_id", "number", "sha", "url"):
