@@ -1,6 +1,11 @@
 # Unsloth UI backend dependencies
 typer
-fastapi
+# Ceiling, not a freeze: patch releases still flow. A minor bump can rewrite
+# code that scan_packages.py has a reviewed entry for, which reopens the
+# finding and reds the security audit on whatever unrelated PR lands next
+# (0.140.0 rewrote the SSE keepalive loop and did exactly that). Raising the
+# ceiling is a deliberate PR that carries the re-review with it.
+fastapi<0.141
 uvicorn
 pydantic
 packaging
