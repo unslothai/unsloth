@@ -1696,6 +1696,7 @@ export const en = {
       memoryEfficient: "Memory Efficient",
       weightDecomposed: "Weight-Decomposed",
       notSupportedAppleSilicon: "Not supported on Apple Silicon",
+      doraNeedsVisionLayersOff: "Turn off vision layer training to use DoRA",
       optimization: "Optimization",
       schedule: "Schedule",
       memory: "Memory",
