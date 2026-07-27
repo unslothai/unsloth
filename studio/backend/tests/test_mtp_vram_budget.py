@@ -132,6 +132,7 @@ class _StubDrafter:
 
     def __init__(self, kv_per_token):
         self._kv_per_token = kv_per_token
+        self._architecture = "gemma3"
 
     def _can_estimate_kv(self):
         return True
@@ -231,6 +232,30 @@ class TestSeparateDrafter:
         a = b._mtp_draft_kv_bytes(16384, drafter_path = "/m/d.gguf")
         c = b._mtp_draft_kv_bytes(65536, drafter_path = "/m/d.gguf")
         assert c == pytest.approx(4 * a)
+
+    def test_gemma4_assistant_shares_target_kv(self, monkeypatch):
+        b = _make_backend(nextn = None)
+        stub = _StubDrafter(kv_per_token = 2000)
+        stub._architecture = "gemma4-assistant"
+        monkeypatch.setattr(b, "_draft_backend_for", lambda path: stub)
+
+        assert (
+            b._mtp_draft_kv_bytes(
+                65536,
+                drafter_path = "/m/mtp-gemma4.gguf",
+                swa_full = True,
+            )
+            == 0
+        )
+        assert (
+            b._estimate_mtp_overhead_bytes(
+                65536,
+                drafter_path = "/m/mtp-gemma4.gguf",
+                draft_weights_bytes = GIB,
+                swa_full = True,
+            )
+            == GIB
+        )
 
     def test_drafter_kv_scales_with_parallel_slots(self, monkeypatch):
         # The drafter is served under the same --parallel slots as the main model,
@@ -398,6 +423,7 @@ class TestExtraArgsMtpDetection:
             (["--spec-type", "mtp"], True),
             (["--spec-type", "ngram-mod,draft-mtp"], True),
             (["--spec-type=draft-mtp"], True),
+            (["--spec_type=draft-mtp"], True),
             (["--spec-type", "ngram-mod"], False),
             (["--spec-default"], False),
             (["-c", "131072"], False),
@@ -579,6 +605,7 @@ class TestExtraArgsMtpDetection:
             (["--spec-draft-ngl", "0"], True),
             (["-ngld", "0"], True),
             (["--spec-draft-ngl=0"], True),
+            (["--spec_draft_ngl=0"], True),
             (["--n-gpu-layers-draft", "0"], True),
             (["--spec-draft-ngl", "20"], False),
             (["--spec-draft-device", "none"], True),
@@ -623,6 +650,7 @@ class TestExtraArgsMtpDetection:
         [
             (["--spec-draft-n-max", "4"], 4),
             (["--spec-draft-n-max=6"], 6),
+            (["--spec_draft_n_max=6"], 6),
             (["--spec-type", "draft-mtp", "--spec-draft-n-max", "3"], 3),
             (["--spec-draft-n-max", "2", "--spec-draft-n-max", "5"], 5),  # last wins
             (["--spec-draft-n-max", "notanint"], None),
@@ -644,6 +672,7 @@ class TestExtraArgsMtpDetection:
             (["--spec-draft-model", "/m/draft.gguf"], "/m/draft.gguf"),
             (["-md", "/m/draft.gguf"], "/m/draft.gguf"),
             (["--model-draft=/m/draft.gguf"], "/m/draft.gguf"),
+            (["--model_draft=/m/draft.gguf"], "/m/draft.gguf"),
             (["--model-draft", "--spec-type"], None),
             (["-c", "4096"], None),
             (None, None),
@@ -689,6 +718,7 @@ class TestExtraArgsMtpDetection:
             (["--cache-type-v-draft", "q4_0"], (None, "q4_0")),  # K stays f16, V only
             (["--cache-type-k-draft", "q4_0", "--cache-type-v-draft", "q8_0"], ("q4_0", "q8_0")),
             (["--cache-type-k-draft=q8_0"], ("q8_0", None)),
+            (["--cache_type_k_draft=q8_0"], ("q8_0", None)),
             (["--cache-type-k", "q8_0"], (None, None)),  # main type, not draft
             (["-c", "4096"], (None, None)),
             (None, (None, None)),
@@ -719,6 +749,7 @@ class TestExtraArgsMtpDetection:
             (["--ubatch-size", "1024"], 1024),
             (["-ub", "4096"], 4096),
             (["--ubatch-size=512"], 512),
+            (["--ubatch_size=512"], 512),
             (["--ubatch", "2048"], None),  # not a real llama-server flag; ignore it
             (["-c", "4096"], None),
             (None, None),

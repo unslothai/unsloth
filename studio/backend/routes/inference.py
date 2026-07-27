@@ -1004,8 +1004,11 @@ try:
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
+        _extra_args_n_ubatch,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
+        _kv_unified_from_args,
+        _swa_full_from_args_or_env,
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
@@ -1043,8 +1046,11 @@ except ImportError:
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
+        _extra_args_n_ubatch,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
+        _kv_unified_from_args,
+        _swa_full_from_args_or_env,
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
@@ -3289,6 +3295,11 @@ def _request_matches_loaded_settings(
             strip_offload = request.gpu_memory_mode == "manual",
         )
     )
+    if (
+        not llama_backend.is_diffusion
+        and llama_backend.swa_full != _swa_full_from_args_or_env(effective_extra)
+    ):
+        return False
     if not _tensor_parallel_matches_loaded(
         effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
     ):
@@ -4388,7 +4399,13 @@ def _estimate_gguf_kv_gb(
         ctx = max(max_seq_length or 0, ctx_override) or (probe._context_length or 0)
         if ctx <= 0:
             return 0.0
-        kv = probe._estimate_kv_cache_bytes(ctx, n_parallel = max(1, n_parallel or 1))
+        kv = probe._estimate_kv_cache_bytes(
+            ctx,
+            n_parallel = max(1, n_parallel or 1),
+            swa_full = _swa_full_from_args_or_env(llama_extra_args),
+            kv_unified = _kv_unified_from_args(llama_extra_args, default = False),
+            n_ubatch = _extra_args_n_ubatch(llama_extra_args),
+        )
         return kv / (1024**3)
     except Exception as e:
         logger.warning(f"Could not size GGUF KV cache for training guard: {e}")

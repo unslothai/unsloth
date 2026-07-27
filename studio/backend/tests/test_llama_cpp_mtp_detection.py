@@ -63,7 +63,9 @@ from core.inference.llama_cpp import (
     _extra_args_set_any_flag,
     _extra_args_set_spec_type,
     _is_mtp_model_name,
+    _kv_unified_from_args,
     _mla_mtp_auto_enabled,
+    _swa_full_from_args_or_env,
 )
 
 
@@ -145,6 +147,51 @@ def test_is_mtp_model_name_handles_none():
     assert _is_mtp_model_name(None) is False
     assert _is_mtp_model_name(None, None) is False
     assert _is_mtp_model_name("", "") is False
+
+
+@pytest.mark.parametrize("flag", ["--swa-full", "--swa_full"])
+def test_swa_full_detects_llama_cpp_long_flag_spellings(flag):
+    assert _swa_full_from_args_or_env([flag], {}) is True
+
+
+@pytest.mark.parametrize("value", ["on", "enabled", "true", "1"])
+def test_swa_full_detects_llama_cpp_env_truth_values(value):
+    assert _swa_full_from_args_or_env([], {"LLAMA_ARG_SWA_FULL": value}) is True
+
+
+@pytest.mark.parametrize("value", ["", "off", "yes", "TRUE", " true ", "0"])
+def test_swa_full_rejects_values_llama_cpp_treats_as_false(value):
+    assert _swa_full_from_args_or_env([], {"LLAMA_ARG_SWA_FULL": value}) is False
+
+
+def test_swa_full_cli_wins_when_env_is_false():
+    assert _swa_full_from_args_or_env(["--swa-full"], {"LLAMA_ARG_SWA_FULL": "0"}) is True
+
+
+@pytest.mark.parametrize("flag", ["--kv-unified", "--kv_unified", "-kvu"])
+def test_kv_unified_detects_enable_aliases(flag):
+    assert _kv_unified_from_args([flag]) is True
+
+
+@pytest.mark.parametrize("flag", ["--no-kv-unified", "--no_kv_unified", "-no-kvu"])
+def test_kv_unified_detects_disable_aliases(flag):
+    assert _kv_unified_from_args(["--kv-unified", flag]) is False
+
+
+def test_kv_unified_uses_environment_before_cli():
+    assert _kv_unified_from_args([], env = {"LLAMA_ARG_KV_UNIFIED": "true"}) is True
+    assert (
+        _kv_unified_from_args(
+            [], default = True, env = {"LLAMA_ARG_KV_UNIFIED": "false"}
+        )
+        is True
+    )
+    assert (
+        _kv_unified_from_args(
+            ["--kv-unified"], env = {"LLAMA_ARG_KV_UNIFIED": "false"}
+        )
+        is True
+    )
 
 
 def test_is_mtp_model_name_detects_marker_in_filename(tmp_path):

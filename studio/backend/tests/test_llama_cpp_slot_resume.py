@@ -221,6 +221,20 @@ def test_fingerprint_tracks_effective_context_length(tmp_path):
     assert backend._slot_launch_fingerprint() != before
 
 
+def test_fingerprint_tracks_swa_full_mode(tmp_path):
+    backend = _resume_backend(tmp_path)
+    before = backend._slot_launch_fingerprint()
+    backend._swa_full = True
+    assert backend._slot_launch_fingerprint() != before
+
+
+def test_fingerprint_tracks_unified_cache_mode(tmp_path):
+    backend = _resume_backend(tmp_path)
+    before = backend._slot_launch_fingerprint()
+    backend._kv_cache_unified = True
+    assert backend._slot_launch_fingerprint() != before
+
+
 def test_gguf_file_identity_covers_split_shards(tmp_path):
     backend = _resume_backend(tmp_path)
     first = tmp_path / "m-00001-of-00002.gguf"
@@ -442,6 +456,57 @@ def test_save_skipped_when_estimate_exceeds_cap(monkeypatch, tmp_path):
         raising = False,
     )
     assert backend.save_slots_for_resume() is None
+
+
+def test_save_estimate_uses_total_context_and_swa_full(monkeypatch, tmp_path):
+    backend = _resume_backend(tmp_path, n_slots = 4)
+    backend._effective_context_length = 8192
+    backend._kv_cache_context_total = 32768
+    backend._swa_full = True
+    calls = []
+
+    def estimate(ctx, cache_type, **kwargs):
+        calls.append((ctx, cache_type, kwargs))
+        return 0
+
+    backend._estimate_kv_cache_bytes = estimate
+    _fake_disk(monkeypatch)
+    monkeypatch.setattr(
+        llama_cpp.httpx,
+        "post",
+        lambda *a, **k: _Resp(200, {"n_saved": 1, "n_written": 1}),
+        raising = False,
+    )
+
+    assert backend.save_slots_for_resume() is not None
+    assert calls == [
+        (
+                32768,
+                None,
+                {
+                    "n_parallel": 4,
+                    "swa_full": True,
+                    "kv_unified": False,
+                    "n_ubatch": 512,
+                },
+            )
+        ]
+
+
+def test_compact_swa_slots_are_still_saved(monkeypatch, tmp_path):
+    # Do not restore the abandoned blanket SWA guard: compact SWA slot saves can
+    # still be useful, and failures already fall back safely to prompt prefill.
+    backend = _resume_backend(tmp_path)
+    backend._sliding_window = 4096
+    backend._swa_full = False
+    _fake_disk(monkeypatch)
+    monkeypatch.setattr(
+        llama_cpp.httpx,
+        "post",
+        lambda *a, **k: _Resp(200, {"n_saved": 1, "n_written": 1}),
+        raising = False,
+    )
+    assert backend.save_slots_for_resume() is not None
 
 
 def test_save_skipped_when_model_file_changed_since_load(monkeypatch, tmp_path):

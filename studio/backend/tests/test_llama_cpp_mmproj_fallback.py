@@ -384,6 +384,10 @@ class TestFlashAttnOffQuantizedKvCache:
         out = _flash_off(["llama-server", "--flash-attn=on", "--cache_type_v=q8_0"])
         assert out == ["llama-server", "--flash-attn=off", "--cache_type_v=f16"]
 
+    def test_underscore_alias_flash_attn_is_disabled(self):
+        out = _flash_off(["llama-server", "--flash_attn=on"])
+        assert out == ["llama-server", "--flash_attn=off"]
+
     def test_underscore_value_not_normalized_for_nonquantized(self):
         # Only the flag name is canonicalized; a non-quantized type value is
         # matched verbatim and left untouched (no spurious reset).

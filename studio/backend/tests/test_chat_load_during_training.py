@@ -996,9 +996,15 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 self,
                 ctx,
                 n_parallel = 1,
+                swa_full = False,
+                kv_unified = False,
+                n_ubatch = None,
             ):
                 seen["ctx"] = ctx
                 seen["n_parallel"] = n_parallel
+                seen["swa_full"] = swa_full
+                seen["kv_unified"] = kv_unified
+                seen["n_ubatch"] = n_ubatch
                 return ctx * n_parallel * (1024**2)  # 1 MiB per ctx unit per slot
 
         with patch.object(self.route, "LlamaCppBackend", _FakeBackend):
@@ -1009,6 +1015,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
             self.assertEqual(seen["ctx"], 131072)
             self.assertEqual(seen["n_parallel"], 1)  # default single slot
+            self.assertFalse(seen["swa_full"])
             # override below max_seq_length -> larger (max_seq_length) wins
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "1024"]), 4.0)
             self.assertEqual(seen["ctx"], 4096)
@@ -1020,6 +1027,14 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             # --parallel slots scale the cache the same way the launcher does
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, None, 4), 16.0)
             self.assertEqual(seen["n_parallel"], 4)
+            # Full SWA mode follows the same pass-through args as the launcher.
+            r._estimate_gguf_kv_gb("m", 4096, ["--swa_full"])
+            self.assertTrue(seen["swa_full"])
+            r._estimate_gguf_kv_gb(
+                "m", 4096, ["--kv_unified", "--ubatch_size", "256"]
+            )
+            self.assertTrue(seen["kv_unified"])
+            self.assertEqual(seen["n_ubatch"], 256)
 
 
 # ── load_model integration: authoritative 409, and no unload before refusal ──
