@@ -73,23 +73,44 @@ def test_autoload_records_backend_loaded_model_identity():
     assert "m.id === loadedModelId" in autoload
 
 
-def test_chat_autoload_toast_matches_explicit_load_lifetime():
-    """Send-triggered autoload must stay visible until the load settles, just
-    like the explicit model-loading toast, instead of expiring after 5 seconds."""
+def test_chat_autoload_toast_is_persistent_and_dismissible():
+    """Send-triggered autoload stays visible until it settles but remains
+    dismissible, matching the explicit model-loading toast's lifetime."""
     src = _read("features/chat/api/chat-adapter.ts")
     auto_load = src.split("async function autoLoadSmallestModel", 1)[1]
     auto_load = auto_load.split("export function createOpenAIStreamAdapter", 1)[0]
-    assert auto_load.count("toast.loading(") >= 5
-    # Sonner keeps loading toasts open by type. Do not store Infinity on the
-    # toast because the success update reuses its id and would inherit it.
-    assert "duration: Infinity" not in auto_load
-    assert "duration: 5000" not in auto_load
+    assert "toast.loading(" not in auto_load
+    assert "const updateAutoLoadToast =" in auto_load
+    assert "if (autoLoadToastDismissed) return;" in auto_load
+    assert auto_load.count("toast.message(") == 2
+    assert auto_load.count("updateAutoLoadToast(") >= 4
+    assert "duration: Number.POSITIVE_INFINITY" in auto_load
+    assert "closeButton: true" in auto_load
+    assert "onDismiss:" in auto_load
+    # Terminal success uses a fresh finite toast after manual progress dismissal.
+    assert "showAutoLoadSuccess" in auto_load
+    assert "description: undefined" in auto_load
+    assert "duration: 5000" in auto_load
     assert "duration: 30000" not in auto_load
-    assert auto_load.count("toast.success(") >= 2
     assert auto_load.count("toast.dismiss(toastId)") >= 4
 
     explicit_load = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "duration: Infinity" in explicit_load
+
+
+def test_recipe_model_load_toast_is_persistent_and_dismissible():
+    """Recipe model loading uses the same dismissible persistent lifecycle as
+    chat loading because both call the non-abortable loadModel API."""
+    src = _read("features/recipe-studio/hooks/use-recipe-executions.ts")
+    model_load = src.split("async function loadLocalModelSelection", 1)[1]
+    model_load = model_load.split("function getLocalModelLoadPlanForPayload", 1)[0]
+    assert "toast.loading(" not in model_load
+    assert "toast.message(" in model_load
+    assert "duration: Number.POSITIVE_INFINITY" in model_load
+    assert "closeButton: true" in model_load
+    assert "onDismiss:" in model_load
+    assert "description: undefined" in model_load
+    assert "duration: 2000" in model_load
 
 
 def test_rollback_restores_native_lease_expiry_with_token():
