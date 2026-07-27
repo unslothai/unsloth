@@ -4578,9 +4578,13 @@ async def _override_gpu_ids_still_resolve(gpu_ids: List[int]) -> bool:
     """Whether a per-model GPU pin is usable on this machine right now.
 
     normalize_model_override cannot know the device list, so it stores whatever
-    was valid where the config was written. This is the load-time reconciliation,
-    and it has to make every check _resolve_gguf_gpu_ids_for_request would later
-    make, or the load 400s on the check this one skipped.
+    was valid where the config was written. This is the load-time reconciliation
+    for the device-availability rules, which are the ones that go stale.
+
+    Deliberately not exhaustive: model-dependent rules (a Vulkan diffusion GGUF
+    refuses gpu_ids outright) need a ModelConfig this has no reason to build.
+    The caller's retry-without-the-pin covers those, and covers rules added
+    later, so a check missing here costs one extra attempt, not the load.
     """
     try:
         from utils.hardware import DeviceType, get_device

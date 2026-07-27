@@ -79,9 +79,9 @@ def test_rollback_restores_native_lease_expiry_with_token():
     (which would look non-expiring and skip the expiry guard)."""
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "previousActiveNativePathExpiresAtMs" in src
-    assert re.search(
-        r"activeNativePathExpiresAtMs:\s*previousActiveNativePathToken", src
-    ), "rollback must restore the expiry alongside the token"
+    assert re.search(r"activeNativePathExpiresAtMs:\s*previousActiveNativePathToken", src), (
+        "rollback must restore the expiry alongside the token"
+    )
 
 
 def test_default_caches_keyed_on_inventory_version():
@@ -599,3 +599,35 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     # The torch fallback keeps its physical-only gate and the XPU ban.
     assert 'data?.device_backend !== "xpu" &&' in src
     assert 'physicalIndex: pinnableBackend && d.index_kind === "physical",' in src
+
+
+def test_only_gguf_configs_are_mirrored_to_the_server():
+    """The server override map is read by the OpenAI-compatible auto-switch, and
+    its resolver indexes GGUFs only. Mirroring a safetensors config there would
+    advertise settings on the monitor's applied-on-API-load list that no API
+    request can ever apply. The local write stays unconditional: the picker
+    loads safetensors models and must honour their config.
+    """
+    src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    assert "if (!saveFailed && target.isGguf) { syncModelOverride(" in src
+    # The local save is not behind the same gate.
+    assert "if (remember) { saveFailed = !savePerModelConfig(" in src
+
+
+def test_evicted_local_configs_drop_their_server_overrides():
+    """savePerModelConfig evicts older models when the map exceeds its budget.
+    Those models keep a server override that API loads still apply, with nothing
+    left in the UI showing it or able to forget it, so eviction has to propagate.
+    """
+    src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    assert "const evicted: { modelId: string; ggufVariant: string | null }[] = [];" in src
+    assert (
+        "for (const dropped of evicted) { syncModelOverride(dropped.modelId, dropped.ggufVariant, null); }"
+        in src
+    )
+
+    # The eviction path has to actually report what it dropped, decoded back into
+    # a model id and variant rather than the normalized storage key.
+    store = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
+    assert "evicted?: { modelId: string; ggufVariant: string | null }[]" in store
+    assert "modelIdFromStorageKey(" in store and "ggufVariantFromStorageKey(" in store
