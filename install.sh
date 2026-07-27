@@ -211,12 +211,14 @@ run_install_cmd() {
         _rc=$(cat "$_rcf" 2>/dev/null || echo 1)
         rm -f "$_rcf"
         [ "${_rc:-1}" -eq 0 ] 2>/dev/null && return 0
+        tauri_log "ERROR" "$_label failed (exit code $_rc)"
         step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
         return "$_rc"
     fi
     _log=$(mktemp)
     "$@" >"$_log" 2>&1 && { rm -f "$_log"; return 0; }
     _rc=$?
+    tauri_log "ERROR" "$_label failed (exit code $_rc)"
     step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
     _redact_install_output "$_log" >&2
     rm -f "$_log"
@@ -4055,6 +4057,7 @@ if [ -n "$VENV_ABS_BIN" ]; then
 fi
 
 if ! command -v bash >/dev/null 2>&1; then
+    tauri_log "ERROR" "bash is required to run studio setup"
     step "setup" "bash is required to run studio setup" "$C_ERR"
     substep "Please install bash and re-run install.sh"
     exit 1
@@ -4166,6 +4169,7 @@ fi
 # PATH and shortcuts are already set up so the user can fix and retry.
 if [ "$_SETUP_EXIT" -ne 0 ]; then
     echo ""
+    tauri_log "ERROR" "studio setup failed (exit code $_SETUP_EXIT)"
     step "error" "studio setup failed (exit code $_SETUP_EXIT)" "$C_ERR"
     echo ""
     exit "$_SETUP_EXIT"

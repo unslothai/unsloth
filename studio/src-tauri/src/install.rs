@@ -1,6 +1,7 @@
 use crate::diagnostics::{self, AttemptLog, DiagnosticsState};
 use log::{error, info, warn};
 use process_wrap::std::*;
+use std::collections::VecDeque;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -37,6 +38,64 @@ pub fn new_install_state() -> InstallState {
 }
 
 use crate::process::trim_line_endings;
+
+const FAILURE_CONTEXT_LINES: usize = 8;
+const FAILURE_CONTEXT_LINE_BYTES: usize = 1_000;
+
+#[derive(Default)]
+struct InstallFailureContext {
+    explicit_error: Option<String>,
+    stderr_tail: VecDeque<String>,
+}
+
+impl InstallFailureContext {
+    fn observe_stdout(&mut self, text: &str) {
+        if let Some(message) = text.strip_prefix("[TAURI:ERROR] ") {
+            let message = message.trim();
+            if !message.is_empty() {
+                self.explicit_error = Some(message.to_string());
+            }
+        }
+    }
+
+    fn observe_stderr(&mut self, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let boundary =
+            diagnostics::valid_utf8_boundary(text, text.len().min(FAILURE_CONTEXT_LINE_BYTES));
+        self.stderr_tail.push_back(text[..boundary].to_string());
+        while self.stderr_tail.len() > FAILURE_CONTEXT_LINES {
+            self.stderr_tail.pop_front();
+        }
+    }
+
+    fn message(&self, code: i32) -> String {
+        let detail = self.explicit_error.as_deref().or_else(|| {
+            self.stderr_tail
+                .iter()
+                .rev()
+                .find(|line| {
+                    let lower = line.to_ascii_lowercase();
+                    lower.contains("error") || lower.contains("failed")
+                })
+                .or_else(|| self.stderr_tail.back())
+                .map(String::as_str)
+        });
+        match detail {
+            Some(detail) => format!(
+                "Installation failed: {} (exit code {}).",
+                diagnostics::redact_for_display(detail),
+                code
+            ),
+            None => format!(
+                "Installation failed with exit code {}. Open the installer logs for details.",
+                code
+            ),
+        }
+    }
+}
 
 // ── Script Resolution ──
 
@@ -241,14 +300,19 @@ fn stream_output(
     attempt: AttemptLog,
     stdout: Option<std::process::ChildStdout>,
     stderr: Option<std::process::ChildStderr>,
-) -> Vec<std::thread::JoinHandle<()>> {
+) -> (
+    Vec<std::thread::JoinHandle<()>>,
+    Arc<Mutex<InstallFailureContext>>,
+) {
     let mut threads = Vec::new();
+    let failure_context = Arc::new(Mutex::new(InstallFailureContext::default()));
 
     if let Some(out) = stdout {
         let app_clone = app.clone();
         let state_clone = Arc::clone(state);
         let diagnostics_clone = diagnostics.clone();
         let attempt_clone = attempt.clone();
+        let failure_context_clone = Arc::clone(&failure_context);
         threads.push(std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(out);
             let mut buf = Vec::new();
@@ -259,6 +323,9 @@ fn stream_output(
                     Ok(_) => {
                         let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
                         diagnostics::append_phase_line(&attempt_clone.handle, "stdout", &text);
+                        if let Ok(mut context) = failure_context_clone.lock() {
+                            context.observe_stdout(&text);
+                        }
                         // Parse structured Tauri protocol lines
                         if let Some(packages) = text.strip_prefix("[TAURI:NEED_SUDO] ") {
                             let pkgs: Vec<String> =
@@ -314,6 +381,7 @@ fn stream_output(
     if let Some(err) = stderr {
         let app_clone = app.clone();
         let attempt_clone = attempt.clone();
+        let failure_context_clone = Arc::clone(&failure_context);
         threads.push(std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(err);
             let mut buf = Vec::new();
@@ -324,6 +392,9 @@ fn stream_output(
                     Ok(_) => {
                         let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
                         diagnostics::append_phase_line(&attempt_clone.handle, "stderr", &text);
+                        if let Ok(mut context) = failure_context_clone.lock() {
+                            context.observe_stderr(&text);
+                        }
                         warn!("[install][stderr] {}", text);
                         let _ = app_clone.emit(event_mode.progress_event(), &text);
                     }
@@ -336,7 +407,7 @@ fn stream_output(
         }));
     }
 
-    threads
+    (threads, failure_context)
 }
 
 // ── Wait & Finalize ──
@@ -457,7 +528,7 @@ fn run_install_with_event_mode(
             return Err(msg);
         }
     };
-    let threads = stream_output(
+    let (threads, failure_context) = stream_output(
         &app,
         &state,
         event_mode,
@@ -508,7 +579,15 @@ fn run_install_with_event_mode(
                 let _ = app.emit(event_mode.needs_elevation_event(), &packages);
                 Err("NEEDS_ELEVATION".to_string())
             } else {
-                let msg = format!("Installer exited with code {}", code);
+                let msg = failure_context
+                    .lock()
+                    .map(|context| context.message(code))
+                    .unwrap_or_else(|_| {
+                        format!(
+                            "Installation failed with exit code {}. Open the installer logs for details.",
+                            code
+                        )
+                    });
                 diagnostics::finish_attempt(
                     &diagnostics,
                     &attempt,
@@ -896,5 +975,45 @@ mod tests {
             "repair-needs-elevation"
         );
         assert!(!InstallEventMode::Repair.emit_terminal_events());
+    }
+
+    #[test]
+    fn explicit_installer_error_beats_stderr_noise() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch");
+        context.observe_stderr("rollback cleanup failed");
+        assert_eq!(
+            context.message(7),
+            "Installation failed: Failed to install PyTorch (exit code 7)."
+        );
+    }
+
+    #[test]
+    fn stderr_fallback_prefers_failure_line_and_redacts_secrets() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("ERROR: download failed for https://user:pass@example.com/package");
+        context.observe_stderr("restoring previous environment");
+        let message = context.message(1);
+        assert!(message.contains("ERROR: download failed"));
+        assert!(message.contains("https://<redacted>@example.com/package"));
+        assert!(!message.contains("user:pass"));
+        assert!(!message.contains("restoring previous environment"));
+    }
+
+    #[test]
+    fn failure_context_is_bounded_and_utf8_safe() {
+        let mut context = InstallFailureContext::default();
+        for index in 0..20 {
+            context.observe_stderr(&format!("{index}: {}", "é".repeat(1_000)));
+        }
+        assert_eq!(context.stderr_tail.len(), FAILURE_CONTEXT_LINES);
+        assert!(context
+            .stderr_tail
+            .iter()
+            .all(|line| line.len() <= FAILURE_CONTEXT_LINE_BYTES));
+        assert!(context
+            .stderr_tail
+            .iter()
+            .all(|line| line.is_char_boundary(line.len())));
     }
 }
