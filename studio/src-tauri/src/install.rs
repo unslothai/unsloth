@@ -82,6 +82,17 @@ fn clear_install_in_progress_marker() -> Result<(), String> {
     clear_install_in_progress_marker_at(&path)
 }
 
+/// The marker means "a run started and never reported an outcome", so every
+/// terminal outcome clears it, failures included. The runtime probe is the
+/// backstop for a broken venv, whereas a marker left behind by a failed update
+/// pins a working install into a repair it may not be able to finish offline.
+/// Never fatal: losing the marker costs a fast path, not correctness.
+fn clear_install_marker_best_effort() {
+    if let Err(msg) = clear_install_in_progress_marker() {
+        warn!("[install] {}", msg);
+    }
+}
+
 fn clear_install_in_progress_marker_at(path: &Path) -> Result<(), String> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -496,18 +507,7 @@ fn run_install_with_event_mode(
     );
 
     if let Err(msg) = create_install_in_progress_marker() {
-        diagnostics::finish_attempt(
-            &diagnostics,
-            &attempt,
-            None,
-            false,
-            Some(format!("create_install_marker: {msg}")),
-        );
-        clear_current_attempt(&state);
-        if event_mode.emit_terminal_events() {
-            emit_failed(&app, &msg);
-        }
-        return Err(msg);
+        warn!("[install] {}", msg);
     }
 
     let (stdout, stderr) = match spawn_script(&script, &args, &state) {
@@ -542,20 +542,7 @@ fn run_install_with_event_mode(
 
     match result {
         Ok((status, _)) if status.success() => {
-            if let Err(msg) = clear_install_in_progress_marker() {
-                diagnostics::finish_attempt(
-                    &diagnostics,
-                    &attempt,
-                    Some(status.to_string()),
-                    false,
-                    Some(format!("clear_install_marker: {msg}")),
-                );
-                clear_current_attempt(&state);
-                if event_mode.emit_terminal_events() {
-                    emit_failed(&app, &msg);
-                }
-                return Err(msg);
-            }
+            clear_install_marker_best_effort();
             diagnostics::finish_attempt(
                 &diagnostics,
                 &attempt,
@@ -589,6 +576,7 @@ fn run_install_with_event_mode(
                 let _ = app.emit(event_mode.needs_elevation_event(), &packages);
                 Err("NEEDS_ELEVATION".to_string())
             } else {
+                clear_install_marker_best_effort();
                 let msg = format!("Installer exited with code {}", code);
                 diagnostics::finish_attempt(
                     &diagnostics,
@@ -611,6 +599,7 @@ fn run_install_with_event_mode(
             Err(msg)
         }
         Err(msg) => {
+            clear_install_marker_best_effort();
             diagnostics::finish_attempt(&diagnostics, &attempt, None, false, Some(msg.clone()));
             clear_current_attempt(&state);
             if event_mode.emit_terminal_events() {
@@ -650,6 +639,9 @@ pub fn record_pending_elevation_canceled(
     let Some(attempt) = attempt else {
         return false;
     };
+    // The elevation exit left the marker in place for the resumed run that is
+    // now not happening.
+    clear_install_marker_best_effort();
     diagnostics::finish_attempt(
         diagnostics,
         &attempt,

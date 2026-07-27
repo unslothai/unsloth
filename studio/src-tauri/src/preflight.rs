@@ -638,6 +638,45 @@ exit 1
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn managed_runtime_probe_survives_more_stdout_than_the_pipe_holds() {
+        // The probe imports the whole backend, so import-time output can exceed
+        // the 64 KiB pipe buffer. Waiting on exit before draining wedges the
+        // child mid-write and reports a healthy install as broken.
+        let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
+        let _cache_home = ManagedCapabilityCacheHome::new("runtime-noisy");
+        remove_managed_capability_cache();
+
+        let fake = fake_cli(
+            "runtime-noisy",
+            r#"#!/bin/sh
+if [ "$1" = "studio" ] && [ "$2" = "desktop-runtime-check" ] && [ "$3" = "--json" ]; then
+  awk 'BEGIN { while (i++ < 4000) print "import chatter on stdout" }'
+  printf '{"runtime_ready":true}\n'
+  exit 0
+fi
+if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":1,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"version":"2026.5.3"}'
+  exit 0
+fi
+exit 1
+"#,
+        );
+
+        let started = std::time::Instant::now();
+        let probe = probe_managed_bin(fake.bin.clone()).await;
+        assert!(
+            matches!(probe, ManagedProbe::Ready { .. }),
+            "noisy but healthy CLI must probe Ready, got {probe:?}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(9),
+            "probe hit the 10s timeout instead of draining stdout"
+        );
+        remove_managed_capability_cache();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn managed_runtime_probe_runs_before_capability_cache() {
         use std::fs;
 

@@ -272,21 +272,30 @@ def _load_run_module():
 
 def _missing_studio_requirement(run_mod):
     from importlib.metadata import PackageNotFoundError, distribution
-    from packaging.requirements import Requirement
+    from packaging.requirements import InvalidRequirement, Requirement
 
     requirements = Path(run_mod.__file__).with_name("requirements") / "studio.txt"
     for line in requirements.read_text(encoding = "utf-8").splitlines():
         line = line.partition("#")[0].strip()
-        if not line:
+        # pip flags (-r, --extra-index-url) are not requirements. Skipping them
+        # matters: an unparseable line would report the install broken, and
+        # repair reinstalls the same file, so the failure would never clear.
+        if not line or line.startswith("-"):
             continue
-        requirement = Requirement(line)
+        try:
+            requirement = Requirement(line)
+        except InvalidRequirement:
+            continue
         if requirement.marker and not requirement.marker.evaluate():
             continue
         try:
             installed = distribution(requirement.name)
         except PackageNotFoundError:
             return requirement.name
-        if requirement.specifier and not requirement.specifier.contains(installed.version):
+        # prereleases=True: a prerelease satisfying a floor is not a broken install.
+        if requirement.specifier and not requirement.specifier.contains(
+            installed.version, prereleases = True
+        ):
             return requirement.name
     return None
 

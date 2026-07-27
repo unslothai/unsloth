@@ -306,11 +306,21 @@ async fn probe_cli_runtime(bin: &Path) -> Result<(), String> {
         return Err("studio_runtime_probe_failed".to_string());
     };
 
+    // Drain while waiting: the backend import this probe runs can print more than
+    // the pipe buffer holds, and waiting first deadlocks on it, timing out a
+    // healthy install into repair.
+    let reader = tokio::spawn(async move {
+        let mut buffer = Vec::new();
+        let _ = stdout.read_to_end(&mut buffer).await;
+        buffer
+    });
+
     let status = match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
         Ok(Ok(status)) => status,
         _ => {
             let _ = child.kill().await;
             let _ = child.wait().await;
+            reader.abort();
             info!(
                 "Managed runtime probe timed out in {}ms",
                 started.elapsed().as_millis()
@@ -319,10 +329,9 @@ async fn probe_cli_runtime(bin: &Path) -> Result<(), String> {
         }
     };
 
-    let mut output = Vec::new();
-    if stdout.read_to_end(&mut output).await.is_err() {
+    let Ok(output) = reader.await else {
         return Err("studio_runtime_probe_failed".to_string());
-    }
+    };
     let payload = String::from_utf8_lossy(&output)
         .lines()
         .rev()
@@ -389,11 +398,19 @@ async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
         return None;
     };
 
+    // Same reason as the runtime probe above.
+    let reader = tokio::spawn(async move {
+        let mut buffer = Vec::new();
+        let _ = stdout.read_to_end(&mut buffer).await;
+        buffer
+    });
+
     match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
         Ok(Ok(status)) if status.success() => {}
         Err(_) => {
             let _ = child.kill().await;
             let _ = child.wait().await;
+            reader.abort();
             info!(
                 "Managed desktop-capabilities probe timed out in {}ms",
                 started.elapsed().as_millis()
@@ -401,6 +418,7 @@ async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
             return None;
         }
         _ => {
+            reader.abort();
             info!(
                 "Managed desktop-capabilities probe exited unsuccessfully in {}ms",
                 started.elapsed().as_millis()
@@ -409,10 +427,9 @@ async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
         }
     }
 
-    let mut output = Vec::new();
-    if stdout.read_to_end(&mut output).await.is_err() {
+    let Ok(output) = reader.await else {
         return None;
-    }
+    };
 
     let capability = serde_json::from_slice::<DesktopCapability>(&output).ok();
     info!(

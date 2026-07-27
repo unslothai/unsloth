@@ -64,6 +64,44 @@ def test_desktop_runtime_check_catches_later_startup_dependency(monkeypatch, cap
     assert payload["module"] == "definitely-missing-studio-package"
 
 
+def test_desktop_runtime_check_ignores_pip_flag_lines(monkeypatch, capsys, tmp_path):
+    """An unparseable line must not fail the check: repair reinstalls the same
+    file, so the install would be declared broken forever."""
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    backend = tmp_path / "backend"
+    requirements = backend / "requirements"
+    requirements.mkdir(parents = True)
+    (requirements / "studio.txt").write_text(
+        "--extra-index-url https://example.invalid/simple\n-r base.txt\n",
+        encoding = "utf-8",
+    )
+    run_mod = SimpleNamespace(__file__ = str(backend / "run.py"))
+    monkeypatch.setattr(studio, "_load_run_module", lambda: run_mod)
+
+    studio.desktop_runtime_check(_json_output = True)
+
+    assert json.loads(capsys.readouterr().out) == {"runtime_ready": True}
+
+
+def test_desktop_runtime_check_accepts_a_prerelease_over_a_floor(monkeypatch, capsys, tmp_path):
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    backend = tmp_path / "backend"
+    requirements = backend / "requirements"
+    requirements.mkdir(parents = True)
+    (requirements / "studio.txt").write_text("example-package>=1.0\n", encoding = "utf-8")
+    run_mod = SimpleNamespace(__file__ = str(backend / "run.py"))
+    monkeypatch.setattr(studio, "_load_run_module", lambda: run_mod)
+    monkeypatch.setattr(
+        importlib.import_module("importlib.metadata"),
+        "distribution",
+        lambda _name: SimpleNamespace(version = "2.0.0b1"),
+    )
+
+    studio.desktop_runtime_check(_json_output = True)
+
+    assert json.loads(capsys.readouterr().out) == {"runtime_ready": True}
+
+
 def test_desktop_runtime_check_rejects_version_mismatch(monkeypatch, capsys, tmp_path):
     studio = importlib.import_module("unsloth_cli.commands.studio")
     backend = tmp_path / "backend"
