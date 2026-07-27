@@ -415,3 +415,34 @@ def test_start_aborted_by_concurrent_stop(patched):
     threading.Thread(target = _stop_soon, daemon = True).start()
     with pytest.raises(SdCppCancelled):
         s.start(_FILES, startup_timeout = 30.0)
+
+
+def test_diagnostic_tail_keeps_the_reason_not_just_the_backtrace():
+    """What a Metal host produces: the abort prints its cause, then ggml_print_backtrace fills the
+    buffer with stack frames. Taking the last N lines reported addresses and no cause, so the
+    failure was undiagnosable from the message alone."""
+    lines = [
+        "loading model from flux-2-klein-4b-Q2_K.gguf",
+        "ggml_metal_op_encode: error: unsupported op 'SOME_OP'",
+        "/tmp/ggml/src/ggml-metal.m:1234: fatal error",
+        *[f"{i}   sd-server  0x000000010311{i:04x} ggml_print_backtrace + {i}" for i in range(24)],
+    ]
+
+    tail = srv._diagnostic_tail(lines)
+
+    assert "unsupported op 'SOME_OP'" in tail
+    assert "fatal error" in tail
+    # Still ends with recent context, so a failure with no marked line is not left empty.
+    assert "ggml_print_backtrace" in tail
+
+
+def test_diagnostic_tail_falls_back_to_the_last_lines():
+    lines = [f"step {i}" for i in range(50)]
+    tail = srv._diagnostic_tail(lines)
+    assert "step 49" in tail
+    assert "step 0" not in tail
+
+
+def test_diagnostic_tail_is_bounded():
+    lines = ["error: " + "x" * 500 for _ in range(20)]
+    assert len(srv._diagnostic_tail(lines)) <= 1500

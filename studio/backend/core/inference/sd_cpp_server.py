@@ -72,6 +72,34 @@ _TERMINAL_OK = "completed"
 _TERMINAL_FAIL = "failed"
 _TERMINAL_CANCELLED = "cancelled"
 
+# Lines worth keeping from a dead server's output whatever their position.
+_DIAGNOSTIC_MARKERS = (
+    "error",
+    "abort",
+    "assert",
+    "unsupported",
+    "not implemented",
+    "out of memory",
+    "failed",
+    "exception",
+)
+
+
+def _diagnostic_tail(lines, *, keep: int = 20, limit: int = 1500) -> str:
+    """The most useful part of the captured output, not merely its last lines.
+
+    A native abort prints its REASON first and then a long backtrace, so taking the last N lines
+    reported nothing but stack frames: a Metal host that died on an unimplemented op showed twenty
+    addresses and no cause. Marked lines come first (in order), then the last few lines for
+    context, deduplicated."""
+    captured = list(lines)
+    marked = [line for line in captured if any(m in line.lower() for m in _DIAGNOSTIC_MARKERS)]
+    chosen: list[str] = []
+    for line in marked[-keep:] + captured[-max(keep // 2, 4):]:
+        if line not in chosen:
+            chosen.append(line)
+    return "\n".join(chosen)[:limit]
+
 # Grace for the best-effort native cancel to show in job status before abandoning the poll;
 # without the cap a lost cancel would hold the generate lock until the job ends.
 _CANCEL_GRACE_S = 5.0
@@ -212,7 +240,7 @@ class SdCppServer:
                 self._dispose()
                 raise RuntimeError(f"failed to spawn sd-server: {self._spawn_error}")
             if not self._wait_ready(startup_timeout):
-                tail = "\n".join(list(self._tail)[-30:])
+                tail = _diagnostic_tail(self._tail, keep = 30)
                 aborted = self._abort.is_set()
                 self._kill_locked()
                 self._dispose()
@@ -467,7 +495,7 @@ class SdCppServer:
         return out
 
     def _died_message(self, where: str, exc: Optional[Exception]) -> str:
-        tail = "\n".join(list(self._tail)[-20:])
+        tail = _diagnostic_tail(self._tail)
         base = f"sd-server connection lost during {where}"
         if not self.is_alive():
             code = None if self._process is None else self._process.returncode
