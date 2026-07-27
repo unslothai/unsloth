@@ -242,7 +242,12 @@ class JsonlWriter:
             os.replace(tmp, self.path)
             return True
         except (OSError, UnicodeError):
-            tmp.unlink(missing_ok = True)
+            try:
+                tmp.unlink(missing_ok = True)
+            except OSError:
+                # A locked or undeletable temp must not mask the failure: the
+                # caller needs the False to fall back to ASCII appends.
+                pass
             return False
 
     def _key(self, obj: dict) -> str | None:
