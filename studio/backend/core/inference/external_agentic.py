@@ -47,6 +47,7 @@ from state.tool_approvals import (
 
 logger = logging.getLogger(__name__)
 
+
 # OAI-compat Connections that can drive Unsloth's local tool runtime.
 def _delta_text(content: Any) -> str:
     """Text from a streamed delta. Some OAI-compat servers (Magistral-style)
