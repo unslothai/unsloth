@@ -36,7 +36,8 @@ STUDIO_UPDATE = REPO_ROOT / "docker" / "unsloth_studio_update.sh"
 LLAMA_UPDATE = REPO_ROOT / "docker" / "unsloth_llama_update.sh"
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("bash") is None, reason = "needs bash",
+    shutil.which("bash") is None,
+    reason = "needs bash",
 )
 
 
@@ -47,34 +48,52 @@ def _stub(directory: Path, name: str, body: str) -> None:
     path.chmod(0o755)
 
 
-def _run(script: Path, args, env, cwd = None):
+def _run(
+    script: Path,
+    args,
+    env,
+    cwd = None,
+):
     return subprocess.run(
         ["bash", str(script), *args],
-        capture_output = True, text = True, env = env, cwd = cwd, timeout = 120,
+        capture_output = True,
+        text = True,
+        env = env,
+        cwd = cwd,
+        timeout = 120,
     )
 
 
 # --- unsloth-studio-update ----------------------------------------------------
+
 
 def _studio_env(tmp_path: Path, *, import_ok: bool) -> dict:
     home = tmp_path / "studio"
     venv_bin = home / "unsloth_studio" / "bin"
     venv_bin.mkdir(parents = True)
     _stub(
-        venv_bin, "python",
+        venv_bin,
+        "python",
         'if [ "$1" = "-c" ]; then\n'
-        + ("  exit 0\n" if import_ok else '  case "$2" in *studio.backend.main*) exit 1;; esac\n  exit 0\n')
-        + 'fi\n'
+        + (
+            "  exit 0\n"
+            if import_ok
+            else '  case "$2" in *studio.backend.main*) exit 1;; esac\n  exit 0\n'
+        )
+        + "fi\n"
         'if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then\n'
         '  if [ "$3" = "show" ]; then echo "Version: 2026.7.5"; exit 0; fi\n'
         '  echo "STUB-PIP $*" >> "$STUB_LOG"; exit 0\n'
-        'fi\n'
-        'exit 0\n',
+        "fi\n"
+        "exit 0\n",
     )
     bin_dir = tmp_path / "bin"
-    _stub(bin_dir, "supervisorctl",
-          'echo "STUB-SUPERVISORCTL $*" >> "$STUB_LOG"\n'
-          'if [ "$1" = "status" ]; then exit 0; fi\nexit 0\n')
+    _stub(
+        bin_dir,
+        "supervisorctl",
+        'echo "STUB-SUPERVISORCTL $*" >> "$STUB_LOG"\n'
+        'if [ "$1" = "status" ]; then exit 0; fi\nexit 0\n',
+    )
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
     env["UNSLOTH_STUDIO_HOME"] = str(home)
@@ -104,19 +123,21 @@ def test_studio_update_does_not_restart_into_a_backend_that_cannot_import(tmp_pa
 
 # --- unsloth-llama-update -----------------------------------------------------
 
+
 def _llama_env(tmp_path: Path, *, latest: str | None) -> dict:
     install = tmp_path / "llama.cpp"
     install.mkdir(parents = True)
     (install / "UNSLOTH_PREBUILT_INFO.json").write_text(
-        '{"tag": "b1111-old"}\n', encoding = "utf-8",
+        '{"tag": "b1111-old"}\n',
+        encoding = "utf-8",
     )
     fetcher = tmp_path / "fetch_llama_prebuilt.py"
     resolve = (
-        "    raise RuntimeError('unreachable')\n" if latest is None
-        else f"    return {latest!r}\n"
+        "    raise RuntimeError('unreachable')\n" if latest is None else f"    return {latest!r}\n"
     )
     fetcher.write_text(
-        "def resolve_latest_tag(repo):\n" + resolve, encoding = "utf-8",
+        "def resolve_latest_tag(repo):\n" + resolve,
+        encoding = "utf-8",
     )
     env = dict(os.environ)
     env["UNSLOTH_LLAMA_CPP_PATH"] = str(install)
@@ -158,7 +179,8 @@ def _llama_inplace_env(tmp_path: Path, old: list[str], new: list[str]) -> dict:
     for name in old:
         (install / name).write_text("OLD\n", encoding = "utf-8")
     (install / "UNSLOTH_PREBUILT_INFO.json").write_text(
-        '{"tag": "b1111-old"}\n', encoding = "utf-8",
+        '{"tag": "b1111-old"}\n',
+        encoding = "utf-8",
     )
     fetcher = tmp_path / "fetch_llama_prebuilt.py"
     fetcher.write_text(
@@ -171,7 +193,7 @@ def _llama_inplace_env(tmp_path: Path, old: list[str], new: list[str]) -> dict:
         f"    for name in {new!r}:\n"
         "        open(os.path.join(dest, name), 'w').write('NEW\\n')\n"
         "    open(os.path.join(dest, 'UNSLOTH_PREBUILT_INFO.json'), 'w')"
-        ".write('{\"tag\": \"b2222-new\"}\\n')\n",
+        '.write(\'{"tag": "b2222-new"}\\n\')\n',
         encoding = "utf-8",
     )
     # Fail the ACTIVATION move (-t <install dir>) AFTER it has moved the files, so
@@ -181,12 +203,13 @@ def _llama_inplace_env(tmp_path: Path, old: list[str], new: list[str]) -> dict:
     # only that one invocation is broken.
     bin_dir = tmp_path / "bin"
     _stub(
-        bin_dir, "mv",
+        bin_dir,
+        "mv",
         'if [ "$1" = "-t" ] && [ "$2" = "$FAIL_MV_TARGET" ]; then\n'
-        '  shift 2\n'
+        "  shift 2\n"
         '  for _s in "$@"; do /bin/mv "$_s" "$FAIL_MV_TARGET/"; done\n'
-        '  exit 1\n'
-        'fi\n'
+        "  exit 1\n"
+        "fi\n"
         'exec /bin/mv "$@"\n',
     )
     env = dict(os.environ)
@@ -204,21 +227,24 @@ def test_llama_rollback_leaves_no_new_release_files_behind(tmp_path: Path):
     # libggml-*.so sitting next to the binaries, so a leftover is loaded against
     # the restored older libggml-base.so.
     old = ["libggml-base.so", "libggml-cpu-icelake.so", "llama-cli"]
-    new = ["libggml-base.so", "libggml-cpu-icelake.so", "llama-cli",
-           "libggml-hexagon.so", "llama-mtmd-cli"]
+    new = [
+        "libggml-base.so",
+        "libggml-cpu-icelake.so",
+        "llama-cli",
+        "libggml-hexagon.so",
+        "llama-mtmd-cli",
+    ]
     env = _llama_inplace_env(tmp_path, old, new)
     res = _run(LLAMA_UPDATE, [], env)
     assert res.returncode != 0, "a failed swap must not report success"
     install = tmp_path / "llama.cpp"
     present = sorted(p.name for p in install.iterdir())
     leftovers = [n for n in ("libggml-hexagon.so", "llama-mtmd-cli") if n in present]
-    assert not leftovers, (
-        f"new-release-only files survived the rollback: {leftovers} in {present}"
-    )
+    assert not leftovers, f"new-release-only files survived the rollback: {leftovers} in {present}"
     for name in old:
-        assert (install / name).read_text() == "OLD\n", (
-            f"{name} was not restored from the backup: {present}"
-        )
+        assert (
+            install / name
+        ).read_text() == "OLD\n", f"{name} was not restored from the backup: {present}"
 
 
 def test_llama_rollback_keeps_every_old_file_when_the_drain_is_interrupted(tmp_path: Path):
@@ -232,19 +258,18 @@ def test_llama_rollback_keeps_every_old_file_when_the_drain_is_interrupted(tmp_p
     # source, so half the old tree is still sitting in the install dir when the
     # rollback runs. Those entries are then the only copy there is.
     _stub(
-        tmp_path / "bin", "mv",
+        tmp_path / "bin",
+        "mv",
         'case "${1:-}:${2:-}" in\n'
-        '  -t:*/.old.*)\n'
+        "  -t:*/.old.*)\n"
         '    _t="$2"; shift 2\n'
         '    [ $# -gt 0 ] && /bin/mv "$1" "$_t/"\n'
-        '    exit 1;;\n'
-        'esac\n'
+        "    exit 1;;\n"
+        "esac\n"
         'exec /bin/mv "$@"\n',
     )
     res = _run(LLAMA_UPDATE, [], env)
     assert res.returncode != 0
     survivors = sorted(p.name for p in install.rglob("*") if p.is_file())
     for name in old:
-        assert name in survivors, (
-            f"{name} was lost during an interrupted drain: {survivors}"
-        )
+        assert name in survivors, f"{name} was lost during an interrupted drain: {survivors}"

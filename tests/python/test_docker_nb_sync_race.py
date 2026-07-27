@@ -148,12 +148,12 @@ def test_the_lock_lives_beside_the_state_it_protects(sync: str):
 def test_the_refresh_publishes_each_notebook_atomically(sync: str):
     block = sync[sync.index("while IFS= read -r -d '' f; do") :]
     block = block[: block.index("done < <(find")]
-    assert re.search(r'cp -a "\$f" "\$new"', block), (
-        "the refresh must copy into a staging file, not onto the live notebook"
-    )
-    assert re.search(r'mv -f "\$new" "\$dst"', block), (
-        "the staged copy must be published with an atomic rename"
-    )
+    assert re.search(
+        r'cp -a "\$f" "\$new"', block
+    ), "the refresh must copy into a staging file, not onto the live notebook"
+    assert re.search(
+        r'mv -f "\$new" "\$dst"', block
+    ), "the staged copy must be published with an atomic rename"
 
 
 def test_the_staging_file_is_hidden_and_beside_the_destination(sync: str):

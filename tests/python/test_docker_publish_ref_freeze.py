@@ -40,7 +40,8 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docker-publish.yml"
 RESOLVER_STEPS = ("unsloth_ref", "zoo_ref", "notebooks")
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("bash") is None, reason = "needs bash",
+    shutil.which("bash") is None,
+    reason = "needs bash",
 )
 
 
@@ -79,13 +80,14 @@ def test_an_unreachable_remote_fails_the_step(steps: dict, step_id: str, tmp_pat
 
 
 @pytest.mark.parametrize("step_id", RESOLVER_STEPS)
-def test_an_unreachable_remote_never_emits_a_mutable_ref(
-    steps: dict, step_id: str, tmp_path: Path,
-):
+def test_an_unreachable_remote_never_emits_a_mutable_ref(steps: dict, step_id: str, tmp_path: Path):
     script = _expand(steps[step_id])
     res = _run_with_failing_ls_remote(script, tmp_path)
-    emitted = (tmp_path / "github_output").read_text(encoding = "utf-8") \
-        if (tmp_path / "github_output").exists() else ""
+    emitted = (
+        (tmp_path / "github_output").read_text(encoding = "utf-8")
+        if (tmp_path / "github_output").exists()
+        else ""
+    )
     for line in emitted.splitlines():
         key, _, value = line.partition("=")
         assert re.fullmatch(r"[0-9a-f]{40}", value), (
@@ -128,5 +130,8 @@ def _run_with_failing_ls_remote(script: str, tmp_path: Path):
     # Exactly how the runner invokes a `run:` step with no explicit `shell:`.
     return subprocess.run(
         ["bash", "-e", str(path)],
-        capture_output = True, text = True, env = env, timeout = 60,
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 60,
     )
