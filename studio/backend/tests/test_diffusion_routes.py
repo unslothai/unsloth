@@ -1071,6 +1071,88 @@ def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
     assert len(seen["loras"] or []) == 1
 
 
+def test_download_plan_uses_the_engine_the_load_will_pick(client, monkeypatch):
+    # On a host with no usable GPU a GGUF pick routes to native sd.cpp, which reads the single-file
+    # VAE + text encoders and never opens the base repo's sharded components. Planning with
+    # diffusers there staged GB the load discards and left the assets sd-cli actually needs to be
+    # fetched inline, outside the manager's progress and disk preflight.
+    from core.inference import diffusion_engine_router as router
+    from core.inference import sd_cpp_backend as sd_cpp
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_SD_CPP)
+    native_plan = {
+        "entries": [{"repo_id": "Comfy-Org/z_image_turbo", "files": ["ae.safetensors"],
+                     "bytes": 7, "gguf_filename": None}],
+        "total_bytes": 7,
+    }
+    seen: dict = {}
+
+    class _Native:
+        def download_plan(self, model_path, **kwargs):
+            seen["model_path"] = model_path
+            seen.update(kwargs)
+            return native_plan
+
+    monkeypatch.setattr(sd_cpp, "get_sd_cpp_backend", lambda: _Native())
+    diffusers_backend = diffusion_module.get_diffusion_backend()
+    monkeypatch.setattr(
+        diffusers_backend,
+        "download_plan",
+        lambda *a, **k: pytest.fail("planned with diffusers for a native-routed load"),
+        raising = False,
+    )
+
+    resp = client.post(
+        "/api/inference/images/download-plan",
+        json = {
+            "model_path": "unsloth/Z-Image-Turbo-GGUF",
+            "gguf_filename": "z-image-turbo-Q4_K_M.gguf",
+            "model_kind": "gguf",
+            "hf_token": "hf_secret",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["total_bytes"] == 7
+    # The native planner gets the same identity + token the load would use.
+    assert seen["model_path"] == "unsloth/Z-Image-Turbo-GGUF"
+    assert seen["gguf_filename"] == "z-image-turbo-Q4_K_M.gguf"
+    assert seen["hf_token"] == "hf_secret"
+
+
+def test_download_plan_stays_on_diffusers_when_the_load_will(client, monkeypatch):
+    # The mirror of the above: a GPU host (or any non-GGUF kind) loads through diffusers, so the
+    # plan must keep describing the diffusers component set.
+    from core.inference import diffusion_engine_router as router
+    from core.inference import sd_cpp_backend as sd_cpp
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    monkeypatch.setattr(
+        sd_cpp,
+        "get_sd_cpp_backend",
+        lambda: pytest.fail("planned natively for a diffusers load"),
+    )
+    backend = diffusion_module.get_diffusion_backend()
+    monkeypatch.setattr(
+        backend,
+        "download_plan",
+        lambda *a, **k: {"entries": [], "total_bytes": 11},
+        raising = False,
+    )
+
+    resp = client.post(
+        "/api/inference/images/download-plan",
+        json = {
+            "model_path": "unsloth/Z-Image-Turbo-GGUF",
+            "gguf_filename": "z-image-turbo-Q4_K_M.gguf",
+            "model_kind": "gguf",
+        },
+    )
+    assert resp.status_code == 200 and resp.json()["total_bytes"] == 11
+
+
 def test_load_refused_when_only_the_diffusion_probe_can_be_read(client, monkeypatch):
     # The two training probes are independent. An LLM backend that raises used to short-circuit the
     # guard entirely, so an image load sailed past a KNOWN-active diffusion trainer and contended

@@ -16066,6 +16066,8 @@ async def diffusion_download_plan(
         resolve_local_single_file,
         resolve_model_kind,
     )
+    from core.inference.diffusion_engine_router import predict_engine
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
     backend = get_diffusion_backend()
@@ -16078,7 +16080,7 @@ async def diffusion_download_plan(
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_model_kind(sole)
-        await asyncio.to_thread(
+        fam = await asyncio.to_thread(
             backend.validate_load_request,
             request.model_path,
             gguf_filename = request.gguf_filename,
@@ -16086,8 +16088,19 @@ async def diffusion_download_plan(
             model_kind = kind,
             base_repo = request.base_repo,
         )
+        # Plan for the engine /images/load will pick, not for diffusers unconditionally. On a host
+        # with no usable GPU a GGUF pick routes to native sd.cpp, which reads single-file VAE +
+        # text encoders and never opens the base repo's sharded components: planning with the wrong
+        # engine stages GB the load discards and then leaves the assets it does need to be fetched
+        # inline, outside the manager's progress and disk preflight. predict_engine applies the
+        # selection policy without activating anything (staging must not unload a resident model).
+        planner = backend
+        if fam is not None and predict_engine(fam, model_kind = kind) == ENGINE_SD_CPP:
+            from core.inference.sd_cpp_backend import get_sd_cpp_backend
+
+            planner = get_sd_cpp_backend()
         plan = await asyncio.to_thread(
-            backend.download_plan,
+            planner.download_plan,
             request.model_path,
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,

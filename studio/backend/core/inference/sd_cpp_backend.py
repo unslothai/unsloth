@@ -633,6 +633,92 @@ class SdCppDiffusionBackend:
                 if self._load_token == _load_token and self._loading is not None:
                     self._loading.error = redact_native_paths(str(exc))
 
+    def download_plan(
+        self,
+        repo_id: str,
+        *,
+        gguf_filename: Optional[str] = None,
+        base_repo: Optional[str] = None,
+        family_override: Optional[str] = None,
+        model_kind: Optional[str] = None,
+        hf_token: Optional[str] = None,
+        **_load_kwargs: Any,
+    ) -> dict[str, Any]:
+        """The repos + exact files a NATIVE load of this pick needs, in the same envelope the
+        diffusers backend returns, so the Hub download manager stages what sd-cli will actually
+        open.
+
+        The two engines want different files: diffusers builds a pipeline around the base repo's
+        sharded components, while sd-cli reads the single-file VAE + text encoders declared in
+        ``diffusion_families``. Planning with the wrong engine stages tens of GB the load never
+        opens and then pulls the native assets inline, outside the manager's progress and disk
+        preflight -- so the route asks whichever engine it predicts the load will select.
+
+        The diffusers-only kwargs (quant / memory / LoRA) are accepted and ignored, exactly as
+        ``begin_load`` accepts them: nothing sd-cli fetches depends on them."""
+        if not gguf_filename:
+            raise ValueError(
+                "gguf_filename is required: the native engine loads single-file GGUF checkpoints only."
+            )
+        fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
+        if fam is None or not family_sd_cpp_supported(fam):
+            # Unreachable through the route (it only plans natively for a family the router would
+            # send to sd.cpp), but a direct caller gets the same message begin_load would raise.
+            raise ValueError(f"'{repo_id}' has no native sd.cpp asset mapping.")
+
+        specs = self._asset_specs(repo_id, gguf_filename, fam)
+        # Group by repo so a family whose VAE and encoder live in one repo yields one entry, and
+        # keep first-seen order (transformer first) so the manager fetches the big file first.
+        by_repo: dict[str, list[str]] = {}
+        for repo, filename, kind in specs:
+            # A local GGUF directory is already on disk; nothing to stage for it.
+            if kind == "diffusion_model" and Path(repo).expanduser().exists():
+                continue
+            names = by_repo.setdefault(repo, [])
+            if filename not in names:
+                names.append(filename)
+
+        sizes = self._plan_file_sizes(by_repo, hf_token)
+        entries: list[dict[str, Any]] = []
+        total = 0
+        for repo, names in by_repo.items():
+            repo_bytes = int(sum(sizes.get((repo, n), 0) for n in names))
+            total += repo_bytes
+            entries.append(
+                {
+                    "repo_id": repo,
+                    "files": names,
+                    "bytes": repo_bytes,
+                    # Only the transformer entry carries the GGUF filename; the VAE / encoder
+                    # entries are plain single files.
+                    "gguf_filename": gguf_filename if repo == repo_id else None,
+                }
+            )
+        return {"entries": entries, "total_bytes": total}
+
+    @staticmethod
+    def _plan_file_sizes(
+        by_repo: dict[str, list[str]], hf_token: Optional[str]
+    ) -> dict[tuple[str, str], int]:
+        """(repo, filename) -> size in bytes, best-effort (0 for anything the Hub won't answer).
+
+        A missing size only understates the manager's progress total; it must not fail the plan,
+        which is the cheap pre-flight for a load that would otherwise download inline."""
+        out: dict[tuple[str, str], int] = {}
+        try:
+            from huggingface_hub import HfApi
+
+            api = HfApi(token = hf_token)
+        except Exception:  # noqa: BLE001 -- sizes are best-effort
+            return out
+        for repo, names in by_repo.items():
+            try:
+                for info in api.get_paths_info(repo, paths = names, expand = False):
+                    out[(repo, getattr(info, "path", ""))] = int(getattr(info, "size", 0) or 0)
+            except Exception:  # noqa: BLE001 -- one unreadable repo is non-fatal
+                continue
+        return out
+
     def _asset_specs(
         self, repo_id: str, gguf_filename: str, fam: DiffusionFamily
     ) -> list[tuple[str, str, str]]:

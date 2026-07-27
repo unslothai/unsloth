@@ -214,6 +214,73 @@ def test_asset_specs_cover_required_files(fam_name, expect_kinds):
     assert tr[0] == "unsloth/x-GGUF" and tr[1] == "x-Q4_K_M.gguf"
 
 
+def test_download_plan_stages_exactly_what_sd_cli_opens(monkeypatch):
+    # The plan feeds the Hub download manager. Native reads the single-file VAE + text encoder and
+    # never opens the base repo's sharded components, so a native-routed pick must be staged from
+    # the asset specs, not from the diffusers plan.
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    sizes = {
+        ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf"): 4_000,
+        ("Comfy-Org/z_image_turbo", "split_files/vae/ae.safetensors"): 300,
+        ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors"): 8_000,
+    }
+    monkeypatch.setattr(
+        SdCppDiffusionBackend,
+        "_plan_file_sizes",
+        staticmethod(lambda by_repo, token: sizes),
+    )
+
+    plan = b.download_plan(
+        "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        model_kind = "gguf",
+        # diffusers-only knobs are accepted and ignored, exactly as begin_load accepts them.
+        transformer_quant = "int8",
+        memory_mode = "low_vram",
+    )
+
+    fam = detect_family("z-image")
+    expected = {(r, f) for r, f, _k in b._asset_specs(
+        "unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf", fam
+    )}
+    listed = {(e["repo_id"], f) for e in plan["entries"] for f in e["files"]}
+    assert listed == expected
+    assert plan["total_bytes"] == 12_300
+    # The transformer entry is the only one that carries the GGUF filename (the manager treats a
+    # GGUF pick differently from a plain file), and the VAE + encoder share one repo entry.
+    tr = [e for e in plan["entries"] if e["gguf_filename"]]
+    assert len(tr) == 1 and tr[0]["repo_id"] == "unsloth/Z-Image-Turbo-GGUF"
+    assert len([e for e in plan["entries"] if e["repo_id"] == "Comfy-Org/z_image_turbo"]) == 1
+
+
+def test_download_plan_skips_a_local_transformer_but_still_stages_the_assets(monkeypatch, tmp_path):
+    # A local GGUF folder is already on disk; its VAE + encoder still have to come from the Hub.
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    (tmp_path / "z-image-turbo-Q4_K_M.gguf").write_bytes(b"gguf")
+    monkeypatch.setattr(
+        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: {})
+    )
+
+    plan = b.download_plan(
+        str(tmp_path), gguf_filename = "z-image-turbo-Q4_K_M.gguf", model_kind = "gguf"
+    )
+
+    assert str(tmp_path) not in {e["repo_id"] for e in plan["entries"]}
+    assert {e["repo_id"] for e in plan["entries"]} == {"Comfy-Org/z_image_turbo"}
+    # An unreadable size understates the total; it must never fail the plan.
+    assert plan["total_bytes"] == 0
+
+
+def test_download_plan_refuses_a_pick_native_cannot_serve():
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    with pytest.raises(ValueError, match = "gguf_filename is required"):
+        b.download_plan("unsloth/Z-Image-Turbo-GGUF", model_kind = "gguf")
+    with pytest.raises(ValueError, match = "native sd.cpp asset mapping"):
+        b.download_plan(
+            "stabilityai/sdxl-turbo", gguf_filename = "sdxl-Q4_K_M.gguf", model_kind = "gguf"
+        )
+
+
 def test_asset_specs_flux2_klein_selects_encoder_by_variant():
     # FLUX.2-klein 4B pairs with Qwen3-4B, 9B with Qwen3-8B, so the encoder must be chosen from the
     # load identity, not the family default (a mismatched encoder fails deep in sd-cli).

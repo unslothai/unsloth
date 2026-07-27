@@ -362,3 +362,67 @@ def test_switch_aborts_when_the_old_engine_fails_to_unload(monkeypatch):
         r._activate(ENGINE_DIFFUSERS, "switch test")
     # Still the old engine, so the resident model remains reachable and reclaimable.
     assert r.active_engine_name() == ENGINE_SD_CPP
+
+
+# ── predict_engine: the download plan's read-only twin of the selection ───────
+
+
+def test_predict_engine_matches_the_selection_without_activating(monkeypatch):
+    # The download plan is built from this prediction, so it has to agree with the selection the
+    # load will make -- but staging a download must not unload a resident model, so it activates
+    # nothing.
+    _set_device(monkeypatch, "cpu")
+    _set_binary(monkeypatch, "/usr/bin/sd-cli")
+    _set_runnable(monkeypatch)
+    r._active_engine_name = ENGINE_DIFFUSERS
+    assert r.predict_engine(detect_family("z-image"), model_kind = "gguf") == ENGINE_SD_CPP
+    assert r.active_engine_name() == ENGINE_DIFFUSERS
+
+
+def test_predict_engine_counts_an_installable_binary_as_available(monkeypatch):
+    # The first native load on a fresh CPU host installs the binary, so predicting diffusers just
+    # because nothing is on disk yet would mispredict the common case and stage the diffusers
+    # components for a load that opens none of them. It must not install anything itself.
+    _set_device(monkeypatch, "cpu")
+    installs: list[dict] = []
+
+    def _ensure(**kwargs):
+        installs.append(kwargs)
+        return None
+
+    monkeypatch.setattr(r, "ensure_sd_cpp_binary", _ensure)
+    monkeypatch.setattr(r, "ensure_sd_server_binary", _ensure)
+    assert r.predict_engine(detect_family("z-image"), model_kind = "gguf") == ENGINE_SD_CPP
+    assert installs and all(k.get("allow_install") is False for k in installs)
+
+
+def test_predict_engine_falls_back_when_install_is_disabled_and_nothing_is_installed(monkeypatch):
+    # With installs off and no binary present, the load really will fall back to diffusers.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_INSTALL", "0")
+    _set_device(monkeypatch, "cpu")
+    _set_binary(monkeypatch, None)
+    monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
+    assert r.predict_engine(detect_family("z-image"), model_kind = "gguf") == ENGINE_DIFFUSERS
+
+
+@pytest.mark.parametrize(
+    "kwargs, device",
+    [
+        ({"model_kind": "pipeline"}, "cpu"),   # native is GGUF-only
+        ({"model_kind": "single_file"}, "cpu"),
+        ({"model_kind": "gguf"}, "cuda"),      # a usable GPU always means diffusers
+    ],
+)
+def test_predict_engine_returns_diffusers_where_the_load_would(monkeypatch, kwargs, device):
+    _set_device(monkeypatch, device)
+    _set_binary(monkeypatch, "/usr/bin/sd-cli")
+    _set_runnable(monkeypatch)
+    assert r.predict_engine(detect_family("z-image"), **kwargs) == ENGINE_DIFFUSERS
+
+
+def test_predict_engine_returns_diffusers_for_a_family_without_native_assets(monkeypatch):
+    # sdxl has no single-file VAE / text-encoder mapping, so sd-cli cannot serve it.
+    _set_device(monkeypatch, "cpu")
+    _set_binary(monkeypatch, "/usr/bin/sd-cli")
+    _set_runnable(monkeypatch)
+    assert r.predict_engine(detect_family("sdxl"), model_kind = "gguf") == ENGINE_DIFFUSERS

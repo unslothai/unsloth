@@ -227,6 +227,48 @@ def select_and_activate_engine(
     return _activate(ENGINE_DIFFUSERS, reason)
 
 
+def predict_engine(fam: DiffusionFamily, *, model_kind: Optional[str] = None) -> str:
+    """The engine a load of ``fam`` would select on this host, WITHOUT any side effect.
+
+    Same policy as ``select_and_activate_engine`` -- and it has to be, because the download plan
+    is built from it: the two engines need different files (sharded diffusers components vs
+    sd-cli's single-file VAE + text encoders), so a plan built for the wrong one stages GB the
+    load never opens and then fetches the right files inline, outside the manager.
+
+    It differs from selection in exactly two ways, both deliberate. Nothing is activated (staging
+    a download must not unload the resident model), and the binary is only LOCATED, never
+    installed -- but an absent binary on a host where install is allowed still counts as
+    available, because that is what the load will do. Getting that wrong the other way (planning
+    diffusers for the very first native load, when no binary is on disk yet) would mispredict the
+    common case: a fresh CPU host.
+    """
+    if model_kind and model_kind != "gguf":
+        return ENGINE_DIFFUSERS
+
+    forced, sd_cpp_pref, mps_enabled = _engine_config()
+    if forced == ENGINE_DIFFUSERS:
+        return ENGINE_DIFFUSERS
+    prefer_native = forced == ENGINE_SD_CPP
+    if sd_cpp_pref in _DISABLE_TOKENS and not prefer_native:
+        return ENGINE_DIFFUSERS
+
+    backend = resolve_diffusion_device_target().backend
+    policy_eligible = backend == "cpu" or (backend == "mps" and mps_enabled) or prefer_native
+    if not (policy_eligible and family_sd_cpp_supported(fam)):
+        return ENGINE_DIFFUSERS
+
+    server_binary = ensure_sd_server_binary(allow_install = False)
+    if server_binary and not _server_binary_runnable(server_binary):
+        server_binary = None
+    binary = ensure_sd_cpp_binary(allow_install = False)
+    if binary and SdCppEngine(binary = binary).version() is None:
+        binary = None
+    native_available = bool(binary or server_binary) or _install_allowed()
+    return select_diffusion_engine(
+        backend, native_available = native_available, prefer_native = prefer_native
+    )
+
+
 def annotate_status(status: dict[str, Any]) -> dict[str, Any]:
     """Tag a backend status dict with the active engine + any fallback reason."""
     out = dict(status)
