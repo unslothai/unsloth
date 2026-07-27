@@ -300,6 +300,30 @@ def test_a_loaded_alias_advertises_the_quant_that_is_actually_loaded(monkeypatch
     assert ids["publisher/Qwen3"]["quant"] == "Q8_0"
 
 
+def test_a_nested_model_directory_is_not_the_resident_one(monkeypatch):
+    # Two separately indexed models can nest (/models/A holding A, /models/A/sub/B
+    # holding B). A plain prefix test made loading B mark A resident, so a request for
+    # A was answered with B's weights. The innermost indexed model owns the file.
+    outer = _Info("/models/A", "A", model_id = "publisher/A")
+    outer.path = "/models/A"
+    inner = _Info("/models/A/sub/B", "B", model_id = "publisher/B")
+    inner.path = "/models/A/sub/B"
+    monkeypatch.setitem(inf._CATALOG_CACHE, "models", [outer, inner])
+
+    llama = _FakeLlama()
+    llama.gguf_path = "/models/A/sub/B/model-Q4_K_M.gguf"
+    llama.model_identifier = llama.gguf_path
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
+
+    assert inf._resolves_to_resident("/models/A/sub/B") is True
+    assert inf._resolves_to_resident("/models/A") is False
+    # With nothing indexed there is no nesting to tell apart, so the directory-to-file
+    # match this exists for must still hold.
+    monkeypatch.setitem(inf._CATALOG_CACHE, "models", [])
+    assert inf._resolves_to_resident("/models/A") is True
+
+
 def test_a_transformers_model_does_not_mark_a_gguf_alias_loaded(monkeypatch):
     # Every entry in this loop is advertised as GGUF and carries a GGUF quant. A
     # Transformers model live from a directory that also holds GGUF exports is not one

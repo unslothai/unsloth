@@ -67,8 +67,17 @@ def _no_background_model_scan(monkeypatch):
     install takes seconds, and the resulting I/O starves the loop under the
     timing-sensitive streaming tests. Tests that exercise the warm patch it back.
     """
+    import time
+
     from core.inference import local_model_resolver
+
     monkeypatch.setattr(local_model_resolver, "warm_index_soon", lambda: None)
+    # Start from a built, empty index. Stubbing only the background warm still left the
+    # cold path walking those caches synchronously inside the admission wait, so on a
+    # large install the assertion became a 503 "still indexing". Tests that want the
+    # cold path set _scan back themselves (and stub the scan). _build_index is left
+    # alone so the tests that call it directly still exercise the real walk.
+    monkeypatch.setattr(local_model_resolver, "_scan", (time.monotonic(), {}))
 
 
 @pytest.fixture(scope = "session")

@@ -3889,13 +3889,34 @@ def _resolves_to_resident(load_path: Optional[str], *, llama_only: bool = False)
         if not candidate:
             continue
         current = _norm_path(candidate)
-        if (
-            current == target
-            or current.startswith(f"{target}/")
-            or target.startswith(f"{current}/")
-        ):
+        if current == target:
+            return True
+        if current.startswith(f"{target}/"):
+            # A model directory holding the weights loaded from it. Nested entries
+            # (/models/A alongside /models/A/sub/B) satisfied this too, so a request
+            # for A was answered with B. The innermost indexed model owns the file;
+            # with none indexed there is no nesting to tell apart, so keep matching.
+            owner = _innermost_indexed_owner(current)
+            if owner is None or owner == target:
+                return True
+            continue
+        if target.startswith(f"{current}/"):
             return True
     return False
+
+
+def _innermost_indexed_owner(path: str) -> Optional[str]:
+    """Longest catalog-listed model path containing *path*, or None if none does."""
+    best = None
+    for info in _CATALOG_CACHE["models"] or ():
+        listed = getattr(info, "path", None)
+        if not listed:
+            continue
+        normalized = _norm_path(listed)
+        if path == normalized or path.startswith(f"{normalized}/"):
+            if best is None or len(normalized) > len(best):
+                best = normalized
+    return best
 
 
 async def _reject_unservable_model(

@@ -84,11 +84,27 @@ def test_standalone_idle_unload_still_names_the_stored_checkpoint():
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "const [idleReload, setIdleReload] = useState(false);" in hook
-    assert "setIdleReload(idleActive)" in hook
+    assert "setIdleReload(settings[1])" in hook
     assert "s.idleUnloadActive" in hook
     # fromCatalog stays gated on auto-switch alone.
     assert "?? (autoSwitch ? catalog?.[0] : undefined)" in hook
     assert "idleReload ? catalog" not in hook
+
+
+def test_a_failed_refresh_does_not_erase_what_the_server_holds():
+    # Catching into [] and false made a transient error authoritative: the panel
+    # dropped a still-servable model and printed "No model" until the next poll.
+    # The catalog is deliberately tri-state, and a failure must stay the unknown one.
+    src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
+    hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
+    assert "listOpenAIModels().catch(() => null)" in hook
+    assert ".catch(() => null)," in hook
+    assert "if (models !== null) setCatalog(models);" in hook
+    assert "if (settings !== null) {" in hook
+    # The old negatives must be gone entirely.
+    assert "catch(() => [] as OpenAIModel[])" not in hook
+    assert "catch(() => [false, false] as const)" not in hook
+    assert "catch(() => false)" not in hook
 
 
 def test_the_pinned_quant_comes_from_the_catalog():

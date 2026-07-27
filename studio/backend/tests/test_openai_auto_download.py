@@ -552,6 +552,63 @@ def test_an_unknown_state_still_reports_the_download_to_a_retry(hub, monkeypatch
     assert _run("unsloth/other-GGUF").code == "model_download_busy"
 
 
+def test_a_hanging_code_probe_does_not_pin_the_slot(hub, monkeypatch):
+    # hf_hub_download and auth_check take no timeout, and both run while the provisional
+    # slot is held, so an unresponsive Hub stalled the request far past the metadata
+    # budget and reported every other model busy meanwhile. Unchecked is not cleared,
+    # so the bounded probe refuses rather than admitting the repo.
+    import threading
+
+    entered, release = threading.Event(), threading.Event()
+
+    def _hang(repo, token = None):
+        entered.set()
+        release.wait(30)
+        return False
+
+    monkeypatch.setattr("utils.security.consent._config_has_auto_map", _hang)
+    monkeypatch.setattr(auto_dl, "_CODE_PROBE_TIMEOUT_S", 0.2)
+
+    async def _timed():
+        # Time the await, not asyncio.run: the probe thread cannot be cancelled, so
+        # loop shutdown waits for it here in a way a long-lived server loop never does.
+        started = time.monotonic()
+        refusal = await auto_dl.maybe_auto_download("unsloth/x-GGUF:UD-Q4_K_XL")
+        waited = time.monotonic() - started
+        release.set()
+        return refusal, waited
+
+    refusal, waited = asyncio.run(_timed())
+    assert entered.is_set()
+    assert refusal.status == 403 and refusal.code == "remote_code_consent_required"
+    assert waited < 5
+    # The slot was handed back, so the next request is admitted rather than told busy.
+    assert auto_dl._active is None
+
+
+def test_a_hanging_auth_check_falls_through_to_the_download(hub, monkeypatch):
+    # Inconclusive, not denied: the download's own auth is the real gate, so a slow
+    # gated-repo check must not turn into a refusal.
+    import threading
+
+    hub["info"].gated = True
+    release = threading.Event()
+
+    def _hang(repo, token = None):
+        release.wait(30)
+        return True
+
+    monkeypatch.setattr(auto_dl, "_auth_denied", _hang)
+    monkeypatch.setattr(auto_dl, "_MODEL_INFO_TIMEOUT_S", 0.2)
+
+    async def _timed():
+        refusal = await auto_dl.maybe_auto_download("unsloth/x-GGUF:UD-Q4_K_XL")
+        release.set()
+        return refusal
+
+    assert asyncio.run(_timed()).code == "model_downloading"
+
+
 def test_a_companion_only_repo_is_not_held_at_busy(hub):
     # mmproj and MTP files are companions, not quants, so admission classifies such a
     # repo as non-servable and lets the label fall through to the resident model. The

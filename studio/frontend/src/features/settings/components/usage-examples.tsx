@@ -396,19 +396,24 @@ function useExampleModelName(): string | null {
     let timeoutId: number | null = null;
 
     const update = () => {
+      // null on failure, never [] or false: a transient error is not evidence that the
+      // server holds nothing, and feeding those negatives in blanked every example while
+      // the model was still servable. Keep the last answer and retry.
       void Promise.all([
-        listOpenAIModels().catch(() => [] as OpenAIModel[]),
+        listOpenAIModels().catch(() => null),
         loadOpenAIAutoSwitchSettings()
           .then((s) => [s.enabled, s.idleUnloadActive] as const)
-          .catch(() => [false, false] as const),
+          .catch(() => null),
       ])
-        .then(([models, [enabled, idleActive]]) => {
+        .then(([models, settings]) => {
           if (cancelled) return true;
-          setCatalog(models);
-          setAutoSwitch(enabled);
-          setIdleReload(idleActive);
+          if (models !== null) setCatalog(models);
+          if (settings !== null) {
+            setAutoSwitch(settings[0]);
+            setIdleReload(settings[1]);
+          }
           // Resident only slows the polling; it never stops it.
-          return models.some((m) => m.loaded);
+          return models !== null && models.some((m) => m.loaded);
         })
         .then((resolved) => {
           if (cancelled) return;

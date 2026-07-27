@@ -39,6 +39,11 @@ logger = get_logger(__name__)
 
 # Keep the Hub probe short so a slow Hub can't stall the request path.
 _MODEL_INFO_TIMEOUT_S = 8.0
+# auth_check and hf_hub_download take no timeout of their own, and both run while the
+# provisional slot is held, so an unresponsive Hub would pin the single flight and stall
+# the request long past the metadata budget. The code probe fetches up to three small
+# configs, so it gets more room than the single auth call.
+_CODE_PROBE_TIMEOUT_S = 20.0
 # Headroom left free after the download, so filling the disk can't wedge the box.
 _DISK_RESERVE_BYTES = 5 * 1024**3
 _WATCH_POLL_S = 2.0
@@ -201,6 +206,20 @@ def _gated_refusal(repo_id: str) -> AutoDownloadRefusal:
             "uses this server's Hugging Face identity."
         ),
     )
+
+
+async def _bounded_probe(fn, *args, timeout: float, default):
+    """Run a blocking Hub probe off the loop, bounding only the wait.
+
+    The thread is left to finish (a blocking socket read cannot be cancelled); the
+    caller stops waiting and takes *default*, which each call site chooses so that a
+    timeout errs the safe way.
+    """
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout)
+    except (TimeoutError, asyncio.TimeoutError):
+        logger.debug("hub probe %s timed out after %ss", getattr(fn, "__name__", fn), timeout)
+        return default
 
 
 def _auth_denied(repo_id: str, hf_token: Optional[str]) -> bool:
@@ -589,7 +608,10 @@ async def _admit_and_start(
             retry_after = _RETRY_AFTER_S,
         )
 
-    if getattr(info, "gated", False) and await asyncio.to_thread(_auth_denied, repo_id, hf_token):
+    # Inconclusive on timeout: the download's own auth is the real gate.
+    if getattr(info, "gated", False) and await _bounded_probe(
+        _auth_denied, repo_id, hf_token, timeout = _MODEL_INFO_TIMEOUT_S, default = False
+    ):
         # Metadata for a gated repo is not file access; unchecked, the config read below lies.
         _release(active)
         return _gated_refusal(repo_id)
@@ -615,7 +637,14 @@ async def _admit_and_start(
     # _hub_token, not the raw token: None lets huggingface_hub fall back to a cached
     # server login, so a caller-named repo would be probed with this server's identity.
     # Same rule as the metadata probe and the worker.
-    has_auto_map = await asyncio.to_thread(_config_has_auto_map, repo_id, _hub_token(hf_token))
+    # None on timeout, which refuses: an unchecked repo is not a cleared one.
+    has_auto_map = await _bounded_probe(
+        _config_has_auto_map,
+        repo_id,
+        _hub_token(hf_token),
+        timeout = _CODE_PROBE_TIMEOUT_S,
+        default = None,
+    )
     if has_auto_map is not False:
         _release(active)
         unknown = has_auto_map is None
