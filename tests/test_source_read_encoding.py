@@ -125,6 +125,7 @@ EAGER_CONSUMERS = {
     "list",
     "max",
     "min",
+    "next",
     "set",
     "sorted",
     "sum",
@@ -147,6 +148,7 @@ PATH_METHODS = {
     "resolve",
     "rglob",
     "with_name",
+    "with_stem",
     "with_suffix",
 }
 # Where each API takes its encoding positionally, for the bound call.
@@ -408,6 +410,24 @@ def _imports_at_each_call(tree: ast.Module) -> dict:
     return visible_at
 
 
+def _open_alias(name, modules):
+    """What a bare callable resolves to: "builtin", a COMPRESSED_OPENERS key, or None.
+
+    `from io import open as io_open` is the builtin under another name and
+    `from gzip import open as gzopen` is gzip's, while `from PIL.Image import
+    open` is neither and takes no encoding at all.
+    """
+    origin = modules.get(name)
+    if origin is None:
+        return "builtin" if name == "open" else None
+    parts = origin.split(".")
+    if parts[-1] != "open":
+        return None
+    if parts[0] == "io" or origin == "open":
+        return "builtin"
+    return parts[0] if parts[0] in COMPRESSED_OPENERS else None
+
+
 def _origin_root(name, modules) -> str:
     """The top-level module a bound name came from, or the name itself."""
     return modules.get(name, name).split(".")[0]
@@ -443,7 +463,7 @@ def _path_expr(call: ast.Call, modules = NO_MODULES):
         if isinstance(func.value, ast.Name) and _is_module_receiver(func.value.id, modules):
             return call.args[0] if call.args else None
         return func.value
-    if isinstance(func, ast.Name) and func.id == "open":
+    if isinstance(func, ast.Name) and _open_alias(func.id, modules) is not None:
         if call.args:
             return call.args[0]
         # open(file = CHECKED_IN) is the same call spelled out.
@@ -532,6 +552,28 @@ def _reads_itself(name: str, value: ast.AST) -> bool:
     return isinstance(expr, ast.Name) and expr.id == name
 
 
+def _unpack(target, value, paired: bool):
+    """Yield (name node, the value it is bound to) for one binding.
+
+    A destructured target contributes every name inside it. Where the two sides
+    line up, as in `A, B = P1, P2`, each name takes its own element; where they
+    do not, as in `for name, path in CASES`, they all take the iterable, which
+    is the thing whose provenance is known.
+    """
+    if isinstance(target, ast.Name):
+        yield target, value
+        return
+    if not isinstance(target, (ast.Tuple, ast.List)):
+        return
+    elements = None
+    if paired and isinstance(value, (ast.Tuple, ast.List)) and len(value.elts) == len(target.elts):
+        elements = value.elts
+    for index, element in enumerate(target.elts):
+        if isinstance(element, ast.Starred):
+            element = element.value
+        yield from _unpack(element, elements[index] if elements else value, paired)
+
+
 def _checked_in_locals(
     func,
     module_names: set,
@@ -549,17 +591,20 @@ def _checked_in_locals(
     targets = set()
     bad = set()
     for node in ast.walk(func):
+        paired = False
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
             target, value = node.targets[0], node.value
+            paired = True  # `A, B = P1, P2` lines its sides up element by element
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-            # `for p in SRC_DIR.rglob("*.py")` binds p to a checked-in path too.
+            # `for p in SRC_DIR.rglob("*.py")` binds p to a checked-in path too,
+            # and `for name, path in CASES` binds both to the same iterable.
             target, value = node.target, node.iter
         else:
             continue
-        if isinstance(target, ast.Name):
-            targets.add(id(target))
-            if not _reads_itself(target.id, value):
-                assignments.append((target.id, value))
+        for name_node, bound in _unpack(target, value, paired):
+            targets.add(id(name_node))
+            if not _reads_itself(name_node.id, bound):
+                assignments.append((name_node.id, bound))
     for node in ast.walk(func):
         # A with-as or an augassign says nothing about the value it binds.
         if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
@@ -664,8 +709,11 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
                 params = {p for f, p in good if f == caller.name}
                 here = _checked_in_locals(caller, module_names, _local_names(caller), params)
                 scope[id(caller)] = here
-            params = [a.arg for a in [*func.args.posonlyargs, *func.args.args]]
-            supplied = dict(zip(params, call.args))
+            positional = [a.arg for a in [*func.args.posonlyargs, *func.args.args]]
+            # A keyword-only parameter never takes a positional slot, so it is
+            # matched by name alone.
+            params = positional + [a.arg for a in func.args.kwonlyargs]
+            supplied = dict(zip(positional, call.args))
             supplied.update({k.arg: k.value for k in call.keywords if k.arg in params})
             for param in params:
                 value = supplied.get(param)
@@ -839,14 +887,17 @@ def _offender(call: ast.Call, modules = NO_MODULES) -> str | None:
                 else "Path.open()"
             )
         return None
-    # Binary handles have no encoding to name.
-    if isinstance(func, ast.Name) and func.id == "open" and _is_text(call, 1):
-        # `from PIL.Image import open` is not the builtin and takes no
-        # encoding; `from io import open` is the builtin under another roof.
-        origin = modules.get("open")
-        if origin is not None and origin.split(".")[0] != "io":
-            return None
-        return None if _pins_encoding(call, ENCODING_POSITION["open"]) else "open()"
+    if isinstance(func, ast.Name):
+        alias = _open_alias(func.id, modules)
+        # Binary handles have no encoding to name.
+        if alias == "builtin" and _is_text(call, 1):
+            return None if _pins_encoding(call, ENCODING_POSITION["open"]) else "open()"
+        if alias is not None and alias != "builtin":
+            mode = _open_mode(call, 1)
+            if mode is UNKNOWN_MODE or "t" not in str(mode):
+                return None  # "rb" default, so binary unless asked otherwise
+            position = COMPRESSED_OPENERS[alias]
+            return None if _pins_encoding(call, position) else f"{alias}.open()"
     return None
 
 
