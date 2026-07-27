@@ -212,14 +212,11 @@ def _force_missing_fla_imports(monkeypatch):
 def _pin_fla_model_types(monkeypatch):
     """Pin the auto-discovered FLA allowlist to the Qwen GDN families.
 
-    `_discover_fla_model_types` scans the *installed* transformers for modeling
-    files importing `from fla.`, and `models/qwen3_5/` only exists from
-    transformers 5.x. The backend supports `transformers>=4.51`, so on a 4.x
-    install the gate returns False and every Qwen3.5 assertion below silently
-    passes through a no-op instead of exercising the install path. Pinning keeps
-    these tests hermetic across the whole supported transformers range, the same
-    way test_hook_does_not_install_tilelang_for_model_outside_allowlist pins it
-    against newly added FLA model_types.
+    `_discover_fla_model_types` scans the *installed* transformers, and
+    `models/qwen3_5/` only exists from 5.x. The backend supports
+    `transformers>=4.51`, so on a 4.x install the gate returns False and every
+    Qwen3.5 assertion below silently no-ops. Pinning keeps these tests hermetic
+    across the supported range.
     """
     monkeypatch.setattr(
         worker,

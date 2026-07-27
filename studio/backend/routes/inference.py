@@ -3118,8 +3118,8 @@ def _lifecycle_model_label(model: Optional[str], variant: Optional[str] = None) 
 def _close_load_event(
     entry_id: Optional[str], model: Optional[str], variant: Optional[str]
 ) -> None:
-    """Close a monitor load row, relabelled with the id the load actually resolved
-    (the row opened on the request's model_path, which may be an HF snapshot dir)."""
+    """Close a monitor load row, relabelled with the id the load resolved: the row
+    opened on the request's model_path, which may be an HF snapshot dir."""
     api_monitor.relabel(entry_id, _lifecycle_model_label(model, variant))
     api_monitor.finish(entry_id)
 
@@ -3127,8 +3127,8 @@ def _close_load_event(
 def _monitor_active_model() -> Optional[str]:
     """The loaded model as a client-facing id, quant included when known.
 
-    Cleaned like /v1/models: this is rendered in the settings UI and served over
-    the public --secure tunnel, so it must never be the on-disk load path.
+    Cleaned like /v1/models: rendered in the settings UI and served over the public
+    --secure tunnel, so it must never be the on-disk load path.
     """
     llama_backend = get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
@@ -3540,8 +3540,8 @@ _DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY = "_unsloth_disable_openai_auto_switch"
 # only restore an idle-freed model, never run the resolver (so a downloaded GGUF
 # literally named "default" can't be swapped to). The NUL keeps it off any index.
 _RELOAD_ONLY_MODEL = "\x00reload-only"
-# One cold scan is worth paying to avoid answering a named model with another; a
-# pathological install must not hang the request behind it forever.
+# One cold scan is worth paying to avoid answering a named model with another,
+# bounded so a pathological install cannot hang the request behind it.
 _COLD_INDEX_WAIT_S = 10.0
 
 
@@ -3659,9 +3659,9 @@ def _format_available_models(ids: list[str]) -> str:
 async def _unavailable_model_message(requested_model: str) -> str:
     """Why a named model can't serve this request, and what can.
 
-    Auto-switch only loads already-downloaded GGUFs, so a request naming a real
-    model usually fails because it is not on this machine. Pointing the caller at
-    /inference/load cannot fix that; say what is actually wrong.
+    Auto-switch only loads downloaded GGUFs, so a request naming a real model
+    usually fails because it is not on this machine, which /inference/load cannot
+    fix; say what is actually wrong.
     """
     from core.inference.local_model_resolver import (
         MISS_VARIANT_NOT_FOUND,
@@ -3694,10 +3694,10 @@ async def _no_model_loaded_error(
 ):
     """``(status, detail)`` for the /v1 sites that fail because nothing is loaded.
 
-    Changes only the case the generic text describes wrongly: auto-switch on, a
-    model named, and that name resolves to nothing local, so the switch silently
-    did nothing. That becomes a 404 model_not_found. Toggle off or no model named
-    keeps ``status`` and the :func:`_no_model_loaded_detail` text verbatim.
+    Changes only the case the generic text gets wrong (auto-switch on, a model
+    named, that name resolving to nothing local, so the switch silently did
+    nothing) into a 404 model_not_found. Everything else keeps ``status`` and the
+    :func:`_no_model_loaded_detail` text verbatim.
     """
     from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
     from core.inference.local_model_resolver import resolve_local_gguf
@@ -3739,10 +3739,9 @@ async def _no_model_loaded_error(
 def _auto_download_hf_token(fastapi_request: Optional[Request]) -> Optional[str]:
     """The token to fetch with: only one the caller sent themselves.
 
-    Never the server's ambient token. The repo here is named by whoever holds an
-    API key, so borrowing the owner's Hub identity would let that key pull the
-    owner's private repos and publish them in /v1/models for every other key.
-    The OpenAI bearer key is never used as an HF token either.
+    Never the server's ambient token, and never the OpenAI bearer key. The repo is
+    named by whoever holds an API key, so borrowing the owner's Hub identity would
+    let that key pull the owner's private repos and publish them in /v1/models.
     """
     from hub.dependencies import HUB_HF_TOKEN_HEADER, HUB_HF_TOKEN_MAX_LENGTH
 
@@ -3763,10 +3762,9 @@ async def _maybe_auto_download_model(
 ) -> None:
     """Opt-in: start fetching a named GGUF this server doesn't have.
 
-    Raises to stop the request when the model is downloading or cannot be
-    fetched. Off by default, and it never fires on a name that isn't shaped like
-    a Hub repo, so an unknown id like "gpt-4" still falls through to the resident
-    model as before.
+    Raises to stop the request while the model is downloading or cannot be fetched.
+    Off by default, and never fires on a name not shaped like a Hub repo, so an
+    unknown id like "gpt-4" still falls through to the resident model.
     """
     from utils.openai_auto_switch_settings import get_openai_auto_download_enabled
     from core.inference.openai_auto_download import is_downloadable_ref, maybe_auto_download
@@ -3812,8 +3810,8 @@ async def _maybe_auto_download_model(
 def _loaded_satisfies(requested: str) -> bool:
     """Whether what is serving right now actually answers to *requested*.
 
-    A bare ``org/model`` is satisfied by any loaded quant of that repo; an
-    explicit ``:QUANT`` must match the loaded one.
+    A bare ``org/model`` is satisfied by any loaded quant of that repo; an explicit
+    ``:QUANT`` must match the loaded one.
     """
     from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
@@ -3866,8 +3864,7 @@ def _matches_any(requested: str, candidates) -> bool:
     """Whether *requested* names any of *candidates*.
 
     A repo alias is case-insensitive, a filesystem path is not: lowercasing both
-    made /srv/models/foo.gguf and /srv/models/Foo.gguf the same weights, which is
-    the same trap _norm_path exists for one comparison further down.
+    made /srv/models/foo.gguf and /srv/models/Foo.gguf the same weights.
     """
     lowered = requested.strip().lower()
     for candidate in candidates:
@@ -3893,9 +3890,8 @@ def _norm_path(value: str) -> str:
     /srv/models/Foo and /srv/models/foo are different models."""
     import os
 
-    # normcase after, not before: on Windows it folds case *and* rewrites the
-    # separator to a backslash, so normalizing first leaves the descendant checks
-    # below comparing a "/" against a path that no longer has any.
+    # normcase after, not before: on Windows it folds case *and* rewrites "/" to a
+    # backslash, leaving the descendant checks below comparing against a path with none.
     return os.path.normcase(str(value)).replace("\\", "/").rstrip("/")
 
 
@@ -3908,10 +3904,9 @@ def _resident_quant_is(variant: Optional[str]) -> bool:
 def _resolves_to_resident(load_path: Optional[str], *, llama_only: bool = False) -> bool:
     """Whether a resolved on-disk path is what is already loaded.
 
-    ``llama_only`` drops the Transformers backend from the comparison. Only
-    llama.cpp carries a quant identity, so a Transformers model active from a
-    directory that also holds GGUF exports would otherwise match a request for
-    one of those quants and answer it with the safetensors weights.
+    ``llama_only`` drops the Transformers backend: only llama.cpp carries a quant
+    identity, so a Transformers model active from a directory that also holds GGUF
+    exports would otherwise answer a request for one of those quants.
     """
     if not load_path:
         return False
@@ -3933,9 +3928,9 @@ def _resolves_to_resident(load_path: Optional[str], *, llama_only: bool = False)
             return True
         if current.startswith(f"{target}/"):
             # A model directory holding the weights loaded from it. Nested entries
-            # (/models/A alongside /models/A/sub/B) satisfied this too, so a request
-            # for A was answered with B. The innermost indexed model owns the file;
-            # with none indexed there is no nesting to tell apart, so keep matching.
+            # (/models/A alongside /models/A/sub/B) matched too, so a request for A was
+            # answered with B. The innermost indexed model owns the file; with none
+            # indexed there is no nesting to tell apart, so keep matching.
             owner = _innermost_indexed_owner(current)
             if owner is None or owner == target:
                 return True
@@ -3965,13 +3960,11 @@ async def _reject_unservable_model(
     """Refuse rather than answer a named model with a different one.
 
     Only for a reference this server can tell was meant for it: an explicit GGUF
-    quant, or a model that is actually here. A namespace decides nothing either
-    way. ``vendor/model`` is how LiteLLM and OpenRouter name every provider, so
-    ``anthropic/claude-3.5-sonnet`` falls through like ``gpt-4``; a standalone or
-    custom-folder GGUF is advertised without one, so a slashless id that does
-    resolve locally is still a concrete reference. Only runs while something is
-    serving; with nothing loaded the caller's own :func:`_no_model_loaded_error`
-    already says the right thing.
+    quant, or a model that is actually here. A namespace decides nothing either way
+    (``vendor/model`` is how LiteLLM and OpenRouter name every provider, and a
+    standalone GGUF is advertised without one), so a slashless id that resolves
+    locally is still a concrete reference. Only runs while something is serving:
+    with nothing loaded, :func:`_no_model_loaded_error` already says the right thing.
     """
     from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
@@ -4006,27 +3999,24 @@ async def _reject_unservable_model(
             warm_index_soon()
             resolved = resolve_local_gguf(requested_model, allow_scan = False)
         else:
-            # Before the first scan there is nothing cached to reason from, and falling
-            # through would answer a named model with the resident one. Pay the scan
-            # once, off the loop and bounded, rather than reading "not scanned yet" as
-            # "not here". Later requests take the cached branch above.
+            # Nothing cached to reason from yet, and falling through would answer a
+            # named model with the resident one. Pay the scan once, off the loop and
+            # bounded, rather than read "not scanned yet" as "not here".
             try:
                 resolved = await asyncio.wait_for(
                     asyncio.to_thread(resolve_local_gguf, requested_model),
                     _COLD_INDEX_WAIT_S,
                 )
             except (TimeoutError, asyncio.TimeoutError):
-                # Still scanning, so nothing is known about this name. Falling through
-                # would put the resident model behind it, which is the failure this
-                # whole hook exists to stop, so say "not yet" instead of guessing.
+                # Still scanning, so nothing is known about this name: say "not yet"
+                # rather than guess and put the resident model behind it.
                 warm_index_soon()
                 still_indexing = True
                 resolved = None
-        # A manual load stores the on-disk path the resolver advertises under an alias, so
-        # match on the path too.
-        # Quants of one repo share a directory, so the path alone cannot tell them
-        # apart: without the variant check an explicit :Q8_0 would be answered by a
-        # resident Q4_K_M, which _loaded_satisfies has already refused by name.
+        # A manual load stores the on-disk path the resolver advertises under an alias,
+        # so match on the path too. Quants of one repo share a directory, so the path
+        # alone cannot tell them apart: without the variant check an explicit :Q8_0
+        # would be answered by a resident Q4_K_M.
         if (
             resolved is not None
             and _resolves_to_resident(resolved[0], llama_only = quantified)
@@ -4052,8 +4042,8 @@ async def _reject_unservable_model(
         )
         switchable = downloaded and get_openai_auto_switch_enabled()
     except HTTPException:
-        # A refusal decided above is the answer, not a failure to decide. Without this
-        # the handler below would log it and fall through to the resident model.
+        # A refusal decided above is the answer, not a failure to decide: without this
+        # the handler below logs it and falls through to the resident model.
         raise
     except Exception as exc:
         # Can't verify: an explicit quant still proves intent, so refuse; let anything else by.
@@ -4189,9 +4179,9 @@ async def _maybe_auto_switch_model(
         # repo, so it never reloads a different local quant that already serves it.
         from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
-        # A tag that names no quant (":latest", ":8b") means the repo, exactly as
-        # _loaded_satisfies and the resolver read it. Treating it as a quant tears
-        # down a serving Q8 to load the preferred Q4 for a request either satisfies.
+        # A tag that names no quant (":latest", ":8b") means the repo, as
+        # _loaded_satisfies and the resolver read it. Treating it as a quant tears down
+        # a serving Q8 to load the preferred Q4 for a request either satisfies.
         _, _requested_variant = split_model_ref(requested_model)
         bare = not looks_like_quant(_requested_variant)
 
@@ -11113,8 +11103,8 @@ def _quant_reference_resolves(model_id: Optional[str], quant: str) -> bool:
     """Whether ``<model_id>:<quant>`` still resolves once this model is not resident.
 
     A standalone .gguf takes its quant from the filename, but the resolver stores
-    such files with no quants at all, so advertising one hands out a pin that dies
-    the moment another model loads.
+    such files with no quants, so advertising one hands out a pin that dies the
+    moment another model loads.
     """
     from core.inference.local_model_resolver import (
         index_is_built,
@@ -11125,7 +11115,7 @@ def _quant_reference_resolves(model_id: Optional[str], quant: str) -> bool:
 
     if not model_id:
         return False
-    # Cold index proves nothing, and publishing on no proof is what hands out the
+    # A cold index proves nothing, and publishing on no proof is what hands out the
     # dead pin; warm so the next response carries the quant.
     warm_index_soon()
     return resolve_local_gguf(f"{model_id}:{quant}", allow_scan = False) is not None
@@ -11135,8 +11125,8 @@ def _advertised_local_path(model: str) -> Optional[str]:
     """On-disk path of *model* if the last /v1/models scan listed it, else None.
 
     Cache-only, never scans. The catalog scans on its own schedule, so it can have
-    advertised a local model the resolver index has not picked up yet; having
-    advertised it is evidence the name means something other than the resident one.
+    advertised a local model the resolver index has not picked up yet, which is
+    evidence the name means something other than the resident one.
     """
     if _ADVERTISED_CACHE["at"] != _CATALOG_CACHE["at"]:
         paths = {}
@@ -11231,17 +11221,16 @@ async def _openai_catalog_objects() -> list[dict]:
             "object": "model",
             "created": _created,
             "owned_by": _OWNED_BY,
-            # A manual load keys the resident entry by path basename while the catalog uses
-            # the alias, so match on the path or the alias reads as not loaded. llama-only:
-            # these entries are advertised as GGUF with a GGUF quant, so a Transformers
-            # model live from a directory that also holds GGUF exports must not mark one
-            # loaded, or the examples pin a quant nothing can serve with switching off.
+            # A manual load keys the resident entry by path basename while the catalog
+            # uses the alias, so match on the path or the alias reads as not loaded.
+            # llama-only: a Transformers model live from a directory that also holds
+            # GGUF exports must not mark one of these GGUF entries loaded, or the
+            # examples pin a quant nothing can serve with switching off.
             "loaded": _resolves_to_resident(getattr(info, "path", None), llama_only = True),
         }
         # The id stays bare for OpenAI compat; a client appends ":<quant>" to pin one.
-        # For the resident model that has to be the quant actually loaded, not the
-        # preferred one on disk, or the listing advertises alias:Q4 as loaded while
-        # Q8 is serving and pinning it 404s.
+        # For the resident model that must be the quant actually loaded, not the
+        # preferred one on disk, or the listing advertises alias:Q4 while Q8 serves.
         resident_quant = getattr(get_llama_cpp_backend(), "hf_variant", None)
         if obj["loaded"] and resident_quant:
             obj["quant"] = resident_quant
