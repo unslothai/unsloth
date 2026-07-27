@@ -240,4 +240,5 @@ llama.cpp/
 async_task_outputs/
 individual_reviews/
 # Stray "~" dir some tools create from a literal ~ TMPDIR; never part of the repo.
-/~/
+~/
+/temp/
