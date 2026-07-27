@@ -46,6 +46,34 @@ export function useToolPaneScope(): string {
   return toolThreadScope(paneScope, threadId);
 }
 
+/**
+ * Read a tool-output map for one call, tolerating a run that started before its
+ * thread had an id.
+ *
+ * The adapter captures its scope once at run start, so a first turn writes under
+ * the unresolved (empty-thread) scope for its whole life. The autosave can
+ * assign `remoteId` while that same turn is still streaming, which moves this
+ * component's key but not the writer's, and the card went blank mid-run. Falling
+ * back to the pane-wide scope keeps those entries reachable; only an
+ * unpersisted first turn can be filed there, so within a pane it is unambiguous.
+ */
+/** The scope a run that started before its thread had an id writes under. */
+export function useUnresolvedToolPaneScope(): string {
+  return toolThreadScope(useContext(ToolPaneScopeContext), undefined);
+}
+
+export function useToolOutputFor(
+  map: Record<string, string>,
+  paneScope: string,
+  toolCallId: string,
+): string {
+  // Unconditional: hooks cannot sit behind the early return below.
+  const unresolvedScope = useUnresolvedToolPaneScope();
+  const own = map[toolOutputKey(paneScope, toolCallId)];
+  if (own !== undefined) return own;
+  return map[toolOutputKey(unresolvedScope, toolCallId)] ?? "";
+}
+
 /** Store key for the live/full tool output maps: pane scope + tool call id. */
 export function toolOutputKey(paneScope: string, toolCallId: string): string {
   return `${paneScope}\u0000${toolCallId}`;

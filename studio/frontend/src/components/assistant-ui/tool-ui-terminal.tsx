@@ -19,8 +19,8 @@ import { ToolResultOutput } from "./tool-result-output";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
   preferFullToolOutput,
-  toolOutputKey,
   useToolAwaitingApproval,
+  useToolOutputFor,
   useToolPaneScope,
 } from "@/features/chat";
 
@@ -45,8 +45,10 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   // Show the fuller live stream over a truncated result, keeping its exit
   // status. Session-transient: after a reload only the result remains.
   const paneScope = useToolPaneScope();
-  const fullOutput = useChatRuntimeStore(
-    (s) => s.toolFullOutput[toolOutputKey(paneScope, toolCallId)] ?? "",
+  const fullOutput = useToolOutputFor(
+    useChatRuntimeStore((s) => s.toolFullOutput),
+    paneScope,
+    toolCallId,
   );
   const displayOutput = preferFullToolOutput(fullOutput, output);
   // The gate only opens once the call parsed, so a pending approval means the command is

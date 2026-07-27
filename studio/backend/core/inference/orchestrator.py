@@ -1666,15 +1666,22 @@ class InferenceOrchestrator:
     def _owns_worker(self, cancel_event) -> bool:
         """Whether a reset from this request may signal the shared cancel event.
 
-        True when it is one of the EXECUTING generations, and also when none are:
-        an error path that resets before anything started has no one else to
-        interrupt, so it must not become a silent no-op. Claimed-but-queued does
-        not count, or a Stop on a queued request would end the running one.
+        True when it is one of the EXECUTING generations, and when nothing is in
+        flight at all: an error path that resets before anything started has no
+        one else to interrupt, so it must not become a silent no-op. Claimed but
+        queued does not count, or a Stop on a queued request would end the
+        running one, including during the prefill before any response arrives.
         """
         with self._active_cancel_lock:
-            if not self._executing_cancel_events:
+            if not self._active_cancel_events:
+                # Nothing in flight at all, so there is no one to protect.
                 return True
-            return any(ev is cancel_event for ev in self._executing_cancel_events)
+            if self._executing_cancel_events:
+                return any(ev is cancel_event for ev in self._executing_cancel_events)
+            # Claimed but nothing has answered yet (A is in prefill). The worker
+            # takes commands in order, so the oldest claim is the one it must be
+            # working on; anyone else here is queued behind it.
+            return self._active_cancel_events[0] is cancel_event
 
     def reset_generation_state(self, caller_cancel_event = None):
         """Cancel any ongoing generation and reset state.

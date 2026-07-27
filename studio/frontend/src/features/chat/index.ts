@@ -50,6 +50,8 @@ export {
   preferFullToolOutput,
   toolOutputKey,
   toolThreadScope,
+  useToolOutputFor,
+  useUnresolvedToolPaneScope,
   useToolPaneScope,
 } from "./tool-output-scope";
 export { useToolAwaitingApproval } from "./tool-approval";

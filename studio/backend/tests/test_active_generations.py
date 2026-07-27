@@ -2628,3 +2628,36 @@ def test_a_dispatched_request_queued_behind_another_is_not_an_owner():
     orch._mark_worker_started(b_event)  # the worker moves on to B
     orch.reset_generation_state(b_event)
     assert orch._cancel_event.is_set()
+
+
+def test_a_queued_request_cannot_reset_during_the_other_ones_prefill():
+    # Between _send_cmd and the first response A is claimed but not executing.
+    # Treating "nothing executing" as "nobody to protect" let a queued request's
+    # Stop through in exactly that window and killed A mid-prefill.
+    orch = _orchestrator_for_ownership()
+    a_event = threading.Event()
+    b_event = threading.Event()
+
+    orch._claim_worker(a_event)  # A sent its command and is in prefill
+    orch._claim_worker(b_event)  # B is queued behind it
+
+    orch.reset_generation_state(b_event)
+    assert not orch._cancel_event.is_set(), "B must not reset A during prefill"
+
+    # A's own Stop still works before any token has arrived.
+    orch.reset_generation_state(a_event)
+    assert orch._cancel_event.is_set()
+
+
+def test_the_oldest_claim_is_the_one_the_worker_is_prefilling():
+    # The command queue is FIFO, so with nothing answering yet the oldest claim
+    # is the presumptive executor. Once A finishes, B becomes it.
+    orch = _orchestrator_for_ownership()
+    a_event = threading.Event()
+    b_event = threading.Event()
+    orch._claim_worker(a_event)
+    orch._claim_worker(b_event)
+    orch._release_worker(a_event)
+
+    orch.reset_generation_state(b_event)
+    assert orch._cancel_event.is_set(), "B is now the oldest claim"
