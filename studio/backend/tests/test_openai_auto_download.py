@@ -656,6 +656,15 @@ def test_hook_prefers_the_hub_header_token(hub):
 # --- never answer as a different model ----------------------------------------
 
 
+class _CatalogInfo:
+    """Minimal stand-in for a local model the /v1/models scan listed."""
+
+    def __init__(self, model_id, path):
+        self.model_id = model_id
+        self.id = model_id
+        self.path = path
+
+
 class _Loaded:
     """Minimal stand-in for the GGUF backend with one model resident."""
 
@@ -1211,3 +1220,55 @@ def test_a_stale_index_is_refreshed_so_a_hub_download_becomes_visible(monkeypatc
             break
         time.sleep(0.01)
     assert scans == [1]
+
+
+def test_an_id_v1_models_advertised_is_refused_before_the_resolver_warms(monkeypatch):
+    # Codex P1: /v1/models scans on its own schedule, so it can advertise an
+    # unloaded local GGUF while the resolver index is still cold. A bare id carries
+    # no quant to refuse on, so without the catalog as evidence that request would
+    # be answered by the unrelated resident model.
+    from core.inference import local_model_resolver as resolver
+
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    monkeypatch.setattr(
+        inference_route,
+        "_CATALOG_CACHE",
+        {"at": 1.0, "models": [_CatalogInfo("org/Other", "/srv/models/org--Other")]},
+    )
+    monkeypatch.setattr(inference_route, "_ADVERTISED_CACHE", {"at": None, "paths": {}})
+    loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route._reject_unservable_model("org/Other", _Req()))
+    assert excinfo.value.status_code == 404
+    # An id the catalog never listed still proves nothing, so it falls through.
+    assert asyncio.run(inference_route._reject_unservable_model("org/Unlisted", _Req())) is None
+
+
+def test_an_advertised_alias_for_the_resident_weights_is_still_served(monkeypatch):
+    # The flip side: the catalog can list the resident weights under an alias the
+    # loaded entry does not answer to. That is not evidence of a different model.
+    from core.inference import local_model_resolver as resolver
+
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    monkeypatch.setattr(
+        inference_route,
+        "_CATALOG_CACHE",
+        {"at": 2.0, "models": [_CatalogInfo("publisher/Qwen3", "/srv/models")]},
+    )
+    monkeypatch.setattr(inference_route, "_ADVERTISED_CACHE", {"at": None, "paths": {}})
+    loaded = _Loaded("/srv/models/Qwen3-Q4.gguf", "Q4_K_M")
+    loaded.gguf_path = "/srv/models/Qwen3-Q4.gguf"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    assert asyncio.run(inference_route._reject_unservable_model("publisher/Qwen3", _Req())) is None

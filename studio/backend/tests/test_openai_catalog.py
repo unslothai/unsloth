@@ -248,3 +248,43 @@ def test_lifecycle_model_label_is_path_free():
     assert inf._lifecycle_model_label("org/A-GGUF", "Q4_K_M") == "org/A-GGUF:Q4_K_M"
     # An id that already carries a quant is not double-suffixed.
     assert inf._lifecycle_model_label("org/A-GGUF:Q4_K_M", "Q8_0") == "org/A-GGUF:Q4_K_M"
+
+
+def test_a_standalone_gguf_does_not_advertise_a_quant_that_stops_resolving(monkeypatch):
+    # Codex P1: llama.cpp reads hf_variant off the filename for a directly loaded
+    # .gguf, but the resolver stores standalone files with no quants, so a client
+    # that pinned "<stem>:<quant>" would get model-not-found once it is not resident.
+    from core.inference.local_model_resolver import _LocalGgufEntry
+
+    standalone = _LocalGgufEntry("Qwen3-Q4", "/srv/models/Qwen3-Q4.gguf", ())
+    repo = _LocalGgufEntry("org/Foo", "/hf/models--org--Foo/snapshots/a", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (1.0, {"qwen3-q4": standalone, "org/foo": repo}))
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
+
+    llama = _FakeLlama()
+    llama.hf_variant = "Q4_K_M"
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
+    assert "quant" not in inf._openai_model_objects()[0]
+
+    # The same quant on a repo the resolver does list stays advertised.
+    llama.model_identifier = "org/Foo"
+    assert inf._openai_model_objects()[0]["quant"] == "Q4_K_M"
+
+
+def test_an_alias_for_the_resident_weights_is_not_listed_as_unloaded(monkeypatch):
+    # Codex P2: an LM Studio publisher/model GGUF loaded by absolute path keys the
+    # resident entry by the path basename, so an id-only dedup emits the alias a
+    # second time marked not loaded, which is the wrong residency for those weights.
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama())
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
+
+    alias = _Info("/srv/models", "Qwen3", model_id = "publisher/Qwen3")
+    alias.path = "/srv/models"  # holds the resident /srv/models/Qwen3-Q4.gguf
+
+    async def _fake_catalog():
+        return [alias]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
+    monkeypatch.setattr(resolver, "local_gguf_quants", lambda info: ("Q4_K_M",))
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["publisher/Qwen3"]["loaded"] is True

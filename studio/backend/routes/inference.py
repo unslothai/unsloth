@@ -3875,9 +3875,16 @@ async def _reject_unservable_model(
         if resolved is not None and _resolves_to_resident(resolved[0]):
             return
         downloaded = resolved is not None
+        # /v1/models may already have advertised this id off its own scan while the
+        # resolver index is still cold, and that is evidence too.
+        advertised = _advertised_local_path(base)
+        if advertised is not None and _resolves_to_resident(advertised):
+            return
         # The exact ref may miss on the quant alone, so ask about the repo too.
-        here = downloaded or (
-            variant is not None and resolve_local_gguf(base, allow_scan = False) is not None
+        here = (
+            downloaded
+            or advertised is not None
+            or (variant is not None and resolve_local_gguf(base, allow_scan = False) is not None)
         )
         switchable = downloaded and get_openai_auto_switch_enabled()
     except Exception as exc:
@@ -10878,7 +10885,7 @@ def _openai_model_objects() -> list[dict]:
             "owned_by": _OWNED_BY,
         }
         _quant = getattr(llama_backend, "hf_variant", None)
-        if _quant:
+        if _quant and _quant_reference_resolves(entry["id"], _quant):
             entry["quant"] = _quant
         _ctx = _positive_int_or_none(getattr(llama_backend, "context_length", None))
         if _ctx is not None:
@@ -10920,6 +10927,41 @@ def _openai_model_objects() -> list[dict]:
 # Brief cache for the local-model filesystem scan so repeated /v1/models calls
 # don't rescan the HF cache and models dirs on every request.
 _CATALOG_CACHE: dict = {"at": 0.0, "models": []}
+# Ids the last catalog scan listed, rebuilt only when that scan is replaced.
+_ADVERTISED_CACHE: dict = {"at": None, "paths": {}}
+
+
+def _quant_reference_resolves(model_id: Optional[str], quant: str) -> bool:
+    """Whether ``<model_id>:<quant>`` still resolves once this model is not resident.
+
+    A standalone .gguf takes its quant from the filename, but the resolver stores
+    such files with no quants at all, so advertising one hands out a pin that dies
+    the moment another model loads. Only downgrade on a definite answer: the id
+    itself indexed, that quant not among what it has.
+    """
+    from core.inference.local_model_resolver import resolve_local_gguf
+
+    if not model_id or resolve_local_gguf(model_id, allow_scan = False) is None:
+        return True
+    return resolve_local_gguf(f"{model_id}:{quant}", allow_scan = False) is not None
+
+
+def _advertised_local_path(model: str) -> Optional[str]:
+    """On-disk path of *model* if the last /v1/models scan listed it, else None.
+
+    Cache-only, never scans. The catalog scans on its own schedule, so it can have
+    advertised a local model the resolver index has not picked up yet; having
+    advertised it is evidence the name means something other than the resident one.
+    """
+    if _ADVERTISED_CACHE["at"] != _CATALOG_CACHE["at"]:
+        paths = {}
+        for info in _CATALOG_CACHE["models"] or ():
+            cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
+            path = getattr(info, "path", None)
+            if cid and path:
+                paths.setdefault(cid.strip().lower(), path)
+        _ADVERTISED_CACHE.update(at = _CATALOG_CACHE["at"], paths = paths)
+    return _ADVERTISED_CACHE["paths"].get(model.strip().lower())
 _CATALOG_TTL_S = 30.0
 # Per-loop lock (like _auto_switch_lock): a module-level asyncio.Lock ties its
 # waiters to the loop that first awaited it, so a second event loop awaiting it
@@ -11002,7 +11044,10 @@ async def _openai_catalog_objects() -> list[dict]:
             "object": "model",
             "created": _created,
             "owned_by": _OWNED_BY,
-            "loaded": False,
+            # A manual load keys the resident entry by the path basename while the
+            # catalog knows the same weights as "publisher/model", so match on the
+            # path too or the alias is advertised as not loaded.
+            "loaded": _resolves_to_resident(getattr(info, "path", None)),
         }
         # The id stays bare for OpenAI compat; a client appends ":<quant>" to pin one.
         if quants:
