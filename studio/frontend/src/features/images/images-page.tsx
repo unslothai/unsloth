@@ -84,6 +84,7 @@ import {
   type DiffusionGenerateProgress,
   type DiffusionGenerateResponse,
   type DiffusionLoadProgress,
+  type DiffusionLoadRequest,
   type DiffusionLoraInfo,
   type DiffusionStatus,
   type GalleryImage,
@@ -1086,6 +1087,20 @@ function RecipePopover({
 
 type Busy = "loading" | "unloading" | "generating" | null;
 
+// The Advanced controls a load sends, with the "auto" sentinels already resolved to omitted.
+// A staged download pins one of these at pick time so the load it eventually fires matches the
+// file set that was planned and downloaded for it.
+type LoadAdvanced = Pick<
+  DiffusionLoadRequest,
+  | "cpu_offload"
+  | "speed_mode"
+  | "transformer_quant"
+  | "attention_backend"
+  | "memory_mode"
+  | "transformer_cache"
+  | "loras"
+>;
+
 export function ImagesPage({ active = true }: { active?: boolean }) {
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
@@ -1873,6 +1888,33 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     [loras, status?.repo_id],
   );
 
+  // One snapshot of every Advanced control a load sends, so a staged pick can pin the values it
+  // planned against and the load cannot drift from them. Sentinels ("auto") map to undefined here
+  // once, rather than at each call site.
+  const currentLoadAdvanced = useCallback(
+    (repoId: string): LoadAdvanced => {
+      const baked = bakedLorasFor(repoId);
+      return {
+        cpu_offload: cpuOffload,
+        speed_mode: speedMode === "auto" ? undefined : speedMode,
+        transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
+        attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
+        memory_mode: memoryMode === "auto" ? undefined : memoryMode,
+        transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
+        loras: baked.length > 0 ? baked : undefined,
+      };
+    },
+    [
+      bakedLorasFor,
+      cpuOffload,
+      speedMode,
+      transformerQuant,
+      attentionBackend,
+      memoryMode,
+      transformerCache,
+    ],
+  );
+
   const handleLoad = useCallback(
     // Resolves true when the background load STARTED (callers may revert
     // optimistic picker state on false); poll outcomes are handled internally.
@@ -1882,6 +1924,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         kind: "gguf" | "single_file" | "pipeline";
         filename?: string;
       },
+      // The Advanced values this load must use, when they were pinned earlier. A staged download
+      // plans its file set from the controls as they stood at pick time and only loads minutes
+      // later, so reading the live state here would run a load the staged files may not cover
+      // (the rest is then pulled inline, outside the manager) or leave gigabytes staged for a
+      // build this load no longer uses.
+      pinned?: LoadAdvanced,
     ): Promise<boolean> => {
       // Cancel any prior poll loop so two can't run at once.
       if (pollTimer.current) clearTimeout(pollTimer.current);
@@ -1901,7 +1949,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // set with "reload the model with the adapter selection", so a reload that drops the
       // selection leaves the advertised LoRA picker permanently unusable. Ignored by every other
       // load kind (bf16 / bnb-4bit apply adapters at generation time).
-      const bakeLoras = bakedLorasFor(repoId);
+      const advanced = pinned ?? currentLoadAdvanced(repoId);
+      const bakeLoras = advanced.loras ?? [];
       // Whether THIS load carries the selection into the build, so a quantized load that did
       // not can drop a selection it can never apply rather than failing the next Generate.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
@@ -1921,12 +1970,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           model_kind: opts.kind,
           gguf_filename: opts.filename,
           hf_token: hfApiToken(getHfToken()),
-          cpu_offload: cpuOffload,
-          speed_mode: speedMode === "auto" ? undefined : speedMode,
-          transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
-          attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
-          memory_mode: memoryMode === "auto" ? undefined : memoryMode,
-          transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
+          cpu_offload: advanced.cpu_offload,
+          speed_mode: advanced.speed_mode,
+          transformer_quant: advanced.transformer_quant,
+          attention_backend: advanced.attention_backend,
+          memory_mode: advanced.memory_mode,
+          transformer_cache: advanced.transformer_cache,
           loras: bakeLoras.length > 0 ? bakeLoras : undefined,
         });
       } catch (err) {
@@ -1942,18 +1991,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       void pollLoadProgress();
       return true;
     },
-    [
-      pollLoadProgress,
-      refreshStatus,
-      dismissLoadToast,
-      cpuOffload,
-      speedMode,
-      transformerQuant,
-      attentionBackend,
-      memoryMode,
-      transformerCache,
-      bakedLorasFor,
-    ],
+    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced],
   );
 
   // Set (or clear) the Transform/Inpaint source image; always drop any painted mask so it
@@ -1970,6 +2008,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const pendingStagedLoad = useRef<{
     repoId: string;
     opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string };
+    // The Advanced values the plan was built from. Staging does not set `busy`, so the user can
+    // change precision, memory mode, speed or the baked LoRAs while the download runs; without
+    // this the completed load would use the new values against the old file set, pulling whatever
+    // is missing inline (no progress, no disk preflight) or leaving gigabytes staged for nothing.
+    advanced: LoadAdvanced;
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
   handleLoadRef.current = handleLoad;
@@ -1987,7 +2030,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       }
       const pending = pendingStagedLoad.current;
       pendingStagedLoad.current = null;
-      if (pending) void handleLoadRef.current(pending.repoId, pending.opts);
+      if (pending) void handleLoadRef.current(pending.repoId, pending.opts, pending.advanced);
     },
   });
 
@@ -1996,7 +2039,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     stagedLoadDeferred.current = false;
     const pending = pendingStagedLoad.current;
     pendingStagedLoad.current = null;
-    if (pending) void handleLoadRef.current(pending.repoId, pending.opts);
+    if (pending) void handleLoadRef.current(pending.repoId, pending.opts, pending.advanced);
   }, [active]);
 
   // Stage a not-yet-downloaded hub pick, else load it directly. Returns true when the pick
@@ -2008,6 +2051,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       isDownloaded?: boolean,
     ): Promise<boolean> => {
       if (isDownloaded !== false) return handleLoadRef.current(repoId, opts);
+      // ONE snapshot for the plan and for the load it will fire: the download runs for minutes
+      // without setting `busy`, so anything read separately at completion time could have changed.
+      const advanced = currentLoadAdvanced(repoId);
       try {
         const plan = await getDiffusionDownloadPlan({
           model_path: repoId,
@@ -2020,21 +2066,18 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           // and quant controls an explicit Speed/Precision Off or low-VRAM pick stages
           // base transformer/ shards the load never opens.
           hf_token: hfApiToken(getHfToken()),
-          cpu_offload: cpuOffload,
-          speed_mode: speedMode === "auto" ? undefined : speedMode,
-          transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
-          memory_mode: memoryMode === "auto" ? undefined : memoryMode,
+          cpu_offload: advanced.cpu_offload,
+          speed_mode: advanced.speed_mode,
+          transformer_quant: advanced.transformer_quant,
+          memory_mode: advanced.memory_mode,
           // The backend's prefetch decision reads the adapter selection too: a baked LoRA always
           // runs the dense build path. Omitting it here planned a quantized load's file set and
           // then staged too little for the load that actually ran, which pulled the rest inline
           // outside the download manager. Same list handleLoad bakes.
-          loras: (() => {
-            const baked = bakedLorasFor(repoId);
-            return baked.length > 0 ? baked : undefined;
-          })(),
+          loras: advanced.loras,
         });
         if (plan.entries.length > 0) {
-          pendingStagedLoad.current = { repoId, opts };
+          pendingStagedLoad.current = { repoId, opts, advanced };
           stage(
             plan.entries.map((e) => ({
               repoId: e.repo_id,
@@ -2050,7 +2093,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       }
       return handleLoadRef.current(repoId, opts);
     },
-    [stage, cpuOffload, speedMode, transformerQuant, memoryMode, bakedLorasFor],
+    [stage, currentLoadAdvanced],
   );
 
   // A diffusion model picked from the chat picker arrives as ?model= on this route. Load it
