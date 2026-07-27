@@ -2387,7 +2387,6 @@ def test_a_confirmed_install_that_cannot_drain_refuses_instead_of_swapping(monke
     assert calls["installed"] == []
 
 
-
 def test_confirmed_install_does_not_spend_its_cancel_on_an_install_that_will_refuse(monkeypatch):
     # An unrelated middleware-counted request that active_generations cannot stop
     # (a long count_tokens) must be waited out BEFORE the cancel, not after: the
@@ -2432,6 +2431,7 @@ def test_confirmed_install_does_not_spend_its_cancel_on_an_install_that_will_ref
 
     assert exc.value.status_code == 409
     assert calls["installed"] == []
+
 
 # ── draining before teardown ──────────────────────────────────────────
 
