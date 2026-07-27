@@ -541,9 +541,9 @@ def test_ggml_unsupported_op_abort_is_recognised_only_with_both_markers():
     )
     assert is_ggml_unsupported_op_abort(abort) is True
     # The RMS_NORM shape of the same abort (text encoder) counts too.
-    assert is_ggml_unsupported_op_abort(
-        "error: unsupported op 'RMS_NORM'\nggml_abort + 156"
-    ) is True
+    assert (
+        is_ggml_unsupported_op_abort("error: unsupported op 'RMS_NORM'\nggml_abort + 156") is True
+    )
     # Neither marker alone is enough, and an unrelated death is never a match.
     assert is_ggml_unsupported_op_abort("unsupported op 'MUL_MAT'") is False
     assert is_ggml_unsupported_op_abort("ggml_abort + 156") is False

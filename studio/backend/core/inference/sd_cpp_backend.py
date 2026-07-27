@@ -999,10 +999,7 @@ class SdCppDiffusionBackend:
         return images, seeds
 
     def _restart_server_on_cpu_backend(
-        self,
-        state: _SdState,
-        error_text: str,
-        cancel: threading.Event,
+        self, state: _SdState, error_text: str, cancel: threading.Event
     ) -> Optional[SdCppServer]:
         """Relaunch this checkpoint's sd-server with ``--backend cpu``; None if that does not apply.
 
