@@ -30,8 +30,6 @@ _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
 from utils.transformers_version import (
-
-
     _resolve_base_model,
     _is_lora_adapter_dir,
     _has_adapter_weights,
@@ -5660,6 +5658,7 @@ def _link_headers(*values):
     ``Link`` field line, which is the shape that returns a truncated page as whole.
     """
     import email.message
+
     msg = email.message.Message()
     for value in values:
         if value is not None:
