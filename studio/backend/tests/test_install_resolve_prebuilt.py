@@ -936,10 +936,16 @@ def test_masked_probe_suppression_does_not_touch_non_amd_auto_paths(monkeypatch)
     # and predates this feature.
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
     host = _host(
-        system = "Windows", is_windows = True, has_intel_gpu = True,
-        has_rocm = False, has_physical_nvidia = False, has_usable_nvidia = False,
+        system = "Windows",
+        is_windows = True,
+        has_intel_gpu = True,
+        has_rocm = False,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
     )
-    _routed, repo, _tag, _persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    _routed, repo, _tag, _persist = ilp._route_to_vulkan_prebuilt(
+        host, FORK, "pin", force_cpu = False
+    )
     assert repo == UPSTREAM
 
 
