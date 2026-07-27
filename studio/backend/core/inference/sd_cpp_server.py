@@ -115,7 +115,12 @@ def _diagnostic_tail(
 _CANCEL_GRACE_S = 5.0
 
 
-def _has_ancestor(pid: int, ancestor_pid: int, *, max_depth: int = 8) -> bool:
+def _has_ancestor(
+    pid: int,
+    ancestor_pid: int,
+    *,
+    max_depth: int = 8,
+) -> bool:
     """True if ``ancestor_pid`` is ``pid``'s parent (or grandparent, ...).
 
     The listening socket can be held by a child of the process we spawned (a wrapper script, or a
@@ -123,7 +128,6 @@ def _has_ancestor(pid: int, ancestor_pid: int, *, max_depth: int = 8) -> bool:
     pid-reuse cycle cannot loop."""
     try:
         import psutil
-
         proc = psutil.Process(pid)
         for _ in range(max_depth):
             proc = proc.parent()

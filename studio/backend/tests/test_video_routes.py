@@ -904,21 +904,28 @@ def test_signed_video_link_rejects_tampering_and_other_ids(client):
     )
     first = _generate_and_wait(client, {"prompt": "a"})["id"]
     second = _generate_and_wait(client, {"prompt": "b"})["id"]
-    token = client.get(f"/api/inference/video/gallery/{first}/signed-url").json()["url"].split(
-        "token=", 1
-    )[1]
+    token = (
+        client.get(f"/api/inference/video/gallery/{first}/signed-url")
+        .json()["url"]
+        .split("token=", 1)[1]
+    )
 
     # The token names exactly one clip.
-    assert client.get(
-        f"/api/inference/video/gallery/{second}/file-signed?token={token}"
-    ).status_code == 401
+    assert (
+        client.get(f"/api/inference/video/gallery/{second}/file-signed?token={token}").status_code
+        == 401
+    )
     # A flipped signature, a malformed token, and an expired one are all refused.
-    assert client.get(
-        f"/api/inference/video/gallery/{first}/file-signed?token={token[:-1]}x"
-    ).status_code == 401
-    assert client.get(
-        f"/api/inference/video/gallery/{first}/file-signed?token=nonsense"
-    ).status_code == 401
+    assert (
+        client.get(
+            f"/api/inference/video/gallery/{first}/file-signed?token={token[:-1]}x"
+        ).status_code
+        == 401
+    )
+    assert (
+        client.get(f"/api/inference/video/gallery/{first}/file-signed?token=nonsense").status_code
+        == 401
+    )
     from routes import video as video_routes
 
     expired = video_routes._sign_video_id(first)
@@ -931,12 +938,13 @@ def test_signed_video_link_rejects_tampering_and_other_ids(client):
     stale_sig = hmac.new(
         video_routes._VIDEO_LINK_SECRET, stale_payload.encode(), hashlib.sha256
     ).hexdigest()
-    assert client.get(
-        f"/api/inference/video/gallery/{first}/file-signed?token={stale_payload}.{stale_sig}"
-    ).status_code == 401
+    assert (
+        client.get(
+            f"/api/inference/video/gallery/{first}/file-signed?token={stale_payload}.{stale_sig}"
+        ).status_code
+        == 401
+    )
 
 
 def test_signed_url_mint_is_bearer_gated_and_404s_for_an_unknown_clip(client):
-    assert client.get(
-        "/api/inference/video/gallery/does-not-exist/signed-url"
-    ).status_code == 404
+    assert client.get("/api/inference/video/gallery/does-not-exist/signed-url").status_code == 404
