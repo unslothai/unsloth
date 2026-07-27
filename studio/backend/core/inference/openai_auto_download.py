@@ -97,14 +97,21 @@ def _public_label(repo_id: str, variant: Optional[str]) -> str:
 def split_model_ref(requested: str) -> tuple[str, Optional[str]]:
     """``org/repo:QUANT`` -> ``("org/repo", "QUANT")``; no suffix -> variant None.
 
-    Splits on the last colon only when the suffix carries no slash, so a Windows
-    drive letter or a path never reads as a quant.
+    Splits on the last colon. A slash-bearing suffix is only a variant when a real
+    Hub repo precedes it: an unrecognized GGUF below a subdirectory keys on its path
+    ("build/llama-13b", which is_valid_gguf_variant allows and the catalog advertises),
+    while "C:/models/x.gguf" leaves a drive letter that is no repo id at all.
     """
     text = (requested or "").strip()
     base, sep, suffix = text.rpartition(":")
-    if not sep or not base or "/" in suffix or not suffix:
+    if not sep or not base or not suffix:
         return text, None
-    return base.strip(), suffix.strip()
+    stripped = base.strip()
+    if "/" in suffix:
+        from hub.utils.paths import is_valid_repo_id
+        if "/" not in stripped or not is_valid_repo_id(stripped):
+            return text, None
+    return stripped, suffix.strip()
 
 
 def is_downloadable_ref(requested: str) -> bool:
@@ -423,10 +430,11 @@ async def _is_downloadable_model(repo_id: str, hf_token: Optional[str]) -> bool:
         info = await asyncio.to_thread(_probe)
     except Exception:
         return False
-    siblings = list(getattr(info, "siblings", None) or [])
-    servable = any(
-        str(getattr(s, "rfilename", "") or "").lower().endswith(".gguf") for s in siblings
-    )
+    # The same filter admission uses, not a bare .gguf test: mmproj, MTP drafters and
+    # big-endian builds are companions rather than quants, so a repo holding only those
+    # is not downloadable here either. Answering otherwise would hold an ordinary
+    # foreign label at model_download_busy for the length of an unrelated download.
+    servable = bool(_gguf_variants(getattr(info, "siblings", None)))
     if not servable:
         _mark_not_servable(repo_id, hf_token)
     return servable

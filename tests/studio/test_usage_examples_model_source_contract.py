@@ -72,9 +72,23 @@ def test_a_stored_checkpoint_needs_catalog_evidence():
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert 'const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));' in hook
-    # Resident, or downloaded with switching able to reload it. Never the setting alone.
-    assert "catalog === null || (!!entry && (entry.loaded || autoSwitch))" in hook
+    # Resident, or downloaded with something able to reload it. Never the setting alone.
+    assert "(!!entry && (entry.loaded || autoSwitch || idleReload))" in hook
     assert "autoSwitch ||\n" not in hook
+
+
+def test_standalone_idle_unload_still_names_the_stored_checkpoint():
+    # UNSLOTH_MODEL_IDLE_TTL without auto-switch reloads exactly what it freed, so the
+    # stored checkpoint stays runnable after an idle unload and the panel must keep
+    # showing it. The stash restores only that model, so it can never pick catalog[0].
+    src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
+    hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
+    assert "const [idleReload, setIdleReload] = useState(false);" in hook
+    assert "setIdleReload(idleActive)" in hook
+    assert "s.idleUnloadActive" in hook
+    # fromCatalog stays gated on auto-switch alone.
+    assert "?? (autoSwitch ? catalog?.[0] : undefined)" in hook
+    assert "idleReload ? catalog" not in hook
 
 
 def test_the_pinned_quant_comes_from_the_catalog():

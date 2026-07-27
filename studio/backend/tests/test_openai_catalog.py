@@ -272,6 +272,9 @@ def test_a_standalone_gguf_does_not_advertise_a_quant_that_stops_resolving(monke
     # A cold index cannot prove the reference either, and publishing on no proof is
     # exactly what hands out the pin that later fails to resolve.
     monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    # Stub the walk: a real multi-root scan inside the cold-wait budget makes this
+    # test time out into a 503 under load instead of asserting what it is here for.
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
     monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
     assert "quant" not in inf._openai_model_objects()[0]
 
@@ -295,6 +298,28 @@ def test_a_loaded_alias_advertises_the_quant_that_is_actually_loaded(monkeypatch
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["publisher/Qwen3"]["loaded"] is True
     assert ids["publisher/Qwen3"]["quant"] == "Q8_0"
+
+
+def test_a_transformers_model_does_not_mark_a_gguf_alias_loaded(monkeypatch):
+    # Every entry in this loop is advertised as GGUF and carries a GGUF quant. A
+    # Transformers model live from a directory that also holds GGUF exports is not one
+    # of them, and marking the alias loaded had the usage examples pin alias:quant that
+    # nothing can serve while switching is off.
+    unsloth = _FakeUnsloth()
+    unsloth.active_model_name = "/srv/models"
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: unsloth)
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama(loaded = False))
+
+    alias = _Info("/srv/models", "Qwen3", model_id = "publisher/Qwen3")
+    alias.path = "/srv/models"  # also holds /srv/models/Qwen3-Q4.gguf
+
+    async def _fake_catalog():
+        return [alias]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
+    monkeypatch.setattr(resolver, "local_gguf_quants", lambda info: ("Q4_K_M",))
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["publisher/Qwen3"]["loaded"] is False
 
 
 def test_an_alias_for_the_resident_weights_is_not_listed_as_unloaded(monkeypatch):

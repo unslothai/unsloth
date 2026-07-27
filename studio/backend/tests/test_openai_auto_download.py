@@ -209,6 +209,12 @@ def _run(model, hf_token = None):
         # A colon followed by a path segment is not a quant.
         ("C:/models/x.gguf", ("C:/models/x.gguf", None)),
         ("org/repo:", ("org/repo:", None)),
+        # An unrecognized GGUF below a subdirectory keys on its path, and that key is
+        # what the catalog advertises, so pinning it has to parse.
+        ("org/repo:build/llama-13b", ("org/repo", "build/llama-13b")),
+        # Still a path, not a variant: no Hub repo precedes the colon.
+        ("/home/me/models/x:build/llama-13b", ("/home/me/models/x:build/llama-13b", None)),
+        ("D:/models/repo:build/llama-13b", ("D:/models/repo:build/llama-13b", None)),
     ],
 )
 def test_split_model_ref(raw, expected):
@@ -543,6 +549,20 @@ def test_an_unknown_state_still_reports_the_download_to_a_retry(hub, monkeypatch
     monkeypatch.setattr(auto_dl, "_job_state", _unknown)
     # Still downloading as far as anyone knows, so the slot stays taken.
     assert _run("unsloth/x-GGUF:UD-Q4_K_XL").code == "model_downloading"
+    assert _run("unsloth/other-GGUF").code == "model_download_busy"
+
+
+def test_a_companion_only_repo_is_not_held_at_busy(hub):
+    # mmproj and MTP files are companions, not quants, so admission classifies such a
+    # repo as non-servable and lets the label fall through to the resident model. The
+    # busy probe accepted any .gguf, which stranded that ordinary traffic behind an
+    # unrelated multi-hour download.
+    assert _run("unsloth/x-GGUF:UD-Q4_K_XL").code == "model_downloading"
+    gb = 1024**3
+    hub["info"] = _Info([_Sibling("mmproj-F16.gguf", gb), _Sibling("mtp-model.gguf", gb)])
+    assert _run("unsloth/companions-GGUF") is None
+    # A repo that does hold a real quant is still a second download.
+    hub["info"] = _gguf_repo_info()
     assert _run("unsloth/other-GGUF").code == "model_download_busy"
 
 
@@ -1307,6 +1327,9 @@ def test_an_id_v1_models_advertised_is_refused_before_the_resolver_warms(monkeyp
     from core.inference import local_model_resolver as resolver
 
     monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    # Stub the walk: a real multi-root scan inside the cold-wait budget makes this
+    # test time out into a 503 under load instead of asserting what it is here for.
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
     monkeypatch.setattr(
         inference_route,
         "_CATALOG_CACHE",
@@ -1334,6 +1357,9 @@ def test_an_advertised_alias_for_the_resident_weights_is_still_served(monkeypatc
     from core.inference import local_model_resolver as resolver
 
     monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    # Stub the walk: a real multi-root scan inside the cold-wait budget makes this
+    # test time out into a 503 under load instead of asserting what it is here for.
+    monkeypatch.setattr(resolver, "_build_index", lambda: {})
     monkeypatch.setattr(
         inference_route,
         "_CATALOG_CACHE",

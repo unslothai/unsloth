@@ -382,6 +382,10 @@ function useExampleModelName(): string | null {
   const [catalog, setCatalog] = useState<OpenAIModel[] | null>(null);
   // A downloaded but unloaded model is only runnable when switching is on.
   const [autoSwitch, setAutoSwitch] = useState(false);
+  // Idle-unload running on its own (UNSLOTH_MODEL_IDLE_TTL, switching off) still
+  // reloads exactly what it freed on the next request. That restores the stored
+  // checkpoint only, never an arbitrary catalog entry, so it is tracked apart.
+  const [idleReload, setIdleReload] = useState(false);
   const usableCheckpoint =
     !!checkpoint && !checkpoint.startsWith("external::") && !looksLikePath(checkpoint);
 
@@ -395,13 +399,14 @@ function useExampleModelName(): string | null {
       void Promise.all([
         listOpenAIModels().catch(() => [] as OpenAIModel[]),
         loadOpenAIAutoSwitchSettings()
-          .then((s) => s.enabled)
-          .catch(() => false),
+          .then((s) => [s.enabled, s.idleUnloadActive] as const)
+          .catch(() => [false, false] as const),
       ])
-        .then(([models, enabled]) => {
+        .then(([models, [enabled, idleActive]]) => {
           if (cancelled) return true;
           setCatalog(models);
           setAutoSwitch(enabled);
+          setIdleReload(idleActive);
           // Resident only slows the polling; it never stops it.
           return models.some((m) => m.loaded);
         })
@@ -438,7 +443,8 @@ function useExampleModelName(): string | null {
     // lists it: resident, or downloaded with switching able to reload it. A null
     // catalog means /v1/models has not answered, which is not evidence against it.
     const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));
-    const backed = catalog === null || (!!entry && (entry.loaded || autoSwitch));
+    const backed =
+      catalog === null || (!!entry && (entry.loaded || autoSwitch || idleReload));
     if (usableCheckpoint && checkpoint && backed) {
       if (checkpoint.includes(":")) {
         return checkpoint;
@@ -450,7 +456,7 @@ function useExampleModelName(): string | null {
       return quant ? `${checkpoint}:${quant}` : checkpoint;
     }
     return fromCatalog();
-  }, [autoSwitch, catalog, checkpoint, ggufVariant, usableCheckpoint]);
+  }, [autoSwitch, catalog, checkpoint, ggufVariant, idleReload, usableCheckpoint]);
 }
 
 // Backend PATH detection is only safe in the desktop app, where the UI owns

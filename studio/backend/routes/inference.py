@@ -11166,8 +11166,11 @@ async def _openai_catalog_objects() -> list[dict]:
             "created": _created,
             "owned_by": _OWNED_BY,
             # A manual load keys the resident entry by path basename while the catalog uses
-            # the alias, so match on the path or the alias reads as not loaded.
-            "loaded": _resolves_to_resident(getattr(info, "path", None)),
+            # the alias, so match on the path or the alias reads as not loaded. llama-only:
+            # these entries are advertised as GGUF with a GGUF quant, so a Transformers
+            # model live from a directory that also holds GGUF exports must not mark one
+            # loaded, or the examples pin a quant nothing can serve with switching off.
+            "loaded": _resolves_to_resident(getattr(info, "path", None), llama_only = True),
         }
         # The id stays bare for OpenAI compat; a client appends ":<quant>" to pin one.
         # For the resident model that has to be the quant actually loaded, not the
