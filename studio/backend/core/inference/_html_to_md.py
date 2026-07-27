@@ -404,9 +404,7 @@ class _MarkdownRenderer(HTMLParser):
             self._scope_depth -= 1
             if self._scope_depth == 0 and self._scope_seg_start is not None:
                 self.scope_segments.append("".join(self._out[self._scope_seg_start :]))
-                self.scope_header_prose.append(
-                    self._header_prose_total - self._seg_header_start
-                )
+                self.scope_header_prose.append(self._header_prose_total - self._seg_header_start)
                 self._scope_seg_start = None
         return not suppressed
 
@@ -803,6 +801,7 @@ def _select_main_scope_render(
 # content (e.g. an empty <article> stub) and the next candidate is tried.
 _MIN_MAIN_CONTENT_CHARS = 200
 
+
 # An unclosed <header> adopts the body (as browsers parse it). Size cannot tell
 # that apart from furniture removal, but link density can: a real header holds
 # a title and links, so only non-anchor prose counts as a swallowed body.
@@ -830,7 +829,9 @@ def html_to_markdown(source_html: str, *, main_content: bool = False) -> str:
             # Render only the chosen subtree so sibling <article>/<main>
             # elements do not leak in once the largest passes the size gate.
             length, rendered, header_prose = _select_main_scope_render(
-                source_html, scope_tag, strip_header = True,
+                source_html,
+                scope_tag,
+                strip_header = True,
             )
             if _header_strip_backfired(length, header_prose):
                 length, rendered, _ = _select_main_scope_render(source_html, scope_tag)

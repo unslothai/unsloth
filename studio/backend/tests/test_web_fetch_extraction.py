@@ -1276,10 +1276,10 @@ def test_in_main_header_language_list_does_not_displace_article():
 
 
 def test_header_title_kept_when_article_is_shorter_than_its_language_list():
-    body = (
-        "<main><header><h1>Stub</h1><ul>%s</ul></header>"
-        "<p>%s</p></main>"
-    ) % (_interlanguage_list(300), "Short article body. " * 15)
+    body = ("<main><header><h1>Stub</h1><ul>%s</ul></header><p>%s</p></main>") % (
+        _interlanguage_list(300),
+        "Short article body. " * 15,
+    )
     out = html_to_markdown(f"<body>{body}</body>", main_content = True)
     assert "Short article body." in out
     assert "Lang0" not in out
@@ -1308,9 +1308,7 @@ def test_unclosed_header_does_not_swallow_the_body():
 
 def test_unclosed_header_with_many_headings_keeps_body():
     # Headings survive, so a heading-rich page clears the size gate alone.
-    sections = "".join(
-        f"<h2>Section {i}</h2><p>{'Body prose here. ' * 10}</p>" for i in range(12)
-    )
+    sections = "".join(f"<h2>Section {i}</h2><p>{'Body prose here. ' * 10}</p>" for i in range(12))
     body = f"<main><header><h1>T</h1>{sections}</main>"
     out = html_to_markdown(f"<body>{body}</body>", main_content = True)
     assert "Body prose here." in out
@@ -1318,10 +1316,9 @@ def test_unclosed_header_with_many_headings_keeps_body():
 
 
 def test_header_strip_applies_without_article_or_main():
-    body = (
-        "<header><h1>Site name</h1><a href='/pricing'>Pricing</a></header>"
-        "<p>%s</p>"
-    ) % ("Page prose without a main landmark. " * 20)
+    body = ("<header><h1>Site name</h1><a href='/pricing'>Pricing</a></header><p>%s</p>") % (
+        "Page prose without a main landmark. " * 20
+    )
     out = html_to_markdown(f"<body>{body}</body>", main_content = True)
     assert "Page prose without a main landmark." in out
     assert "# Site name" in out
