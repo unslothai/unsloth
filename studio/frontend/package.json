@@ -11,6 +11,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "test": "node --experimental-strip-types --test tests/reasoning-duration.test.ts",
     "typecheck": "tsc -b --pretty false",
     "i18n:check": "node --experimental-strip-types --no-warnings src/i18n/check-parity.ts",
     "biome:check": "biome check",

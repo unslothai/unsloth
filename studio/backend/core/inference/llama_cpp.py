@@ -11371,6 +11371,7 @@ class LlamaCppBackend:
                 # Time each reasoning pass so final answers can replace tool timing.
                 _reasoning_started_at = None
                 _reasoning_summary_emitted = False
+                _deferred_reasoning_summary = None
                 cumulative_display = ""  # Cumulative yielded text (with <think>)
                 in_thinking = False
                 has_content_tokens = False
@@ -11619,7 +11620,13 @@ class LlamaCppBackend:
                                         and not _reasoning_summary_emitted
                                     ):
                                         _reasoning_summary_emitted = True
-                                        yield _reasoning_summary_event(_reasoning_started_at)
+                                        _summary = _reasoning_summary_event(
+                                            _reasoning_started_at
+                                        )
+                                        if _suppress_visible_output:
+                                            _deferred_reasoning_summary = _summary
+                                        else:
+                                            yield _summary
                                     has_content_tokens = True
                                     content_accum += token
 
@@ -11896,7 +11903,11 @@ class LlamaCppBackend:
                             # route's extractor closes the streamed <think>).
                             if _reasoning_started_at is not None and not _reasoning_summary_emitted:
                                 _reasoning_summary_emitted = True
-                                yield _reasoning_summary_event(_reasoning_started_at)
+                                _summary = _reasoning_summary_event(_reasoning_started_at)
+                                if _suppress_visible_output:
+                                    _deferred_reasoning_summary = _summary
+                                else:
+                                    yield _summary
                             cumulative_display = _finalize_reasoning_only_cumulative(
                                 cumulative_display,
                                 reasoning_accum,
@@ -12010,6 +12021,8 @@ class LlamaCppBackend:
                                         "type": "content",
                                         "text": forced_visible_text,
                                     }
+                                    if _deferred_reasoning_summary is not None:
+                                        yield _deferred_reasoning_summary
                         elif not _suppress_visible_output:
                             # Turn ended as a plain answer (no [ARGS] followed): the held
                             # rehearsal tail is real prose, release it.

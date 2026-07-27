@@ -602,7 +602,7 @@ def test_consumed_tool_final_pass_emits_latest_reasoning_summary(monkeypatch):
     ]
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
-    _patch_monotonic(monkeypatch, [200.0, 201.0, 203.0, 300.0, 400.0, 405.0, 405.0])
+    _patch_monotonic(monkeypatch, [200.0, 201.0, 203.0, 300.0, 400.0, 405.0, 410.0])
 
     def fake_execute_tool(name, arguments, **_kwargs):
         return "Rendered HTML canvas: Done."
@@ -1495,6 +1495,7 @@ def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
     streams = [
         [_sse({"content": "I will use render_html now."}), _done()],
         [
+            _sse({"reasoning_content": "I reconsidered the request."}),
             _sse({"content": "No tool is needed. Final answer: use a red square."}),
             _done(),
         ],
@@ -1531,8 +1532,20 @@ def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
     content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
     assert content_texts == [
         "I will use render_html now.",
-        "No tool is needed. Final answer: use a red square.",
+        (
+            "<think>I reconsidered the request.</think>"
+            "No tool is needed. Final answer: use a red square."
+        ),
     ]
+    summaries = [event for event in events if event.get("type") == "reasoning_summary"]
+    assert len(summaries) == 1
+    visible_answer_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.get("type") == "content"
+        and "No tool is needed" in event.get("text", "")
+    )
+    assert visible_answer_index < events.index(summaries[0])
     assert len(payloads) == 2
 
 
@@ -1774,24 +1787,14 @@ def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
     streams = [
         [_sse({"content": "I will use render_html now."}), _done()],
         [
+            _sse({"reasoning_content": "I should render the requested HTML."}),
             _sse(
                 {
-                    "tool_calls": [
-                        {
-                            "index": 0,
-                            "id": "call_forced",
-                            "type": "function",
-                            "function": {
-                                "name": "render_html",
-                                "arguments": json.dumps(
-                                    {
-                                        "code": "<html><body>forced</body></html>",
-                                        "title": "Forced",
-                                    }
-                                ),
-                            },
-                        }
-                    ]
+                    "content": (
+                        '<tool_call>{"name":"render_html","arguments":'
+                        '{"code":"<html><body>forced</body></html>",'
+                        '"title":"Forced"}}</tool_call>'
+                    )
                 }
             ),
             _done(),
@@ -1835,6 +1838,7 @@ def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
     assert len(calls) == 1
     content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
     assert content_texts == ["I will use render_html now.", "Final note after tool."]
+    assert not any(event.get("type") == "reasoning_summary" for event in events)
     assert len(payloads) == 3
 
 
