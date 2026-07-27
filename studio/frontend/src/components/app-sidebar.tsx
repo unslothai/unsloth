@@ -351,10 +351,13 @@ export function AppSidebar() {
   const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
   // Mac uses Cmd, others use Ctrl. Not Tauri-gated, so it's right on web too.
   const [isMacPlatform] = useState(() => getClientPlatform().includes("mac"));
-  const { pathname, search } = useRouterState({
+  const { pathname, search, href } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
       search: s.location.search as Record<string, string | undefined>,
+      // Pathname and search together, which is what makes chat-to-chat
+      // navigation visible: only the ?thread= part of it changes.
+      href: s.location.href,
     }),
   });
   const { togglePinned, isMobile, setOpenMobile } = useSidebar();
@@ -560,11 +563,13 @@ export function AppSidebar() {
     itemIds: recentChatItemIds,
     scrollContainerRef: scrollRef,
     listRootRef: chatRecentsListRef,
+    routeKey: href,
   });
   const runRecentsSelection = useSidebarListSelection({
     itemIds: runItemIds,
     scrollContainerRef: scrollRef,
     listRootRef: runRecentsListRef,
+    routeKey: href,
   });
   const activeJobId = useTrainingRuntimeStore((s) => s.jobId);
   const currentRunViewActive = useTrainingRuntimeStore((s) => s.currentRunViewActive);
@@ -833,8 +838,11 @@ export function AppSidebar() {
     // Reset so the next project delete never inherits this checkbox.
     setDeleteProjectFiles(false);
     if (target.kind === "chats-bulk") {
+      const batchIds = target.items.map((item) => item.id);
       // Guarded: this dialog already closed, so the bar stays live for the
       // whole loop and a second confirm would delete the same rows again.
+      // Handing over the ids also takes each captured row's own Delete out of
+      // service, so no single-row delete can race the loop to the same chat.
       await chatRecentsSelection.runBulkAction(async () => {
         let failed = 0;
         for (const item of target.items) {
@@ -845,11 +853,11 @@ export function AppSidebar() {
           // Only the rows this batch captured: the loop above can take a while
           // and the rows stay clickable throughout, so a blanket clear would
           // wipe a selection the user started while waiting for it.
-          chatRecentsSelection.deselectIds(target.items.map((item) => item.id));
+          chatRecentsSelection.deselectIds(batchIds);
         } else {
           toast.error(translate("shell.toast.failedToDeleteSomeChats"));
         }
-      });
+      }, batchIds);
       return;
     }
     if (target.kind === "chat") {
@@ -886,6 +894,7 @@ export function AppSidebar() {
       return;
     }
     if (target.kind === "runs-bulk") {
+      const batchIds = target.runs.map((run) => run.id);
       await runRecentsSelection.runBulkAction(async () => {
         // Re-check status: a run can start between opening and confirming.
         const live = new Map(runItems.map((run) => [run.id, run]));
@@ -910,7 +919,7 @@ export function AppSidebar() {
           // Runs skipped for being live are part of it: they were confirmed
           // away with the rest, and leaving them selected would re-arm Delete
           // on rows the user just chose to stop acting on.
-          runRecentsSelection.deselectIds(target.runs.map((run) => run.id));
+          runRecentsSelection.deselectIds(batchIds);
         } else {
           toast.error(translate("shell.toast.failedToDeleteSomeRuns"));
         }
@@ -919,7 +928,7 @@ export function AppSidebar() {
             t("shell.toast.skippedRunningRuns", { count: skipped }),
           );
         }
-      });
+      }, batchIds);
       return;
     }
     if (target.run.status === "running") {
@@ -1244,6 +1253,12 @@ export function AppSidebar() {
             </DropdownMenuItem>
             <DropdownMenuItem
               variant="destructive"
+              // Only while a bulk delete already owns this exact chat: deleting
+              // it again from here would issue a second request for a row the
+              // batch is part way through and report the batch as failed. Rows
+              // outside the batch stay deletable, since the sidebar is meant to
+              // remain usable while a slow batch runs.
+              disabled={chatRecentsSelection.isItemPending(item.id)}
               onSelect={() =>
                 confirmDeleteChats
                   ? setConfirmingDelete({ kind: "chat", item })
@@ -1926,7 +1941,13 @@ export function AppSidebar() {
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               variant="destructive"
-                              disabled={run.status === "running"}
+                              // Same single-flight rule as the chat rows: a run
+                              // a bulk delete already captured cannot also be
+                              // deleted from its own menu.
+                              disabled={
+                                run.status === "running" ||
+                                runRecentsSelection.isItemPending(run.id)
+                              }
                               onSelect={() =>
                                 setConfirmingDelete({ kind: "run", run })
                               }

@@ -22,8 +22,12 @@ const AUTO_SCROLL_STEP_PX = 10;
 // so a forgotten destructive batch would ride along to the new chat.
 export const SIDEBAR_SELECTION_BOUNDARY = "sidebar-bulk-delete";
 const SELECTION_BOUNDARY_SELECTOR = `[data-selection-boundary="${SIDEBAR_SELECTION_BOUNDARY}"]`;
-// Escape belongs to the topmost layer, whichever dialog that is.
-const DIALOG_LAYER_SELECTOR = '[role="dialog"], [role="alertdialog"]';
+// Escape belongs to the topmost layer it was delivered into, and a row's kebab
+// is a layer too: Radix portals its content out of the list and gives it
+// role="menu", so a menu-shaped Escape has to stop here the same way a dialog
+// one does, or dismissing the menu also throws the batch away.
+const OVERLAY_LAYER_SELECTOR =
+  '[role="dialog"], [role="alertdialog"], [role="menu"]';
 
 type DragState = {
   anchorIndex: number;
@@ -35,6 +39,9 @@ type DragState = {
   startY: number;
   lastClientY: number;
   dragging: boolean;
+  // Set when the row the drag started from leaves the list. The range has no
+  // anchor to rebuild from at that point, so the drag stops extending.
+  cancelled: boolean;
 };
 
 function rangeIndices(anchor: number, current: number): number[] {
@@ -77,13 +84,19 @@ export function useSidebarListSelection({
   itemIds,
   scrollContainerRef,
   listRootRef,
+  routeKey,
 }: {
   itemIds: string[];
   scrollContainerRef: RefObject<HTMLElement | null>;
   listRootRef: RefObject<HTMLElement | null>;
+  // The current location, pathname and search together. Navigating is the one
+  // signal every way of leaving has in common; the input that triggered it is
+  // not. Optional so a caller with no router still gets the rest of the hook.
+  routeKey?: string;
 }) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [isBulkPending, setIsBulkPending] = useState(false);
+  const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
   const bulkPendingRef = useRef(false);
   const dragRef = useRef<DragState | null>(null);
   const autoScrollRef = useRef<number | null>(null);
@@ -100,7 +113,10 @@ export function useSidebarListSelection({
   );
 
   const clearSelection = useCallback(() => {
-    setSelectedIds(new Set());
+    // Keep the empty set when it is already empty: this now runs on every
+    // navigation, and a fresh Set each time would re-render the whole sidebar
+    // for nothing.
+    setSelectedIds((prev) => (prev.size === 0 ? prev : new Set()));
     anchorIdRef.current = null;
   }, []);
 
@@ -131,20 +147,50 @@ export function useSidebarListSelection({
   // update; the flag drives the bar. Both reset on the failure path too, or a
   // throwing batch would leave the bar dead until it remounts.
   const runBulkAction = useCallback(
-    async (action: () => Promise<void>): Promise<boolean> => {
+    async (
+      action: () => Promise<void>,
+      // The rows this batch is going to delete. They are reported as pending so
+      // each one's own Delete can be disabled for the duration: the rest of the
+      // sidebar deliberately stays live during a slow batch, so the lock has to
+      // be the batch's own rows rather than the whole list.
+      capturedIds?: Iterable<string>,
+    ): Promise<boolean> => {
       if (bulkPendingRef.current) return false;
       bulkPendingRef.current = true;
       setIsBulkPending(true);
+      const captured = new Set(capturedIds ?? []);
+      setPendingIds((prev) =>
+        prev.size === 0 && captured.size === 0 ? prev : captured,
+      );
       try {
         await action();
         return true;
       } finally {
         bulkPendingRef.current = false;
         setIsBulkPending(false);
+        // On the failure path too, or a throwing batch leaves its rows
+        // permanently undeletable.
+        setPendingIds((prev) => (prev.size === 0 ? prev : new Set()));
       }
     },
     [],
   );
+
+  // Clearing on the way out, by route rather than by input. A chat can be left
+  // by mouse, by keyboard, or by the command palette, which navigates straight
+  // out of cmdk's key handling and never produces a MouseEvent for a click or
+  // pointer listener to see. Chat-to-chat navigation keeps Recents mounted, so
+  // the unmount path below does not cover it either.
+  const previousRouteKeyRef = useRef(routeKey);
+  useEffect(() => {
+    if (previousRouteKeyRef.current === routeKey) return;
+    previousRouteKeyRef.current = routeKey;
+    // Not while a batch is running: deleting the open chat navigates away by
+    // itself, and treating the batch's own redirect as the user leaving would
+    // discard a selection started while waiting for it.
+    if (bulkPendingRef.current) return;
+    clearSelection();
+  }, [clearSelection, routeKey]);
 
   // The sidebar outlives the list: a route change, browser history, or
   // collapsing the section unmounts the rows while the hook keeps its state.
@@ -236,7 +282,21 @@ export function useSidebarListSelection({
       const drag = dragRef.current;
       const listRoot = listRootRef.current;
       const container = scrollContainerRef.current;
-      if (!drag || !listRoot) return;
+      if (!drag || drag.cancelled || !listRoot) return;
+
+      // The row the drag started from can vanish mid-drag: deleted from another
+      // window, or pushed out of the limited Recents window by a new chat. The
+      // old numeric index now addresses whichever row slid into its place, so
+      // rebuilding the range from it would sweep up rows the user never touched
+      // and arm them for the delete that usually follows. Stop instead, and
+      // keep whatever of the selection is still valid.
+      const liveAnchor = indexOfId(drag.anchorId);
+      if (drag.anchorId != null && liveAnchor === -1) {
+        drag.cancelled = true;
+        drag.anchorId = null;
+        stopAutoScroll();
+        return;
+      }
 
       const index = document
         .elementsFromPoint(
@@ -245,7 +305,6 @@ export function useSidebarListSelection({
         )
         .map((el) => indexFromPointerTarget(el, listRoot))
         .find((value) => value != null);
-      const liveAnchor = indexOfId(drag.anchorId);
       const anchorIndex = liveAnchor === -1 ? drag.anchorIndex : liveAnchor;
       const currentIndex =
         index ?? edgeRowIndex(listRoot, clientY) ?? anchorIndex;
@@ -275,6 +334,9 @@ export function useSidebarListSelection({
       const drag = dragRef.current;
       if (!drag || event.pointerId !== drag.pointerId) return;
       if (drag.pointerType !== "mouse") return;
+      // Cancelled by its anchor disappearing: the press is still held, but it
+      // no longer selects anything.
+      if (drag.cancelled) return;
 
       const dx = event.clientX - drag.startX;
       const dy = event.clientY - drag.startY;
@@ -316,12 +378,12 @@ export function useSidebarListSelection({
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      // An open dialog traps focus, so an Escape aimed at it is delivered
-      // inside it and dismisses that layer alone. Clearing here as well would
-      // make keyboard cancel the one path that loses the batch, while Cancel
-      // and a backdrop press both keep it.
+      // An open dialog or menu holds focus, so an Escape aimed at it is
+      // delivered inside it and dismisses that layer alone. Clearing here as
+      // well would make keyboard cancel the one path that loses the batch,
+      // while Cancel and a backdrop press both keep it.
       const target = event.target instanceof Element ? event.target : null;
-      if (target?.closest(DIALOG_LAYER_SELECTOR)) return;
+      if (target?.closest(OVERLAY_LAYER_SELECTOR)) return;
       clearSelection();
     };
     window.addEventListener("keydown", onKeyDown);
@@ -375,6 +437,7 @@ export function useSidebarListSelection({
         startY: event.clientY,
         lastClientY: event.clientY,
         dragging: false,
+        cancelled: false,
       };
     },
     [itemIds],
@@ -423,6 +486,13 @@ export function useSidebarListSelection({
     [selectedIds],
   );
 
+  // True only for the rows a running batch already owns, so a row's own Delete
+  // cannot issue a second request for something the batch is mid-way through.
+  const isItemPending = useCallback(
+    (id: string) => pendingIds.has(id),
+    [pendingIds],
+  );
+
   return {
     selectedIds,
     selectedCount: selectedIds.size,
@@ -434,5 +504,6 @@ export function useSidebarListSelection({
     handleItemPointerDown,
     handleItemClick,
     isItemSelected,
+    isItemPending,
   };
 }

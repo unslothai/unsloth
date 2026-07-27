@@ -79,15 +79,17 @@ def test_selection_boundary_covers_the_portaled_dialog_overlay():
     assert "data-selection-boundary={selectionBoundary}" in content
 
 
-def test_escape_leaves_a_dismissed_dialog_to_keep_the_batch():
+def test_escape_leaves_a_dismissed_layer_to_keep_the_batch():
     # Escape dismisses the top layer; taking it here as well would make keyboard
     # cancel the one path that loses the batch that Cancel and the backdrop keep.
+    # A row's kebab is a layer too: Radix portals it out of the list and marks it
+    # role="menu", so dismissing a row menu must not cost the batch either.
     hook = _hook()
-    assert 'const DIALOG_LAYER_SELECTOR = \'[role="dialog"], [role="alertdialog"]\';' in hook
+    assert '\'[role="dialog"], [role="alertdialog"], [role="menu"]\';' in hook
     block = _between(hook, "const onKeyDown = (event: KeyboardEvent)", "window.addEventListener")
     assert 'if (event.key !== "Escape") return;' in block
-    assert "if (target?.closest(DIALOG_LAYER_SELECTOR)) return;" in block
-    assert block.index("DIALOG_LAYER_SELECTOR") < block.index("clearSelection();")
+    assert "if (target?.closest(OVERLAY_LAYER_SELECTOR)) return;" in block
+    assert block.index("OVERLAY_LAYER_SELECTOR") < block.index("clearSelection();")
 
 
 def test_keyboard_activation_outside_the_list_clears_the_batch():
@@ -186,8 +188,10 @@ def test_bulk_delete_clears_only_the_batch_it_captured():
     sidebar = _sidebar()
     chats = _between(sidebar, 'if (target.kind === "chats-bulk")', 'if (target.kind === "chat")')
     runs = _between(sidebar, 'if (target.kind === "runs-bulk")', "if (target.run.status ===")
-    assert "chatRecentsSelection.deselectIds(target.items.map((item) => item.id));" in chats
-    assert "runRecentsSelection.deselectIds(target.runs.map((run) => run.id));" in runs
+    assert "const batchIds = target.items.map((item) => item.id);" in chats
+    assert "const batchIds = target.runs.map((run) => run.id);" in runs
+    assert "chatRecentsSelection.deselectIds(batchIds);" in chats
+    assert "runRecentsSelection.deselectIds(batchIds);" in runs
     assert "clearSelection()" not in chats
     assert "clearSelection()" not in runs
 
@@ -235,3 +239,67 @@ def test_bottom_fade_recomputes_when_the_bulk_bar_mounts():
     block = _between(_sidebar(), "// Recompute bottom-fade on mount", "const chatDisabled")
     assert "chatRecentsSelection.selectedCount," in block
     assert "runRecentsSelection.selectedCount," in block
+
+
+def test_navigation_drops_the_batch_whatever_triggered_it():
+    # The command palette navigates straight out of cmdk's own key handling and
+    # never produces a MouseEvent, so no click or pointer listener can see it.
+    # The route is the one signal every way of leaving a chat shares.
+    hook = _hook()
+    assert "routeKey?: string;" in hook
+    block = _between(hook, "const previousRouteKeyRef = useRef(routeKey);", "useEffect(() => {\n    if (selectedIds.size === 0) return;\n    const valid")
+    assert "if (previousRouteKeyRef.current === routeKey) return;" in block
+    assert "previousRouteKeyRef.current = routeKey;" in block
+    # A batch that deletes the open chat redirects by itself; that is the
+    # batch's own doing, not the user navigating away.
+    assert "if (bulkPendingRef.current) return;" in block
+    assert "clearSelection();" in block
+
+    sidebar = _sidebar()
+    # Pathname plus search, so chat-to-chat navigation is visible: only the
+    # ?thread= part of it changes.
+    assert "href: s.location.href," in sidebar
+    assert sidebar.count("routeKey: href,") == 2
+
+
+def test_row_delete_is_locked_only_for_the_rows_a_batch_captured():
+    # Freezing the whole sidebar during a slow batch was deliberately rejected,
+    # so the lock is the batch's own rows and nothing else.
+    hook = _hook()
+    block = _between(hook, "const runBulkAction = useCallback", "// Clearing on the way out")
+    assert "capturedIds?: Iterable<string>," in block
+    assert "const captured = new Set(capturedIds ?? []);" in block
+    # Released on the failure path too, or a throwing batch leaves its rows
+    # permanently undeletable.
+    assert "setPendingIds((prev) => (prev.size === 0 ? prev : new Set()));" in block
+    assert "    isItemPending,\n" in hook
+
+    sidebar = _sidebar()
+    chats = _between(sidebar, 'if (target.kind === "chats-bulk")', 'if (target.kind === "chat")')
+    runs = _between(sidebar, 'if (target.kind === "runs-bulk")', "if (target.run.status ===")
+    assert "}, batchIds);" in chats
+    assert "}, batchIds);" in runs
+    assert "disabled={chatRecentsSelection.isItemPending(item.id)}" in sidebar
+    assert "runRecentsSelection.isItemPending(run.id)" in sidebar
+    # Running runs stay blocked for their own reason as well.
+    assert 'run.status === "running" ||' in sidebar
+
+
+def test_drag_stops_when_the_row_it_started_from_disappears():
+    # A refresh can delete the anchor row or push it out of the limited Recents
+    # window mid-drag. The old numeric index then addresses whichever row slid
+    # into its place, and the next move or auto-scroll tick would rebuild the
+    # range from the wrong item and arm rows the user never touched.
+    hook = _hook()
+    assert "cancelled: boolean;" in hook
+    assert "cancelled: false," in hook
+    block = _between(hook, "const updateDragSelection = useCallback", "if (container) {")
+    assert "if (!drag || drag.cancelled || !listRoot) return;" in block
+    assert "if (drag.anchorId != null && liveAnchor === -1) {" in block
+    assert "drag.cancelled = true;" in block
+    assert "drag.anchorId = null;" in block
+    assert "stopAutoScroll();" in block
+    # The bail happens before any range is applied.
+    assert block.index("drag.cancelled = true;") < block.index("applyRangeSelection")
+    move = _between(hook, "const onPointerMove = (event: PointerEvent)", "const onPointerUp")
+    assert "if (drag.cancelled) return;" in move
