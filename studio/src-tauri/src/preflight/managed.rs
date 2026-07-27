@@ -105,6 +105,42 @@ fn marker_content_hash(path: &Path, metadata: &fs::Metadata) -> Option<u64> {
         .map(|bytes| hash_bytes(FNV64_OFFSET_BASIS, &bytes))
 }
 
+fn site_packages_dirs(venv_dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    #[cfg(unix)]
+    {
+        if let Ok(lib_dir) = fs::read_dir(venv_dir.join("lib")) {
+            for entry in lib_dir.flatten() {
+                out.push(entry.path().join("site-packages"));
+            }
+        }
+    }
+    out.push(venv_dir.join("Lib").join("site-packages"));
+    // read_dir order is unspecified and the hashes below fold in order.
+    out.sort();
+    out
+}
+
+/// Hash of the .dist-info / .egg-info names present, version included.
+///
+/// pip rewrites nothing that is fingerprinted when it uninstalls a package, and
+/// the cached capability now answers studio_install_ok, so a venv that lost a
+/// studio.txt dependency would otherwise keep serving the healthy verdict.
+fn installed_distributions_hash(site_packages: &Path) -> Option<u64> {
+    let mut names: Vec<String> = fs::read_dir(site_packages)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            (name.ends_with(".dist-info") || name.ends_with(".egg-info")).then_some(name)
+        })
+        .collect();
+    names.sort();
+    Some(names.iter().fold(FNV64_OFFSET_BASIS, |hash, name| {
+        hash_bytes(hash, name.as_bytes())
+    }))
+}
+
 fn marker_candidates_for_bin(bin: &Path) -> Vec<PathBuf> {
     let Some(scripts_dir) = bin.parent() else {
         return Vec::new();
@@ -114,34 +150,18 @@ fn marker_candidates_for_bin(bin: &Path) -> Vec<PathBuf> {
     };
     let mut out = Vec::new();
 
-    #[cfg(unix)]
-    {
-        if let Ok(lib_dir) = fs::read_dir(venv_dir.join("lib")) {
-            for entry in lib_dir.flatten() {
-                out.push(
-                    entry
-                        .path()
-                        .join("site-packages")
-                        .join("unsloth_cli")
-                        .join("commands")
-                        .join("studio.py"),
-                );
-            }
-        }
+    for site_packages in site_packages_dirs(venv_dir) {
+        out.push(
+            site_packages
+                .join("unsloth_cli")
+                .join("commands")
+                .join("studio.py"),
+        );
     }
     for marker_name in FALLBACK_MARKER_NAMES {
         out.push(venv_dir.join(marker_name));
         out.push(scripts_dir.join(marker_name));
     }
-
-    out.push(
-        venv_dir
-            .join("Lib")
-            .join("site-packages")
-            .join("unsloth_cli")
-            .join("commands")
-            .join("studio.py"),
-    );
     out
 }
 
@@ -171,7 +191,7 @@ fn managed_bin_fingerprint(bin: &Path) -> Option<ManagedBinFingerprint> {
         })
         .collect();
     marker_entries.sort_by(|left, right| left.path.cmp(&right.path));
-    let marker_hash = marker_entries
+    let mut marker_hash = marker_entries
         .iter()
         .fold(FNV64_OFFSET_BASIS, |hash, marker| {
             let next = hash_bytes(hash, marker.path.as_bytes());
@@ -183,9 +203,20 @@ fn managed_bin_fingerprint(bin: &Path) -> Option<ManagedBinFingerprint> {
                 next
             }
         });
-    let marker_path = (!marker_entries.is_empty()).then(|| "markers".to_string());
-    let marker_size = (!marker_entries.is_empty()).then(|| marker_entries.len() as u64);
-    let marker_mtime_ms = (!marker_entries.is_empty()).then_some(marker_hash);
+    let mut tracked = marker_entries.len();
+    if let Some(venv_dir) = bin.parent().and_then(Path::parent) {
+        for site_packages in site_packages_dirs(venv_dir) {
+            let Some(dist_hash) = installed_distributions_hash(&site_packages) else {
+                continue;
+            };
+            marker_hash = hash_bytes(marker_hash, site_packages.to_string_lossy().as_bytes());
+            marker_hash = hash_bytes(marker_hash, &dist_hash.to_le_bytes());
+            tracked += 1;
+        }
+    }
+    let marker_path = (tracked > 0).then(|| "markers".to_string());
+    let marker_size = (tracked > 0).then_some(tracked as u64);
+    let marker_mtime_ms = (tracked > 0).then_some(marker_hash);
 
     Some(ManagedBinFingerprint {
         bin_path,
@@ -642,6 +673,74 @@ mod tests {
         let without_manifest = managed_bin_fingerprint(&bin).unwrap();
 
         assert_ne!(with_manifest, without_manifest);
+        let _ = fs::remove_dir_all(&venv);
+    }
+
+    fn cache_for(fingerprint: &ManagedBinFingerprint) -> ManagedCapabilityCache {
+        ManagedCapabilityCache {
+            schema: MANAGED_CAPABILITY_CACHE_SCHEMA,
+            bin_path: fingerprint.bin_path.clone(),
+            bin_size: fingerprint.bin_size,
+            bin_mtime_ms: fingerprint.bin_mtime_ms,
+            studio_root_id: fingerprint.studio_root_id.clone(),
+            marker_path: fingerprint.marker_path.clone(),
+            marker_size: fingerprint.marker_size,
+            marker_mtime_ms: fingerprint.marker_mtime_ms,
+            desktop_protocol_version: DESKTOP_PROTOCOL_VERSION,
+            desktop_manageability_version: DESKTOP_MANAGEABILITY_VERSION,
+            capability: healthy_capability(),
+        }
+    }
+
+    #[test]
+    fn losing_a_studio_package_changes_the_fingerprint() {
+        // pip uninstall rewrites no fingerprinted file: the manifest, pyvenv.cfg
+        // and the launcher all survive, and `unsloth -h` still exits 0. The
+        // cached capability now carries studio_install_ok, so without the
+        // installed distributions in the fingerprint a healthy answer is served
+        // forever and the backend is launched without fastmcp.
+        let venv = std::env::temp_dir().join(format!(
+            "unsloth-fingerprint-deps-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&venv);
+        let scripts = venv.join("bin");
+        fs::create_dir_all(&scripts).unwrap();
+        let bin = scripts.join("unsloth");
+        fs::write(&bin, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::write(venv.join("pyvenv.cfg"), "home = /usr/bin\n").unwrap();
+        fs::write(venv.join("unsloth_install_manifest.json"), "{}").unwrap();
+
+        let site_packages = venv.join("lib").join("python3.11").join("site-packages");
+        fs::create_dir_all(site_packages.join("unsloth_cli").join("commands")).unwrap();
+        fs::write(
+            site_packages
+                .join("unsloth_cli")
+                .join("commands")
+                .join("studio.py"),
+            "# cli\n",
+        )
+        .unwrap();
+        let dist_info = site_packages.join("fastmcp-3.0.2.dist-info");
+        fs::create_dir_all(&dist_info).unwrap();
+        fs::write(dist_info.join("METADATA"), "Name: fastmcp\n").unwrap();
+
+        let with_dep = managed_bin_fingerprint(&bin).unwrap();
+        let healthy_cache = cache_for(&with_dep);
+        // read_dir order is unspecified, so an unsorted walk would miss its own
+        // cache every launch and the entry would never be worth writing.
+        assert_eq!(with_dep, managed_bin_fingerprint(&bin).unwrap());
+        assert!(cache_matches(&healthy_cache, &with_dep));
+
+        fs::remove_dir_all(&dist_info).unwrap();
+        let without_dep = managed_bin_fingerprint(&bin).unwrap();
+
+        assert_ne!(with_dep, without_dep);
+        assert!(
+            !cache_matches(&healthy_cache, &without_dep),
+            "a removed studio package must not keep serving the cached Ready answer"
+        );
         let _ = fs::remove_dir_all(&venv);
     }
 }

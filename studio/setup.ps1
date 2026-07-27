@@ -3030,6 +3030,29 @@ if ($script:PinChangedForceReinstall) { $SkipPythonDeps = $false }
 
 if (-not $SkipPythonDeps) {
 
+# install_python_stack.py drops the manifest before its own dependency pass, but
+# pip, torch and triton below are replaced first, so it is not the first mutation
+# here. Drop it now: a run killed during those must leave the venv marked
+# half-built, not behind a marker that still verifies as a finished install.
+$_ManifestDropped = $true
+try {
+    & python -c "
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+except Exception:
+    sys.exit(0)  # older tree without the manifest helper
+sys.exit(0 if install_manifest.remove_manifest() else 1)
+" "$PSScriptRoot" 2>$null
+    if ($LASTEXITCODE -ne 0) { $_ManifestDropped = $false }
+} catch { $_ManifestDropped = $false }
+if (-not $_ManifestDropped) {
+    Write-Host "[ERROR] Could not remove the stale unsloth_install_manifest.json." -ForegroundColor Red
+    Write-Host "        Refusing to install behind a marker that still reports this venv as complete." -ForegroundColor Red
+    exit 1
+}
+
 if ($script:UnslothVerbose) {
     Fast-Install --upgrade pip
 } else {

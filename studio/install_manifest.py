@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import sys
 import time
 from pathlib import Path
@@ -78,7 +79,17 @@ def requirement_digests(req_root: Optional[Path] = None) -> Dict[str, str]:
     return digests
 
 
-def _installed_version(dist_name: str) -> Optional[str]:
+def _canonical(name: str) -> str:
+    """PEP 503 normalisation, so PyJWT / pyjwt / py_jwt compare equal."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _installed_version(
+    dist_name: str,
+    installed: Optional[Dict[str, str]] = None,
+) -> Optional[str]:
+    if installed is not None:
+        return installed.get(_canonical(dist_name))
     from importlib.metadata import PackageNotFoundError, version
     try:
         return version(dist_name)
@@ -182,13 +193,19 @@ def _marker_applies(marker: str) -> bool:
         return True
 
 
-def missing_requirements(req_file: Optional[Path] = None) -> List[str]:
+def missing_requirements(
+    req_file: Optional[Path] = None,
+    installed: Optional[Dict[str, str]] = None,
+) -> List[str]:
     """Distribution names from a requirements file that are not installed.
 
     Presence only, never specifiers: later steps deliberately move some pins, so
     a mismatch is normal. Checked via importlib.metadata, not import names,
     because studio.txt lists PyJWT / python-docx / pymupdf whose import names
     (jwt, docx, fitz) differ.
+
+    `installed` (canonical distribution name -> version) checks a venv other
+    than the one running this code, which importlib.metadata cannot see.
     """
     from importlib.metadata import PackageNotFoundError, distribution
 
@@ -206,6 +223,10 @@ def missing_requirements(req_file: Optional[Path] = None) -> List[str]:
         name, marker = parsed
         if not _marker_applies(marker):
             continue
+        if installed is not None:
+            if _canonical(name) not in installed:
+                missing.append(name)
+            continue
         try:
             distribution(name)
         except PackageNotFoundError:
@@ -219,14 +240,19 @@ def verify_install(
     root: Optional[Path] = None,
     req_root: Optional[Path] = None,
     package_name: str = "unsloth",
+    installed: Optional[Dict[str, str]] = None,
 ) -> dict:
     """Report whether the managed install finished and can still boot.
 
     Reason strings are surfaced verbatim by the desktop preflight as its
     staleness reason, so keep them stable.
+
+    Pass `installed` (and the matching `root` / `req_root`) to describe a venv
+    other than this interpreter's; without it the version and dependency checks
+    would answer for the venv the caller happens to be running in.
     """
     reqs = req_root or requirements_root()
-    missing = missing_requirements(reqs / BOOT_REQUIREMENT_FILE)
+    missing = missing_requirements(reqs / BOOT_REQUIREMENT_FILE, installed = installed)
     deps_ok = not missing
 
     manifest = read_manifest(root)
@@ -240,9 +266,9 @@ def verify_install(
     else:
         # The manifest names what was installed: `update --package X` records X,
         # so comparing against unsloth would report a permanent version change.
-        installed = _installed_version(manifest.get("package") or package_name)
+        current = _installed_version(manifest.get("package") or package_name, installed)
         recorded = manifest.get("package_version")
-        if installed and recorded and installed != recorded:
+        if current and recorded and current != recorded:
             reason = "studio_install_version_changed"
         elif manifest.get("requirement_files") != requirement_digests(reqs):
             reason = "studio_install_requirements_changed"

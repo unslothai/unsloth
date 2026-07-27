@@ -52,6 +52,42 @@ def test_guard_can_still_force_the_dependency_pass(script: pathlib.Path):
     )
 
 
+def test_ps1_drops_the_manifest_before_its_first_install():
+    """Nothing may mutate the venv while the marker still says "install finished".
+
+    install_python_stack.py drops it before its own dependency pass, which is
+    enough for setup.sh: the stack is the first thing that pass runs. setup.ps1
+    replaces pip, torch and triton first, so a run killed there would leave a
+    manifest that still verifies and a venv with half a PyTorch.
+    """
+    text = SETUP_PS1.read_text(encoding = "utf-8")
+    pass_start = text.index("if (-not $SkipPythonDeps) {")
+    removal = text.find("remove_manifest", pass_start)
+    first_install = text.index("Fast-Install", pass_start)
+    stack = text.index(r'python "$PSScriptRoot\install_python_stack.py"', pass_start)
+
+    assert removal != -1, (
+        "setup.ps1 never drops the install manifest; install_python_stack.py "
+        "only does so after setup.ps1 has already replaced pip and torch"
+    )
+    assert removal < first_install < stack, (
+        "setup.ps1 must invalidate the install manifest before its first "
+        "Fast-Install, not leave it to install_python_stack.py"
+    )
+
+
+def test_sh_dependency_pass_mutates_nothing_before_the_stack():
+    """setup.sh relies on install_python_stack.py dropping the marker, which only
+    holds while the stack is the first thing its dependency pass runs."""
+    text = SETUP_SH.read_text(encoding = "utf-8")
+    pass_start = text.index('if [ "$_SKIP_PYTHON_DEPS" = false ]')
+    body = text[pass_start : text.index("install_python_stack", pass_start)]
+    assert "fast_install" not in body and "pip install" not in body, (
+        "setup.sh installs something before install_python_stack.py drops the "
+        "manifest, so an interrupted run would keep a marker that verifies"
+    )
+
+
 def test_sh_guard_runs_before_the_skip_decision():
     text = SETUP_SH.read_text(encoding = "utf-8")
     guard = text.find("studio install incomplete")
