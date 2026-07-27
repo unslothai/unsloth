@@ -219,7 +219,7 @@ class TestUploadDenylist:
         )
 
     def test_plain_post_json_not_blocked(self):
-        _ok("import requests\n" 'requests.post("https://api.weather.gov/lookup", json={"k": "v"})')
+        _ok('import requests\nrequests.post("https://api.weather.gov/lookup", json={"k": "v"})')
 
 
 class TestSandboxEnvIsolation:
@@ -693,6 +693,51 @@ class TestBashBlocklistPosition:
     def test_while_do_blocked(self):
         assert "curl" in self._find()("while true; do curl --version; break; done")
 
+    # ---- `.` is the POSIX synonym for the blocked `source` builtin ----
+    def test_dot_source_blocked(self):
+        assert "." in self._find()(". ./script.sh")
+        assert "." in self._find()("cat x && . ./payload")
+
+    def test_dot_in_argument_position_allowed(self):
+        assert self._find()("find . -type f") == set()
+        assert self._find()("ls .") == set()
+        assert self._find()("cd .") == set()
+
+    # ---- ANSI-C quoting must not hide a blocked command name ----
+    def test_ansi_c_quoted_command_blocked(self):
+        assert "ssh" in self._find()("$'ssh' user@host")
+        assert "source" in self._find()("$'source' ./payload")
+
+    def test_ansi_c_data_with_newline_is_not_a_command(self):
+        # $'...' expands to a single word, so a newline inside it is data for
+        # printf, not a separator that starts a second command.
+        payload = "printf '%s' $'hello\\n" + "rm" + " -rf x\\n'"
+        assert self._find()(payload) == set()
+
+    def test_command_position_glob_matches_blocked_name(self):
+        # Bash expands the pattern to the blocked name after this scan runs.
+        assert "rm" in self._find()("/bin/r[m] -rf /tmp/victim")
+        assert "rm" in self._find()("/bin/r? -rf /tmp/victim")
+
+    def test_glob_without_literal_character_allowed(self):
+        # A bracket expression in argument position is not a command word.
+        assert self._find()("echo '[a]'") == set()
+
+    def test_attached_exec_flag_value_blocked(self):
+        # fd accepts the command attached to the flag, so the value is what runs.
+        assert "rm" in self._find()("fd victim . --exec=rm")
+        assert "rm" in self._find()("fd victim . --exec-batch=rm")
+
+    def test_short_flag_neighbour_not_read_as_command(self):
+        # Only the long spellings carry an attached command; -x belongs to too
+        # many other utilities to read its neighbour as one.
+        assert self._find()("grep -x rm file.txt") == set()
+
+    def test_alias_body_scanned_as_command(self):
+        # `alias zap='rm -rf'` stores a command bash runs when zap is invoked.
+        assert "rm" in self._find()("alias zap='rm -rf'")
+        assert self._find()("alias ll='ls -la'") == set()
+
 
 class TestHfUploadImportGate:
     """Upload-method blocking requires an HF import in scope, so paramiko /
@@ -737,15 +782,11 @@ class TestHfUploadImportGate:
 
     def test_hf_bare_name_upload_folder_safe_allowed(self):
         _ok(
-            "from huggingface_hub import upload_folder;"
-            " upload_folder(folder_path='x', repo_id='r')"
+            "from huggingface_hub import upload_folder; upload_folder(folder_path='x', repo_id='r')"
         )
 
     def test_hf_bare_name_create_commit_safe_allowed(self):
-        _ok(
-            "from huggingface_hub import create_commit;"
-            " create_commit(operations=[], repo_id='r')"
-        )
+        _ok("from huggingface_hub import create_commit; create_commit(operations=[], repo_id='r')")
 
     def test_bare_name_upload_file_without_hf_import_allowed(self):
         # No HF import -- local helper named upload_file passes.

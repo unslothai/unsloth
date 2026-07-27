@@ -126,6 +126,185 @@ def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_pa
     assert row.active_cache is False
 
 
+def test_list_cached_gguf_reports_snapshot_load_id_for_inactive_cache(monkeypatch, tmp_path):
+    """Only a repo outside the active cache needs a snapshot load_id."""
+    active = tmp_path / "active"
+    snapshot = tmp_path / "legacy" / "models--Org--Away" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "Q4_K_M.gguf").write_bytes(b"\0")
+    away = _repo(
+        "Org/Away",
+        [],
+        tmp_path / "legacy" / "models--Org--Away",
+        revisions = [
+            SimpleNamespace(files = [_file("Q4_K_M.gguf", 5_000)], snapshot_path = snapshot),
+        ],
+    )
+    here = _repo("Org/Here", [_file("Q4_K_M.gguf", 6_000)], active / "models--Org--Here")
+
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [away, here])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = {
+        c["repo_id"]: c
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+    }
+
+    assert rows["Org/Away"]["load_id"] == str(snapshot)
+    assert "load_id" not in rows["Org/Here"]
+
+
+def test_list_cached_gguf_load_id_follows_snapshot_dir_mtime(monkeypatch, tmp_path):
+    """Pick the snapshot variant discovery reads: newest directory, not newest blob."""
+    import os
+
+    active = tmp_path / "active"
+    repo_dir = tmp_path / "legacy" / "models--Org--Multi"
+    older, newer = repo_dir / "snapshots" / "rev-a", repo_dir / "snapshots" / "rev-b"
+    for path in (older, newer):
+        path.mkdir(parents = True)
+    (older / "Q4_K_M.gguf").write_bytes(b"\0")
+    (newer / "Q8_0.gguf").write_bytes(b"\0")
+    os.utime(older, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    repo = _repo(
+        "Org/Multi",
+        [],
+        repo_dir,
+        revisions = [
+            # The older directory holds the newer blob, which is what diverges.
+            SimpleNamespace(
+                files = [_file("Q4_K_M.gguf", 5_000, blob_path = "b1")], snapshot_path = older
+            ),
+            SimpleNamespace(files = [_file("Q8_0.gguf", 6_000, blob_path = "b2")], snapshot_path = newer),
+        ],
+    )
+
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+    monkeypatch.setattr(
+        models_route, "_blob_mtime", lambda f: 9_000 if f.blob_path == "b1" else 1.0
+    )
+
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+
+    assert rows[0]["load_id"] == str(newer)
+
+
+def test_list_cached_gguf_load_id_skips_partial_split_snapshot(monkeypatch, tmp_path):
+    """A half-downloaded split quant must not beat an older snapshot that can load."""
+    import os
+
+    active = tmp_path / "active"
+    repo_dir = tmp_path / "legacy" / "models--Org--Split"
+    older, newer = repo_dir / "snapshots" / "rev-a", repo_dir / "snapshots" / "rev-b"
+    for path in (older, newer):
+        path.mkdir(parents = True)
+    (older / "Model-Q8_0.gguf").write_bytes(b"\0")
+    # Only part 1 of 3 landed before the download was interrupted.
+    (newer / "Model-Q4_K_M-00001-of-00003.gguf").write_bytes(b"\0")
+    os.utime(older, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    repo = _repo(
+        "Org/Split",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(files = [_file("Model-Q8_0.gguf", 5_000)], snapshot_path = older),
+            SimpleNamespace(
+                files = [_file("Model-Q4_K_M-00001-of-00003.gguf", 6_000)], snapshot_path = newer
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+
+    assert rows[0]["load_id"] == str(older)
+
+
+def test_list_cached_gguf_omits_load_id_when_no_snapshot_is_complete(monkeypatch, tmp_path):
+    """With only a half-downloaded split quant, fall back to the repo id, not a path."""
+    active = tmp_path / "active"
+    repo_dir = tmp_path / "legacy" / "models--Org--Torn"
+    snapshot = repo_dir / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "Model-Q4_K_M-00001-of-00003.gguf").write_bytes(b"\0")
+
+    repo = _repo(
+        "Org/Torn",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(
+                files = [_file("Model-Q4_K_M-00001-of-00003.gguf", 6_000)], snapshot_path = snapshot
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+
+    assert "load_id" not in rows[0]
+
+
+def test_list_cached_gguf_skips_snapshot_with_one_incomplete_variant(monkeypatch, tmp_path):
+    """A good quant beside a half-downloaded one is still not a safe load target."""
+    import os
+
+    active = tmp_path / "active"
+    repo_dir = tmp_path / "legacy" / "models--Org--Mixed"
+    older, newer = repo_dir / "snapshots" / "rev-a", repo_dir / "snapshots" / "rev-b"
+    for path in (older, newer):
+        path.mkdir(parents = True)
+    (older / "Model-Q8_0.gguf").write_bytes(b"\0")
+    # rev-b has a complete Q8_0 AND a half-downloaded split Q4_K_M. The picker
+    # enumerates the whole directory, so it would offer the broken one.
+    (newer / "Model-Q8_0.gguf").write_bytes(b"\0")
+    (newer / "Model-Q4_K_M-00001-of-00003.gguf").write_bytes(b"\0")
+    os.utime(older, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    repo = _repo(
+        "Org/Mixed",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(files = [_file("Model-Q8_0.gguf", 5_000)], snapshot_path = older),
+            SimpleNamespace(
+                files = [
+                    _file("Model-Q8_0.gguf", 5_000),
+                    _file("Model-Q4_K_M-00001-of-00003.gguf", 6_000),
+                ],
+                snapshot_path = newer,
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+
+    assert rows[0]["load_id"] == str(older)
+
+
 def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(monkeypatch, tmp_path):
     repo = _repo(
         "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",

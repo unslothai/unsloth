@@ -89,6 +89,7 @@ import {
 import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
   generateAudio,
+  GenerationLengthError,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
@@ -3171,12 +3172,15 @@ export function createOpenAIStreamAdapter(
             // Permission level for local tool calls is sent for every local
             // chat, not only when a tool pill is on: a process policy
             // (unsloth run --enable-tools) can open the tool loop with no pill,
-            // and the backend must still see the selected gate. ask/auto request
-            // the confirm gate ("auto" only pauses calls flagged unsafe); off
-            // and full never prompt, full also drops the sandbox.
+            // and the backend must still see the selected gate. "auto" OMITS
+            // confirm_tool_calls: an explicit true would make the backend treat
+            // every auto request as needing a stream and defeat the safe-only
+            // no-stream exception. "ask" sends true; off/full send false (full
+            // also drops the sandbox).
             permission_mode: permissionMode,
-            confirm_tool_calls:
-              permissionMode === "ask" || permissionMode === "auto",
+            ...(permissionMode === "auto"
+              ? {}
+              : { confirm_tool_calls: permissionMode === "ask" }),
             bypass_permissions: bypassPermissions,
             ...(supportsTools &&
             (toolsEnabled ||
@@ -4093,7 +4097,15 @@ export function createOpenAIStreamAdapter(
         );
         if (!abortSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (err instanceof StreamInterruptedError) {
+          if (err instanceof GenerationLengthError) {
+            toast.error("Response ran out of tokens", {
+              description:
+                "The model used the full Max Tokens budget while thinking " +
+                "and did not produce a final answer. Increase Max Tokens in " +
+                "chat Settings or turn off thinking, then retry.",
+              duration: 8000,
+            });
+          } else if (err instanceof StreamInterruptedError) {
             // Connection dropped mid-turn: surface it explicitly (the rethrow
             // below also marks the message with an inline error + Retry).
             toast.error("Response interrupted", {
