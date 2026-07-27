@@ -885,8 +885,9 @@ def test_subagent_model_id_warns_when_status_unavailable(monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("agent", ["openclaw", "hermes"])
-def test_unsupported_agents_reject_as_subagent(agent):
-    result = CliRunner().invoke(start.start_app, [agent, "--as-subagent"])
+@pytest.mark.parametrize("flag", ["--as-subagent", "--as-subagent=true", "--as-subagent=false"])
+def test_unsupported_agents_reject_as_subagent(agent, flag):
+    result = CliRunner().invoke(start.start_app, [agent, flag])
     assert result.exit_code == 1
     assert f"--as-subagent is not supported for {agent}." in result.output
 
@@ -1294,6 +1295,66 @@ def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch, cap
     assert any(c[1].endswith("/api/inference/load") for c in calls)
     output = capsys.readouterr().out
     assert "please wait" not in output
+
+
+def test_resolve_model_matches_snapshot_path_by_public_id(monkeypatch):
+    """A GGUF loaded by snapshot path is advertised by its basename, not the path."""
+    snapshot = "/home/u/.cache/legacy/models--Org--Model/snapshots/abc123"
+    state = {"loaded": False}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/v1/models"):
+            return {"data": [{"id": "abc123"}] if state["loaded"] else []}
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            # The load echoes the path it was given, which /v1/models never lists.
+            return {"model": snapshot, "display_name": snapshot}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", snapshot, start.LoadOptions())
+
+    assert entry["id"] == "abc123"
+
+
+def test_subagent_model_id_warns_when_a_path_load_cannot_pin_the_quant(capsys):
+    """A path is advertised as a bare basename, so the quant cannot be recorded."""
+    model_id = start._subagent_model_id(BASE, "sk-test", {"id": "abc123"}, None, "UD-Q4_K_XL")
+
+    assert model_id == "abc123"
+    assert "cannot pin the UD-Q4_K_XL quant" in capsys.readouterr().err
+
+
+def test_subagent_model_id_pins_the_quant_for_repo_ids(capsys):
+    model_id = start._subagent_model_id(
+        BASE, "sk-test", {"id": "unsloth/gemma-4-E4B-it-GGUF"}, None, "UD-Q4_K_XL"
+    )
+
+    assert model_id == "unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL"
+    assert capsys.readouterr().err == ""
+
+
+def test_public_model_id_leaves_repo_ids_alone():
+    """Only a path gets reduced; a repo id must not match some unrelated model.
+
+    Relative and multi-segment paths are covered too: _looks_like_path is defined
+    twice in this module (the WSLENV one wins), so this must use its own classifier.
+    """
+    assert start._public_model_id("unsloth/gemma-4-E4B-it-GGUF") is None
+    assert start._public_model_id("org/model") is None
+    assert start._public_model_id("/srv/models/Qwen3-Q4_K_M.gguf") == "Qwen3-Q4_K_M"
+    assert start._public_model_id("/a/b/snapshots/rev1") == "rev1"
+    assert start._public_model_id("./models/foo") == "foo"
+    assert start._public_model_id("cache/snapshots/rev") == "rev"
+    assert start._public_model_id("a/b/c") == "c"
 
 
 def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
@@ -3296,9 +3357,13 @@ def test_write_opencode_config_as_subagent_preserves_parent_model(tmp_path):
 
 def test_opencode_subagent_inline_keeps_parent_provider_filters(monkeypatch, tmp_path):
     config_path = tmp_path / "opencode.json"
-    inherited = {"theme": "tokyonight"}
+    inherited = {
+        "theme": "tokyonight",
+        "enabled_providers": ["anthropic"],
+    }
     monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", json.dumps(inherited))
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: "/usr/bin/opencode")
+    monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: None)
     captured = {}
 
     def run(command, **kwargs):
@@ -3324,7 +3389,11 @@ def test_opencode_subagent_inline_keeps_parent_provider_filters(monkeypatch, tmp
     assert captured["env"]["OPENCODE_CONFIG"] == str(config_path)
     assert inline == {
         "theme": "tokyonight",
-        "enabled_providers": ["opencode-go", start._OPENCODE_PROVIDER],
+        "enabled_providers": [
+            "anthropic",
+            "opencode-go",
+            start._OPENCODE_PROVIDER,
+        ],
         "disabled_providers": ["ollama"],
         "subagent_depth": 1,
         "permission": permission,
@@ -3721,21 +3790,26 @@ def test_connect_pi_no_launch(fake_studio, tmp_path):
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
 
 
-def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
+@pytest.mark.parametrize("yolo", [False, True])
+def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, yolo):
+    args = [
+        "pi",
+        "--as-subagent",
+        "--no-launch",
+        "--model",
+        MODEL["id"] + ":UD-Q4_K_XL",
+    ]
+    if yolo:
+        args.insert(2, "--yolo")
     result = CliRunner().invoke(
         start.start_app,
-        [
-            "pi",
-            "--as-subagent",
-            "--no-launch",
-            "--model",
-            MODEL["id"] + ":UD-Q4_K_XL",
-        ],
+        args,
     )
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
     assert command[:2] == ["pi", "--extension"]
     assert command[2].endswith("unsloth_cli/pi_subagent.ts")
+    assert ("--approve" in command) is yolo
     assert "--provider" not in command
     assert "--model" not in command
     assert "PI_CODING_AGENT_DIR" not in result.output
@@ -3750,6 +3824,7 @@ def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
         "model": MODEL["id"] + ":UD-Q4_K_XL",
         "contextWindow": 4096,
         "maxTokens": 1024,
+        "approve": yolo,
     }
     assert "Ask Pi to spawn an Unsloth or local agent." in result.output
 
