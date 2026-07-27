@@ -36,7 +36,12 @@ def _torch(*, cuda = False, xpu = False):
     )
 
 
-def _modules(monkeypatch, *, torch = None, unsloth = False):
+def _modules(
+    monkeypatch,
+    *,
+    torch = None,
+    unsloth = False,
+):
     """Stub sys.modules so the gate sees a chosen torch / unsloth state."""
     mods = dict(sys.modules)
     mods.pop("unsloth", None)
