@@ -323,6 +323,13 @@ export async function refreshContextUsage(options?: {
     });
     const inputTokens = result.input_tokens;
 
+    // The endpoint counts against whatever is loaded at the moment it runs, so a
+    // model switch by another API client after our last status refresh is
+    // invisible to the checkpoint guards below -- they only see that our own
+    // store is unchanged. When the backend names the tokenizer it used, require
+    // it to be ours. Older backends omit the field; keep counting for them.
+    if (result.model != null && result.model !== capturedCheckpoint) return;
+
     if (generation !== refreshGeneration) return;
     if (useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint) {
       return;

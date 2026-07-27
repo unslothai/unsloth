@@ -315,6 +315,27 @@ async function syncInferenceStatusToStore(options?: {
         // setModels(listRes...) above used catalog data, which omits audio
         // capability. Re-apply live status so attach gates survive a refresh.
         syncModelCapabilities(checkpointId, statusRes);
+
+        // Studio starting against an already-resident GGUF: the thread history
+        // can load before this first status refresh has a checkpoint or a
+        // window, and that load's recount condition needs both, so it takes the
+        // saved-usage branch and finds nothing to restore. Nothing reloads
+        // history afterwards, so the bar stays blank until the thread is
+        // reopened. Recount here the first time a status refresh discovers a
+        // loaded local model, and only into a blank bar for a thread that is
+        // already mounted -- a populated bar is either a completion's exact
+        // usage or a recount that already ran, and a null thread would count an
+        // empty conversation and publish it as this thread's usage.
+        const hydrated = useChatRuntimeStore.getState();
+        if (
+          !selectedCheckpoint &&
+          hydrated.contextUsage == null &&
+          hydrated.activeThreadId != null &&
+          hydrated.ggufContextLength != null &&
+          !isExternalModelId(checkpointId)
+        ) {
+          void refreshContextUsage({ threadId: hydrated.activeThreadId });
+        }
       }
     } else if (!statusRes.active_model && !isExternalSelectionActive) {
       useChatRuntimeStore.setState({

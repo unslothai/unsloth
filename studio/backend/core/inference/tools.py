@@ -3582,6 +3582,26 @@ def _last_user_text(conversation: list[dict]) -> str:
     return ""
 
 
+def rag_autoinject_permitted(rag_scope: dict | None) -> bool:
+    """Whether ``build_rag_autoinject`` would attempt a retrieval for this scope.
+
+    The cheap half of that function's entry gate: no embedding, no vector search,
+    no document read. Callers that must know whether a generation would splice in
+    retrieved passages -- without paying for the retrieval -- use this, so the
+    answer stays defined in one place.
+    """
+    if not rag_scope:
+        return False
+    enabled = rag_scope.get("autoinject")
+    if enabled is None:
+        enabled = _autoinject_enabled()
+    thread_id = rag_scope.get("thread_id")
+    whole_doc_requested = (
+        bool(thread_id) and not rag_scope.get("kb_id") and _thread_whole_doc_enabled(rag_scope)
+    )
+    return bool(enabled or whole_doc_requested)
+
+
 def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     """Pre-retrieve the latest user turn; if a hit clears the cosine floor return
     ``{"events": [...], "messages": [...]}`` to splice into the loop, else ``None``.
@@ -3591,7 +3611,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     Also the small-model fallback: models below ~4B often answer from memory
     instead of calling ``search_knowledge_base``, so forcing retrieval here keeps
     attachments consulted regardless of model size."""
-    if not rag_scope:
+    if not rag_autoinject_permitted(rag_scope):
         return None
     enabled = rag_scope.get("autoinject")
     if enabled is None:
@@ -3600,8 +3620,6 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     whole_doc_requested = (
         bool(thread_id) and not rag_scope.get("kb_id") and _thread_whole_doc_enabled(rag_scope)
     )
-    if not enabled and not whole_doc_requested:
-        return None
     query = _last_user_text(conversation)
     if not query:
         return None

@@ -289,9 +289,9 @@ def test_openai_compat_routes_bound_to_handlers_with_auth():
     for key, handler in expected.items():
         assert key in seen, f"route {key} is not registered"
         route = seen[key]
-        assert (
-            route.endpoint.__name__ == handler
-        ), f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        assert route.endpoint.__name__ == handler, (
+            f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        )
         deps = [d.call.__name__ for d in route.dependant.dependencies]
         assert "get_current_subject" in deps, f"{key} lost its auth dependency"
 
@@ -3034,7 +3034,7 @@ def test_chat_count_tokens_returns_input_tokens(monkeypatch):
     response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
     import json
 
-    assert json.loads(response.body) == {"input_tokens": 42}
+    assert json.loads(response.body) == {"input_tokens": 42, "model": "org/A-GGUF"}
 
 
 def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
@@ -3076,7 +3076,7 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
     response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
     import json
 
-    assert json.loads(response.body) == {"input_tokens": 99}
+    assert json.loads(response.body) == {"input_tokens": 99, "model": "org/A-GGUF"}
     assert captured["tools_on"] is True
     assert captured["tools"][0]["function"]["name"] == "web_search"
     assert any(
@@ -3152,7 +3152,7 @@ def test_chat_count_tokens_still_counts_text_only_messages(monkeypatch):
     response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
     import json
 
-    assert json.loads(response.body) == {"input_tokens": 7}
+    assert json.loads(response.body) == {"input_tokens": 7, "model": "org/A-GGUF"}
 
 
 def test_chat_count_tokens_strips_stale_tool_xml_from_history(monkeypatch):
@@ -3317,8 +3317,259 @@ def test_chat_count_tokens_never_switches_the_loaded_model(monkeypatch):
     response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
     import json
 
-    assert json.loads(response.body) == {"input_tokens": 5}
+    assert json.loads(response.body) == {"input_tokens": 5, "model": "org/B-GGUF"}
     assert switched["called"] is False
+
+
+# ── codex review (round 10): RAG auto-injection, tokenizer identity ──
+
+
+def _count_tokens_backend(
+    monkeypatch,
+    loaded_id,
+    count = 10,
+):
+    """Loaded GGUF backend wired into the count endpoint, with auto-switch off."""
+    backend = _FakeBackend(loaded_id)
+    backend.supports_tools = True
+    backend.count_chat_tokens = lambda *a, **k: count
+
+    async def _noop(*a, **k):
+        return None
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop)
+    return backend
+
+
+def _rag_tools(monkeypatch, names = ("search_knowledge_base",)):
+    async def _select_tools(payload, *, tools_on, mcp_allowed):
+        return [{"type": "function", "function": {"name": n}} for n in names]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select_tools)
+
+
+def test_chat_count_tokens_declines_pending_turn_that_would_retrieve(monkeypatch):
+    # Codex P2: with RAG auto-injection permitted, the next generation for a
+    # thread ending in an unanswered user turn splices in the retrieved passages
+    # before rendering. Counting without them can say the pending turn fits when
+    # it does not, so decline rather than publish the undercount.
+    import pytest as _pytest
+    from fastapi import HTTPException
+
+    import json
+
+    from models.inference import ChatCountTokensRequest, ChatMessage
+
+    _count_tokens_backend(monkeypatch, "org/A-GGUF")
+    _rag_tools(monkeypatch)
+    payload = ChatCountTokensRequest(
+        model = "org/A-GGUF",
+        messages = [ChatMessage(role = "user", content = "what does the dossier say?")],
+        enable_tools = True,
+        enabled_tools = ["search_knowledge_base"],
+        rag_scope = {"thread_id": "t1", "autoinject": True},
+    )
+    with _pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+    assert "retrieve documents" in str(excinfo.value.detail)
+
+
+def test_chat_count_tokens_counts_answered_thread_with_rag(monkeypatch):
+    # Negative control: the same RAG-enabled thread ending in an assistant turn
+    # still counts. The next generation there retrieves against a user message
+    # that does not exist yet, which no count could predict, so declining would
+    # blank the bar for the ordinary case.
+    import json
+
+    from models.inference import ChatCountTokensRequest, ChatMessage
+
+    _count_tokens_backend(monkeypatch, "org/A-GGUF", count = 11)
+    _rag_tools(monkeypatch)
+    payload = ChatCountTokensRequest(
+        model = "org/A-GGUF",
+        messages = [
+            ChatMessage(role = "user", content = "what does the dossier say?"),
+            ChatMessage(role = "assistant", content = "it says hello"),
+        ],
+        enable_tools = True,
+        enabled_tools = ["search_knowledge_base"],
+        rag_scope = {"thread_id": "t1", "autoinject": True},
+    )
+    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert json.loads(response.body)["input_tokens"] == 11
+
+
+def test_chat_count_tokens_declines_pending_tool_result(monkeypatch):
+    # Same divergence one shape over: a loop interrupted after the tool ran
+    # leaves a trailing tool result, and resuming it re-runs the auto-injection.
+    import pytest as _pytest
+    from fastapi import HTTPException
+
+    from models.inference import ChatCountTokensRequest, ChatMessage
+
+    _count_tokens_backend(monkeypatch, "org/A-GGUF")
+    _rag_tools(monkeypatch)
+    payload = ChatCountTokensRequest(
+        model = "org/A-GGUF",
+        messages = [
+            ChatMessage(role = "user", content = "what does the dossier say?"),
+            ChatMessage(role = "assistant", content = "looking"),
+            ChatMessage(role = "tool", content = "chunk", tool_call_id = "c1"),
+        ],
+        enable_tools = True,
+        enabled_tools = ["search_knowledge_base"],
+        rag_scope = {"thread_id": "t1", "autoinject": True},
+    )
+    with _pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+
+
+def test_chat_count_tokens_counts_pending_turn_when_autoinject_off(monkeypatch):
+    # Negative control: auto-injection turned off in the scope injects nothing,
+    # so a pending user turn is fully countable. Mirrors build_rag_autoinject's
+    # own gate via the shared rag_autoinject_permitted predicate.
+    import json
+
+    from models.inference import ChatCountTokensRequest, ChatMessage
+
+    _count_tokens_backend(monkeypatch, "org/A-GGUF", count = 12)
+    _rag_tools(monkeypatch)
+    payload = ChatCountTokensRequest(
+        model = "org/A-GGUF",
+        messages = [ChatMessage(role = "user", content = "what does the dossier say?")],
+        enable_tools = True,
+        enabled_tools = ["search_knowledge_base"],
+        rag_scope = {"thread_id": "t1", "autoinject": False, "whole_doc": False},
+    )
+    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert json.loads(response.body)["input_tokens"] == 12
+
+
+def test_chat_count_tokens_counts_pending_turn_without_rag_tool(monkeypatch):
+    # Negative control: no search_knowledge_base in the selected tools means no
+    # retrieval scope, so a pending user turn counts as before.
+    import json
+
+    from models.inference import ChatCountTokensRequest, ChatMessage
+
+    _count_tokens_backend(monkeypatch, "org/A-GGUF", count = 13)
+    _rag_tools(monkeypatch, names = ("web_search",))
+    payload = ChatCountTokensRequest(
+        model = "org/A-GGUF",
+        messages = [ChatMessage(role = "user", content = "hello")],
+        enable_tools = True,
+        enabled_tools = ["web_search"],
+    )
+    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert json.loads(response.body)["input_tokens"] == 13
+
+
+def test_rag_autoinject_permitted_matches_build_rag_autoinject_gate(monkeypatch):
+    # The decline gate must not drift from the retrieval it is standing in for.
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "_thread_whole_doc_enabled", lambda scope: True)
+    assert tools_mod.rag_autoinject_permitted(None) is False
+    assert tools_mod.rag_autoinject_permitted({}) is False
+    assert tools_mod.rag_autoinject_permitted({"autoinject": True}) is True
+    # Whole-document mode is its own reason to inject even with autoinject off.
+    assert tools_mod.rag_autoinject_permitted({"autoinject": False, "thread_id": "t1"}) is True
+    assert (
+        tools_mod.rag_autoinject_permitted({"autoinject": False, "thread_id": "t1", "kb_id": "k1"})
+        is False
+    )
+    monkeypatch.setattr(tools_mod, "_thread_whole_doc_enabled", lambda scope: False)
+    assert tools_mod.rag_autoinject_permitted({"autoinject": False, "thread_id": "t1"}) is False
+    # A scope whose gate is closed must also stop build_rag_autoinject.
+    assert (
+        tools_mod.build_rag_autoinject(
+            [{"role": "user", "content": "hi"}],
+            {"autoinject": False, "thread_id": "t1"},
+        )
+        is None
+    )
+
+
+def test_chat_count_tokens_reports_the_tokenizer_that_counted(monkeypatch):
+    # Codex P2: another API client can auto-switch the single backend after the
+    # caller's last status refresh, and this endpoint deliberately counts what is
+    # loaded now. Name it, in the same shape /api/inference/status publishes, so
+    # the caller can discard a count that is not its model.
+    import json
+
+    from models.inference import ChatCountTokensRequest, ChatMessage
+
+    _count_tokens_backend(monkeypatch, "org/B-GGUF", count = 77)
+    payload = ChatCountTokensRequest(
+        model = "org/A-GGUF",
+        messages = [ChatMessage(role = "user", content = "hello")],
+    )
+    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert json.loads(response.body) == {"input_tokens": 77, "model": "org/B-GGUF"}
+
+
+def test_chat_count_tokens_identity_matches_status_for_native_lease(monkeypatch):
+    # A native-lease load reports no model_identifier, so the client's checkpoint
+    # is status.active_model (the display label). The count must name the same
+    # string or every recount for a leased GGUF would be discarded.
+    import json
+
+    from models.inference import ChatCountTokensRequest, ChatMessage
+
+    backend = _count_tokens_backend(monkeypatch, "/abs/path/to/Model-Q4.gguf", count = 3)
+    backend._native_grant_backed = True
+
+    display, identifier = inference_route._llama_status_model_ids(backend)
+    assert identifier is None
+    assert display == "Model-Q4.gguf"
+    # status publishes model_identifier ?? active_model; the count must agree.
+    assert inference_route._llama_status_checkpoint_id(backend) == display
+
+    payload = ChatCountTokensRequest(
+        model = "Model-Q4.gguf",
+        messages = [ChatMessage(role = "user", content = "hello")],
+    )
+    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert json.loads(response.body) == {"input_tokens": 3, "model": "Model-Q4.gguf"}
+
+
+def test_chat_count_tokens_declines_when_model_swaps_mid_count(monkeypatch):
+    # A switch landing while count_chat_tokens runs leaves the total attributable
+    # to neither model, so neither identity may be reported.
+    import pytest as _pytest
+    from fastapi import HTTPException
+
+    from models.inference import ChatCountTokensRequest, ChatMessage
+
+    backend = _count_tokens_backend(monkeypatch, "org/A-GGUF")
+
+    def _count_then_swap(*a, **k):
+        backend.model_identifier = "org/B-GGUF"
+        return 55
+
+    backend.count_chat_tokens = _count_then_swap
+    payload = ChatCountTokensRequest(
+        model = "org/A-GGUF",
+        messages = [ChatMessage(role = "user", content = "hello")],
+    )
+    with _pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+    assert "changed while counting" in str(excinfo.value.detail)
+
+
+def test_inference_status_publishes_the_shared_model_ids(monkeypatch):
+    # The status handler and the count endpoint must derive the identity from one
+    # place, else the client's captured checkpoint and the count's model can drift
+    # apart and silently discard every recount.
+    import inspect
+
+    src = inspect.getsource(inference_route.get_status)
+    assert "_llama_status_model_ids(" in src
+    assert "_native_grant_backed else _model_id" not in src
 
 
 def test_audio_generate_is_reload_only(monkeypatch):

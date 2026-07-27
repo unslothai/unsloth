@@ -155,13 +155,18 @@ export async function countChatInputTokens(payload: {
   mcp_enabled?: boolean;
   rag_scope?: Record<string, unknown>;
   auto_heal_tool_calls?: boolean;
-}): Promise<{ input_tokens: number }> {
+  // `model` in the response is the identity of the tokenizer that produced the
+  // count, in the same shape `/api/inference/status` publishes as
+  // `model_identifier ?? active_model`. Absent from older backends.
+}): Promise<{ input_tokens: number; model?: string | null }> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  return parseJsonOrThrow<{ input_tokens: number }>(response);
+  return parseJsonOrThrow<{ input_tokens: number; model?: string | null }>(
+    response,
+  );
 }
 
 export async function validateModel(
