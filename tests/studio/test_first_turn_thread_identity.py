@@ -19,9 +19,9 @@ from pathlib import Path
 
 
 WORKSPACE = Path(__file__).resolve().parents[2]
-PROVIDER = (
-    WORKSPACE / "studio/frontend/src/features/chat/runtime-provider.tsx"
-).read_text(encoding = "utf-8")
+PROVIDER = (WORKSPACE / "studio/frontend/src/features/chat/runtime-provider.tsx").read_text(
+    encoding = "utf-8"
+)
 
 
 def test_the_tracked_promise_carries_the_assigned_thread_id():
@@ -53,9 +53,9 @@ def test_the_run_is_given_its_real_thread_id():
     assert block, "createPersistedRunAdapter's run wrapper not found"
     body = block.group(0)
     assert "const adoptedThreadId = await waitForRunStartHistoryAppend(" in body
-    assert "!options.unstable_threadId && adoptedThreadId" in body, (
-        "only fill in the id when assistant-ui had none"
-    )
+    assert (
+        "!options.unstable_threadId && adoptedThreadId" in body
+    ), "only fill in the id when assistant-ui had none"
     assert "unstable_threadId: adoptedThreadId" in body
 
 

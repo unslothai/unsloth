@@ -11271,9 +11271,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # the relay through the check it already polls. Entered inside the body
             # generator, so a response whose body never starts leaves nothing behind (see
             # _responses_stream). No thread_id: public API surface, not a Studio chat.
-            _tracker = _TrackedCancel(
-                disconnect_event, model = monitor_model, kind = "completions"
-            )
+            _tracker = _TrackedCancel(disconnect_event, model = monitor_model, kind = "completions")
             _tracker.__enter__()
             try:
                 req = client.build_request(
@@ -11374,9 +11372,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         # event to signal. Unpooled client so a cancel-close hits this call only.
         _cancel_event = threading.Event()
         _client = _cancelable_nonstreaming_client()
-        _tracker = _TrackedCancel(
-            _cancel_event, model = monitor_model, kind = "completions"
-        )
+        _tracker = _TrackedCancel(_cancel_event, model = monitor_model, kind = "completions")
         _tracker.__enter__()
         _cancel_watcher = asyncio.create_task(
             _await_cancel_or_disconnect_then_close_client(
