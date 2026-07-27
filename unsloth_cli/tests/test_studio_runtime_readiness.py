@@ -274,7 +274,9 @@ def test_a_record_without_its_package_is_reported_missing(monkeypatch, capsys, t
         locate_file = lambda name: site_packages / name,
     )
     monkeypatch.setattr(
-        importlib.import_module("importlib.metadata"), "distribution", lambda _name: installed,
+        importlib.import_module("importlib.metadata"),
+        "distribution",
+        lambda _name: installed,
     )
 
     with pytest.raises(typer.Exit):
