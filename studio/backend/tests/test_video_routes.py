@@ -774,7 +774,7 @@ def test_export_endpoint_validation(client, monkeypatch):
     def _boom(video_id, fmt):
         raise RuntimeError("WebM export needs the 'av' package (PyAV).")
 
-    monkeypatch.setattr(gallery_module, "transcode", _boom)
+    monkeypatch.setattr(gallery_module, "transcode_to_file", _boom)
     client.post(
         "/api/inference/video/load",
         json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},

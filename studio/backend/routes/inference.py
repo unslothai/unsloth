@@ -16390,6 +16390,22 @@ async def generate_diffusion_image(
                             if request.controlnet and request.controlnet.strength > 0
                             else None
                         ),
+                        # The conditioned workflows (Transform/Inpaint/Extend/Upscale/Edit/reference/
+                        # ControlNet) keep their scalar settings here. The source, mask, reference and
+                        # control IMAGES are deliberately not persisted -- they are user uploads with
+                        # their own lifetime, and copying them into every recipe would grow the gallery
+                        # without bound -- so a recipe records what it ran, and the client says plainly
+                        # that the images have to be supplied again rather than silently replaying as
+                        # a plain Create.
+                        "workflow": result.get("workflow"),
+                        "strength": request.strength,
+                        "upscale": request.upscale,
+                        "controlnet_guidance": (
+                            f"{request.controlnet.guidance_start:g}:{request.controlnet.guidance_end:g}"
+                            if request.controlnet and request.controlnet.strength > 0
+                            else None
+                        ),
+                        "reference_image_count": len(request.reference_images or []) or None,
                         "created_at": created_at,
                     },
                 )

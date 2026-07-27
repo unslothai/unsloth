@@ -356,18 +356,29 @@ async def export_gallery_video(
     if fmt not in ("webm", "gif"):
         raise HTTPException(status_code = 400, detail = "Unsupported format. Use webm or gif.")
     try:
-        data = await asyncio.to_thread(video_gallery.transcode, video_id, fmt)
+        path = await asyncio.to_thread(video_gallery.transcode_to_file, video_id, fmt)
     except RuntimeError as exc:
         raise HTTPException(status_code = 501, detail = str(exc)) from exc
-    if data is None:
+    if path is None:
         raise HTTPException(status_code = 404, detail = "Video not found.")
-    from fastapi.responses import Response
+    from fastapi.responses import FileResponse
+    from starlette.background import BackgroundTask
 
-    return Response(
-        content = data,
+    def _cleanup() -> None:
+        try:
+            path.unlink(missing_ok = True)
+        except OSError as e:  # noqa: BLE001 -- a leaked temp file must not fail the download
+            logger.debug(f"Could not remove the export temp file {path}: {e}")
+
+    # FileResponse streams from disk, so a large VP9 export is never fully resident (the caps allow
+    # 2048x2048 x 1024 frames). The temp file is deleted once the response has been sent.
+    return FileResponse(
+        path,
         media_type = "video/webm" if fmt == "webm" else "image/gif",
+        filename = f"{video_id}.{fmt}",
         # Transcodes are deterministic per id+format; let the browser cache them.
         headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+        background = BackgroundTask(_cleanup),
     )
 
 

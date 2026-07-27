@@ -35,6 +35,7 @@ from .diffusion_families import (
     IDEOGRAM4_FAMILY_NAME,
     LUMINA2_FAMILY_NAME,
     DiffusionFamily,
+    assert_pipeline_class_available,
     default_generation_params,
     detect_family_for_pick,
     excluded_model_reason,
@@ -727,6 +728,9 @@ class DiffusionBackend:
                 f"pass family_override with that family name. (Video models and image models "
                 f"whose diffusers transformer has no single-file loader are not supported.)"
             )
+        # Refuse a too-old diffusers here rather than deep in the load, after the checkpoint has
+        # already been downloaded (Flux2Klein / Z-Image / Krea 2 / HunyuanImage are 0.39-only).
+        assert_pipeline_class_available(fam.pipeline_class, fam.name)
         # Families whose single file IS the whole pipeline have no GGUF path; reject before eviction.
         if kind == "gguf" and fam.single_file_is_pipeline:
             raise ValueError(
@@ -3161,6 +3165,11 @@ class DiffusionBackend:
                     # compile and the generate request then carries none, so a recipe built from
                     # the request alone claimed no LoRA for an image that plainly used one.
                     "active_loras": _active_lora_pairs(state.pipe),
+                    # The workflow this generation ACTUALLY ran, as resolved above from which
+                    # conditioning inputs were present. The recipe records it so a conditioned
+                    # image is not presented as a plain Create recipe that would replay as
+                    # something unrelated.
+                    "workflow": workflow,
                 }
             finally:
                 # Deregister so a later unload/load can't poke a finished generation (if still ours).

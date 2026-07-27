@@ -1778,3 +1778,36 @@ def test_hub_local_rows_are_tagged_with_their_task():
     src = inspect.getsource(local_inventory.list_local_models_response)
     assert "_local_model_task" in src
     assert 'model_copy(update = {"task"' in src
+
+
+def test_pipeline_class_guard_fires_before_any_download():
+    # The 0.39-only families (Flux2Klein, Z-Image, Krea 2, LTX-2, HunyuanImage) used to die with a
+    # bare AttributeError deep in the load, after the checkpoint had been fetched, on the older
+    # diffusers that packaging still allows on Python 3.9. Validation refuses first, with the
+    # version and the fix in the message.
+    import pytest
+
+    from core.inference.diffusion_families import _FAMILIES, assert_pipeline_class_available
+
+    # Present -> no raise (every shipped family resolves on a current diffusers).
+    import diffusers
+
+    for fam in _FAMILIES:
+        assert_pipeline_class_available(fam.pipeline_class, fam.name)
+
+    stub = types.SimpleNamespace(__version__ = "0.37.0")
+    real = sys.modules.get("diffusers")
+    sys.modules["diffusers"] = stub
+    try:
+        with pytest.raises(RuntimeError) as excinfo:
+            assert_pipeline_class_available("ZImagePipeline", "z-image")
+    finally:
+        if real is not None:
+            sys.modules["diffusers"] = real
+        else:  # pragma: no cover
+            del sys.modules["diffusers"]
+    msg = str(excinfo.value)
+    assert "z-image" in msg and "ZImagePipeline" in msg
+    assert "0.39" in msg and "0.37.0" in msg
+    assert "3.10" in msg  # names the Python floor that carries a new enough diffusers
+    assert diffusers is not None

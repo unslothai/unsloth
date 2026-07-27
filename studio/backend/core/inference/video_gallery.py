@@ -78,33 +78,61 @@ def video_path(video_id: str) -> Optional[Path]:
     return path if path.is_file() else None
 
 
-def transcode(video_id: str, fmt: str) -> Optional[bytes]:
-    """Re-encode a stored MP4 for the Download menu: "webm" (VP9) or "gif". Returns the bytes, or
-    None when the id doesn't resolve. Raises RuntimeError on missing codec/deps (route 501s). MP4
-    downloads stream the original via /file, not here."""
+def transcode_to_file(video_id: str, fmt: str) -> Optional[Path]:
+    """Re-encode a stored MP4 for the Download menu into a TEMP FILE and return its path, or None
+    when the id doesn't resolve. Raises RuntimeError on missing codec/deps (route 501s). The caller
+    owns the file and must delete it after serving.
+
+    A file rather than a buffer because the request caps allow 2048x2048 x 1024 frames: a VP9
+    export of a clip that size runs to hundreds of MB, and holding it as one ``bytes`` (then again
+    in the response) let a couple of concurrent export clicks exhaust the process. The MP4 route
+    already streams from disk; this makes the transcodes behave the same way."""
     # Ownership-gate like /file: only transcode a Studio-owned clip (readable sidecar), so a guessed
     # stem for a foreign/orphan MP4 the gallery hides can't be re-encoded out either.
     path = owned_video_path(video_id)
     if path is None:
         return None
     normalized = fmt.strip().lower()
-    if normalized == "webm":
-        return _transcode_webm(path)
-    if normalized == "gif":
-        return _transcode_gif(path)
-    raise ValueError(f"Unsupported export format '{fmt}'. Use webm or gif.")
+    if normalized not in ("webm", "gif"):
+        raise ValueError(f"Unsupported export format '{fmt}'. Use webm or gif.")
+    import tempfile
+
+    fd, tmp_name = tempfile.mkstemp(prefix = f"unsloth-export-{video_id}-", suffix = f".{normalized}")
+    os.close(fd)
+    dest = Path(tmp_name)
+    try:
+        if normalized == "webm":
+            _transcode_webm(path, dest)
+        else:
+            # GIF is already bounded by _GIF_MAX_FRAMES / _GIF_MAX_EDGE, so it is built in memory
+            # and written out; the cap is what keeps that safe.
+            dest.write_bytes(_transcode_gif(path))
+    except BaseException:
+        dest.unlink(missing_ok = True)
+        raise
+    return dest
 
 
-def _transcode_webm(path: Path) -> bytes:
-    import io
+def transcode(video_id: str, fmt: str) -> Optional[bytes]:
+    """``transcode_to_file`` read back into memory. Kept for callers that want the bytes; the route
+    uses the file form so a large export is never fully resident."""
+    dest = transcode_to_file(video_id, fmt)
+    if dest is None:
+        return None
+    try:
+        return dest.read_bytes()
+    finally:
+        dest.unlink(missing_ok = True)
 
+
+def _transcode_webm(path: Path, dest: Path) -> None:
+    """Transcode ``path`` to VP9 (+ Opus when the clip has audio) at ``dest``."""
     try:
         import av
     except Exception as exc:  # noqa: BLE001 -- no PyAV -> no transcode
         raise RuntimeError("WebM export needs the 'av' package (PyAV).") from exc
-    buf = io.BytesIO()
     try:
-        with av.open(str(path)) as src, av.open(buf, "w", format = "webm") as dst:
+        with av.open(str(path)) as src, av.open(str(dest), "w", format = "webm") as dst:
             if not src.streams.video:
                 raise RuntimeError("WebM export failed: the clip has no video stream.")
             in_v = src.streams.video[0]
@@ -171,7 +199,6 @@ def _transcode_webm(path: Path) -> bytes:
         raise
     except Exception as exc:  # noqa: BLE001 -- surface as "encoder unavailable"
         raise RuntimeError(f"WebM export failed (libvpx-vp9 unavailable?): {exc}") from exc
-    return buf.getvalue()
 
 
 # Ceilings for a GIF export, which must hold every kept frame in memory before encoding. 720 px

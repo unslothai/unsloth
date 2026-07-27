@@ -470,6 +470,41 @@ def test_transcode_unknown_id_and_bad_format():
         gallery.transcode(record["id"], "avi")
 
 
+def test_transcode_to_file_writes_a_temp_file_the_caller_owns():
+    # The route streams the export from disk instead of materialising it: the request caps allow
+    # 2048x2048 x 1024 frames, and a VP9 export of that size held as bytes (then again in the
+    # response) let concurrent exports exhaust the process.
+    record = gallery.save(_real_mp4_bytes(), _meta())
+    for fmt, magic in (("webm", b"\x1a\x45\xdf\xa3"), ("gif", b"GIF8")):
+        path = gallery.transcode_to_file(record["id"], fmt)
+        assert path is not None and path.is_file(), fmt
+        assert path.suffix == f".{fmt}"
+        assert path.read_bytes()[: len(magic)] == magic
+        # It is a temp file, NOT something inside the gallery: deleting it must not touch the clip.
+        path.unlink()
+        assert gallery.video_path(record["id"]) is not None
+    assert gallery.transcode_to_file("does-not-exist", "webm") is None
+
+
+def test_transcode_to_file_leaves_no_temp_file_when_the_encode_fails(monkeypatch):
+    # A half-written export must not accumulate in the temp dir on a host with no VP9 encoder.
+    import tempfile
+
+    from core.inference import video_gallery as vg
+
+    record = gallery.save(_real_mp4_bytes(), _meta())
+
+    def _boom(src, dest):
+        dest.write_bytes(b"partial")
+        raise RuntimeError("WebM export failed (libvpx-vp9 unavailable?)")
+
+    monkeypatch.setattr(vg, "_transcode_webm", _boom)
+    before = set(Path(tempfile.gettempdir()).glob("unsloth-export-*"))
+    with pytest.raises(RuntimeError):
+        vg.transcode_to_file(record["id"], "webm")
+    assert set(Path(tempfile.gettempdir()).glob("unsloth-export-*")) == before
+
+
 def test_gif_export_bounds_frames_and_edge(monkeypatch):
     """Every kept frame is held as a paletted image before the encoder runs, so an unbounded walk
     is a memory bomb: the generate request allows 2048x2048 for 1024 frames, and at the 12 fps

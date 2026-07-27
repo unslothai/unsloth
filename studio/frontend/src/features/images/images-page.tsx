@@ -181,6 +181,20 @@ const WORKFLOW_TABS: Array<{
 // Per-model generation defaults (steps + guidance), matched by repo-id substring,
 // most specific first. Distilled "turbo/schnell" models want few steps and little
 // guidance; the full "dev" models want more steps and real CFG.
+// The images each conditioned workflow consumed, named for the restore toast. A recipe keeps the
+// scalar settings but not the uploads themselves, so restoring one of these lands on Create and the
+// user needs to know which input to add back rather than pressing Generate on a silently different
+// request. Keys are the backend's own workflow strings (diffusion.py); txt2img is absent because it
+// restores completely.
+const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
+  img2img: "the source image",
+  inpaint: "the source image and mask",
+  upscale: "the source image",
+  edit: "the source image",
+  reference: "the source and reference images",
+  controlnet: "the control image",
+};
+
 // Generation defaults when the model is unrecognised: the distilled few-step /
 // no-CFG shape. Also seeds the sliders' initial state.
 const DEFAULT_GEN = { steps: 9, guidance: 0 };
@@ -1550,11 +1564,18 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       if (id && Number.isFinite(weight)) restoredLoras.push({ id, weight });
     }
     setLoras(restoredLoras);
+    // The conditioned workflows' scalar settings ARE persisted, so restore them even though the
+    // form returns to Create: they are what the user re-applies after adding the image back.
+    if (typeof image.strength === "number") {
+      if (image.workflow === "upscale") setUpscaleStrength(image.strength);
+      else setStrength(image.strength);
+    }
+    if (typeof image.upscale === "number") setUpscaleFactor(image.upscale);
     // None of the conditioning images are persisted in a recipe, so a restore must not leave the
     // form pointing at whatever is currently loaded in the Transform / Inpaint / Edit tabs: the
     // next Generate would condition on an unrelated image and reproduce something else entirely.
-    // Clear them all and return to Create, the workflow the restored recipe actually describes
-    // (the workflow-validity effect snaps this back if the loaded model is edit-only).
+    // Clear them all and return to Create (the workflow-validity effect snaps this back if the
+    // loaded model is edit-only).
     setWorkflow("create");
     setInitImage(null);
     setMaskImage(null);
@@ -1562,7 +1583,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // The control image isn't persisted, so clear any stale ControlNet selection.
     setControlnetId("");
     setControlImage(null);
-    toast.success("Settings restored to inputs");
+    // Say so, rather than letting a conditioned image restore as a plain Create that quietly
+    // generates something unrelated. The scalar settings ARE restored above; only the images the
+    // workflow consumed have to be supplied again.
+    const conditioned = CONDITIONED_WORKFLOW_INPUTS[image.workflow ?? ""];
+    if (conditioned) {
+      toast.success(`Settings restored. Add ${conditioned} again to reproduce this image.`);
+    } else {
+      toast.success("Settings restored to inputs");
+    }
   }, []);
 
   // A locked ratio keeps the paired dimension in step while dragging; "custom"

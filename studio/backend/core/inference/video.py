@@ -394,6 +394,11 @@ class VideoBackend:
                 f"{', '.join(supported_video_family_names())}. If this is a variant of one "
                 f"of them, pass family_override with that family name."
             )
+        # Refuse a too-old diffusers here rather than deep in the load, after the checkpoint has
+        # already been downloaded (LTX2Pipeline / HunyuanVideo15Pipeline are 0.39-only).
+        from .diffusion_families import assert_pipeline_class_available
+
+        assert_pipeline_class_available(fam.pipeline_class, fam.name)
         if kind != "gguf" and not _is_trusted_video_repo(repo_id):
             raise ValueError(
                 f"Non-GGUF video loads are limited to unsloth/* repos, the official "

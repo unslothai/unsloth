@@ -620,6 +620,27 @@ def family_prequant_repo(
     return None
 
 
+def assert_pipeline_class_available(pipeline_class: str, family_name: str) -> None:
+    """Raise before any download when the installed diffusers has no ``pipeline_class``.
+
+    The newer families (Flux2Klein, Z-Image, Krea 2, LTX-2, HunyuanImage) only exist from diffusers
+    0.39, and the packaging leaves an older diffusers installable on Python 3.9 -- diffusers dropped
+    3.9 in 0.38 and this project still supports it, so the 0.39 floor has to be conditional or the
+    whole extra becomes unresolvable. Without this check the getattr chain died with a bare
+    AttributeError deep in the load, after the checkpoint had already been fetched, which is an
+    expensive way to learn the environment is too old. Krea 2 already guarded itself this way; this
+    is the same check for every family, run from validation."""
+    import diffusers
+
+    if hasattr(diffusers, pipeline_class):
+        return
+    raise RuntimeError(
+        f"'{family_name}' needs diffusers >= 0.39.0 ({pipeline_class}); this environment has "
+        f"diffusers {getattr(diffusers, '__version__', 'unknown')}. Upgrade with: "
+        f"pip install -U diffusers (which needs Python >= 3.10; diffusers dropped 3.9 in 0.38)."
+    )
+
+
 def family_gguf_loadable(fam: DiffusionFamily) -> bool:
     """True when a GGUF transformer can be assembled for this family.
 

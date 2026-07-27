@@ -2587,6 +2587,24 @@ class GalleryImage(BaseModel):
     controlnet: Optional[str] = Field(
         None, description = "ControlNet applied, formatted as 'id:control_type:strength'"
     )
+    # Conditioned-workflow settings. The images themselves are NOT persisted (user uploads with
+    # their own lifetime), so these say what ran and let the client tell the user which inputs it
+    # needs back instead of silently restoring a conditioned image as a plain Create.
+    workflow: Optional[str] = Field(
+        None,
+        description = "Workflow that produced it: txt2img, img2img, inpaint, upscale, edit, "
+        "reference or controlnet. Absent on records written before this was recorded.",
+    )
+    strength: Optional[float] = Field(
+        None, description = "img2img/inpaint denoise strength, when the workflow used one"
+    )
+    upscale: Optional[float] = Field(None, description = "Upscale factor, for the upscale workflow")
+    controlnet_guidance: Optional[str] = Field(
+        None, description = "ControlNet guidance interval, formatted as 'start:end'"
+    )
+    reference_image_count: Optional[int] = Field(
+        None, description = "How many reference images the reference workflow used"
+    )
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
 
 

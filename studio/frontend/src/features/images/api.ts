@@ -175,6 +175,14 @@ export interface GalleryImage {
   model: string | null;
   loras?: string[];
   controlnet?: string | null;
+  // Conditioned-workflow settings. The source/mask/reference/control images are not persisted, so
+  // these say what ran and let restore name the inputs the user has to supply again. Absent on
+  // records written before they were recorded.
+  workflow?: string | null;
+  strength?: number | null;
+  upscale?: number | null;
+  controlnet_guidance?: string | null;
+  reference_image_count?: number | null;
   created_at: number;
 }
 

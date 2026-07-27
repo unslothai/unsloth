@@ -123,6 +123,12 @@ class _FakeBackend:
             "images": [object() for _ in range(batch_size)],
             "seed": seed if seed is not None else 4242,
             "repo_id": "x/z-image",
+            # The real backend reports the workflow it resolved; the recipe records it.
+            "workflow": (
+                "inpaint"
+                if kwargs.get("mask_image")
+                else ("img2img" if kwargs.get("init_image") else "txt2img")
+            ),
         }
 
     def generate_progress(self):
@@ -1093,3 +1099,41 @@ def test_load_refused_when_only_the_diffusion_probe_can_be_read(client, monkeypa
         json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"},
     )
     assert resp.status_code == 200
+
+
+def test_recipe_records_the_conditioned_workflow_settings(client, monkeypatch):
+    # A conditioned generation's recipe used to carry only the txt2img fields, so the gallery
+    # presented an inpaint result as a complete Create recipe and restoring it replayed an
+    # unrelated text-to-image request. The images are still not persisted (user uploads with their
+    # own lifetime), but what ran IS, so the client can say which inputs to supply again.
+    import base64
+    import io
+
+    from PIL import Image
+
+    client.post(
+        "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
+    )
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), (120, 30, 90)).save(buf, format = "PNG")
+    px = base64.b64encode(buf.getvalue()).decode()
+    gen = client.post(
+        "/api/inference/images/generate",
+        json = {
+            "prompt": "a sloth",
+            "seed": 7,
+            "init_image": px,
+            "mask_image": px,
+            "strength": 0.42,
+        },
+    )
+    assert gen.status_code == 200
+    img = gen.json()["images"][0]
+    assert img["workflow"] == "inpaint"
+    assert img["strength"] == 0.42
+    # A plain txt2img still records its own workflow and leaves the conditioning fields empty.
+    plain = client.post("/api/inference/images/generate", json = {"prompt": "a sloth", "seed": 7})
+    assert plain.status_code == 200
+    plain_img = plain.json()["images"][0]
+    assert plain_img["workflow"] == "txt2img"
+    assert plain_img["strength"] is None and plain_img["upscale"] is None
