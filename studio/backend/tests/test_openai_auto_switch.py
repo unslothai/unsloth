@@ -8,7 +8,11 @@ tests/test_gguf_completion_usage.py.
 """
 
 import asyncio
+import json
 import os
+import threading
+import types
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -3315,6 +3319,152 @@ def test_chat_count_tokens_never_switches_the_loaded_model(monkeypatch):
 
     assert json.loads(response.body) == {"input_tokens": 5, "model": "org/B-GGUF"}
     assert switched["called"] is False
+
+
+# ── Template rendering, strict counts ───────────────────────────────
+
+
+class _StubLlamaServer:
+    """llama-server stand-in for the real count_chat_tokens over real HTTP.
+
+    /tokenize always answers (one token per whitespace-separated word) and
+    /apply-template renders a chat-markup prompt or returns ``fail_status``,
+    which is what llama-server does when the template cannot be rendered
+    (``--no-jinja`` plus tools, or a template that raises on this history).
+    """
+
+    def __init__(self, fail_status = None):
+        self.fail_status = fail_status
+        stub = self
+
+        class _Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def _send(self, code, body):
+                raw = json.dumps(body).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])) or b"{}")
+                if self.path == "/tokenize":
+                    self._send(200, {"tokens": body.get("content", "").split()})
+                    return
+                if self.path == "/apply-template":
+                    if stub.fail_status is not None:
+                        self._send(stub.fail_status, {"error": "tools param requires --jinja"})
+                        return
+                    rendered = "".join(
+                        f"<|im_start|> {msg.get('role', '')} {msg.get('content', '')} <|im_end|> "
+                        for msg in body.get("messages", [])
+                    )
+                    if body.get("tools"):
+                        rendered += "# Tools " + json.dumps(body["tools"])
+                    self._send(200, {"prompt": rendered})
+                    return
+                self._send(404, {"error": "unknown route"})
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self.base_url = f"http://127.0.0.1:{self._server.server_address[1]}"
+
+    def __enter__(self):
+        self._thread = threading.Thread(target = self._server.serve_forever, daemon = True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout = 5)
+        return False
+
+
+def _real_counter_backend(server, loaded_id = "org/A-GGUF"):
+    """Backend stub running the real count_chat_tokens against ``server``."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = _FakeBackend(loaded_id)
+    backend.supports_tools = True
+    backend.base_url = server.base_url
+    backend._auth_headers = {}
+    backend.count_chat_tokens = types.MethodType(LlamaCppBackend.count_chat_tokens, backend)
+    return backend
+
+
+_TEMPLATE_MESSAGES = [
+    {"role": "system", "content": "You are a helpful local assistant."},
+    {"role": "user", "content": "search for the newest release"},
+    {"role": "assistant", "content": "The newest release is b6120."},
+]
+_TEMPLATE_TOOLS = [{"type": "function", "function": {"name": "web_search"}}]
+
+
+def test_count_chat_tokens_strict_refuses_the_text_only_fallback():
+    # A failed /apply-template drops role markers, special tokens and the rendered
+    # tool schemas, so the fallback is an estimate. Strict callers publish the
+    # number, so they get an error instead.
+    with _StubLlamaServer(fail_status = 500) as server:
+        backend = _real_counter_backend(server)
+        with pytest.raises(Exception):
+            backend.count_chat_tokens(_TEMPLATE_MESSAGES, None, _TEMPLATE_TOOLS, strict = True)
+
+
+def test_count_chat_tokens_strict_counts_the_rendered_template():
+    # Control: with /apply-template healthy the strict count is the rendered prompt,
+    # markup included, and it is materially larger than the fallback estimate.
+    with _StubLlamaServer() as server:
+        backend = _real_counter_backend(server)
+        rendered = backend.count_chat_tokens(_TEMPLATE_MESSAGES, None, _TEMPLATE_TOOLS, strict = True)
+    with _StubLlamaServer(fail_status = 500) as server:
+        fallback = _real_counter_backend(server).count_chat_tokens(
+            _TEMPLATE_MESSAGES, None, _TEMPLATE_TOOLS
+        )
+    assert rendered > fallback > 0
+
+
+def test_count_chat_tokens_keeps_the_fallback_for_best_effort_callers():
+    # Control: the generation paths count non-strict and must keep their estimate,
+    # since their alternative is failing the completion itself.
+    with _StubLlamaServer(fail_status = 500) as server:
+        backend = _real_counter_backend(server)
+        assert backend.count_chat_tokens(_TEMPLATE_MESSAGES, None, _TEMPLATE_TOOLS) > 0
+
+
+def test_chat_count_tokens_declines_when_the_template_will_not_render(monkeypatch):
+    # End of the chain: the recount replaces the usage the frontend has saved, so an
+    # unrenderable template must 503 and leave the existing number on the bar.
+    from fastapi import HTTPException
+
+    from models.inference import ChatCountTokensRequest, ChatMessage
+
+    with _StubLlamaServer(fail_status = 500) as server:
+        backend = _real_counter_backend(server)
+        monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+        payload = ChatCountTokensRequest(
+            model = "org/A-GGUF",
+            messages = [ChatMessage(role = "user", content = "search for the newest release")],
+        )
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+
+
+def test_chat_count_tokens_returns_the_rendered_count(monkeypatch):
+    # Control for the 503 above: a healthy template still answers with a count.
+    from models.inference import ChatCountTokensRequest, ChatMessage
+    with _StubLlamaServer() as server:
+        backend = _real_counter_backend(server)
+        monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+        payload = ChatCountTokensRequest(
+            model = "org/A-GGUF",
+            messages = [ChatMessage(role = "user", content = "search for the newest release")],
+        )
+        response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert json.loads(response.body)["input_tokens"] > 0
 
 
 # ── RAG auto-injection, tokenizer identity ──────────────────────────
