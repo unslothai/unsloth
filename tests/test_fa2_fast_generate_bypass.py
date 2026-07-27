@@ -268,6 +268,61 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
     assert captured == {}
 
 
+def test_flash_attention_fallback_pins_a_dynamic_cache():
+    # Delegating is not enough on its own: a static cache still reaches FlashAttention when
+    # the caller passes a generation_config carrying one, or the model defaults to one.
+    namespace = {
+        "torch": SimpleNamespace(
+            Tensor = type("FakeTensor", (), {"shape": (1, 3)}),
+            bfloat16 = "bfloat16",
+            float16 = "float16",
+            inference_mode = nullcontext,
+            autocast = lambda **kwargs: nullcontext(),
+        ),
+        "os": os,
+        "inspect": inspect,
+        "FastBaseModel": SimpleNamespace(for_inference = lambda model: None),
+        "dtype_from_config": lambda config: "bfloat16",
+        "_get_dtype": lambda dtype: dtype,
+        "_unsloth_generate_accepts_kwarg": lambda model, name: False,
+        "NUM_LOGITS_TO_KEEP": {"Qwen3VLForConditionalGeneration": None},
+        "DEVICE_TYPE_TORCH": "cuda",
+        "_uses_flash_attention_for_generation": uses_flash_attention,
+        "_clear_generation_caches": clear_generation_caches,
+    }
+    fast_generate = _load_function("unsloth_base_fast_generate", namespace)
+
+    captured = {}
+
+    class Model:
+        config = SimpleNamespace(
+            architectures = ["Qwen3VLForConditionalGeneration"],
+            eos_token_id = 2,
+            _attn_implementation = "flash_attention_2",
+        )
+
+        def forward(self, input_ids = None):
+            return input_ids
+
+        def named_modules(self):
+            return []
+
+        def _old_generate(self, *args, **kwargs):
+            captured.clear()
+            captured.update(kwargs)
+            return "fallback-result"
+
+    input_ids = namespace["torch"].Tensor()
+
+    fast_generate(Model(), input_ids = input_ids)
+    assert captured["cache_implementation"] == "dynamic"
+
+    generation_config = SimpleNamespace(cache_implementation = "static")
+    fast_generate(Model(), input_ids = input_ids, generation_config = generation_config)
+    assert generation_config.cache_implementation == "dynamic"
+    assert "cache_implementation" not in captured
+
+
 if __name__ == "__main__":
     tests = [
         value
