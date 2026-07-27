@@ -237,11 +237,8 @@ def _full_base_label(match: re.Match) -> str:
 
 
 def _parent_flavor_suffix(normalized: str, match: re.Match) -> str:
-    """Flavor suffix from the nearest quant-named parent dir, if it agrees.
-
-    ``Q6_K-MTP/model-Q6_K.gguf``: the basename settles the quant so the parent
-    is never inspected, and both MTP flavors would collapse to ``Q6_K``.
-    """
+    """Flavor from the nearest agreeing quant parent dir; else ``Q6_K-MTP/model-Q6_K.gguf``
+    collapses onto plain ``Q6_K``."""
     if "/" not in normalized:
         return ""
     for segment in reversed(normalized.rsplit("/", 1)[0].split("/")):

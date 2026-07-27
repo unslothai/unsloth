@@ -100,11 +100,8 @@ def test_returns_none_when_quant_absent(tmp_path):
 
 
 def test_delete_variant_matches_the_listed_label(tmp_path):
-    """``_delete_gguf_variant_files`` must key on the same label the listing shows.
-
-    Reading only ``path.name`` misses every subdir layout, so the displayed
-    variant 404s instead of deleting.
-    """
+    """Must key on the label the listing shows: reading only ``path.name`` misses
+    subdir layouts, so the displayed variant 404s instead of deleting."""
     for names, variant in [
         (["Q6_K-MTP/model-Q6_K.gguf"], "Q6_K-MTP"),
         (["Q6_K/model.gguf"], "Q6_K"),

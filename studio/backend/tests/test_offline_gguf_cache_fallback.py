@@ -1212,11 +1212,8 @@ class TestPreUpgradeVariantKeyResolvesFromCache:
 
 
 class TestCompanionSearchRootSuffixedQuantDir:
-    """A suffixed quant dir is still a quant dir, so companions live one level up.
-
-    Without this the mmproj/MTP scan stays inside ``Q6_K-MTP/`` and the model
-    loads with no projector and no separate drafter.
-    """
+    """A suffixed quant dir is still a quant dir, so companions live one level up:
+    else the scan stays inside ``Q6_K-MTP/`` and no projector or drafter is found."""
 
     @staticmethod
     def _root(path):
