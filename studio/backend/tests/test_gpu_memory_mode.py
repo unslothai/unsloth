@@ -748,10 +748,8 @@ def test_remote_vulkan_diffusion_rejection_keeps_active_server(monkeypatch):
 
 
 def test_remote_vulkan_preflight_download_failure_keeps_active_server(monkeypatch, tmp_path):
-    # An incomplete cache (missing shard, no disk space, offline hub) must surface
-    # from the pre-teardown _download_gguf, never from Phase 2 after the kill: a
-    # resolvable shard-1 file does not prove the variant is complete, so the
-    # download has to run first even when such a file is resolvable.
+    # A resolvable shard-1 file does not prove the variant is complete, so download
+    # failures must surface from the pre-teardown _download_gguf, not after the kill.
     import hub.utils.gguf as hub_gguf
 
     cached_shard = tmp_path / "model-00001-of-00003.gguf"
