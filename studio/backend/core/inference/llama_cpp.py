@@ -12496,11 +12496,9 @@ class LlamaCppBackend:
     ) -> int:
         """Count prompt tokens for a chat request via llama-server.
 
-        Non-strict callers keep the historical best-effort behavior and receive
-        0 when a count cannot be determined. Strict callers (public count_tokens
-        endpoints) get an exception instead of a successful-looking number when
-        the tokenizer fails or the chat template cannot be rendered, since the
-        text-only fallback is an approximation and not a count.
+        Non-strict callers keep the historical best-effort behavior and return 0
+        when no count is available. Strict callers (public count_tokens endpoints)
+        raise instead, since the text-only fallback is an estimate, not a count.
         """
         if not self.is_loaded:
             if strict:
@@ -12573,12 +12571,9 @@ class LlamaCppBackend:
                 except Exception:
                     apply_template_failed = True
 
-                # The fallback below is an estimate, not a count: it drops every role
-                # marker and special token, the tool schemas the template renders into
-                # the system turn, and assistant tool_calls (which carry no content).
-                # Measured on a six-turn chat with two tools that is 30% of the real
-                # prompt. A strict caller shows or stores the number, so hand it an
-                # error and let it keep whatever it had.
+                # The fallback drops role markers, special tokens and rendered tool
+                # schemas: ~30% of the real prompt on a six-turn chat with two tools.
+                # A strict caller publishes the number, so error rather than undercount.
                 if strict and apply_template_failed:
                     raise RuntimeError("llama-server could not render the chat template")
 

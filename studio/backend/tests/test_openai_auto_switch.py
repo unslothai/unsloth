@@ -3325,12 +3325,10 @@ def test_chat_count_tokens_never_switches_the_loaded_model(monkeypatch):
 
 
 class _StubLlamaServer:
-    """llama-server stand-in for the real count_chat_tokens over real HTTP.
+    """llama-server stand-in for exercising the real count_chat_tokens over HTTP.
 
-    /tokenize always answers (one token per whitespace-separated word) and
-    /apply-template renders a chat-markup prompt or returns ``fail_status``,
-    which is what llama-server does when the template cannot be rendered
-    (``--no-jinja`` plus tools, or a template that raises on this history).
+    /tokenize counts whitespace-separated words; /apply-template renders chat markup
+    or returns ``fail_status``, as llama-server does when the template will not render.
     """
 
     def __init__(self, fail_status = None):
@@ -3404,9 +3402,8 @@ _TEMPLATE_TOOLS = [{"type": "function", "function": {"name": "web_search"}}]
 
 
 def test_count_chat_tokens_strict_refuses_the_text_only_fallback():
-    # A failed /apply-template drops role markers, special tokens and the rendered
-    # tool schemas, so the fallback is an estimate. Strict callers publish the
-    # number, so they get an error instead.
+    # A failed /apply-template drops role markers and tool schemas, so the fallback
+    # is an estimate. Strict callers publish the number, so they get an error.
     with _StubLlamaServer(fail_status = 500) as server:
         backend = _real_counter_backend(server)
         with pytest.raises(Exception):
@@ -3414,8 +3411,7 @@ def test_count_chat_tokens_strict_refuses_the_text_only_fallback():
 
 
 def test_count_chat_tokens_strict_counts_the_rendered_template():
-    # Control: with /apply-template healthy the strict count is the rendered prompt,
-    # markup included, and it is materially larger than the fallback estimate.
+    # Control: a healthy template counts rendered markup, materially above the fallback.
     with _StubLlamaServer() as server:
         backend = _real_counter_backend(server)
         rendered = backend.count_chat_tokens(_TEMPLATE_MESSAGES, None, _TEMPLATE_TOOLS, strict = True)
@@ -3427,16 +3423,15 @@ def test_count_chat_tokens_strict_counts_the_rendered_template():
 
 
 def test_count_chat_tokens_keeps_the_fallback_for_best_effort_callers():
-    # Control: the generation paths count non-strict and must keep their estimate,
-    # since their alternative is failing the completion itself.
+    # Control: generation must keep the estimate, since its alternative is no completion.
     with _StubLlamaServer(fail_status = 500) as server:
         backend = _real_counter_backend(server)
         assert backend.count_chat_tokens(_TEMPLATE_MESSAGES, None, _TEMPLATE_TOOLS) > 0
 
 
 def test_chat_count_tokens_declines_when_the_template_will_not_render(monkeypatch):
-    # End of the chain: the recount replaces the usage the frontend has saved, so an
-    # unrenderable template must 503 and leave the existing number on the bar.
+    # The recount replaces the usage the frontend saved, so an unrenderable template
+    # must 503 and leave the existing number on the bar.
     from fastapi import HTTPException
 
     from models.inference import ChatCountTokensRequest, ChatMessage
