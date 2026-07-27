@@ -87,11 +87,12 @@ class LocalModelInfo(BaseModel):
     format_variant: Optional[str] = Field(
         None, description = "Format variant label, for example a GGUF quant"
     )
-    is_sharded: bool = Field(
-        False,
+    shard_count: int = Field(
+        0,
         description = (
-            "True when this GGUF model is a multi-part split "
-            "(``-NNN-of-NNN.gguf`` shards). Used by the UI to badge the row."
+            "Number of parts this GGUF model declares as a llama.cpp split "
+            "(the 13 in ``-00001-of-00013.gguf``); 0 for a whole file. The UI "
+            "labels the row with it."
         ),
     )
     capabilities: LocalModelCapabilities = Field(

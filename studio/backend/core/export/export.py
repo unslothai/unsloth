@@ -1009,24 +1009,26 @@ class ExportBackend:
             )
         imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file is not None else {}
 
-        # Same story for gguf_shard_size. The UI sends a value on every GGUF export
-        # ("0" = single file), so passing it unconditionally would break every export
-        # against an unsloth build that predates the kwarg. Only forward it when the
-        # user actually asked to split, and fail loudly if that build cannot honour it
-        # -- silently writing one huge file would look like the setting was ignored.
+        # Same story for gguf_shard_size, except the UI sends a value on *every*
+        # GGUF export ("0" = single file), so passing it unconditionally would
+        # break every export against a build that predates the kwarg. An explicit
+        # split request on such a build is a hard error -- silently writing one
+        # huge file would look like the setting was ignored -- while a "single
+        # file" request just drops the kwarg and takes that build's own default.
         shard_kw: dict = {}
-        if _wants_gguf_split(gguf_shard_size):
+        if gguf_shard_size is not None:
             hooks = [self.current_model.save_pretrained_gguf]
             if push_to_hub:
                 hooks.append(self.current_model.push_to_hub_gguf)
-            if not all(_supports_kwarg(fn, "gguf_shard_size") for fn in hooks):
+            if all(_supports_kwarg(fn, "gguf_shard_size") for fn in hooks):
+                shard_kw = {"gguf_shard_size": gguf_shard_size}
+            elif _wants_gguf_split(gguf_shard_size):
                 return (
                     False,
                     "This Unsloth build does not support GGUF shard sizing. "
                     "Upgrade unsloth and unsloth_zoo, or choose 'Single file'.",
                     None,
                 )
-            shard_kw = {"gguf_shard_size": gguf_shard_size}
 
         output_path: Optional[str] = None
         model_tmp_to_cleanup: Optional[str] = None

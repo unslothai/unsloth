@@ -112,7 +112,7 @@ if str(backend_path) not in sys.path:
 
 from auth.authentication import get_current_subject
 from hub.dependencies import get_hf_token
-from hub.utils.gguf import is_split_gguf_filename
+from hub.utils.gguf import gguf_split_part_count
 
 try:
     from utils.models import (
@@ -304,7 +304,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                 path = str(models_dir),
                 source = "models_dir",
                 model_format = _dir_model_format(models_dir),
-                is_sharded = _dir_is_sharded_gguf(models_dir),
+                shard_count = _dir_gguf_shard_count(models_dir),
                 updated_at = updated_at,
             ),
         ]
@@ -346,7 +346,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                 path = str(child),
                 source = "models_dir",
                 model_format = model_format,
-                is_sharded = _dir_is_sharded_gguf(child) if has_gguf else False,
+                shard_count = _dir_gguf_shard_count(child) if has_gguf else 0,
                 updated_at = updated_at,
             ),
         )
@@ -461,19 +461,22 @@ def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
         return None
 
 
-def _dir_is_sharded_gguf(path: Path) -> bool:
-    """True when a folder's main GGUF weights are a multi-part split (any
-    ``-NNN-of-NNN`` shard). Badges the row, and marks the folder as one model
-    rather than a publisher of many. mmproj/drafter companions don't count, the
-    same way ``_dir_model_format`` ignores them."""
+def _dir_gguf_shard_count(path: Path) -> int:
+    """Parts declared by a folder's main GGUF weights when they are a llama.cpp
+    split (the 13 in ``-00001-of-00013.gguf``), else 0. Labels the row, and marks
+    the folder as one model rather than a publisher of many. mmproj/drafter
+    companions don't count, the same way ``_dir_model_format`` ignores them."""
     try:
-        return any(
-            is_split_gguf_filename(p.name)
-            for p in path.glob("*.gguf")
-            if _is_main_gguf_filename(p.name)
+        return max(
+            (
+                gguf_split_part_count(p.name)
+                for p in path.glob("*.gguf")
+                if _is_main_gguf_filename(p.name)
+            ),
+            default = 0,
         )
     except OSError:
-        return False
+        return 0
 
 
 def _lmstudio_dir_row(path: Path) -> LocalModelInfo:
@@ -488,7 +491,7 @@ def _lmstudio_dir_row(path: Path) -> LocalModelInfo:
         path = str(path),
         source = "lmstudio",
         model_format = _dir_model_format(path),
-        is_sharded = _dir_is_sharded_gguf(path),
+        shard_count = _dir_gguf_shard_count(path),
         updated_at = updated_at,
     )
 
@@ -508,7 +511,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     # silently or fanning its shards out into a row per file below. Loose
     # standalone GGUFs at the root stay one model each, so only a *split*
     # collapses here.
-    if _is_model_directory(lm_dir) or _dir_is_sharded_gguf(lm_dir):
+    if _is_model_directory(lm_dir) or _dir_gguf_shard_count(lm_dir):
         return [_lmstudio_dir_row(lm_dir)]
 
     found: List[LocalModelInfo] = []
@@ -537,7 +540,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
             # -NNN-of-NNN.gguf parts, no config.json) is one model too, so it
             # collapses to a single row instead of a row per shard. A publisher
             # holding ordinary whole GGUFs is not a split, and still descends.
-            if _is_model_directory(child) or _dir_is_sharded_gguf(child):
+            if _is_model_directory(child) or _dir_gguf_shard_count(child):
                 found.append(_lmstudio_dir_row(child))
                 continue
 

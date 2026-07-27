@@ -52,7 +52,7 @@ _apply_format_aware_partial = model_common._apply_format_aware_partial
 _classify_local_path = model_common._classify_local_path
 _is_main_gguf_filename = model_common._is_main_gguf_filename
 _main_gguf_files = model_common._main_gguf_files
-_gguf_files_are_sharded = model_common._gguf_files_are_sharded
+_gguf_shard_count = model_common._gguf_shard_count
 _is_transformers_bin_weight_file = model_common._is_transformers_bin_weight_file
 _prefer_complete_larger = model_common._prefer_complete_larger
 _gguf_variant_state_summary = model_common._gguf_variant_state_summary
@@ -61,7 +61,7 @@ _gguf_variant_state_summary = model_common._gguf_variant_state_summary
 def _dir_is_sharded_gguf(path: Path) -> bool:
     """True when a folder's main GGUF weights are a multi-part ``-NNN-of-NNN``
     split, which makes the folder one model rather than a publisher of many."""
-    return _gguf_files_are_sharded(_main_gguf_files(path))
+    return _gguf_shard_count(_main_gguf_files(path)) > 0
 
 
 def _is_immediate_model_weight_file(path: Path) -> bool:

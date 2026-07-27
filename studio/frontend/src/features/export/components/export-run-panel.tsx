@@ -24,6 +24,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { FolderBrowser } from "@/features/model-picker";
+import { cn } from "@/lib/utils";
 import {
   AlertCircleIcon,
   ArrowRight01Icon,
@@ -115,6 +116,17 @@ const SHARD_SIZE_PRESETS = [
 ] as const;
 const SHARD_SIZE_CUSTOM = "__custom__";
 const SHARD_SIZE_DEFAULT = "2GB";
+// Mirrors unsloth/save.py:_GGUF_SHARD_SIZE_RE so a typo is caught here rather
+// than an hour in, after the 16-bit merge, inside the converter subprocess.
+const SHARD_SIZE_RE = /^\d+\s*[KMG]B?$/i;
+
+/** True when the resolved shard size is safe to send. "0" (single file) and the
+ * presets always are; only free-text custom input can be wrong. */
+export function isValidShardSize(value: string): boolean {
+  const size = value.trim();
+  if (!size || size === "0" || size.toLowerCase() === "none") return true;
+  return SHARD_SIZE_RE.test(size);
+}
 
 export interface ExportRunPanelProps {
   exportMethod: ExportMethod | null;
@@ -185,6 +197,9 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
         ggufShardSize.trim() as (typeof SHARD_SIZE_PRESETS)[number],
       ),
   );
+  // Only free-text custom input can be malformed; presets and "0" are always fine.
+  const shardSizeValid =
+    exportMethod !== "gguf" || isValidShardSize(ggufShardSize);
 
   const run = useExportRuntimeStore(
     useShallow((s) => ({
@@ -393,7 +408,9 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
               {splitMode === "split" ? (
                 <>
                   <Select
-                    value={customSize ? SHARD_SIZE_CUSTOM : ggufShardSize.trim()}
+                    value={
+                      customSize ? SHARD_SIZE_CUSTOM : ggufShardSize.trim()
+                    }
                     onValueChange={(value) => {
                       if (value === SHARD_SIZE_CUSTOM) {
                         setCustomSize(true);
@@ -417,23 +434,46 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                   </Select>
                   {customSize && (
                     <Input
-                      className="font-mono text-[12px]"
+                      className={cn(
+                        "font-mono text-[12px]",
+                        !shardSizeValid &&
+                          "border-destructive focus-visible:ring-destructive",
+                      )}
                       value={ggufShardSize === "0" ? "" : ggufShardSize}
                       onChange={(e) => onGgufShardSizeChange(e.target.value)}
                       spellCheck={false}
+                      aria-invalid={!shardSizeValid}
                       placeholder="e.g. 512MB, 6GB"
                     />
                   )}
-                  <p className="text-[11px] text-muted-foreground/70">
-                    {customSize ? (
-                      <>
-                        Whole number + <code className="font-mono">GB</code> or{" "}
-                        <code className="font-mono">MB</code> (e.g.{" "}
-                        <code className="font-mono">512MB</code>). Decimals and bare
-                        numbers are not accepted.
-                      </>
+                  <p
+                    className={cn(
+                      "text-[11px]",
+                      shardSizeValid
+                        ? "text-muted-foreground/70"
+                        : "text-destructive",
+                    )}
+                  >
+                    {shardSizeValid ? (
+                      customSize ? (
+                        <>
+                          Whole number + <code className="font-mono">KB</code>,{" "}
+                          <code className="font-mono">MB</code> or{" "}
+                          <code className="font-mono">GB</code> (e.g.{" "}
+                          <code className="font-mono">512MB</code>).
+                        </>
+                      ) : (
+                        "Each file will be at most this size. A k-quant (Q4_K_M etc.) splits its full-precision base but is written as one file itself; a lone F16/BF16/Q8_0 export splits directly."
+                      )
                     ) : (
-                      "Each file will be at most this size. Quantized outputs are always a single file."
+                      <>
+                        Not a valid size. Use a whole number plus{" "}
+                        <code className="font-mono">KB</code>/
+                        <code className="font-mono">MB</code>/
+                        <code className="font-mono">GB</code>, e.g.{" "}
+                        <code className="font-mono">512MB</code>. llama.cpp's
+                        splitter takes neither decimals nor bare numbers.
+                      </>
                     )}
                   </p>
                 </>
@@ -734,7 +774,9 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             <Button variant="outline" onClick={onClose}>
               Cancel
             </Button>
-            <Button onClick={onStart}>Start Export</Button>
+            <Button onClick={onStart} disabled={!shardSizeValid}>
+              Start Export
+            </Button>
           </>
         )}
         {isExporting && (

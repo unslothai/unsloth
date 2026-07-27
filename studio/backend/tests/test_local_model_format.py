@@ -121,7 +121,7 @@ def test_scan_lmstudio_dir_collapses_split_export_child(tmp_path):
     _touch_split(tmp_path / "Qwen3.5-2B-GGUF", "Qwen3.5-2B.BF16")
     rows = models_route._scan_lmstudio_dir(tmp_path)
     assert [m.display_name for m in rows] == ["Qwen3.5-2B-GGUF"]
-    assert rows[0].is_sharded is True
+    assert rows[0].shard_count == 3
     assert rows[0].model_format == "gguf"
 
 
@@ -131,7 +131,7 @@ def test_scan_lmstudio_dir_collapses_split_export_as_scan_root(tmp_path):
     _touch_split(tmp_path, "Qwen3.5-2B.BF16")
     rows = models_route._scan_lmstudio_dir(tmp_path)
     assert [m.display_name for m in rows] == [tmp_path.name]
-    assert rows[0].is_sharded is True
+    assert rows[0].shard_count == 3
 
 
 def test_scan_lmstudio_dir_publisher_of_whole_ggufs_still_descends(tmp_path):
@@ -143,12 +143,12 @@ def test_scan_lmstudio_dir_publisher_of_whole_ggufs_still_descends(tmp_path):
     assert names == {"model-Q4_K_M", "other-Q8_0"}
 
 
-def test_dir_is_sharded_gguf_ignores_split_mmproj_only(tmp_path):
+def test_dir_gguf_shard_count_ignores_split_mmproj_only(tmp_path):
     # A split mmproj companion alongside a whole main GGUF is not a sharded model.
     _touch(tmp_path / "model.BF16.gguf")
     _touch(tmp_path / "model.BF16-mmproj-00001-of-00002.gguf")
     _touch(tmp_path / "model.BF16-mmproj-00002-of-00002.gguf")
-    assert models_route._dir_is_sharded_gguf(tmp_path) is False
+    assert models_route._dir_gguf_shard_count(tmp_path) == 0
 
 
 def test_dir_model_format_gguf_with_config_is_still_gguf(tmp_path):

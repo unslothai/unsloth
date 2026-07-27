@@ -348,9 +348,10 @@ export interface LocalModelInfo {
   // Backend-detected weights format ("gguf" when known), so the UI can
   // classify scanned folders whose name lacks a -GGUF suffix.
   model_format?: string | null;
-  // True when the GGUF model is a multi-part split (``-NNN-of-NNN.gguf``),
-  // so the row can show a "Sharded" badge next to GGUF.
-  is_sharded?: boolean;
+  // Parts the GGUF declares as a llama.cpp split (the 13 in
+  // `-00001-of-00013.gguf`); 0 or absent for a whole file. The picker labels
+  // the row "13 parts".
+  shard_count?: number;
   // Set when a cached snapshot holds an incomplete download, so consumers can skip
   // weights that cannot load yet.
   partial?: boolean;

@@ -1319,11 +1319,13 @@ function localModelIsGguf(m: LocalModelInfo): boolean {
   );
 }
 
-/** Meta string for a local model row: format pill, plus a "Sharded" pill when
- * the GGUF is a multi-part split. */
+/** Meta string for a local model row: the format pill, plus the part count when
+ * the GGUF is a llama.cpp split (a split export is one model spread over many
+ * files, so the count is what distinguishes it from a plain GGUF). */
 function localModelRowMeta(m: LocalModelInfo, isGguf: boolean): string {
   if (!isGguf) return "Local";
-  return m.is_sharded ? "GGUF · Sharded" : "GGUF";
+  const parts = m.shard_count ?? 0;
+  return parts > 1 ? `GGUF · ${parts} parts` : "GGUF";
 }
 
 function localPathTooltip(name: string, path: string): ReactNode {

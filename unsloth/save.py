@@ -1798,21 +1798,46 @@ def get_executable(executables):
     return None
 
 
+# Larger than any real checkpoint, so the splitter never fires.
+_GGUF_NO_SHARDING = "100000GB"
+
+# llama.cpp's --split-max-size takes a whole number plus a K/M/G unit
+# (unsloth-zoo strips the trailing "B" before passing it on). A decimal such as
+# "1.5GB" clears zoo's float-based check but then dies in the converter's int()
+# parse, inside a subprocess, after the expensive 16-bit merge; a bare number is
+# silently read as *bytes*. Require the unit and reject both here instead.
+_GGUF_SHARD_SIZE_RE = re.compile(r"^(\d+)\s*([KMG])B?$", re.IGNORECASE)
+
+
 def _resolve_gguf_shard_size(gguf_shard_size: Optional[str]) -> str:
     """
     Resolve a user-supplied gguf_shard_size value to the string passed to
     convert_to_gguf's max_shard_size argument.
 
-    - None or ""      → "50GB"  (default: effectively one file for most models)
-    - "0" or "none"   → "100000GB"  (no sharding: one file regardless of size)
-    - anything else   → passed through as-is (e.g. "2GB", "4GB")
+    - None                    → "50GB" (the historical default)
+    - "", "none", "0", "0MB"  → no sharding: one file regardless of size
+    - "512MB", "4GB", ...     → normalized to "<n><K|M|G>B"
+
+    Raises ValueError for anything else, so a typo fails before the merge rather
+    than deep inside the converter subprocess.
     """
     if gguf_shard_size is None:
         return "50GB"
-    cleaned = gguf_shard_size.strip().lower()
-    if cleaned in ("", "0", "none"):
-        return "100000GB"
-    return gguf_shard_size.strip()
+    cleaned = gguf_shard_size.strip()
+    if cleaned.lower() in ("", "none", "0"):
+        return _GGUF_NO_SHARDING
+    match = _GGUF_SHARD_SIZE_RE.match(cleaned)
+    if match is None:
+        raise ValueError(
+            f"Unsloth: `gguf_shard_size={gguf_shard_size!r}` is not a valid shard size. "
+            "Use a whole number with a KB/MB/GB unit, for example '512MB' or '4GB'. "
+            "Decimals such as '1.5GB' are not supported by llama.cpp's splitter, and a "
+            "bare number would be read as bytes. Pass '0' or None for a single file."
+        )
+    magnitude, unit = int(match.group(1)), match.group(2).upper()
+    if magnitude == 0:
+        return _GGUF_NO_SHARDING
+    return f"{magnitude}{unit}B"
 
 
 # Output types convert_hf_to_gguf.py can emit directly via --outtype.
