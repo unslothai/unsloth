@@ -3916,7 +3916,8 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
 
     try:
         infos = socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM)
-    except OSError as e:
+    except (OSError, UnicodeError) as e:
+        # UnicodeError (not an OSError) when IDNA encoding rejects the hostname.
         return False, f"Failed to resolve host: {e}", ""
 
     if not infos:
@@ -4156,13 +4157,27 @@ def _normalize_url_scheme(url: str) -> str:
     """Prepend ``https://`` to bare hosts (``google.com``, ``example.com:8443``).
 
     ``urlparse`` reads the host of a ``host:port`` input as the scheme, so those
-    are recognised by a dotted host-like scheme with an empty netloc. Only a
-    dotted host with an in-range port is rewritten; real schemes (``file:``,
-    ``javascript:``, including ``file:80``), root-relative paths (``/login``)
-    and bad ports are returned untouched so the caller rejects them."""
+    are recognised by a dotted host-like scheme with an empty netloc. Rewrites a
+    dotted host with an optional in-range port, and the ``//host`` form. Real
+    schemes (``file:``, ``javascript:``, including ``file:80``), root-relative
+    paths (``/login``) and bad ports are returned untouched so the caller
+    rejects them. A dotted scheme is indistinguishable from ``host:port``, so
+    ``com.acme.app:443/cb`` is rewritten too; an empty port (``example.com:``)
+    is kept as-is, matching ``https://example.com:``.
+
+    The host is matched against the raw authority, never against what
+    ``urlparse`` returned, because urlsplit strips tabs/newlines (3.10) and
+    leading C0/space (3.12). Anything it would strip fails the match, so the
+    decision and the rewritten string cannot disagree across versions."""
     from urllib.parse import urlparse
 
-    parsed = urlparse(url)
+    url = url.strip()
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        # Unmatched IPv6 brackets, or a netloc that NFKC-decomposes into a
+        # delimiter. Not a bare host; let the caller reject it.
+        return url
     if parsed.scheme:
         if parsed.netloc or not _DOTTED_HOST_RE.fullmatch(parsed.scheme):
             return url
@@ -4195,6 +4210,8 @@ def _fetch_url_raw(
     ``error`` is a user-facing message string when the fetch failed (the
     existing "Blocked:" / "Failed to fetch URL:" wording), else ``None``.
     Blocks private/loopback/link-local targets and caps the download size.
+    No input reaches the caller as an exception: the URL is model-supplied, so
+    every malformed form resolves to one of these strings.
 
     ``deadline`` is an optional ``time.monotonic`` cutoff for the whole fetch
     (redirect hops and body read included) and ``cancel_event`` aborts it when
@@ -4203,7 +4220,11 @@ def _fetch_url_raw(
     from urllib.parse import urlparse
 
     url = _normalize_url_scheme(url)
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+    except ValueError as e:
+        # Unmatched IPv6 brackets, or a netloc NFKC-decomposing into a delimiter.
+        return f"Blocked: malformed URL (got {url!r}): {e}.", "", ""
     if parsed.scheme not in ("http", "https"):
         return f"Blocked: only http/https URLs are allowed (got {url!r}).", "", ""
     if not parsed.hostname:

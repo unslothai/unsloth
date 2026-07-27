@@ -120,6 +120,50 @@ def test_blocked_message_shows_the_url_not_the_scheme():
     assert "ftp://x.com" in err
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        # urlparse itself raises on these; the URL is model-supplied, so they
+        # have to come back as an error string like every other bad input
+        "//exam／ple.com",  # NFKC-decomposes into "/"
+        "//example.com＠",  # NFKC-decomposes into "@"
+        "//example.com：",  # NFKC-decomposes into ":"
+        "https://[::1",  # unmatched IPv6 bracket
+        "https://::1]",
+    ],
+)
+def test_malformed_url_is_blocked_instead_of_raising(url):
+    err, _, _ = tools._fetch_url_raw(url)
+    assert err and err.startswith("Blocked:")
+
+
+def test_idna_failure_is_reported_instead_of_raising(monkeypatch):
+    # getaddrinfo raises UnicodeError, not OSError, when IDNA encoding fails.
+    import socket
+
+    def boom(*a, **k):
+        raise UnicodeError("encoding with 'idna' codec failed")
+
+    monkeypatch.setattr(socket, "getaddrinfo", boom)
+    err, _, _ = tools._fetch_url_raw("https://münich.example")
+    assert err and err.startswith("Failed to resolve host:")
+
+
+@pytest.mark.parametrize(
+    "url, hostname",
+    [
+        (" google.com", "google.com"),
+        ("google.com\n", "google.com"),
+        ("\t example.com:8443 ", "example.com"),
+    ],
+)
+def test_surrounding_whitespace_is_stripped(resolved, url, hostname):
+    # _web_search strips, but normalization now lives at the fetch layer, so
+    # direct callers of _fetch_page_text/_fetch_url_raw need it too.
+    tools._fetch_url_raw(url)
+    assert resolved["hostname"] == hostname
+
+
 @pytest.mark.parametrize("url", ["127.0.0.1", "169.254.169.254", "10.0.0.1", "192.168.1.1"])
 def test_normalization_does_not_bypass_ssrf_guard(url):
     err, _, _ = tools._fetch_url_raw(url, timeout = 3)
