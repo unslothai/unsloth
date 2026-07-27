@@ -535,7 +535,7 @@ def install_lock(lock_path: Path) -> Iterator[None]:
                 break
             except FileExistsError:
                 try:
-                    raw = lock_path.read_text().strip()
+                    raw = lock_path.read_text(encoding = "utf-8").strip()
                 except FileNotFoundError:
                     continue
                 stale = False
@@ -660,7 +660,7 @@ def write_metadata(install_dir: Path, *, version: str, asset: str, sha256: str) 
         "asset": asset,
         "sha256": sha256,
     }
-    metadata_path(install_dir).write_text(json.dumps(payload, indent = 2) + "\n")
+    metadata_path(install_dir).write_text(json.dumps(payload, indent = 2) + "\n", encoding = "utf-8")
 
 
 def load_metadata(install_dir: Path) -> dict | None:
@@ -668,7 +668,7 @@ def load_metadata(install_dir: Path) -> dict | None:
     if not path.exists():
         return None
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding = "utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
     return data if isinstance(data, dict) else None

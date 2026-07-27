@@ -205,35 +205,33 @@ export function ParamsSection(): ReactElement {
     setCtxInput(String(store.contextLength));
   }, [store.contextLength]);
 
-  // On Apple Silicon the MLX trainer supports a different optimizer set than
-  // the CUDA/bitsandbytes list, so offer the MLX names there.
+  // Apple Silicon (MLX) supports a different optimizer set than the CUDA list.
   const isMac = platformDeviceType === "mac";
   const optimizerOptions = isMac ? MLX_OPTIMIZER_OPTIONS : OPTIMIZER_OPTIONS;
 
-  // On Mac, the MLX backend normalizes every CUDA/bitsandbytes optimizer in
-  // OPTIMIZER_OPTIONS (including the shared default) to plain AdamW, so show
-  // AdamW for those to keep the control truthful and non-blank. Any other
-  // value -- an MLX optimizer the user picked, or an unrecognized/non-canonical
-  // imported one -- is shown as-is rather than mislabeled as AdamW, since the
-  // backend would run or reject it on its own terms. Non-Mac display unchanged.
+  // On Mac the MLX backend remaps CUDA optimizers to AdamW, so label those as
+  // AdamW; other values (MLX or imported) show as-is. Non-Mac unchanged.
   const isCudaAliasOptimizer = OPTIMIZER_OPTIONS.some(
     (o) => o.value === store.optimizerType,
   );
   const selectedOptimizer =
     isMac && isCudaAliasOptimizer ? "adamw" : store.optimizerType;
 
-  // LoftQ is not supported on MLX (the backend rejects it), so clear a stale
-  // selection to lora on Apple Silicon -- whether persisted, applied from a
-  // model default, or imported -- so the backend never receives it.
+  // LoftQ and DoRA are not supported on MLX (the backend rejects both), so
+  // clear a stale selection to lora on Apple Silicon -- whether persisted,
+  // applied from a model default, or imported -- so the backend never
+  // receives it.
   const setLoraVariant = store.setLoraVariant;
   useEffect(() => {
-    if (isMac && store.loraVariant === "loftq") {
+    if (
+      isMac &&
+      (store.loraVariant === "loftq" || store.loraVariant === "dora")
+    ) {
       setLoraVariant("lora");
     }
   }, [isMac, store.loraVariant, setLoraVariant]);
 
-  // Packing is not supported on MLX (the backend forces it off), so clear it on
-  // Apple Silicon -- the checkbox is disabled and the flag is never sent.
+  // Packing is unsupported on MLX; clear it on Apple Silicon (checkbox disabled).
   const setPacking = store.setPacking;
   useEffect(() => {
     if (isMac && store.packing) {
@@ -720,7 +718,7 @@ export function ParamsSection(): ReactElement {
                   )}
 
                   {/* LoRA variant */}
-                  <div className="flex gap-2">
+                  <div className="grid grid-cols-2 gap-2">
                     {(
                       [
                         {
@@ -738,12 +736,20 @@ export function ParamsSection(): ReactElement {
                           label: "LoftQ",
                           desc: t("studio.params.memoryEfficient"),
                         },
+                        {
+                          value: "dora",
+                          label: "DoRA",
+                          desc: t("studio.params.weightDecomposed"),
+                        },
                       ] as const
                     ).map((opt) => (
                       <button
                         key={opt.value}
                         type="button"
-                        disabled={isMac && opt.value === "loftq"}
+                        disabled={
+                          isMac &&
+                          (opt.value === "loftq" || opt.value === "dora")
+                        }
                         onClick={() => store.setLoraVariant(opt.value)}
                         className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
                           store.loraVariant === opt.value
@@ -753,7 +759,7 @@ export function ParamsSection(): ReactElement {
                       >
                         <p className="text-xs font-medium">{opt.label}</p>
                         <p className="text-ui-10 text-muted-foreground">
-                          {isMac && opt.value === "loftq"
+                          {isMac && (opt.value === "loftq" || opt.value === "dora")
                             ? "Not supported on Apple Silicon"
                             : opt.desc}
                         </p>
