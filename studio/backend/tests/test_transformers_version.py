@@ -5940,14 +5940,27 @@ class TestExternalAutoMapRepoFallsBackToTheHubCache:
         return snap
 
     @classmethod
-    def _pair(cls, hub: Path, external_marker: str = _V5_IMPORT, cache_external: bool = True):
-        cls._snapshot(hub, "org/primary", {
-            "config.json": json.dumps({
-                "model_type": "custom_remote",
-                "auto_map": {"AutoModelForCausalLM": "ext/repo--modeling_ext.ExtForCausalLM"},
-            }),
-            "modeling_local.py": "import torch\n",
-        })
+    def _pair(
+        cls,
+        hub: Path,
+        external_marker: str = _V5_IMPORT,
+        cache_external: bool = True,
+    ):
+        cls._snapshot(
+            hub,
+            "org/primary",
+            {
+                "config.json": json.dumps(
+                    {
+                        "model_type": "custom_remote",
+                        "auto_map": {
+                            "AutoModelForCausalLM": "ext/repo--modeling_ext.ExtForCausalLM"
+                        },
+                    }
+                ),
+                "modeling_local.py": "import torch\n",
+            },
+        )
         if cache_external:
             cls._snapshot(hub, "ext/repo", {"modeling_ext.py": external_marker})
 
@@ -5981,8 +5994,9 @@ class TestExternalAutoMapRepoFallsBackToTheHubCache:
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         assert tv._remote_auto_map_tier("org/primary") == ("default", False)
 
-    def test_transient_external_failure_is_never_reported_complete(self, monkeypatch,
-                                                                   tmp_path: Path):
+    def test_transient_external_failure_is_never_reported_complete(
+        self, monkeypatch, tmp_path: Path
+    ):
         """Negative control: a snapshot substitution must not close an unread closure.
 
         Online, a repo the Hub failed on stays incomplete even though its snapshot answered,
@@ -6001,9 +6015,15 @@ class TestExternalAutoMapRepoFallsBackToTheHubCache:
         """The scan-wide ceiling still applies, so N repos cannot multiply it."""
         import utils.transformers_version as tv
 
-        self._snapshot(tmp_path, "ext/repo", {
-            "a.py": "import torch\n", "b.py": "import torch\n", "c.py": "import torch\n",
-        })
+        self._snapshot(
+            tmp_path,
+            "ext/repo",
+            {
+                "a.py": "import torch\n",
+                "b.py": "import torch\n",
+                "c.py": "import torch\n",
+            },
+        )
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         budget = tv._RemoteScanBudget()
@@ -6040,7 +6060,8 @@ class TestScannedTierSurvivesOneResolution:
         monkeypatch.setattr(tv, "_load_config_json", lambda m, t = None: cfg)
         monkeypatch.setattr(tv, "_config_json_is_definitive", lambda m, t = None: True)
         monkeypatch.setattr(
-            tv, "_load_repo_json_checked",
+            tv,
+            "_load_repo_json_checked",
             lambda m, fn, t = None: (cfg, True) if fn == "config.json" else (None, True),
         )
         monkeypatch.setattr(tv, "_check_tokenizer_config_needs_v5", lambda m, t = None, **kw: False)
@@ -6048,11 +6069,16 @@ class TestScannedTierSurvivesOneResolution:
         monkeypatch.setattr(tv, "_tier_from_config_mapping", lambda c: None)
         monkeypatch.setattr(tv, "_probe_tier", lambda m, t, r, **kw: kw.get("floor", "530"))
         monkeypatch.setattr(
-            tv, "_list_hub_repo_py_files",
+            tv,
+            "_list_hub_repo_py_files",
             lambda repo, tok = None: ({"modeling_custom.py", "other.py"}, True),
         )
 
-        def _read(model_name, filename, tok = None):
+        def _read(
+            model_name,
+            filename,
+            tok = None,
+        ):
             return reads[min(scans["n"], len(reads) - 1)].get(filename)
 
         original = tv._remote_auto_map_py_contents
@@ -6069,18 +6095,24 @@ class TestScannedTierSurvivesOneResolution:
     def test_marker_read_by_the_first_scan_still_activates_5x(self, monkeypatch):
         # Scan 1 reads the marker but a sibling .py fails, so nothing is memoized; scan 2
         # would then lose the marker file itself.
-        scans = self._hub(monkeypatch, [
-            {"modeling_custom.py": _V5_IMPORT, "other.py": None},
-            {"modeling_custom.py": None, "other.py": "import torch\n"},
-        ])
+        scans = self._hub(
+            monkeypatch,
+            [
+                {"modeling_custom.py": _V5_IMPORT, "other.py": None},
+                {"modeling_custom.py": None, "other.py": "import torch\n"},
+            ],
+        )
         assert get_transformers_tier("org/flaky-remote", probe = True) == "530"
         assert scans["n"] == 1  # the resolution reused its own scan
 
     def test_complete_scan_without_the_marker_stays_default(self, monkeypatch):
         """Negative control: reusing the scanned tier must not invent a promotion."""
-        scans = self._hub(monkeypatch, [
-            {"modeling_custom.py": "import torch\n", "other.py": "import torch\n"},
-        ])
+        scans = self._hub(
+            monkeypatch,
+            [
+                {"modeling_custom.py": "import torch\n", "other.py": "import torch\n"},
+            ],
+        )
         assert get_transformers_tier("org/plain-remote", probe = True) == "default"
         assert scans["n"] == 1
 
@@ -6103,60 +6135,74 @@ class TestTypeCheckingGuardMustResolveToTyping:
     @staticmethod
     def _matches(src: str) -> bool:
         import utils.transformers_version as tv
-
         return tv._remote_auto_map_py_matches(tv._TRANSFORMERS_5_REMOTE_IMPORT_MARKERS, [src])
 
-    @pytest.mark.parametrize("src, label", [
-        (f"TYPE_CHECKING = True\nif TYPE_CHECKING:\n    {_V5_IMPORT}", "module-level assignment"),
-        (
-            f"def build(TYPE_CHECKING = True):\n    if TYPE_CHECKING:\n        {_V5_IMPORT}",
-            "function parameter",
-        ),
-        (
-            f"import myconfig\nif myconfig.TYPE_CHECKING:\n    {_V5_IMPORT}",
-            "unrelated object attribute",
-        ),
-        (
-            f"for TYPE_CHECKING in flags:\n    if TYPE_CHECKING:\n        {_V5_IMPORT}",
-            "loop target",
-        ),
-        (
-            f"from .flags import TYPE_CHECKING\nif TYPE_CHECKING:\n    {_V5_IMPORT}",
-            "relative import of the repo's own name",
-        ),
-    ])
+    @pytest.mark.parametrize(
+        "src, label",
+        [
+            (
+                f"TYPE_CHECKING = True\nif TYPE_CHECKING:\n    {_V5_IMPORT}",
+                "module-level assignment",
+            ),
+            (
+                f"def build(TYPE_CHECKING = True):\n    if TYPE_CHECKING:\n        {_V5_IMPORT}",
+                "function parameter",
+            ),
+            (
+                f"import myconfig\nif myconfig.TYPE_CHECKING:\n    {_V5_IMPORT}",
+                "unrelated object attribute",
+            ),
+            (
+                f"for TYPE_CHECKING in flags:\n    if TYPE_CHECKING:\n        {_V5_IMPORT}",
+                "loop target",
+            ),
+            (
+                f"from .flags import TYPE_CHECKING\nif TYPE_CHECKING:\n    {_V5_IMPORT}",
+                "relative import of the repo's own name",
+            ),
+        ],
+    )
     def test_shadowed_guard_still_reaches_the_tier(self, src, label):
         assert self._matches(src) is True, label
 
-    @pytest.mark.parametrize("src, label", [
-        (f"from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    {_V5_IMPORT}", "plain"),
-        (f"from typing import TYPE_CHECKING as TC\nif TC:\n    {_V5_IMPORT}", "aliased"),
-        (
-            f"from typing_extensions import TYPE_CHECKING as TC\nif TC:\n    {_V5_IMPORT}",
-            "aliased typing_extensions",
-        ),
-        (f"import typing\nif typing.TYPE_CHECKING:\n    {_V5_IMPORT}", "qualified"),
-        (f"import typing as t\nif t.TYPE_CHECKING:\n    {_V5_IMPORT}", "aliased module"),
-        (
-            f"TYPE_CHECKING = False\nif TYPE_CHECKING:\n    {_V5_IMPORT}",
-            "the no-import False idiom",
-        ),
-    ])
+    @pytest.mark.parametrize(
+        "src, label",
+        [
+            (f"from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    {_V5_IMPORT}", "plain"),
+            (f"from typing import TYPE_CHECKING as TC\nif TC:\n    {_V5_IMPORT}", "aliased"),
+            (
+                f"from typing_extensions import TYPE_CHECKING as TC\nif TC:\n    {_V5_IMPORT}",
+                "aliased typing_extensions",
+            ),
+            (f"import typing\nif typing.TYPE_CHECKING:\n    {_V5_IMPORT}", "qualified"),
+            (f"import typing as t\nif t.TYPE_CHECKING:\n    {_V5_IMPORT}", "aliased module"),
+            (
+                f"TYPE_CHECKING = False\nif TYPE_CHECKING:\n    {_V5_IMPORT}",
+                "the no-import False idiom",
+            ),
+        ],
+    )
     def test_real_typing_guard_never_promotes(self, src, label):
         """Negative control: a genuinely dead branch must still be pruned."""
         assert self._matches(src) is False, label
 
     def test_else_branch_of_a_real_guard_still_counts(self):
         """Negative control: only the guard's own body is dropped."""
-        assert self._matches(
-            f"from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    pass\nelse:\n    {_V5_IMPORT}"
-        ) is True
+        assert (
+            self._matches(
+                f"from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    pass\nelse:\n    {_V5_IMPORT}"
+            )
+            is True
+        )
 
     def test_guard_resolves_when_the_import_follows_the_branch(self):
         """The walk reaches the ``if`` before the import that binds the name."""
-        assert self._matches(
-            f"if TYPE_CHECKING:\n    {_V5_IMPORT}\nfrom typing import TYPE_CHECKING\n"
-        ) is False
+        assert (
+            self._matches(
+                f"if TYPE_CHECKING:\n    {_V5_IMPORT}\nfrom typing import TYPE_CHECKING\n"
+            )
+            is False
+        )
 
 
 class TestProbeFalseSkipsTokenizerAutoMapScan:

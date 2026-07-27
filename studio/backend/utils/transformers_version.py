@@ -966,10 +966,7 @@ def _fetch_hub_py_sources(
     return sources, complete
 
 
-def _snapshot_py_sources(
-    snapshot: Path,
-    budget: "_RemoteScanBudget | None" = None,
-) -> list[str]:
+def _snapshot_py_sources(snapshot: Path, budget: "_RemoteScanBudget | None" = None) -> list[str]:
     """Every readable ``.py`` under a hub-cache snapshot dir, charged to *budget*.
 
     Stands in for a repo the Hub API would not list: the snapshot is the exact code an
