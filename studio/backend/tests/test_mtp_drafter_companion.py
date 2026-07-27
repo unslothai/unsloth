@@ -799,3 +799,31 @@ def test_detect_mtp_file_ranks_split_drafter_by_total_size(tmp_path):
     smaller.write_bytes(b"x" * 100)
 
     assert detect_mtp_file(str(weight)) == str(smaller.resolve())
+
+
+def test_companion_search_root_promotes_bpw_quant_directory(tmp_path):
+    """A bpw-qualified quant directory must resolve to the repository root, or
+    the repo-root MTP/ copy is never in scope for it."""
+    quant_dir = tmp_path / "IQ4_XS-3.53bpw"
+    quant_dir.mkdir()
+    weight = quant_dir / "model.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    drafter = sub / "mtp-model.gguf"
+    drafter.write_bytes(b"x")
+
+    # Directory selection and the file inside it agree on the root.
+    assert _local_gguf_companion_search_root(str(quant_dir), str(weight)) == str(tmp_path)
+    assert _local_gguf_companion_search_root(str(weight), str(weight)) == str(tmp_path)
+    assert detect_mtp_file(str(weight), str(tmp_path)) == str(drafter.resolve())
+
+
+def test_companion_search_root_keeps_non_quant_directories(tmp_path):
+    """Sharing the quant vocabulary must not widen what gets promoted."""
+    for name in ("DeepSeek-V3-UD-Q2_K_XL", "outputs", "Q4_0-extra", "Q4_0bpw"):
+        directory = tmp_path / name
+        directory.mkdir()
+        weight = directory / "model.gguf"
+        weight.write_bytes(b"x")
+        assert _local_gguf_companion_search_root(str(directory), str(weight)) == str(directory)

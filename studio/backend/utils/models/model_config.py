@@ -1865,17 +1865,9 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
 
     selected = Path(selected_path)
     gguf_path = Path(gguf_file)
-    quant_dir_re = (
-        r"(UD-)?("
-        r"MXFP[0-9]+(?:_[A-Z0-9]+)*"
-        r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
-        r"|TQ[0-9]+_[0-9]+"
-        r"|Q[0-9]+_K_[A-Z]+"
-        r"|Q[0-9]+_[0-9]+"
-        r"|Q[0-9]+_K"
-        r"|BF16|F16|F32"
-        r")"
-    )
+    # One quant vocabulary, shared: a local copy of it silently fell behind on
+    # the bpw modifier, which left IQ4_XS-3.53bpw unrecognised as a quant dir.
+    quant_dir_re = rf"{_GGUF_KNOWN_QUANT_RE.pattern}(-[0-9]+(?:\.[0-9]+)?bpw)?"
     search_dir = gguf_path.parent if selected.suffix.lower() == ".gguf" else selected
     if not search_dir.name:
         return str(search_dir)
