@@ -774,7 +774,7 @@ def _write_pid_file():
     """Write the current process PID to the studio PID file."""
     try:
         _PID_FILE.parent.mkdir(parents = True, exist_ok = True)
-        _PID_FILE.write_text(str(os.getpid()))
+        _PID_FILE.write_text(str(os.getpid()), encoding = "utf-8")
     except OSError:
         pass
 
@@ -783,10 +783,10 @@ def _remove_pid_file():
     """Remove the PID file if it belongs to this process."""
     try:
         if _PID_FILE.is_file():
-            stored = _PID_FILE.read_text().strip()
+            stored = _PID_FILE.read_text(encoding = "utf-8").strip()
             if stored == str(os.getpid()):
                 _PID_FILE.unlink(missing_ok = True)
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
 
 
@@ -934,7 +934,7 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
             for finder in sp.glob("__editable___*_finder.py"):
                 try:
                     src = finder.read_text(encoding = "utf-8")
-                except OSError:
+                except (OSError, UnicodeDecodeError):
                     continue
                 # Tolerate single/multi-line dict literals; [^}]* rejects nested
                 # dicts, which the setuptools editable template never emits.

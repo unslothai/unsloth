@@ -7,6 +7,7 @@ import {
   ActivityIcon,
   ChevronDownIcon,
   CircleIcon,
+  PowerOffIcon,
   RefreshCwIcon,
 } from "lucide-react";
 import {
@@ -17,11 +18,19 @@ import {
   useRef,
   useState,
 } from "react";
-import { getApiMonitor, getApiMonitorEntry } from "../../chat/api/chat-api";
+import {
+  getApiMonitor,
+  getApiMonitorEntry,
+  getInferenceStatus,
+  unloadModel,
+} from "../../chat/api/chat-api";
+import { resolveInferenceCheckpointId } from "../../chat/lib/apply-inference-status-to-store";
+import { useChatRuntimeStore } from "../../chat/stores/chat-runtime-store";
 import type { ApiMonitorEntry, ApiMonitorResponse } from "../../chat/types/api";
 
 const API_INFERENCE_PREFIX_RE = /^\/api\/inference/;
 const V1_PREFIX_RE = /^\/v1\//;
+const PAGE_SIZE = 5;
 
 function formatTime(value: number): string {
   return new Date(value * 1000).toLocaleTimeString([], {
@@ -84,6 +93,65 @@ function UsageBar({ value }: { value?: number | null }): ReactElement | null {
         style={{ width: `${pct}%` }}
       />
     </div>
+  );
+}
+
+function isLifecycle(entry: ApiMonitorEntry): boolean {
+  return entry.kind === "lifecycle";
+}
+
+function lifecycleLabel(entry: ApiMonitorEntry): string {
+  if (entry.event === "unload") {
+    return entry.reason === "idle" ? "Model unloaded (idle)" : "Model unloaded";
+  }
+  if (entry.event === "download") {
+    if (entry.status === "running") {
+      const pct = entry.progress;
+      return typeof pct === "number"
+        ? `Downloading model (${Math.round(pct)}%)`
+        : "Downloading model";
+    }
+    if (entry.status === "completed") return "Model downloaded";
+    // A cancel is deliberate, so saying it failed misreads the user's own action.
+    return entry.status === "cancelled"
+      ? "Model download cancelled"
+      : "Model download failed";
+  }
+  if (entry.status === "running") {
+    return "Loading model";
+  }
+  if (entry.status === "completed") {
+    return "Model loaded";
+  }
+  return "Model load failed";
+}
+
+// Load/unload rows: label, model and time. No prompt or detail, so nothing to expand.
+function LifecycleEntry({ entry }: { entry: ApiMonitorEntry }): ReactElement {
+  return (
+    <article className="min-w-0 rounded-lg border border-border/70 bg-muted/25">
+      <div className="flex w-full min-w-0 items-start justify-between gap-3 p-3">
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <ActivityIcon
+              className={cn("size-3.5 shrink-0", statusTone(entry.status))}
+            />
+            <span className="truncate text-xs font-medium">
+              {lifecycleLabel(entry)}
+            </span>
+          </div>
+          <div className="mt-1 truncate text-ui-11 text-muted-foreground">
+            {entry.model}
+          </div>
+        </div>
+        <div className="shrink-0 text-right text-ui-11 text-muted-foreground">
+          <div>{formatTime(entry.started_at)}</div>
+          {entry.event === "load" || entry.event === "download" ? (
+            <div>{formatDuration(entry.duration_ms)}</div>
+          ) : null}
+        </div>
+      </div>
+    </article>
   );
 }
 
@@ -191,6 +259,7 @@ export function ApiMonitorConsole(): ReactElement {
   const [data, setData] = useState<ApiMonitorResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [unloading, setUnloading] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [details, setDetails] = useState<Record<string, ApiMonitorEntry>>({});
   const [loadingDetails, setLoadingDetails] = useState<Set<string>>(
@@ -210,6 +279,28 @@ export function ApiMonitorConsole(): ReactElement {
       setRefreshing(false);
     }
   }, []);
+
+  // /unload matches on the internal id, which the monitor omits, so read it from status.
+  const unloadActiveModel = useCallback(async (): Promise<void> => {
+    setUnloading(true);
+    try {
+      const status = await getInferenceStatus();
+      const checkpoint = resolveInferenceCheckpointId(status);
+      if (!checkpoint) {
+        setError(null);
+        return;
+      }
+      await unloadModel({ model_path: checkpoint });
+      // Same as the chat eject flow: the store still holds the freed checkpoint.
+      useChatRuntimeStore.getState().clearCheckpoint();
+      setError(null);
+      await loadMonitor();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to unload the model");
+    } finally {
+      setUnloading(false);
+    }
+  }, [loadMonitor]);
 
   useEffect(() => {
     let cancelled = false;
@@ -253,6 +344,48 @@ export function ApiMonitorConsole(): ReactElement {
   const statusLabel = data?.status ?? "idle";
   const hasActive = (data?.active_requests ?? 0) > 0;
   const entries = useMemo(() => data?.entries ?? [], [data]);
+
+  // Page 1 tracks the live list; paging back freezes the id order so history holds still.
+  const [page, setPage] = useState(0);
+  const [frozenIds, setFrozenIds] = useState<string[] | null>(null);
+  const byId = useMemo(
+    () => new Map(entries.map((entry) => [entry.id, entry])),
+    [entries],
+  );
+  const ordered = useMemo(() => {
+    if (frozenIds === null) {
+      return entries;
+    }
+    return frozenIds.flatMap((id) => {
+      const entry = byId.get(id);
+      return entry ? [entry] : [];
+    });
+  }, [byId, entries, frozenIds]);
+  const pageCount = Math.max(1, Math.ceil(ordered.length / PAGE_SIZE));
+  const pageIndex = Math.min(page, pageCount - 1);
+  const visible = ordered.slice(
+    pageIndex * PAGE_SIZE,
+    pageIndex * PAGE_SIZE + PAGE_SIZE,
+  );
+  const newerCount =
+    frozenIds === null
+      ? 0
+      : entries.filter((entry) => !frozenIds.includes(entry.id)).length;
+
+  const goToPage = useCallback(
+    (next: number): void => {
+      if (next <= 0) {
+        setFrozenIds(null);
+        setPage(0);
+        return;
+      }
+      // Freeze on the way off page 1 so the history under the cursor holds still.
+      setFrozenIds((prev) => prev ?? entries.map((entry) => entry.id));
+      setPage(next);
+    },
+    [entries],
+  );
+
   const loadDetail = useCallback(
     (id: string): void => {
       if (loadingDetailsRef.current.has(id)) {
@@ -305,8 +438,9 @@ export function ApiMonitorConsole(): ReactElement {
   );
 
   useEffect(() => {
-    for (const entry of entries) {
-      if (!expandedIds.has(entry.id)) {
+    // Only rows on screen: an expanded row on another page would keep polling.
+    for (const entry of visible) {
+      if (isLifecycle(entry) || !expandedIds.has(entry.id)) {
         continue;
       }
       const cached = detailsRef.current[entry.id];
@@ -314,7 +448,7 @@ export function ApiMonitorConsole(): ReactElement {
         loadDetail(entry.id);
       }
     }
-  }, [entries, expandedIds, loadDetail]);
+  }, [visible, expandedIds, loadDetail]);
 
   return (
     <section className="flex min-w-0 flex-col rounded-lg border border-border/70 bg-background">
@@ -339,6 +473,22 @@ export function ApiMonitorConsole(): ReactElement {
           <div className="rounded-full border border-border px-2.5 py-1 text-xs capitalize text-muted-foreground">
             {statusLabel}
           </div>
+          {/* Always rendered, disabled when idle: the only manual release must stay visible. */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => void unloadActiveModel()}
+            disabled={unloading || !data?.active_model}
+            title={
+              data?.active_model
+                ? "Unload the model and free its VRAM"
+                : "No model is loaded"
+            }
+          >
+            <PowerOffIcon className="size-3.5" />
+            {unloading ? "Unloading" : "Unload"}
+          </Button>
           <Button
             type="button"
             variant="ghost"
@@ -375,19 +525,54 @@ export function ApiMonitorConsole(): ReactElement {
           </div>
         ) : (
           <div className="grid gap-3">
-            {entries.map((entry) => (
-              <MonitorEntry
-                key={entry.id}
-                entry={entry}
-                detail={details[entry.id]}
-                expanded={expandedIds.has(entry.id)}
-                loading={loadingDetails.has(entry.id)}
-                onToggle={() => toggleEntry(entry)}
-              />
-            ))}
+            {visible.map((entry) =>
+              isLifecycle(entry) ? (
+                <LifecycleEntry key={entry.id} entry={entry} />
+              ) : (
+                <MonitorEntry
+                  key={entry.id}
+                  entry={entry}
+                  detail={details[entry.id]}
+                  expanded={expandedIds.has(entry.id)}
+                  loading={loadingDetails.has(entry.id)}
+                  onToggle={() => toggleEntry(entry)}
+                />
+              ),
+            )}
           </div>
         )}
       </div>
+
+      {/* Also while frozen: retention can shrink that list below one page, and hiding the
+          pager would strand the console on a stale snapshot. */}
+      {ordered.length > PAGE_SIZE || frozenIds !== null ? (
+        <div className="flex items-center justify-between gap-2 border-t border-border/60 px-4 py-2 text-xs text-muted-foreground">
+          <span>
+            Page {pageIndex + 1} of {pageCount}
+            {newerCount > 0 ? ` (${newerCount.toLocaleString()} new)` : ""}
+          </span>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => goToPage(pageIndex - 1)}
+              disabled={pageIndex === 0 && frozenIds === null}
+            >
+              Newer
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => goToPage(pageIndex + 1)}
+              disabled={pageIndex >= pageCount - 1}
+            >
+              Older
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

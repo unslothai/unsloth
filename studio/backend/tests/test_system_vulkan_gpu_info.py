@@ -56,7 +56,9 @@ def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
     assert gpu["available"] is False
     assert gpu["backend"] == "cpu"
     assert gpu["index_kind"] == "relative"
-    assert gpu["gguf_gpu_ids_supported"] is False
+    # A Vulkan llama.cpp build accepts gpu_ids even when torch training is
+    # CPU-only: the pick is a ggml ordinal, not a torch device index.
+    assert gpu["gguf_gpu_ids_supported"] is True
     assert gpu["devices"] == []
     assert inference_gpu["backend"] == "vulkan"
     assert inference_gpu["devices"] == [vulkan_device]
@@ -124,7 +126,8 @@ def test_system_gpu_info_keeps_forced_vulkan_separate_from_training_metrics(monk
     assert gpu["devices"][0]["vram_used_gb"] == 6.0
     assert inference_gpu["backend"] == "vulkan"
     assert inference_gpu["devices"][0]["vram_used_gb"] == 1.0
-    assert inference_gpu["gguf_gpu_ids_supported"] is False
+    # Probed devices exist, so the ordinals are known and picks are offered.
+    assert inference_gpu["gguf_gpu_ids_supported"] is True
 
 
 def test_system_gpu_info_does_not_merge_metrics_across_backend_index_spaces(monkeypatch):
@@ -169,3 +172,85 @@ def test_system_gpu_info_does_not_merge_metrics_across_backend_index_spaces(monk
 
     assert gpu["devices"] == [vulkan_device]
     assert inference_gpu == gpu
+
+
+def test_vulkan_inference_gpu_uses_real_device_names_and_igpu_flag(monkeypatch):
+    """The picker and the GPU labels need ggml's real device description, not a
+    Vulkan<i> placeholder, and an explicit iGPU flag rather than inferring one
+    from a zero total. Memory still comes from _get_gpu_memory so the iGPU host
+    reserve is applied; budgeting off the raw shared total would hand out the
+    whole machine's RAM with no OS headroom.
+    """
+    from core.inference.llama_cpp import LlamaCppBackend
+    from utils.hardware.hardware import get_vulkan_inference_gpu_info
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda binary = None: True)
+    )
+    # Fit view: discrete card keeps its total, iGPU reports 0 with capped free.
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_get_gpu_memory",
+        staticmethod(lambda binary = None: [(0, 15 * 1024, 16 * 1024), (1, 12 * 1024, 0)]),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "vulkan_device_inventory",
+        staticmethod(
+            lambda binary = None: [
+                {
+                    "index": 0,
+                    "name": "AMD Radeon RX 9070 XT",
+                    "free_mib": 15 * 1024,
+                    "total_mib": 16 * 1024,
+                    "is_igpu": False,
+                },
+                {
+                    "index": 1,
+                    "name": "AMD Radeon(TM) 8060S Graphics",
+                    "free_mib": 89 * 1024,
+                    "total_mib": 91 * 1024,
+                    "is_igpu": True,
+                },
+            ]
+        ),
+    )
+
+    info = get_vulkan_inference_gpu_info()
+    assert info is not None and info["index_kind"] == "vulkan"
+    dgpu, igpu = info["devices"]
+
+    assert dgpu["name"] == "AMD Radeon RX 9070 XT"
+    assert dgpu["index_kind"] == "vulkan"
+    assert dgpu["shared_memory"] is False
+    assert dgpu["memory_total_gb"] == 16.0
+
+    assert igpu["name"] == "AMD Radeon(TM) 8060S Graphics"
+    assert igpu["shared_memory"] is True
+    # The capped free budget from _get_gpu_memory, NOT the 91 GiB raw total.
+    assert igpu["memory_total_gb"] == 12.0
+
+
+def test_vulkan_inference_gpu_falls_back_to_ordinal_names(monkeypatch):
+    """A probe that cannot resolve descriptions must not lose the device list:
+    names degrade to Vulkan<i> and the memory readings still get through."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    from utils.hardware.hardware import get_vulkan_inference_gpu_info
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda binary = None: True)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_get_gpu_memory",
+        staticmethod(lambda binary = None: [(0, 15 * 1024, 16 * 1024)]),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "vulkan_device_inventory",
+        staticmethod(lambda binary = None: (_ for _ in ()).throw(RuntimeError("probe failed"))),
+    )
+
+    info = get_vulkan_inference_gpu_info()
+    assert info["devices"][0]["name"] == "Vulkan0"
+    assert info["devices"][0]["memory_total_gb"] == 16.0

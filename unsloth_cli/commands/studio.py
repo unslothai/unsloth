@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import List, Optional
+from typing import List, Literal, Optional
 import typer
 
 from unsloth_cli.commands import _password_prompt
@@ -442,7 +442,7 @@ def _iter_editable_studio_source_roots(venv_dir: Path):
             for finder in sp.glob("__editable___*_finder.py"):
                 try:
                     src = finder.read_text(encoding = "utf-8")
-                except OSError:
+                except (OSError, UnicodeDecodeError):
                     continue
                 # Tolerate single- or multi-line dict literals; [^}]* still
                 # rejects nested dicts, which the setuptools template never
@@ -826,7 +826,7 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
             # credential after a later reset-password deletes auth.db. Mirrors
             # backend clear_bootstrap_password().
             try:
-                stale_path.write_text("")
+                stale_path.write_text("", encoding = "utf-8")
                 cleared = True
             except OSError:
                 cleared = False
@@ -1279,6 +1279,7 @@ def _load_model_via_http(
     gguf_variant: Optional[str],
     max_seq_length: int,
     load_in_4bit: bool,
+    gpu_memory_mode: Literal["auto", "manual"] = "auto",
     tensor_parallel: bool = False,
     llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
@@ -1295,6 +1296,9 @@ def _load_model_via_http(
     }
     if gguf_variant:
         payload["gguf_variant"] = gguf_variant
+    if gpu_memory_mode == "manual":
+        payload["gpu_memory_mode"] = "manual"
+        payload["gpu_layers"] = -1
     if tensor_parallel:
         payload["tensor_parallel"] = True
     if llama_extra_args:
@@ -1835,6 +1839,16 @@ def run(
         rich_help_panel = _RUN_PANEL_MODEL,
         help = "Runtime context length in tokens (0 = model default for GGUF; 2048 for hub models)",
     ),
+    gpu_memory_mode: Literal["auto", "manual"] = typer.Option(
+        "auto",
+        "--gpu-memory-mode",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = (
+            "GPU memory strategy for GGUF models. Auto lets Unsloth select GPUs "
+            "and cap context to fit VRAM. Manual with default layers and context "
+            "delegates placement and sizing to llama.cpp --fit."
+        ),
+    ),
     load_in_4bit: bool = typer.Option(
         True, "--load-in-4bit/--no-load-in-4bit", rich_help_panel = _RUN_PANEL_MODEL
     ),
@@ -2234,6 +2248,8 @@ def run(
             "--host",
             host,
         ]
+        if gpu_memory_mode != "auto":
+            args.extend(["--gpu-memory-mode", gpu_memory_mode])
         if gguf_variant:
             args.extend(["--gguf-variant", gguf_variant])
         # Forward the explicit polarity; a future default flip on one
@@ -2351,6 +2367,7 @@ def run(
                 gguf_variant = gguf_variant,
                 max_seq_length = max_seq_length,
                 load_in_4bit = load_in_4bit,
+                gpu_memory_mode = gpu_memory_mode,
                 tensor_parallel = tensor_parallel,
                 llama_extra_args = extra_llama_args,
             )
@@ -2513,7 +2530,7 @@ def stop():
         typer.echo("No running Unsloth server found (no PID file).")
         raise typer.Exit(0)
 
-    pid_text = _PID_FILE.read_text().strip()
+    pid_text = _PID_FILE.read_text(encoding = "utf-8").strip()
     if not pid_text.isdigit():
         typer.echo(f"Invalid PID file contents: {pid_text}")
         _PID_FILE.unlink(missing_ok = True)
@@ -3015,7 +3032,7 @@ def reset_password():
             path.unlink(missing_ok = True)
         except OSError:
             try:
-                path.write_text("")
+                path.write_text("", encoding = "utf-8")
             except OSError as exc:
                 typer.echo(
                     f"Error: could not remove or clear {path.name} ({exc}); delete "
