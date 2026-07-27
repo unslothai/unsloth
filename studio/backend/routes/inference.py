@@ -1012,6 +1012,7 @@ try:
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
         extra_args_disable_mmproj,
+        parse_gpu_layers_override,
         parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -1050,6 +1051,7 @@ except ImportError:
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
         extra_args_disable_mmproj,
+        parse_gpu_layers_override,
         parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -4874,11 +4876,16 @@ async def _load_model_impl(
             None if request.llama_extra_args is None else extra_llama_args
         )
 
-        # Manual mode owns the offload flags: strip them from EXPLICIT extras
-        # too (the inherited path already does), or a last-wins --gpu-layers /
-        # --fit in extras re-enables GPU offload on a load status reports as
-        # CPU-only. Manual + per-GPU ratio owns --tensor-split the same way.
+        # Manual mode owns the offload flags. Preserve an explicit layer count
+        # by translating its last-wins value into the first-class field before
+        # stripping the raw flags. This keeps CLI pass-through such as
+        # ``-ngl 20`` from being silently replaced by the manual default (-1).
+        # The inherited path already strips offload flags. Manual + per-GPU
+        # ratio owns --tensor-split the same way.
         if request.gpu_memory_mode == "manual" and extra_llama_args:
+            _gpu_layers_override = parse_gpu_layers_override(extra_llama_args)
+            if _gpu_layers_override is not None:
+                request = request.model_copy(update = {"gpu_layers": _gpu_layers_override})
             _stripped_explicit = strip_shadowing_flags(
                 extra_llama_args,
                 strip_context = False,

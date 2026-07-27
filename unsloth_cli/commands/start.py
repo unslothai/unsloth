@@ -20,7 +20,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import NamedTuple, NoReturn, Optional
+from typing import Literal, NamedTuple, NoReturn, Optional
 from urllib.parse import urlencode, urlparse
 
 import click
@@ -182,6 +182,17 @@ _TENSOR_PARALLEL_OPTION = typer.Option(
     "--tensor-parallel/--no-tensor-parallel",
     rich_help_panel = _PANEL_MODEL,
     help = "Split a GGUF across GPUs by tensor instead of by layer (multi-GPU only).",
+)
+_GPU_MEMORY_MODE_OPTION = typer.Option(
+    None,
+    "--gpu-memory-mode",
+    rich_help_panel = _PANEL_MODEL,
+    help = (
+        "GPU memory strategy for GGUF models loaded by this command. Auto lets "
+        "Unsloth manage placement. Manual with default layers and context delegates "
+        "placement and sizing to llama.cpp --fit. Omit when attaching to preserve "
+        "the running model's mode."
+    ),
 )
 
 # Server knobs. Only used when `unsloth start` auto-starts the server (--serve);
@@ -459,6 +470,7 @@ class LoadOptions(NamedTuple):
     max_seq_length: int = 0
     load_in_4bit: bool = True
     tensor_parallel: bool = False
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
 
 
 class ServerOptions(NamedTuple):
@@ -993,6 +1005,8 @@ def _start_studio_server(
         command += ["--no-load-in-4bit"]
     if load.tensor_parallel:
         command += ["--tensor-parallel"]
+    if load.gpu_memory_mode is not None:
+        command += ["--gpu-memory-mode", load.gpu_memory_mode]
 
     log_path = Path(tempfile.gettempdir()) / f"unsloth-start-server-{os.getpid()}.log"
     typer.echo("Starting Unsloth server")
@@ -1463,7 +1477,11 @@ def _resolve_model(
     # without reloading when the variant AND settings match, so a second session running
     # the same command still attaches without evicting the first.
     load_has_overrides = bool(
-        load.gguf_variant or load.max_seq_length or not load.load_in_4bit or load.tensor_parallel
+        load.gguf_variant
+        or load.max_seq_length
+        or not load.load_in_4bit
+        or load.tensor_parallel
+        or load.gpu_memory_mode is not None
     )
     # /v1/models also lists cached-but-unloaded catalog entries (loaded == False);
     # matching one would skip /api/inference/load and leave the agent pointed at a
@@ -1517,6 +1535,10 @@ def _resolve_model(
             payload["load_in_4bit"] = False
         if load.tensor_parallel:
             payload["tensor_parallel"] = True
+        if load.gpu_memory_mode is not None:
+            payload["gpu_memory_mode"] = load.gpu_memory_mode
+            if load.gpu_memory_mode == "manual":
+                payload["gpu_layers"] = -1
         loaded = _load_model_with_progress(base, key, requested, load, payload)
         if loaded.get("status") == "already_loaded":
             typer.echo(f"Reusing loaded model: {_display_model_spec(requested, load.gguf_variant)}")
@@ -3022,6 +3044,7 @@ def claude(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
@@ -3042,7 +3065,7 @@ def claude(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
@@ -3139,6 +3162,7 @@ def codex(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
@@ -3159,7 +3183,7 @@ def codex(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
@@ -3237,6 +3261,7 @@ def openclaw(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
@@ -3257,7 +3282,7 @@ def openclaw(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
@@ -3317,6 +3342,7 @@ def opencode(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
@@ -3337,7 +3363,7 @@ def opencode(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
@@ -3477,6 +3503,7 @@ def hermes(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
@@ -3499,7 +3526,7 @@ def hermes(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
@@ -3533,6 +3560,7 @@ def pi(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
@@ -3553,7 +3581,7 @@ def pi(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
