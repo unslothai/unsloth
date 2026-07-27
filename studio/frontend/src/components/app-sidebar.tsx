@@ -545,13 +545,21 @@ export function AppSidebar() {
   }, [runningThreadIds, allChatItems]);
   const anyChatRunning = runningChatCount > 0;
   // Where "Return to Chat" lands: the newest running chat, not the empty draft New Chat
-  // left active (map insertion order is start order).
-  const runningThreadId = (() => {
+  // left active (map insertion order is start order). A compare row runs pane threads
+  // that /chat cannot address, so resolve those back to the pair id the route expects.
+  const runningTarget = useMemo(() => {
     const ids = Object.entries(runningThreadIds)
       .filter(([, on]) => on)
       .map(([id]) => id);
-    return ids.length > 0 ? ids[ids.length - 1] : null;
-  })();
+    const id = ids.length > 0 ? ids[ids.length - 1] : null;
+    if (!id) return null;
+    const pair = allChatItems.find(
+      (item) => item.type === "compare" && (item.threadIds ?? []).includes(id),
+    );
+    return pair
+      ? { id: pair.id, compare: true as const }
+      : { id, compare: false as const };
+  }, [runningThreadIds, allChatItems]);
   const activeThreadId = isChatRoute
     ? (search.thread as string | undefined) ??
       (search.compare as string | undefined) ??
@@ -1347,8 +1355,13 @@ export function AppSidebar() {
                 if (showReturnToChat) {
                   // Prefer the running thread so we return to the live generation,
                   // not the empty new chat that became active after New Chat.
-                  if (runningThreadId && runningThreadId !== storeThreadId) {
-                    navigate({ to: "/chat", search: { thread: runningThreadId } });
+                  if (runningTarget && runningTarget.id !== storeThreadId) {
+                    navigate({
+                      to: "/chat",
+                      search: runningTarget.compare
+                        ? { compare: runningTarget.id }
+                        : { thread: runningTarget.id },
+                    });
                   } else {
                     navigate({ to: "/chat" });
                   }

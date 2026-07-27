@@ -124,6 +124,9 @@ class InferenceOrchestrator:
         # routes. Consumers read their mailbox whenever they get around to it, so only the
         # dispatcher sees responses in the order the worker actually produced them.
         self._request_cancel_events: dict[str, object] = {}
+        # Mailboxes for the _gen_lock generations. Kept apart from _mailboxes because that
+        # map means "compare requests are in flight" to the unload and distributed paths.
+        self._direct_mailboxes: dict[str, queue.Queue] = {}
         self._mailbox_lock = threading.Lock()
         self._dispatcher_thread: Optional[threading.Thread] = None
         self._dispatcher_stop = threading.Event()
@@ -475,6 +478,64 @@ class InferenceOrchestrator:
             except (EOFError, OSError, ValueError):
                 return events
 
+    def _direct_reader(self, request_id: str):
+        """Response reader for a _gen_lock generation, safe once compare exists.
+
+        The dispatcher and this reader would otherwise both consume _resp_queue. A
+        dispatcher started mid-stream took our responses and dropped them as
+        unaddressed (truncating or hanging the chat), and this reader, already blocked
+        on the queue, could take a compare request's response before that dispatcher
+        saw it. Registering a mailbox fixes the first; handing foreign responses to
+        their own mailbox fixes the second.
+
+        Returns (read_one, drain, release).
+        """
+        mailbox: queue.Queue = queue.Queue()
+        with self._mailbox_lock:
+            self._direct_mailboxes[request_id] = mailbox
+
+        def read_one(timeout: float = 1.0):
+            try:
+                return mailbox.get_nowait()
+            except queue.Empty:
+                pass
+            thread = self._dispatcher_thread
+            if thread is not None and thread.is_alive():
+                # It owns the queue now, and it routes to us.
+                try:
+                    return mailbox.get(timeout = timeout)
+                except queue.Empty:
+                    return None
+            resp = self._read_resp(timeout = timeout)
+            if resp is None:
+                return None
+            rid = resp.get("request_id")
+            if rid and rid != request_id:
+                with self._mailbox_lock:
+                    other = self._mailboxes.get(rid) or self._direct_mailboxes.get(rid)
+                if other is not None:
+                    other.put(resp)
+                    return None
+            return resp
+
+        def drain(timeout: float = 5.0) -> None:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                resp = read_one(timeout = min(0.5, deadline - time.monotonic()))
+                if resp is None:
+                    if not self._ensure_subprocess_alive():
+                        return
+                    continue
+                if resp.get("type", "") in ("gen_done", "gen_error"):
+                    return
+            logger.warning("Timed out waiting for gen_done after cancel")
+
+        def release() -> None:
+            with self._mailbox_lock:
+                self._direct_mailboxes.pop(request_id, None)
+
+        return read_one, drain, release
+
     def _drain_until_gen_done(self, timeout: float = 5.0) -> None:
         """Consume resp_queue events until gen_done/gen_error, discarding them.
 
@@ -707,7 +768,7 @@ class InferenceOrchestrator:
                 # Route to mailbox if a matching request_id exists
                 if rid:
                     with self._mailbox_lock:
-                        mbox = self._mailboxes.get(rid)
+                        mbox = self._mailboxes.get(rid) or self._direct_mailboxes.get(rid)
                         owner = self._request_cancel_events.get(rid)
                     if mbox is not None:
                         # Worker order, not consumer order: retire a request the moment its
@@ -1657,6 +1718,9 @@ class InferenceOrchestrator:
             # queued on the lock above, having generated nothing -- cannot reset the
             # generation this is starting. Claiming after the send left a window where the
             # command ran unclaimed. Released in the finally, a failed send included.
+            # Own mailbox: a compare request can start the dispatcher while this is
+            # streaming, and it would otherwise consume our responses and drop them.
+            read_one, drain, release_mailbox = self._direct_reader(request_id)
             try:
                 try:
                     with self._send_order_lock:
@@ -1667,14 +1731,15 @@ class InferenceOrchestrator:
                     return
 
                 yield from self._consume_token_stream(
-                    self._read_resp,
-                    lambda: self._drain_until_gen_done(timeout = 5.0),
+                    read_one,
+                    lambda: drain(timeout = 5.0),
                     crash_context = "generation",
                     cancel_event = cancel_event,
                     stats_holder = stats_holder,
                 )
             finally:
                 self._release_worker(cancel_event)
+                release_mailbox()
 
     def _claim_worker(self, cancel_event) -> None:
         """Record this request as one the worker will run.
@@ -1798,35 +1863,40 @@ class InferenceOrchestrator:
             if use_adapter is not None:
                 cmd["use_adapter"] = use_adapter
 
-            self._send_cmd(cmd)
+            # Same shared-queue hazard as _generate_inner: see _direct_reader.
+            read_one, _drain, release_mailbox = self._direct_reader(request_id)
+            try:
+                self._send_cmd(cmd)
 
-            deadline = time.monotonic() + 120.0
-            while time.monotonic() < deadline:
-                remaining = max(0.1, deadline - time.monotonic())
-                resp = self._read_resp(timeout = min(remaining, 1.0))
+                deadline = time.monotonic() + 120.0
+                while time.monotonic() < deadline:
+                    remaining = max(0.1, deadline - time.monotonic())
+                    resp = read_one(timeout = min(remaining, 1.0))
 
-                if resp is None:
-                    if not self._ensure_subprocess_alive():
-                        raise RuntimeError(self._subprocess_crash_message("audio generation"))
-                    continue
+                    if resp is None:
+                        if not self._ensure_subprocess_alive():
+                            raise RuntimeError(self._subprocess_crash_message("audio generation"))
+                        continue
 
-                rtype = resp.get("type", "")
+                    rtype = resp.get("type", "")
 
-                if rtype == "audio_done":
-                    wav_bytes = base64.b64decode(resp["wav_base64"])
-                    sample_rate = resp["sample_rate"]
-                    return wav_bytes, sample_rate
+                    if rtype == "audio_done":
+                        wav_bytes = base64.b64decode(resp["wav_base64"])
+                        sample_rate = resp["sample_rate"]
+                        return wav_bytes, sample_rate
 
-                if rtype == "audio_error":
-                    raise RuntimeError(resp.get("error", "Audio generation failed"))
+                    if rtype == "audio_error":
+                        raise RuntimeError(resp.get("error", "Audio generation failed"))
 
-                if rtype == "error":
-                    raise RuntimeError(resp.get("error", "Unknown error"))
+                    if rtype == "error":
+                        raise RuntimeError(resp.get("error", "Unknown error"))
 
-                if rtype == "status":
-                    continue
+                    if rtype == "status":
+                        continue
 
-            raise RuntimeError("Timeout waiting for audio generation (120s)")
+                raise RuntimeError("Timeout waiting for audio generation (120s)")
+            finally:
+                release_mailbox()
 
     def generate_whisper_response(
         self,
@@ -1922,18 +1992,23 @@ class InferenceOrchestrator:
                 "repetition_penalty": repetition_penalty,
             }
 
+            # Same shared-queue hazard as _generate_inner: see _direct_reader.
+            read_one, drain, release_mailbox = self._direct_reader(request_id)
             try:
-                self._send_cmd(cmd)
-            except RuntimeError as exc:
-                yield GenStreamError(f"Error: {exc}")
-                return
+                try:
+                    self._send_cmd(cmd)
+                except RuntimeError as exc:
+                    yield GenStreamError(f"Error: {exc}")
+                    return
 
-            yield from self._consume_token_stream(
-                self._read_resp,
-                lambda: self._drain_until_gen_done(timeout = 5.0),
-                crash_context = "audio input generation",
-                cancel_event = cancel_event,
-            )
+                yield from self._consume_token_stream(
+                    read_one,
+                    lambda: drain(timeout = 5.0),
+                    crash_context = "audio input generation",
+                    cancel_event = cancel_event,
+                )
+            finally:
+                release_mailbox()
 
     # ------------------------------------------------------------------
     # Local helpers (no subprocess needed)

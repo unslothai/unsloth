@@ -1869,3 +1869,71 @@ def test_a_stale_mailbox_read_does_not_cancel_the_running_generation():
         )
     )
     assert o._cancel_event.is_set(), "the running generation's own Stop must reach the worker"
+
+
+def test_a_dispatcher_started_mid_stream_still_reaches_the_direct_reader():
+    # A compare request can start the dispatcher while an ordinary chat is streaming.
+    # The dispatcher then owns resp_queue, and without a mailbox for the direct reader it
+    # dropped that chat's tokens and its gen_done as unaddressed, hanging it.
+    import queue as _queue
+
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._direct_mailboxes = {}
+    o._request_cancel_events = {}
+
+    read_one, _drain, release = o._direct_reader("direct-1")
+    try:
+        _dispatch(o, [
+            {"type": "token", "request_id": "direct-1", "text": "hi"},
+            {"type": "gen_done", "request_id": "direct-1"},
+        ])
+        assert read_one(timeout = 0.1) == {
+            "type": "token", "request_id": "direct-1", "text": "hi"
+        }, "the dispatcher must route to the direct reader, not drop"
+        assert read_one(timeout = 0.1)["type"] == "gen_done"
+    finally:
+        release()
+    assert o._direct_mailboxes == {}, "the mailbox is dropped when the stream ends"
+
+
+def test_the_direct_reader_hands_back_a_compare_response_it_took():
+    # The mirror race: this reader is already blocked on resp_queue when a compare
+    # request's dispatcher starts, so it can take that request's response first.
+    # Consuming it would corrupt this chat and hang the compare pane.
+    import queue as _queue
+
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    compare_box: _queue.Queue = _queue.Queue()
+    o._mailboxes = {"compare-1": compare_box}
+    o._direct_mailboxes = {}
+    o._request_cancel_events = {}
+    o._resp_queue = _queue.Queue()
+    o._dispatcher_thread = None  # no dispatcher yet: this reader owns the queue
+
+    read_one, _drain, release = o._direct_reader("direct-1")
+    try:
+        o._resp_queue.put({"type": "token", "request_id": "compare-1", "text": "theirs"})
+        o._resp_queue.put({"type": "token", "request_id": "direct-1", "text": "mine"})
+        assert read_one(timeout = 0.1) is None, "a foreign response is not ours to yield"
+        assert compare_box.get_nowait()["text"] == "theirs", "it goes to its own mailbox"
+        assert read_one(timeout = 0.1)["text"] == "mine"
+    finally:
+        release()
+
+
+def test_a_direct_mailbox_is_not_mistaken_for_compare_activity():
+    # _mailboxes means "compare requests are in flight" to the unload and distributed
+    # paths, so an ordinary chat's mailbox must live somewhere else.
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._direct_mailboxes = {}
+    _read_one, _drain, release = o._direct_reader("direct-1")
+    try:
+        assert o._mailboxes == {}
+        assert "direct-1" in o._direct_mailboxes
+    finally:
+        release()
