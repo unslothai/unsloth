@@ -20,7 +20,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.data_recipe.jobs.manager import JobManager  # noqa: E402
+from core.data_recipe.jobs.manager import JobManager, Subscription  # noqa: E402
 from core.data_recipe.jobs.types import Job  # noqa: E402
 
 
@@ -67,7 +67,64 @@ def _manager_with_active_job():
     m._job = job
     m._proc = _FakeProc(alive = True)
     m._mp_q = _ScriptedQueue([])
+    m._pump_thread = None
     return m
+
+
+def test_dead_worker_blocks_replacement_until_queued_completion_is_finalized():
+    manager = _manager_with_active_job()
+    old_job = manager._job
+    manager._proc._alive = False
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _DelayedCompletionQueue:
+        def __init__(self):
+            self._delivered = False
+
+        def get(self, timeout = None):
+            if self._delivered:
+                raise queue.Empty
+            entered.set()
+            assert release.wait(timeout = 5)
+            self._delivered = True
+            return {
+                "type": "job.completed",
+                "artifact_path": "data-recipe-artifact",
+            }
+
+        def get_nowait(self):
+            raise queue.Empty
+
+    manager._mp_q = _DelayedCompletionQueue()
+    subscription = Subscription(
+        job_id = old_job.job_id,
+        owner_subject = old_job.owner_subject,
+        replay = [],
+        _q = queue.Queue(),
+    )
+    manager._subs = [subscription]
+    pump = threading.Thread(
+        target = manager._pump_loop,
+        args = (old_job, manager._proc, manager._mp_q),
+        daemon = True,
+    )
+    manager._pump_thread = pump
+    pump.start()
+    try:
+        assert entered.wait(timeout = 5)
+        with manager._lock:
+            assert manager._has_blocking_job_locked()
+        assert manager._job is old_job
+        assert not subscription.closed
+    finally:
+        release.set()
+        pump.join(timeout = 5)
+
+    assert not pump.is_alive()
+    assert old_job.status == "completed"
+    assert old_job.artifact_path == "data-recipe-artifact"
+    assert not subscription.closed
 
 
 def test_replaced_dead_generation_still_retires_its_workflow_key(monkeypatch):

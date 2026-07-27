@@ -162,7 +162,9 @@ class JobManager:
 
     def _has_blocking_job_locked(self) -> bool:
         """Check process-global admission while holding ``_lock``."""
-        return self._proc is not None and self._proc.is_alive()
+        worker_running = self._proc is not None and self._proc.is_alive()
+        pump_finalizing = self._pump_thread is not None and self._pump_thread.is_alive()
+        return worker_running or pump_finalizing
 
     def start(
         self,
@@ -249,7 +251,11 @@ class JobManager:
                 generation,
                 {"type": EVENT_JOB_ENQUEUED, "ts": time.time(), "job_id": job_id},
             )
-            self._pump_thread = threading.Thread(target = self._pump_loop, daemon = True)
+            self._pump_thread = threading.Thread(
+                target = self._pump_loop,
+                args = (self._job, proc, mp_q),
+                daemon = True,
+            )
             self._pump_thread.start()
 
         self._fanout_prepared(prepared)
@@ -658,18 +664,24 @@ class JobManager:
             etype = event.get("type") if isinstance(event, dict) else type(event).__name__
             logger.exception("Data-recipe job pump: failed to handle %s event; skipping", etype)
 
-    def _pump_loop(self) -> None:
+    def _pump_loop(
+        self,
+        job: Job | None = None,
+        proc: mp.Process | None = None,
+        mp_q: Any | None = None,
+    ) -> None:
         """Background thread: consume worker events and update the job snapshot.
 
         Guarded so no single event can end the loop; it is the sole writer of the
         snapshot the UI polls, so its death would freeze status/SSE.
         """
-        while True:
+        if job is None or proc is None or mp_q is None:
             snap = self._snapshot()
             if snap is None:
                 return
             job, proc, mp_q = snap
 
+        while True:
             try:
                 event = self._read_queue_with_timeout(mp_q, timeout_sec = 0.25)
             except Exception:
