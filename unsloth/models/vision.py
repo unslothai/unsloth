@@ -561,12 +561,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     # normalization above, then delegate before static-cache and compile handling.
     _clear_generation_caches(self)
     if _uses_flash_attention_for_generation(self.config):
-        # Pin "dynamic": skipping the block below is not enough, since a static cache can
-        # still arrive from the caller's generation_config (TRL) or the model's own default.
-        # None would not work, as _prepare_generation_config merges that default back in.
-        if "generation_config" in kwargs:
-            kwargs["generation_config"].cache_implementation = "dynamic"
-        else:
+        # Pin "dynamic": a static cache still arrives via the caller's kwargs, their
+        # generation_config (TRL) or the model default, and None is merged back to that
+        # default. Set the kwarg, which generation_config.update applies last so it wins.
+        # Skip when a cache is supplied, since generate rejects both together.
+        if kwargs.get("past_key_values") is None:
             kwargs["cache_implementation"] = "dynamic"
         try:
             with torch.inference_mode(), autocaster:

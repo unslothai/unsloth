@@ -269,8 +269,8 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
 
 
 def test_flash_attention_fallback_pins_a_dynamic_cache():
-    # Delegating is not enough on its own: a static cache still reaches FlashAttention when
-    # the caller passes a generation_config carrying one, or the model defaults to one.
+    # Delegating is not enough on its own: a static cache still reaches FlashAttention via
+    # an explicit kwarg, the caller's generation_config, or the model default.
     namespace = {
         "torch": SimpleNamespace(
             Tensor = type("FakeTensor", (), {"shape": (1, 3)}),
@@ -317,10 +317,19 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
     fast_generate(Model(), input_ids = input_ids)
     assert captured["cache_implementation"] == "dynamic"
 
+    # The kwarg wins over a supplied generation_config, since update() applies it last.
     generation_config = SimpleNamespace(cache_implementation = "static")
     fast_generate(Model(), input_ids = input_ids, generation_config = generation_config)
-    assert generation_config.cache_implementation == "dynamic"
+    assert captured["cache_implementation"] == "dynamic"
+
+    fast_generate(Model(), input_ids = input_ids, cache_implementation = "static")
+    assert captured["cache_implementation"] == "dynamic"
+
+    # generate() rejects a caller cache combined with any cache_implementation.
+    cache = object()
+    fast_generate(Model(), input_ids = input_ids, past_key_values = cache)
     assert "cache_implementation" not in captured
+    assert captured["past_key_values"] is cache
 
 
 if __name__ == "__main__":
