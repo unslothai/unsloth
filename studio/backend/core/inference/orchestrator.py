@@ -986,7 +986,24 @@ class InferenceOrchestrator:
         self.loading_models.add(model_name)
 
         try:
-            needed_major = "5" if needs_transformers_5(model_name) else "4"
+            # Parent-side metadata preflight stays offline for local-only
+            # loads: the tier probe reads model configs and GPU sizing calls
+            # hf model_info. The guard closes BEFORE the spawn below, so the
+            # worker does not inherit HF_HUB_OFFLINE for its whole lifetime
+            # (its own bootstrap guard scopes the load and restores for
+            # generation-time fetches).
+            import contextlib
+
+            from core.inference.llama_cpp import _hf_offline_if_dns_dead
+
+            def _preflight_offline():
+                # Ordinary loads keep their current (unguarded) behavior.
+                if local_files_only:
+                    return _hf_offline_if_dns_dead(force = True)
+                return contextlib.nullcontext()
+
+            with _preflight_offline():
+                needed_major = "5" if needs_transformers_5(model_name) else "4"
 
             # Build config dict for subprocess
             sub_config = {
@@ -1013,12 +1030,13 @@ class InferenceOrchestrator:
                 if mlx_distributed
                 else None,
             }
-            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
-                gpu_ids,
-                model_name = model_name,
-                hf_token = hf_token,
-                load_in_4bit = load_in_4bit,
-            )
+            with _preflight_offline():
+                resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
+                    gpu_ids,
+                    model_name = model_name,
+                    hf_token = hf_token,
+                    load_in_4bit = load_in_4bit,
+                )
             sub_config["resolved_gpu_ids"] = resolved_gpu_ids
             sub_config["gpu_selection"] = gpu_selection
             # Parent-detected backend for the worker's apply_gpu_ids().

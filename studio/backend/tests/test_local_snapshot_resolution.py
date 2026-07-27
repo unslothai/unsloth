@@ -162,6 +162,35 @@ def test_refless_fallback_picks_newest_snapshot_with_config(tmp_path):
     assert Path(resolved).resolve() == new.resolve()
 
 
+def test_weightless_newest_snapshot_does_not_shadow_complete_older_one(tmp_path):
+    """A newest metadata-only revision (config.json, no weights) must not win
+    over an older revision holding the inventoried safetensors weights: the
+    inventory made the row eligible from the weightful revision, so the load
+    must resolve that one instead of failing on the weightless dir."""
+    import os
+    import time
+
+    complete = _build_cached_repo(
+        tmp_path,
+        "org/meta-newest",
+        {"config.json": "{}", "model.safetensors": "weights"},
+        with_refs = False,
+        rev = "a" * 40,
+    )
+    stale = time.time() - 1000
+    os.utime(complete, (stale, stale))
+    _build_cached_repo(
+        tmp_path,
+        "org/meta-newest",
+        {"config.json": "{}"},
+        with_refs = False,
+        rev = "b" * 40,
+    )
+    resolved = resolve_local_snapshot_path("org/meta-newest", cache_dir = str(tmp_path))
+    assert resolved is not None
+    assert Path(resolved).resolve() == complete.resolve()
+
+
 def test_refless_fallback_without_config_resolves_to_none(tmp_path):
     """A snapshots dir with no config.json anywhere is not a loadable text
     model cache; resolution must stay None (409 upstream), not guess."""

@@ -1115,7 +1115,7 @@ def test_background_candidate_filters_have_no_side_effects():
     # TRUTHY env value short-circuits), and overlapping guards are refcounted
     # so the env is restored only when the LAST one exits; behavior is
     # exercised directly in test_offline_guard_refcount.py.
-    assert "elif _hf_env_offline():" in llama
+    assert "elif _hf_env_offline() and (not force or _hub_offline_env_truthy()):" in llama
     assert "_OFFLINE_GUARD_LOCK" in llama
     assert '_OFFLINE_GUARD_STATE["count"] += 1' in llama
 
@@ -1216,6 +1216,32 @@ def test_background_picks_mirror_inventory_and_skip_installers():
     assert "def _snapshot_dir_mtime(" in inventory
     schema = _read_backend("hub/schemas/inventory.py")
     assert "snapshot_size_bytes" in schema
+
+
+def test_forced_offline_is_hub_specific_and_covers_parent_preflight():
+    """Round-16 gates. A forced guard may only no-op when HF_HUB_OFFLINE
+    itself is truthy (huggingface_hub ignores TRANSFORMERS_OFFLINE), snapshot
+    selection prefers revisions that hold the inventoried safetensors weights
+    so a metadata-only newest revision cannot shadow a complete older one,
+    and the orchestrator's parent-side preflight (transformers tier probe,
+    GPU sizing via hf model_info) runs under the local-only guard, closed
+    before the worker spawn so the child does not inherit the env."""
+    llama = _read_backend("core/inference/llama_cpp.py")
+    assert "def _hub_offline_env_truthy(" in llama
+    assert "not force or _hub_offline_env_truthy()" in llama
+
+    helper = _read_backend("hub/utils/local_snapshot.py")
+    assert "def _snapshot_has_weights(" in helper
+    assert "max(weightful or candidates, key = os.path.getmtime)" in helper
+
+    orchestrator = _read_backend("core/inference/orchestrator.py")
+    preflight = orchestrator.split("def _preflight_offline():", 1)[1]
+    assert "_hf_offline_if_dns_dead(force = True)" in preflight
+    # Both metadata call sites are guarded, and the guard closes before spawn.
+    assert preflight.count("with _preflight_offline():") == 2
+    tier_probe = preflight.split("with _preflight_offline():", 1)[1]
+    assert "needs_transformers_5" in tier_probe.split("with _preflight_offline():", 1)[0]
+    assert "prepare_gpu_selection(" in tier_probe.split("_spawn_subprocess", 1)[0]
 
 
 def test_gguf_background_loads_never_download_companions():

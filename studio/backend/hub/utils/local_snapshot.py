@@ -7,13 +7,29 @@ import os
 from typing import Optional
 
 
-def _snapshot_dir_fallback(repo_id: str, cache_dir: Optional[str]) -> Optional[str]:
-    """Newest snapshots/* dir (by mtime) holding a config.json.
+def _snapshot_has_weights(rev: str) -> bool:
+    """Whether a snapshot dir holds at least one safetensors weight file.
 
-    This mirrors the inventory scanner's latest_snapshot_dir selection, so the
-    load targets the snapshot that made the row eligible. It also covers
-    revision-only layouts (refs/ missing or pruned) that
-    snapshot_download(local_files_only = True) cannot map through refs/main.
+    Background loads only target safetensors-format rows (adapters and
+    pickle checkpoints are excluded upstream), so this is the runnable-weight
+    signal that made the inventory row eligible.
+    """
+    try:
+        return any(name.endswith(".safetensors") for name in os.listdir(rev))
+    except OSError:
+        return False
+
+
+def _snapshot_dir_fallback(repo_id: str, cache_dir: Optional[str]) -> Optional[str]:
+    """Newest snapshots/* dir (by mtime) holding a config.json, preferring
+    revisions that also hold weights.
+
+    This mirrors the inventory scanner's selection (newest revision that
+    actually carries the inventoried weights), so the load targets the
+    snapshot that made the row eligible: a newest metadata-only revision must
+    not shadow an older complete one. It also covers revision-only layouts
+    (refs/ missing or pruned) that snapshot_download(local_files_only = True)
+    cannot map through refs/main.
     """
     if cache_dir is None:
         try:
@@ -33,7 +49,8 @@ def _snapshot_dir_fallback(repo_id: str, cache_dir: Optional[str]) -> Optional[s
     candidates = [rev for rev in revisions if os.path.isfile(os.path.join(rev, "config.json"))]
     if not candidates:
         return None
-    return max(candidates, key = os.path.getmtime)
+    weightful = [rev for rev in candidates if _snapshot_has_weights(rev)]
+    return max(weightful or candidates, key = os.path.getmtime)
 
 
 def resolve_local_snapshot_path(

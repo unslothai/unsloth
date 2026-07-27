@@ -34,7 +34,7 @@ class _NullLogger:
 
 def _load_guard(dns_dead: bool = False):
     src = _LLAMA_CPP.read_text()
-    start = src.index("# Overlapping offline guards")
+    start = src.index("def _hub_offline_env_truthy")
     end = src.index("_SLOT_SAVE_MAX_BYTES")
     end = src.rindex("try:", start, end)
     block = src[start:end]
@@ -98,6 +98,20 @@ def test_truthy_user_env_is_a_noop(clean_env):
     assert g.__enter__() is False
     g.__exit__(None, None, None)
     assert os.environ["HF_HUB_OFFLINE"] == "1"
+
+
+def test_transformers_only_env_does_not_satisfy_forced_guard(clean_env):
+    """TRANSFORMERS_OFFLINE=1 alone is not hub-offline: huggingface_hub
+    ignores it, so a forced guard must still install HF_HUB_OFFLINE for the
+    block and restore the prior state after."""
+    guard = _load_guard()
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    g = guard(force = True)
+    assert g.__enter__() is True
+    assert os.environ.get("HF_HUB_OFFLINE") == "1"
+    g.__exit__(None, None, None)
+    assert "HF_HUB_OFFLINE" not in os.environ
+    assert os.environ.get("TRANSFORMERS_OFFLINE") == "1"
 
 
 def test_nonforce_joins_active_override(clean_env):

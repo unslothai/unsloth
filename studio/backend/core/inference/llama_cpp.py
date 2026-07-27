@@ -506,6 +506,13 @@ def _hf_env_offline() -> bool:
         return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _hub_offline_env_truthy() -> bool:
+    """HF_HUB_OFFLINE specifically is truthy. huggingface_hub does not honor
+    TRANSFORMERS_OFFLINE, so a forced local-only guard may only no-op when the
+    Hub flag itself is already set."""
+    return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 # Overlapping offline guards share one env override: the count tracks active
 # guards and the saved values are restored only when the LAST guard exits, so
 # a request finishing early cannot re-enable network for one still running.
@@ -531,9 +538,11 @@ def _hf_offline_if_dns_dead(force: bool = False):
             # exits, whichever request finishes first.
             _OFFLINE_GUARD_STATE["count"] += 1
             entered = True
-        elif _hf_env_offline():
+        elif _hf_env_offline() and (not force or _hub_offline_env_truthy()):
             # User-set truthy env (count is 0): already offline, nothing to
-            # arrange or restore.
+            # arrange or restore. A forced guard only trusts HF_HUB_OFFLINE
+            # itself: TRANSFORMERS_OFFLINE=1 alone leaves hub API calls (e.g.
+            # get_paths_info) online, so force still installs both flags.
             pass
         elif not force and "HF_HUB_OFFLINE" in os.environ:
             # A user-pinned falsy value stays authoritative for ordinary loads.
