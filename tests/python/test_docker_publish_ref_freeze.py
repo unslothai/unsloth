@@ -97,6 +97,96 @@ def test_an_unreachable_remote_never_emits_a_mutable_ref(steps: dict, step_id: s
     assert res.returncode != 0
 
 
+# --- the llama.cpp prebuilt tag ----------------------------------------------
+# Same hole, same job, different resolver: the tag step is
+#
+#     TAG="$(curl -fsSL -o /dev/null -w '%{url_effective}' .../releases/latest \
+#         | sed -n 's#.*/releases/tag/##p')"
+#     echo "tag=${TAG:-latest}" >> "$GITHUB_OUTPUT"
+#
+# `bash -e` without pipefail takes the exit status of `sed`, so an unreachable
+# github.com made the step emit `tag=latest`. That value is NOT a pin: both
+# matrix legs pass it to docker/fetch_llama_prebuilt.py, whose main() re-resolves
+# "latest" per build, and Dockerfile.studio re-resolves it a third time, so a
+# release published mid-run can put two different llama.cpp bundles under one
+# multi-arch manifest -- with `:latest` moved onto it, because the stable-tag
+# gates key off the dispatch inputs, not off whether resolution worked.
+
+
+@pytest.fixture(scope = "module")
+def llama_step() -> str:
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    for step in doc["jobs"]["prepare"]["steps"]:
+        if step.get("id") == "llama":
+            return step["run"]
+    raise AssertionError("the llama tag resolver step is missing from the prepare job")
+
+
+def test_an_unresolvable_llama_release_fails_the_step(llama_step: str, tmp_path: Path):
+    res = _run_llama_step(llama_step, tmp_path, curl_exit = 6)
+    assert res.returncode != 0, (
+        "a failed /releases/latest lookup must fail the prepare job:\n"
+        f"stdout={res.stdout}\nstderr={res.stderr}"
+    )
+
+
+def test_an_unresolvable_llama_release_never_emits_a_mutable_tag(llama_step: str, tmp_path: Path):
+    res = _run_llama_step(llama_step, tmp_path, curl_exit = 6)
+    emitted = (tmp_path / "github_output").read_text(encoding = "utf-8")
+    assert "latest" not in emitted, (
+        f"the step published {emitted.strip()!r}; every consumer resolves that "
+        "mutable tag again, so the two arch legs and Studio can bake different "
+        "llama.cpp versions under one manifest"
+    )
+    assert res.returncode != 0
+
+
+def test_a_resolved_llama_release_is_forwarded_verbatim(llama_step: str, tmp_path: Path):
+    # The fix must not break the normal path.
+    res = _run_llama_step(llama_step, tmp_path, curl_exit = 0)
+    assert res.returncode == 0, f"stdout={res.stdout}\nstderr={res.stderr}"
+    assert (tmp_path / "github_output").read_text(encoding = "utf-8").strip() == (
+        "tag=b10107-mix-1911198"
+    )
+
+
+def _run_llama_step(script: str, tmp_path: Path, *, curl_exit: int):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    stub = bin_dir / "curl"
+    if curl_exit:
+        # How curl reports an unreachable github.com: nothing on stdout, non-zero.
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "curl: (6) Could not resolve host: github.com" >&2\n'
+            f"exit {curl_exit}\n",
+            encoding = "utf-8",
+        )
+    else:
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf '%s' "
+            "'https://github.com/unslothai/llama.cpp/releases/tag/b10107-mix-1911198'\n",
+            encoding = "utf-8",
+        )
+    stub.chmod(0o755)
+    out = tmp_path / "github_output"
+    out.write_text("", encoding = "utf-8")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
+    env["GITHUB_OUTPUT"] = str(out)
+    env["INPUT_TAG"] = ""          # the default (push / schedule) trigger
+    path = tmp_path / "llama_step.sh"
+    path.write_text(_expand(script), encoding = "utf-8")
+    return subprocess.run(
+        ["bash", "-e", str(path)],
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 60,
+    )
+
+
 def _expand(run: str) -> str:
     """Replace the `${{ ... }}` expressions with the empty string the default
     (push to main, no dispatch inputs) trigger produces."""

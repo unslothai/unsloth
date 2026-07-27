@@ -5,6 +5,7 @@ import {
   JupyterFrontEnd,
   JupyterFrontEndPlugin
 } from '@jupyterlab/application';
+import { CodeMirrorEditor } from '@jupyterlab/codemirror';
 import { INotebookTracker } from '@jupyterlab/notebook';
 
 /**
@@ -65,13 +66,36 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
         ) {
           return;
         }
-        const line = editor.getCursorPosition().line;
-        // Only take over at the cell boundary; else let CodeMirror move the cursor.
-        if (direction === 1 && line !== editor.lineCount - 1) {
-          return;
-        }
-        if (direction === -1 && line !== 0) {
-          return;
+        // Only take over at the cell boundary; else let CodeMirror move the
+        // cursor. `lineCount` counts LOGICAL lines, but JupyterLab wraps
+        // markdown and raw cell editors by default (StaticNotebook
+        // .defaultEditorConfig: markdown/raw lineWrap true), so the first and
+        // last logical line can own several visual rows -- the one-line markdown
+        // header every notebook opens with wraps to ~7. Ask CodeMirror whether
+        // it can still move one VISUAL line first, else those rows are
+        // unreachable: every arrow leaves the cell.
+        const view = editor instanceof CodeMirrorEditor ? editor.editor : null;
+        if (view) {
+          const range = view.state.selection.main;
+          const moved = view.moveVertically(range, direction === 1);
+          const from = view.coordsAtPos(range.head);
+          const to =
+            moved.head === range.head ? from : view.coordsAtPos(moved.head);
+          // moveVertically only returns the unchanged head at offset 0 /
+          // doc.length; elsewhere it clamps to the document edge, so a move that
+          // stays on the same visual row IS the editor edge and the cell
+          // boundary is the next stop.
+          if (from && to && Math.abs(to.top - from.top) > 1) {
+            return;
+          }
+        } else {
+          const line = editor.getCursorPosition().line;
+          if (direction === 1 && line !== editor.lineCount - 1) {
+            return;
+          }
+          if (direction === -1 && line !== 0) {
+            return;
+          }
         }
       }
       const target = notebook.activeCellIndex + direction;

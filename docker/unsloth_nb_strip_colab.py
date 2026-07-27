@@ -136,6 +136,7 @@ def _clean_widgets(nb):
 def strip_notebook(path):
     """Return True if the notebook was modified and written back."""
     try:
+        before = _sha256(path)
         with open(path, "r", encoding = "utf-8") as f:
             nb = json.load(f)
     except Exception:
@@ -152,6 +153,16 @@ def strip_notebook(path):
         with open(tmp, "w", encoding = "utf-8") as f:
             json.dump(nb, f, indent = 1, ensure_ascii = False)
             f.write("\n")
+        # The refresh child re-arms this cleanup AFTER the entrypoint has execed
+        # the container command, so JupyterLab is already serving the tree: a save
+        # landing between the read above and this replace would be silently
+        # overwritten, and migrate() would then record the cleaned hash and mark
+        # the notebook pristine forever. Re-read the live file once the staged
+        # copy is complete (the same rule the refresh publish in
+        # unsloth_sync_notebooks.sh follows) and let their edit win.
+        if _sha256(path) != before:
+            os.remove(tmp)
+            return False
         os.replace(tmp, path)
     except Exception:
         try:

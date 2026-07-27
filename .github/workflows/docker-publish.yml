@@ -82,12 +82,26 @@ jobs:
         run: |
           TAG="$INPUT_TAG"
           if [ -z "$TAG" ]; then
-              TAG="$(curl -fsSL -o /dev/null -w '%{url_effective}' \
-                  https://github.com/unslothai/llama.cpp/releases/latest \
-                  | sed -n 's#.*/releases/tag/##p')"
+              # Same rule as the three ref resolvers below. This step has no
+              # explicit `shell:`, so it runs under `bash -e` WITHOUT pipefail and
+              # a failing curl inside `curl | sed` is lost: the step exited 0 and
+              # published tag=latest. Every consumer resolves that MUTABLE tag
+              # again -- fetch_llama_prebuilt.py once per arch leg, Dockerfile.
+              # studio once more -- so a release cut mid-run can put different
+              # llama.cpp bundles under one manifest. Fail the job instead.
+              if ! REDIRECT="$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+                  https://github.com/unslothai/llama.cpp/releases/latest)"; then
+                  echo "::error::unslothai/llama.cpp unreachable; cannot resolve the newest prebuilt tag"
+                  exit 1
+              fi
+              TAG="$(printf '%s\n' "$REDIRECT" | sed -n 's#.*/releases/tag/##p')"
+              if [ -z "$TAG" ]; then
+                  echo "::error::/releases/latest did not redirect to a release tag (landed on ${REDIRECT})"
+                  exit 1
+              fi
           fi
-          echo "tag=${TAG:-latest}" >> "$GITHUB_OUTPUT"
-          echo "llama.cpp prebuilt tag: ${TAG:-latest}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "llama.cpp prebuilt tag: ${TAG}"
 
       # Requested-ref precedence: dispatch input, else pushed tag, else trigger
       # sha, else main -- then frozen to one sha per the job header.
