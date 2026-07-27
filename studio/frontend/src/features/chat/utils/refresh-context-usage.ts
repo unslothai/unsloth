@@ -18,8 +18,10 @@ let refreshGeneration = 0;
 type RuntimeMessagesGetter = () => readonly ThreadMessage[];
 
 // Compare mode mounts several providers at once, so this is a stack rather than
-// a slot: the newest mount is the one to ask, and unmounting it uncovers the
-// provider underneath instead of leaving nothing registered.
+// a slot: unmounting the newest uncovers the provider underneath instead of
+// leaving nothing registered. Callers that know which records they want search
+// it (runtimeSelectedBranch); only the ones that cannot tell fall back to the
+// newest mount.
 const runtimeMessagesGetters: RuntimeMessagesGetter[] = [];
 
 function currentRuntimeMessagesGetter(): RuntimeMessagesGetter | null {
@@ -159,19 +161,34 @@ function orderBySelectedBranch<T extends MessageRecord>(messages: T[]): T[] {
  * steps back to an earlier retry sibling, the newest stored record belongs to a
  * branch nobody is looking at. Only used after a model load -- the history
  * adapter's own recount runs while assistant-ui is still importing, when the
- * getter can still hold the outgoing thread. Message ids are unique, so
- * requiring the displayed tail to be one of this thread's records also rejects
- * a getter parked on another thread (compare pane, mid switch).
+ * getter can still hold the outgoing thread. Message ids are unique, so the
+ * displayed tail also identifies which mounted provider is showing these
+ * records; getters parked on another thread (compare pane, mid switch) are
+ * skipped, and only a stack with no match at all falls back to storage.
  */
 function runtimeSelectedBranch(
   records: MessageRecord[],
 ): readonly ThreadMessage[] | null {
-  const runtimeMessages = currentRuntimeMessagesGetter()?.();
-  if (!runtimeMessages || runtimeMessages.length === 0) return null;
-  const tailId = runtimeMessages[runtimeMessages.length - 1].id;
-  return records.some((record) => record.id === tailId)
-    ? runtimeMessages
-    : null;
+  const recordIds = new Set(records.map((record) => record.id));
+  // Walk the whole stack, not just its top: with two panes mounted the newest
+  // mount is often the other thread, and reading only that one fails the id
+  // check and drops back to the storage branch -- the wrong retry sibling for
+  // the pane that actually asked. Newest-first keeps the single-provider
+  // order, and a provider that throws mid-teardown is skipped rather than
+  // aborting the recount.
+  for (let index = runtimeMessagesGetters.length - 1; index >= 0; index--) {
+    let runtimeMessages: readonly ThreadMessage[] | undefined;
+    try {
+      runtimeMessages = runtimeMessagesGetters[index]();
+    } catch {
+      continue;
+    }
+    if (!runtimeMessages || runtimeMessages.length === 0) continue;
+    if (recordIds.has(runtimeMessages[runtimeMessages.length - 1].id)) {
+      return runtimeMessages;
+    }
+  }
+  return null;
 }
 
 /** The stored records behind a runtime branch, in the order it displays them. */
