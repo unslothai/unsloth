@@ -232,9 +232,7 @@ def test_desktop_runtime_check_reports_a_rejected_setting_instead_of_exiting(mon
     assert "UNSLOTH_CPU_THREADS" in payload["error"]
 
 
-def test_a_root_pin_is_checked_even_when_a_dependency_names_it_first(
-    monkeypatch, capsys, tmp_path
-):
+def test_a_root_pin_is_checked_even_when_a_dependency_names_it_first(monkeypatch, capsys, tmp_path):
     """datasets asks for huggingface-hub>=0.25,<2 and studio.txt pins ==0.36.2.
     Reached as a dependency first, the pin would never get to decide."""
     studio = importlib.import_module("unsloth_cli.commands.studio")
@@ -242,7 +240,8 @@ def test_a_root_pin_is_checked_even_when_a_dependency_names_it_first(
     requirements = backend / "requirements"
     requirements.mkdir(parents = True)
     (requirements / "studio.txt").write_text(
-        "datasets==4.3.0\nhuggingface-hub==0.36.2\n", encoding = "utf-8",
+        "datasets==4.3.0\nhuggingface-hub==0.36.2\n",
+        encoding = "utf-8",
     )
     run_mod = SimpleNamespace(__file__ = str(backend / "run.py"))
     monkeypatch.setattr(studio, "_load_run_module", lambda: run_mod)
