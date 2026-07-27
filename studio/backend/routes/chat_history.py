@@ -161,11 +161,26 @@ class ChatInferenceSettings(BaseModel):
     fastMode: Optional[bool] = None
 
 
+class ChatPresetLoadConfig(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    customContextLength: Optional[int] = Field(default = None, gt = 0)
+    maxSeqLength: Optional[float] = None
+    kvCacheDtype: Optional[str] = None
+    speculativeType: Optional[str] = None
+    specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
+    tensorParallel: Optional[bool] = None
+    gpuMemoryMode: Optional[Literal["manual"]] = None
+    gpuLayers: Optional[int] = None
+    nCpuMoe: Optional[int] = Field(default = None, ge = 0)
+
+
 class ChatPreset(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     name: str
     params: ChatInferenceSettings
+    loadConfig: Optional[ChatPresetLoadConfig] = None
 
 
 class ChatSettingsPayload(BaseModel):
@@ -278,10 +293,9 @@ async def patch_thread(
 def _cancel_active_research(request: Request, thread_ids: list[str]) -> None:
     """Signal any active research runs on these threads to stop before their rows are deleted.
 
-    Deleting a thread cascade-deletes its research_runs row, and the worker eventually notices via
-    lease loss -- but only at its next lease check, so it can keep doing model/web/RAG work (up to a
-    tool timeout) for a run that no longer exists. Setting the cancel event first shortens that
-    orphaned window. Best-effort: never let cancellation bookkeeping break the deletion itself.
+    Deleting a thread cascade-deletes its research_runs row, but the worker only notices at its
+    next lease check, so it can keep doing model/web/RAG work (up to a tool timeout) for a run
+    that no longer exists. Best-effort: cancellation bookkeeping must never break the deletion.
     """
     if not thread_ids:
         return

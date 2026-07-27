@@ -183,6 +183,11 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
             status_code = 400,
             detail = f"Unsupported inferenceRequest fields: {', '.join(sorted(unknown))}",
         )
+    # Mirrors the ragScope guard below. Every allowed field is a scalar, but "model" is
+    # stringified, so {"auth": "sk-..."} would slip past the sensitive-key scan (inner key
+    # unlisted) into the durable config as the model id.
+    if any(isinstance(value, (dict, list, tuple)) for value in request.values()):
+        raise HTTPException(status_code = 400, detail = "Invalid inferenceRequest value")
     model = str(request.get("model") or thread.get("modelId") or "").strip()
     if not model:
         raise HTTPException(status_code = 400, detail = "A selected local model is required")
@@ -229,10 +234,9 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
             "whole_doc",
         }
         unknown_rag = set(rag_scope) - allowed_rag
-        # Every ragScope field is a scalar (id strings, an int, an enum, floats, bools). A nested
-        # container both evades the sensitive-key scan when its inner keys are unlisted (e.g.
-        # {"kb_id": {"auth": "sk-..."}}) and would reach retrieval code that expects a scalar scope
-        # id, so reject any non-scalar value outright.
+        # Every ragScope field is a scalar. A nested container evades the sensitive-key scan when
+        # its inner keys are unlisted (e.g. {"kb_id": {"auth": "sk-..."}}) and would reach
+        # retrieval code expecting a scalar scope id, so reject non-scalars outright.
         non_scalar = any(isinstance(value, (dict, list, tuple)) for value in rag_scope.values())
         if unknown_rag or non_scalar or _contains_sensitive_key(rag_scope):
             raise HTTPException(status_code = 400, detail = "Unsupported or sensitive ragScope field")
@@ -257,9 +261,8 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
             raise HTTPException(
                 status_code = 400, detail = f"{key} must be between {minimum} and {maximum}"
             )
-    # Server-controlled, not client tunable. OFF by default; opt in via
-    # UNSLOTH_RESEARCH_AUTO_SCRAPE=1. Injected only when enabled, so a default run's budgets stay
-    # byte-identical to legacy.
+    # Server-controlled, not client tunable. OFF unless UNSLOTH_RESEARCH_AUTO_SCRAPE=1, and
+    # injected only when enabled, so a default run's budgets stay byte-identical to legacy.
     from core.research_runs import _auto_scrape_default
 
     _auto_scrape = _auto_scrape_default()

@@ -33,8 +33,8 @@ import {
   useRef,
 } from "react";
 import { toast } from "sonner";
+import { StudioDictationAdapter } from "./adapters/studio-dictation-adapter";
 import { StudioSpeechSynthesisAdapter } from "./adapters/studio-speech-synthesis-adapter";
-import { StudioWebSpeechDictationAdapter } from "./adapters/studio-web-speech-dictation-adapter";
 import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
@@ -1231,11 +1231,10 @@ function useStudioRuntimeAdapters(
             (sameResearchRun ||
               !incomingMetadata?.serverManaged ||
               existingRevision > incomingRevision);
-          // A server-managed research message is owned by the backend, which stored
-          // only its own metadata. Echo that stored metadata verbatim on autosave:
-          // merging incomingMetadata re-adds client-only fields (researchRun /
-          // serverRevision) the server never persisted, so _research_message_would_change
-          // sees a diff and rejects every streamed/snapshot update with 409.
+          // Echo the backend's stored metadata verbatim on autosave: merging
+          // incomingMetadata re-adds client-only fields (researchRun / serverRevision) the
+          // server never persisted, so _research_message_would_change sees a diff and
+          // rejects every streamed/snapshot update with 409.
           const metadata = preserveServerManaged
             ? existingMetadata
             : incomingMetadata;
@@ -1256,13 +1255,10 @@ function useStudioRuntimeAdapters(
     [aui, modelType, pairId],
   );
 
-  const dictation = useMemo(
-    () =>
-      StudioWebSpeechDictationAdapter.isSupported()
-        ? new StudioWebSpeechDictationAdapter()
-        : undefined,
-    [],
-  );
+  // Always register the adapter so the mic stays clickable for any engine. The
+  // engine is resolved at listen() time and the composer shows guidance when it
+  // cannot run, so engine switches also work on an already-mounted thread.
+  const dictation = useMemo(() => new StudioDictationAdapter(), []);
   const speech = useMemo(
     () =>
       StudioSpeechSynthesisAdapter.isSupported()

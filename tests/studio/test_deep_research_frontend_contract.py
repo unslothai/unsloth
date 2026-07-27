@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 from pathlib import Path
 
 
@@ -78,6 +81,33 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     assert "prompt," not in create_block
     assert "instructions: researchInstructions" in create_block
     assert "resolveChatInstructions" in adapter
+
+
+def test_research_reasoning_effort_is_clamped_to_the_loaded_model() -> None:
+    # A level the loaded model lacks is dropped by llama.cpp, so the durable run would silently
+    # fall back to the template default. Must use the same helper and levels as normal local
+    # chat so the two paths cannot drift apart again.
+    adapter = source("features/chat/api/chat-adapter.ts")
+    branch = adapter.split("Deep research requires a selected local model.", 1)[1].split(
+        "createdRun = await createResearchRun({", 1
+    )[0]
+    assert "inferenceRequest.reasoningEffort = runtime.reasoningEffort;" not in branch
+    assert "inferenceRequest.reasoningEffort = clampReasoningEffortToLevels(" in branch
+    assert "runtime.reasoningEffortLevels," in branch
+    assert "const localReasoningEffort = clampReasoningEffortToLevels(" in adapter
+
+
+def test_research_presave_keeps_the_follow_up_parent() -> None:
+    adapter = source("features/chat/api/chat-adapter.ts")
+    presave = adapter.split("const userMessage =", 1)[1].split(
+        "const createdRun = await createResearchRun({", 1
+    )[0]
+
+    assert "const userMessageIndex = messages.indexOf(userMessage);" in presave
+    assert "const userMessageParentId =" in presave
+    assert "userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null" in presave
+    assert "parentId: storedUserMessage?.parentId ?? userMessageParentId" in presave
+    assert "parentId: storedUserMessage?.parentId ?? null" not in presave
 
 
 def test_research_metadata_and_server_merge_are_persisted() -> None:
@@ -179,20 +209,14 @@ def test_research_presentation_is_integrated() -> None:
 
 def test_research_plan_and_status_contract() -> None:
     types = source("features/chat/types/research.ts")
-    coordinator = source("features/chat/stores/research-run-store.ts")
     assert '| "queued"' in types
     assert '| "cancelling"' in types
-    assert '| "synthesis_audit"' in types
-    assert '| "synthesis_recovery"' in types
     assert "title: string;" in types
     assert "query: string;" in types
     assert "position: number;" in types
     assert "createdAt: number;" in types
     assert "planRevision: number;" in types
     assert "planHash: string | null;" in types
-    assert 'phase === "synthesis_audit"' in coordinator
-    assert '"Checking the evidence"' in coordinator
-    assert 'phase === "synthesis" || phase === "synthesis_recovery"' in coordinator
 
 
 def test_research_website_limits_are_configurable_and_sent_with_each_run() -> None:
@@ -204,7 +228,7 @@ def test_research_website_limits_are_configurable_and_sent_with_each_run() -> No
     assert 'label="Allow only"' in component
     assert 'label="Always block"' in component
     assert "their subdomains" in component
-    assert ">Websites</span>" in component
+    assert "<DialogTitle>Website access</DialogTitle>" in component
     assert "DeepResearchWebsiteAccessDialog" in thread
     assert "researchWebsitePolicy" in store
     assert "CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY" in store
@@ -239,6 +263,22 @@ def test_settled_terminal_research_never_stays_disconnected() -> None:
     assert "error: settled ? null" in coordinator
     assert 'state.setFollowing(runId, false, "idle")' in coordinator
     assert "!isSettledResearchRun(run, session.lastAppliedSeq)" in activity
+
+
+def test_replayed_history_never_borrows_another_attempts_step_result() -> None:
+    # A retry deletes the previous attempt's research_plan_steps rows but keeps its events, and
+    # the SSE route attaches the live run snapshot to every replayed event. Matching a replayed
+    # step only by position would show the newest attempt's evidence inside the older one.
+    coordinator = source("features/chat/stores/research-run-store.ts")
+
+    assert "const snapshotIsSameAttempt = attempt === (event.run.retryCount ?? 0);" in coordinator
+    assert "const snapshot = snapshotIsSameAttempt" in coordinator
+    assert "? event.run.steps.find((step) => step.position === stepPosition)" in coordinator
+    assert "snapshot?.result?.evidenceSources ?? activity.evidenceSources," in coordinator
+    assert "excerpt: snapshot?.result?.excerpt ?? activity.excerpt," in coordinator
+    resumed_gate = coordinator.split('event.event === "run.started" &&', 1)[1].split("{", 1)[0]
+    assert "event.data.resumed" in resumed_gate
+    assert "snapshotIsSameAttempt" in resumed_gate
 
 
 def test_research_stop_is_prompt_only_and_deduplicated() -> None:

@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  ChevronDown,
-  CircleAlert,
-  CircleOff,
-  Hand,
-  ShieldCheck,
-} from "lucide-react";
+import { ChevronDown, CircleAlert, Hand, ShieldCheck } from "lucide-react";
+import type { ComponentType } from "react";
 import { useState } from "react";
 
 import {
@@ -29,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { SparklesGlyph } from "@/lib/sparkles-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -45,7 +41,7 @@ export const PERMISSION_MODE_OPTIONS: readonly {
   value: PermissionMode;
   label: string;
   description: string;
-  icon: typeof Hand;
+  icon: ComponentType<{ className?: string; strokeWidth?: number }>;
 }[] = [
   {
     value: "ask",
@@ -56,14 +52,15 @@ export const PERMISSION_MODE_OPTIONS: readonly {
   {
     value: "auto",
     label: "Approve for me",
-    description: "Only ask for actions detected as potentially unsafe",
+    description:
+      "Run tool calls, but ask before high-risk actions like credential access, privilege escalation, or destructive commands",
     icon: ShieldCheck,
   },
   {
     value: "off",
     label: "Run automatically",
     description: "Run tool calls without approval prompts inside the sandbox",
-    icon: CircleOff,
+    icon: SparklesGlyph,
   },
   {
     value: "full",
@@ -80,6 +77,8 @@ export const FULL_ACCESS_WARNING =
 export function permissionModeOption(mode: PermissionMode) {
   return (
     PERMISSION_MODE_OPTIONS.find((option) => option.value === mode) ??
+    // Unknown values fall back to the default ("Approve for me"), not row 0 ("Ask").
+    PERMISSION_MODE_OPTIONS.find((option) => option.value === "auto") ??
     PERMISSION_MODE_OPTIONS[0]
   );
 }
@@ -120,7 +119,7 @@ export function PermissionModeMenuItems({
         >
           <option.icon className="mt-0.5 size-4 shrink-0" strokeWidth={2} />
           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className="text-[13px] leading-tight">{option.label}</span>
+            <span className="text-ui-13 leading-tight">{option.label}</span>
             <span className="text-xs font-normal leading-snug text-muted-foreground">
               {option.description}
             </span>

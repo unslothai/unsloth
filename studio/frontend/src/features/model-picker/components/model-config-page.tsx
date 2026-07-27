@@ -24,7 +24,14 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useEffect, useId, useState } from "react";
+import {
+  type ReactNode,
+  type Ref,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import {
   useDefaultChatTemplate,
   useModelMaxPositionEmbeddings,
@@ -50,17 +57,20 @@ import {
 } from "../model-config/per-model-config";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import type { ModelPickTarget } from "./model-selector/types";
-import { NumericValueInput } from "./numeric-value-input";
+import {
+  NumericValueInput,
+  type NumericValueInputHandle,
+} from "./numeric-value-input";
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
-  "min-w-0 truncate text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg";
+  "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg";
 const LABEL_CLASS_WRAP =
-  "min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg";
+  "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg";
 const CONTROL_SURFACE =
   "rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1]";
-const SELECT_TRIGGER_CLASS = `grid h-8 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
-const NUMBER_INPUT_CLASS = `h-8 w-[92px] ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-right text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0`;
+const SELECT_TRIGGER_CLASS = `grid h-8 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-ui-13! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
+const NUMBER_INPUT_CLASS = `h-8 w-[92px] ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-right text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
 
 const KV_CACHE_DTYPE_DEFAULT = "f16";
 const SPECULATIVE_TYPE_LABELS: Record<(typeof SPECULATIVE_TYPES)[number], string> =
@@ -107,7 +117,7 @@ function ChatTemplateSetting({
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {readOnly ? null : (
-          <span className="text-[12px] text-muted-foreground">
+          <span className="text-ui-12 text-muted-foreground">
             {config.chatTemplateOverride ? "Custom" : "Default"}
           </span>
         )}
@@ -115,7 +125,7 @@ function ChatTemplateSetting({
           type="button"
           size="sm"
           variant="ghost"
-          className={`h-8 px-3 text-[13px] ${CONTROL_SURFACE}`}
+          className={`h-8 px-3 text-ui-13 ${CONTROL_SURFACE}`}
           onClick={onEditTemplate}
         >
           {readOnly ? "View" : "Edit"}
@@ -130,11 +140,13 @@ function MaxSeqLengthSetting({
   max,
   inputMax,
   onChange,
+  inputRef,
 }: {
   value: number;
   max: number;
   inputMax: number;
   onChange: (value: number) => void;
+  inputRef?: Ref<NumericValueInputHandle>;
 }) {
   return (
     <div className="space-y-3">
@@ -146,6 +158,7 @@ function MaxSeqLengthSetting({
           </InfoHint>
         </div>
         <NumericValueInput
+          ref={inputRef}
           value={value}
           min={MAX_SEQ_LENGTH_MIN}
           max={inputMax}
@@ -182,6 +195,7 @@ function AdvancedGpuSlider({
   onChange,
   displayValue,
   info,
+  inputRef,
 }: {
   label: string;
   value: number;
@@ -190,6 +204,7 @@ function AdvancedGpuSlider({
   onChange: (value: number) => void;
   displayValue?: string;
   info?: ReactNode;
+  inputRef?: Ref<NumericValueInputHandle>;
 }) {
   return (
     <div className="space-y-3">
@@ -199,6 +214,7 @@ function AdvancedGpuSlider({
           {info && <InfoHint>{info}</InfoHint>}
         </div>
         <NumericValueInput
+          ref={inputRef}
           value={value}
           min={min}
           max={max}
@@ -231,11 +247,15 @@ function GpuMemorySettings({
   update,
   layerCount,
   moeLayerCount,
+  gpuLayersInputRef,
+  moeLayersInputRef,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   layerCount: number | null;
   moeLayerCount: number | null;
+  gpuLayersInputRef?: Ref<NumericValueInputHandle>;
+  moeLayersInputRef?: Ref<NumericValueInputHandle>;
 }) {
   const gpuDevices = useGpuDevices();
   const mode = config.gpuMemoryMode ?? "auto";
@@ -322,6 +342,7 @@ function GpuMemorySettings({
         <>
           <AdvancedGpuSlider
             label="GPU Layers"
+            inputRef={gpuLayersInputRef}
             value={Math.max(GPU_LAYERS_AUTO, Math.min(gpuLayers, gpuLayersMax))}
             min={GPU_LAYERS_AUTO}
             max={gpuLayersMax}
@@ -338,6 +359,7 @@ function GpuMemorySettings({
           {showMoeSlider && (
             <AdvancedGpuSlider
               label="MoE Layers on CPU"
+              inputRef={moeLayersInputRef}
               value={Math.min(nCpuMoe, moeLayersMax)}
               min={0}
               max={moeLayersMax}
@@ -370,7 +392,7 @@ function GpuMemorySettings({
                 key={d.index}
                 className="flex items-center justify-between gap-3"
               >
-                <span className="min-w-0 truncate text-[12px] text-nav-fg/80">
+                <span className="min-w-0 truncate text-ui-12 text-nav-fg/80">
                   GPU {d.index}: {d.name}
                   {d.memoryTotalGb
                     ? ` · ${Math.round(d.memoryTotalGb)} GB`
@@ -399,6 +421,8 @@ function GgufAdvancedSettings({
   onEditTemplate,
   layerCount,
   moeLayerCount,
+  gpuLayersInputRef,
+  moeLayersInputRef,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -407,6 +431,8 @@ function GgufAdvancedSettings({
   onEditTemplate: () => void;
   layerCount: number | null;
   moeLayerCount: number | null;
+  gpuLayersInputRef?: Ref<NumericValueInputHandle>;
+  moeLayersInputRef?: Ref<NumericValueInputHandle>;
 }) {
   return (
     <>
@@ -415,7 +441,8 @@ function GgufAdvancedSettings({
           <span className={LABEL_CLASS}>KV Cache Dtype</span>
           <InfoHint>
             Lower KV cache precision to save VRAM at the cost of some quality.
-            f16/bf16 are full precision; q8_0/q5_1/q4_1 are quantized.
+            f16 is the default; bf16 and f32 are full precision; q8_0 through
+            iq4_nl are quantized.
           </InfoHint>
         </div>
         <Select
@@ -534,6 +561,8 @@ function GgufAdvancedSettings({
         update={update}
         layerCount={layerCount}
         moeLayerCount={moeLayerCount}
+        gpuLayersInputRef={gpuLayersInputRef}
+        moeLayersInputRef={moeLayersInputRef}
       />
 
       <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />
@@ -596,6 +625,10 @@ export function ModelConfigPage({
   const [showAdvanced, setShowAdvanced] = useState(() =>
     hasNonDefaultAdvanced(config),
   );
+  const contextInputRef = useRef<NumericValueInputHandle>(null);
+  const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
+  const gpuLayersInputRef = useRef<NumericValueInputHandle>(null);
+  const moeLayersInputRef = useRef<NumericValueInputHandle>(null);
   const nativePathToken =
     target.meta.nativePathToken ??
     (isActiveModel ? activeNativePathToken : null);
@@ -743,11 +776,6 @@ export function ModelConfigPage({
       ? { ...config, customContextLength: activeLoadedContext }
       : config
     : config;
-  // Load request needs a concrete max length; substitute the fallback here only,
-  // never in the persisted runtimeConfig.
-  const loadConfig = target.isGguf
-    ? runtimeConfig
-    : { ...runtimeConfig, maxSeqLength: maxSeqLengthValue };
   const rememberChanged = remember !== savedRemember;
   const persistenceOnly = isActiveModel && atBaseline && rememberChanged;
   const primaryActionLabel = persistenceOnly
@@ -759,18 +787,90 @@ export function ModelConfigPage({
       : "Load model";
 
   const handleRun = () => {
-    const defaultConfig = isDefaultConfig(runtimeConfig);
+    // Same-click Load/Reload: a numeric draft the user just typed is flushed only
+    // by that input's blur handler, which updates the parent config after this
+    // click closure already captured the stale value. Commit every numeric input
+    // imperatively so the staged load honors what the user just typed, not just
+    // the Context field.
+    const committedContext = target.isGguf
+      ? contextInputRef.current?.commit()
+      : undefined;
+    const committedMaxSeqLength = target.isGguf
+      ? undefined
+      : maxSeqLengthInputRef.current?.commit();
+    const committedGpuLayers = target.isGguf
+      ? gpuLayersInputRef.current?.commit()
+      : undefined;
+    const committedMoeLayers = target.isGguf
+      ? moeLayersInputRef.current?.commit()
+      : undefined;
+
+    const pendingPatch: Partial<PerModelConfig> = {};
+    if (committedContext != null) {
+      pendingPatch.customContextLength = committedContext;
+    }
+    if (committedMaxSeqLength != null) {
+      pendingPatch.maxSeqLength = clampMaxSeqLength(
+        committedMaxSeqLength,
+        MAX_SEQ_LENGTH_MAX,
+      );
+    }
+    if (committedGpuLayers != null) {
+      pendingPatch.gpuLayers = committedGpuLayers;
+    }
+    if (committedMoeLayers != null) {
+      pendingPatch.nCpuMoe = committedMoeLayers;
+    }
+    const hasPending =
+      committedContext != null ||
+      committedMaxSeqLength != null ||
+      committedGpuLayers != null ||
+      committedMoeLayers != null;
+
+    const effectiveConfig = hasPending
+      ? { ...config, ...pendingPatch }
+      : config;
+    // pinFixedLayerContext above was computed from the render-time config, before
+    // the same-click GPU Layers draft was committed. Recompute it from
+    // effectiveConfig so committing a positive fixed-layer value still pins the
+    // fitted context; otherwise the saved config carries customContextLength: null
+    // and a later fresh load sends the native context with fixed layers (the OOM
+    // the pin exists to avoid).
+    const effectivePinFixedLayerContext =
+      target.isGguf &&
+      effectiveConfig.gpuMemoryMode === "manual" &&
+      effectiveConfig.gpuLayers != null &&
+      effectiveConfig.gpuLayers >= 0 &&
+      effectiveConfig.customContextLength == null &&
+      activeLoadedContext != null;
+    const effectiveRuntimeConfig = hasPending
+      ? effectivePinFixedLayerContext
+        ? { ...effectiveConfig, customContextLength: activeLoadedContext }
+        : effectiveConfig
+      : runtimeConfig;
+    // Non-GGUF load substitutes the resolved max sequence length; recompute it
+    // from the committed draft so a same-click Max Seq Length edit is not lost.
+    const effectiveMaxSeqLengthValue =
+      committedMaxSeqLength == null
+        ? maxSeqLengthValue
+        : (normalizeMaxSeqLength(effectiveConfig.maxSeqLength) ??
+          clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength));
+    // Recheck the committed draft so Save/Forget reloads when needed.
+    const effectiveAtBaseline = perModelConfigsEqual(effectiveConfig, baseline);
+    const effectivePersistenceOnly =
+      isActiveModel && effectiveAtBaseline && rememberChanged;
+    const defaultConfig = isDefaultConfig(effectiveRuntimeConfig);
     let saveFailed = false;
     if (remember) {
       saveFailed = !savePerModelConfig(
         target.id,
         target.ggufVariant,
-        runtimeConfig,
+        effectiveRuntimeConfig,
       );
     } else {
       saveFailed = !deletePerModelConfig(target.id, target.ggufVariant);
     }
-    if (persistenceOnly) {
+    if (effectivePersistenceOnly) {
       if (saveFailed) {
         toast.error("Couldn't save settings for this model.");
         return;
@@ -790,7 +890,10 @@ export function ModelConfigPage({
     if (saveFailed) {
       toast.error("Couldn't save these settings, loading with them anyway.");
     }
-    onRun(loadConfig);
+    const effectiveLoadConfig = target.isGguf
+      ? effectiveRuntimeConfig
+      : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
+    onRun(effectiveLoadConfig);
   };
 
   return (
@@ -812,10 +915,10 @@ export function ModelConfigPage({
             </button>
           )}
           <div className="min-w-0 flex-1">
-            <div className="text-[10px] font-semibold uppercase leading-none tracking-wider text-muted-foreground">
+            <div className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
               Run settings
             </div>
-            <div className="mt-1.5 truncate text-[14px] font-semibold leading-tight text-nav-fg">
+            <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-nav-fg">
               {target.displayName}
             </div>
           </div>
@@ -837,6 +940,7 @@ export function ModelConfigPage({
                   </InfoHint>
                 </div>
                 <NumericValueInput
+                  ref={contextInputRef}
                   value={contextValue}
                   min={minContext}
                   max={maxContext}
@@ -868,7 +972,7 @@ export function ModelConfigPage({
               {isActiveModel &&
                 loadedMaxContextLength != null &&
                 contextValue > loadedMaxContextLength && (
-                  <p className="text-[11px] text-amber-500">
+                  <p className="text-ui-11 text-amber-500">
                     Exceeds estimated VRAM capacity (
                     {loadedMaxContextLength.toLocaleString()} tokens). The model
                     may use system RAM.
@@ -885,12 +989,14 @@ export function ModelConfigPage({
                 onEditTemplate={() => setTemplateOpen(true)}
                 layerCount={stagedDims?.layerCount ?? null}
                 moeLayerCount={stagedDims?.moeLayerCount ?? null}
+                gpuLayersInputRef={gpuLayersInputRef}
+                moeLayersInputRef={moeLayersInputRef}
               />
             )}
 
             <div className={ROW_CLASS}>
               <div className="flex min-w-0 items-center gap-1.5">
-                <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-muted-foreground">
+                <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
                   Advanced settings
                 </span>
                 <InfoHint>
@@ -913,6 +1019,7 @@ export function ModelConfigPage({
               value={maxSeqLengthValue}
               max={maxSeqLengthMax}
               inputMax={MAX_SEQ_LENGTH_MAX}
+              inputRef={maxSeqLengthInputRef}
               onChange={(value) =>
                 update({
                   maxSeqLength: clampMaxSeqLength(value, MAX_SEQ_LENGTH_MAX),
@@ -943,7 +1050,7 @@ export function ModelConfigPage({
           />
           <label
             htmlFor={rememberId}
-            className="cursor-pointer select-none truncate text-[13px] text-nav-fg"
+            className="cursor-pointer select-none truncate text-ui-13 text-nav-fg"
           >
             Remember for this model
           </label>

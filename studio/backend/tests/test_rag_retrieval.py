@@ -244,10 +244,9 @@ def test_knowledge_search_honors_cancellation_and_timeout(monkeypatch):
 
 
 def test_timed_out_search_keeps_slot_until_worker_exits(monkeypatch):
-    # A search that outlives its caller's timeout still owns the sole RAG slot: the running work is
-    # what consumes the embedding/index/GPU resource, so a second lookup must NOT be able to enter
-    # while the first worker is still alive (that would defeat the capacity-of-one bound). The slot
-    # frees only when the detached worker actually finishes.
+    # A search that outlives its caller's timeout still owns the sole RAG slot: the running work
+    # is what consumes the embedding/index/GPU resource, so a second lookup must not enter while
+    # the first worker is alive. The slot frees only when that worker finishes.
     from core.inference import tools
 
     started = threading.Event()

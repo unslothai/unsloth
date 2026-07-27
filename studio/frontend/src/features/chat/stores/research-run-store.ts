@@ -168,6 +168,10 @@ function reduceActivity(
 ): ResearchActivity[] {
   const next = [...activities];
   const attempt = event.data.attempt ?? 0;
+  // A retry deletes the old attempt's step rows while its events survive, and
+  // the stream attaches the live snapshot to replayed history, so run.steps
+  // only describes its own attempt.
+  const snapshotIsSameAttempt = attempt === (event.run.retryCount ?? 0);
   if (event.event !== "reasoning.updated") {
     const activeReasoningIndex = findLastActivityIndex(
       next,
@@ -324,9 +328,9 @@ function reduceActivity(
     );
     if (index >= 0) {
       const activity = next[index];
-      const snapshot = event.run.steps.find(
-        (step) => step.position === stepPosition,
-      );
+      const snapshot = snapshotIsSameAttempt
+        ? event.run.steps.find((step) => step.position === stepPosition)
+        : undefined;
       next[index] = {
         ...activity,
         seq: event.id,
@@ -335,8 +339,9 @@ function reduceActivity(
           event.event === "step.failed"
             ? (event.data.error ?? "The tool could not complete this action.")
             : `${event.data.sourceCount ?? activity.sources?.length ?? 0} sources found`,
-        evidenceSources: snapshot?.result?.evidenceSources,
-        excerpt: snapshot?.result?.excerpt,
+        evidenceSources:
+          snapshot?.result?.evidenceSources ?? activity.evidenceSources,
+        excerpt: snapshot?.result?.excerpt ?? activity.excerpt,
       };
     }
     return next;
@@ -380,7 +385,11 @@ function reduceActivity(
     }
   }
 
-  if (event.event === "run.started" && event.data.resumed) {
+  if (
+    event.event === "run.started" &&
+    event.data.resumed &&
+    snapshotIsSameAttempt
+  ) {
     for (let index = next.length - 1; index >= 0; index -= 1) {
       const activity = next[index];
       if (activity.kind !== "step" || activity.attempt !== attempt) continue;

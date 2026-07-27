@@ -13,6 +13,7 @@ import re
 import sqlite3
 import threading
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator
 
@@ -42,7 +43,10 @@ _SOURCES_HEADING = re.compile(
 _NUMBERED_CITATION = re.compile(r"(?<!\^)\[(\d+)]")
 _AUTOLINK = re.compile(r"<(https?://[^>\s]+)>")
 _RAW_URL = re.compile(r"https?://[^\s<>]+")
-_DOCUMENT_CITATION = re.compile(r"\[Document:(?:[^\[\]]+|\[[^\[\]]*\])*\]")
+# Unrolled rather than the equivalent (?:[^\[\]]+|\[[^\[\]]*\])* : that alternation backtracks
+# catastrophically on an unterminated "[Document:" (ordinary malformed model output), and this
+# runs on the event loop, so one bad report would stall all of Studio.
+_DOCUMENT_CITATION = re.compile(r"\[Document:[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]")
 # Wrapper delimiters used in the decision/synthesis prompts. Any occurrence inside
 # untrusted evidence is escaped so gathered content cannot close a block early.
 _PROMPT_DELIMITER_TAGS = re.compile(
@@ -54,9 +58,32 @@ _PROMPT_DELIMITER_TAGS = re.compile(
     re.IGNORECASE,
 )
 _QUERY_CREDENTIAL = re.compile(
-    r"""(?ix)\b(?:api[\s_-]?key|access[\s_-]?token|authorization|password|secret|token)\s*[:=]\s*
+    r"""(?ix)(?<![A-Za-z0-9])(?:api[\s_-]?key|access[\s_-]?(?:key|token)
+    |auth[\s_-]?token|bearer[\s_-]?token|client[\s_-]?secret|private[\s_-]?key
+    |refresh[\s_-]?token|session[\s_-]?token|authorization|password|secret|token)\s*[:=]\s*
     (?:"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,;]+)"""
 )
+_QUERY_NAMED_ASSIGNMENT = re.compile(
+    r"""(?x)(?<![A-Za-z0-9])(?P<label>[A-Za-z][A-Za-z0-9_-]{0,100})\s*[:=]\s*
+    (?P<value>"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,;]+)"""
+)
+_QUERY_CREDENTIAL_SUFFIXES = (
+    "apikey",
+    "accesskey",
+    "accesstoken",
+    "authtoken",
+    "bearertoken",
+    "clientsecret",
+    "privatekey",
+    "refreshtoken",
+    "secretkey",
+    "sessiontoken",
+    "authorization",
+    "password",
+    "token",
+)
+_QUERY_PUBLIC_ASSIGNMENT_SUFFIXES = ("designtoken", "cancellationtoken")
+_WALL_CLOCK_TIMEOUT_CANCEL_MESSAGE = "research-wall-clock-timeout"
 # Bearer authorization tokens carry no key=value label, so the credential pattern above misses
 # them; the length floor keeps ordinary prose ("bearer of bad news") from matching.
 _QUERY_BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}")
@@ -89,30 +116,37 @@ _MAX_CONTEXT_CHARS = 12_000
 _MAX_CONTEXT_MESSAGE_CHARS = 4_000
 _MAX_SYNTHESIS_EVIDENCE_CHARS = 32_000
 # The synthesis prompt must fit the loaded context or it is silently truncated and the report
-# degenerates (echoes the evidence tail). Studio defaults context to 2048 tokens, far below the
-# cap above, so the evidence budget adapts to the loaded context: reserve tokens for the prompt
-# scaffolding (system prompt, plan, source catalogs) AND the generated report, then convert the
-# remainder to chars. Unknown context keeps the full cap.
+# degenerates (echoes the evidence tail). The context box accepts anything from 128 up, so the
+# budget adapts: the reserve covers the generated report and every trimmable section is measured
+# against what the untrimmable scaffolding leaves. Unknown context keeps the full cap.
 _MIN_SYNTHESIS_EVIDENCE_CHARS = 1_500
+# Trimming the question or the evidence to nothing produces a confidently empty report, so each
+# keeps a floor: overflow on a tiny context is recoverable, an empty prompt is not.
+_MIN_QUESTION_CHARS = 800
 _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN = 3.0
 _SYNTHESIS_CONTEXT_RESERVE_TOKENS = 4_096
 # Below this loaded context the prompt scaffolding alone fills the window and the grounded
 # report degenerates, so grounding is skipped (snippet-only) for smaller loads.
 _AUTO_SCRAPE_MIN_CONTEXT_TOKENS = 8_192
-# Optionally read the top search results so synthesis is grounded in page text, not just
-# snippets: each scraped page is ingested into an ephemeral RAG scope (deleted after, so a
-# user's knowledge base is untouched), the passages most relevant to the question are
-# hybrid-retrieved reusing the KB retriever, and the resulting <chunk> blocks replace the raw
-# search text (staying under the existing 12k per-note cap). OFF by default, opt in via
-# UNSLOTH_RESEARCH_AUTO_SCRAPE=1: benchmarking showed no reliable factoid-accuracy gain over
-# snippets on a local model (snippets usually already carry the fact) while adding latency.
-# Gated per run by budgets["maxAutoScrape"] (absent/0 means no scrape, so existing runs keep
-# legacy behavior). Safe only with the context gate in _research and the adaptive budget in
-# _synthesis_evidence_budget; without them, denser evidence overflows a small context.
+# Optionally ground synthesis in page text: the top results are ingested into an ephemeral RAG
+# scope (deleted after, so the user's knowledge base is untouched) and hybrid-retrieved into
+# <chunk> evidence. OFF by default, opt in via UNSLOTH_RESEARCH_AUTO_SCRAPE=1: benchmarking
+# showed no reliable factoid-accuracy gain over snippets on a local model (snippets usually
+# already carry the fact) while adding latency. Gated per run by budgets["maxAutoScrape"]
+# (absent/0 means no scrape, so existing runs keep legacy behavior). Safe only with the context
+# gate in _research and the adaptive budget in _synthesis_evidence_budget; without them, denser
+# evidence overflows a small context.
 _AUTO_SCRAPE_TOP_K = 3
 _AUTO_SCRAPE_TOTAL_CHARS = 6_000
 _WEB_RAG_TOP_N = 6
 _WEB_RAG_MIN_SCORE = 0.30
+# Poll interval while a run waits for a local model to be (re)loaded, and the detail
+# routes.inference returns when nothing is loaded (its 400 is transient, not a bad request).
+_MODEL_WAIT_POLL_SECONDS = 2.0
+# Each wait is bounded by modelTimeoutSeconds, but a model that keeps disappearing would
+# otherwise re-send forever, so cap how many times one call may wait.
+_MAX_MODEL_WAITS = 3
+_NO_MODEL_LOADED_DETAIL = "No model loaded"
 
 
 def _auto_scrape_default() -> int:
@@ -440,7 +474,16 @@ def _shield_untrusted(text: str) -> str:
 
 
 def _sanitize_public_query(query: str) -> str:
+    def redact_named_assignment(match: re.Match) -> str:
+        label = re.sub(r"[^a-z0-9]", "", match.group("label").lower())
+        if label.endswith(_QUERY_CREDENTIAL_SUFFIXES) and not label.endswith(
+            _QUERY_PUBLIC_ASSIGNMENT_SUFFIXES
+        ):
+            return " "
+        return match.group(0)
+
     query = _QUERY_CREDENTIAL.sub(" ", query)
+    query = _QUERY_NAMED_ASSIGNMENT.sub(redact_named_assignment, query)
     query = _QUERY_BEARER.sub(" ", query)
     query = _QUERY_EMAIL.sub(" ", query)
     query = _QUERY_PRIVATE_ID.sub(" ", query)
@@ -583,9 +626,8 @@ def _loaded_context_length() -> int | None:
 
     Mirrors routes.inference._monitor_context_length (llama.cpp backend, else the inference
     orchestrator) so grounding sizes evidence to the same context the API layer serves. The ML
-    backends live in a worker subprocess, so the low-level core.inference.inference singleton is
-    unpopulated in this (main) process and importing it pulls in the ML stack; read the
-    orchestrator the routes use instead."""
+    backends live in a worker subprocess, so the core.inference.inference singleton is unpopulated
+    here and importing it pulls in the ML stack; read the orchestrator the routes use instead."""
     # GGUF / llama.cpp keeps context on its own backend (checked first, like the API layer).
     try:
         from routes.inference import get_llama_cpp_backend
@@ -617,15 +659,165 @@ def _loaded_context_length() -> int | None:
     return None
 
 
-def _synthesis_evidence_budget() -> int:
-    """Char budget for synthesis evidence, sized to fit the loaded context (falls back to the
-    full cap when the context is unknown)."""
+async def _model_unloaded(response: httpx.Response) -> bool:
+    """Whether the local endpoint refused because no model is loaded (routes.inference). That is
+    transient for a durable run -- the model can be loaded again -- unlike any other 400."""
+    if response.status_code != 400:
+        return False
+    try:
+        body = await response.aread()
+    except Exception:
+        return False
+    return _NO_MODEL_LOADED_DETAIL in body.decode("utf-8", "replace")
+
+
+def _local_model_ready() -> bool:
+    """Whether the local chat-completions path has a model to serve, using the same two checks
+    routes.inference.openai_chat_completions makes before it 400s. Fails open when neither
+    backend can be probed, so a probe failure can only run a request, never withhold one."""
+    probed = False
+    try:
+        from routes.inference import get_llama_cpp_backend
+        if getattr(get_llama_cpp_backend(), "is_loaded", False):
+            return True
+        probed = True
+    except Exception:
+        logger.debug("research.model_probe_llama_failed", exc_info = True)
+    try:
+        from core.inference import get_inference_backend
+        if getattr(get_inference_backend(), "active_model_name", None):
+            return True
+        probed = True
+    except Exception:
+        logger.debug("research.model_probe_failed", exc_info = True)
+    return not probed
+
+
+def _fit_source_catalog(catalog: str, max_chars: int) -> str:
+    """Trim whole catalog entries from the tail so every surviving URL stays citable.
+
+    Slicing mid-entry would hand the model a truncated URL, which the validator then strips.
+    """
+    if max_chars <= 0 or len(catalog) <= max_chars:
+        return catalog if max_chars > 0 else ""
+    kept: list[str] = []
+    used = 0
+    for entry in catalog.split("\n\n") if "\n\n" in catalog else catalog.splitlines(True):
+        used += len(entry)
+        if used > max_chars:
+            break
+        kept.append(entry)
+    return ("".join(kept) if not kept or kept[0].endswith("\n") else "\n\n".join(kept)).rstrip()
+
+
+def _fit_decision_inputs(
+    question: str, plan: dict, system_chars: int, total_budget: int | None
+) -> tuple[str, str]:
+    """Fit the decision question and plan while keeping the plan valid JSON."""
+    full_plan = json.dumps(plan, ensure_ascii = False)
+    if total_budget is None:
+        minimum_question_chars = min(len(question), _MIN_QUESTION_CHARS)
+        research_reserve = 0
+        plan_budget = len(full_plan)
+    else:
+        input_budget = max(0, total_budget - system_chars)
+        if input_budget < len("{}"):
+            raise ValueError("Loaded model context is too small for a research decision")
+        minimum_question_chars = min(
+            len(question),
+            _MIN_QUESTION_CHARS,
+            max(0, input_budget - len("{}")),
+        )
+        research_reserve = min(
+            _MIN_SYNTHESIS_EVIDENCE_CHARS,
+            max(0, input_budget - minimum_question_chars - len("{}")),
+        )
+        plan_budget = max(0, input_budget - minimum_question_chars - research_reserve)
+    if len(full_plan) <= plan_budget:
+        fitted_plan = full_plan
+    else:
+        fitted_plan = "{}"
+        steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
+        for count in range(len(steps) + 1):
+            candidate = json.dumps(
+                {"title": plan.get("title") or "Research plan", "steps": steps[:count]},
+                ensure_ascii = False,
+            )
+            if len(candidate) > plan_budget:
+                break
+            fitted_plan = candidate
+    question_budget = _trimmable_budget(
+        total_budget,
+        system_chars + len(fitted_plan) + research_reserve,
+        _MAX_SYNTHESIS_EVIDENCE_CHARS,
+    )
+    return question[:question_budget], fitted_plan
+
+
+@asynccontextmanager
+async def _wall_clock_timeout(seconds: float) -> AsyncIterator[None]:
+    """Use asyncio.timeout when available, with the same behavior on Python 3.9/3.10."""
+    timeout = getattr(asyncio, "timeout", None)
+    if timeout is not None:
+        async with timeout(seconds):
+            yield
+        return
+
+    task = asyncio.current_task()
+    if task is None:
+        yield
+        return
+    expired = False
+
+    def cancel() -> None:
+        nonlocal expired
+        expired = True
+        task.cancel(_WALL_CLOCK_TIMEOUT_CANCEL_MESSAGE)
+
+    handle = asyncio.get_running_loop().call_later(seconds, cancel)
+    try:
+        yield
+    except asyncio.CancelledError as exc:
+        if expired and exc.args == (_WALL_CLOCK_TIMEOUT_CANCEL_MESSAGE,):
+            raise asyncio.TimeoutError from exc
+        raise
+    finally:
+        handle.cancel()
+
+
+def _prompt_char_budget(reserve_tokens: int) -> int | None:
+    """Chars the whole prompt may occupy on the loaded context, or None when it is unknown.
+
+    The output reserve is capped at half the window: a flat reserve at or above the context
+    (4096 on the 4096-token GGUF floor) would leave a budget of 0 and empty the prompt, and a
+    truncated completion is far better than one that never saw the question.
+    """
     ctx = _loaded_context_length()
     if not ctx:
-        return _MAX_SYNTHESIS_EVIDENCE_CHARS
-    usable_tokens = max(0, ctx - _SYNTHESIS_CONTEXT_RESERVE_TOKENS)
-    budget = int(usable_tokens * _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN)
-    return max(_MIN_SYNTHESIS_EVIDENCE_CHARS, min(budget, _MAX_SYNTHESIS_EVIDENCE_CHARS))
+        return None
+    reserve = min(reserve_tokens, max(1, ctx // 2))
+    return int(max(0, ctx - reserve) * _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN)
+
+
+def _trimmable_budget(total: int | None, fixed_chars: int, hard_cap: int) -> int:
+    """Chars left for a trimmable section once the rest of the prompt is counted.
+
+    Budgeting one section against the context while the others are unbounded does not stop an
+    overflow: at a 2048-token context the untrimmable scaffolding alone is several times the
+    window. Returns 0 rather than a floor, since a short report beats a failed run.
+    """
+    if total is None:
+        return hard_cap
+    return max(0, min(hard_cap, total - fixed_chars))
+
+
+def _synthesis_evidence_budget(fixed_chars: int = 0) -> int:
+    """Char budget for synthesis evidence (full cap when the context is unknown)."""
+    return _trimmable_budget(
+        _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS),
+        fixed_chars,
+        _MAX_SYNTHESIS_EVIDENCE_CHARS,
+    )
 
 
 def _bounded_synthesis_evidence(
@@ -655,7 +847,9 @@ def _bounded_synthesis_evidence(
 
 
 def _fit_synthesis_context(
-    notes: list[str], prioritized_payloads: list[dict[str, Any]]
+    notes: list[str],
+    prioritized_payloads: list[dict[str, Any]],
+    fixed_chars: int = 0,
 ) -> tuple[str, list[str]]:
     """Share the adaptive synthesis budget between evidence and JSON prompt blocks.
 
@@ -664,7 +858,7 @@ def _fit_synthesis_context(
     preventing model-derived state or an audit near its output cap from overflowing a small model
     context.
     """
-    total_budget = _synthesis_evidence_budget()
+    total_budget = _synthesis_evidence_budget(fixed_chars)
     placeholder = "{}"
     minimum_evidence = min(_MIN_SYNTHESIS_EVIDENCE_CHARS, total_budget)
     remaining_payload_budget = max(
@@ -687,12 +881,10 @@ def _fit_synthesis_context(
 def _merge_scraped_evidence(raw_result: str, scraped_section: str) -> str:
     """Combine the raw search snippets with grounded page-body chunks (additive).
 
-    Grounded auto-scrape used to REPLACE ``raw_result`` with ``scraped_section``.
-    When the retrieved chunk was a distractor or dropped the key fact, the
-    answer-bearing search snippet was lost and the grounded run regressed below
-    snippet-only accuracy. Keep the snippets first (they already carry the answer
-    for most factual queries) and append the grounded excerpts as supplementary
-    evidence. If either side is empty the other is returned unchanged.
+    Replacing ``raw_result`` with ``scraped_section`` regressed below snippet-only accuracy:
+    when the retrieved chunk was a distractor the answer-bearing snippet was lost. Keep the
+    snippets first and append the grounded excerpts. If either side is empty the other is
+    returned unchanged.
     """
     raw = (raw_result or "").strip()
     scraped = (scraped_section or "").strip()
@@ -799,6 +991,40 @@ def _split_rag_result(result: str) -> tuple[str, list[dict[str, Any]]]:
     return text.rstrip(), sources
 
 
+def _citation_title(source: dict, fallback: str) -> str:
+    """Title as it may appear in a markdown link label.
+
+    The prompt tells the model to copy titles verbatim from the source catalog, and search
+    titles routinely carry a bracket ("[PDF] Annual Report") which makes the citation
+    unmatchable, so the catalog and the citation writer strip them the same way.
+    """
+    title = str(source.get("title") or fallback).replace("[", "").replace("]", "").strip()
+    return title or fallback
+
+
+def _trim_url_tail(raw: str) -> str:
+    """Strip trailing prose punctuation that ``_RAW_URL`` swallowed.
+
+    Mirrors GFM extended autolink path validation: walk right to left, dropping
+    ``.,;:!?`` and any ``)`` that has no matching ``(`` inside the URL, stopping at the
+    first character that is neither. Both rules must run in one interleaved pass, else
+    ``https://x/y.)`` keeps a stray dot. Without this, ``(https://x/y)`` never matches
+    the catalog and the citation is dropped from the report.
+    """
+    end = len(raw)
+    opening, closing = raw.count("("), raw.count(")")
+    while end:
+        char = raw[end - 1]
+        if char == ")":
+            if closing <= opening:
+                break
+            closing -= 1
+        elif char not in ".,;:!?":
+            break
+        end -= 1
+    return raw[:end]
+
+
 def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
     return is_tool_error(web_result) and not rag_sources
 
@@ -819,9 +1045,9 @@ def _validate_report_sources(report: str, sources: list[dict]) -> str:
         source = source_by_url.get(url)
         if source is None:
             return None
-        title = str(source.get("title") or url).replace("[", "").replace("]", "").strip()
+        title = _citation_title(source, url)
         token = f"\x00research-citation-{len(placeholders)}\x00"
-        placeholders[token] = f"[{title or url}]({_escape_link_destination(url)})"
+        placeholders[token] = f"[{title}]({_escape_link_destination(url)})"
         return token
 
     def replace_markdown_links(text: str) -> str:
@@ -900,10 +1126,11 @@ def _validate_report_sources(report: str, sources: list[dict]) -> str:
     def replace_raw_url(match: re.Match) -> str:
         # Cite whole source URLs; drop other raw URLs. Whole-match avoids prefix collisions.
         raw = match.group(0)
-        core = raw.rstrip(".,;:!?")
+        core = _trim_url_tail(raw)
         if core in source_by_url:
             return (citation(core) or core) + raw[len(core) :]
-        return ""
+        # Keep the trimmed tail so dropping the URL cannot unbalance the prose.
+        return raw[len(core) :]
 
     validated = replace_markdown_links(report)
     validated = _AUTOLINK.sub(replace_autolink, validated)
@@ -1087,9 +1314,9 @@ class ResearchSupervisor:
         tool_timeout: int,
         website_policy: dict | None,
     ) -> tuple[str, list[str]]:
-        """Concurrently read up to ``limit`` of this step's accepted source URLs, rank their
-        content against the research question with the knowledge-base embedding model, and
-        return the most relevant chunks as ``<chunk>`` evidence plus the URLs actually read.
+        """Concurrently read up to ``limit`` of this step's accepted source URLs and return the
+        chunks most relevant to the question as ``<chunk>`` evidence, plus the URLs read.
+
         URLs are already access checked and deduplicated by the caller, so no new sources are
         created. Failures, timeouts, unreadable pages, and low-relevance chunks are dropped;
         the caller enforces cancellation."""
@@ -1232,6 +1459,22 @@ class ResearchSupervisor:
             raise RuntimeError("Research is waiting for the Studio server port")
         return f"http://127.0.0.1:{port}/v1/chat/completions"
 
+    async def _wait_for_local_model(self, run: dict) -> bool:
+        """Wait, up to the run's model timeout, for a model to be loaded again; True if one was.
+
+        A durable run resumes after a Studio restart and is approved long after it was created,
+        so the model it was started with can be gone. Waiting keeps the run alive instead of
+        ending it on a non-retryable 400 that discards every step and source it gathered."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + float(run["config"]["budgets"]["modelTimeoutSeconds"])
+        logger.info("research.waiting_for_local_model run_id=%s", run["id"])
+        while loop.time() < deadline:
+            await self._check_active(run["id"])
+            await asyncio.sleep(_MODEL_WAIT_POLL_SECONDS)
+            if _local_model_ready():
+                return True
+        return False
+
     async def _completion(
         self,
         run: dict,
@@ -1270,7 +1513,9 @@ class ResearchSupervisor:
         try:
             timeout = httpx.Timeout(float(config["budgets"]["modelTimeoutSeconds"]))
             async with httpx.AsyncClient(timeout = timeout, trust_env = False) as client:
-                for attempt in range(3):
+                attempt = 0
+                model_waits = 0
+                while True:
                     await self._check_active(run["id"])
                     try:
                         post_task = asyncio.create_task(
@@ -1295,6 +1540,17 @@ class ResearchSupervisor:
                         body = response.json()
                         break
                     except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                        # Nothing loaded (restart, eject): wait for a model and re-send without
+                        # spending an attempt, so the run survives instead of failing here.
+                        if isinstance(exc, httpx.HTTPStatusError) and await _model_unloaded(
+                            exc.response
+                        ):
+                            model_waits += 1
+                            if model_waits <= _MAX_MODEL_WAITS and await self._wait_for_local_model(
+                                run
+                            ):
+                                continue
+                            raise
                         retryable = (
                             not isinstance(exc, httpx.HTTPStatusError)
                             or exc.response.status_code >= 500
@@ -1302,6 +1558,7 @@ class ResearchSupervisor:
                         if not retryable or attempt == 2:
                             raise
                         await asyncio.sleep(2**attempt)
+                        attempt += 1
             message = body["choices"][0]["message"]
             thought = message.get("reasoning_content")
             if isinstance(thought, str) and thought.strip():
@@ -1466,28 +1723,69 @@ class ResearchSupervisor:
             last_progress_flush = asyncio.get_running_loop().time()
 
         try:
-            timeout = httpx.Timeout(float(config["budgets"]["modelTimeoutSeconds"]))
-            async with httpx.AsyncClient(timeout = timeout, trust_env = False) as client:
-                request = client.build_request(
-                    "POST",
-                    self._endpoint(),
-                    json = payload,
-                    headers = {"Authorization": f"Bearer {token}"},
-                )
+            model_timeout = float(config["budgets"]["modelTimeoutSeconds"])
+            timeout = httpx.Timeout(model_timeout)
+            async with (
+                _wall_clock_timeout(model_timeout),
+                httpx.AsyncClient(timeout = timeout, trust_env = False) as client,
+            ):
                 response: httpx.Response | None = None
-                send_task = asyncio.create_task(client.send(request, stream = True))
+                send_task: asyncio.Task | None = None
+                model_waits = 0
+                attempt = 0
                 try:
-                    while not send_task.done():
-                        await asyncio.wait({send_task}, timeout = 0.2)
-                        if self._cancel_event(run["id"]).is_set():
-                            send_task.cancel()
-                            try:
-                                await send_task
-                            except asyncio.CancelledError:
-                                pass
-                            await self._check_active(run["id"])
-                    response = await send_task
-                    response.raise_for_status()
+                    while True:
+                        request = client.build_request(
+                            "POST",
+                            self._endpoint(),
+                            json = payload,
+                            headers = {"Authorization": f"Bearer {token}"},
+                        )
+                        try:
+                            send_task = asyncio.create_task(client.send(request, stream = True))
+                            while not send_task.done():
+                                await asyncio.wait({send_task}, timeout = 0.2)
+                                if self._cancel_event(run["id"]).is_set():
+                                    send_task.cancel()
+                                    try:
+                                        await send_task
+                                    except asyncio.CancelledError:
+                                        pass
+                                    await self._check_active(run["id"])
+                            response = await send_task
+                            response.raise_for_status()
+                            break
+                        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                            # Only reachable before a body byte is touched (the stream is consumed
+                            # after this loop), so a re-send cannot duplicate report text.
+                            unloaded = isinstance(
+                                exc, httpx.HTTPStatusError
+                            ) and await _model_unloaded(exc.response)
+                            retryable = (
+                                not isinstance(exc, httpx.HTTPStatusError)
+                                or exc.response.status_code >= 500
+                            )
+                            if unloaded:
+                                model_waits += 1
+                                if model_waits > _MAX_MODEL_WAITS:
+                                    raise
+                            elif not retryable or attempt == 2:
+                                raise
+                            if response is not None:
+                                # Manual stream mode owns the connection; release it to re-send.
+                                await response.aclose()
+                                response = None
+                            if unloaded:
+                                # Nothing loaded (restart, eject): wait for a model to come back,
+                                # without spending a transport attempt.
+                                if not await self._wait_for_local_model(run):
+                                    raise
+                            else:
+                                # _completion's policy, so both paths agree; re-check the lease
+                                # and cancellation before re-sending.
+                                await asyncio.sleep(2**attempt)
+                                attempt += 1
+                                await self._check_active(run["id"])
                     async for line in self._iter_stream_lines(run["id"], response):
                         if self._cancel_event(run["id"]).is_set():
                             await self._check_active(run["id"])
@@ -1498,6 +1796,8 @@ class ResearchSupervisor:
                             continue
                         try:
                             chunk = json.loads(data)
+                            if isinstance(chunk, dict) and "error" in chunk:
+                                raise RuntimeError("Local model stream failed")
                             choice = chunk.get("choices", [{}])[0]
                             delta = choice.get("delta", {})
                             if isinstance(choice.get("finish_reason"), str):
@@ -1522,13 +1822,18 @@ class ResearchSupervisor:
                         ):
                             await flush_progress()
                 finally:
-                    if not send_task.done():
+                    if send_task is not None and not send_task.done():
                         send_task.cancel()
                         try:
                             await send_task
                         except asyncio.CancelledError:
                             pass
-                    if response is None and send_task.done() and not send_task.cancelled():
+                    if (
+                        response is None
+                        and send_task is not None
+                        and send_task.done()
+                        and not send_task.cancelled()
+                    ):
                         try:
                             response = send_task.result()
                         except Exception:
@@ -1537,6 +1842,8 @@ class ResearchSupervisor:
                         await response.aclose()
             await flush_progress()
             return report, reasoning, finish_reason
+        except (TimeoutError, asyncio.TimeoutError) as exc:
+            raise httpx.ReadTimeout("Local model request exceeded its wall-clock timeout") from exc
         finally:
             try:
                 await asyncio.to_thread(auth_storage.revoke_internal_api_key, int(key["id"]))
@@ -1646,26 +1953,41 @@ class ResearchSupervisor:
         if not question:
             raise ValueError("User message has no text to research")
         max_steps = int(run["config"]["budgets"]["maxSteps"])
+        planner_system = _system_prompt_with_instructions(
+            _planner_system_prompt(max_steps, run["config"].get("websitePolicy")),
+            run["config"],
+        )
+        # Same whole-prompt budget as the decision and synthesis paths. The question is budgeted
+        # before the history, but it is unbounded on its own (a pasted document arrives here
+        # verbatim) and would otherwise overflow before planning.
+        planning_total = _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS)
+        planning_question = question[
+            : max(
+                _MIN_QUESTION_CHARS,
+                _trimmable_budget(
+                    planning_total, len(planner_system), _MAX_SYNTHESIS_EVIDENCE_CHARS
+                ),
+            )
+        ]
+        planning_context = conversation_context[
+            : _trimmable_budget(
+                planning_total, len(planner_system) + len(planning_question), _MAX_CONTEXT_CHARS
+            )
+        ]
         response, planning_reasoning, _finish_reason = await self._stream_completion(
             run,
             [
                 {
                     "role": "system",
-                    "content": _system_prompt_with_instructions(
-                        _planner_system_prompt(
-                            max_steps,
-                            run["config"].get("websitePolicy"),
-                        ),
-                        run["config"],
-                    ),
+                    "content": planner_system,
                 },
                 {
                     "role": "user",
                     "content": (
                         "Prior conversation context as JSON (oldest to newest; use it only to "
                         "resolve references in the latest request):\n"
-                        f"{_shield_untrusted(conversation_context)}\n\n"
-                        f"Latest research request:\n{_shield_untrusted(question)}"
+                        f"{_shield_untrusted(planning_context)}\n\n"
+                        f"Latest research request:\n{_shield_untrusted(planning_question)}"
                     ),
                 },
             ],
@@ -1690,8 +2012,7 @@ class ResearchSupervisor:
             await self._check_active(run["id"])
             raise
         run.update(result)
-        # The plan is rendered by the structured inline card. Avoid adding a
-        # second markdown copy to the assistant message beneath that card.
+        # The structured inline card renders the plan; no second markdown copy below it.
 
     async def _research(self, run: dict) -> None:
         resuming = run.get("claimedFromStatus") == "running"
@@ -1705,9 +2026,8 @@ class ResearchSupervisor:
         tool_timeout = int(budgets["toolTimeoutSeconds"])
         # Absent for runs created before auto-scrape: default 0 keeps their behavior unchanged.
         max_auto_scrape = int(budgets.get("maxAutoScrape", 0))
-        # Grounding needs the synthesis prompt to fit the loaded context; on a tiny context the
-        # prompt overhead alone fills the window and the report degenerates, so fall back to
-        # snippet-only when the context is too small.
+        # On a tiny context the prompt overhead alone fills the window and the grounded report
+        # degenerates, so fall back to snippet-only.
         if max_auto_scrape > 0:
             loaded_ctx = _loaded_context_length()
             if loaded_ctx is not None and loaded_ctx < _AUTO_SCRAPE_MIN_CONTEXT_TOKENS:
@@ -1774,30 +2094,33 @@ class ResearchSupervisor:
                 )
                 for source in document_sources
             }
+            # Mirrors the live loop: evidence must hold only chunks that made it into the
+            # catalog, else the validator strips citations to the rest and synthesis is left
+            # building claims on uncataloged document text.
+            accepted_rag_sources = []
             for source in restored_rag_sources:
                 source_key = str(
                     source.get("chunkId")
                     or f"{source.get('documentId') or source.get('filename')}:{source.get('page') or ''}"
                 )
-                if (
-                    source_key in document_source_keys
-                    or len(sources) + len(document_sources) >= max_sources
-                ):
-                    continue
-                written = await asyncio.to_thread(
-                    db.upsert_document_source,
-                    run["id"],
-                    int(step["position"]),
-                    source,
-                    self.worker_id,
-                )
-                await self._check_worker_write(run["id"], written)
-                document_source_keys.add(source_key)
-                document_sources.append({**source, "stepPosition": step["position"]})
+                if source_key not in document_source_keys:
+                    if len(sources) + len(document_sources) >= max_sources:
+                        continue
+                    written = await asyncio.to_thread(
+                        db.upsert_document_source,
+                        run["id"],
+                        int(step["position"]),
+                        source,
+                        self.worker_id,
+                    )
+                    await self._check_worker_write(run["id"], written)
+                    document_source_keys.add(source_key)
+                    document_sources.append({**source, "stepPosition": step["position"]})
+                accepted_rag_sources.append(source)
             rag_evidence = "\n".join(
                 f"{item.get('filename') or 'Document'}: "
                 f"{item.get('text') or item.get('snippet') or ''}"
-                for item in restored_rag_sources
+                for item in accepted_rag_sources
             )
             title = str(step.get("title") or "Recovered research step")
             notes.append(
@@ -1818,41 +2141,83 @@ class ResearchSupervisor:
         for position in range(start_position, max_steps):
             await self._check_active(run["id"])
             source_catalog = "\n".join(
-                f"- {source.get('title') or source['url']} | {source['url']} | "
+                f"- {_citation_title(source, source['url'])} | {source['url']} | "
                 f"{source.get('snippet') or ''}"
                 for source in sources
             )
             evidence = "\n\n".join(decision_notes)
+            decision_system = _system_prompt_with_instructions(
+                _AGENT_SYSTEM_PROMPT + (f"\n\n{policy_prompt}" if policy_prompt else ""),
+                run["config"],
+            )
+            # Same whole-prompt budget as synthesis: a fixed 60k evidence tail is many times a
+            # small context, and this runs every step, so an overflow here kills the run long
+            # before it can synthesize what it already gathered.
+            decision_total = _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS)
+            decision_question, decision_plan_json = _fit_decision_inputs(
+                question,
+                run["plan"],
+                len(decision_system),
+                decision_total,
+            )
+            # The catalog is unbounded too (maxSources entries, snippets up to 4000 chars), so it
+            # is fitted before the sections that depend on what it leaves.
+            decision_catalog = _fit_source_catalog(
+                source_catalog,
+                _trimmable_budget(
+                    decision_total,
+                    len(decision_system)
+                    + len(decision_question)
+                    + len(decision_plan_json)
+                    + _MIN_SYNTHESIS_EVIDENCE_CHARS,
+                    len(source_catalog),
+                ),
+            )
+            decision_query_history_json = json.dumps(
+                sorted(used_queries),
+                ensure_ascii = False,
+            )
+            decision_state_json = json.dumps(research_state, ensure_ascii = False)
+            decision_scaffold = (
+                len(decision_system)
+                + len(decision_question)
+                + len(decision_plan_json)
+                + len(decision_catalog)
+                + len(decision_query_history_json)
+                + len(decision_state_json)
+            )
+            evidence_chars = _trimmable_budget(
+                decision_total, decision_scaffold, _MAX_SYNTHESIS_EVIDENCE_CHARS
+            )
+            decision_context = conversation_context[
+                : _trimmable_budget(
+                    decision_total, decision_scaffold + evidence_chars, _MAX_CONTEXT_CHARS
+                )
+            ]
             decision, decision_reasoning, _finish_reason = await self._stream_completion(
                 run,
                 [
                     {
                         "role": "system",
-                        "content": (
-                            _system_prompt_with_instructions(
-                                _AGENT_SYSTEM_PROMPT
-                                + (f"\n\n{policy_prompt}" if policy_prompt else ""),
-                                run["config"],
-                            )
-                        ),
+                        "content": decision_system,
                     },
                     {
                         "role": "user",
                         "content": (
-                            f"Conversation context JSON:\n{_shield_untrusted(conversation_context)}\n\n"
-                            f"Question:\n{_shield_untrusted(question)}\n\n"
+                            f"Conversation context JSON:\n{_shield_untrusted(decision_context)}\n\n"
+                            f"Question:\n{_shield_untrusted(decision_question)}\n\n"
                             f"Approved plan (guidance only):\n"
-                            f"{_shield_untrusted(json.dumps(run['plan'], ensure_ascii = False))}\n\n"
+                            f"{_shield_untrusted(decision_plan_json)}\n\n"
                             f"Actions remaining after this one: {max_steps - position - 1}\n"
                             f"<untrusted_query_history_json>\n"
-                            f"{_shield_untrusted(json.dumps(sorted(used_queries), ensure_ascii = False))}\n"
+                            f"{_shield_untrusted(decision_query_history_json)}\n"
                             f"</untrusted_query_history_json>\n\n"
                             f"<untrusted_research_state_json>\n"
-                            f"{_shield_untrusted(json.dumps(research_state, ensure_ascii = False)) or '{}'}\n"
+                            f"{_shield_untrusted(decision_state_json) or '{}'}\n"
                             f"</untrusted_research_state_json>\n\n"
                             f"<untrusted_web_evidence>\n"
-                            f"Gathered sources:\n{_shield_untrusted(source_catalog) or '(none)'}\n\n"
-                            f"{_shield_untrusted(evidence[-60000:]) or '(none)'}\n"
+                            f"Gathered sources:\n{_shield_untrusted(decision_catalog) or '(none)'}\n\n"
+                            f"{_shield_untrusted(evidence[-evidence_chars:] if evidence_chars else '') or '(none)'}\n"
                             f"</untrusted_web_evidence>"
                         ),
                     },
@@ -2001,6 +2366,12 @@ class ResearchSupervisor:
                     f"{source.get('text') or source.get('snippet') or ''}"
                     for source in accepted_rag_sources
                 )
+            elif rag_sources:
+                # Every chunk was refused by the source cap, so none has a catalog entry and the
+                # validator would strip any citation to it: drop the evidence rather than let
+                # synthesis build claims on it. Gated on rag_sources so a text-only KB reply
+                # ("No documents are attached to this chat.") still passes through.
+                rag_result = ""
             rag_sources = accepted_rag_sources
             step_sources = []
             for match in _URL_BLOCK.finditer(result if action["action"] == "search" else ""):
@@ -2049,9 +2420,8 @@ class ResearchSupervisor:
                 fetched_urls.update(scraped_urls)
                 await self._check_active(run["id"])
                 if scraped_section:
-                    # Additive merge (not replace): keep the answer-bearing search
-                    # snippets and append the grounded page-body chunks. See
-                    # _merge_scraped_evidence for why replacing regressed accuracy.
+                    # Additive, not replace: see _merge_scraped_evidence for why
+                    # replacing the snippets regressed accuracy.
                     result = _merge_scraped_evidence(result, scraped_section)
             note = (
                 f"### {action['title']} ({action['action']})\n"
@@ -2108,7 +2478,7 @@ class ResearchSupervisor:
             await self._check_worker_write(run["id"], seq is not None)
         await self._check_active(run["id"])
         source_catalog = "\n".join(
-            f"{index}. Title: {source.get('title') or source['url']}\n   URL: {source['url']}"
+            f"{index}. Title: {_citation_title(source, source['url'])}\n   URL: {source['url']}"
             for index, source in enumerate(sources, 1)
         )
         document_source_catalog = "\n".join(
@@ -2119,30 +2489,50 @@ class ResearchSupervisor:
             f"   Chunk ID: {source.get('chunkId') or '(unknown)'}"
             for index, source in enumerate(document_sources, 1)
         )
+        # Budget each synthesis call as a whole. Model-derived JSON shares the evidence budget,
+        # and conversation history receives only the space left after the fixed prompt scaffold.
+        total_budget = _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS)
+        plan_json = json.dumps(run["plan"], ensure_ascii = False)
+        audit_system = _system_prompt_with_instructions(
+            _SYNTHESIS_AUDIT_SYSTEM_PROMPT,
+            run["config"],
+        )
+        audit_scaffold_chars = (
+            len(audit_system)
+            + len(question)
+            + len(plan_json)
+            + len(source_catalog)
+            + len(document_source_catalog)
+        )
         audit_evidence_text, [audit_state_json] = _fit_synthesis_context(
             notes,
             [research_state],
+            audit_scaffold_chars,
         )
+        audit_conversation_context = conversation_context[
+            : _trimmable_budget(
+                total_budget,
+                audit_scaffold_chars + len(audit_evidence_text) + len(audit_state_json),
+                _MAX_CONTEXT_CHARS,
+            )
+        ]
         audit_response, audit_reasoning, _audit_finish_reason = await self._stream_completion(
             run,
             [
                 {
                     "role": "system",
-                    "content": _system_prompt_with_instructions(
-                        _SYNTHESIS_AUDIT_SYSTEM_PROMPT,
-                        run["config"],
-                    ),
+                    "content": audit_system,
                 },
                 {
                     "role": "user",
                     "content": (
                         f"<conversation_context_json>\n"
-                        f"{_shield_untrusted(conversation_context)}\n"
+                        f"{_shield_untrusted(audit_conversation_context)}\n"
                         f"</conversation_context_json>\n\n"
                         f"<research_question>\n{_shield_untrusted(question)}\n"
                         f"</research_question>\n\n"
                         f"<approved_plan>\n"
-                        f"{_shield_untrusted(json.dumps(run['plan'], ensure_ascii = False))}\n"
+                        f"{_shield_untrusted(plan_json)}\n"
                         f"</approved_plan>\n\n"
                         f"<source_catalog>\n"
                         f"{_shield_untrusted(source_catalog) or '(no web sources gathered)'}\n"
@@ -2178,26 +2568,43 @@ class ResearchSupervisor:
                     break
             except (ValueError, json.JSONDecodeError):
                 continue
+        report_system = _system_prompt_with_instructions(_REPORT_SYSTEM_PROMPT, run["config"])
+        report_scaffold_chars = (
+            len(report_system)
+            + len(question)
+            + len(plan_json)
+            + len(source_catalog)
+            + len(document_source_catalog)
+        )
         evidence_text, [synthesis_audit_json, synthesis_state_json] = _fit_synthesis_context(
             notes,
             [synthesis_audit, research_state],
+            report_scaffold_chars,
         )
+        synthesis_conversation_context = conversation_context[
+            : _trimmable_budget(
+                total_budget,
+                report_scaffold_chars
+                + len(evidence_text)
+                + len(synthesis_audit_json)
+                + len(synthesis_state_json),
+                _MAX_CONTEXT_CHARS,
+            )
+        ]
         synthesis_messages = [
             {
                 "role": "system",
-                "content": _system_prompt_with_instructions(
-                    _REPORT_SYSTEM_PROMPT,
-                    run["config"],
-                ),
+                "content": report_system,
             },
             {
                 "role": "user",
                 "content": (
-                    f"<conversation_context_json>\n{_shield_untrusted(conversation_context)}\n"
+                    f"<conversation_context_json>\n"
+                    f"{_shield_untrusted(synthesis_conversation_context)}\n"
                     f"</conversation_context_json>\n\n"
                     f"<research_question>\n{_shield_untrusted(question)}\n"
                     f"</research_question>\n\n"
-                    f"<approved_plan>\n{_shield_untrusted(json.dumps(run['plan'], ensure_ascii = False))}\n"
+                    f"<approved_plan>\n{_shield_untrusted(plan_json)}\n"
                     f"</approved_plan>\n\n"
                     f"<source_catalog>\n{_shield_untrusted(source_catalog) or '(no web sources gathered)'}\n"
                     f"</source_catalog>\n\n"

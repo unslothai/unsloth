@@ -74,15 +74,15 @@ export function HeaderRolePicker({
       value={currentRole ?? "_none"}
       onValueChange={(v) => onRoleChange(v === "_none" ? undefined : v)}
     >
-      <SelectTrigger className="h-6 w-[90px] text-[10px] px-2 py-0 border-dashed cursor-pointer">
+      <SelectTrigger className="h-6 w-[90px] text-ui-10 px-2 py-0 border-dashed cursor-pointer">
         <SelectValue placeholder="Role..." />
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value="_none" className="text-[11px]">
+        <SelectItem value="_none" className="text-ui-11">
           None
         </SelectItem>
         {availableRoles.map((role) => (
-          <SelectItem key={role} value={role} className="text-[11px]">
+          <SelectItem key={role} value={role} className="text-ui-11">
             {ROLE_LABELS[role] ?? role}
           </SelectItem>
         ))}
@@ -179,7 +179,7 @@ export function DatasetMappingCard({
                 <Badge
                   key={col}
                   variant="outline"
-                  className="h-6 text-[11px] bg-white/60 dark:bg-transparent"
+                  className="h-6 text-ui-11 bg-white/60 dark:bg-transparent"
                 >
                   <span className="font-mono">{col}</span>
                   <span className="mx-1 text-muted-foreground/60">&rarr;</span>
@@ -211,7 +211,7 @@ export function DatasetMappingCard({
                   <>
                     <Sparkles className="mr-1.5 h-3.5 w-3.5" />
                     AI Assist
-                    <Badge variant="outline" className="ml-1.5 text-[9px] px-1 py-0 h-4 font-medium">Beta</Badge>
+                    <Badge variant="outline" className="ml-1.5 text-ui-9 px-1 py-0 h-4 font-medium">Beta</Badge>
                   </>
                 )}
               </Button>
@@ -227,7 +227,7 @@ export function DatasetMappingCard({
                 <span>{advisorNotification}</span>
               </div>
               {advisorSystemPrompt && (
-                <div className="pl-5.5 text-[11px] font-mono text-indigo-600/80 dark:text-indigo-400/80">
+                <div className="pl-5.5 text-ui-11 font-mono text-indigo-600/80 dark:text-indigo-400/80">
                   <span className="font-sans font-medium text-indigo-500 dark:text-indigo-400">System:</span>{" "}
                   <span className="break-words">{advisorSystemPrompt}</span>
                 </div>
@@ -256,7 +256,7 @@ export function DatasetMappingFooter({
   return (
     <div className="mt-3 flex flex-col gap-2">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-[11px] text-muted-foreground/70 leading-relaxed">
+        <p className="text-ui-11 text-muted-foreground/70 leading-relaxed">
           Tip: use the role dropdowns in the column headers to assign roles.
         </p>
         <div className="flex items-center gap-2">

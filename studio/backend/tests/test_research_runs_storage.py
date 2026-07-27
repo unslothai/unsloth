@@ -213,10 +213,18 @@ def test_synthesis_evidence_budget_tracks_loaded_context(monkeypatch):
     monkeypatch.setattr(worker, "_loaded_context_length", lambda: None)
     assert worker._synthesis_evidence_budget() == worker._MAX_SYNTHESIS_EVIDENCE_CHARS
 
-    # A small context (Studio's 2048 default) shrinks the budget so evidence fits.
+    # A small context shrinks the budget so evidence fits, and the rest of the prompt eats into
+    # it, but the output reserve is capped at half the window so the budget never collapses to 0
+    # and empties the prompt (which is worse than a truncated one).
     monkeypatch.setattr(worker, "_loaded_context_length", lambda: 2048)
     small = worker._synthesis_evidence_budget()
-    assert worker._MIN_SYNTHESIS_EVIDENCE_CHARS <= small < worker._MAX_SYNTHESIS_EVIDENCE_CHARS
+    assert 0 < small < worker._MAX_SYNTHESIS_EVIDENCE_CHARS
+    assert worker._synthesis_evidence_budget(small) == 0
+
+    # The rest of the prompt counts against the same budget, not just the evidence.
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda: 16384)
+    roomy = worker._synthesis_evidence_budget()
+    assert 0 < worker._synthesis_evidence_budget(8_000) < roomy
 
     # A large context uses (and clamps to) the full cap.
     monkeypatch.setattr(worker, "_loaded_context_length", lambda: 32768)
@@ -251,12 +259,20 @@ def test_synthesis_context_budgets_model_derived_json_with_evidence(monkeypatch)
     assert json.loads(state_json) == {"summary": "retained"}
     assert len(evidence) + len(audit_json) + len(state_json) <= budget
 
+    fixed_chars = 4_000
+    evidence, payloads = worker._fit_synthesis_context(
+        notes,
+        [audit, research_state],
+        fixed_chars,
+    )
+    assert len(evidence) + sum(map(len, payloads)) <= worker._synthesis_evidence_budget(fixed_chars)
+
 
 def test_loaded_context_length_reads_orchestrator(monkeypatch):
     # The probe must read the inference ORCHESTRATOR (what the API layer serves), not the
-    # low-level in-subprocess singleton that stays unpopulated in the main process. Patch the
-    # real accessor (not _loaded_context_length) so this exercises the production wiring; a probe
-    # that read the wrong backend would return None here and the adaptive budget would not engage.
+    # in-subprocess singleton that stays unpopulated in the main process. Patch the real accessor
+    # so this exercises the production wiring: a probe reading the wrong backend would return
+    # None here and the adaptive budget would not engage.
     import core.inference as core_inference
     from core import research_runs as worker
 
@@ -2039,9 +2055,8 @@ def test_auto_scrape_respects_char_budgets(research_home, monkeypatch):
             website_policy = None,
         )
     )
-    # the folded evidence is bounded chunks, not the 150k of raw page bodies
-    # (the retrieved chunk section is capped at _AUTO_SCRAPE_TOTAL_CHARS; a short fixed
-    # header is prepended on top)
+    # the folded evidence is bounded chunks, not the 150k of raw page bodies (capped at
+    # _AUTO_SCRAPE_TOTAL_CHARS plus a short fixed header)
     assert "<chunk" in section
     assert len(section) <= worker._AUTO_SCRAPE_TOTAL_CHARS + 200
     assert len(fetched) == worker._AUTO_SCRAPE_TOP_K
@@ -2264,6 +2279,85 @@ def test_recovered_running_research_resumes_durable_progress(research_home, monk
     assert [source["url"] for source in completed["sources"]] == ["https://saved.example/source"]
     assert [source["filename"] for source in completed["documentSources"]] == ["private.txt"]
     assert completed["report"].startswith("# Resumed report")
+
+
+def test_knowledge_base_evidence_beyond_the_source_cap_is_not_synthesized(
+    research_home, monkeypatch
+):
+    """A knowledge-base hit that the source cap refuses to persist must not reach synthesis:
+    it has no document_source_catalog entry, so any citation of it is stripped from the
+    finished report and the claim it supports would be left unattributed."""
+    from core import research_runs as worker
+
+    _create(
+        rag_scope = {"kb_id": "kb-1", "default_top_k": 4},
+        budgets = {
+            "maxSteps": 3,
+            "maxSources": 1,
+            "modelTimeoutSeconds": 30,
+            "toolTimeoutSeconds": 10,
+        },
+    )
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    decisions = iter(
+        (
+            json.dumps({"action": "search", "title": "First", "query": "first query"}),
+            json.dumps({"action": "search", "title": "Second", "query": "second query"}),
+            json.dumps({"action": "finish", "title": "Enough evidence"}),
+        )
+    )
+    synthesis_prompts = []
+    report = "# Report\n\nA finding [Document: kept.pdf, p. 1]."
+
+    async def fake_stream_completion(run, messages, **kwargs):
+        system = messages[0]["content"]
+        if "rigorous web research plan" in system:
+            return json.dumps(_plan()), "planned", "stop"
+        if "iterative research process" in system:
+            return next(decisions), "decided", "stop"
+        synthesis_prompts.append(messages[1]["content"])
+        research_db.set_report_progress(run["id"], report)
+        return report, "synthesized", "stop"
+
+    labels = iter(("kept", "capped"))
+
+    def fake_tool(name, arguments, *args, **kwargs):
+        if name == "search_knowledge_base":
+            label = next(labels)
+            return (
+                f"UNCATALOGED_{label.upper()}_KB_TEXT"
+                + worker.RAG_SOURCES_SENTINEL
+                + json.dumps(
+                    [
+                        {
+                            "chunkId": f"doc-{label}:0",
+                            "documentId": f"doc-{label}",
+                            "filename": f"{label}.pdf",
+                            "page": 1,
+                            "text": f"{label} chunk body",
+                        }
+                    ]
+                )
+            )
+        return "Title: Alpha\nURL: https://a.example.com\nSnippet: alpha snippet."
+
+    monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
+    monkeypatch.setattr(worker, "execute_tool", fake_tool)
+
+    asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
+    planned = research_db.get_run("run-1")
+    research_db.approve("run-1", planned["planRevision"], planned["planHash"])
+    asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
+
+    completed = research_db.get_run("run-1")
+    assert completed["status"] == "completed"
+    # The cap admitted the first chunk only, so only it may appear in the evidence.
+    assert [source["filename"] for source in completed["documentSources"]] == ["kept.pdf"]
+    assert synthesis_prompts, "synthesis must have run"
+    assert "kept chunk body" in synthesis_prompts[0]
+    assert "UNCATALOGED_KEPT_KB_TEXT" not in synthesis_prompts[0]
+    assert "capped chunk body" not in synthesis_prompts[0]
+    assert "UNCATALOGED_CAPPED_KB_TEXT" not in synthesis_prompts[0]
 
 
 def test_create_without_assistant_id_does_not_eagerly_create_message(research_home):

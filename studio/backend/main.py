@@ -40,7 +40,7 @@ if sys.platform == "win32":
 
 _SYSTEM_GPU_CACHE_TTL_SECONDS = 10.0
 _system_gpu_cache_lock = threading.Lock()
-_system_gpu_cache: Optional[tuple[float, dict[str, Any]]] = None
+_system_gpu_cache: Optional[tuple[float, tuple[dict[str, Any], dict[str, Any]]]] = None
 
 # ── Windows AMD ROCm DLL injection ──────────────────────────────────────────
 # Python 3.8+ ignores PATH for extension modules; register ROCm bin dirs with
@@ -254,7 +254,11 @@ def _read_studio_install_id() -> str:
     /api/health emits "" and the launcher accepts any healthy backend.
     Carries no install-path info (matters when Unsloth runs -H 0.0.0.0)."""
     try:
-        token = (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id").read_text().strip()
+        token = (
+            (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id")
+            .read_text(encoding = "utf-8")
+            .strip()
+        )
     except (OSError, ValueError):
         return ""
     return token if _STUDIO_INSTALL_ID_RE.fullmatch(token) else ""
@@ -310,6 +314,7 @@ from routes import (
     training_router,
 )
 from routes.llama import router as llama_router
+from routes.whisper import router as whisper_router
 from routes.preview import router as preview_router
 from hub.routes import (
     inventory_router as hub_inventory_router,
@@ -357,7 +362,7 @@ def get_unsloth_version() -> str:
         for line in version_file.read_text(encoding = "utf-8").splitlines():
             if line.startswith("__version__ = "):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
     return "dev"
 
@@ -438,7 +443,11 @@ def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
         import structlog as _structlog
 
         _log = _structlog.get_logger(__name__)
-        if _caps.get("found") and not _caps.get("supports_mtp"):
+        if (
+            _caps.get("found")
+            and not _caps.get("supports_mtp")
+            and not _caps.get("mtp_probe_inconclusive")
+        ):
             _msg = (
                 "llama.cpp prebuilt lacks MTP support "
                 "(--spec-type mtp/draft-mtp). Run `unsloth studio update`. "
@@ -783,6 +792,8 @@ app.add_middleware(SecurityHeadersMiddleware)
 # headroom; non-upload routes keep the default body cap.
 import json as _json_for_413  # noqa: E402
 from utils.upload_limits import (  # noqa: E402
+    STT_AUDIO_JSON_MAX_BYTES,
+    STT_AUDIO_RAW_MAX_BYTES,
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
     default_request_body_limit_bytes,
     upload_request_limit_bytes,
@@ -818,6 +829,14 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)
     if path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIX):
         return upload_request_limit_bytes()
+    return default_request_body_limit_bytes()
+
+
+def _get_request_body_max_bytes(path: str) -> int:
+    if path.startswith("/api/inference/audio/transcribe/raw"):
+        return STT_AUDIO_RAW_MAX_BYTES
+    if path.startswith("/api/inference/audio/transcribe"):
+        return STT_AUDIO_JSON_MAX_BYTES
     return default_request_body_limit_bytes()
 
 
@@ -863,12 +882,14 @@ class MaxBodyMiddleware:
         app,
         max_bytes_getter,
         protected_prefixes: tuple,
+        request_max_bytes_getter = None,
         upload_passthrough_prefixes: tuple = (),
         upload_passthrough_max_bytes_getter = None,
     ):
         self.app = app
         self.max_bytes_getter = max_bytes_getter
         self.protected_prefixes = protected_prefixes
+        self.request_max_bytes_getter = request_max_bytes_getter
         self.upload_passthrough_prefixes = upload_passthrough_prefixes
         self.upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter
 
@@ -885,6 +906,14 @@ class MaxBodyMiddleware:
         except Exception:
             return int(self.max_bytes_getter())
 
+    def _request_max_bytes(self, path: str) -> int:
+        if self.request_max_bytes_getter is None:
+            return int(self.max_bytes_getter())
+        try:
+            return int(self.request_max_bytes_getter(path))
+        except Exception:
+            return int(self.max_bytes_getter())
+
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             await self.app(scope, receive, send)
@@ -897,7 +926,7 @@ class MaxBodyMiddleware:
             await self.app(scope, receive, send)
             return
 
-        max_bytes = int(self.max_bytes_getter())
+        max_bytes = self._request_max_bytes(path)
         declared = None
         for name, value in scope.get("headers", []):
             if name == b"content-length":
@@ -962,6 +991,7 @@ app.add_middleware(
     MaxBodyMiddleware,
     max_bytes_getter = default_request_body_limit_bytes,
     protected_prefixes = _BODY_PROTECTED_PREFIXES,
+    request_max_bytes_getter = _get_request_body_max_bytes,
     upload_passthrough_prefixes = _BODY_UPLOAD_PASSTHROUGH_PREFIXES,
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
 )
@@ -1021,6 +1051,7 @@ app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
+app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
@@ -1151,10 +1182,14 @@ async def shutdown_server(request: Request, current_subject: str = Depends(get_c
     return {"status": "shutting_down"}
 
 
-def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
-    """Return merged GPU visibility/utilization with bounded live-probe churn."""
+def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return training and inference GPU info with bounded live-probe churn."""
     import time
-    from utils.hardware import get_backend_visible_gpu_info, get_visible_gpu_utilization
+    from utils.hardware import (
+        get_backend_visible_gpu_info,
+        get_visible_gpu_utilization,
+        get_vulkan_inference_gpu_info,
+    )
 
     global _system_gpu_cache
     now = time.monotonic()
@@ -1176,7 +1211,20 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             logger.debug(f"Failed to get GPU utilization info: {e}")
             utilization_info = {"devices": []}
 
-        util_devices = {d.get("index"): d for d in utilization_info.get("devices", [])}
+        # Device indices are backend-specific. Never overlay CUDA/ROCm metrics
+        # onto compact Vulkan ordinals merely because both happen to start at 0.
+        visibility_backend = visibility_info.get("backend")
+        utilization_backend = utilization_info.get("backend")
+        metrics_match = (
+            not visibility_backend
+            or not utilization_backend
+            or visibility_backend == utilization_backend
+        )
+        util_devices = (
+            {d.get("index"): d for d in utilization_info.get("devices", [])}
+            if metrics_match
+            else {}
+        )
         enriched_devices = []
 
         for dev in visibility_info.get("devices", []):
@@ -1186,36 +1234,69 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             total_vram = util.get("vram_total_gb") or dev.get("memory_total_gb") or 0
             # Keep None (usage unknown, e.g. Windows ROCm perf counter) so the UI
             # shows unknown, not a fabricated 0 used / full free.
-            used_vram = util.get("vram_used_gb")
+            used_vram = util.get("vram_used_gb", dev.get("vram_used_gb"))
+            reported_free_vram = util.get("vram_free_gb", dev.get("vram_free_gb"))
 
             enriched_dev = dict(dev)
             enriched_dev["vram_used_gb"] = used_vram
             enriched_dev["vram_free_gb"] = (
-                round(total_vram - used_vram, 2) if total_vram and used_vram is not None else None
+                round(total_vram - used_vram, 2)
+                if total_vram and used_vram is not None
+                else reported_free_vram
             )
-            enriched_dev["vram_utilization_pct"] = util.get("vram_utilization_pct")
+            enriched_dev["vram_utilization_pct"] = util.get(
+                "vram_utilization_pct", dev.get("vram_utilization_pct")
+            )
             enriched_devices.append(enriched_dev)
 
-        # Whether GGUF loads accept an explicit gpu_ids pick: /load and
-        # /validate 400 picks on XPU hosts (no visibility mask speaks torch-xpu
-        # ordinals) and on Vulkan-only builds (--device pins ggml's own
-        # ordinals), so the picker must not offer them.
+        # Whether GGUF loads accept an explicit gpu_ids pick. /load and /validate
+        # 400 picks on XPU hosts, where no visibility mask speaks torch-xpu
+        # ordinals. A Vulkan build IS pinnable: its picks are ggml ordinals, the
+        # same space `--device Vulkan<i>` uses, so check it first and let it
+        # through even on an XPU host (the XPU ban is about torch ordinals).
+        is_vulkan_build = False
         try:
             from core.inference.llama_cpp import LlamaCppBackend
             from utils.hardware import DeviceType, get_device
-            gpu_ids_supported = (
-                get_device() != DeviceType.XPU and not LlamaCppBackend._is_vulkan_backend()
-            )
+
+            is_vulkan_build = LlamaCppBackend._is_vulkan_backend()
+            gpu_ids_supported = is_vulkan_build or get_device() != DeviceType.XPU
         except Exception as e:
             logger.debug(f"Could not resolve gpu_ids support: {e}")
             gpu_ids_supported = True
+        # Preserve backend/index metadata from the visibility probe. In
+        # particular, a CPU training host can expose a Vulkan inference GPU and
+        # the UI must label that device as Vulkan rather than falling back to the
+        # top-level CPU training backend.
         gpu_info = {
+            **visibility_info,
             "available": visibility_info.get("available", False),
             "devices": enriched_devices,
             "gguf_gpu_ids_supported": gpu_ids_supported,
         }
-        _system_gpu_cache = (time.monotonic(), gpu_info)
-        return gpu_info
+
+        # Keep inference placement separate on train-capable hosts where a
+        # forced Vulkan llama.cpp bundle can enumerate a different device set.
+        # If Vulkan is installed but its probe fails, retain the unavailable
+        # Vulkan shape instead of budgeting training GPUs that llama.cpp cannot use.
+        if visibility_info.get("backend") == "vulkan":
+            inference_gpu_info = gpu_info
+        else:
+            vulkan_info = get_vulkan_inference_gpu_info()
+            inference_gpu_info = (
+                {
+                    **vulkan_info,
+                    # Pinnable only once the probe actually enumerated devices:
+                    # without ordinals the frontend has nothing valid to offer.
+                    "gguf_gpu_ids_supported": bool(vulkan_info.get("devices")),
+                }
+                if vulkan_info is not None
+                else gpu_info
+            )
+
+        combined_info = (gpu_info, inference_gpu_info)
+        _system_gpu_cache = (time.monotonic(), combined_info)
+        return combined_info
 
 
 @app.get("/api/system")
@@ -1236,7 +1317,7 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
 
     logger = logging.getLogger(__name__)
 
-    gpu_info = _get_cached_system_gpu_info(logger)
+    gpu_info, inference_gpu_info = _get_cached_system_gpu_info(logger)
 
     memory = psutil.virtual_memory()
 
@@ -1303,6 +1384,7 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
             "percent_used": disk.percent if disk else 0,
         },
         "gpu": gpu_info,
+        "inference_gpu": inference_gpu_info,
         "ml_packages": ml_packages,
         # Export capability + torch-aware reason. See /api/system/hardware.
         **export_capability(),

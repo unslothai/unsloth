@@ -587,10 +587,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         if int(row[5] or 0) > 0
     ]
     if claim_pk != ["thread_id"]:
-        # Rebuild the claims table (legacy owner_subject+thread_id PK -> thread_id PK)
-        # atomically. Without an explicit transaction the RENAME/CREATE/INSERT/DROP run
-        # in autocommit, so an interruption after CREATE left the new table empty and the
-        # rows orphaned in _legacy, and the migration never re-triggered.
+        # Rebuild the claims table (legacy owner_subject+thread_id PK -> thread_id PK) atomically.
+        # Without an explicit transaction the RENAME/CREATE/INSERT/DROP run in autocommit, so an
+        # interruption after CREATE orphaned the rows in _legacy and never re-triggered.
         conn.commit()
         conn.execute("BEGIN IMMEDIATE")
         try:

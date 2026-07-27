@@ -57,7 +57,7 @@ const CAPABILITY_TONE: Record<CapabilityKey, string> = {
 
 export function AccessChip({ label }: { label: string }) {
   return (
-    <span className="inline-flex h-6 shrink-0 items-center rounded-full border border-amber-500/30 bg-amber-500/8 px-2 text-[11px] font-medium leading-none text-amber-700 dark:text-amber-300">
+    <span className="inline-flex h-6 shrink-0 items-center rounded-full border border-amber-500/30 bg-amber-500/8 px-2 text-ui-11 font-medium leading-none text-amber-700 dark:text-amber-300">
       {label}
     </span>
   );
@@ -144,7 +144,7 @@ export function CapabilityPill({
     <span
       aria-label={iconOnly ? capability.label : undefined}
       className={cn(
-        "inline-flex h-6 shrink-0 items-center rounded-full text-[11.5px] font-medium",
+        "inline-flex h-6 shrink-0 items-center rounded-full text-ui-11p5 font-medium",
         iconOnly ? "w-6 justify-center px-0" : "gap-1.5 px-2.5",
         CAPABILITY_TONE[capability.key],
       )}

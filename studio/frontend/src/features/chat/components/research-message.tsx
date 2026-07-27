@@ -58,7 +58,7 @@ export function ResearchMessage(): ReactElement {
       return (
         <MarkdownPreview
           markdown={fallbackText}
-          className="max-h-none overflow-visible border-0 bg-transparent p-0 text-[15.5px]"
+          className="max-h-none overflow-visible border-0 bg-transparent p-0 text-ui-15p5"
         />
       );
     }
@@ -106,7 +106,7 @@ export function ResearchMessage(): ReactElement {
         </button>
         <MarkdownPreview
           markdown={run.report}
-          className="max-h-none overflow-visible border-0 bg-transparent p-0 text-[15.5px]"
+          className="max-h-none overflow-visible border-0 bg-transparent p-0 text-ui-15p5"
         />
         <SourcesGroup sources={sources} allowRemoteIcons={false} />
         <DocumentSourcesGroup sources={documentSources} />
@@ -150,7 +150,7 @@ export function ResearchMessage(): ReactElement {
                   ? "Your research plan is ready"
                   : researchStatusLabel(run.status)}
           </p>
-          <p className="mt-1 text-[12.5px] leading-relaxed text-muted-foreground">
+          <p className="mt-1 text-ui-12p5 leading-relaxed text-muted-foreground">
             {session?.error
               ? session.error
               : failed

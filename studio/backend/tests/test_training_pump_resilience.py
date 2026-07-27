@@ -566,3 +566,34 @@ def test_db_run_created_before_pump_consumes_events(monkeypatch):
     # The pump observed an already-created run; it would be False if the pump
     # were started before the eager create.
     assert seen["db_created"] is True
+
+
+def test_startup_flag_reports_training_active_before_proc():
+    # Between freeing VRAM and _proc going live, a concurrent STT load must see
+    # training as active so it does not grab the just-freed GPU.
+    b = TrainingBackend()
+    b._spawn_in_progress = True
+    assert b.is_training_active() is True
+
+
+def test_before_spawn_runs_inside_active_window(monkeypatch):
+    # The VRAM-freeing hook must run while training already counts as active, or
+    # an STT load racing it would place Whisper back on the freed GPU.
+    b = TrainingBackend()
+    _stub_spawn(monkeypatch)
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_pump_loop", lambda: setattr(b, "_pump_running", False))
+
+    active_during_free = {}
+
+    def before_spawn():
+        active_during_free["value"] = b.is_training_active()
+
+    assert b.start_training("job_active_window", model_name = "m", before_spawn = before_spawn) is True
+    if b._pump_thread is not None:
+        b._pump_thread.join(timeout = 2.0)
+
+    assert active_during_free["value"] is True
+    # The transient flag clears, but the live proc keeps training active.
+    assert b._spawn_in_progress is False
+    assert b.is_training_active() is True

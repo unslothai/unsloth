@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -39,6 +40,22 @@ _RELEASE_BASE = "https://github.com/cloudflare/cloudflared/releases/latest/downl
 
 _READY_TIMEOUT = 15.0  # seconds to wait for the URL + a registered edge connection
 _DOWNLOAD_TIMEOUT = 60  # urlopen timeout for the one-time binary download
+
+# A registered edge connection does not mean the hostname resolves yet, so the
+# URL is fetched once before it is advertised.
+_PUBLIC_PROBE_PATH = "/api/health"
+_PUBLIC_PROBE_MARKER = "Unsloth UI Backend"
+# One deadline for DNS propagation + the health probe, bounding the startup stall.
+_PUBLIC_PROBE_TIMEOUT = 45.0
+_PUBLIC_PROBE_ATTEMPT_TIMEOUT = 5.0
+_PUBLIC_PROBE_RETRY_DELAY = 1.0
+
+# Wait for the hostname via DoH first: an early OS lookup negative-caches the
+# NXDOMAIN for up to 30 min.
+_DNS_POLL_DELAY = 2.0
+# Retry transient DoH failures, but give up fast when DoH is blocked outright.
+_DNS_MAX_DOH_ERRORS = 3
+_DOH_URL = "https://cloudflare-dns.com/dns-query?name={host}&type=A"
 
 
 def _windows_hidden_kwargs() -> dict:
@@ -191,6 +208,59 @@ def ensure_cloudflared() -> Optional[str]:
         return None
 
 
+def _wait_for_dns(host: str, deadline: float) -> None:
+    import json
+    import urllib.request
+
+    errors = 0
+    while True:
+        answered = False
+        try:
+            req = urllib.request.Request(
+                _DOH_URL.format(host = host),
+                headers = {"Accept": "application/dns-json", "User-Agent": "unsloth-studio"},
+            )
+            with urllib.request.urlopen(req, timeout = 5) as response:
+                answered = bool(json.loads(response.read(65536)).get("Answer"))
+            errors = 0
+        except Exception:
+            errors += 1
+            if errors >= _DNS_MAX_DOH_ERRORS:
+                return
+        if answered:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(_DNS_POLL_DELAY, remaining))
+
+
+def verify_public_url(url: str, timeout: float = _PUBLIC_PROBE_TIMEOUT) -> bool:
+    import json
+    import urllib.request
+    from urllib.parse import urlsplit
+
+    deadline = time.monotonic() + timeout
+    host = urlsplit(url).hostname
+    if host:
+        _wait_for_dns(host, deadline)
+
+    probe_url = f"{url.rstrip('/')}{_PUBLIC_PROBE_PATH}"
+    while True:
+        try:
+            req = urllib.request.Request(probe_url, headers = {"User-Agent": "unsloth-studio"})
+            with urllib.request.urlopen(req, timeout = _PUBLIC_PROBE_ATTEMPT_TIMEOUT) as response:
+                body = response.read(4096)
+            if json.loads(body).get("service") == _PUBLIC_PROBE_MARKER:
+                return True
+        except Exception:
+            pass
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(_PUBLIC_PROBE_RETRY_DELAY, remaining))
+
+
 class CloudflareTunnel:
     """A cloudflared quick tunnel to http://localhost:<port>. Best-effort throughout.
 
@@ -322,11 +392,12 @@ def start_studio_tunnel(port: int, timeout: float = _READY_TIMEOUT) -> Optional[
     """Start a quick tunnel and return its public URL once it is actually
     serving, or None (best-effort).
 
-    Waits for cloudflared to both mint the URL and register an edge connection
-    before returning, so the caller never advertises a URL that yields Cloudflare
-    error 1033 (HTTP 530). If a URL is minted but no connection registers within
-    the window (e.g. quic is blocked on this network), retries once forcing the
-    http2 protocol. On any failure the tunnel is stopped and None is returned.
+    Waits for cloudflared to both mint the URL and register an edge connection,
+    then fetches /api/health over the public URL, so the caller never advertises
+    a link that yields Cloudflare error 1033 (HTTP 530) or an unresolvable host.
+    If a URL is minted but no connection registers within the window (e.g. quic
+    is blocked on this network), retries once forcing the http2 protocol. On any
+    failure the tunnel is stopped and None is returned.
     """
     global _active_tunnel, _shutdown_requested
     binary = ensure_cloudflared()
@@ -349,9 +420,13 @@ def start_studio_tunnel(port: int, timeout: float = _READY_TIMEOUT) -> Optional[
             prior, _active_tunnel = _active_tunnel, tunnel
         if prior is not None:
             prior.stop()
+        registered = False
         try:
             tunnel.start()
             url = tunnel.wait_for_ready(timeout)
+            registered = url is not None
+            if url and not verify_public_url(url):
+                url = None
         except Exception:
             url = None
         if url:
@@ -370,6 +445,9 @@ def start_studio_tunnel(port: int, timeout: float = _READY_TIMEOUT) -> Optional[
         # No URL at all is an API/network failure, not a protocol one; forcing
         # http2 will not help, so do not burn another window on it.
         if not saw_url:
+            return None
+        # probe failure after registering is DNS propagation; http2 would not help
+        if registered:
             return None
     return None
 

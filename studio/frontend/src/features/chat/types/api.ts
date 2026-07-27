@@ -115,6 +115,8 @@ export interface GgufVariantDetail {
   download_size_bytes?: number;
   downloaded?: boolean;
   update_available?: boolean;
+  /** An interrupted download: some shards are missing, so it cannot load yet. */
+  partial?: boolean;
 }
 
 export interface GgufVariantsResponse {
@@ -169,7 +171,10 @@ export interface LoadModelResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   supports_reasoning?: boolean;
-  reasoning_style?: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
+  reasoning_style?:
+    | "enable_thinking"
+    | "reasoning_effort"
+    | "enable_thinking_effort";
   reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
@@ -188,7 +193,10 @@ export interface LoadModelResponse {
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
+  /** Effective GPU placement after fit-time narrowing. */
   gpu_ids?: number[] | null;
+  /** User-requested GPU placement pool before fit-time narrowing. */
+  requested_gpu_ids?: number[] | null;
 }
 
 export interface UnloadModelRequest {
@@ -217,7 +225,10 @@ export interface InferenceStatusResponse {
   } | null;
   requires_trust_remote_code?: boolean;
   supports_reasoning?: boolean;
-  reasoning_style?: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
+  reasoning_style?:
+    | "enable_thinking"
+    | "reasoning_effort"
+    | "enable_thinking_effort";
   reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
@@ -240,7 +251,10 @@ export interface InferenceStatusResponse {
   /** n_ctx the active GGUF load was invoked with (0 = Auto); re-seeds a
    * Manual + Auto-layers context pin on hydration. Null for non-GGUF. */
   requested_context_length?: number | null;
+  /** Effective GPU placement after fit-time narrowing. */
   gpu_ids?: number[] | null;
+  /** User-requested GPU placement pool before fit-time narrowing. */
+  requested_gpu_ids?: number[] | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
@@ -277,6 +291,12 @@ export interface ApiMonitorEntry {
   completion_tokens?: number | null;
   total_tokens?: number | null;
   error?: string | null;
+  // "lifecycle" is a model load/unload/download: event/reason instead of a prompt.
+  kind?: "request" | "lifecycle";
+  event?: "load" | "unload" | "download" | null;
+  reason?: "manual" | "idle" | "api" | null;
+  // 0-100 while a download row is running.
+  progress?: number | null;
 }
 
 export interface ApiMonitorResponse {
@@ -383,7 +403,7 @@ export interface OpenAIChatCompletionsRequest {
     | "xhigh"
     | null;
   preserve_thinking?: boolean | null;
-  thinking?: {type: "disabled" | "enabled";} | null;
+  thinking?: { type: "disabled" | "enabled" } | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];
   /** Local models + enable_tools only. */

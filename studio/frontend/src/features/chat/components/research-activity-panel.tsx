@@ -306,7 +306,7 @@ const ActivityRow = memo(function ActivityRow({
       activity.detail,
   );
   const content = (
-    <div className="space-y-2 pb-3 pl-7 pr-1 text-[12.5px] text-muted-foreground">
+    <div className="space-y-2 pb-3 pl-7 pr-1 text-ui-12p5 text-muted-foreground">
       {activity.input ? (
         <p
           className={cn(
@@ -332,7 +332,7 @@ const ActivityRow = memo(function ActivityRow({
           </p>
           {activity.plan.steps.slice(0, 3).map((step, index) => (
             <div key={`activity-plan-${index}`} className="flex gap-2">
-              <span className="text-[10px] tabular-nums text-primary">
+              <span className="text-ui-10 tabular-nums text-primary">
                 {index + 1}
               </span>
               <span className="min-w-0">
@@ -344,7 +344,7 @@ const ActivityRow = memo(function ActivityRow({
             </div>
           ))}
           {activity.plan.steps.length > 3 ? (
-            <p className="pl-5 text-[11px] text-muted-foreground">
+            <p className="pl-5 text-ui-11 text-muted-foreground">
               +{activity.plan.steps.length - 3} more steps
             </p>
           ) : null}
@@ -373,7 +373,7 @@ const ActivityRow = memo(function ActivityRow({
             <span className="block line-clamp-2 break-words font-medium text-foreground/85">
               {source.title || source.url}
             </span>
-            <span className="block truncate text-[11px]">{source.url}</span>
+            <span className="block truncate text-ui-11">{source.url}</span>
             {source.snippet ? (
               <span className="mt-1 block line-clamp-2 leading-relaxed">
                 {source.snippet}
@@ -435,10 +435,10 @@ const ActivityRow = memo(function ActivityRow({
           >
             <ActivityIcon activity={activity} />
           </span>
-          <span className="min-w-0 flex-1 break-words text-[13.5px] font-medium leading-5 text-foreground/90">
+          <span className="min-w-0 flex-1 break-words text-ui-13p5 font-medium leading-5 text-foreground/90">
             {activity.title}
           </span>
-          <time className="mt-0.5 shrink-0 text-[10.5px] tabular-nums text-muted-foreground">
+          <time className="mt-0.5 shrink-0 text-ui-10p5 tabular-nums text-muted-foreground">
             {new Date(activity.createdAt).toLocaleTimeString([], {
               hour: "numeric",
               minute: "2-digit",
@@ -566,7 +566,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                     className="border-b border-border/60 py-3 first:pt-0 last:border-b-0 last:pb-0"
                   >
                     <div className="mb-2 flex items-center gap-1">
-                      <span className="mr-auto text-[11px] font-medium text-muted-foreground">
+                      <span className="mr-auto text-ui-11 font-medium text-muted-foreground">
                         Step {index + 1}
                       </span>
                       <Button
@@ -658,7 +658,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                   <p className="break-words font-heading text-lg font-medium leading-snug text-foreground/90">
                     {draft.title}
                   </p>
-                  <span className="shrink-0 rounded-full bg-muted px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
+                  <span className="shrink-0 rounded-full bg-muted px-2.5 py-1 text-ui-11 font-medium text-muted-foreground">
                     {draft.steps.length} steps
                   </span>
                 </div>
@@ -674,7 +674,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                       <span className="block break-words text-sm font-medium leading-5 text-foreground/90">
                         {step.title}
                       </span>
-                      <span className="mt-1 block break-words text-[13px] leading-relaxed text-muted-foreground/90">
+                      <span className="mt-1 block break-words text-ui-13 leading-relaxed text-muted-foreground/90">
                         {step.query}
                       </span>
                     </span>
@@ -839,12 +839,12 @@ export function ResearchActivityPanel({
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <h2 className="font-heading text-[15px] font-medium">
+              <h2 className="font-heading text-ui-15 font-medium">
                 Deep research
               </h2>
               <span
                 className={cn(
-                  "rounded-full bg-muted px-2 py-0.5 text-[10.5px] font-medium text-muted-foreground",
+                  "rounded-full bg-muted px-2 py-0.5 text-ui-10p5 font-medium text-muted-foreground",
                   run.status === "awaiting_approval" &&
                     "bg-amber-500/10 text-amber-700 dark:text-amber-300",
                   run.status === "failed" &&
@@ -859,14 +859,14 @@ export function ResearchActivityPanel({
             </p>
             {websiteLimitLabel ? (
               <p
-                className="mt-1 flex items-center gap-1 text-[10.5px] font-medium text-primary/75"
+                className="mt-1 flex items-center gap-1 text-ui-10p5 font-medium text-primary/75"
                 title={websiteLimitTitle}
               >
                 <Globe2 className="size-3" />
                 <span className="truncate">{websiteLimitLabel}</span>
               </p>
             ) : null}
-            <p className="mt-1 text-[10.5px] tabular-nums text-muted-foreground">
+            <p className="mt-1 text-ui-10p5 tabular-nums text-muted-foreground">
               {formatElapsed(run.createdAt, elapsedEnd)} · {sourceCount}{" "}
               sources ·{" "}
               {run.steps.filter((step) => step.status === "completed").length}{" "}
@@ -885,7 +885,7 @@ export function ResearchActivityPanel({
         {session.connection === "reconnecting" ? (
           <div
             role="status"
-            className="mt-2 flex items-center gap-2 text-[11px] text-amber-700 dark:text-amber-300"
+            className="mt-2 flex items-center gap-2 text-ui-11 text-amber-700 dark:text-amber-300"
           >
             <Spinner className="size-3" /> Reconnecting to research activity…
           </div>
@@ -893,13 +893,13 @@ export function ResearchActivityPanel({
           !isSettledResearchRun(run, session.lastAppliedSeq) ? (
           <div
             role="status"
-            className="mt-2 flex items-center justify-between gap-2 text-[11px] text-destructive"
+            className="mt-2 flex items-center justify-between gap-2 text-ui-11 text-destructive"
           >
             <span>Research activity is unavailable.</span>
             <Button
               size="sm"
               variant="ghost"
-              className="h-7 px-2 text-[11px]"
+              className="h-7 px-2 text-ui-11"
               onClick={() => {
                 useResearchRunStore
                   .getState()

@@ -58,6 +58,7 @@ def precache_helper_gguf():
     try:
         from huggingface_hub import HfApi, hf_hub_download
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
+        from utils.hf_cache_settings import active_hf_hub_cache
 
         disable_progress_bars()
         logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
@@ -76,7 +77,11 @@ def precache_helper_gguf():
                 + (f" (+{len(matching) - 1} shards)" if len(matching) > 1 else "")
             )
             for target in matching:
-                hf_hub_download(repo_id = repo, filename = target)
+                hf_hub_download(
+                    repo_id = repo,
+                    filename = target,
+                    cache_dir = active_hf_hub_cache(),
+                )
             logger.info(f"Helper GGUF cached: {len(matching)} file(s)")
         else:
             logger.warning(f"No GGUF matching variant '{variant}' in {repo}")

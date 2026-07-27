@@ -22,6 +22,7 @@ from utils.models.model_config import (
     _is_mmproj,
     _is_mtp_drafter,
 )
+from utils.hf_cache_settings import active_hf_hub_cache
 from utils.paths.path_utils import (
     is_local_path,
     normalize_path,
@@ -378,7 +379,12 @@ def read_default_chat_template(
             if _remote_exceeds_cap(rel):
                 return None
             try:
-                path = hf_hub_download(resolved, rel, token = hf_token)
+                path = hf_hub_download(
+                    resolved,
+                    rel,
+                    token = hf_token,
+                    cache_dir = active_hf_hub_cache(),
+                )
                 return _read_bounded_text(Path(path), MAX_TEMPLATE_METADATA_BYTES)
             except Exception:
                 return None
