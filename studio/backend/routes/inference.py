@@ -4422,7 +4422,8 @@ async def _drain_and_recancel_before_teardown(*, force: bool, action: str) -> No
     case stays what it is today rather than becoming a refusal.
     """
     await _wait_for_model_switch_idle(
-        current_request_counted = False, timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
+        current_request_counted = False,
+        timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
     )
     if force:
         _raise_or_cancel_active_generations(force = True, action = action)
