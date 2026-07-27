@@ -843,9 +843,39 @@ def _get_effective_local_files_only(kwargs):
     return _env_says_offline()
 
 
+# Attribute stamped on a tokenizer/processor that was loaded local-only, so a later
+# save still knows. transformers takes local_files_only as an explicit from_pretrained
+# parameter and never copies it into tokenizer.init_kwargs, and _offline_aware_load
+# restores the offline env vars when the load window closes, so without this stamp an
+# explicit local_files_only = True load is invisible by the time we save (issue #7481).
+_LOCAL_FILES_ONLY_ATTR = "_unsloth_local_files_only"
+
+
+def _mark_loaded_local_files_only(result):
+    """Stamp a load's local-only mode onto the returned tokenizer/processor objects."""
+    for obj in result if isinstance(result, (tuple, list)) else (result,):
+        try:
+            # A processor keeps the tokenizer that _has_tokenizer_model unwraps to,
+            # so stamp both (a wrapped model can raise from its own __getattr__).
+            targets = (obj, getattr(obj, "tokenizer", None))
+        except Exception:
+            targets = (obj,)
+        for target in targets:
+            if target is None:
+                continue
+            # Objects that reject new attributes (__slots__) are skipped.
+            try:
+                setattr(target, _LOCAL_FILES_ONLY_ATTR, True)
+            except Exception:
+                pass
+    return result
+
+
 def _tokenizer_wants_local_only(tokenizer):
     """True when Hub metadata probes should be skipped for this tokenizer."""
     if _env_says_offline():
+        return True
+    if getattr(tokenizer, _LOCAL_FILES_ONLY_ATTR, False):
         return True
     init_kwargs = getattr(tokenizer, "init_kwargs", None) or {}
     return bool(init_kwargs.get("local_files_only"))
@@ -1075,7 +1105,9 @@ def _offline_aware_load(fn):
         if _get_effective_local_files_only(kwargs):
             kwargs["local_files_only"] = True
             with _force_hf_offline():
-                return fn(*args, **kwargs)
+                # Stamp inside the window: the env vars are restored on exit, so the
+                # request has to travel on the objects themselves to reach saving.
+                return _mark_loaded_local_files_only(fn(*args, **kwargs))
         _pb_were_disabled = _progress_bars_were_disabled()  # restore before any retry
         try:
             return fn(*args, **kwargs)
