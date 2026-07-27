@@ -172,7 +172,12 @@ export function ApiMonitorOverlay(): ReactElement | null {
       return;
     }
     const seen = seenIdsRef.current;
-    const hasNewTraffic = ids.some((id) => !seen.has(id));
+    // Only API-key traffic counts. Studio's own chat goes through these same
+    // endpoints, and this panel is about serving other clients, not about the
+    // request the user is watching stream in front of them.
+    const hasNewTraffic = data.entries.some(
+      (entry) => entry.via_api_key && !seen.has(entry.id),
+    );
     // Re-seed each poll so the set stays bounded by the server's ring buffer.
     seenIdsRef.current = new Set(ids);
     if (!hasNewTraffic) {

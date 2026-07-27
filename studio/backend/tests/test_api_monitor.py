@@ -289,3 +289,28 @@ def test_api_monitor_clear_is_scoped_to_one_subject():
     # Passing no subject is the explicit "everything" path.
     monitor.clear()
     assert monitor.snapshot(subject = "bob") == []
+
+
+def test_api_monitor_records_whether_the_caller_used_an_api_key():
+    # Studio's own chat hits these endpoints with a session JWT. The floating
+    # panel keys its auto-open off this flag, so mislabelling in-app chat as API
+    # traffic pops the panel over the composer mid-conversation.
+    monitor = ApiMonitor(max_entries = 4)
+    ui = monitor.start(
+        endpoint = "/api/inference/chat",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+        subject = "u",
+    )
+    api = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+        subject = "u",
+        via_api_key = True,
+    )
+    by_id = {entry["id"]: entry for entry in monitor.snapshot(subject = "u")}
+    assert by_id[ui]["via_api_key"] is False
+    assert by_id[api]["via_api_key"] is True

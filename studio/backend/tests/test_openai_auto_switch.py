@@ -4247,3 +4247,20 @@ def test_ambiguous_case_fallback_matches_nothing(monkeypatch):
     settings.set_model_override("/models/foo.gguf", max_seq_length = 1024)
     settings.set_model_override("/models/FOO.gguf", max_seq_length = 8192)
     assert settings.get_model_override("/models/Foo.gguf") == {}
+
+
+def test_request_used_api_key_distinguishes_key_from_session():
+    from auth.authentication import API_KEY_PREFIX
+
+    class _Req:
+        def __init__(self, header):
+            self.headers = {"authorization": header} if header else {}
+
+    assert inference_route._request_used_api_key(_Req(f"Bearer {API_KEY_PREFIX}abc")) is True
+    assert inference_route._request_used_api_key(_Req(f"bearer {API_KEY_PREFIX}abc")) is True
+    assert inference_route._request_used_api_key(_Req("Bearer eyJhbGciOiJIUzI1NiJ9.x")) is False
+    assert inference_route._request_used_api_key(_Req("")) is False
+    assert inference_route._request_used_api_key(_Req(None)) is False
+    # A malformed request object must read as "not an API key", never raise, since
+    # this runs on the hot path of every tracked request.
+    assert inference_route._request_used_api_key(object()) is False

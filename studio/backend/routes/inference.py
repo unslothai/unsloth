@@ -1754,7 +1754,24 @@ from core.inference.anthropic_compat import (
     AnthropicStreamEmitter,
     AnthropicPassthroughEmitter,
 )
-from auth.authentication import get_current_subject
+from auth.authentication import API_KEY_PREFIX, get_current_subject
+
+
+def _request_used_api_key(request: Any) -> bool:
+    """True when this request authenticated with an sk-unsloth key.
+
+    Studio's own chat hits these same endpoints with a session JWT, so this is
+    what separates "someone is using Unsloth as an API server" from "someone is
+    using Unsloth".
+    """
+    try:
+        header = request.headers.get("authorization") or ""
+    except Exception:
+        return False
+    scheme, _, token = header.partition(" ")
+    return scheme.lower() == "bearer" and token.startswith(API_KEY_PREFIX)
+
+
 from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
@@ -7238,6 +7255,7 @@ async def _proxy_to_external_provider(
     if not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
             endpoint = request.url.path,
+            via_api_key = _request_used_api_key(request),
             method = request.method,
             model = model,
             prompt = _monitor_prompt_from_messages(payload.messages),
@@ -7798,6 +7816,7 @@ async def openai_chat_completions(
         if not getattr(request.state, "skip_api_monitor", False):
             tts_monitor_id = api_monitor.start(
                 endpoint = request.url.path,
+                via_api_key = _request_used_api_key(request),
                 method = request.method,
                 model = model_label,
                 prompt = _monitor_prompt_from_messages(payload.messages),
@@ -7865,6 +7884,7 @@ async def openai_chat_completions(
         if not getattr(request.state, "skip_api_monitor", False):
             monitor_id = api_monitor.start(
                 endpoint = request.url.path,
+                via_api_key = _request_used_api_key(request),
                 method = request.method,
                 model = model_name,
                 prompt = _monitor_prompt_from_messages(payload.messages),
@@ -8009,6 +8029,7 @@ async def openai_chat_completions(
     if monitor_id is None and not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
             endpoint = request.url.path,
+            via_api_key = _request_used_api_key(request),
             method = request.method,
             model = model_name,
             prompt = _monitor_prompt_from_messages(payload.messages),
@@ -10832,6 +10853,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     prompt_text = _flatten_monitor_prompt(body.get("prompt", ""))
     monitor_id = api_monitor.start(
         endpoint = request.url.path,
+        via_api_key = _request_used_api_key(request),
         method = request.method,
         model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default"),
         prompt = prompt_text,
@@ -11043,6 +11065,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     if not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
             endpoint = request.url.path,
+            via_api_key = _request_used_api_key(request),
             method = request.method,
             model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default"),
             prompt = prompt_text,
@@ -11637,6 +11660,7 @@ async def _responses_non_streaming(
         monitor_id = api_monitor.start(
             endpoint = getattr(getattr(request, "url", None), "path", "/v1/responses"),
             method = getattr(request, "method", "POST"),
+            via_api_key = _request_used_api_key(request),
             model = payload.model,
             prompt = _monitor_prompt_from_messages(messages),
             context_length = _monitor_context_length(),
@@ -12828,6 +12852,7 @@ async def openai_responses(
         if not getattr(request.state, "skip_api_monitor", False):
             monitor_id = api_monitor.start(
                 endpoint = request.url.path,
+                via_api_key = _request_used_api_key(request),
                 method = request.method,
                 model = payload.model,
                 prompt = _monitor_prompt_from_messages(messages),
@@ -13296,6 +13321,7 @@ async def anthropic_messages(
         monitor_id = api_monitor.start(
             endpoint = getattr(request_url, "path", "/v1/messages"),
             method = getattr(request, "method", "POST"),
+            via_api_key = _request_used_api_key(request),
             model = model_name,
             prompt = _monitor_prompt_from_messages(openai_messages),
             context_length = monitor_context_length,

@@ -41,6 +41,10 @@ class ApiMonitorEntry:
     started_at: float
     updated_at: float
     subject: Optional[str] = None
+    # True when the caller used an sk-unsloth key rather than a UI session. The
+    # floating panel only opens itself for these: Studio's own chat goes through
+    # the same endpoints, and popping the monitor open mid-chat is noise.
+    via_api_key: bool = False
     # Monotonic anchors so duration math survives wall-clock steps (NTP).
     started_monotonic: float = 0.0
     finished_monotonic: Optional[float] = None
@@ -70,6 +74,7 @@ class ApiMonitorEntry:
             "endpoint": self.endpoint,
             "method": self.method,
             "model": self.model,
+            "via_api_key": self.via_api_key,
             "prompt_preview": _trim(self.prompt, _PREVIEW_CHARS),
             "reply_preview": _trim(self.reply, _PREVIEW_CHARS),
             "prompt_truncated": len(self.prompt) > _PREVIEW_CHARS,
@@ -107,6 +112,7 @@ class ApiMonitor:
         prompt: str,
         context_length: Optional[int] = None,
         subject: Optional[str] = None,
+        via_api_key: bool = False,
     ) -> str:
         now = time.time()
         entry = ApiMonitorEntry(
@@ -121,6 +127,7 @@ class ApiMonitor:
             started_at = now,
             updated_at = now,
             subject = subject,
+            via_api_key = via_api_key,
             started_monotonic = time.monotonic(),
             context_length = context_length,
         )

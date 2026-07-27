@@ -169,7 +169,10 @@ export interface LoadModelResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   supports_reasoning?: boolean;
-  reasoning_style?: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
+  reasoning_style?:
+    | "enable_thinking"
+    | "reasoning_effort"
+    | "enable_thinking_effort";
   reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
@@ -220,7 +223,10 @@ export interface InferenceStatusResponse {
   } | null;
   requires_trust_remote_code?: boolean;
   supports_reasoning?: boolean;
-  reasoning_style?: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
+  reasoning_style?:
+    | "enable_thinking"
+    | "reasoning_effort"
+    | "enable_thinking_effort";
   reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
@@ -268,6 +274,9 @@ export interface ApiMonitorEntry {
   model: string;
   prompt?: string;
   reply?: string;
+  // True when the caller used an API key rather than a UI session. The floating
+  // panel keys its auto-open off this so Studio's own chat does not pop it.
+  via_api_key: boolean;
   prompt_preview: string;
   reply_preview: string;
   prompt_truncated: boolean;
@@ -389,7 +398,7 @@ export interface OpenAIChatCompletionsRequest {
     | "xhigh"
     | null;
   preserve_thinking?: boolean | null;
-  thinking?: {type: "disabled" | "enabled";} | null;
+  thinking?: { type: "disabled" | "enabled" } | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];
   /** Local models + enable_tools only. */
