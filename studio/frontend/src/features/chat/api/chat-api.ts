@@ -352,6 +352,9 @@ export interface LocalModelInfo {
   // Backend-detected weights format ("gguf" when known), so the UI can
   // classify scanned folders whose name lacks a -GGUF suffix.
   model_format?: string | null;
+  // Set when a cached snapshot holds an incomplete download, so consumers can skip
+  // weights that cannot load yet.
+  partial?: boolean;
   updated_at?: number | null;
   // HF pipeline task inferred from the GGUF architecture, so the Images picker
   // can filter local models to diffusion ("text-to-image"). Optional for
