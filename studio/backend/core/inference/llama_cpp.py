@@ -6285,9 +6285,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _extras_after_startup_recovery(
-        retry_cmd: list[str],
-        extra_args: Optional[List[str]],
-        extras_start: int,
+        retry_cmd: list[str], extra_args: Optional[List[str]], extras_start: int
     ) -> Optional[List[str]]:
         """The user's pass-through args as a crash-recovery retry rewrote them.
 
@@ -6315,9 +6313,9 @@ class LlamaCppBackend:
         for original, rewritten in zip(originals, window):
             if not original.startswith("-"):
                 continue
-            if _canonical_long_flag_name(
-                original.partition("=")[0]
-            ) != _canonical_long_flag_name(rewritten.partition("=")[0]):
+            if _canonical_long_flag_name(original.partition("=")[0]) != _canonical_long_flag_name(
+                rewritten.partition("=")[0]
+            ):
                 return None
         return window
 

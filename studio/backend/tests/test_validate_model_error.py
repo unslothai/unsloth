@@ -449,7 +449,13 @@ def _kv_probe_backend():
     return probe
 
 
-def _estimate_kv_gb_with(monkeypatch, extra_args, *, ctx = 8192, n_parallel = 1):
+def _estimate_kv_gb_with(
+    monkeypatch,
+    extra_args,
+    *,
+    ctx = 8192,
+    n_parallel = 1,
+):
     """Run the route's KV sizer over a probe with fixed metadata."""
     from core.inference.llama_cpp import LlamaCppBackend
 
