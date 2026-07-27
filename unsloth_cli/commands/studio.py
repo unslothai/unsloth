@@ -283,9 +283,8 @@ def _studio_requirement_roots(run_mod):
     roots = []
     for line in requirements.read_text(encoding = "utf-8").splitlines():
         line = line.partition("#")[0].strip()
-        # pip flags (-r, --extra-index-url) are not requirements. Skipping them
-        # matters: an unparseable line would report the install broken, and
-        # repair reinstalls the same file, so the failure would never clear.
+        # pip flags (-r, --extra-index-url) are not requirements. Treating one
+        # as broken is permanent: repair reinstalls the same file.
         if not line or line.startswith("-"):
             continue
         try:
@@ -301,10 +300,9 @@ def _studio_requirement_roots(run_mod):
 def _missing_studio_requirement(run_mod):
     """First requirement studio.txt needs that this venv cannot supply.
 
-    Walks dependencies too: starlette is imported by studio/backend/main.py but
-    reaches the venv only as a FastAPI dependency, and main is imported inside
-    run_server, so a direct-only check calls the install ready and the server
-    still dies on startup. Metadata only, no imports, ~80ms on a full venv.
+    Walks dependencies too: starlette reaches the venv only via FastAPI and is
+    imported inside run_server, so a direct-only check calls a doomed install
+    ready. Metadata only, no imports, ~80ms on a full venv.
     """
     from importlib.metadata import PackageNotFoundError, distribution
     from packaging.requirements import InvalidRequirement, Requirement
@@ -313,21 +311,18 @@ def _missing_studio_requirement(run_mod):
     seen = set()
 
     def visit(requirement, is_root):
-        """The name to report, or None; queues the requirement's dependencies."""
+        """Missing name, or None; queues the requirement's dependencies."""
         try:
             installed = distribution(requirement.name)
         except PackageNotFoundError:
             return requirement.name
-        # Metadata outlives the package it describes: hatchling wheels (fastapi,
-        # typer) store .dist-info/METADATA as the first archive entry, so an
-        # unpack killed midway leaves a readable version for modules that never
-        # landed. RECORD is written last, so its absence marks that unpack.
+        # Metadata outlives the package: wheels store METADATA first, so a killed
+        # unpack leaves a version behind. RECORD is last, so its absence marks it.
         if installed.files is None:
             return requirement.name
-        # Only studio.txt pins are enforced. install_python_stack installs torch
-        # and friends with --no-deps, so a transitive bound can read unsatisfied
-        # in a venv that works, and repair reinstalls studio.txt either way.
-        # prereleases=True: a prerelease satisfying a floor is not a broken install.
+        # Only studio.txt pins are enforced: install_python_stack uses --no-deps,
+        # so transitive bounds read unsatisfied in venvs that work. A prerelease
+        # satisfying a floor is not a broken install either.
         if (
             is_root
             and requirement.specifier
@@ -345,9 +340,8 @@ def _missing_studio_requirement(run_mod):
             pending.append(parsed)
         return None
 
-    # Every root is checked before the walk starts. Reached as a dependency
-    # first, a root would mark itself seen and never meet its own pin: datasets
-    # asks for huggingface-hub>=0.25,<2 and studio.txt pins it to ==0.36.2.
+    # Roots are seen up front: reached as a dependency first, a root would never
+    # meet its own pin (datasets wants huggingface-hub<2, studio.txt ==0.36.2).
     roots = _studio_requirement_roots(run_mod)
     seen.update(_canonical_distribution_name(root.name) for root in roots)
     for requirement in roots:
@@ -2927,9 +2921,8 @@ def desktop_runtime_check(
             "reason": "missing_dependency",
             "module": exc.name,
         }
-    # SystemExit is not an Exception. run.py raises it for rejected settings such
-    # as UNSLOTH_CPU_THREADS, and letting it escape would emit no payload at all,
-    # so the desktop app would reinstall over an environment value instead.
+    # SystemExit is not an Exception. run.py raises it for rejected settings like
+    # UNSLOTH_CPU_THREADS; escaping emits no payload, so the app reinstalls.
     except SystemExit as exc:
         payload = {
             "runtime_ready": False,

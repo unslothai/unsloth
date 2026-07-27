@@ -19,8 +19,7 @@ async fn managed_install_ready_after_repair() -> bool {
 }
 
 /// The update can install the newer CLI and only then reach a rejected
-/// environment value. No reinstall changes that, so report it instead of
-/// running the bundled installer over a healthy tree.
+/// environment value. No reinstall changes that, so report it instead.
 fn unrepairable_after_update(reason: Option<&str>) -> Option<String> {
     match reason {
         Some(crate::preflight::STUDIO_RUNTIME_STARTUP_FAILED) => Some(
@@ -793,9 +792,7 @@ mod tests {
     }
     #[test]
     fn rejected_settings_stop_repair_instead_of_reinstalling() {
-        // The update can install the newer CLI and only then reach the bad
-        // value, so this arm is the one that would otherwise reinstall over a
-        // healthy tree and fail again the same way.
+        // This arm is the one that would otherwise reinstall over a healthy tree.
         let msg =
             super::unrepairable_after_update(Some(crate::preflight::STUDIO_RUNTIME_STARTUP_FAILED))
                 .expect("a rejected setting must stop repair");

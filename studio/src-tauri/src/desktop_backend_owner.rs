@@ -265,9 +265,8 @@ impl BackendOwnerState {
         self.write()
     }
 
-    /// Only while the file is still ours. Cleanup after a backend exits can run
-    /// for seconds terminating descendants, and a start in that window has
-    /// already written the next backend's metadata to this same path.
+    /// Only while the file is still ours. Cleanup after an exit can take seconds,
+    /// and a start in that window already wrote the next metadata to this path.
     pub(crate) fn remove(self) {
         if let Ok(Some(on_disk)) = read_metadata(&self.path) {
             if on_disk.token_sha256 != self.metadata.token_sha256 {
@@ -278,8 +277,7 @@ impl BackendOwnerState {
                 return;
             }
         }
-        // Unreadable counts as ours: a file nothing can parse would otherwise
-        // outlive every backend and fail each later ownership check.
+        // Unreadable counts as ours, or it would outlive every backend.
         remove_metadata_file(&self.path);
     }
 
@@ -994,8 +992,6 @@ mod tests {
 
     #[test]
     fn a_replaced_owner_file_survives_the_previous_backend_cleanup() {
-        // Cleanup after an exit can take seconds; a start in that window has
-        // already written the next backend's metadata to the same path.
         let path = temp_metadata_path("replaced-owner");
         let exited = BackendOwnerState::from_metadata(path.clone(), metadata(1, Some(8888)));
         let mut current = metadata(2, Some(8899));

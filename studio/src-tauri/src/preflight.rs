@@ -24,7 +24,7 @@ use managed::probe_managed_bin;
 #[cfg(test)]
 use version::{backend_version_compatible, MIN_DESKTOP_BACKEND_VERSION};
 
-/// The managed backend refused to start on a value it inherited from the
+/// The managed backend refused to start on a value inherited from the
 /// environment rather than from the install.
 pub(crate) const STUDIO_RUNTIME_STARTUP_FAILED: &str = "studio_runtime_startup_failed";
 
@@ -33,7 +33,7 @@ fn release_auto_repair() -> bool {
 }
 
 /// Reinstalling cannot change a rejected environment value, so repairing over
-/// one only replaces a healthy install and fails the same way afterwards.
+/// one only replaces a healthy install and fails the same way.
 fn stale_reason_is_repairable(reason: &str) -> bool {
     reason != STUDIO_RUNTIME_STARTUP_FAILED
 }
@@ -404,8 +404,6 @@ mod tests {
 
     #[test]
     fn rejected_backend_settings_do_not_auto_repair() {
-        // No reinstall can change an inherited environment value, so repairing
-        // would replace a healthy install and fail again the same way.
         assert!(!stale_reason_is_repairable(STUDIO_RUNTIME_STARTUP_FAILED));
         for reason in [
             "studio_runtime_missing_dependency",
@@ -685,8 +683,7 @@ exit 1
     #[tokio::test]
     async fn a_hung_cli_is_stale_without_running_the_legacy_fallback() {
         // An older CLI rejects the unknown command at once, so only a broken one
-        // reaches the timeout. Retrying it with two more 10s probes would treble
-        // the wait before repair on exactly the installs that need it soonest.
+        // reaches the timeout, and two more 10s probes would treble the wait.
         let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
         let _cache_home = ManagedCapabilityCacheHome::new("runtime-hang");
         remove_managed_capability_cache();
@@ -713,9 +710,8 @@ sleep 120
     #[cfg(unix)]
     #[tokio::test]
     async fn managed_runtime_probe_survives_more_stdout_than_the_pipe_holds() {
-        // The probe imports the whole backend, so import-time output can exceed
-        // the 64 KiB pipe buffer. Waiting on exit before draining wedges the
-        // child mid-write and reports a healthy install as broken.
+        // The probe imports the whole backend, so output can exceed the 64 KiB
+        // pipe buffer, and waiting before draining wedges the child mid-write.
         let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
         let _cache_home = ManagedCapabilityCacheHome::new("runtime-noisy");
         remove_managed_capability_cache();
@@ -753,10 +749,9 @@ exit 1
     #[tokio::test]
     async fn a_cli_predating_the_runtime_check_is_stale_for_its_own_reason() {
         // Every published CLI satisfies MIN_DESKTOP_BACKEND_VERSION but has no
-        // `desktop-runtime-check`, so click exits 2 with an empty stdout. That
-        // is the CLI the interrupted installs shipped with, and -h passes
-        // without touching the backend, so launchable is not ready. Update it
-        // first, and keep the reason apart from a CLI that cannot answer.
+        // `desktop-runtime-check`, so click exits 2 with an empty stdout. It is
+        // what the interrupted installs shipped with, and -h passes without
+        // touching the backend, so keep it apart from a CLI that cannot answer.
         let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
         let _cache_home = ManagedCapabilityCacheHome::new("runtime-check-absent");
         remove_managed_capability_cache();
@@ -810,8 +805,8 @@ exit 2
         let _cache_home = ManagedCapabilityCacheHome::new("cache-hit");
 
         remove_managed_capability_cache();
-        // Runtime readiness is checked on every probe, while the static
-        // desktop-capabilities probe is skipped once the cache is warm.
+        // Runtime readiness runs on every probe; the capability probe is skipped
+        // once the cache is warm.
         let fake = fake_cli(
             "cap-cache-hit",
             r#"#!/bin/sh

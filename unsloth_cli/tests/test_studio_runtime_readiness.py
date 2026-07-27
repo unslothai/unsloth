@@ -65,8 +65,7 @@ def test_desktop_runtime_check_catches_later_startup_dependency(monkeypatch, cap
 
 
 def test_desktop_runtime_check_ignores_pip_flag_lines(monkeypatch, capsys, tmp_path):
-    """An unparseable line must not fail the check: repair reinstalls the same
-    file, so the install would be declared broken forever."""
+    """Repair reinstalls the same file, so an unparseable line breaks it forever."""
     studio = importlib.import_module("unsloth_cli.commands.studio")
     backend = tmp_path / "backend"
     requirements = backend / "requirements"
@@ -126,9 +125,8 @@ def test_desktop_runtime_check_rejects_version_mismatch(monkeypatch, capsys, tmp
 def test_desktop_runtime_check_rejects_metadata_without_an_unpacked_package(
     monkeypatch, capsys, tmp_path
 ):
-    """fastapi's wheel stores .dist-info/METADATA as its first archive entry, so
-    an interrupted unpack leaves a readable version for modules that never
-    landed. RECORD is written last, so its absence marks the unfinished unpack."""
+    """fastapi's wheel stores METADATA first, so an interrupted unpack leaves a
+    readable version behind. RECORD is last, so its absence marks the unpack."""
     studio = importlib.import_module("unsloth_cli.commands.studio")
     backend = tmp_path / "backend"
     requirements = backend / "requirements"
@@ -166,9 +164,8 @@ def _fake_distributions(monkeypatch, installed):
 def test_desktop_runtime_check_rejects_a_missing_transitive_dependency(
     monkeypatch, capsys, tmp_path
 ):
-    """starlette reaches the venv only as a FastAPI dependency, and the backend
-    imports it from main.py, which run.py imports inside run_server. A
-    direct-only check calls the install ready and the server dies on start."""
+    """starlette reaches the venv only as a FastAPI dependency, so a direct-only
+    check calls the install ready and the server dies on start."""
     studio = importlib.import_module("unsloth_cli.commands.studio")
     backend = tmp_path / "backend"
     requirements = backend / "requirements"
@@ -187,8 +184,7 @@ def test_desktop_runtime_check_rejects_a_missing_transitive_dependency(
 def test_desktop_runtime_check_ignores_optional_and_circular_dependencies(
     monkeypatch, capsys, tmp_path
 ):
-    """No extra is requested, so an extras-only dependency is not missing, and a
-    dependency cycle must terminate rather than walk forever."""
+    """Extras-only dependencies are not missing, and a cycle must terminate."""
     studio = importlib.import_module("unsloth_cli.commands.studio")
     backend = tmp_path / "backend"
     requirements = backend / "requirements"
@@ -200,8 +196,8 @@ def test_desktop_runtime_check_ignores_optional_and_circular_dependencies(
         monkeypatch,
         {
             "fastapi": ("0.140.5", ['uvicorn; extra == "standard"', "starlette"]),
-            # Transitive bounds are not enforced: install_python_stack installs
-            # with --no-deps, so an unmet one can describe a working venv.
+            # Transitive bounds are not enforced: --no-deps installs leave unmet
+            # ones on venvs that work.
             "starlette": ("0.1", ["fastapi>=99"]),
         },
     )
@@ -212,9 +208,8 @@ def test_desktop_runtime_check_ignores_optional_and_circular_dependencies(
 
 
 def test_desktop_runtime_check_reports_a_rejected_setting_instead_of_exiting(monkeypatch, capsys):
-    """run.py raises SystemExit for values such as UNSLOTH_CPU_THREADS=invalid.
-    Escaping without a payload makes the desktop app reinstall over an
-    environment value no install can change."""
+    """run.py raises SystemExit for values like UNSLOTH_CPU_THREADS=invalid, and
+    with no payload the app reinstalls over a value no install can change."""
     studio = importlib.import_module("unsloth_cli.commands.studio")
 
     def _rejected_setting():
@@ -233,8 +228,8 @@ def test_desktop_runtime_check_reports_a_rejected_setting_instead_of_exiting(mon
 
 
 def test_a_root_pin_is_checked_even_when_a_dependency_names_it_first(monkeypatch, capsys, tmp_path):
-    """datasets asks for huggingface-hub>=0.25,<2 and studio.txt pins ==0.36.2.
-    Reached as a dependency first, the pin would never get to decide."""
+    """datasets wants huggingface-hub<2, studio.txt pins ==0.36.2. Reached as a
+    dependency first, the pin would never get to decide."""
     studio = importlib.import_module("unsloth_cli.commands.studio")
     backend = tmp_path / "backend"
     requirements = backend / "requirements"

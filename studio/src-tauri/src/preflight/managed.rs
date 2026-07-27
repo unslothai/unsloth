@@ -303,21 +303,19 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> bool {
     }
 }
 
-/// The probe could not answer: the binary would not run, or it exited without
-/// a payload. Distinct from a CLI that is simply too old to know the command.
+/// The probe could not answer: it would not run, or exited without a payload.
+/// Distinct from a CLI that is simply too old to know the command.
 const RUNTIME_PROBE_FAILED: &str = "studio_runtime_probe_failed";
 /// A hung binary, kept out of the fallback below: an older CLI rejects the
-/// unknown command at once, so only a broken one reaches the timeout, and
-/// running two more probes on it would treble the wait before repair.
+/// unknown command at once, so only a broken one reaches the timeout.
 const RUNTIME_PROBE_TIMEOUT: &str = "studio_runtime_probe_timeout";
-/// A CLI predating the runtime probe. Repairable, and the update installs one
-/// that can answer, so the next preflight checks the venv for real.
+/// A CLI predating the runtime probe. Repairable: the update installs one that
+/// can answer, so the next preflight checks the venv for real.
 const RUNTIME_CHECK_UNSUPPORTED: &str = "studio_runtime_check_unsupported";
 
 /// True when the CLI is older than `desktop-runtime-check` yet still launches.
-/// Such a CLI exits with a usage error and no JSON, which is indistinguishable
-/// from a crashed probe; `--help` resolves the command without running it, and
-/// the legacy launch probe keeps a genuinely unusable binary out of this path.
+/// Its usage error is indistinguishable from a crashed probe, so `--help`
+/// resolves the command without running it.
 async fn predates_runtime_check(bin: &Path) -> bool {
     !run_cli_probe(bin, &["studio", "desktop-runtime-check", "--help"]).await
         && run_cli_probe(bin, &["-h"]).await
@@ -359,9 +357,8 @@ async fn probe_cli_runtime(bin: &Path) -> Result<(), String> {
         return Err(RUNTIME_PROBE_FAILED.to_string());
     };
 
-    // Drain while waiting: the backend import this probe runs can print more than
-    // the pipe buffer holds, and waiting first deadlocks on it, timing out a
-    // healthy install into repair.
+    // Drain while waiting: the backend import can print more than the pipe holds,
+    // and waiting first deadlocks, timing out a healthy install into repair.
     let reader = tokio::spawn(async move {
         let mut buffer = Vec::new();
         let _ = stdout.read_to_end(&mut buffer).await;
@@ -522,13 +519,11 @@ fn desktop_capability_ready(capability: &DesktopCapability) -> bool {
 
 pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     let started = Instant::now();
-    // Runtime readiness is intentionally uncached. A matching capability
-    // fingerprint only proves protocol compatibility, not that Studio's backend
-    // imports are complete after an interrupted dependency transaction.
+    // Runtime readiness is intentionally uncached: a matching capability
+    // fingerprint proves protocol compatibility, not that the venv is complete.
     if let Err(reason) = probe_cli_runtime(&bin).await {
-        // A CLI too old for this subcommand is the one the interrupted installs
-        // shipped with, and -h passes without touching the backend, so accepting
-        // it here leaves those users on the same crash. Update it, then ask.
+        // A CLI too old for this subcommand is what the interrupted installs
+        // shipped with, and -h passes without touching the backend.
         let reason = if reason == RUNTIME_PROBE_FAILED && predates_runtime_check(&bin).await {
             RUNTIME_CHECK_UNSUPPORTED.to_string()
         } else {
@@ -619,7 +614,7 @@ pub async fn managed_install_ready() -> bool {
 }
 
 /// Ready, or the reason it is not, so repair can tell an unrepairable cause
-/// apart from a stale install rather than reinstalling over both.
+/// apart from a stale install.
 pub async fn managed_install_state() -> Result<(), Option<String>> {
     match probe_managed_install().await {
         ManagedProbe::Ready { .. } => Ok(()),

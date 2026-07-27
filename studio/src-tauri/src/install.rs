@@ -83,11 +83,9 @@ fn clear_install_in_progress_marker() -> Result<(), String> {
 }
 
 /// Clear only where the script provably never touched the venv: it failed to
-/// spawn, or it exited asking for elevation, which install.sh decides (:1931)
-/// before it creates the venv (:2120). Once the script is running, any failure
-/// can leave pip part-way through replacing a package, and the runtime probe
-/// does not reach transitive dependencies, so the marker is the only signal
-/// left. Never fatal: losing it costs a fast path, not correctness.
+/// spawn, or it asked for elevation, which install.sh decides (:1931) before it
+/// creates the venv (:2120). Later on any failure can leave pip part-way
+/// through, and the marker is the only signal. Never fatal: it costs a fast path.
 fn clear_install_marker_best_effort() {
     if let Err(msg) = clear_install_in_progress_marker() {
         warn!("[install] {}", msg);
@@ -193,7 +191,7 @@ fn emit_complete(app: &AppHandle) {
 
 // ── Spawn ──
 
-/// A start rejected because one is already running. Distinguished from a real
+/// A start rejected because one is already running, kept apart from a real
 /// spawn failure so the loser of the race leaves the winner's marker alone.
 const INSTALL_ALREADY_RUNNING: &str = "Installation is already running.";
 
@@ -518,9 +516,8 @@ fn run_install_with_event_mode(
     let (stdout, stderr) = match spawn_script(&script, &args, &state) {
         Ok(handles) => handles,
         Err(msg) => {
-            // Nothing ran, so nothing is half-installed. Unless another
-            // installer is already inside the venv, in which case the marker
-            // is its own and clearing it here throws away its recovery signal.
+            // Nothing ran, so nothing is half-installed. Unless another installer
+            // owns the marker, where clearing it drops its recovery signal.
             if msg != INSTALL_ALREADY_RUNNING {
                 clear_install_marker_best_effort();
             }
@@ -587,8 +584,7 @@ fn run_install_with_event_mode(
                 let _ = app.emit(event_mode.needs_elevation_event(), &packages);
                 Err("NEEDS_ELEVATION".to_string())
             } else {
-                // Keep the marker: the script ran, so pip may have replaced or
-                // removed packages before it failed.
+                // Keep the marker: the script ran, so pip may be part-way through.
                 let msg = format!("Installer exited with code {}", code);
                 diagnostics::finish_attempt(
                     &diagnostics,
@@ -651,8 +647,7 @@ pub fn record_pending_elevation_canceled(
     let Some(attempt) = attempt else {
         return false;
     };
-    // The elevation exit left the marker in place for the resumed run that is
-    // now not happening.
+    // The resumed run the elevation exit left the marker for is not happening.
     clear_install_marker_best_effort();
     diagnostics::finish_attempt(
         diagnostics,
@@ -926,8 +921,7 @@ fn finish_elevation_failure(
     exit_status: Option<String>,
     message: String,
 ) {
-    // Terminal, like a cancelled prompt: the run the code 2 exit left the
-    // marker for is not happening.
+    // Terminal, like a cancelled prompt: the resumed run is not happening.
     clear_install_marker_best_effort();
     if let Some(attempt) = attempt {
         diagnostics::finish_attempt(
