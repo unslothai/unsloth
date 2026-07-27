@@ -6166,21 +6166,22 @@ def _active_rocm_gfx_target(host: HostInfo) -> str | None:
 
 
 def _hip_visible_device_mask_set() -> bool:
-    """Whether a HIP visible-device mask is filtering this process's view of the GPUs.
+    """Whether a HIP visible-device mask is in force for this process.
 
     The Windows arch probe is hipinfo, itself a HIP application, and AMD documents these
     as "only devices whose index is present in the sequence are visible to HIP" (with
     HIP_VISIBLE_DEVICES the Windows spelling), so under a mask it enumerates the VISIBLE
-    devices, not the physical ones. Same first-var-wins order as _pick_rocm_gfx_target,
-    which reads the identical three. Empty / "-1" hides every AMD GPU, which that
-    function already reports as no active target, so it is not a partial mask here."""
-    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
-        _val = os.environ.get(_env)
-        if _val is None:
-            continue
-        _val = _val.strip()
-        return bool(_val) and _val != "-1"
-    return False
+    devices, not the physical ones. Presence is the whole test: a partial mask leaves the
+    inventory unknowable, and an all-hiding "" / "-1" is the strongest form of the same
+    signal rather than an exemption -- the probe reports no arch there, but --rocm-gfx
+    can still supply one (setup's name inference reads the display adapter, which no HIP
+    mask touches), so the guard would otherwise auto-route a host on which the user hid
+    every AMD GPU. Same first-var-wins order as _pick_rocm_gfx_target, which reads the
+    identical three, so the two cannot disagree about the host."""
+    return any(
+        os.environ.get(_env) is not None
+        for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+    )
 
 
 def _windows_hip_gfx_targets(published_repo: str | None) -> frozenset[str]:
@@ -6240,8 +6241,10 @@ def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | No
     # application, so it enumerates only the visible devices and rocm_gfx_targets lists
     # what survived the mask rather than what is installed. "No AMD GPU here reaches the
     # floor" is then unprovable, and guessing wrong is the same reserved-card handover,
-    # so decline to guess. The mask is only ever set deliberately, and the driver-only
-    # single-GPU host this fallback exists for does not set one.
+    # so decline to guess. An all-hiding "" / "-1" is included: the probe reports no arch
+    # there, but a forwarded --rocm-gfx still reconstructs one, and auto-routing then
+    # hands Vulkan every AMD GPU the user hid. The mask is only ever set deliberately,
+    # and the driver-only single-GPU host this fallback exists for does not set one.
     if _hip_visible_device_mask_set():
         return False
     targets = list(dict.fromkeys([*_host_rocm_gfx_targets(host), active]))

@@ -907,27 +907,35 @@ def test_auto_vulkan_declines_when_a_hip_device_mask_filtered_the_probe(mask_env
 
 
 @pytest.mark.parametrize("mask_value", ["", "  ", "-1"])
-def test_auto_vulkan_still_fires_when_the_mask_hides_every_amd_gpu(mask_value, monkeypatch):
-    # Negative control: an empty / "-1" mask is not a partial view, it hides every AMD
-    # GPU, and _pick_rocm_gfx_target already reports that as no active target. Such a
-    # value must not be read as "the probe list may be incomplete" and suppress the
-    # fallback on a host whose arch came from --rocm-gfx.
+def test_auto_vulkan_declines_when_the_mask_hides_every_amd_gpu(mask_value, monkeypatch):
+    # An all-hiding mask is the strongest form of the same signal, not an exemption.
+    # detect_host() resolves no arch under it, but a forwarded --rocm-gfx still
+    # reconstructs one (setup infers the arch from the display-adapter name, which no
+    # HIP mask touches), so auto-routing here would hand Vulkan every AMD GPU the user
+    # deliberately hid from HIP.
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", mask_value)
-    host = _windows_amd_host(rocm_gfx_target = "gfx803", rocm_gfx_targets = ["gfx803"])
-    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is True
-    _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
-    assert repo == UPSTREAM
-    assert persist == "vulkan"
+    host = _windows_amd_host(rocm_gfx_target = None, rocm_gfx_targets = [])
+    host = ilp._apply_host_overrides(host, override_rocm_gfx = "gfx803")
+    assert ilp._active_rocm_gfx_target(host) == "gfx803"
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is False
+    routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert routed is host
+    assert repo == FORK
+    assert persist is None
 
 
-def test_hip_device_mask_check_takes_the_first_variable_that_is_set(monkeypatch):
-    # Same first-var-wins order as _pick_rocm_gfx_target, which reads the identical
-    # three: HIP_VISIBLE_DEVICES="" means no AMD GPU visible even with a later
-    # CUDA_VISIBLE_DEVICES set, so the two must not disagree about the host.
-    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "")
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+def test_hip_device_mask_check_is_presence_not_value(monkeypatch):
+    # Presence is the whole test: any value means the HIP view of the GPUs is not the
+    # physical one, and no value can be read as "the probe saw everything".
     assert ilp._hip_visible_device_mask_set() is False
-    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
+    for value in ("", "  ", "-1", "0", "1", "0,1"):
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", value)
+        assert ilp._hip_visible_device_mask_set() is True, value
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES")
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "0")
+    assert ilp._hip_visible_device_mask_set() is True
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
     assert ilp._hip_visible_device_mask_set() is True
 
 
