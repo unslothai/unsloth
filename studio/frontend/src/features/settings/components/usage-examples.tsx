@@ -334,6 +334,9 @@ const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
 const USE_TUNNEL_KEY = "unsloth_api_use_tunnel";
 // Slow retry while /v1 has nothing to name: a download or load moves no store state.
 const CATALOG_RETRY_MS = 15000;
+// Slower beat once something is servable: idle unload frees a model without
+// touching the store, so residency is never settled for good.
+const CATALOG_IDLE_MS = 60000;
 
 function readUseTunnelPref(): boolean {
   if (typeof window === "undefined") return true;
@@ -377,7 +380,7 @@ function useExampleModelName(): string | null {
     !!checkpoint && !checkpoint.startsWith("external::") && !looksLikePath(checkpoint);
   const needsCatalog = !usableCheckpoint;
 
-  // Only when the checkpoint can't answer it; retries until something is servable.
+  // Only when the checkpoint can't answer it; polls for as long as it is mounted.
   // biome-ignore lint/correctness/useExhaustiveDependencies: a load or unload must refetch the servable ids
   useEffect(() => {
     if (!needsCatalog) return;
@@ -395,12 +398,15 @@ function useExampleModelName(): string | null {
           if (cancelled) return true;
           setCatalog(models);
           setAutoSwitch(enabled);
-          // Only a resident model settles this; auto-switch can be turned back off.
+          // Resident only slows the polling; it never stops it.
           return models.some((m) => m.loaded);
         })
         .then((resolved) => {
-          if (cancelled || resolved) return;
-          timeoutId = window.setTimeout(update, CATALOG_RETRY_MS);
+          if (cancelled) return;
+          timeoutId = window.setTimeout(
+            update,
+            resolved ? CATALOG_IDLE_MS : CATALOG_RETRY_MS,
+          );
         });
     };
 

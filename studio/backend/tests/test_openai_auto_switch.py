@@ -4143,3 +4143,73 @@ def test_env_idle_below_floor_is_clamped(monkeypatch):
     assert settings.get_auto_unload_idle_seconds() == 600
     monkeypatch.delenv(settings.MODEL_IDLE_TTL_ENV_VAR)
     assert settings.get_auto_unload_idle_seconds() == 0
+
+
+def test_a_tag_that_names_no_quant_resolves_to_the_repo(monkeypatch):
+    # A downloaded but unloaded GGUF asked for as org/model:latest missed the
+    # resolver, so the switch path could not load it: with auto-download on it
+    # probed the Hub and 404d on a quant that was never a quant, and with it off it
+    # refused without switching. A real quant that is not on disk must still miss,
+    # or a swap would serve the wrong weights under the right name.
+    from core.inference.local_model_resolver import _LocalGgufEntry
+
+    import time
+
+    entry = _LocalGgufEntry("org/model", "/srv/models/org--model", ("Q4_K_M",))
+    # Fresh stamp so _index serves this instead of rescanning over it.
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/model": entry}))
+    for tag in ("org/model:latest", "org/model:8b", "org/model"):
+        assert resolver.resolve_local_gguf(tag) == (
+            "/srv/models/org--model",
+            "Q4_K_M",
+            "org/model",
+        )
+    assert resolver.resolve_local_gguf("org/model:Q8_0") is None
+    assert resolver.resolve_local_gguf("org/model:Q4_K_M") == (
+        "/srv/models/org--model",
+        "Q4_K_M",
+        "org/model",
+    )
+
+
+def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
+    # Only the API auto-download watcher invalidated, so a GGUF fetched in the Hub
+    # UI stayed absent to the cache-only request path and the request was answered
+    # by the resident model instead. Every worker exits through here.
+    import logging
+
+    from hub.services import download_lifecycle
+
+    class _Proc:
+        stderr = None
+
+        def wait(self):
+            return 0
+
+    class _Registry:
+        def cancel_requested(self, key):
+            return False
+
+        def drop_process(self, key, proc):
+            return True
+
+        def get_job_metadata(self, key):
+            return None
+
+        def set_job(self, key, state):
+            self.state = state
+
+    resolver._scan = (1234.0, {"stale": "entry"})
+    assert (
+        download_lifecycle.finalize_worker_exit(
+            _Registry(),
+            "org/model:Q4_K_M",
+            _Proc(),
+            hf_token = None,
+            label = "org/model",
+            log_prefix = "[test]",
+            logger = logging.getLogger(__name__),
+        )
+        == "complete"
+    )
+    assert resolver._scan == (0.0, {}), "a finished download left the scan cached"

@@ -367,7 +367,8 @@ def resolve_local_gguf(
     a remote), ``loader_id`` is the advertised id used as the launch-override key.
     ``requested`` is ``repo`` or ``repo:VARIANT``. An exact id match wins first
     (so ids containing a colon still resolve); else the last ``:VARIANT`` is split
-    off and resolves only when that quant is on disk.
+    off and resolves only when that quant is on disk, unless it names no quant at
+    all (an Ollama-style ":latest"), which means the repo.
 
     ``allow_scan=False`` answers from the last built index and never rebuilds,
     for callers on the request path: the scan walks several model dirs and HF
@@ -395,7 +396,13 @@ def resolve_local_gguf(
         for v in entry.variants:
             if v.lower() == wanted:
                 return entry.load_path, v, entry.loader_id
-        return None
+        from core.inference.openai_auto_download import looks_like_quant
+
+        if looks_like_quant(variant):
+            return None
+        # ":latest" or ":8b" names no file, so it means the repo; a real quant that
+        # is not on disk still misses, or a swap would serve the wrong weights.
+        return entry.load_path, (entry.variants[0] if entry.variants else None), entry.loader_id
     except Exception:
         # Best-effort: any resolver failure falls through to the loaded model,
         # so a malformed name can never turn a servable request into a 500.
