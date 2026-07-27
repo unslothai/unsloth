@@ -1022,6 +1022,7 @@ try:
     from utils.inference import load_inference_config
     from utils.models.model_config import (
         _local_gguf_companion_search_root,
+        colocated_split_shards,
         detect_mtp_file,
         load_model_defaults,
     )
@@ -1063,6 +1064,7 @@ except ImportError:
     from utils.inference import load_inference_config
     from utils.models.model_config import (
         _local_gguf_companion_search_root,
+        colocated_split_shards,
         detect_mtp_file,
         load_model_defaults,
     )
@@ -3138,22 +3140,56 @@ def _validate_native_gguf_companion(
         ) from exc
 
 
+def _loaded_is_local_model(
+    llama_backend: LlamaCppBackend, native_grant_backed: bool, model_id: str | None
+) -> bool:
+    """Provenance of the running model, preferring what the load recorded.
+
+    Falls back to the filesystem for a server started before the flag existed.
+    """
+    if native_grant_backed:
+        return True
+    stored = getattr(llama_backend, "_is_local_model", None)
+    if stored is not None:
+        return bool(stored)
+    return bool(model_id and is_local_path(model_id))
+
+
+def _validate_native_mtp_drafter(
+    companion_path: str | None,
+    gguf_path: str | None,
+    *,
+    mtp_search_root: str | Path | None = None,
+) -> None:
+    """Validate an MTP drafter for a native load, every shard of it.
+
+    llama-server opens the sibling shards of a split drafter implicitly, so
+    checking only the launch path would let a later shard be a symlink out of
+    the permitted directory without ever facing the native rules.
+    """
+    if not companion_path or not gguf_path:
+        return
+    shards, _ = colocated_split_shards(Path(companion_path))
+    for shard in shards or [Path(companion_path)]:
+        _validate_native_gguf_companion(
+            str(shard),
+            gguf_path,
+            "MTP drafter",
+            allow_mtp_subdir = True,
+            mtp_search_root = mtp_search_root,
+        )
+
+
 def _native_gguf_companion_usable(
     companion_path: str | None,
     gguf_path: str | None,
     *,
     mtp_search_root: str | Path | None = None,
 ) -> bool:
-    """Whether a native load would accept this MTP drafter. Same rules as
-    _validate_native_gguf_companion, as a predicate for reload dedup."""
+    """Whether a native load would accept this MTP drafter, as a predicate for
+    reload dedup. Same rules, so the two cannot disagree."""
     try:
-        _validate_native_gguf_companion(
-            companion_path,
-            gguf_path,
-            "MTP drafter",
-            allow_mtp_subdir = True,
-            mtp_search_root = mtp_search_root,
-        )
+        _validate_native_mtp_drafter(companion_path, gguf_path, mtp_search_root = mtp_search_root)
     except HTTPException:
         return False
     return True
@@ -4726,11 +4762,9 @@ async def _load_model_impl(
 
                         def _mtp_allowed(candidate: str) -> bool:
                             try:
-                                _validate_native_gguf_companion(
+                                _validate_native_mtp_drafter(
                                     candidate,
                                     config.gguf_file,
-                                    "MTP drafter",
-                                    allow_mtp_subdir = True,
                                     mtp_search_root = mtp_search_root,
                                 )
                                 return True
@@ -4865,6 +4899,10 @@ async def _load_model_impl(
             _gguf_is_audio = llama_backend._is_audio
             llama_backend._native_display_label = model_log_label if native_grant_backed else None
             llama_backend._native_grant_backed = bool(native_grant_backed)
+            # Provenance is a load-time fact. Re-deriving it per status poll
+            # would flip a local model to remote if its directory is deleted
+            # or unmounted underneath a still-running server.
+            llama_backend._is_local_model = bool(native_grant_backed or config.is_local)
             if _gguf_is_audio:
                 logger.info(f"GGUF model detected as audio: audio_type={_gguf_audio}")
 
@@ -5999,7 +6037,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 model_identifier = None if _native_grant_backed else _model_id,
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
-                is_local_model = _native_grant_backed or bool(_model_id and is_local_path(_model_id)),
+                is_local_model = _loaded_is_local_model(
+                    llama_backend, _native_grant_backed, _model_id
+                ),
                 is_diffusion = llama_backend.is_diffusion,
                 gguf_variant = llama_backend.hf_variant,
                 is_audio = getattr(llama_backend, "_is_audio", False),

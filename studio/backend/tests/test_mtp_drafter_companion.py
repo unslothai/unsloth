@@ -757,3 +757,45 @@ def test_detect_mtp_file_keeps_snapshot_path_for_sharded_root_drafter(tmp_path):
     found = detect_mtp_file(str(weight), str(snapshot))
     assert found == str(first)
     assert (Path(found).parent / second.name).exists()
+
+
+def test_detect_mtp_file_pairs_bpw_qualified_subdir_drafter(tmp_path):
+    """_extract_quant_label supports bpw-qualified names, so pairing must too."""
+    weight = tmp_path / "model-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    drafter = sub / "mtp-model-IQ4_XS-3.53bpw.gguf"
+    drafter.write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) == str(drafter.resolve())
+
+
+def test_detect_mtp_file_skips_incomplete_split_drafter(tmp_path):
+    """An incomplete shard set fails llama-server's draft startup, so a
+    complete copy must win rather than MTP being disabled."""
+    weight = tmp_path / "model-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    # Declares two shards but ships only the first.
+    (sub / "mtp-model-Q4_0-00001-of-00002.gguf").write_bytes(b"x" * 50)
+    complete = sub / "mtp-model-BF16.gguf"
+    complete.write_bytes(b"x" * 100)
+
+    assert detect_mtp_file(str(weight)) == str(complete.resolve())
+
+
+def test_detect_mtp_file_ranks_split_drafter_by_total_size(tmp_path):
+    """Candidates collapse to shard 1, so a split copy must be summed or it
+    outranks a smaller single file."""
+    weight = tmp_path / "model-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    (sub / "mtp-model-Q8_0-00001-of-00002.gguf").write_bytes(b"x" * 90)
+    (sub / "mtp-model-Q8_0-00002-of-00002.gguf").write_bytes(b"x" * 90)
+    smaller = sub / "mtp-model-BF16.gguf"
+    smaller.write_bytes(b"x" * 100)
+
+    assert detect_mtp_file(str(weight)) == str(smaller.resolve())

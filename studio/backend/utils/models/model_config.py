@@ -1301,6 +1301,47 @@ def _colocated_first_split_shard(path: Path) -> tuple[Optional[Path], bool]:
     return first, first is not None and len(indices) == total
 
 
+def colocated_split_shards(path: Path) -> tuple[list[Path], bool]:
+    """Every shard beside *path*, and whether the declared set is complete.
+
+    A non-split path is itself a complete one-file set. Callers that hand a
+    path to llama-server need this: it opens the sibling shards implicitly, so
+    an incomplete set fails at startup and every shard needs validating.
+    """
+    match = _GGUF_SPLIT_FILE_RE.match(path.name)
+    if match is None:
+        return [path], True
+
+    prefix = match.group("prefix").casefold()
+    total_text = match.group("total")
+    total = int(total_text)
+    if total < 1:
+        return [], False
+
+    found: dict[int, Path] = {}
+    try:
+        for sibling in path.parent.iterdir():
+            sibling_match = _GGUF_SPLIT_FILE_RE.match(sibling.name)
+            if (
+                sibling_match is None
+                or sibling_match.group("prefix").casefold() != prefix
+                or sibling_match.group("total") != total_text
+            ):
+                continue
+            try:
+                if not sibling.is_file():
+                    continue
+            except OSError:
+                continue
+            index = int(sibling_match.group("index"))
+            if 1 <= index <= total:
+                found[index] = sibling
+    except OSError:
+        return [], False
+
+    return [found[i] for i in sorted(found)], len(found) == total
+
+
 def _local_gguf_load_path(path: Path) -> Path:
     """Choose a loadable local path while preserving complete symlink sets."""
     if _GGUF_SPLIT_FILE_RE.match(path.name) is None:
@@ -1476,7 +1517,13 @@ def detect_mtp_file(
         if stem.endswith("-mtp"):
             stem = stem[: -len("-mtp")]
         # Full quant vocabulary, not a subset: K/IQ/UD/MXFP drafters pair too.
-        return re.sub(rf"-(?:{_GGUF_KNOWN_QUANT_RE.pattern})$", "", stem, flags = re.IGNORECASE)
+        # The optional bpw modifier goes with it, as _extract_quant_label does.
+        return re.sub(
+            rf"-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]+(?:\.[0-9]+)?bpw)?$",
+            "",
+            stem,
+            flags = re.IGNORECASE,
+        )
 
     def _drafter_launch_path(candidate: Path) -> str:
         # llama-server takes shard 1 as the model path, and a split copy must
@@ -1497,13 +1544,25 @@ def detect_mtp_file(
             and (len(weight_name) == len(stem) or not weight_name[len(stem)].isalnum())
         )
 
+    def _launchable(candidate: Path) -> bool:
+        # An incomplete split set makes llama-server fail its draft startup and
+        # would disable MTP entirely, so skip it and let a complete copy win.
+        try:
+            _, complete = colocated_split_shards(candidate)
+        except OSError:
+            return False
+        return complete
+
     def _smallest_first(candidate: Path) -> tuple[int, int, str]:
         # Cheapest compatible copy wins. Size first: a fixed precision list
         # ranked unknown quants behind BF16, so a small K-quant lost to a far
         # larger BF16. Precision breaks size ties, name keeps it stable.
+        # Candidates are collapsed to shard 1, so a split copy must be summed
+        # across its shards or it would outrank a smaller single file.
         name = candidate.name.lower()
         try:
-            size = candidate.stat().st_size
+            shards, _ = colocated_split_shards(candidate)
+            size = sum(shard.stat().st_size for shard in shards)
         except OSError:
             size = sys.maxsize
         if "-q4_0" in name:
@@ -1535,7 +1594,7 @@ def detect_mtp_file(
                 if not _matches_weight(f):
                     continue
                 try:
-                    if f.is_file():
+                    if f.is_file() and _launchable(f):
                         return _drafter_launch_path(f)
                 except OSError:
                     continue
@@ -1577,7 +1636,7 @@ def detect_mtp_file(
                 if not _matches_weight(f):
                     continue
                 try:
-                    if f.is_file():
+                    if f.is_file() and _launchable(f):
                         # Collapse a split copy to shard 1 before ranking.
                         subdir_candidates.append(_local_gguf_load_path(f))
                 except OSError:

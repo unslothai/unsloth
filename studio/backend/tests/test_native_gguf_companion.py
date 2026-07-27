@@ -17,6 +17,8 @@ if _BACKEND_DIR not in sys.path:
 
 from routes.inference import _validate_native_gguf_companion
 from routes.inference import _request_matches_loaded_settings
+from routes.inference import _validate_native_mtp_drafter
+from routes.inference import _loaded_is_local_model
 from core.inference.llama_cpp import LlamaCppBackend
 from models.inference import LoadRequest
 
@@ -286,3 +288,49 @@ def test_reload_dedup_native_load_with_no_admissible_drafter(tmp_path, monkeypat
     assert _request_matches_loaded_settings(request, backend, None, native_grant_backed = True)
     # An ordinary load would launch the root drafter, so it must reload.
     assert not _request_matches_loaded_settings(request, backend, None, native_grant_backed = False)
+
+
+def test_native_mtp_drafter_rejects_symlinked_later_shard(tmp_path):
+    """llama-server opens sibling shards implicitly, so validating only the
+    launch path would let a later shard escape the permitted directory."""
+    weight = tmp_path / "model-Q4_0.gguf"
+    weight.write_bytes(b"model")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    first = sub / "mtp-model-Q4_0-00001-of-00002.gguf"
+    first.write_bytes(b"draft")
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"secret")
+    try:
+        (sub / "mtp-model-Q4_0-00002-of-00002.gguf").symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    with pytest.raises(HTTPException, match = "regular file"):
+        _validate_native_mtp_drafter(str(first), str(weight), mtp_search_root = str(tmp_path))
+
+
+def test_native_mtp_drafter_accepts_regular_shard_set(tmp_path):
+    weight = tmp_path / "model-Q4_0.gguf"
+    weight.write_bytes(b"model")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    first = sub / "mtp-model-Q4_0-00001-of-00002.gguf"
+    first.write_bytes(b"draft")
+    (sub / "mtp-model-Q4_0-00002-of-00002.gguf").write_bytes(b"draft")
+
+    _validate_native_mtp_drafter(str(first), str(weight), mtp_search_root = str(tmp_path))
+
+
+def test_status_provenance_survives_deleted_model_directory(tmp_path, monkeypatch):
+    """Provenance is a load-time fact: a directory removed underneath a running
+    server must not turn a local model into a remote one."""
+    monkeypatch.setattr(LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 0))
+    backend = LlamaCppBackend()
+    backend._is_local_model = True
+    # "outputs/gemma" no longer exists, so is_local_path would call it a repo id.
+    assert _loaded_is_local_model(backend, False, "outputs/gemma")
+
+    stale = LlamaCppBackend()
+    assert not _loaded_is_local_model(stale, False, "unsloth/gemma-4-12b")
+    assert _loaded_is_local_model(stale, True, None)

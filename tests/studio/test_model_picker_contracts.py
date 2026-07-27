@@ -376,7 +376,11 @@ def test_local_mtp_warning_uses_backend_source_metadata():
 
     route = _read_backend("routes/inference.py")
     assert route.count("is_local_model = config.is_local") >= 2
-    assert "is_local_model = _native_grant_backed" in route
+    # GGUF status reports the provenance the load recorded. Re-deriving it from
+    # the filesystem would flip a local model to remote once its directory goes
+    # away underneath a running server.
+    assert "llama_backend._is_local_model = bool(native_grant_backed or config.is_local)" in route
+    assert "is_local_model = _loaded_is_local_model(" in route
     assert "backend.active_model_name and is_local_path(backend.active_model_name)" in route
 
 
