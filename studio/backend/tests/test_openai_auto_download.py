@@ -1429,9 +1429,7 @@ def test_a_sibling_quant_in_the_same_directory_is_not_the_resident_one(monkeypat
     with pytest.raises(HTTPException):
         asyncio.run(inference_route._reject_unservable_model("org/model:Q8_0", _Req()))
     # The quant that is actually resident still answers.
-    assert (
-        asyncio.run(inference_route._reject_unservable_model("org/model:Q4_K_M", _Req())) is None
-    )
+    assert asyncio.run(inference_route._reject_unservable_model("org/model:Q4_K_M", _Req())) is None
 
 
 def test_a_remote_tag_that_names_no_quant_picks_the_preferred_one(hub):
