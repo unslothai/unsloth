@@ -88,19 +88,50 @@ def _hub_error(error_type, status_code: int, message: str):
     """Build a Hub exception across huggingface_hub majors.
 
     huggingface_hub 1.x made ``response`` a required keyword-only argument, and
-    the project floor is 0.34, so construct positionally and fall back.
+    the project floor is 0.34, so construct positionally and fall back. The
+    positional form carries no response, and hf_error_status reads the status off
+    it for the types that do not encode it in their name, so attach one either way.
     """
     try:
-        return error_type(message)
+        exc = error_type(message)
     except TypeError:
         import httpx
-        return error_type(
+        exc = error_type(
             message,
             response = httpx.Response(
                 status_code,
                 request = httpx.Request("GET", "https://huggingface.co/api/models/org/repo"),
             ),
         )
+    if getattr(getattr(exc, "response", None), "status_code", None) != status_code:
+        from types import SimpleNamespace
+
+        try:
+            exc.response = SimpleNamespace(status_code = status_code)
+        except AttributeError:
+            pass
+    return exc
+
+
+def test_the_hub_error_helper_carries_a_status_on_both_majors():
+    # CI runs huggingface_hub 1.x and this box runs 0.x, and only one of the two
+    # constructor shapes works on each. hf_error_status reads the status off the
+    # response, so a helper that silently produced one without it would make an
+    # error-mapping test pass here and fail there.
+    from hub.utils.hf_errors import hf_error_status
+
+    class _Legacy(Exception):
+        """0.x: response is optional and unset when built positionally."""
+
+    class _Modern(Exception):
+        """1.x: response is required and keyword-only."""
+
+        def __init__(self, message, *, response):
+            super().__init__(message)
+            self.response = response
+
+    for error_type in (_Legacy, _Modern):
+        assert hf_error_status(_hub_error(error_type, 401, "unauthorized")) == 401
 
 
 @pytest.fixture
@@ -1254,13 +1285,9 @@ def test_a_rejected_token_says_so_instead_of_asking_for_a_retry(hub):
     # Hugging Face answers an expired or invalid X-Unsloth-HF-Token with 401. Only
     # 403 and 404 were handled, so it fell through to "could not reach Hugging Face"
     # with a 503, telling the caller to retry something that cannot start working.
-    from types import SimpleNamespace
-
     from huggingface_hub.utils import HfHubHTTPError
 
-    err = HfHubHTTPError("unauthorized")
-    err.response = SimpleNamespace(status_code = 401)
-    hub["raise"] = err
+    hub["raise"] = _hub_error(HfHubHTTPError, 401, "unauthorized")
     refusal = _run("unsloth/x-GGUF:UD-Q5_K_XL", hf_token = "hf_expired")
     assert refusal.status == 401 and refusal.code == "model_access_denied"
     assert "token" in refusal.message.lower()
