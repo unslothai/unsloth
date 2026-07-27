@@ -336,7 +336,7 @@ def validate_id(value: Any, field_name: str = "id") -> str:
             "invalid_id",
             f"{field_name} must be a non-empty string of at most {MAX_ID_CHARS} characters",
         )
-    if "/" in value or "\\" in value:
+    if value in {".", ".."} or "/" in value or "\\" in value:
         raise UserAssetValidationError(
             "invalid_id",
             f"{field_name} must be safe to use as one URL path segment",

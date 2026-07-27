@@ -243,6 +243,8 @@ export function useRecipePersistence({
   const [conflict, setConflict] = useState<"changed" | "unavailable" | null>(
     null,
   );
+  const [redactedCredentialSignature, setRedactedCredentialSignature] =
+    useState<string | null>(null);
 
   const normalizedWorkflowName = useMemo(
     () => normalizeNonEmptyName(workflowName, "Unnamed"),
@@ -272,6 +274,7 @@ export function useRecipePersistence({
     setLastSavedAt(initialSavedAt);
     setCurrentRevision(initialRevision);
     setConflict(null);
+    setRedactedCredentialSignature(null);
     setCopied(false);
 
     const parsed = importRecipePayload(JSON.stringify(initialPayload), {
@@ -327,14 +330,16 @@ export function useRecipePersistence({
       setLastSavedAt(result.updatedAt);
       setCurrentRevision(result.revision);
       setConflict(null);
-      setSavedSignature(
-        buildSignature(
-          nextName,
-          result.removedCredentialPaths.length > 0
-            ? currentPayload
-            : result.payload,
-        ),
-      );
+      setSavedSignature(buildSignature(nextName, result.payload));
+      if (result.removedCredentialPaths.length > 0) {
+        setRedactedCredentialSignature(currentSignature);
+        toastError(
+          "Credentials were not saved",
+          "Configure replacement environment variables before running this recipe.",
+        );
+      } else {
+        setRedactedCredentialSignature(null);
+      }
       drainQueuedUploadCleanups(result.payload);
     } catch (error) {
       console.error("Save recipe failed:", error);
@@ -370,6 +375,7 @@ export function useRecipePersistence({
   }, [
     currentPayload,
     currentRevision,
+    currentSignature,
     conflict,
     onPersistRecipe,
     recipeId,
@@ -378,7 +384,12 @@ export function useRecipePersistence({
   ]);
 
   useEffect(() => {
-    if (!isDirty || saveLoading || conflict) {
+    if (
+      !isDirty ||
+      saveLoading ||
+      conflict ||
+      redactedCredentialSignature === currentSignature
+    ) {
       return;
     }
     const timeoutId = window.setTimeout(() => {
@@ -387,8 +398,10 @@ export function useRecipePersistence({
     return () => window.clearTimeout(timeoutId);
   }, [
     conflict,
+    currentSignature,
     isDirty,
     persistRecipe,
+    redactedCredentialSignature,
     saveLoading,
   ]);
 

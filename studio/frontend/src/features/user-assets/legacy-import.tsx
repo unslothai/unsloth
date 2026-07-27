@@ -19,6 +19,7 @@ import { MAX_LEGACY_BATCH_JSON_BYTES } from "./persistence-policy";
 
 const SOURCE = "recipe-indexeddb-v1";
 const DEVICE_IMPORT_OWNER_KEY = "user-assets:recipe-indexeddb-v1:owner";
+const DEVICE_IMPORT_LOCK_NAME = "user-assets:recipe-indexeddb-v1:claim";
 const LEGACY_PAGE_SIZE = 100;
 const utf8Encoder = new TextEncoder();
 
@@ -132,21 +133,45 @@ function reportRejectedItems(
   console.error(`Legacy ${kind} import rejected items.`, rejected);
 }
 
+function reportRedactedItems(
+  kind: "recipes" | "executions",
+  redacted: LegacyImportItemResult[],
+): void {
+  if (redacted.length === 0) return;
+  console.warn(
+    `Legacy ${kind} import removed saved credentials. Configure replacement environment variables before running them.`,
+    redacted,
+  );
+  toastError(
+    "Credentials removed from browser migration",
+    `${redacted.length} ${kind === "recipes" ? "recipe" : "execution"}${redacted.length === 1 ? " had" : "s had"} saved credentials removed. Configure replacement environment variables before running them.`,
+  );
+}
+
 function rejectedItems(
   results: LegacyImportItemResult[],
 ): LegacyImportItemResult[] {
   return results.filter((item) => item.outcome === "rejected");
 }
 
-function claimLegacyBrowserData(owner: string): boolean {
+async function claimLegacyBrowserData(owner: string): Promise<boolean> {
   if (typeof window === "undefined") return true;
+  if (typeof navigator.locks === "undefined") {
+    throw new Error("Browser storage migration ownership could not be locked.");
+  }
   try {
-    const claimedOwner = window.localStorage.getItem(DEVICE_IMPORT_OWNER_KEY);
-    if (claimedOwner && claimedOwner !== owner) return false;
-    if (!claimedOwner) {
-      window.localStorage.setItem(DEVICE_IMPORT_OWNER_KEY, owner);
-    }
-    return window.localStorage.getItem(DEVICE_IMPORT_OWNER_KEY) === owner;
+    return await navigator.locks.request(
+      DEVICE_IMPORT_LOCK_NAME,
+      { mode: "exclusive" },
+      () => {
+        const claimedOwner = window.localStorage.getItem(DEVICE_IMPORT_OWNER_KEY);
+        if (claimedOwner && claimedOwner !== owner) return false;
+        if (!claimedOwner) {
+          window.localStorage.setItem(DEVICE_IMPORT_OWNER_KEY, owner);
+        }
+        return window.localStorage.getItem(DEVICE_IMPORT_OWNER_KEY) === owner;
+      },
+    );
   } catch {
     throw new Error("Could not confirm ownership of browser-saved recipes.");
   }
@@ -200,6 +225,10 @@ async function importRecipePages(
       const rejected = rejectedItems(result.recipes);
       reportRejectedItems("recipes", rejected);
       rejectedCount += rejected.length;
+      reportRedactedItems(
+        "recipes",
+        result.recipes.filter((item) => item.outcome === "redacted"),
+      );
       onProgress?.();
     }
     if (cursor !== null && page.nextCursor === cursor) {
@@ -254,6 +283,10 @@ async function importExecutionPages(
       const rejected = rejectedItems(result.executions);
       reportRejectedItems("executions", rejected);
       rejectedCount += rejected.length;
+      reportRedactedItems(
+        "executions",
+        result.executions.filter((item) => item.outcome === "redacted"),
+      );
       const retryIds = effectiveRetryIds(result.executions);
       if (retryIds.size > 0) {
         const retryResult = await importLegacyUserAssets(
@@ -303,7 +336,7 @@ export async function importLegacyUserAssetsFromIndexedDb({
   if (requestSubjectKey === "anonymous") {
     requestSubjectKey = getAuthSubjectKey();
   }
-  if (!claimLegacyBrowserData(bootstrap.subject)) return;
+  if (!(await claimLegacyBrowserData(bootstrap.subject))) return;
   const rejectedRecipes = await importRecipePages(
     bootstrap,
     readRecipes,

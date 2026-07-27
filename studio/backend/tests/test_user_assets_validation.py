@@ -6,6 +6,7 @@ import pytest
 from core.user_assets_validation import (
     MAX_TIMESTAMP_MS,
     UserAssetValidationError,
+    validate_id,
     validate_recipe_payload,
     validate_timestamp,
 )
@@ -16,6 +17,12 @@ def test_timestamp_rejects_values_outside_the_javascript_date_range():
     for value in (-1, MAX_TIMESTAMP_MS + 1, 2**63, True, 1.5):
         with pytest.raises(UserAssetValidationError, match = "valid Date range"):
             validate_timestamp(value, "createdAt")
+
+
+@pytest.mark.parametrize("asset_id", [".", ".."])
+def test_asset_ids_reject_url_dot_segments(asset_id):
+    with pytest.raises(UserAssetValidationError, match = "URL path segment"):
+        validate_id(asset_id)
 
 
 def test_proxy_authorization_is_rejected_and_redacted_by_the_same_policy():
