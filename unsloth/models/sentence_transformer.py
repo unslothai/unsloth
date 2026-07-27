@@ -187,6 +187,8 @@ def _save_pretrained_gguf(
         tokenizer = self.tokenizer
 
     # 4. Call Unsloth's GGUF saver on the inner model targeting the transformer subdirectory
+    # No rmtree guard here: the merge cleanup that deletes save_directory is gated on
+    # push_to_hub, which is forced False below.
     result = unsloth_save_pretrained_gguf(
         inner_model,
         save_directory = transformer_dir,
