@@ -55,6 +55,7 @@ from transformers.models.llama.modeling_llama import logger
 from .models.loader_utils import (
     get_model_name,
     _resolve_hub_repo_cached_file,
+    _tokenizer_cache_dir,
     _tokenizer_wants_local_only,
 )
 from .models._utils import _convert_torchao_model
@@ -451,7 +452,7 @@ def _has_tokenizer_model(tokenizer, token = None):
         return _TOKENIZER_MODEL_CACHE[source]
 
     # Hub repo id: probe local cache before model_info (issue #7481).
-    cache_dir = os.environ.get("HF_HUB_CACHE")
+    cache_dir = _tokenizer_cache_dir(tokenizer) or os.environ.get("HF_HUB_CACHE")
     if not cache_dir:
         hf_home = os.environ.get("HF_HOME")
         if hf_home:
@@ -530,7 +531,7 @@ def _preserve_sentencepiece_tokenizer_assets(
                 if os.path.isfile(local_path):
                     downloaded_path = local_path
             else:
-                cache_dir = os.environ.get("HF_HUB_CACHE")
+                cache_dir = _tokenizer_cache_dir(tokenizer) or os.environ.get("HF_HUB_CACHE")
                 if not cache_dir:
                     hf_home = os.environ.get("HF_HOME")
                     if hf_home:
@@ -3839,6 +3840,7 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
 from .models.loader_utils import (
     get_model_name,
     _resolve_hub_repo_cached_file,
+    _tokenizer_cache_dir,
     _tokenizer_wants_local_only,
 )
 from unsloth_zoo.saving_utils import (

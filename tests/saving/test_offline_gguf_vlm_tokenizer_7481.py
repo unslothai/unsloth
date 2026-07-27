@@ -306,3 +306,33 @@ def test_has_tokenizer_model_local_files_only_skips_model_info(tmp_path, monkeyp
     with patch("huggingface_hub.HfApi.model_info") as model_info:
         assert _has_tokenizer_model(tok, token = None) is False
     assert model_info.call_count == 0
+
+
+def test_custom_cache_dir_survives_to_saving(tmp_path, monkeypatch):
+    """A local-only load with a caller-supplied cache_dir that no env var points
+    at. Saving derives its cache from HF_HUB_CACHE / HF_HOME, so without the
+    stamp it probes the wrong place, and the local-only marker then stops it
+    falling back to the Hub, silently dropping tokenizer.model."""
+    from unsloth.save import _TOKENIZER_MODEL_CACHE, _has_tokenizer_model
+
+    custom_cache = tmp_path / "caller_cache"
+    custom_cache.mkdir()
+    snap = _write_gemma4_cache(custom_cache)
+    (snap / "tokenizer.model").write_bytes(b"sp-model")
+
+    # The environment points somewhere else entirely.
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "unrelated"))
+    _TOKENIZER_MODEL_CACHE.clear()
+
+    @L._offline_aware_load
+    def _load(**kwargs):
+        return SimpleNamespace(name_or_path = _REPO)
+
+    tok = _load(local_files_only = True, cache_dir = str(custom_cache))
+
+    assert L._tokenizer_cache_dir(tok) == str(custom_cache)
+    with patch("huggingface_hub.HfApi.model_info") as model_info:
+        assert _has_tokenizer_model(tok, token = None) is True
+    assert model_info.call_count == 0

@@ -849,10 +849,13 @@ def _get_effective_local_files_only(kwargs):
 # restores the offline env vars when the load window closes, so without this stamp an
 # explicit local_files_only = True load is invisible by the time we save (issue #7481).
 _LOCAL_FILES_ONLY_ATTR = "_unsloth_local_files_only"
+# The load's cache_dir travels with it too: saving derives one from HF_HUB_CACHE /
+# HF_HOME, which does not see a caller-supplied cache.
+_LOADED_CACHE_DIR_ATTR = "_unsloth_loaded_cache_dir"
 
 
-def _mark_loaded_local_files_only(result):
-    """Stamp a load's local-only mode onto the returned tokenizer/processor objects."""
+def _mark_loaded_local_files_only(result, cache_dir = None):
+    """Stamp a load's local-only mode and cache_dir onto the returned objects."""
     for obj in result if isinstance(result, (tuple, list)) else (result,):
         try:
             # A processor keeps the tokenizer that _has_tokenizer_model unwraps to,
@@ -866,9 +869,17 @@ def _mark_loaded_local_files_only(result):
             # Objects that reject new attributes (__slots__) are skipped.
             try:
                 setattr(target, _LOCAL_FILES_ONLY_ATTR, True)
+                if cache_dir:
+                    setattr(target, _LOADED_CACHE_DIR_ATTR, str(cache_dir))
             except Exception:
                 pass
     return result
+
+
+def _tokenizer_cache_dir(tokenizer):
+    """The cache_dir the load used, when it was not the environment's."""
+    tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+    return getattr(tokenizer, _LOADED_CACHE_DIR_ATTR, None)
 
 
 def _tokenizer_wants_local_only(tokenizer):
@@ -1107,7 +1118,9 @@ def _offline_aware_load(fn):
             with _force_hf_offline():
                 # Stamp inside the window: the env vars are restored on exit, so the
                 # request has to travel on the objects themselves to reach saving.
-                return _mark_loaded_local_files_only(fn(*args, **kwargs))
+                return _mark_loaded_local_files_only(
+                    fn(*args, **kwargs), kwargs.get("cache_dir")
+                )
         _pb_were_disabled = _progress_bars_were_disabled()  # restore before any retry
         try:
             return fn(*args, **kwargs)
