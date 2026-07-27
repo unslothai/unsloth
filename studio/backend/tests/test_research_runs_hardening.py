@@ -861,7 +861,9 @@ def test_stream_completion_timeout_is_absolute_despite_keepalives(monkeypatch):
 
 
 def test_wall_clock_timeout_supports_python_without_asyncio_timeout(monkeypatch):
-    monkeypatch.delattr(research_runs.asyncio, "timeout")
+    # raising=False: on Python 3.10 asyncio.timeout does not exist to begin with,
+    # which is the very case these tests cover.
+    monkeypatch.delattr(research_runs.asyncio, "timeout", raising = False)
 
     async def run():
         async with research_runs._wall_clock_timeout(0.01):
@@ -872,7 +874,9 @@ def test_wall_clock_timeout_supports_python_without_asyncio_timeout(monkeypatch)
 
 
 def test_wall_clock_timeout_does_not_swallow_shutdown_cancellation(monkeypatch):
-    monkeypatch.delattr(research_runs.asyncio, "timeout")
+    # raising=False: on Python 3.10 asyncio.timeout does not exist to begin with,
+    # which is the very case these tests cover.
+    monkeypatch.delattr(research_runs.asyncio, "timeout", raising = False)
 
     async def run(cleanup_started: asyncio.Event):
         async with research_runs._wall_clock_timeout(0.01):

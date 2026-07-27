@@ -1585,7 +1585,7 @@ class FastModel(FastBaseModel):
         if do_logging:
             redirector = contextlib.nullcontext()
         else:
-            redirector = contextlib.redirect_stdout(open(os.devnull, "w"))
+            redirector = contextlib.redirect_stdout(open(os.devnull, "w", encoding = "utf-8"))
 
         model_types = ["siglip"] + model_types
         # Set forced float32 env flag
