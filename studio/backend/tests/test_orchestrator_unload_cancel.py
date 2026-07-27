@@ -1746,9 +1746,9 @@ def _dispatch(o, resps):
 
 
 def test_worker_ownership_follows_the_worker_not_the_consumer():
-    # The subprocess runs one generation at a time and can start B while A's consumer has
-    # yet to drain its mailbox. A must stop owning the worker the moment its gen_done is
-    # routed, else a late Stop for A cancels B.
+    # The subprocess runs one generation at a time and can start B while A's consumer has yet to
+    # drain its mailbox. A must stop owning the worker the moment its gen_done is routed, else
+    # a late Stop for A cancels B.
     import queue as _queue
 
     o = _bare_orchestrator()
@@ -1763,8 +1763,8 @@ def test_worker_ownership_follows_the_worker_not_the_consumer():
     assert o._owns_worker(a_cancel), "the request the worker is answering owns it"
     assert not o._owns_worker(b_cancel), "a queued request does not"
 
-    # A finishes. B has been sent but has not answered yet (it is prefilling), so the
-    # gap between the two is the window a late Stop for A used to fire into.
+    # A finishes. B has been sent but has not answered yet (it is prefilling), so the gap
+    # between the two is the window a late Stop for A used to fire into.
     _dispatch(o, [{"type": "gen_done", "request_id": "a"}])
     assert not o._owns_worker(a_cancel), "a finished request stops owning the worker"
     assert o._owns_worker(b_cancel), "the next queued request is the one prefilling"
@@ -1780,8 +1780,7 @@ def test_worker_ownership_follows_the_worker_not_the_consumer():
 
 
 def test_status_responses_do_not_transfer_worker_ownership():
-    # Status lines are not an answer to any request; the dispatcher drops them before
-    # routing, so they must not promote anyone.
+    # Status lines are not an answer to any request; the dispatcher drops them before routing.
     import queue as _queue
 
     o = _bare_orchestrator()
@@ -1800,7 +1799,7 @@ def test_status_responses_do_not_transfer_worker_ownership():
 
 def test_only_the_latest_responder_executes():
     # The subprocess runs one generation at a time, so answering B means it has left A.
-    # _generate_inner promotes from its own consumer, and it can share the worker with a
+    # _generate_inner promotes from its own consumer and can share the worker with a
     # dispatched request, so the two must not both count as executing.
     o = _bare_orchestrator()
     a_cancel, b_cancel = threading.Event(), threading.Event()
@@ -1818,9 +1817,9 @@ def test_only_the_latest_responder_executes():
 
 
 def test_a_stale_mailbox_read_does_not_cancel_the_running_generation():
-    # A dispatched consumer can still be draining tokens after the dispatcher retired its
-    # request and started the next one. Stopping it then must tear down only its own
-    # stream: signalling the shared worker event from here would end its successor.
+    # A dispatched consumer can still be draining tokens after the dispatcher retired its request
+    # and started the next one. Stopping it then must tear down only its own stream: signalling
+    # the shared worker event would end its successor.
     import queue as _queue
 
     o = _bare_orchestrator()
@@ -1872,9 +1871,9 @@ def test_a_stale_mailbox_read_does_not_cancel_the_running_generation():
 
 
 def test_a_dispatcher_started_mid_stream_still_reaches_the_direct_reader():
-    # A compare request can start the dispatcher while an ordinary chat is streaming.
-    # The dispatcher then owns resp_queue, and without a mailbox for the direct reader it
-    # dropped that chat's tokens and its gen_done as unaddressed, hanging it.
+    # A compare request can start the dispatcher while an ordinary chat is streaming. The
+    # dispatcher then owns resp_queue, and without a mailbox for the direct reader it dropped
+    # that chat's tokens and its gen_done as unaddressed, hanging it.
     import queue as _queue
 
     o = _bare_orchestrator()
@@ -1904,9 +1903,9 @@ def test_a_dispatcher_started_mid_stream_still_reaches_the_direct_reader():
 
 
 def test_the_direct_reader_hands_back_a_compare_response_it_took():
-    # The mirror race: this reader is already blocked on resp_queue when a compare
-    # request's dispatcher starts, so it can take that request's response first.
-    # Consuming it would corrupt this chat and hang the compare pane.
+    # The mirror race: this reader is already blocked on resp_queue when a compare request's
+    # dispatcher starts, so it can take that request's response first. Consuming it would
+    # corrupt this chat and hang the compare pane.
     import queue as _queue
 
     o = _bare_orchestrator()
@@ -1930,8 +1929,8 @@ def test_the_direct_reader_hands_back_a_compare_response_it_took():
 
 
 def test_a_direct_mailbox_is_not_mistaken_for_compare_activity():
-    # _mailboxes means "compare requests are in flight" to the unload and distributed
-    # paths, so an ordinary chat's mailbox must live somewhere else.
+    # _mailboxes means "compare requests are in flight" to the unload and distributed paths,
+    # so an ordinary chat's mailbox must live somewhere else.
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}

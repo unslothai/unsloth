@@ -16,8 +16,7 @@ const SHIKI_THEME = ["github-light", "github-dark"] as [
   "github-light",
   "github-dark",
 ];
-/** Past this the block stays plain monospace: shiki is not worth the
- * main-thread time on a payload that size. */
+/** Past this the block stays plain monospace: shiki is not worth the main-thread time. */
 const MAX_HIGHLIGHT_CHARS = 20_000;
 /** Within this many px of the bottom counts as following the stream. */
 const PIN_SLACK_PX = 40;
@@ -95,8 +94,7 @@ function DownloadBtn({ code, name }: { code: string; name: string }) {
   );
 }
 
-/** A fence longer than any backtick run in the code, so a script containing
- * ``` cannot terminate the block early. */
+/** A fence longer than any backtick run in the code, so a script containing ``` cannot end it early. */
 function fenceFor(source: string): string {
   const longest = (source.match(/`+/g) ?? []).reduce(
     (max, run) => Math.max(max, run.length),
@@ -105,9 +103,9 @@ function fenceFor(source: string): string {
   return "`".repeat(Math.max(3, longest + 1));
 }
 
-/** Syntax-highlighted code via Streamdown + shiki. Always in the DOM as plain monospace,
- * but shiki only tokenizes once the block nears the viewport, so a long transcript does
- * not highlight every script up front. Immediate where IntersectionObserver is missing. */
+/** Syntax-highlighted code via Streamdown + shiki. Always in the DOM as plain monospace, but
+ * shiki only tokenizes once the block nears the viewport, so a long transcript does not
+ * highlight every script up front. Immediate where IntersectionObserver is missing. */
 function HighlightedCode({
   code: source,
   language,
@@ -160,8 +158,7 @@ function HighlightedCode({
     }
   };
 
-  // Skip shiki while the model is writing (it re-tokenizes every fragment) and on payloads
-  // too big to tokenize cheaply.
+  // Skip shiki while the model is writing (it re-tokenizes every fragment) and on payloads too big.
   const highlight =
     nearViewport && !plain && source.length <= MAX_HIGHLIGHT_CHARS;
 
@@ -181,8 +178,8 @@ function HighlightedCode({
           {markdown}
         </Streamdown>
       ) : (
-        // A div, not a <pre>: the container's [&_pre]:!p-0 would strip the padding and
-        // shift the content when shiki swaps in. whitespace-pre so long lines scroll.
+        // A div, not a <pre>: the container's [&_pre]:!p-0 would strip the padding and shift
+        // the content when shiki swaps in. whitespace-pre so long lines scroll.
         <div className="whitespace-pre p-3 font-mono text-xs text-muted-foreground">
           {source}
         </div>
@@ -191,8 +188,7 @@ function HighlightedCode({
   );
 }
 
-/** The code a tool is about to run, in the card's collapsible content so the chevron
- * hides code and output together. */
+/** The code a tool is about to run, in the card's collapsible content so the chevron hides code and output together. */
 export function ToolCodeCell({
   label,
   code,

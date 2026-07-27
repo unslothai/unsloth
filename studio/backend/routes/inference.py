@@ -2223,9 +2223,8 @@ class _TrackedCancel:
     ):
         self.event = event
         self.keys = tuple(k for k in keys if k)
-        # kind reaches the swap prompt: embeddings and raw completions have no
-        # conversation, so calling them chats there would offer to stop something
-        # the user cannot see and did not start from a thread.
+        # kind reaches the swap prompt: embeddings and raw completions have no conversation, so
+        # naming them chats would offer to stop something the user never started from a thread.
         self._active = active_generations.ActiveGeneration(
             event, thread_id = thread_id, model = model, kind = kind
         )
@@ -4405,10 +4404,9 @@ async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) 
                 return False
             await asyncio.sleep(0.02)
 
-    # Weighted, not halved, keeping the total wait under the gate unchanged. The first
-    # drain only asks whether unrelated inference is in flight, which patience does not
-    # change; the second waits for chats that were just cancelled to unwind, and cutting
-    # that short refused installs whose chats had already been stopped for nothing.
+    # Weighted, not halved, so the total wait under the gate is unchanged. The first drain only
+    # asks whether unrelated inference is in flight; cutting the second short refused installs
+    # whose chats had already been stopped for nothing.
     if not await _drain(time.monotonic() + budget / 5, discount_registered = True):
         return
     _raise_or_cancel_active_generations(force = True, action = "Installing a new transformers version")
@@ -4507,8 +4505,8 @@ async def get_active_generations(
     requested --parallel; chats beyond it queue rather than fail.
     """
     entries = active_generations.snapshot()
-    # A tracker's model can be a native local path (the legacy stream records
-    # active_model_name verbatim); redact here, the one place that serialises it.
+    # A tracker's model can be a native local path (the legacy stream records active_model_name
+    # verbatim); redact here, the one place that serialises it.
     for _entry in entries:
         if isinstance(_entry.get("model"), str):
             _entry["model"] = redact_native_paths(_entry["model"])
@@ -4552,9 +4550,8 @@ async def load_model(
     # holds this gate.
     async with inference_lifecycle_gate():
         _raise_if_sidecar_swap_in_progress()
-        # The active-generation gate runs inside _load_model_impl, once it knows this is
-        # a real reload (an already_loaded Apply interrupts nothing), and still under the
-        # lifecycle gate so the check stays atomic with the teardown it guards.
+        # The active-generation gate runs inside _load_model_impl, once it knows this is a real
+        # reload, and still under the lifecycle gate so the check stays atomic with the teardown.
         return await _load_model_impl(
             request,
             fastapi_request,
@@ -4768,18 +4765,17 @@ async def _load_model_impl(
                     chat_template = _chat_template,
                 )
 
-        # Past every already_loaded fast return, so this really will replace the running
-        # model: gate it on the chats that would stop. Refusal only, so a non-forced swap
-        # fails fast; the checks between here and the teardown (identifier resolution, GPU
-        # validation, training guard, download manager) can still reject the load, and
-        # cancelling now would stop every chat for a model that never loads. Auto-switch
-        # passes no hook and keeps its current behaviour.
+        # Past every already_loaded fast return, so this really will replace the running model: gate
+        # it on the chats that would stop. Refusal only, so a non-forced swap fails fast; the checks
+        # between here and the teardown (identifier, GPU, training guard, downloads) can still
+        # reject the load, and cancelling now would stop every chat for a model that never loads.
+        # Auto-switch passes no hook and keeps its current behaviour.
         if on_reload_confirmed is not None:
             on_reload_confirmed(cancel = False)
 
-        # Destructive cancel still owed at the teardown below, so it can be deferred past
-        # every remaining check; the drains key off this. Only a forced swap cancels:
-        # unforced already 409'd above, auto-switch has no hook.
+        # Destructive cancel still owed at the teardown below, so it can be deferred past every
+        # remaining check; the drains key off this. Only a forced swap cancels: unforced already
+        # 409'd above, auto-switch has no hook.
         cancel_pending = on_reload_confirmed is not None and bool(request.force_cancel_active)
 
         # is_lora auto-detected from adapter_config.json on disk/HF.
@@ -4898,24 +4894,24 @@ async def _load_model_impl(
             # Fast path only: a swap can still be reserved during the drain.
             _raise_if_sidecar_swap_in_progress()
 
-            # Drain active generations first (the lifecycle gate blocks new starts); a
-            # forced swap excludes the ones it is about to cancel rather than waiting them out.
+            # Drain active generations first (the lifecycle gate blocks new starts); a forced swap
+            # excludes the ones it is about to cancel rather than waiting them out.
             await _wait_for_model_switch_idle(
                 current_request_counted = current_request_counted,
                 cancel_pending = cancel_pending,
             )
-            # Decisive recheck, and the last thing that can reject this load, so it runs
-            # BEFORE the cancel: rejecting after would stop every chat for nothing.
+            # Decisive recheck, and the last thing that can reject this load, so it runs BEFORE the
+            # cancel: rejecting after would stop every chat for nothing.
             _raise_if_sidecar_swap_in_progress()
 
-            # Point of no return for the GGUF path: nothing left can reject this load, so
-            # stop the chats the swap interrupts (or refuse, if the caller never opted in).
+            # Point of no return for the GGUF path: nothing left can reject this load, so stop the
+            # chats the swap interrupts (or refuse, if the caller never opted in).
             if on_reload_confirmed is not None:
                 on_reload_confirmed(cancel = True)
 
-            # Let the cancelled generations unwind before the teardown; no check follows,
-            # so this cannot strand a cancelled chat behind a 409. Bounded: TTS observes no
-            # cancel event, so an unbounded wait would hold the gate for a whole audio run.
+            # Let the cancelled generations unwind before the teardown; no check follows, so this cannot
+            # strand a cancelled chat behind a 409. Bounded: TTS observes no cancel event, so an
+            # unbounded wait would hold the gate for a whole audio run.
             if cancel_pending:
                 await _wait_for_model_switch_idle(
                     current_request_counted = current_request_counted,
@@ -5142,13 +5138,11 @@ async def _load_model_impl(
         )
         _raise_if_sidecar_swap_in_progress()
 
-        # Point of no return for the Unsloth path: cancel only once nothing can still
-        # reject the load.
+        # Point of no return for the Unsloth path: cancel only once nothing can still reject the load.
         if on_reload_confirmed is not None:
             on_reload_confirmed(cancel = True)
 
-        # Let the cancelled generations unwind before the teardown; no check follows.
-        # Bounded for the same reason as the GGUF path above.
+        # Let the cancelled generations unwind before the teardown; no check follows. Bounded like GGUF.
         if cancel_pending:
             await _wait_for_model_switch_idle(
                 current_request_counted = current_request_counted,
@@ -5748,8 +5742,8 @@ async def install_latest_transformers_route(
             other_inference_request_count,
         )
 
-        # A confirmed swap skips only this fast path; the recheck under the gate still has
-        # to pass, so the guard is unchanged for anyone who did not confirm.
+        # A confirmed swap skips only this fast path; the recheck under the gate still has to pass,
+        # so the guard is unchanged for anyone who did not confirm.
         if (
             not request.force_cancel_active
             and other_inference_request_count(current_request_counted = False, include_pending = False)
@@ -5848,12 +5842,11 @@ async def install_latest_transformers_route(
                             "Retry the install."
                         ),
                     )
-                # Carry a confirmed swap's decision through: the user already accepted the
-                # "stop N chats" prompt, and refusing here would make that answer
-                # unactionable (Retry cannot succeed while the same chats run). Deliberately
-                # LAST, after every check that can still reject the install (training,
-                # export, a load that beat us to the gate), so the cancel is spent only once
-                # nothing can turn this request away -- /load's rule.
+                # Carry a confirmed swap's decision through: the user already accepted the "stop N
+                # chats" prompt, and refusing here would make that answer unactionable (Retry
+                # cannot succeed while the same chats run). Deliberately LAST, after every check
+                # that can still reject the install, so the cancel is spent only once nothing can
+                # turn this request away -- /load's rule.
                 if request.force_cancel_active:
                     await _cancel_and_drain_for_sidecar_swap()
                 # Recheck under the gate: new streams bump their in-flight count while
@@ -5910,8 +5903,8 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
     try:
         # "Stop loading" (frontend cancelLoading -> /unload) must abort a still-loading
-        # model promptly, and /load holds the lifecycle gate for the whole load. cancel_load
-        # only tears the loading subprocess down, so it is safe off-gate -- and ahead of the
+        # model promptly, and /load holds the lifecycle gate for the whole load. cancel_load only
+        # tears the loading subprocess down, so it is safe off-gate -- and ahead of the
         # active-generation refusal below, which it can never need (see there).
         backend = get_inference_backend()
         loading = getattr(backend, "get_loading_model", lambda: None)()
@@ -5925,11 +5918,11 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
                 logger.info(f"Cancelled in-flight load: {request.model_path}")
                 return UnloadResponse(status = "unloaded", model = request.model_path)
 
-        # Same "stop loading" fast path for a still-loading GGUF (spawned, health check not
-        # passed). unload_model() sets the cancel_event load_model polls and kills the child
-        # without a worker command, so it is safe off-gate like cancel_load; the gated branch
-        # below handles the already-loaded case. Gated on the loading model (identifier or
-        # native label) so an unload for a different model cannot cancel this load.
+        # Same "stop loading" fast path for a still-loading GGUF (spawned, health check not passed).
+        # unload_model() sets the cancel_event load_model polls and kills the child without a
+        # worker command, so it is safe off-gate like cancel_load; the gated branch below handles
+        # the already-loaded case. Gated on the loading model so an unload for a different model
+        # cannot cancel this load.
         llama_backend = get_llama_cpp_backend()
         if (
             llama_backend.is_active
@@ -5946,15 +5939,14 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             logger.info(f"Cancelled in-flight GGUF load: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
-        # Same gate as /load: refusal only, so a non-forced unload fails fast before
-        # queueing on the lifecycle gate. Skipped when no teardown branch can fire, or a
-        # request naming a model another tab already replaced would 409 on chats it cannot
-        # interrupt instead of returning its no-op.
+        # Same gate as /load: refusal only, so a non-forced unload fails fast before queueing on the
+        # lifecycle gate. Skipped when no teardown branch can fire, or a request naming a model
+        # another tab already replaced would 409 on chats it cannot interrupt.
         #
-        # BEHIND the two "stop loading" fast paths above: both cancel a load that has not
-        # replaced anything yet, so neither can interrupt a chat, and refusing them counted
-        # a teardown that cannot happen (unretryably -- the frontend's Cancel sends this
-        # unload unforced and drops the error). Any other name still falls through here.
+        # BEHIND the two "stop loading" fast paths above: both cancel a load that has not replaced
+        # anything yet, so neither can interrupt a chat, and refusing them counted a teardown that
+        # cannot happen (unretryably -- the frontend's Cancel sends this unload unforced and drops
+        # the error). Any other name still falls through here.
         if _unload_may_evict(request.model_path):
             _raise_or_cancel_active_generations(
                 force = request.force_cancel_active,
@@ -5967,9 +5959,9 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
         # swap in a fresh subprocess mid-unload and the unload command would land on the
         # new worker. The gate makes load and unload exclusive.
         async with inference_lifecycle_gate():
-            # Rechecked under the gate, like /load: a chat can register while this one queues
-            # here (the middleware takes and releases the same gate). Still refusal only, and
-            # re-read rather than carried down, since a load may have finished meanwhile.
+            # Rechecked under the gate, like /load: a chat can register while this one queues here (the
+            # middleware takes and releases the same gate). Still refusal only, and re-read rather
+            # than carried down, since a load may have finished meanwhile.
             if _unload_may_evict(request.model_path):
                 _raise_or_cancel_active_generations(
                     force = request.force_cancel_active,
@@ -5985,15 +5977,13 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
                 )
                 or not llama_backend.is_loaded
             ):
-                # Point of no return: this really does replace the running server, so stop
-                # the chats it interrupts.
+                # Point of no return: this really does replace the running server, so stop the chats.
                 _raise_or_cancel_active_generations(
                     force = request.force_cancel_active, action = "Unloading the model"
                 )
-                # Let what we just cancelled unwind first, like /load: tearing the server
-                # down under streams told to stop but not yet finished turned a clean end
-                # into a dropped connection. Bounded, since a manual unload is deliberate;
-                # only the automatic idle loop defers indefinitely.
+                # Let what we just cancelled unwind first, like /load: tearing the server down under
+                # streams told to stop but not yet finished turned a clean end into a dropped
+                # connection. Bounded, since a manual unload is deliberate.
                 await _drain_and_recancel_before_teardown(
                     force = request.force_cancel_active, action = "Unloading the model"
                 )
@@ -6170,10 +6160,10 @@ async def generate_stream(
         disconnect_watcher = asyncio.create_task(
             _await_disconnect_then_cancel(fastapi_request, cancel_event)
         )
-        # Registered inside the generator, under the finally that unregisters it, so a
-        # response whose body never starts leaves nothing behind. Unregistered, this run
-        # passes /unload's 409 gate (which runs no idle drain) and a forced swap has no
-        # event to signal. GenerateRequest carries no thread_id: counted, not nameable.
+        # Registered inside the generator, under the finally that unregisters it, so a response whose
+        # body never starts leaves nothing behind. Unregistered, this run passes /unload's 409 gate
+        # (which runs no idle drain) and a forced swap has no event to signal. GenerateRequest
+        # carries no thread_id: counted, not nameable.
         _tracker = _TrackedCancel(cancel_event, model = backend.active_model_name)
         _tracker.__enter__()
         try:
@@ -6497,8 +6487,8 @@ async def generate_audio(
     # the idle-stash restore runs here; switching TTS models is an explicit /load.
     await _maybe_auto_switch_model(_RELOAD_ONLY_MODEL, request, current_subject)
 
-    # Created before the backend pick so the GGUF lambda can close over it; the
-    # registration that arms it is below, once the model name is known.
+    # Created before the backend pick so the GGUF lambda can close over it; the registration
+    # that arms it is below, once the model name is known.
     _audio_cancel = threading.Event()
 
     # Pick backend — both return (wav_bytes, sample_rate)
@@ -6546,21 +6536,20 @@ async def generate_audio(
     # /audio/generate route and the chat-completions audio branches that delegate here.
     _fill_recommended_sampling_openai(payload, _audio_model_id)
 
-    # TTS holds the model for the whole request, so unregistered a non-forced swap counted
-    # zero generations and tore the model down mid-generation. The GGUF path observes the
-    # event; the subprocess backend blocks on its response queue and has no cancel plumbing,
-    # so there it is only advisory -- which is why the swap drains are bounded. No cancel
-    # keys: /cancel addresses streams, and this route has none.
+    # TTS holds the model for the whole request, so unregistered a non-forced swap counted zero
+    # generations and tore the model down mid-generation. The GGUF path observes the event; the
+    # subprocess backend blocks on its response queue with no cancel plumbing, so there it is
+    # only advisory -- which is why the swap drains are bounded. No cancel keys: /cancel
+    # addresses streams, and this route has none.
     with _TrackedCancel(
         _audio_cancel,
         thread_id = getattr(payload, "thread_id", None),
         model = model_name,
         kind = "audio",
     ):
-        # Stop in the UI aborts the fetch and nothing more, and this route has no
-        # cancel id to address, so without watching the disconnect llama-server
-        # kept generating for the rest of the request timeout after the chat had
-        # already reported it stopped.
+        # Stop in the UI aborts the fetch and nothing more, and this route has no cancel id to
+        # address, so without watching the disconnect llama-server kept generating for the rest
+        # of the request timeout after the chat had already reported it stopped.
         _audio_watcher = asyncio.create_task(_await_disconnect_then_cancel(request, _audio_cancel))
         try:
             wav_bytes, sample_rate = await asyncio.to_thread(gen)
@@ -8325,10 +8314,9 @@ async def openai_chat_completions(
                     },
                 )
             else:
-                # `stream` defaults to False, so this is the ordinary shape of an audio-input
-                # chat and it holds the worker for the whole request. Unregistered, a swap
-                # counted zero generations and cancelled it instead of 409ing (/unload runs
-                # no idle drain). The streaming sibling registers its own branch.
+                # `stream` defaults to False, so this is the ordinary shape of an audio-input chat and it
+                # holds the worker for the whole request. Unregistered, a swap counted zero generations
+                # and cancelled it instead of 409ing (/unload runs no idle drain).
                 _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
                 _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
                 _tracker.__enter__()
@@ -8346,8 +8334,7 @@ async def openai_chat_completions(
                     api_monitor.fail(monitor_id, _friendly_error(e))
                     raise
                 finally:
-                    # Nested under the except arms too: api_monitor.fail() can throw, and a
-                    # leaked entry 409s every later swap until restart.
+                    # Nested under the except arms too: api_monitor.fail() can throw, and a leaked entry 409s swaps.
                     _tracker.__exit__(None, None, None)
                 api_monitor.set_reply(monitor_id, full_text)
                 api_monitor.finish(monitor_id)
@@ -8751,25 +8738,24 @@ async def openai_chat_completions(
                 gen = None
                 next_task = None
                 stream_completed = False
-                # A call parked on the approval prompt is not decoding, so it gives its slot
-                # back until the user answers; otherwise unanswered prompts hold every slot.
+                # A call parked on the approval prompt is not decoding, so it gives its slot back;
+                # otherwise unanswered prompts hold every slot.
                 _parked = False
 
                 async def _park_admission(on: bool, *, wait: bool = True):
                     nonlocal _parked
                     if on == _parked:
                         return
-                    # The reservation's own queue, not a fresh lookup: queues are keyed by
-                    # base_url and a reload mints a new port, so re-resolving could unpark a
-                    # queue this call never parked and release someone else's slot.
+                    # The reservation's own queue, not a fresh lookup: queues are keyed by base_url and a
+                    # reload mints a new port, so re-resolving could release someone else's slot.
                     queue = reservation.queue
                     if queue is None:
                         return
                     if on:
                         queue.park()
                     elif wait:
-                        # Resuming: park() may have handed our slot to a waiter, so wait
-                        # for room instead of putting two holders on one slot.
+                        # Resuming: park() may have handed our slot to a waiter, so wait for room instead
+                        # of putting two holders on one slot.
                         await queue.unpark_async(cancel_event = cancel_event)
                     else:
                         # Tearing down; the lease is released separately.
@@ -10716,9 +10702,9 @@ async def openai_chat_completions(
 
     # ── Non-streaming response ────────────────────────────────────
     else:
-        # `stream` defaults to False, so this is the default shape of a standard (non-GGUF)
-        # chat and generate() holds the worker for the whole request. Unregistered, a swap
-        # cancelled this run rather than returning 409 (/unload runs no idle drain).
+        # `stream` defaults to False, so this is the default shape of a standard (non-GGUF) chat and
+        # generate() holds the worker throughout. Unregistered, a swap cancelled this run rather
+        # than returning 409 (/unload runs no idle drain).
         _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
         _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
         _tracker.__enter__()
@@ -10843,8 +10829,7 @@ async def openai_chat_completions(
             api_monitor.fail(monitor_id, _friendly_error(e))
             raise HTTPException(status_code = 500, detail = safe_error_detail(e))
         finally:
-            # Nested under the except arms too: reset_generation_state() there can throw,
-            # and a leaked entry 409s every later swap until restart.
+            # Nested under the except arms too: reset_generation_state() can throw, and a leaked entry 409s swaps.
             _tracker.__exit__(None, None, None)
 
 
@@ -11265,12 +11250,11 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             bytes_iter = None
             disconnect_event = threading.Event()
             disconnect_watcher = None
-            # This proxy relays straight from llama-server, so the swap gate has to see
-            # it: without an entry a non-forced /unload counts zero generations and tears
-            # the server down mid-response. Sharing disconnect_event lets a forced swap stop
-            # the relay through the check it already polls. Entered inside the body
-            # generator, so a response whose body never starts leaves nothing behind (see
-            # _responses_stream). No thread_id: public API surface, not a Studio chat.
+            # This proxy relays straight from llama-server, so the swap gate has to see it: without an
+            # entry a non-forced /unload counts zero generations and tears the server down mid-response.
+            # Sharing disconnect_event lets a forced swap stop the relay through the check it already
+            # polls. Entered inside the body generator, so a response whose body never starts leaves
+            # nothing behind (see _responses_stream). No thread_id: public API surface, not a chat.
             _tracker = _TrackedCancel(disconnect_event, model = monitor_model, kind = "completions")
             _tracker.__enter__()
             try:
@@ -11278,8 +11262,8 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     "POST", target_url, json = body, headers = {"Connection": "close"}
                 )
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-                # Same event the relay loop polls, so a forced swap ends the request during
-                # prefill instead of only once headers arrive.
+                # Same event the relay loop polls, so a forced swap ends the request during prefill
+                # instead of only once headers arrive.
                 resp = await _send_stream_with_preheader_cancel(
                     client, req, disconnect_event, request = request
                 )
@@ -11366,10 +11350,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 
         return _sse_streaming_response(_stream())
     else:
-        # ``stream`` defaults to false, so this common shape registers with the swap gate
-        # like the streaming branch: unregistered, a non-forced /unload counts zero
-        # generations and kills llama-server mid-request, and force_cancel_active has no
-        # event to signal. Unpooled client so a cancel-close hits this call only.
+        # ``stream`` defaults to false, so this common shape registers with the swap gate like the
+        # streaming branch: unregistered, a non-forced /unload counts zero generations and kills
+        # llama-server mid-request, and force_cancel_active has no event. Unpooled client so a
+        # cancel-close hits this call only.
         _cancel_event = threading.Event()
         _client = _cancelable_nonstreaming_client()
         _tracker = _TrackedCancel(_cancel_event, model = monitor_model, kind = "completions")
@@ -11389,8 +11373,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     timeout = _llama_non_streaming_generation_timeout(),
                 )
             except httpx.RequestError:
-                # The watcher closed the client out from under the request: report the
-                # cancel, not a bare transport failure.
+                # The watcher closed the client out from under the request: report the cancel, not a transport failure.
                 if _cancel_event.is_set():
                     raise asyncio.CancelledError()
                 raise
@@ -11504,9 +11487,9 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             subject = current_subject,
         )
 
-    # Same gate registration as the completions proxy: unregistered, a non-forced /unload
-    # counts zero generations and kills llama-server mid-embedding. Unpooled client so a
-    # cancel-close hits this call only.
+    # Same gate registration as the completions proxy: unregistered, a non-forced /unload counts
+    # zero generations and kills llama-server mid-embedding. Unpooled client so a cancel-close
+    # hits this call only.
     _cancel_event = threading.Event()
     _client = _cancelable_nonstreaming_client()
     _tracker = _TrackedCancel(
@@ -11530,8 +11513,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
                 timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
             )
         except httpx.RequestError:
-            # The watcher closed the client out from under the request: report the cancel,
-            # not a bare transport failure.
+            # The watcher closed the client out from under the request: report the cancel, not a transport failure.
             if _cancel_event.is_set():
                 raise asyncio.CancelledError()
             raise
@@ -12284,10 +12266,10 @@ async def _responses_stream(
     )
     body["stream_options"] = {"include_usage": True}
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    # The stream's own disconnect event, shared with the cancel/active-generation
-    # registries: this path decodes on llama-server, so a non-forced /unload must see it
-    # and refuse instead of tearing the server down mid-response. Entered inside the body
-    # generator below, so a response whose body never starts leaves nothing behind.
+    # The stream's own disconnect event, shared with the cancel/active-generation registries:
+    # this path decodes on llama-server, so a non-forced /unload must see it and refuse instead
+    # of tearing the server down mid-response. Entered inside the body generator below, so a
+    # response whose body never starts leaves nothing behind.
     cancel_event = threading.Event()
     _tracker = _TrackedCancel.for_payload(cancel_event, payload, resp_id)
     try:
@@ -12751,8 +12733,8 @@ async def _responses_stream(
             )
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
             try:
-                # Same event the loop below polls: prefill can run for the whole first-token
-                # window, and only the send watcher can end it early.
+                # Same event the loop below polls: prefill can run for the whole first-token window,
+                # and only the send watcher can end it early.
                 resp = await _send_stream_with_preheader_cancel(
                     client, req, disconnect_event, request = request
                 )
@@ -13151,9 +13133,8 @@ async def _responses_stream(
         yield _sse("response.completed", completed_response)
 
     async def admitted_event_generator():
-        # Register for the body's whole lifetime, admission wait included: the run holds a
-        # decode slot from here on, so /load and /unload must count it. __exit__ runs from
-        # the finally below on every exit path.
+        # Register for the body's whole lifetime, admission wait included: the run holds a decode
+        # slot from here on, so /load and /unload must count it. __exit__ runs from the finally below.
         _tracker.__enter__()
         lease = reservation.lease_nowait()
         admission_wait_started_at = None
@@ -13171,10 +13152,9 @@ async def _responses_stream(
                     completion_id = resp_id,
                     level = "debug",
                 )
-                # The tracked event, not just the client socket: registered above, so a
-                # forced swap's cancel_all() reaches this run while it is still queued.
-                # Otherwise it takes a lease it was told to give up and the swap's
-                # post-cancel drain waits out the round trip it just cancelled.
+                # The tracked event, not just the client socket: registered above, so a forced swap's
+                # cancel_all() reaches this run while it is still queued. Otherwise it takes a lease it was
+                # told to give up and the post-cancel drain waits out the round trip it just cancelled.
                 async for wait_item in _openai_admission_wait_stream_chunks(
                     reservation,
                     admission_config,
@@ -14075,10 +14055,10 @@ async def _anthropic_tool_stream(
         )
 
     async def _stream():
-        # The server-tool loop decodes on llama-server for its whole body, so without an
-        # entry a non-forced /unload saw zero generations and tore the server down
-        # mid-response. Entered inside the body generator so a response whose body never
-        # starts leaves nothing behind. No thread_id: public API surface.
+        # The server-tool loop decodes on llama-server for its whole body, so without an entry a
+        # non-forced /unload saw zero generations and tore the server down mid-response. Entered
+        # inside the body generator so a response whose body never starts leaves nothing behind.
+        # No thread_id: public API surface.
         _tracker = _TrackedCancel(cancel_event, model = model_name, kind = "messages")
         _tracker.__enter__()
         try:
@@ -14087,19 +14067,19 @@ async def _anthropic_tool_stream(
                 yield line
 
             captured_finish_reason = None
-            # Response ends on a pending tool_use block (stop_reason "tool_use") rather
-            # than final text; a server tool that keeps generating flips this back to False.
+            # Response ends on a pending tool_use block rather than final text; a server tool
+            # that keeps generating flips this back to False.
             ends_on_tool_use = False
             tool_blocks_emitted = 0
             drop_until_tool_end = False
-            # Last drop-branch keepalive, seeded to stream start so a chatty tool busy past
-            # the stall window still gets one though its events are dropped.
+            # Last drop-branch keepalive, seeded to stream start so a chatty tool busy past the
+            # stall window still gets one though its events are dropped.
             _last_drop_keepalive = time.monotonic()
 
             gen = run_gen()
             _next_task = None
-            # Watcher to cancel on disconnect: the in-loop poll fires only between
-            # events, so a mid-prefill disconnect would hold the decode slot.
+            # Watcher to cancel on disconnect: the in-loop poll fires only between events,
+            # so a mid-prefill disconnect would hold the decode slot.
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
@@ -14108,8 +14088,8 @@ async def _anthropic_tool_stream(
                     if cancel_event.is_set() or await request.is_disconnected():
                         cancel_event.set()
                         return
-                    # Stall keepalive (see GGUF tool stream): silent backend segments
-                    # must not leave the SSE stream idle past proxy timeouts.
+                    # Stall keepalive (see GGUF tool stream): silent backend segments must not
+                    # leave the SSE stream idle past proxy timeouts.
                     _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
                     while True:
                         _done_tasks, _ = await asyncio.wait(
@@ -14126,15 +14106,14 @@ async def _anthropic_tool_stream(
                         break
                     etype = event.get("type")
                     if etype == "heartbeat":
-                        # Tool-wrapper heartbeat -> SSE keepalive, checked BEFORE the drop
-                        # skip: a dropped tool still runs and suppresses the stall keepalive.
+                        # Tool-wrapper heartbeat -> SSE keepalive, checked BEFORE the drop skip:
+                        # a dropped tool still runs and suppresses the stall keepalive.
                         yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
                     if etype in ("tool_output", "tool_args"):
-                        # No Anthropic Messages equivalent (the full call/result follow in
-                        # tool_use / tool_result), so drop them. They suppress the stall
-                        # keepalive, so emit a rate-limited one instead of going silent past
-                        # the ~100s proxy cap.
+                        # No Anthropic Messages equivalent (the full call/result follow in tool_use /
+                        # tool_result), so drop them. They suppress the stall keepalive, so emit a
+                        # rate-limited one instead of going silent past the ~100s proxy cap.
                         _now = time.monotonic()
                         if _now - _last_drop_keepalive >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
                             _last_drop_keepalive = _now
@@ -14150,9 +14129,9 @@ async def _anthropic_tool_stream(
                         _fr = event.get("finish_reason")
                         if _fr is not None:
                             captured_finish_reason = _fr
-                    # Strip leaked tool-call XML first, so a purely-tool-XML content event
-                    # doesn't count as text. The protected helper keeps <think> rehearsal and
-                    # balanced [TOOL_CALLS] trailing prose, which a raw sub corrupts.
+                    # Strip leaked tool-call XML first, so a purely-tool-XML content event doesn't
+                    # count as text. The protected helper keeps <think> rehearsal and balanced
+                    # [TOOL_CALLS] trailing prose, which a raw sub corrupts.
                     if etype == "content":
                         event = dict(event)
                         event["text"] = _strip_tool_xml_for_display(
@@ -14169,9 +14148,8 @@ async def _anthropic_tool_stream(
                         ends_on_tool_use = True
                     elif etype == "tool_end":
                         tool_blocks_emitted += 1
-                        # Unsloth ran the tool server-side, so the response no longer ends on
-                        # a pending client action; otherwise stop_reason "tool_use" tells the
-                        # client to run a tool that already ran.
+                        # Unsloth ran the tool server-side, so the response no longer ends on a pending
+                        # client action; otherwise stop_reason "tool_use" tells the client to run it again.
                         ends_on_tool_use = False
                     elif etype == "content" and event.get("text"):
                         ends_on_tool_use = False
@@ -14179,16 +14157,16 @@ async def _anthropic_tool_stream(
                         yield line
             except Exception as e:
                 logger.error("anthropic_messages stream error: %s", e)
-                # force = True so an unclassified mid-stream failure emits an SSE error
-                # instead of a message_stop that masks a truncated turn as a clean finish.
+                # force = True so an unclassified mid-stream failure emits an SSE error instead
+                # of a message_stop that masks a truncated turn as a clean finish.
                 _error_event = _anthropic_stream_error_event(e, force = True)
                 if _error_event is not None:
                     yield _error_event
                     return
             finally:
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
-                # Drain a still-running next(gen) worker first, so a mid-prefill disconnect
-                # releases its resources; closing first races into 'already executing'.
+                # Drain a still-running next(gen) worker first, so a mid-prefill disconnect releases
+                # its resources; closing first races into 'already executing'.
                 await _drain_pending_next_task(_next_task, cancel_event)
                 if gen is not None:
                     try:
@@ -14239,8 +14217,8 @@ async def _anthropic_plain_stream(
 
             gen = run_gen()
             _next_task = None
-            # Watcher to cancel on disconnect: the in-loop poll fires only between
-            # chunks, so a mid-prefill disconnect would hold the decode slot.
+            # Watcher to cancel on disconnect: the in-loop poll fires only between chunks,
+            # so a mid-prefill disconnect would hold the decode slot.
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
@@ -14277,16 +14255,16 @@ async def _anthropic_plain_stream(
                         yield line
             except Exception as e:
                 logger.error("anthropic_messages stream error: %s", e)
-                # force = True so an unclassified mid-stream failure emits an SSE error
-                # instead of a message_stop that masks a truncated turn as a clean finish.
+                # force = True so an unclassified mid-stream failure emits an SSE error instead
+                # of a message_stop that masks a truncated turn as a clean finish.
                 _error_event = _anthropic_stream_error_event(e, force = True)
                 if _error_event is not None:
                     yield _error_event
                     return
             finally:
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
-                # Drain a still-running next(gen) worker first, so a mid-prefill disconnect
-                # releases its resources; closing first races into 'already executing'.
+                # Drain a still-running next(gen) worker first, so a mid-prefill disconnect releases
+                # its resources; closing first races into 'already executing'.
                 await _drain_pending_next_task(_next_task, cancel_event)
                 if gen is not None:
                     try:
@@ -14666,9 +14644,9 @@ async def _anthropic_passthrough_stream(
         cancel_watcher = None
         disconnect_watcher = None
         try:
-            # Entered inside the body generator, under the finally that exits it. Entering
-            # eagerly leaks: aclose() runs no body on a never-started generator, so a client
-            # that drops first leaves the run registered until restart, 409-ing every swap.
+            # Entered inside the body generator, under the finally that exits it. Entering eagerly
+            # leaks: aclose() runs no body on a never-started generator, so a client that drops
+            # first leaves the run registered until restart, 409-ing every swap.
             _tracker.__enter__()
             req = client.build_request(
                 "POST", target_url, json = body, headers = {"Connection": "close"}
@@ -14820,8 +14798,8 @@ async def _anthropic_passthrough_non_streaming(
                 timeout = _llama_non_streaming_generation_timeout(),
             )
         except httpx.RequestError:
-            # The watcher closes the client to break a blocked POST, so a
-            # transport error with the event set is the cancel, not a failure.
+            # The watcher closes the client to break a blocked POST, so a transport error
+            # with the event set is the cancel, not a failure.
             if cancel_event is not None and cancel_event.is_set():
                 raise asyncio.CancelledError()
             raise
@@ -14839,8 +14817,8 @@ async def _anthropic_passthrough_non_streaming(
         # tool_choice arrives here already converted to the OpenAI shape.
         _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools, tool_choice)
 
-        # Opt-in single-retry nudge (mirrors the OpenAI passthrough): the tool call came
-        # out unusable; re-ask with the prompt prefix intact so the KV cache is reused.
+        # Opt-in single-retry nudge (mirrors the OpenAI passthrough): the tool call came out
+        # unusable; re-ask with the prompt prefix intact so the KV cache is reused.
         if (
             _allowed_tools
             and nudge_enabled(nudge_tool_calls)
@@ -14899,10 +14877,10 @@ async def _anthropic_passthrough_non_streaming(
         else:
             text = message.get("content") or ""
             if text:
-                # Keep unpromoted bytes when healing is active; legacy stripping is only for
-                # opted-out or no-client-tool requests. The protected helper preserves
-                # <think> rehearsal and balanced [TOOL_CALLS] prose, gated on the declared
-                # tools so an inactive NAME[ARGS]{...} example is kept.
+                # Keep unpromoted bytes when healing is active; legacy stripping is only for opted-out
+                # or no-client-tool requests. The protected helper preserves <think> rehearsal and
+                # balanced [TOOL_CALLS] prose, gated on the declared tools so an inactive
+                # NAME[ARGS]{...} example is kept.
                 if not healing_active:
                     text = _strip_tool_xml_for_display(
                         text,

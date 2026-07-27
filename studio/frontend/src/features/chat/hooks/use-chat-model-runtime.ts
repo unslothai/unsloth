@@ -464,14 +464,13 @@ export function useChatModelRuntime() {
     useChatRuntimeStore.getState().setModelLoading(true);
     void (async () => {
       try {
-        // Unforced on purpose: a chat may stream on the PREVIOUS model and must not be
-        // killed by cancelling this load. Nothing to report, since the route runs its
-        // stop-loading fast path ahead of the active-chat refusal.
+        // Unforced on purpose: a chat may stream on the PREVIOUS model and must not be killed by
+        // cancelling this load. Nothing to report, since the route runs its stop-loading fast
+        // path ahead of the active-chat refusal.
         await unloadModel({ model_path: model.id }).catch(() => {});
-        // clearCheckpoint above assumed nothing was left loaded, but a forced switch
-        // keeps the previous model resident until /load's teardown, and the stop-loading
-        // fast path leaves it there. Take the answer from the backend: it restores that
-        // model and its capabilities, and reports none when the load had already evicted it.
+        // clearCheckpoint above assumed nothing was left loaded, but a forced switch keeps the
+        // previous model resident until /load's teardown, and the stop-loading fast path leaves
+        // it there. Take the answer from the backend, which reports none once it was evicted.
         await syncInferenceStatusToStore().catch(() => {});
       } finally {
         cancelUnloadPendingRef.current = false;
@@ -538,11 +537,11 @@ export function useChatModelRuntime() {
       };
       if (bailIfLoadInFlight()) return;
 
-      // Picking an external provider leaves the local model resident and stops the status
-      // poll mirroring it, so params.checkpoint cannot tell whether this pick is that same
-      // model. Ask the backend before prompting: /load answers already_loaded ahead of its
-      // cancel hook, so the dialog would promise to stop chats this pick never interrupts.
-      // A staged config always carries forceReload, so Apply still reloads and prompts.
+      // Picking an external provider leaves the local model resident and stops the status poll
+      // mirroring it, so params.checkpoint cannot tell whether this pick is that same model.
+      // Ask the backend before prompting: /load answers already_loaded ahead of its cancel
+      // hook, so the dialog would promise to stop chats this pick never interrupts. A staged
+      // config always carries forceReload, so Apply still reloads and prompts.
       const selectedCheckpoint =
         useChatRuntimeStore.getState().params.checkpoint;
       if (!forceReload && isExternalModelId(selectedCheckpoint)) {
@@ -552,11 +551,11 @@ export function useChatModelRuntime() {
           resolveInferenceCheckpointId(residentStatus) === modelId &&
           (residentStatus.gguf_variant ?? null) === (ggufVariant ?? null)
         ) {
-          // Same window as the confirm below: a rival load may have started during
-          // that GET, and it owns the resident model now.
+          // Same window as the confirm below: a rival load may have started during that GET,
+          // and it owns the resident model now.
           if (bailIfLoadInFlight()) return;
-          // Roll back the config pre-applied for the load that is not happening BEFORE
-          // hydrating, so the resident model's status wins over the staged snapshot.
+          // Roll back the config pre-applied for the load that is not happening BEFORE hydrating,
+          // so the resident model's status wins over the staged snapshot.
           if (typeof selection !== "string" && selection.previousConfig) {
             applyPerModelConfigToRuntime(selection.previousConfig);
           }
@@ -574,8 +573,8 @@ export function useChatModelRuntime() {
         }
       }
 
-      // Every chat decodes on the llama-server this load replaces, so ask first, then allow
-      // the cancel; the 409 gate stays armed for callers that never confirmed.
+      // Every chat decodes on the llama-server this load replaces, so ask first, then allow the
+      // cancel; the 409 gate stays armed for callers that never confirmed.
       const stopDecision = await confirmStopRunningChatsIfNeeded(
         forceReload ? "Applying these settings" : "Loading a different model",
       );
@@ -585,8 +584,8 @@ export function useChatModelRuntime() {
         }
         return;
       }
-      // Re-check: the confirm above awaits a GET, so a pick in that window would start a
-      // rival load over the same refs. Nothing awaits before the reservation below.
+      // Re-check: the confirm above awaits a GET, so a pick in that window would start a rival
+      // load over the same refs. Nothing awaits before the reservation below.
       if (bailIfLoadInFlight()) return;
       const forceCancelActive = stopDecision.forceCancelActive;
 
@@ -828,9 +827,9 @@ export function useChatModelRuntime() {
                 upgrade: validation.transformers_upgrade,
                 // No installable release: custom-code models may fall back to the trust_remote_code gate below.
                 trustRemoteCodeFallback: validation.requires_trust_remote_code,
-                // The install refuses while chats generate and takes no force flag of its
-                // own, so without this the "Stop and reload" the user just confirmed dies
-                // here: Retry hits the same 409, and this path leaves chats running.
+                // The install refuses while chats generate and takes no force flag of its own, so
+                // without this the "Stop and reload" the user just confirmed dies here: Retry hits
+                // the same 409, and this path leaves chats running.
                 forceCancelActive,
               });
               // The install unloads the previous model before the swap (even when
@@ -875,15 +874,14 @@ export function useChatModelRuntime() {
               : undefined;
 
             if (currentCheckpoint) {
-              // With chats generating, skip this preliminary unload: it cancels them ahead
-              // of /load's preflight, so a rejected target truncates replies for a model
-              // that never loads (/load evicts past those checks itself). Idle, unload
-              // first and free VRAM early.
+              // With chats generating, skip this preliminary unload: it cancels them ahead of /load's
+              // preflight, so a rejected target truncates replies for a model that never loads
+              // (/load evicts past those checks itself). Idle, unload first and free VRAM early.
               if (!forceCancelActive) {
                 await unloadModel({ model_path: currentCheckpoint });
               }
-              // Set either way: /load can still leave no model resident, and an unneeded
-              // rollback hits already_loaded before the gate.
+              // Set either way: /load can still leave no model resident, and an unneeded rollback
+              // hits already_loaded before the gate.
               previousWasUnloaded = true;
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");

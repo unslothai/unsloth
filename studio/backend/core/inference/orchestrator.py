@@ -104,13 +104,13 @@ class InferenceOrchestrator:
         # so a generate queued behind the cancelled one is skipped, not run.
         self._drain_event: Any = None
         self._gen_lock = threading.Lock()  # Serializes generation
-        # Cancel event of the request holding _gen_lock: lets a Stop tell whether it owns
-        # the running generation or is queued behind it (the worker's event is shared).
+        # Cancel event of the request holding _gen_lock: lets a Stop tell whether it owns the
+        # running generation or is queued behind it (the worker's event is shared).
         self._active_cancel_events: list = []
         self._executing_cancel_events: list = []
         self._active_cancel_lock = threading.Lock()
-        # Held across claim + _send_cmd so claim order matches the order the
-        # subprocess dequeues commands in; _owns_worker relies on that.
+        # Held across claim + _send_cmd so claim order matches the subprocess dequeue order,
+        # which _owns_worker relies on.
         self._send_order_lock = threading.Lock()
         # Set during a switch so a generation winning the _gen_lock handoff bails
         # instead of starting on the outgoing model.
@@ -120,12 +120,12 @@ class InferenceOrchestrator:
         # bypass _gen_lock, send commands directly, read from per-request
         # mailboxes routed by a dispatcher thread on request_id.
         self._mailboxes: dict[str, queue.Queue] = {}
-        # request_id -> cancel event, so the dispatcher can move worker ownership as it
-        # routes. Consumers read their mailbox whenever they get around to it, so only the
-        # dispatcher sees responses in the order the worker actually produced them.
+        # request_id -> cancel event, so the dispatcher can move worker ownership as it routes.
+        # Consumers read their mailbox whenever they get to it, so only the dispatcher sees
+        # responses in the order the worker produced them.
         self._request_cancel_events: dict[str, object] = {}
-        # Mailboxes for the _gen_lock generations. Kept apart from _mailboxes because that
-        # map means "compare requests are in flight" to the unload and distributed paths.
+        # Mailboxes for the _gen_lock generations. Kept apart from _mailboxes because that map
+        # means "compare requests are in flight" to the unload and distributed paths.
         self._direct_mailboxes: dict[str, queue.Queue] = {}
         self._mailbox_lock = threading.Lock()
         self._dispatcher_thread: Optional[threading.Thread] = None
@@ -670,10 +670,9 @@ class InferenceOrchestrator:
             rtype = resp.get("type", "")
             if rtype == "status":
                 continue
-            # The worker is answering THIS request, so it is the one executing:
-            # only now may its cancel event speak for the shared worker one. The
-            # dispatched path opts out: its dispatcher already did this in worker order,
-            # and a mailbox read can lag far behind that.
+            # The worker is answering THIS request, so it is the one executing: only now may its
+            # cancel event speak for the shared worker one. The dispatched path opts out: its
+            # dispatcher already did this in worker order, which a mailbox read can lag behind.
             if mark_started:
                 self._mark_worker_started(cancel_event)
             # Subprocess-level error (no request_id); request-scoped failures
@@ -685,12 +684,11 @@ class InferenceOrchestrator:
             if rtype == "token":
                 # Cancel from route (e.g. SSE connection closed).
                 if cancel_event is not None and cancel_event.is_set():
-                    # Same rule as reset_generation_state: the shared worker event may
-                    # only be set by the generation the worker is running. A dispatched
-                    # request can still be draining stale mailbox tokens after the
-                    # dispatcher retired it and started the next one, and signalling from
-                    # here would end that one instead. Tearing this stream down is always
-                    # safe, so the local drain happens either way.
+                    # Same rule as reset_generation_state: the shared worker event may only be set by
+                    # the generation the worker is running. A dispatched request can still be draining
+                    # stale mailbox tokens after the dispatcher retired it, and signalling from here
+                    # would end the next one instead. Tearing this stream down is always safe, so the
+                    # local drain happens either way.
                     if self._owns_worker(cancel_event):
                         self._cancel_generation()
                     drain_on_cancel()
@@ -789,10 +787,9 @@ class InferenceOrchestrator:
                         mbox = self._mailboxes.get(rid) or self._direct_mailboxes.get(rid)
                         owner = self._request_cancel_events.get(rid)
                     if mbox is not None:
-                        # Worker order, not consumer order: retire a request the moment its
-                        # last response is routed. Waiting for the consumer's finally left it
-                        # owning the worker after the worker had moved on, so a late Stop for
-                        # it cancelled whichever request had started next.
+                        # Worker order, not consumer order: retire a request the moment its last response
+                        # is routed. Waiting for the consumer's finally left it owning the worker after
+                        # the worker moved on, so a late Stop for it cancelled whichever request started next.
                         if owner is not None:
                             if rtype in ("gen_done", "gen_error"):
                                 self._release_worker(owner)
@@ -930,13 +927,10 @@ class InferenceOrchestrator:
             yield GenStreamError("Error: model is being unloaded", public = True)
             return
 
-        # Claim before sending, like the locked path: dispatched runs are concurrent
-        # by design, so without this a Stop on one of them saw no owner at all and
-        # reset the worker, ending its siblings.
-        # Claim and enqueue under one lock. Two dispatcher threads could otherwise
-        # interleave between the two, leaving the claim order different from the
-        # subprocess's command order, and _owns_worker reads claim order to decide
-        # who is prefilling.
+        # Claim before sending, like the locked path: dispatched runs are concurrent by design,
+        # so without this a Stop on one saw no owner and reset the worker, ending its siblings.
+        # Claim and enqueue under one lock, or two dispatcher threads interleave and claim order
+        # stops matching the subprocess's command order, which _owns_worker reads.
         try:
             with self._send_order_lock:
                 self._claim_worker(cancel_event)
@@ -967,8 +961,8 @@ class InferenceOrchestrator:
                 mark_started = False,
             )
         finally:
-            # Normally already retired by the dispatcher at gen_done; this covers the
-            # streams that end without one (cancel, disconnect, a dead subprocess).
+            # Normally already retired by the dispatcher at gen_done; this covers streams that
+            # end without one (cancel, disconnect, a dead subprocess).
             self._release_worker(cancel_event)
             with self._mailbox_lock:
                 self._mailboxes.pop(request_id, None)
@@ -1732,12 +1726,11 @@ class InferenceOrchestrator:
                 preserve_thinking = preserve_thinking,
             )
 
-            # Claim the worker BEFORE sending, so a Stop on some OTHER chat -- still
-            # queued on the lock above, having generated nothing -- cannot reset the
-            # generation this is starting. Claiming after the send left a window where the
-            # command ran unclaimed. Released in the finally, a failed send included.
-            # Own mailbox: a compare request can start the dispatcher while this is
-            # streaming, and it would otherwise consume our responses and drop them.
+            # Claim the worker BEFORE sending, so a Stop on some OTHER chat -- still queued on the
+            # lock above, having generated nothing -- cannot reset the generation this is starting.
+            # Claiming after the send left the command running unclaimed. Released in the finally.
+            # Own mailbox: a compare request can start the dispatcher while this is streaming,
+            # and it would otherwise consume our responses and drop them.
             read_one, drain, release_mailbox = self._direct_reader(request_id)
             try:
                 try:
@@ -1806,9 +1799,8 @@ class InferenceOrchestrator:
                 return True
             if self._executing_cancel_events:
                 return any(ev is cancel_event for ev in self._executing_cancel_events)
-            # Claimed but nothing has answered yet (A is in prefill). The worker
-            # takes commands in order, so the oldest claim is the one it must be
-            # working on; anyone else here is queued behind it.
+            # Claimed but nothing has answered yet (A is in prefill). The worker takes commands
+            # in order, so the oldest claim is the executor; anyone else here is queued behind it.
             return self._active_cancel_events[0] is cancel_event
 
     def reset_generation_state(self, caller_cancel_event = None):
@@ -2014,9 +2006,8 @@ class InferenceOrchestrator:
             read_one, drain, release_mailbox = self._direct_reader(request_id)
             try:
                 try:
-                    # Claim under the send lock, like _generate_inner: unclaimed, a compare
-                    # request queued behind this looked like the oldest owner, so stopping
-                    # that queued request signalled the worker and killed this one.
+                    # Claim under the send lock, like _generate_inner: unclaimed, a compare request queued
+                    # behind this looked like the oldest owner, so stopping it killed this one.
                     with self._send_order_lock:
                         self._claim_worker(cancel_event)
                         self._send_cmd(cmd)

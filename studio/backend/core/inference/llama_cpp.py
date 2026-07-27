@@ -6515,10 +6515,10 @@ class LlamaCppBackend:
             binary = self._find_llama_server_binary()
             is_vulkan_backend = self._is_vulkan_backend(binary)
 
-            # Without --kv-unified an explicit --parallel N splits -c into windows of -c/N,
-            # so on a build lacking the flag the default of 4 would quarter every context
-            # window for a feature it cannot serve: fall back to the one slot it already
-            # behaved as. Ahead of the KV estimates so the fit matches what launches.
+            # Without --kv-unified an explicit --parallel N splits -c into windows of -c/N, so on a
+            # build lacking the flag the default of 4 would quarter every context window for a
+            # feature it cannot serve: fall back to one slot. Ahead of the KV estimates so the
+            # fit matches what launches.
             if (
                 n_parallel > 1
                 and binary
@@ -11500,8 +11500,8 @@ class LlamaCppBackend:
                                                 permission_mode == "auto"
                                                 and is_always_safe_tool(current_name)
                                             )
-                                            # A text-preview card still streams while
-                                            # gated; hiding it blanks the chat.
+                                            # A text-preview card still streams while gated;
+                                            # hiding it blanks the chat.
                                             and not has_text_only_provisional_card(current_name)
                                         )
                                         # Keep small-argument tools on the normal path.

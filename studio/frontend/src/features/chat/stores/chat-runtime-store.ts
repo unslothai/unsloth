@@ -796,24 +796,23 @@ type ChatRuntimeStore = {
   loras: ChatLoraSummary[];
   runningByThreadId: Record<string, boolean>;
   /**
-   * The subset of `runningByThreadId` decoding on the local llama-server. Swapping the
-   * local model neither interrupts an external-provider chat nor needs its consent, which
-   * is why the backend keeps those out of `active_generations` too.
-   */
+     * The subset of `runningByThreadId` decoding on the local llama-server. Swapping the local
+     * model neither interrupts an external-provider chat nor needs its consent, which is why
+     * the backend keeps those out of `active_generations` too.
+     */
   localRunByThreadId: Record<string, boolean>;
   /**
-   * Which runs set `runningByThreadId[id]`; see `setThreadRunning`'s `owner`. A list, not
-   * one entry: runs without a resolved thread id share the "__default" key, so a single
-   * entry would let a newer run's clear delete an older run's flag while it still generates.
-   */
+     * Which runs set `runningByThreadId[id]`; see `setThreadRunning`'s `owner`. A list, not one
+     * entry: runs without a resolved thread id share the "__default" key, so one entry would let
+     * a newer run's clear delete an older run's flag while it still generates.
+     */
   runOwnerByThreadId: Record<string, ThreadRunOwner[]>;
   cancelByThreadId: Record<string, () => void>;
   /**
-   * Backend cancels for the threads generating in the background. `cancelByThreadId` only
-   * holds the visible thread's `cancelRun()`, so the adapter parks a closure here that
-   * POSTs that run's own cancel_id, never touching a conversation behind another key. A
-   * list for the same reason as `runOwnerByThreadId`: "__default" is shared.
-   */
+     * Backend cancels for the threads generating in the background. `cancelByThreadId` only holds
+     * the visible thread's `cancelRun()`, so the adapter parks a closure here that POSTs that
+     * run's own cancel_id. A list for the same reason as `runOwnerByThreadId`: "__default" is shared.
+     */
   serverCancelByThreadId: Record<string, (() => void)[]>;
   autoTitle: boolean;
   hfToken: string;
@@ -936,15 +935,14 @@ type ChatRuntimeStore = {
    */
   webFetchToolsEnabled: boolean;
   /**
-   * Live tool status per conversation ("Running Python: ...") with its start time. Keyed by
-   * thread, or one chat's tool call shows above every other composer; the timestamp keeps
-   * the counter running across a thread switch.
-   */
+     * Live tool status per conversation ("Running Python: ...") with its start time. Keyed by
+     * thread, or one chat's tool call shows above every other composer; the timestamp keeps the
+     * counter running across a thread switch.
+     */
   /**
-   * Per-run entries, newest last. Unresolved threads share "__default", so one
-   * scalar per key meant a finishing run's clear removed a sibling's status
-   * while its tool was still running.
-   */
+     * Per-run entries, newest last. Unresolved threads share "__default", so one scalar per key
+     * meant a finishing run's clear removed a sibling's status while its tool was still running.
+     */
   toolStatusByThreadId: Record<string, ToolStatusEntry[]>;
   /** Live stdout/stderr from running tools, keyed by toolCallId. Transient:
    *  appended by tool_output, cleared on tool_end or run end. */
@@ -1013,11 +1011,10 @@ type ChatRuntimeStore = {
    *  denoising-canvas artifact auto-render. */
   loadedIsDiffusion: boolean;
   /**
-   * Live denoising frame per conversation ("__default" until the id exists). Transient:
-   * set per step, cleared when the run ends, never persisted into the transcript. Keyed,
-   * not global: two denoising chats overwrote each other's frame, so the visible preview
-   * flickered or vanished until that thread happened to emit again.
-   */
+     * Live denoising frame per conversation ("__default" until the id exists). Transient: set per
+     * step, cleared when the run ends, never persisted. Keyed, not global: two denoising chats
+     * overwrote each other's frame, so the visible preview flickered or vanished.
+     */
   activeDiffusionCanvasByThreadId: Record<string, DiffusionCanvasFrame>;
   customContextLength: number | null;
   /** The pinned context the loaded model used (null = Auto), so dirty-tracking
@@ -1043,10 +1040,10 @@ type ChatRuntimeStore = {
   pendingImageEditReference: PendingImageEditReference | null;
   contextUsage: ContextUsageSnapshot | null;
   /**
-   * Per-thread copy of the above, so the bar survives a switch away and back. `contextUsage`
-   * is the VISIBLE conversation's usage and a background run may not write it, so without
-   * this a run finishing off-screen leaves nothing to restore.
-   */
+     * Per-thread copy of the above, so the bar survives a switch away and back. `contextUsage` is
+     * the VISIBLE conversation's usage and a background run may not write it, so without this a
+     * run finishing off-screen leaves nothing to restore.
+     */
   contextUsageByThreadId: Record<string, ContextUsageSnapshot>;
   modelLoading: boolean;
   loadingModelPick: LoadingModelPick | null;
@@ -1067,30 +1064,29 @@ type ChatRuntimeStore = {
   setModels: (models: ChatModelSummary[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
   /**
-   * `local` defaults to true, so an unqualified caller still counts for the model-swap
-   * gate. `owner` narrows the clear to the run that set the flag: unresolved thread ids
-   * share the "__default" key, so a blind delete would drop a sibling's live entry. Owners
-   * accumulate, so the flag survives until the last one clears.
-   */
+     * `local` defaults to true, so an unqualified caller still counts for the model-swap gate.
+     * `owner` narrows the clear to the run that set the flag: unresolved thread ids share the
+     * "__default" key, so a blind delete would drop a sibling's live entry. Owners accumulate,
+     * so the flag survives until the last one clears.
+     */
   setThreadRunning: (
     threadId: string,
     running: boolean,
     options?: { local?: boolean; owner?: () => void },
   ) => void;
   /**
-   * Re-key a first turn's run handles once its thread is persisted.
-   *
-   * A run that starts before its id exists files everything under "__default".
-   * Nothing moved it afterwards, so once the user navigated away the sidebar
-   * looked up the real id, found no run, and showed no spinner; stopChatThread
-   * had no handle either and the generation carried on holding a slot.
-   */
+     * Re-key a first turn's run handles once its thread is persisted.
+     *
+     * A run that starts before its id exists files everything under "__default". Nothing moved it
+     * afterwards, so once the user navigated away the sidebar found no run and showed no spinner;
+     * stopChatThread had no handle either and the generation carried on holding a slot.
+     */
   adoptDefaultThreadRun: (threadId: string) => void;
   /**
-   * Which key this run's handles live under now. `adoptDefaultThreadRun` re-keys them
-   * mid-run, so a run that started under "__default" must look its owner up instead of
-   * reusing the key it captured, or its writes and its final clear miss the entries.
-   */
+     * Which key this run's handles live under now. `adoptDefaultThreadRun` re-keys them mid-run,
+     * so a run that started under "__default" must look its owner up instead of reusing the key
+     * it captured, or its writes and its final clear miss the entries.
+     */
   runKeyForOwner: (fallbackKey: string, owner: () => void) => string;
   registerThreadCancel: (threadId: string, cancel: () => void) => void;
   clearThreadCancel: (threadId: string) => void;
@@ -1150,9 +1146,9 @@ type ChatRuntimeStore = {
   setRagOcrScanned: (enabled: boolean) => void;
   setRagCaptionFigures: (enabled: boolean) => void;
   /**
-   * `owner` is the run's identity token, as for `setThreadRunning`: unresolved threads share
-   * "__default", so without it one run's cleanup clears a concurrent run's status.
-   */
+     * `owner` is the run's identity token, as for `setThreadRunning`: unresolved threads share
+     * "__default", so without it one run's cleanup clears a concurrent run's status.
+     */
   setToolStatus: (
     threadId: string,
     status: string | null,
@@ -1170,8 +1166,8 @@ type ChatRuntimeStore = {
     threadId: string | null,
     canvas: DiffusionCanvasFrame,
   ) => void;
-  /** Drop only `threadId`'s canvas: a run ending in a background chat must not wipe
-   * the frame another chat is still painting. */
+  /** Drop only `threadId`'s canvas: a run ending in a background chat must not wipe the
+     * frame another chat is still painting. */
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
@@ -1638,8 +1634,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         if (options?.owner) {
           nextOwner[threadId] = [...owners, { owner: options.owner, local }];
         }
-        // Any local owner keeps the key counted by the model-swap gate, so an external
-        // run joining a shared key must not clear a sibling's flag.
+        // Any local owner keeps the key counted by the model-swap gate, so an external run
+        // joining a shared key must not clear a sibling's flag.
         if (local) {
           nextLocal[threadId] = true;
         } else if (!owners.some((o) => o.local)) {
@@ -1649,11 +1645,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         const remaining = options?.owner
           ? owners.filter((o) => o.owner !== options.owner)
           : [];
-        // An owner missing from the list was already cleared, or the key belongs to
-        // siblings only: either way this run must change nothing.
+        // An owner missing from the list was already cleared, or the key belongs to siblings
+        // only: either way this run must change nothing.
         if (options?.owner && remaining.length === owners.length) return state;
-        // An ownerless clear predates per-run tracking, so it must not speak for runs
-        // that own the key: leave them to clear themselves.
+        // An ownerless clear predates per-run tracking, so it must not speak for runs that
+        // own the key: leave them to clear themselves.
         if (!options?.owner && owners.length > 0) return state;
         if (remaining.length > 0) {
           nextOwner[threadId] = remaining;
@@ -1678,13 +1674,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       const key = "__default";
       if (!threadId || threadId === key) return state;
-      // Two first turns can share "__default", and nothing links a run there to the
-      // thread being persisted. Moving the arrays wholesale handed this thread the
-      // sibling's owner and stop handle too, so stopping one aborted both. Adopt only
-      // when the key holds a single run; ambiguous, leave both where they are.
+      // Two first turns can share "__default", and nothing links a run there to the thread being
+      // persisted. Moving the arrays wholesale handed this thread the sibling's owner and stop
+      // handle too, so stopping one aborted both. Adopt only when the key holds a single run.
       if ((state.runOwnerByThreadId[key]?.length ?? 0) > 1) return state;
-      // Only the transient run maps move. Anything already filed under the real
-      // id wins, since that is a later, better-identified run.
+      // Only the transient run maps move. Anything already filed under the real id wins,
+      // since that is a later, better-identified run.
       const moved: Partial<ChatRuntimeStore> = {};
       const move = <T,>(
         map: Record<string, T>,
@@ -1734,8 +1729,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       next[threadId] = [...(state.serverCancelByThreadId[threadId] ?? []), cancel];
       return { serverCancelByThreadId: next };
     }),
-  // `cancel` narrows removal to the run that registered it: unresolved thread ids share
-  // the "__default" key, so a blind delete would drop a live sibling.
+  // `cancel` narrows removal to the run that registered it: unresolved thread ids share the
+  // "__default" key, so a blind delete would drop a live sibling.
   clearThreadServerCancel: (threadId, cancel) =>
     set((state) => {
       const current = state.serverCancelByThreadId[threadId];
@@ -1806,9 +1801,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ...(isExternalModelId(modelId) ? { deepResearchEnabled: false } : {}),
       };
     }),
-  // Re-apply the incoming thread's own usage rather than blanking the bar: a run that
-  // finished in the background never wrote the visible value, and a still-mounted runtime
-  // skips the history loader on the way back.
+  // Re-apply the incoming thread's own usage rather than blanking the bar: a run that finished
+  // in the background never wrote the visible value, and a still-mounted runtime skips the
+  // history loader on the way back.
   setActiveThreadId: (activeThreadId) =>
     set((state) => ({
       activeThreadId,
@@ -2172,8 +2167,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const entries = state.toolStatusByThreadId[threadId] ?? [];
       const mine = entries.find((e) => e.owner === owner);
       if (!status) {
-        // Drop only this run's entry: a sibling behind the same key may still be running
-        // a tool, and its status has to survive this clear.
+        // Drop only this run's entry: a sibling behind the same key may still be running a tool,
+        // and its status has to survive this clear.
         if (mine === undefined) return state;
         const rest = entries.filter((e) => e !== mine);
         if (rest.length > 0) {
@@ -2182,8 +2177,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           delete next[threadId];
         }
       } else {
-        // Same text from the same run means the same call, so keep startedAt: only a new
-        // tool restarts the counter.
+        // Same text from the same run means the same call, so keep startedAt: only a new tool restarts it.
         if (mine?.status === status) return state;
         const entry = { status, startedAt: Date.now(), owner };
         next[threadId] = mine
@@ -2309,9 +2303,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ pendingImageEditReference }),
   clearPendingImageEditReference: () =>
     set({ pendingImageEditReference: null }),
-  // Write through to the visible thread's own entry, so a value restored by the history
-  // loader survives a switch away and back: that loader runs once per mount and
-  // setActiveThreadId reads the map, so without this the bar goes blank on return.
+  // Write through to the visible thread's own entry, so a value restored by the history loader
+  // survives a switch away and back: that loader runs once per mount and setActiveThreadId
+  // reads the map, so without this the bar goes blank on return.
   setContextUsage: (contextUsage) =>
     set((state) => {
       if (!state.activeThreadId) return { contextUsage };

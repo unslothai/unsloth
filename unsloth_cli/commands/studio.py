@@ -295,8 +295,8 @@ def _find_setup_script() -> Optional[Path]:
 _PARALLEL_MIN = 1
 _PARALLEL_MAX = 64
 _PARALLEL_DEFAULT_RUN = 4  # pre-PR hardcoded for `unsloth studio run`
-# New Chat leaves the previous conversation generating and the admission queue caps decodes
-# at the slot count, so at 1 every extra chat queues. _slots_that_fit_on_gpu() may cut it back.
+# New Chat leaves the previous conversation generating and the admission queue caps decodes at
+# the slot count, so at 1 every extra chat queues. _slots_that_fit_on_gpu() may cut it back.
 _PARALLEL_DEFAULT_PLAIN = 4
 
 

@@ -217,7 +217,7 @@ def test_gate_force_with_nothing_running_is_a_no_op(gate):
 
 def test_tracked_cancel_registers_the_thread_for_its_block():
     # The single place a generation is recorded, so every streaming path gets it.
-    _route_gate()  # skips when the inference stack is unavailable
+    _route_gate()
     from routes.inference import _TrackedCancel
 
     ev = threading.Event()
@@ -233,7 +233,7 @@ def test_tracked_cancel_registers_the_thread_for_its_block():
 
 def test_tracked_cancel_shares_its_event_with_the_registry():
     # Reusing the per-run event is what keeps a forced reload off llama-server.
-    _route_gate()  # skips when the inference stack is unavailable
+    _route_gate()
     from routes.inference import _TrackedCancel
 
     ev = threading.Event()
@@ -291,9 +291,8 @@ def _stub_load_route(monkeypatch, *, active_model_name):
 
 
 def test_idempotent_load_neither_refuses_nor_cancels_running_chats(monkeypatch):
-    # Re-applying the resident model returns already_loaded without touching
-    # llama-server, so it must neither 409 nor stop chats on the forced retry.
-    _route_gate()  # skips when the inference stack is unavailable
+    # Re-applying the resident model hits already_loaded: no llama-server touch, no 409, no stopped chats.
+    _route_gate()
     import asyncio
 
     from models.inference import LoadRequest
@@ -316,7 +315,7 @@ def test_idempotent_load_neither_refuses_nor_cancels_running_chats(monkeypatch):
 
 def test_a_real_reload_still_refuses_while_chats_stream(monkeypatch):
     # A load that would really replace the model still 409s and names the chats.
-    _route_gate()  # skips when the inference stack is unavailable
+    _route_gate()
     import asyncio
 
     from fastapi import HTTPException
@@ -335,9 +334,8 @@ def test_a_real_reload_still_refuses_while_chats_stream(monkeypatch):
 
 
 def test_a_forced_load_that_fails_preflight_leaves_the_chats_alone(monkeypatch):
-    # Preflight (identifier, GPU, training guard, downloads) runs after the user confirms
-    # and can still reject the load, so cancelling first would end every chat for nothing.
-    _route_gate()  # skips when the inference stack is unavailable
+    # Preflight can still reject after the user confirms, so cancelling first ends chats for nothing.
+    _route_gate()
     import asyncio
     import contextlib
 
@@ -400,10 +398,9 @@ def _stub_standard_load_route(monkeypatch):
 
 
 def test_a_sidecar_swap_reserved_during_the_drain_never_strands_cancelled_chats(monkeypatch):
-    # A sidecar install can reserve the swap window during the pre-teardown drain, so the
-    # recheck after it is the last thing that can reject the load and must run ahead of the
-    # cancel: rejecting after would 409 with every chat stopped and no new model loaded.
-    _route_gate()  # skips when the inference stack is unavailable
+    # A sidecar install can reserve the swap window during the pre-teardown drain, so the recheck
+    # after it is the last rejection point and must precede the cancel, else chats die for nothing.
+    _route_gate()
     import asyncio
     import time
     from types import SimpleNamespace
@@ -419,8 +416,7 @@ def test_a_sidecar_swap_reserved_during_the_drain_never_strands_cancelled_chats(
     reserved = {"v": False}
     monkeypatch.setattr(tv, "sidecar_swap_in_progress", lambda: reserved["v"])
 
-    # Two tracked requests: the chat registered below, plus one a forced cancel cannot
-    # stop. The install reserves the window when that second one finishes, mid-drain.
+    # Two tracked requests; the install reserves the window mid-drain when the uncancellable one ends.
     monkeypatch.setattr(kw, "_inflight", 2)
 
     def _installer():
@@ -468,9 +464,8 @@ def _stub_unload_backends(monkeypatch, *, llama, backend):
 
 
 def test_unload_rechecks_active_generations_under_the_lifecycle_gate(monkeypatch):
-    # Without the recheck, a chat that starts while this request queues on the
-    # gate is torn down mid-stream.
-    _route_gate()  # skips when the inference stack is unavailable
+    # Without the recheck, a chat that starts while this queues on the gate is torn down mid-stream.
+    _route_gate()
     import asyncio
     from types import SimpleNamespace
 
@@ -569,9 +564,8 @@ def _run_unload(
 
 
 def test_forced_unload_of_a_stale_model_path_leaves_the_chats_alone(monkeypatch):
-    # A second tab swapped the model, so this Eject names one no longer loaded: a no-op that
-    # still reports success, so cancelling before the route resolves it loses runs for nothing.
-    _route_gate()  # skips when the inference stack is unavailable
+    # Eject naming a model another tab swapped out: a no-op success; cancelling first loses runs.
+    _route_gate()
     import routes.inference as inf_mod
 
     torn_down: list[str] = []
@@ -594,7 +588,7 @@ def test_forced_unload_of_a_stale_model_path_leaves_the_chats_alone(monkeypatch)
 
 def test_forced_unload_of_the_loaded_model_still_stops_its_chats(monkeypatch):
     # A real unload must still cancel, or llama-server goes down mid-stream.
-    _route_gate()  # skips when the inference stack is unavailable
+    _route_gate()
     import routes.inference as inf_mod
 
     torn_down: list[str] = []
@@ -614,10 +608,9 @@ def test_forced_unload_of_the_loaded_model_still_stops_its_chats(monkeypatch):
 
 
 def test_forced_unload_lets_the_cancelled_chats_unwind_before_teardown(monkeypatch):
-    # /unload used to cancel and tear down on the next line, so a stream told to stop but
-    # not yet finished lost its server and the client saw a dropped connection. Assert the
-    # order: the count must reach zero before unload_model runs, not by the time it returns.
-    _route_gate()  # skips when the inference stack is unavailable
+    # /unload used to tear down right after the cancel, so a stream told to stop but not yet
+    # finished lost its server. Assert the count hits zero BEFORE unload_model runs.
+    _route_gate()
     import core.inference.llama_keepwarm as keepwarm
     import routes.inference as inf_mod
 
@@ -658,11 +651,9 @@ def test_forced_unload_lets_the_cancelled_chats_unwind_before_teardown(monkeypat
 
 
 def test_unload_drains_on_the_middleware_count_not_just_the_registry(monkeypatch):
-    # A request that passed the middleware but has not reached its _TrackedCancel yet is
-    # counted and unregistered, so gating the drain on "did we cancel anything" let a
-    # teardown land on it. The drain reads the middleware count instead: one poll on a
-    # quiet server, not a wait.
-    _route_gate()  # skips when the inference stack is unavailable
+    # A request past the middleware but not yet at its _TrackedCancel is counted but unregistered, so
+    # the drain reads the middleware count, not "did we cancel anything": one poll on a quiet server.
+    _route_gate()
     import core.inference.llama_keepwarm as keepwarm
     import routes.inference as inf_mod
 
@@ -690,9 +681,8 @@ def test_unload_drains_on_the_middleware_count_not_just_the_registry(monkeypatch
 
 
 def test_unforced_unload_of_a_stale_model_path_is_still_a_no_op(monkeypatch):
-    # Same stale Eject without the force flag. It reaches no teardown branch, so refusing
-    # it counts a teardown that cannot happen and strands the stale tab's selection.
-    _route_gate()  # skips when the inference stack is unavailable
+    # Same stale Eject unforced: it reaches no teardown, so refusing strands the stale tab's selection.
+    _route_gate()
     import routes.inference as inf_mod
 
     torn_down: list[str] = []
@@ -715,7 +705,7 @@ def test_unforced_unload_of_a_stale_model_path_is_still_a_no_op(monkeypatch):
 
 def test_unforced_unload_of_the_loaded_model_still_refuses_while_chats_stream(monkeypatch):
     # The stale skip above must not disarm the gate for a real replacement.
-    _route_gate()  # skips when the inference stack is unavailable
+    _route_gate()
     import routes.inference as inf_mod
 
     from fastapi import HTTPException
@@ -739,10 +729,9 @@ def test_unforced_unload_of_the_loaded_model_still_refuses_while_chats_stream(mo
 
 
 def test_unforced_unload_still_refuses_while_a_gguf_load_is_in_flight(monkeypatch):
-    # An Eject naming the PREVIOUS model while a different one loads (a stale tab, not
-    # cancelLoading). The GGUF branch evicts a llama-server that is up but not yet serving,
-    # so this is not harmless: a chat on the previous model must get the 409, not be killed.
-    _route_gate()  # skips when the inference stack is unavailable
+    # A stale tab's Eject naming the PREVIOUS model while a different one loads. The GGUF branch
+    # evicts a live llama-server, so a chat on the previous model must get the 409, not be killed.
+    _route_gate()
     import asyncio
     from types import SimpleNamespace
 
@@ -782,10 +771,9 @@ def test_unforced_unload_still_refuses_while_a_gguf_load_is_in_flight(monkeypatc
 
 
 def test_cancelling_an_in_flight_standard_load_is_not_refused_by_the_chat_gate(monkeypatch):
-    # The real cancelLoading shape: unforced /unload naming the still-LOADING model.
-    # Cancelling a load replaces nothing, so it cannot interrupt a chat and must not 409 --
-    # the frontend drops the error and never aborts the /load fetch.
-    _route_gate()  # skips when the inference stack is unavailable
+    # The real cancelLoading shape: unforced /unload naming the still-LOADING model. It replaces
+    # nothing, so it cannot interrupt a chat and must not 409 (the frontend would drop the error).
+    _route_gate()
     import asyncio
     from types import SimpleNamespace
 
@@ -827,9 +815,8 @@ def test_cancelling_an_in_flight_standard_load_is_not_refused_by_the_chat_gate(m
 
 
 def test_cancelling_an_in_flight_gguf_load_is_not_refused_by_the_chat_gate(monkeypatch):
-    # Same cancelLoading shape against the GGUF fast path: llama-server is up for the
-    # named model but not yet serving it, so killing that child ends a load, not a chat.
-    _route_gate()  # skips when the inference stack is unavailable
+    # Same cancelLoading shape on the GGUF fast path: killing that child ends a load, not a chat.
+    _route_gate()
     import asyncio
     from types import SimpleNamespace
 
@@ -915,9 +902,8 @@ class _NeverDisconnectedRequest:
 
 
 def test_direct_responses_stream_is_visible_to_the_swap_gate(monkeypatch):
-    # /v1/responses streams straight to llama-server, so without its own registration a
-    # non-forced /unload saw zero generations and tore the server down mid-response.
-    _route_gate()  # skips when the inference stack is unavailable
+    # /v1/responses streams straight to llama-server; unregistered, a non-forced /unload tore it down.
+    _route_gate()
     import asyncio
 
     from models.inference import ChatMessage, ResponsesRequest
@@ -947,9 +933,8 @@ def test_direct_responses_stream_is_visible_to_the_swap_gate(monkeypatch):
 
 
 def test_forced_reload_stops_a_direct_responses_stream(monkeypatch):
-    # The registered event must be the one the stream watches, or a forced
-    # reload unloads the server while it keeps decoding.
-    _route_gate()  # skips when the inference stack is unavailable
+    # The registered event must be the one the stream watches, or a forced reload kills a live decode.
+    _route_gate()
     import asyncio
 
     from models.inference import ChatMessage, ResponsesRequest
@@ -981,10 +966,9 @@ def test_forced_reload_stops_a_direct_responses_stream(monkeypatch):
 
 
 def test_forced_reload_stops_a_responses_stream_still_queued_for_a_slot(monkeypatch):
-    # The run registers before it holds a decode slot, so cancel_all() must reach it while it
-    # is still queued in admission. Watching only the client socket lets a cancelled run wait
-    # out the queue and open a generation the swap revoked, deadlocking the post-cancel drain.
-    _route_gate()  # skips when the inference stack is unavailable
+    # The run registers before it holds a decode slot, so cancel_all() must reach it while queued in
+    # admission; watching only the client socket lets it open a generation the swap already revoked.
+    _route_gate()
     import asyncio
 
     from core.inference import llama_admission
@@ -1028,8 +1012,7 @@ def test_forced_reload_stops_a_responses_stream_still_queued_for_a_slot(monkeypa
                 await asyncio.sleep(0.01)
             assert active_generations.count() == 1, "the queued run never registered"
             assert active_generations.cancel_all() == 1
-            # Unbounded queue by default: without the tracked event this never returns
-            # while the slot above is held.
+            # Unbounded queue by default: without the tracked event this never returns while the slot is held.
             await asyncio.wait_for(task, timeout = 5)
             return chunks
 
@@ -1053,8 +1036,7 @@ def _install_completions_stream_mock(monkeypatch, events):
     import routes.inference as inf_mod
 
     def handler(request):
-        # One network chunk per SSE event: the relay polls its cancel flag
-        # between upstream chunks, so a buffered body would never exercise it.
+        # One network chunk per SSE event: the relay polls its cancel flag between upstream chunks.
         async def _chunks():
             for event in events:
                 yield f"data: {json.dumps(event)}\n\n".encode()
@@ -1107,9 +1089,8 @@ class _CompletionsRequest(_NeverDisconnectedRequest):
 
 
 def test_completions_proxy_stream_is_visible_to_the_swap_gate(monkeypatch):
-    # /v1/completions relays straight from llama-server and /unload runs no idle drain:
-    # unregistered, a non-forced /unload counted zero generations and tore it down mid-response.
-    _route_gate()  # skips when the inference stack is unavailable
+    # /v1/completions relays from llama-server with no idle drain; unregistered, /unload tore it down.
+    _route_gate()
     import asyncio
 
     inf_mod = _install_completions_stream_mock(monkeypatch, [{"choices": [{"text": "33"}]}])
@@ -1136,9 +1117,8 @@ def test_completions_proxy_stream_is_visible_to_the_swap_gate(monkeypatch):
 
 
 def test_forced_reload_stops_a_completions_proxy_stream(monkeypatch):
-    # The registered event must be the one the relay watches, or a forced
-    # reload unloads the server while it keeps decoding.
-    _route_gate()  # skips when the inference stack is unavailable
+    # The registered event must be the one the relay watches, or a forced reload kills a live decode.
+    _route_gate()
     import asyncio
 
     inf_mod = _install_completions_stream_mock(
@@ -1166,10 +1146,9 @@ def test_forced_reload_stops_a_completions_proxy_stream(monkeypatch):
 
 
 def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
-    # ``stream`` defaults to false, so the non-streaming branch is the common shape and it
-    # holds llama-server for the whole request: unregistered, a non-forced /unload counts
-    # zero generations and tears the server down, and force_cancel_active has no event.
-    _route_gate()  # skips when the inference stack is unavailable
+    # ``stream`` defaults to false, so the non-streaming branch is the common shape and holds
+    # llama-server throughout: unregistered, /unload counts zero and force_cancel_active has no event.
+    _route_gate()
     import asyncio
     from types import SimpleNamespace
 
@@ -1194,8 +1173,7 @@ def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
         "AsyncClient",
         lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
     )
-    # The pooled client too, so a route that never took a per-request one still reaches
-    # this transport (keeps the pre-fix behaviour observable, not a 502).
+    # The pooled client too, so a route that took no per-request one still reaches this transport.
     monkeypatch.setattr(
         inf_mod, "nonstreaming_client", lambda: real_async_client(transport = transport)
     )
@@ -1244,10 +1222,9 @@ class _EmbeddingsRequest(_NeverDisconnectedRequest):
 
 
 def test_embeddings_proxy_is_visible_to_the_swap_gate(monkeypatch):
-    # /v1/embeddings holds llama-server for its whole HTTP call: unregistered, a non-forced
-    # /unload counts zero generations and kills the server mid-request (only /load waits on
-    # the middleware in-flight count).
-    _route_gate()  # skips when the inference stack is unavailable
+    # /v1/embeddings holds llama-server for its whole HTTP call: unregistered, a non-forced /unload
+    # counts zero and kills the server mid-request (only /load waits on the middleware count).
+    _route_gate()
     import asyncio
     from types import SimpleNamespace
 
@@ -1303,10 +1280,9 @@ def test_embeddings_proxy_is_visible_to_the_swap_gate(monkeypatch):
 
 
 def test_active_generations_redacts_native_model_paths(monkeypatch):
-    # The legacy stream records active_model_name verbatim, an absolute path for a native
-    # local model, and this route is the only place that serialises it: redact like the
-    # error paths so a remote client cannot learn host paths.
-    _route_gate()  # skips when the inference stack is unavailable
+    # The legacy stream records active_model_name verbatim (an absolute path locally) and is the only
+    # place that serialises it: redact like the error paths so a remote client cannot learn host paths.
+    _route_gate()
     import asyncio
     import threading
     from types import SimpleNamespace
@@ -1329,10 +1305,9 @@ def test_active_generations_redacts_native_model_paths(monkeypatch):
 
 
 def test_legacy_generate_stream_is_visible_to_the_swap_gate(monkeypatch):
-    # The legacy /generate/stream decodes on the standard backend for its whole run:
-    # unregistered it passed the advertised 409 gate then blocked on the generation lock,
-    # and a forced swap had no event to signal.
-    _route_gate()  # skips when the inference stack is unavailable
+    # The legacy /generate/stream decodes on the standard backend throughout: unregistered it passed
+    # the advertised 409 gate then blocked on the generation lock, and a forced swap had no event.
+    _route_gate()
     import asyncio
     from types import SimpleNamespace
 
@@ -1393,9 +1368,8 @@ def _anthropic_stream_args(chunks):
 
 
 def test_local_anthropic_plain_stream_is_visible_to_the_swap_gate(monkeypatch):
-    # Only the client-tool pass-through ever registered, so the no-tool
-    # /v1/messages path was invisible to the gate and died mid-response.
-    _route_gate()  # skips when the inference stack is unavailable
+    # Only the client-tool pass-through registered, so the no-tool /v1/messages path died mid-response.
+    _route_gate()
     import asyncio
 
     import routes.inference as inf_mod
@@ -1423,7 +1397,7 @@ def test_local_anthropic_plain_stream_is_visible_to_the_swap_gate(monkeypatch):
 
 def test_forced_reload_stops_a_local_anthropic_plain_stream(monkeypatch):
     # The event registered has to be the one the decode loop watches.
-    _route_gate()  # skips when the inference stack is unavailable
+    _route_gate()
     import asyncio
 
     import routes.inference as inf_mod
@@ -1451,7 +1425,7 @@ def test_forced_reload_stops_a_local_anthropic_plain_stream(monkeypatch):
 
 def test_local_anthropic_tool_stream_is_visible_to_the_swap_gate(monkeypatch):
     # Same gap on the server-tool path (enable_tools / Anthropic server tools).
-    _route_gate()  # skips when the inference stack is unavailable
+    _route_gate()
     import asyncio
 
     import routes.inference as inf_mod
@@ -1554,8 +1528,7 @@ def _run_server_parallel_default(path: str, consts: dict):
 
 
 def test_run_server_default_matches_the_cli_parallel_default():
-    # colab.py calls run_server() without llama_parallel_slots, so the signature
-    # default is what Colab runs with; at 1 the admission queue serialises it.
+    # colab.py omits llama_parallel_slots, so the signature default is what Colab runs with.
     run_path = os.path.join(_backend, "run.py")
     consts = _parallel_constants(run_path)
 
@@ -1597,10 +1570,9 @@ def test_colab_launcher_inherits_the_parallel_default():
 
 
 def test_a_forced_load_that_loses_to_a_sidecar_install_leaves_the_chats_alone(monkeypatch):
-    # The destructive cancel is the point of no return: nothing after it may reject the
-    # load. A sidecar install can reserve the swap window during preflight and the recheck
-    # then 409s -- run after the cancel, it stops every chat for a model that never loads.
-    _route_gate()  # skips when the inference stack is unavailable
+    # The destructive cancel is the point of no return: nothing after it may reject the load. A sidecar
+    # install can reserve the window during preflight, so its recheck must run before, not after.
+    _route_gate()
     import asyncio
     import contextlib
     from types import SimpleNamespace
@@ -1669,10 +1641,9 @@ def test_a_forced_load_that_loses_to_a_sidecar_install_leaves_the_chats_alone(mo
 
 
 def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
-    # A pass-through response whose body never starts must leave both registries clean. A
-    # tracker entered eagerly could never be unregistered: a never-started async generator
-    # runs no body code (PEP 342), so the run would sit there until restart and 409 swaps.
-    _route_gate()  # skips when the inference stack is unavailable
+    # A pass-through response whose body never starts must leave both registries clean: a never-started
+    # async generator runs no body code (PEP 342), so an eagerly entered tracker never unregisters.
+    _route_gate()
     import asyncio
     import inspect
     from types import SimpleNamespace
@@ -1704,14 +1675,12 @@ def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
             cancel_id = "c1",
         )
 
-    # Built and abandoned, as when the request task is cancelled before Starlette
-    # calls the response.
+    # Built and abandoned, as when the request task is cancelled before Starlette calls the response.
     asyncio.run(_build())
     assert active_generations.count() == 0
     assert not inf_mod._CANCEL_REGISTRY
 
-    # The client is gone when the headers go out, so the first send fails and the
-    # body generator is never entered.
+    # The client is gone at header time, so the first send fails and the body generator never runs.
     async def _drive():
         response = await _build()
 
@@ -1728,18 +1697,16 @@ def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
     assert active_generations.count() == 0
     assert not inf_mod._CANCEL_REGISTRY
 
-    # Still tracked once the body runs: the enter stays inside the generator,
-    # under the finally that exits it.
+    # Still tracked once the body runs: the enter stays inside the generator, under the finally.
     src = inspect.getsource(inf_mod._anthropic_passthrough_stream)
     assert src.index("async def _stream()") < src.index("_tracker.__enter__()")
     assert src.index("_tracker.__enter__()") < src.index("_tracker.__exit__(None, None, None)")
 
 
 def test_audio_generation_is_visible_to_the_swap_gate(monkeypatch):
-    # /audio/generate is non-streaming and holds the model for the whole request:
-    # unregistered, a non-forced swap counted zero generations and could tear the model
-    # down under the TTS work, and a forced one had no entry to name.
-    _route_gate()  # skips when the inference stack is unavailable
+    # /audio/generate is non-streaming and holds the model for the whole request: unregistered, a
+    # non-forced swap counted zero and could tear it down mid-TTS, and a forced one had no entry.
+    _route_gate()
     import asyncio
     from types import SimpleNamespace
 
@@ -1831,10 +1798,9 @@ def _standard_chat_stubs(monkeypatch, backend):
 
 
 def test_standard_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
-    # ``stream`` defaults to false, so this is the default shape of a standard (non-GGUF)
-    # chat and it holds the worker for the whole request. Only the streaming branch was
-    # registered, so a non-forced swap passed the gate and truncated the completion.
-    _route_gate()  # skips when the inference stack is unavailable
+    # ``stream`` defaults to false, so this is the default shape of a standard chat and it holds the
+    # worker throughout. Only the streaming branch registered, so a swap truncated the completion.
+    _route_gate()
     import asyncio
 
     import routes.inference as inf_mod
@@ -1887,7 +1853,7 @@ def test_standard_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
 
 def test_standard_non_stream_chat_unregisters_when_it_fails(monkeypatch):
     # A raising backend must not strand an entry: that would 409 every later swap.
-    _route_gate()  # skips when the inference stack is unavailable
+    _route_gate()
     import asyncio
 
     from fastapi import HTTPException
@@ -1918,10 +1884,9 @@ def test_standard_non_stream_chat_unregisters_when_it_fails(monkeypatch):
 
 
 def test_audio_input_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
-    # An audio-input model answering with the default stream=false holds the standard worker
-    # for the whole request. Only the streaming sibling was registered, so a non-forced swap
-    # bypassed the 409 guard and could unload the worker mid-transcription.
-    _route_gate()  # skips when the inference stack is unavailable
+    # An audio-input model with the default stream=false holds the standard worker throughout. Only
+    # the streaming sibling registered, so a non-forced swap could unload it mid-transcription.
+    _route_gate()
     import asyncio
 
     import routes.inference as inf_mod
@@ -2008,10 +1973,9 @@ class _MessagesRequest(_NeverDisconnectedRequest):
 
 @pytest.mark.parametrize("with_server_tools", [False, True])
 def test_local_anthropic_non_stream_is_visible_to_the_swap_gate(monkeypatch, with_server_tools):
-    # ``stream`` defaults to false on /v1/messages, so the non-streaming plain and
-    # server-tool branches are the common shape and both decode on llama-server throughout.
-    # Only their streaming siblings were registered, so a non-forced /unload tore it down.
-    _route_gate()  # skips when the inference stack is unavailable
+    # ``stream`` defaults to false on /v1/messages, so the non-streaming plain and server-tool branches
+    # are the common shape and decode throughout. Only their streaming siblings registered.
+    _route_gate()
     import asyncio
 
     from models.inference import AnthropicMessagesRequest
@@ -2061,10 +2025,9 @@ def test_local_anthropic_non_stream_is_visible_to_the_swap_gate(monkeypatch, wit
 
 
 def test_anthropic_passthrough_non_stream_is_visible_to_the_swap_gate(monkeypatch):
-    # The client-tool pass-through holds llama-server for one non-streaming POST. Its
-    # streaming sibling registers inside the body generator; this branch had no entry, so a
-    # non-forced /unload counted zero generations and tore the server down.
-    _route_gate()  # skips when the inference stack is unavailable
+    # The client-tool pass-through holds llama-server for one non-streaming POST. Its streaming sibling
+    # registers inside the body generator; this branch had none, so /unload tore the server down.
+    _route_gate()
     import asyncio
 
     import httpx
@@ -2089,16 +2052,14 @@ def test_anthropic_passthrough_non_stream_is_visible_to_the_swap_gate(monkeypatc
     inf_mod = _anthropic_route_stubs(monkeypatch)
     transport = httpx.MockTransport(handler)
     real_async_client = httpx.AsyncClient
-    # The pass-through takes a per-request client, not the pooled one, so a Stop
-    # or a forced swap can close it mid-POST.
+    # The pass-through takes a per-request client, so a Stop or forced swap can close it mid-POST.
     monkeypatch.setattr(
         inf_mod,
         "_cancelable_nonstreaming_client",
         lambda: real_async_client(transport = transport),
     )
 
-    # enable_tools False keeps the server-tool loop out, so the declared client tool
-    # takes the pass-through branch.
+    # enable_tools False keeps the server-tool loop out, so the client tool takes the pass-through.
     payload = AnthropicMessagesRequest(
         max_tokens = 16,
         messages = [{"role": "user", "content": "hi"}],
@@ -2119,10 +2080,9 @@ def test_anthropic_passthrough_non_stream_is_visible_to_the_swap_gate(monkeypatc
 
 
 def test_anthropic_passthrough_non_stream_stops_when_the_swap_cancels_it(monkeypatch):
-    # Registering is only half the job: a pooled client cannot be closed, so the gate could
-    # cancel the run and the POST carried on regardless. The watcher closes a per-request
-    # client instead, and a set event turns the resulting transport error into a cancel.
-    _route_gate()  # skips when the inference stack is unavailable
+    # Registering is half the job: a pooled client cannot be closed, so the run was cancelled while the
+    # POST carried on. The watcher closes a per-request client; the set event makes that error a cancel.
+    _route_gate()
     import asyncio
 
     import httpx
@@ -2132,8 +2092,7 @@ def test_anthropic_passthrough_non_stream_stops_when_the_swap_cancels_it(monkeyp
     seen = {}
 
     def handler(request):
-        # Stand in for a forced swap landing mid-decode: cancel, then fail the
-        # transport exactly as closing the client would.
+        # Stand in for a forced swap mid-decode: cancel, then fail the transport as closing would.
         seen["cancelled"] = active_generations.cancel_all()
         raise httpx.ConnectError("client closed")
 
@@ -2167,7 +2126,7 @@ def test_anthropic_passthrough_non_stream_stops_when_the_swap_cancels_it(monkeyp
 
 def test_audio_generation_unregisters_when_it_fails(monkeypatch):
     # A raising backend must not strand an entry: that would 409 every later load.
-    _route_gate()  # skips when the inference stack is unavailable
+    _route_gate()
     import asyncio
     from types import SimpleNamespace
 
@@ -2264,11 +2223,9 @@ def _stub_install_route(monkeypatch, *, in_flight_events):
 
 
 def test_confirmed_install_stops_the_chats_it_was_given_permission_to_stop(monkeypatch):
-    # The install sits between the swap's "stop N chats" prompt and the /load carrying
-    # force_cancel_active, and refuses while those chats run. Unless the confirmation
-    # reaches it the user's answer is unactionable (Retry hits the same 409, and nothing
-    # else stops the chats), so a confirmed install cancels them itself.
-    _route_gate()  # skips when the inference stack is unavailable
+    # The install sits between the swap's "stop N chats" prompt and the /load carrying the
+    # confirmation, and refuses while those chats run, so a confirmed install cancels them itself.
+    _route_gate()
     import asyncio
 
     from models.inference import InstallLatestTransformersRequest
@@ -2290,9 +2247,8 @@ def test_confirmed_install_stops_the_chats_it_was_given_permission_to_stop(monke
 
 
 def test_unconfirmed_install_still_refuses_while_chats_stream(monkeypatch):
-    # The guard is unchanged for every caller that never confirmed (second tab,
-    # desktop app, curl): no flag, no cancel, and the chats keep streaming.
-    _route_gate()  # skips when the inference stack is unavailable
+    # Unchanged for every caller that never confirmed (second tab, desktop, curl): no flag, no cancel.
+    _route_gate()
     import asyncio
 
     from fastapi import HTTPException
@@ -2318,10 +2274,9 @@ def test_unconfirmed_install_still_refuses_while_chats_stream(monkeypatch):
 
 
 def test_a_confirmed_install_that_cannot_drain_refuses_instead_of_swapping(monkeypatch):
-    # A cancelled request that never observes its event (a non-streaming generation
-    # mid-decode) keeps the in-flight count up, so the drain is bounded and cannot wedge the
-    # process holding the gate and reservation; the recheck behind it still refuses.
-    _route_gate()  # skips when the inference stack is unavailable
+    # A cancelled request that never observes its event keeps the in-flight count up, so the drain is
+    # bounded and cannot wedge the process holding the gate; the recheck behind it still refuses.
+    _route_gate()
     import asyncio
 
     from fastapi import HTTPException
@@ -2342,8 +2297,7 @@ def test_a_confirmed_install_that_cannot_drain_refuses_instead_of_swapping(monke
     monkeypatch.setattr(keepwarm, "other_inference_request_count", _never_unwinds)
 
     async def _install():
-        # Deadline in the test too: without it a regression that drops the drain's bound
-        # hangs the suite instead of failing, which reads as slow CI rather than this bug.
+        # Deadline here too: a regression that drops the drain's bound must fail, not hang the suite.
         return await asyncio.wait_for(
             inf_mod.install_latest_transformers_route(
                 InstallLatestTransformersRequest(version = "5.0.0", force_cancel_active = True),
@@ -2361,10 +2315,9 @@ def test_a_confirmed_install_that_cannot_drain_refuses_instead_of_swapping(monke
 
 
 def test_confirmed_install_does_not_spend_its_cancel_on_an_install_that_will_refuse(monkeypatch):
-    # An unrelated middleware-counted request the cancel cannot stop (a long count_tokens)
-    # must be waited out BEFORE the cancel: the recheck refuses while it is there, so
-    # cancelling first stopped every chat for an install that then failed anyway.
-    _route_gate()  # skips when the inference stack is unavailable
+    # An unrelated counted request the cancel cannot stop must be waited out BEFORE the cancel: the
+    # recheck refuses while it is there, so cancelling first stopped chats for a doomed install.
+    _route_gate()
     import asyncio
 
     from fastapi import HTTPException
@@ -2377,8 +2330,7 @@ def test_confirmed_install_does_not_spend_its_cancel_on_an_install_that_will_ref
     import core.inference.llama_keepwarm as keepwarm
 
     def _never_drains(current_request_counted = True, *, include_pending = True):
-        # A counted AND registered chat plus a counted-only request that never finishes:
-        # discounting the registered one still leaves the stranger, so the drain must not clear.
+        # Discounting the registered chat still leaves the counted-only stranger: the drain must not clear.
         return 2
 
     monkeypatch.setattr(keepwarm, "other_inference_request_count", _never_drains)
@@ -2413,7 +2365,7 @@ def _drain_with_counts(monkeypatch, counts, **kwargs):
     ``counts`` is consumed one entry per poll; the last value repeats, so a
     trailing non-zero stands for a request that never unwinds.
     """
-    _route_gate()  # skips when the inference stack is unavailable
+    _route_gate()
     import asyncio
 
     import core.inference.llama_keepwarm as keepwarm
@@ -2430,8 +2382,7 @@ def _drain_with_counts(monkeypatch, counts, **kwargs):
     monkeypatch.setattr(inf_mod, "_switch_waiter_count", lambda: 0)
 
     async def _run():
-        # Hard test-side deadline: a drain that regresses to waiting forever must
-        # fail this test red, not hang the suite until CI's own timeout kills it.
+        # Hard test-side deadline: a drain that regresses to waiting forever must fail red, not hang.
         await asyncio.wait_for(
             inf_mod._wait_for_model_switch_idle(current_request_counted = False, **kwargs),
             timeout = 5,
@@ -2442,9 +2393,8 @@ def _drain_with_counts(monkeypatch, counts, **kwargs):
 
 
 def test_forced_swap_does_not_wait_out_the_generations_it_is_about_to_cancel(monkeypatch):
-    # cancel_pending discounts the registered generations, since the caller cancels them
-    # right after this drain. Drop the discount and the drain waits on a count only that
-    # pending cancel can lower, i.e. it never returns; nothing else covers cancel_pending.
+    # cancel_pending discounts the registered generations, since the caller cancels them right after.
+    # Drop the discount and the drain waits on a count only that pending cancel can lower: forever.
     ev = threading.Event()
     with active_generations.ActiveGeneration(ev, thread_id = "t1"):
         polls = _drain_with_counts(monkeypatch, [1], cancel_pending = True)
@@ -2452,8 +2402,7 @@ def test_forced_swap_does_not_wait_out_the_generations_it_is_about_to_cancel(mon
 
 
 def test_the_same_drain_without_the_discount_would_keep_waiting(monkeypatch):
-    # The other half of the claim: the count above really does block, so the previous test
-    # passes because of the discount and not because the scripted count was idle.
+    # The other half: that count really does block, so the previous test passes by the discount.
     ev = threading.Event()
     with active_generations.ActiveGeneration(ev, thread_id = "t1"):
         polls = _drain_with_counts(monkeypatch, [1], timeout_s = 0.05)
@@ -2461,16 +2410,14 @@ def test_the_same_drain_without_the_discount_would_keep_waiting(monkeypatch):
 
 
 def test_post_cancel_drain_gives_up_on_a_request_that_never_unwinds(monkeypatch):
-    # TTS on the subprocess backend observes no cancel event, so a forced swap can cancel it
-    # and still see it counted forever. The post-cancel drains hold the lifecycle gate, so
-    # they must expire and proceed rather than pin everything behind one audio generation.
+    # TTS on the subprocess backend observes no cancel event, so a forced swap can cancel it and still
+    # see it counted forever. The post-cancel drains hold the gate, so they must expire and proceed.
     polls = _drain_with_counts(monkeypatch, [1], timeout_s = 0.05)
     assert polls > 1
 
 
 def test_drain_returns_as_soon_as_the_cancelled_requests_unwind(monkeypatch):
-    # The bound is a backstop, not the normal path: once the count drops the
-    # drain returns immediately instead of sitting out the rest of the timeout.
+    # The bound is a backstop: once the count drops the drain returns without sitting out the timeout.
     polls = _drain_with_counts(monkeypatch, [2, 1, 0], timeout_s = 30)
     assert polls == 3
 
@@ -2480,7 +2427,7 @@ def test_drain_returns_as_soon_as_the_cancelled_requests_unwind(monkeypatch):
 
 def _orchestrator_for_ownership():
     """A real InferenceOrchestrator with just enough stubbed to drive the lock."""
-    _route_gate()  # skips when the inference stack is unavailable
+    _route_gate()
     orch_mod = pytest.importorskip(
         "core.inference.orchestrator", reason = "inference stack not installed"
     )
@@ -2495,9 +2442,8 @@ def _orchestrator_for_ownership():
 
 
 def test_a_queued_chat_cannot_reset_the_chat_that_is_generating():
-    # Safetensors generation is serialized on _gen_lock and the worker has ONE cancel event.
-    # Stopping still-queued chat B called reset_generation_state(), which set that shared
-    # event and killed the running chat A. Scoping the reset to the current holder fixes it.
+    # Safetensors generation serialises on _gen_lock and the worker has ONE cancel event: stopping
+    # queued chat B reset that shared event and killed running chat A. Scope the reset to the holder.
     orch = _orchestrator_for_ownership()
     a_event = threading.Event()
     b_event = threading.Event()
@@ -2512,8 +2458,7 @@ def test_a_queued_chat_cannot_reset_the_chat_that_is_generating():
 
 
 def test_a_global_reset_still_cancels_whatever_is_running():
-    # Unload and model switch pass nothing: they mean "stop everything", and
-    # scoping them would leave a generation alive across a teardown.
+    # Unload and switch pass nothing: they mean stop everything, else a generation survives teardown.
     orch = _orchestrator_for_ownership()
     _running = threading.Event()
     orch._claim_worker(_running)
@@ -2523,18 +2468,16 @@ def test_a_global_reset_still_cancels_whatever_is_running():
 
 
 def test_a_reset_with_no_generation_running_is_not_dropped():
-    # Nothing holds the lock, so there is no other chat to protect: an error
-    # path that resets before any generation started must still reset.
+    # Nothing holds the lock, so no chat to protect: a reset before any generation must still run.
     orch = _orchestrator_for_ownership()
     orch.reset_generation_state(threading.Event())
     assert orch._cancel_event.is_set()
 
 
 def test_unload_waits_for_a_request_that_is_admitted_but_not_yet_registered(monkeypatch):
-    # The window between passing the keep-warm middleware and entering _TrackedCancel:
-    # counted in-flight, absent from the registry. Cancelling on the registry alone saw
-    # nothing to stop and tore the backend down under an already-admitted request.
-    _route_gate()  # skips when the inference stack is unavailable
+    # The window between the keep-warm middleware and _TrackedCancel: counted in-flight, absent from
+    # the registry. Cancelling on the registry alone tore the backend down under an admitted request.
+    _route_gate()
     import core.inference.llama_keepwarm as keepwarm
     import routes.inference as inf_mod
 
@@ -2572,9 +2515,8 @@ def test_unload_waits_for_a_request_that_is_admitted_but_not_yet_registered(monk
 
 
 def test_a_dispatched_chat_cannot_reset_its_concurrently_dispatched_sibling():
-    # Compare-mode / dispatched runs bypass _gen_lock and run concurrently, so
-    # "the one holding the lock" is not the whole story: with several claimed at
-    # once, a Stop on one must still leave the others alone.
+    # Compare-mode / dispatched runs bypass _gen_lock and run concurrently, so with several claimed
+    # at once a Stop on one must still leave the others alone.
     orch = _orchestrator_for_ownership()
     a_event = threading.Event()
     b_event = threading.Event()
@@ -2611,9 +2553,8 @@ def test_releasing_one_generation_leaves_the_other_claimed():
 
 
 def test_a_dispatched_request_queued_behind_another_is_not_an_owner():
-    # The subprocess runs generations one at a time, so admission is not
-    # execution: B can be claimed while A is the one the worker is answering.
-    # Counting B as an owner let its Stop signal the shared event and end A.
+    # The subprocess runs generations one at a time, so admission is not execution: B can be claimed
+    # while the worker answers A. Counting B as an owner let its Stop signal the shared event and end A.
     orch = _orchestrator_for_ownership()
     a_event = threading.Event()
     b_event = threading.Event()
@@ -2631,9 +2572,8 @@ def test_a_dispatched_request_queued_behind_another_is_not_an_owner():
 
 
 def test_a_queued_request_cannot_reset_during_the_other_ones_prefill():
-    # Between _send_cmd and the first response A is claimed but not executing.
-    # Treating "nothing executing" as "nobody to protect" let a queued request's
-    # Stop through in exactly that window and killed A mid-prefill.
+    # Between _send_cmd and the first response A is claimed but not executing; treating that as
+    # "nobody to protect" let a queued request's Stop kill A mid-prefill.
     orch = _orchestrator_for_ownership()
     a_event = threading.Event()
     b_event = threading.Event()
@@ -2650,8 +2590,7 @@ def test_a_queued_request_cannot_reset_during_the_other_ones_prefill():
 
 
 def test_the_oldest_claim_is_the_one_the_worker_is_prefilling():
-    # The command queue is FIFO, so with nothing answering yet the oldest claim
-    # is the presumptive executor. Once A finishes, B becomes it.
+    # The command queue is FIFO, so with nothing answering the oldest claim is the executor.
     orch = _orchestrator_for_ownership()
     a_event = threading.Event()
     b_event = threading.Event()
@@ -2664,10 +2603,9 @@ def test_the_oldest_claim_is_the_one_the_worker_is_prefilling():
 
 
 def test_claim_order_matches_send_order_under_concurrent_dispatch():
-    # _owns_worker reads claim order to decide who is prefilling, so a claim that
-    # is not atomic with the enqueue can put A first in the list while B is first
-    # in the subprocess queue, and stopping A then kills B.
-    _route_gate()  # skips when the inference stack is unavailable
+    # _owns_worker reads claim order to decide who is prefilling, so a claim not atomic with the
+    # enqueue can put A first in the list while B is first in the subprocess queue: stopping A kills B.
+    _route_gate()
     orch_mod = pytest.importorskip(
         "core.inference.orchestrator", reason = "inference stack not installed"
     )
@@ -2684,8 +2622,7 @@ def test_claim_order_matches_send_order_under_concurrent_dispatch():
         barrier.wait(timeout = 10)
         with orch._send_order_lock:
             orch._claim_worker(ev)
-            # Stand in for _send_cmd: the enqueue must not be separable from the
-            # claim, or the two orders drift.
+            # Stand in for _send_cmd: the enqueue must not be separable from the claim.
             sent.append(ev)
 
     events = [threading.Event() for _ in range(4)]

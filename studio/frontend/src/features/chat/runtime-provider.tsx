@@ -703,9 +703,9 @@ function createStudioDbAdapter(
 
     async initialize(threadId: string) {
       await ensureThreadRecord({ threadId, modelType, pairId, projectId });
-      // A run already streaming on this thread filed its handles under
-      // "__default" because the id did not exist yet. Re-key them now, or the
-      // sidebar row and Stop look up an id nothing is registered against.
+      // A run already streaming on this thread filed its handles under "__default" because
+      // the id did not exist yet. Re-key them now, or the sidebar row and Stop look up an
+      // id nothing is registered against.
       useChatRuntimeStore.getState().adoptDefaultThreadRun(threadId);
       return { remoteId: threadId, externalId: undefined };
     },
@@ -898,9 +898,9 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
     ...adapter,
     async *run(options) {
       const adoptedThreadId = await waitForRunStartHistoryAppend(options.messages);
-      // The thread has an id by the time that resolves, but assistant-ui bound
-      // unstable_threadId before the await. Hand the run its real id so a first turn
-      // never files its handles under the unresolved key that concurrent runs share.
+      // The thread has an id by the time that resolves, but assistant-ui bound unstable_threadId
+      // before the await. Hand the run its real id so a first turn never files its handles
+      // under the unresolved key that concurrent runs share.
       const result = adapter.run(
         !options.unstable_threadId && adoptedThreadId
           ? { ...options, unstable_threadId: adoptedThreadId }
@@ -1170,10 +1170,9 @@ function useStudioRuntimeAdapters(
           : typeof store.ggufContextLength === "number" &&
             store.ggufContextLength > 0;
         if (savedUsage && withinLocalLimit && modelMatches) {
-          // Key by the thread this loader read, not whichever is active when the await
-          // resolves: a switch inside it would file this thread's usage under the incoming
-          // one and keep showing the wrong value on every later switch back. Same rule the
-          // adapter's end-of-run write follows.
+          // Key by the thread this loader read, not whichever is active when the await resolves:
+          // a switch inside it would file this thread's usage under the incoming one. Same rule
+          // the adapter's end-of-run write follows.
           store.setThreadContextUsage(remoteId, savedUsage);
           if (store.activeThreadId === remoteId) {
             store.setContextUsage(savedUsage);

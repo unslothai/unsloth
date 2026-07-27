@@ -522,8 +522,8 @@ export function AppSidebar() {
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   // The whole map, so each row can show its own spinner.
   const runningThreadIds = useChatRuntimeStore((s) => s.runningByThreadId);
-  // Rows, not raw thread ids: a compare conversation runs two pane threads but is one
-  // chat in the sidebar, so counting the map said "2 Chats" for a single compare row.
+  // Rows, not raw thread ids: a compare conversation runs two pane threads but is one chat
+  // in the sidebar, so counting the map said "2 Chats" for a single compare row.
   const runningChatCount = useMemo(() => {
     const running = new Set(
       Object.entries(runningThreadIds)
@@ -544,9 +544,9 @@ export function AppSidebar() {
     return rows + running.size;
   }, [runningThreadIds, allChatItems]);
   const anyChatRunning = runningChatCount > 0;
-  // Where "Return to Chat" lands: the newest running chat, not the empty draft New Chat
-  // left active (map insertion order is start order). A compare row runs pane threads
-  // that /chat cannot address, so resolve those back to the pair id the route expects.
+  // Where "Return to Chat" lands: the newest running chat, not the empty draft New Chat left
+  // active (map insertion order is start order). A compare row runs pane threads that /chat
+  // cannot address, so resolve those back to the pair id the route expects.
   const runningTarget = useMemo(() => {
     const ids = Object.entries(runningThreadIds)
       .filter(([, on]) => on)

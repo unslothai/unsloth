@@ -2764,20 +2764,17 @@ const ArtifactsToggle: FC = () => {
 };
 
 const ToolStatusDisplay: FC = () => {
-  // This conversation's tool call only: a global status would put one chat's
-  // "Running Python..." above every composer.
-  // remoteId, not id: the adapter keys this map by unstable_threadId, which is
-  // remoteId, so reading id lost the status of every restored chat. Same rule as
-  // the tool-output scope.
+  // This conversation's tool call only: a global status would put one chat's "Running
+  // Python..." above every composer. remoteId, not id: the adapter keys this map by
+  // unstable_threadId, so reading id lost the status of every restored chat.
   const threadListItemId = useAuiState(
     ({ threadListItem }) => threadListItem.remoteId,
   );
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
   const entry = useChatRuntimeStore((s) => {
-    // A first turn starts before its id is persisted, so the adapter files it
-    // under "__default"; only this thread's own run may claim it. Two first turns
-    // share that key with nothing to tell them apart, so claim it only when it
-    // holds one run: showing a sibling's status would be worse than showing none.
+    // A first turn starts before its id is persisted, so the adapter files it under
+    // "__default"; only this thread's own run may claim it. Two first turns share that key
+    // with nothing to tell them apart, so claim it only when it holds one run.
     const unresolved = s.toolStatusByThreadId.__default;
     const own =
       s.toolStatusByThreadId[threadListItemId ?? ""] ??
@@ -2826,8 +2823,7 @@ const ToolStatusDisplay: FC = () => {
   if (!(toolStatus && startedAt && visible)) {
     return null;
   }
-  // From the store's start time, so returning to the conversation resumes rather than
-  // restarting at 0.
+  // From the store's start time, so returning to the conversation resumes rather than restarting.
   const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000));
   const isRunning = toolStatus.startsWith("Running");
   const StatusIcon = isRunning ? TerminalIcon : GlobeIcon;
@@ -3798,12 +3794,12 @@ const DiffusionCanvas: FC = () => {
   const isRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
-  // Only this conversation's own frames render here; a first turn has no id yet, so it
-  // reads "__default", which is where its run files them until the thread persists.
+  // Only this conversation's own frames render here; a first turn has no id yet, so it reads
+  // "__default", which is where its run files them until the thread persists.
   const threadKey =
     useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? "__default";
-  // A canvas is set only by diffusion_frame events (diffusion models only), so its
-  // presence is a sufficient gate; loadedIsDiffusion can lag the first frame on a fresh load.
+  // A canvas is set only by diffusion_frame events, so its presence is a sufficient gate;
+  // loadedIsDiffusion can lag the first frame on a fresh load.
   const canvas = useChatRuntimeStore(
     (s) => s.activeDiffusionCanvasByThreadId[threadKey],
   );

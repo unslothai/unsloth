@@ -2216,11 +2216,10 @@ export function createOpenAIStreamAdapter(
             : undefined;
 
         const threadKey = resolvedThreadId;
-        // The run is durable on the server and survives navigating away, but Stop,
-        // archive and delete reach a background thread only through this map. Without a
-        // handle here the supervisor kept planning and calling tools against a
-        // conversation the user had already removed. Registered before the run exists,
-        // since the thread can be stopped while createResearchRun is still in flight.
+        // The run is durable on the server, but Stop, archive and delete reach a background
+        // thread only through this map: without a handle the supervisor kept planning against
+        // a deleted conversation. Registered before the run exists, since the thread can be
+        // stopped while createResearchRun is still in flight.
         let researchRunId: string | null = null;
         const researchServerCancel = () => {
           if (researchRunId) {
@@ -2337,9 +2336,9 @@ export function createOpenAIStreamAdapter(
         ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
         : sandboxSessionId || "_default";
       const toolConfirmationIdsByBackendId = new Map<string, string>();
-      // Local tool ids ("call_0") repeat across turns, panes and conversations, so scope
-      // by pane AND thread. unstable_threadId alone, with no activeThreadId fallback: the
-      // reader has only threadListItem.remoteId, which is exactly this value.
+      // Local tool ids ("call_0") repeat across turns, panes and conversations, so scope by pane
+      // AND thread. unstable_threadId alone, no activeThreadId fallback: the reader has only
+      // threadListItem.remoteId, which is exactly this value.
       const toolOutputPaneScope = toolThreadScope(
         toolPaneScope(options.modelType, options.pairId),
         unstable_threadId,
@@ -2348,9 +2347,8 @@ export function createOpenAIStreamAdapter(
         toolOutputKey(toolOutputPaneScope, id);
       const runToolLiveOutputKeys = new Set<string>();
       const resolvedThreadKey = resolvedThreadId ?? null;
-      // Which conversation was on screen when this run started. A first turn has
-      // no id yet, so this is the only way to tell later whether the user has
-      // since switched away from it.
+      // Which conversation was on screen when this run started. A first turn has no id yet, so
+      // this is the only way to tell later whether the user has switched away from it.
       const activeThreadIdAtRunStart =
         useChatRuntimeStore.getState().activeThreadId ?? null;
       const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
@@ -2758,8 +2756,8 @@ export function createOpenAIStreamAdapter(
           // waitForRunEnd resolves instead of hanging: this gate fires
           // before the streaming path's setThreadRunning(true).
           const gatedThreadKey = resolvedThreadId || "__default";
-          // Own token: siblings share "__default", so an ownerless clear would drop
-          // their entries while they are still generating.
+          // Own token: siblings share "__default", so an ownerless clear would drop their
+          // entries while they are still generating.
           const gateOwner = () => {};
           runtime.setThreadRunning(gatedThreadKey, true, { owner: gateOwner });
           runtime.setThreadRunning(gatedThreadKey, false, { owner: gateOwner });
@@ -2781,9 +2779,9 @@ export function createOpenAIStreamAdapter(
       const useAdapter = await resolveUseAdapter(resolvedThreadId, options);
 
       const threadKey = resolvedThreadId || "__default";
-      // A first turn files its handles under "__default"; autosave then assigns a real id
-      // and adoptDefaultThreadRun re-keys them mid-run. Resolve per use so later writes
-      // and the final clear follow the run instead of stranding entries behind.
+      // A first turn files its handles under "__default"; autosave then assigns a real id and
+      // adoptDefaultThreadRun re-keys them mid-run. Resolve per use so later writes and the
+      // final clear follow the run instead of stranding entries behind.
       const liveThreadKey = (owner: () => void) =>
         threadKey === "__default"
           ? useChatRuntimeStore.getState().runKeyForOwner(threadKey, owner)
@@ -2795,14 +2793,14 @@ export function createOpenAIStreamAdapter(
           ? crypto.randomUUID()
           : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-      // Per-run abort, chained to assistant-ui's signal. cancelByThreadId only holds the
-      // visible thread's cancelRun(), so this controller is the only way to end a
-      // backgrounded chat's request; the cancel POST below reaches llama-server only.
+      // Per-run abort, chained to assistant-ui's signal. cancelByThreadId only holds the visible
+      // thread's cancelRun(), so this controller is the only way to end a backgrounded chat's
+      // request; the cancel POST below reaches llama-server only.
       const runAbort = new AbortController();
       const runSignal = runAbort.signal;
       const forwardAbort = () => runAbort.abort(abortSignal.reason);
-      // Declared here, not at its registration below: it doubles as this run's identity
-      // token on the per-thread maps (see registerThreadServerCancel).
+      // Declared here, not at its registration below: it doubles as this run's identity token
+      // on the per-thread maps (see registerThreadServerCancel).
       const serverCancel = () => runAbort.abort();
       if (abortSignal.aborted) {
         forwardAbort();
@@ -2898,8 +2896,8 @@ export function createOpenAIStreamAdapter(
         if (runSignal.aborted) return;
         runtime.setGeneratingStatus("waiting");
       }, warmupDelayMs);
-      // Flagged local/external so the model-swap gate only counts the chats a reload ends;
-      // the backend leaves external-provider runs out of active_generations for the same reason.
+      // Flagged local/external so the model-swap gate only counts the chats a reload ends; the
+      // backend leaves external-provider runs out of active_generations for the same reason.
       runtime.setThreadRunning(threadKey, true, {
         local: !isExternalRequest,
         owner: serverCancel,
@@ -3072,9 +3070,8 @@ export function createOpenAIStreamAdapter(
       // Colab-style proxies can swallow fetch aborts, so also POST
       // /inference/cancel explicitly on abort.
       const onAbortCancel = () => {
-        // assistant-ui aborts with detach=true when a runtime unmounts and detach=false for
-        // an explicit Stop. Only a real Stop cancels the backend run; runSignal forwards the
-        // reason so a detach reads as one.
+        // assistant-ui aborts with detach=true when a runtime unmounts and detach=false for an
+        // explicit Stop. Only a real Stop cancels the backend run; runSignal forwards the reason.
         if ((runSignal.reason as { detach?: boolean } | undefined)?.detach) {
           return;
         }
@@ -3624,8 +3621,8 @@ export function createOpenAIStreamAdapter(
                 }
               )._diffusionFrame;
               if (diffusionFrame !== undefined) {
-                // Keyed by thread so a background run's frames stay out of the
-                // visible chat instead of overwriting the frame it is painting.
+                // Keyed by thread so a background run's frames stay out of the visible chat
+                // instead of overwriting the frame it is painting.
                 runtime.setActiveDiffusionCanvas(liveThreadKey(serverCancel), {
                   block: diffusionFrame.block ?? 0,
                   step: diffusionFrame.step ?? 0,
@@ -4355,16 +4352,12 @@ export function createOpenAIStreamAdapter(
         // Anthropic-only (billed at the write premium).
         const cacheWriteTokens = meta?.usage?.cache_creation_input_tokens ?? 0;
 
-        // Gate on the captured checkpoint so a late completion from provider A cannot
-        // populate the bar after a mid-stream switch to B, and on the captured thread so a
-        // background run finishing after New Chat cannot repaint another chat's usage.
-        // An unresolved run has no id to compare, so compare what was on screen when it
-        // started instead: treating it as always visible wrote its counts into whatever
-        // conversation the user had moved to.
-        // A first turn has no id at run start but is adopted onto one mid-run, and
-        // autosave moves activeThreadId with it. Read the adopted key, or the run stays
-        // "unresolved" for life: its usage was never filed and the visible-write gate
-        // compared against null, leaving the context bar blank after the first reply.
+        // Gate on the captured checkpoint so a late completion from provider A cannot populate
+        // the bar after a mid-stream switch to B, and on the captured thread so a background
+        // run finishing after New Chat cannot repaint another chat's usage. An unresolved run
+        // has no id to compare, so compare what was on screen when it started. A first turn is
+        // adopted onto an id mid-run and autosave moves activeThreadId with it, so read the
+        // adopted key, or the run stays "unresolved" for life and the bar stays blank.
         const usageKey = liveThreadKey(serverCancel);
         const usageThreadKey = usageKey === "__default" ? null : usageKey;
         const usageThreadIsVisible =
@@ -4384,8 +4377,8 @@ export function createOpenAIStreamAdapter(
             cachedTokens,
             cacheWriteTokens,
           };
-          // File it under this run's own thread even when the gate below blocks the
-          // visible write, so switching back re-applies it.
+          // File it under this run's own thread even when the gate below blocks the visible
+          // write, so switching back re-applies it.
           if (usageThreadKey !== null) {
             useChatRuntimeStore
               .getState()
@@ -4493,8 +4486,8 @@ export function createOpenAIStreamAdapter(
           confirmStore.clearToolConfirmation(part.toolCallId);
         }
         runtime.setGeneratingStatus(null);
-        // Scoped by thread AND by run: a global clear wiped every other running chat's
-        // badge, and an unowned one wiped a concurrent run's badge behind the same key.
+        // Scoped by thread AND by run: a global clear wiped every other running chat's badge,
+        // and an unowned one wiped a concurrent run's badge behind the same key.
         runtime.setToolStatus(cleanupKey, null, serverCancel);
         // Clear only this run's live keys (a concurrent pane owns its own). A
         // key still here streamed stdout but never reached tool_end (SSE drop or
@@ -4509,8 +4502,8 @@ export function createOpenAIStreamAdapter(
           store.clearToolLiveOutput(liveKey);
         }
         runToolLiveOutputKeys.clear();
-        // Drop the transient denoising canvas so the finished bubble shows only the
-        // committed answer. Scoped: a global clear wiped another denoising chat's frame.
+        // Drop the transient denoising canvas so the finished bubble shows only the committed
+        // answer. Scoped: a global clear wiped another denoising chat's frame.
         runtime.clearActiveDiffusionCanvasForThread(cleanupKey);
         clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
@@ -4522,8 +4515,8 @@ export function createOpenAIStreamAdapter(
             settleFirstTokenErr(new Error("No tokens received"));
           }
         }
-        // serverCancel narrows both clears: runs with no resolved thread id share the
-        // "__default" key, so a blind clear could drop a sibling's entry.
+        // serverCancel narrows both clears: runs with no resolved thread id share the "__default"
+        // key, so a blind clear could drop a sibling's entry.
         runtime.setThreadRunning(cleanupKey, false, { owner: serverCancel });
         runtime.clearThreadServerCancel(cleanupKey, serverCancel);
       }

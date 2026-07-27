@@ -4598,8 +4598,7 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            # Per-request client so a forced swap can close it mid-call; the pooled one
-            # is shared and must not be torn down.
+            # Per-request client so a forced swap can close it mid-call; the pooled one is shared.
             monkeypatch.setattr(
                 inf_mod,
                 "_cancelable_nonstreaming_client",
@@ -4895,8 +4894,7 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            # Per-request client so a forced swap can close it mid-call; the pooled one
-            # is shared and must not be torn down.
+            # Per-request client so a forced swap can close it mid-call; the pooled one is shared.
             monkeypatch.setattr(
                 inf_mod,
                 "_cancelable_nonstreaming_client",

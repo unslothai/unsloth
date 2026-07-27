@@ -32,13 +32,12 @@ export function toolThreadScope(paneScope: string, threadId?: string): string {
 export const ToolPaneScopeContext = createContext<string>(toolPaneScope());
 
 /**
- * Store-key scope for the conversation this component renders in, taken from the
- * surrounding runtime so reader and writer agree without a prop.
+ * Store-key scope for the conversation this component renders in, taken from the surrounding
+ * runtime so reader and writer agree without a prop.
  *
- * `remoteId`, not `id`: the adapter gets `unstable_threadId`, which assistant-ui sources
- * from `remoteId`, and an uninitialized thread has `id` but no `remoteId`. Reading `id`
- * split the keys apart for the first turn of every New Chat, so live tool output never
- * reached the card. Uninitialized, both sides fall back to the pane-wide scope.
+ * `remoteId`, not `id`: the adapter gets `unstable_threadId`, which assistant-ui sources from
+ * `remoteId`, and an uninitialized thread has `id` but no `remoteId`. Reading `id` split the
+ * keys apart for the first turn of every New Chat, so live tool output never reached the card.
  */
 export function useToolPaneScope(): string {
   const paneScope = useContext(ToolPaneScopeContext);
@@ -47,15 +46,12 @@ export function useToolPaneScope(): string {
 }
 
 /**
- * Read a tool-output map for one call, tolerating a run that started before its
- * thread had an id.
+ * Read a tool-output map for one call, tolerating a run that started before its thread had an id.
  *
- * The adapter captures its scope once at run start, so a first turn writes under
- * the unresolved (empty-thread) scope for its whole life. The autosave can
- * assign `remoteId` while that same turn is still streaming, which moves this
- * component's key but not the writer's, and the card went blank mid-run. Falling
- * back to the pane-wide scope keeps those entries reachable; only an
- * unpersisted first turn can be filed there, so within a pane it is unambiguous.
+ * The adapter captures its scope once at run start, so a first turn writes under the unresolved
+ * scope for its whole life. The autosave can assign `remoteId` mid-run, which moves this
+ * component's key but not the writer's, and the card went blank. Falling back to the pane-wide
+ * scope keeps those entries reachable; only an unpersisted first turn can be filed there.
  */
 /** The scope a run that started before its thread had an id writes under. */
 export function useUnresolvedToolPaneScope(): string {
@@ -70,8 +66,8 @@ export function useToolOutputFor(
   // Unconditional: hooks cannot sit behind the early return below.
   const unresolvedScope = useUnresolvedToolPaneScope();
   // Only a thread mid-run can be the one that just gained its id. Local ids repeat
-  // ("call_0"), so an unconditional fallback showed a live first turn's stdout in
-  // every older conversation whose own entry had been cleared.
+  // ("call_0"), so an unconditional fallback showed a live first turn's stdout in every
+  // older conversation whose own entry had been cleared.
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
   const own = map[toolOutputKey(paneScope, toolCallId)];
   if (own !== undefined) return own;

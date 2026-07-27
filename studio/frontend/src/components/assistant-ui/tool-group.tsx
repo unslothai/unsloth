@@ -250,9 +250,8 @@ const ToolGroupImpl: FC<
       .some(
         (part) =>
           part.type === "tool-call" &&
-          // Either scope: a first turn writes under the unresolved one for its
-          // whole life, even after the autosave assigns the id (see
-          // useToolOutputFor).
+          // Either scope: a first turn writes under the unresolved one for its whole
+          // life, even after the autosave assigns the id (see useToolOutputFor).
           (Object.prototype.hasOwnProperty.call(
             toolLiveOutput,
             toolOutputKey(paneScope, part.toolCallId),

@@ -366,10 +366,9 @@ def test_new_key_retains_in_flight_prior_load_queue():
 
 
 def test_unpark_waits_instead_of_putting_two_holders_on_one_slot():
-    # park() hands the freed slot to a waiter, so by the time the user answers an
-    # approval prompt someone else may be decoding in it. Decrementing _parked
-    # regardless left two holders against capacity 1, and the resumed tool loop
-    # went straight back to llama-server past the admission limit.
+    # park() hands the freed slot to a waiter, so by the time the user answers an approval
+    # prompt someone else may be decoding in it. Decrementing _parked regardless left two
+    # holders against capacity 1, and the resumed tool loop went past the admission limit.
     async def scenario():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
@@ -387,8 +386,8 @@ def test_unpark_waits_instead_of_putting_two_holders_on_one_slot():
         resumed = asyncio.ensure_future(queue.unpark_async(poll_s = 0.01))
         await asyncio.sleep(0.05)
         assert not resumed.done(), "A must not resume while B holds the slot"
-        # The invariant is the EFFECTIVE count, active minus parked; snapshot()
-        # reports raw active, which is legitimately 2 here (A parked, B granted).
+        # The invariant is the EFFECTIVE count, active minus parked; snapshot() reports raw
+        # active, which is legitimately 2 here (A parked, B granted).
         effective = lambda: queue._active - queue._parked
         assert effective() <= 1, "never over capacity while waiting"
 
@@ -421,9 +420,9 @@ def test_unpark_gives_up_when_the_caller_is_cancelled():
 
 
 def test_an_approved_chat_is_not_overtaken_by_later_arrivals():
-    # A parks on an approval prompt, B takes the slot, C arrives afterwards.
-    # release() grants under the same lock, so a plain poll in unpark_async never
-    # saw a free slot: A waited behind every later arrival and starved.
+    # A parks on an approval prompt, B takes the slot, C arrives afterwards. release() grants
+    # under the same lock, so a plain poll in unpark_async never saw a free slot: A waited
+    # behind every later arrival and starved.
     async def scenario():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
@@ -451,9 +450,8 @@ def test_an_approved_chat_is_not_overtaken_by_later_arrivals():
 
 
 def test_two_approved_chats_do_not_block_each_other():
-    # A bare pending-count made every approved holder count against every other:
-    # park A, admit and park B, admit C, approve both, and once C released the
-    # predicate stayed false forever with nothing left decoding to change it.
+    # A bare pending-count made every approved holder count against every other: park A, admit
+    # and park B, admit C, approve both, and once C released the predicate stayed false forever.
     async def scenario():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
@@ -489,9 +487,9 @@ def test_two_approved_chats_do_not_block_each_other():
 
 
 def test_an_immediate_arrival_cannot_take_an_approved_chat_s_slot():
-    # The fairness reservation lived only in _grant_waiters_locked. reserve()'s
-    # fast path ignored it, so a request arriving in the window between the slot
-    # freeing and the approved chat's next poll took the slot straight off the top.
+    # The fairness reservation lived only in _grant_waiters_locked. reserve()'s fast path
+    # ignored it, so a request arriving in the window between the slot freeing and the
+    # approved chat's next poll took the slot straight off the top.
     async def scenario():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
