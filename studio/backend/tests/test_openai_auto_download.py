@@ -1539,9 +1539,7 @@ def test_a_non_quant_tag_does_not_tear_down_a_serving_quant(monkeypatch):
         "utils.openai_auto_switch_settings.get_openai_auto_switch_enabled", lambda: True
     )
     for tag in ("org/model:latest", "org/model:8b", "org/model"):
-        asyncio.run(
-            inference_route._maybe_auto_switch_model(tag, _Req(), "tester")
-        )
+        asyncio.run(inference_route._maybe_auto_switch_model(tag, _Req(), "tester"))
     assert loads == [], "a tag naming no quant swapped the serving model out"
 
 
