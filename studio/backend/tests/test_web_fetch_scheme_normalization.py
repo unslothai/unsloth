@@ -93,6 +93,30 @@ def test_out_of_range_port_returns_error_instead_of_raising():
     assert err and "invalid port" in err
 
 
+def test_redirect_to_out_of_range_port_is_blocked(monkeypatch):
+    # A redirect target reads .port too, so it needs the same guard as the
+    # initial URL or a server can turn it into a generic fetch failure.
+    import urllib.request
+    from urllib.error import HTTPError
+
+    monkeypatch.setattr(
+        tools,
+        "_resolve_with_budget",
+        lambda host, port, deadline, cancel: (True, "", "93.184.216.34"),
+    )
+
+    class _Redirecting:
+        def open(self, req, timeout = None):
+            raise HTTPError(
+                req.full_url, 302, "Found",
+                {"Location": "https://example.org:99999/next"}, None,
+            )
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _Redirecting())
+    err, _, _ = tools._fetch_url_raw("https://example.com")
+    assert err and "invalid port in redirect target" in err
+
+
 def test_blocked_message_shows_the_url_not_the_scheme():
     err, _, _ = tools._fetch_url_raw("ftp://x.com")
     assert "ftp://x.com" in err

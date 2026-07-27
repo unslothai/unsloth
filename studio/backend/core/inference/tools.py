@@ -4269,7 +4269,10 @@ def _fetch_url_raw(
                 rp = urlparse(current_url)
                 if rp.scheme not in ("http", "https") or not rp.hostname:
                     return "Blocked: redirect target is not a valid http/https URL.", "", ""
-                rp_port = rp.port or (443 if rp.scheme == "https" else 80)
+                try:
+                    rp_port = rp.port or (443 if rp.scheme == "https" else 80)
+                except ValueError:
+                    return "Blocked: invalid port in redirect target.", "", ""
                 ok2, reason2, pinned_ip = _resolve_with_budget(
                     rp.hostname,
                     rp_port,
