@@ -3998,7 +3998,9 @@ def test_unload_fences_queued_generations_while_it_waits(fake_runtime, tmp_path)
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
     backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo",
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
         family_override = "z-image",
     )
 
@@ -4014,7 +4016,7 @@ def test_unload_fences_queued_generations_while_it_waits(fake_runtime, tmp_path)
     backend._unload_locked = _record_then_unload
     backend.unload()
 
-    assert seen == [1]                     # the fence was up for the whole wait
+    assert seen == [1]  # the fence was up for the whole wait
     assert backend._teardown_waiters == 0  # and released once the pipeline was gone
 
 
@@ -4024,7 +4026,9 @@ def test_generation_refuses_while_a_teardown_is_waiting(fake_runtime, tmp_path):
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
     backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo",
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
         family_override = "z-image",
     )
     assert backend.generate(prompt = "before", steps = 2)["images"]
@@ -4045,7 +4049,9 @@ def test_a_superseding_load_fences_queued_generations_too(fake_runtime, tmp_path
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
     backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo",
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
         family_override = "z-image",
     )
 
@@ -4058,7 +4064,9 @@ def test_a_superseding_load_fences_queued_generations_too(fake_runtime, tmp_path
 
     backend._unload_locked = _record_then_unload
     backend.load_pipeline(
-        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo",
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
         family_override = "z-image",
     )
 

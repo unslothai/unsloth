@@ -477,7 +477,8 @@ def _current_revisions(repo_info):
         latest = latest_snapshot_dir(Path(repo_path))
         if latest is not None:
             scoped = [
-                rev for rev in revisions
+                rev
+                for rev in revisions
                 if getattr(rev, "snapshot_path", None) is not None
                 and Path(rev.snapshot_path) == latest
             ]

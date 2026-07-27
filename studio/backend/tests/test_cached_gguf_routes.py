@@ -1679,9 +1679,7 @@ def test_pipeline_scans_read_the_snapshot_the_loader_will_open(tmp_path):
         return SimpleNamespace(
             snapshot_path = snap,
             last_modified = float(snap.stat().st_mtime),
-            files = [
-                SimpleNamespace(file_name = Path(f).name, file_path = snap / f) for f in files
-            ],
+            files = [SimpleNamespace(file_name = Path(f).name, file_path = snap / f) for f in files],
         )
 
     info = SimpleNamespace(
