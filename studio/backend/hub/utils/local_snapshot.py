@@ -22,7 +22,6 @@ def resolve_local_snapshot_path(
     """
     try:
         from huggingface_hub import snapshot_download
-
         return snapshot_download(
             repo_id,
             local_files_only = True,

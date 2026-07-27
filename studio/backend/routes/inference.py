@@ -4506,11 +4506,7 @@ async def _load_model_impl(
         # fails over to the next candidate instead of fetching.
         from utils.paths import is_local_path
 
-        if (
-            request.local_files_only
-            and not config.is_gguf
-            and not is_local_path(config.path)
-        ):
+        if request.local_files_only and not config.is_gguf and not is_local_path(config.path):
             from hub.utils.local_snapshot import resolve_local_snapshot_path
 
             local_snapshot = await asyncio.to_thread(

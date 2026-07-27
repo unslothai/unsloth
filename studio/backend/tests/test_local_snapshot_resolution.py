@@ -31,11 +31,7 @@ from hub.utils.local_snapshot import resolve_local_snapshot_path
 _REV = "0123456789abcdef0123456789abcdef01234567"
 
 
-def _build_cached_repo(
-    cache_dir: Path,
-    repo_id: str,
-    files: dict[str, str],
-) -> Path:
+def _build_cached_repo(cache_dir: Path, repo_id: str, files: dict[str, str]) -> Path:
     """Lay out a minimal HF hub cache entry the way huggingface_hub expects:
     ``models--org--name/refs/main`` pointing at a snapshot directory."""
     repo_dir = cache_dir / f"models--{repo_id.replace('/', '--')}"
@@ -54,9 +50,7 @@ def test_cached_repo_resolves_to_its_snapshot_dir(tmp_path):
         "org/tiny-model",
         {"config.json": "{}", "model.safetensors": "weights"},
     )
-    resolved = resolve_local_snapshot_path(
-        "org/tiny-model", cache_dir = str(tmp_path)
-    )
+    resolved = resolve_local_snapshot_path("org/tiny-model", cache_dir = str(tmp_path))
     assert resolved is not None
     assert Path(resolved).resolve() == snapshot.resolve()
 
@@ -72,18 +66,13 @@ def test_incomplete_snapshot_still_resolves_locally(tmp_path):
             "model-00001-of-00002.safetensors": "first shard only",
         },
     )
-    resolved = resolve_local_snapshot_path(
-        "org/half-downloaded", cache_dir = str(tmp_path)
-    )
+    resolved = resolve_local_snapshot_path("org/half-downloaded", cache_dir = str(tmp_path))
     assert resolved is not None
     assert Path(resolved).resolve() == snapshot.resolve()
 
 
 def test_uncached_repo_resolves_to_none(tmp_path):
-    assert (
-        resolve_local_snapshot_path("org/never-downloaded", cache_dir = str(tmp_path))
-        is None
-    )
+    assert resolve_local_snapshot_path("org/never-downloaded", cache_dir = str(tmp_path)) is None
 
 
 def test_resolution_never_uses_the_network(tmp_path, monkeypatch):
@@ -97,6 +86,4 @@ def test_resolution_never_uses_the_network(tmp_path, monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", _no_network)
     _build_cached_repo(tmp_path, "org/offline-ok", {"config.json": "{}"})
     assert resolve_local_snapshot_path("org/offline-ok", cache_dir = str(tmp_path))
-    assert (
-        resolve_local_snapshot_path("org/absent", cache_dir = str(tmp_path)) is None
-    )
+    assert resolve_local_snapshot_path("org/absent", cache_dir = str(tmp_path)) is None
