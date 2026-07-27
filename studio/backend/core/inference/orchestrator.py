@@ -109,6 +109,9 @@ class InferenceOrchestrator:
         self._active_cancel_events: list = []
         self._executing_cancel_events: list = []
         self._active_cancel_lock = threading.Lock()
+        # Held across claim + _send_cmd so claim order matches the order the
+        # subprocess dequeues commands in; _owns_worker relies on that.
+        self._send_order_lock = threading.Lock()
         # Set during a switch so a generation winning the _gen_lock handoff bails
         # instead of starting on the outgoing model.
         self._unload_pending = False
@@ -824,9 +827,14 @@ class InferenceOrchestrator:
         # Claim before sending, like the locked path: dispatched runs are concurrent
         # by design, so without this a Stop on one of them saw no owner at all and
         # reset the worker, ending its siblings.
-        self._claim_worker(cancel_event)
+        # Claim and enqueue under one lock. Two dispatcher threads could otherwise
+        # interleave between the two, leaving the claim order different from the
+        # subprocess's command order, and _owns_worker reads claim order to decide
+        # who is prefilling.
         try:
-            self._send_cmd(cmd)
+            with self._send_order_lock:
+                self._claim_worker(cancel_event)
+                self._send_cmd(cmd)
         except RuntimeError as exc:
             self._release_worker(cancel_event)
             with self._mailbox_lock:
@@ -1617,10 +1625,11 @@ class InferenceOrchestrator:
             # queued on the lock above, having generated nothing -- cannot reset the
             # generation this is starting. Claiming after the send left a window where the
             # command ran unclaimed. Released in the finally, a failed send included.
-            self._claim_worker(cancel_event)
             try:
                 try:
-                    self._send_cmd(cmd)
+                    with self._send_order_lock:
+                        self._claim_worker(cancel_event)
+                        self._send_cmd(cmd)
                 except RuntimeError as exc:
                     yield GenStreamError(f"Error: {exc}")
                     return

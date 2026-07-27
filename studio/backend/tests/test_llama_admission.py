@@ -448,3 +448,41 @@ def test_an_approved_chat_is_not_overtaken_by_later_arrivals():
         assert queue._active - queue._parked <= 1
 
     asyncio.run(scenario())
+
+
+def test_two_approved_chats_do_not_block_each_other():
+    # A bare pending-count made every approved holder count against every other:
+    # park A, admit and park B, admit C, approve both, and once C released the
+    # predicate stayed false forever with nothing left decoding to change it.
+    async def scenario():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+
+        a = queue.reserve(capacity = 1, config = config)
+        assert a.lease_nowait() is not None
+        b = queue.reserve(capacity = 1, config = config)
+        queue.park()  # A parks; B is admitted
+        b_lease = await asyncio.wait_for(b.wait(timeout_s = 1), timeout = 2)
+        assert b_lease is not None
+
+        c = queue.reserve(capacity = 1, config = config)
+        queue.park()  # B parks too; C is admitted
+        c_lease = await asyncio.wait_for(c.wait(timeout_s = 1), timeout = 2)
+        assert c_lease is not None
+
+        # Both approvals come back while C is still decoding.
+        first = asyncio.ensure_future(queue.unpark_async(poll_s = 0.01))
+        await asyncio.sleep(0.02)
+        second = asyncio.ensure_future(queue.unpark_async(poll_s = 0.01))
+        await asyncio.sleep(0.02)
+        assert not first.done() and not second.done()
+
+        c_lease.release()
+        # The earlier approval goes first; the other follows once it releases.
+        await asyncio.wait_for(first, timeout = 2)
+        assert not second.done(), "the second approval waits its turn, not forever"
+        a.cancel()  # whoever resumed first finishes
+        await asyncio.wait_for(second, timeout = 2)
+        assert queue._active - queue._parked <= 1
+
+    asyncio.run(scenario())

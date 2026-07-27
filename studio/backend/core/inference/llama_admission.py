@@ -248,8 +248,10 @@ class LlamaAdmissionQueue:
         # Holders parked on a tool approval prompt keep their lease but must not
         # count against capacity, or unanswered prompts wedge every other chat.
         self._parked = 0
-        # Slots reserved for holders resuming from a park (see unpark_async).
-        self._unpark_pending = 0
+        # FIFO tickets for holders resuming from a park (see unpark_async). A
+        # bare count deadlocked: every approved holder blocked every other one.
+        self._unpark_tickets: Deque[int] = deque()
+        self._unpark_seq = 0
         self._waiters: Deque[_Waiter] = deque()
 
     def reserve(self, *, capacity: int, config: LlamaAdmissionConfig) -> LlamaAdmissionReservation:
@@ -331,18 +333,25 @@ class LlamaAdmissionQueue:
         with self._lock:
             if self._parked <= 0:
                 return
-            # Claim the next slot before waiting for it, so arrivals after the
-            # approval queue behind this holder instead of ahead of it.
-            self._unpark_pending += 1
+            # Take a ticket, so arrivals after the approval queue behind this
+            # holder. Ordered, not counted: a count made every approved holder
+            # block every other, and with nothing decoding it never resolved.
+            self._unpark_seq += 1
+            ticket = self._unpark_seq
+            self._unpark_tickets.append(ticket)
         try:
             while True:
                 with self._lock:
                     if self._parked <= 0:
                         return
-                    # Effective count is (_active - _parked); un-parking adds one
-                    # to it, so there has to be room for that one. This holder's
-                    # own reservation is excluded from the check it gates.
-                    if (self._active - self._parked + self._unpark_pending - 1) < self._capacity:
+                    ahead = 0
+                    for queued in self._unpark_tickets:
+                        if queued == ticket:
+                            break
+                        ahead += 1
+                    # Effective count is (_active - _parked); un-parking adds one,
+                    # and so would every approval ahead of this one.
+                    if (self._active - self._parked + ahead) < self._capacity:
                         self._parked -= 1
                         return
                     if cancel_event is not None and cancel_event.is_set():
@@ -351,7 +360,10 @@ class LlamaAdmissionQueue:
                 await asyncio.sleep(poll_s)
         finally:
             with self._lock:
-                self._unpark_pending = max(0, self._unpark_pending - 1)
+                try:
+                    self._unpark_tickets.remove(ticket)
+                except ValueError:
+                    pass
 
     def cancel(self, waiter: _Waiter) -> None:
         lease_to_release = None
@@ -381,12 +393,14 @@ class LlamaAdmissionQueue:
 
     def _grant_waiters_locked(self) -> None:
         self._prune_waiters_locked()
-        # _unpark_pending reserves a slot for a holder that has been approved and
+        # A pending unpark reserves a slot for a holder that has been approved and
         # is waiting to resume. Without it, release() grants the freed slot to the
         # next waiter under this same lock, so an approved chat is overtaken by
         # every later arrival and starves under sustained traffic.
         while (
-            self._waiters and (self._active - self._parked + self._unpark_pending) < self._capacity
+            self._waiters
+            and (self._active - self._parked + len(self._unpark_tickets))
+            < self._capacity
         ):
             waiter = self._waiters.popleft()
             if waiter.cancelled or waiter.future.done():

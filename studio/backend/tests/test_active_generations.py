@@ -2661,3 +2661,38 @@ def test_the_oldest_claim_is_the_one_the_worker_is_prefilling():
 
     orch.reset_generation_state(b_event)
     assert orch._cancel_event.is_set(), "B is now the oldest claim"
+
+
+def test_claim_order_matches_send_order_under_concurrent_dispatch():
+    # _owns_worker reads claim order to decide who is prefilling, so a claim that
+    # is not atomic with the enqueue can put A first in the list while B is first
+    # in the subprocess queue, and stopping A then kills B.
+    _route_gate()  # skips when the inference stack is unavailable
+    orch_mod = pytest.importorskip(
+        "core.inference.orchestrator", reason = "inference stack not installed"
+    )
+    orch = orch_mod.InferenceOrchestrator.__new__(orch_mod.InferenceOrchestrator)
+    orch._active_cancel_events = []
+    orch._executing_cancel_events = []
+    orch._active_cancel_lock = threading.Lock()
+    orch._send_order_lock = threading.Lock()
+
+    sent: list = []
+    barrier = threading.Barrier(4)
+
+    def worker(ev):
+        barrier.wait(timeout = 10)
+        with orch._send_order_lock:
+            orch._claim_worker(ev)
+            # Stand in for _send_cmd: the enqueue must not be separable from the
+            # claim, or the two orders drift.
+            sent.append(ev)
+
+    events = [threading.Event() for _ in range(4)]
+    threads = [threading.Thread(target = worker, args = (e,)) for e in events]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout = 30)
+
+    assert orch._active_cancel_events == sent, "claim order must equal send order"
