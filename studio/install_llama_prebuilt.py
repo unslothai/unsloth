@@ -2651,10 +2651,15 @@ def _apply_host_overrides(
             host,
             has_rocm = True,
             rocm_gfx_target = gfx,
-            # Keep the probe's per-GPU list when it already covers the forwarded
-            # arch: collapsing it to one entry would hide the host's other AMD
-            # cards from _should_auto_vulkan_for_amd_windows().
-            rocm_gfx_targets = list(host.rocm_gfx_targets) if gfx in _physical else [gfx],
+            # ADD the forwarded arch to the probe's per-GPU list, never replace it.
+            # That list is the PHYSICAL inventory _should_auto_vulkan_for_amd_windows()
+            # reads, and a forwarded arch says which GPU HIP should target, not which
+            # cards exist: dropping a probe-confirmed GPU would let a stale or
+            # name-inferred below-floor forward auto-route a box whose probe saw a
+            # HIP-capable card to Vulkan, which then enumerates that card regardless of
+            # HIP_VISIBLE_DEVICES. An empty probe still yields [gfx] -- the driver-only
+            # host the forward exists for keeps its auto-Vulkan fallback.
+            rocm_gfx_targets = list(dict.fromkeys([*_physical, gfx])),
         )
     if override_has_rocm and not host.has_rocm:
         return dataclasses_replace(host, has_rocm = True)

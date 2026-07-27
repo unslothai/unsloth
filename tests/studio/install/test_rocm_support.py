@@ -4510,7 +4510,9 @@ class TestApplyHostOverrides:
         host = rocm_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
         out = _apply_host_overrides(host, override_rocm_gfx = "gfx1151")
         assert out.rocm_gfx_target == "gfx1151"
-        assert out.rocm_gfx_targets == ["gfx1151"]
+        # ... but it says which arch HIP targets, not which cards exist: the probed
+        # gfx1100 is still physically in the box, so it stays in the per-GPU list.
+        assert out.rocm_gfx_targets == ["gfx1100", "gfx1151"]
         assert out.has_rocm is True
 
     def test_forwarded_family_label_never_overrides_a_probed_arch(self, monkeypatch):
@@ -4542,6 +4544,36 @@ class TestApplyHostOverrides:
         assert out.rocm_gfx_target == "gfx1010"
         assert out.rocm_gfx_targets == ["gfx1100", "gfx1010"]
 
+    def test_forwarded_gfx_never_drops_a_probed_physical_gpu(self, monkeypatch):
+        # The per-GPU list is the PHYSICAL inventory the Windows auto-Vulkan floor
+        # check reads. A forwarded arch the probe never saw (stale env var, a
+        # name-inferred arch for the other card) must be ADDED to it, not replace
+        # it: dropping the probe-confirmed gfx1100 would tell that check no AMD GPU
+        # on the box reaches the HIP floor when one plainly does.
+        monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+        host = rocm_host(rocm_gfx_target = "gfx803", rocm_gfx_targets = ["gfx1100", "gfx803"])
+        out = _apply_host_overrides(host, override_rocm_gfx = "gfx900")
+        assert out.rocm_gfx_target == "gfx900"
+        assert out.rocm_gfx_targets == ["gfx1100", "gfx803", "gfx900"]
+
+    def test_forwarded_gfx_not_duplicated_when_already_probed(self, monkeypatch):
+        # UNSLOTH_ROCM_GFX_ARCH makes the forward win over the probe's visible-device
+        # pick, so this reaches the same branch; the list must stay deduplicated.
+        monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx803")
+        host = rocm_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100", "gfx803"])
+        out = _apply_host_overrides(host, override_rocm_gfx = "gfx803")
+        assert out.rocm_gfx_target == "gfx803"
+        assert out.rocm_gfx_targets == ["gfx1100", "gfx803"]
+
+    def test_forwarded_gfx_on_an_unprobed_host_lists_only_itself(self, monkeypatch):
+        # Negative control for the two above: with nothing probed there is no
+        # physical inventory to preserve, so the driver-only host the forward
+        # exists for keeps a single-entry list and its auto-Vulkan fallback.
+        monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+        out = _apply_host_overrides(cpu_host(), override_rocm_gfx = "gfx803")
+        assert out.rocm_gfx_target == "gfx803"
+        assert out.rocm_gfx_targets == ["gfx803"]
+
     def test_manual_env_override_still_wins_over_probe(self, monkeypatch):
         # UNSLOTH_ROCM_GFX_ARCH is the documented manual escape hatch for hosts
         # whose arch the probes get wrong; it stays authoritative.
@@ -4549,7 +4581,7 @@ class TestApplyHostOverrides:
         host = rocm_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
         out = _apply_host_overrides(host, override_rocm_gfx = "gfx1151")
         assert out.rocm_gfx_target == "gfx1151"
-        assert out.rocm_gfx_targets == ["gfx1151"]
+        assert out.rocm_gfx_targets == ["gfx1100", "gfx1151"]
 
     def test_has_rocm_only_keeps_probe_gfx(self):
         out = _apply_host_overrides(cpu_host(), override_has_rocm = True)

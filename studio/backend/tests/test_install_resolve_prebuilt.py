@@ -1092,6 +1092,69 @@ def test_forwarded_gfx_does_not_undo_visible_device_auto_vulkan(monkeypatch):
     assert persist is None
 
 
+def test_forwarded_gfx_absent_from_probe_keeps_the_physical_hip_card(monkeypatch):
+    # Mixed-AMD Windows host: GPU 0 = gfx1100 (HIP prebuilt exists), GPU 1 = gfx803
+    # (below the floor). CUDA_VISIBLE_DEVICES=1 reserves the gfx1100 for another
+    # workload, so detect_host() picks gfx803 as active but still reports both cards.
+    # setup then forwards a third arch the probe never saw -- a stale
+    # UNSLOTH_ROCM_GFX_ARCH, or its name-inference table reading the other card.
+    # That forward selects the HIP target; it must not delete the probe's inventory,
+    # or the floor check concludes no AMD GPU here reaches HIP and auto-routes to
+    # Vulkan, which ignores the HIP mask and enumerates the reserved gfx1100.
+    monkeypatch.delenv("UNSLOTH_LLAMA_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+    host = _windows_amd_host(rocm_gfx_target = "gfx803", rocm_gfx_targets = ["gfx1100", "gfx803"])
+    host = ilp._apply_host_overrides(host, override_rocm_gfx = "gfx900")
+    assert ilp._active_rocm_gfx_target(host) == "gfx900"
+    assert host.rocm_gfx_targets == ["gfx1100", "gfx803", "gfx900"]
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is False
+    _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert repo == FORK
+    assert persist is None
+
+
+def test_forwarded_gfx_absent_from_probe_keeps_a_single_probed_hip_card(monkeypatch):
+    # Same rule on a single-GPU box: a stale below-floor forward over a
+    # probe-confirmed gfx1100 must not auto-route that machine to Vulkan.
+    monkeypatch.delenv("UNSLOTH_LLAMA_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+    host = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
+    host = ilp._apply_host_overrides(host, override_rocm_gfx = "gfx803")
+    assert ilp._active_rocm_gfx_target(host) == "gfx803"
+    assert host.rocm_gfx_targets == ["gfx1100", "gfx803"]
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is False
+
+
+def test_forwarded_gfx_absent_from_probe_still_allows_explicit_vulkan(monkeypatch):
+    # The physical-inventory rule gates the AUTO path only; naming the backend wins.
+    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "vulkan")
+    monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+    host = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
+    host = ilp._apply_host_overrides(host, override_rocm_gfx = "gfx803")
+    _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert repo == UPSTREAM
+    assert persist == "vulkan"
+
+
+def test_forwarded_gfx_on_unprobed_host_still_auto_vulkans(monkeypatch):
+    # Negative control: a Windows driver-only AMD host runs no successful probe
+    # (no HIP SDK hipinfo, amd-smi suppressed), so --rocm-gfx is the ONLY source of
+    # the arch and there is no inventory to preserve. This is the #7357 path the
+    # feature exists for and it must keep falling back to Vulkan.
+    monkeypatch.delenv("UNSLOTH_LLAMA_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+    host = _windows_amd_host(rocm_gfx_target = None, rocm_gfx_targets = [])
+    host = ilp._apply_host_overrides(host, override_rocm_gfx = "gfx803")
+    assert host.rocm_gfx_targets == ["gfx803"]
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is True
+    _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert repo == UPSTREAM
+    assert persist == "vulkan"
+
+
 def test_forwarded_gfx_still_fills_an_unprobed_arch(monkeypatch):
     # Negative control: on an amd-smi-only / driver-only host detect_host() reports
     # no arch at all, so the forward is the only source and must still apply --
