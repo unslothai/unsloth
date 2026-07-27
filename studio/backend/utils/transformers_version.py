@@ -966,6 +966,39 @@ def _fetch_hub_py_sources(
     return sources, complete
 
 
+def _snapshot_py_sources(
+    snapshot: Path,
+    budget: "_RemoteScanBudget | None" = None,
+) -> list[str]:
+    """Every readable ``.py`` under a hub-cache snapshot dir, charged to *budget*.
+
+    Stands in for a repo the Hub API would not list: the snapshot is the exact code an
+    offline ``trust_remote_code`` load executes. Each read draws on the caller's scan-wide
+    budget, so substituting snapshots for N repos cannot lift one scan's ceiling.
+    """
+    sources: list[str] = []
+    try:
+        paths = sorted(snapshot.rglob("*.py"))
+    except Exception as exc:
+        logger.debug("Could not walk hub cache snapshot %s: %s", snapshot, exc)
+        return sources
+    for py_path in paths:
+        if not _safe_is_file(py_path):
+            continue
+        if budget is not None and not budget.take_file():
+            logger.debug("Remote scan budget spent walking hub cache snapshot %s", snapshot)
+            break
+        try:
+            text = py_path.read_text(encoding = "utf-8", errors = "replace")
+        except Exception as exc:
+            logger.debug("Could not read %s: %s", py_path, exc)
+            continue
+        if budget is not None:
+            budget.spend(len(text))
+        sources.append(text)
+    return sources
+
+
 def _collect_external_py_sources(
     refs: set,
     hf_token: str | None = None,
@@ -976,6 +1009,14 @@ def _collect_external_py_sources(
     Like :func:`_fetch_hub_py_sources`, an unreachable repo marks the closure incomplete
     without dropping what the repos that did answer returned. *budget* is the caller's
     scan-wide cap, threaded through so every referenced repo draws on the same ceiling.
+
+    A repo the Hub would not answer for falls back to its own hub-cache snapshot, the same
+    substitution :func:`_remote_auto_map_tier` makes for the primary model id. Without it an
+    offline model whose ``auto_map`` names a separate repo is scanned with that repo's code
+    missing, so a 5.x-only import living only there is never seen and the worker activates
+    4.57.x for code it cannot import. ``complete`` stays False whenever the Hub was not read,
+    snapshot or not: an on-disk copy is not proof the Hub repo still matches it, so the
+    closure never becomes definitive and no negative is memoized.
     """
     external_repos = {repo for repo, _ in refs if repo is not None}
     if not external_repos:
@@ -984,9 +1025,12 @@ def _collect_external_py_sources(
     complete = True
     for repo in sorted(external_repos):
         repo_sources, ok = _fetch_hub_py_sources(repo, hf_token, budget)
+        sources.extend(repo_sources)
         if not ok:
             complete = False
-        sources.extend(repo_sources)
+            snapshot = _hf_cache_snapshot_dir(repo)
+            if snapshot is not None:
+                sources.extend(_snapshot_py_sources(snapshot, budget))
     return sources, complete
 
 
@@ -1215,7 +1259,10 @@ def _parsed_dotted_imports(src: str) -> set[str] | None:
     ``if TYPE_CHECKING:`` bodies are skipped: that guard is false at runtime, so a type-only
     import must not promote an otherwise 4.57.x-loadable model onto a sidecar. Only the guard's
     own body is dropped; its ``else``/``elif`` branches and ``if not TYPE_CHECKING:`` do run
-    and are collected.
+    and are collected. The name must resolve to ``typing``/``typing_extensions``'
+    ``TYPE_CHECKING`` (aliases included) or to a literal ``False``: a module is free to bind
+    that spelling to its own truthy value, and dropping a branch that really executes would
+    hide a 5.x-only import behind the default tier.
 
     ``importlib.import_module("pkg.mod")`` / ``__import__("pkg.mod")`` count, since that call
     really imports at runtime and would raise on the wrong sidecar. Only literal string args
@@ -1228,10 +1275,76 @@ def _parsed_dotted_imports(src: str) -> set[str] | None:
     """
     import ast
 
+    _TYPING_GUARD_MODULES = ("typing", "typing_extensions")
+
+    def _type_checking_bindings(tree) -> tuple[set[str], set[str]]:
+        """``(names meaning typing's TYPE_CHECKING, names bound to a typing module)``.
+
+        A pre-pass, because the walk below pops off a stack seeded with the module and so
+        reaches an ``if TYPE_CHECKING:`` before the import that binds the name. ``deferred``
+        cannot help: pruning decides whether the children are walked at all.
+
+        A name qualifies only when the file binds it to ``typing``/``typing_extensions``'
+        ``TYPE_CHECKING`` (aliases included) or to a literal ``False``, the spelling that keeps
+        the guard without importing ``typing`` at runtime. Any other binding of that name is a
+        shadow whose branch really does execute, so it is subtracted. Erring toward keeping a
+        branch only costs a needless sidecar; dropping a live one hides a 5.x-only import.
+        """
+        direct: set[str] = set()
+        modules: set[str] = set()
+        shadowed: set[str] = set()
+        # Identities, so the sweep below can tell a dead ``X = False`` target apart from the
+        # same name reappearing as an ordinary store.
+        dead_targets: set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+                if node.value.value is False:
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            direct.add(target.id)
+                            dead_targets.add(id(target))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.split(".", 1)[0]
+                    if alias.asname:
+                        # ``import typing.io as tio`` binds the submodule, not ``typing``.
+                        if alias.name in _TYPING_GUARD_MODULES:
+                            modules.add(alias.asname)
+                    elif root in _TYPING_GUARD_MODULES:
+                        modules.add(root)
+            elif isinstance(node, ast.ImportFrom):
+                # A relative ``from .flags import TYPE_CHECKING`` is the repo's own name.
+                if node.level or node.module not in _TYPING_GUARD_MODULES:
+                    continue
+                for alias in node.names:
+                    if alias.name == "TYPE_CHECKING":
+                        direct.add(alias.asname or alias.name)
+                    elif alias.name == "*":
+                        # TYPE_CHECKING is in typing.__all__, so a star import binds it.
+                        direct.add("TYPE_CHECKING")
+            elif isinstance(node, ast.arg):
+                shadowed.add(node.arg)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                shadowed.add(node.name)
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                shadowed.add(node.name)
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                # Covers assignment, for/with targets, walrus and comprehensions.
+                if id(node) not in dead_targets:
+                    shadowed.add(node.id)
+        return direct - shadowed, modules - shadowed
+
     def _is_type_checking(test) -> bool:
-        return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
-            isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
-        )
+        if isinstance(test, ast.Name):
+            return test.id in type_checking_names
+        if isinstance(test, ast.Attribute):
+            return (
+                test.attr == "TYPE_CHECKING"
+                and isinstance(test.value, ast.Name)
+                and test.value.id in type_checking_modules
+            )
+        return False
 
     def _dynamic_import_call(node) -> tuple[str, str] | None:
         """``(callee, module)`` for a constant-string import call, else ``None``."""
@@ -1264,6 +1377,7 @@ def _parsed_dotted_imports(src: str) -> set[str] | None:
         tree = ast.parse(src)
     except Exception:
         return None
+    type_checking_names, type_checking_modules = _type_checking_bindings(tree)
     names: set[str] = set()
     bound: dict[str, str] = {}
     chains: set[tuple[str, str]] = set()
@@ -1483,8 +1597,8 @@ def _check_remote_auto_map_needs_510(model_name: str, hf_token: str | None = Non
 
     Gated on the tuple rather than at the call site, so re-adding a 5.10-only module restores
     the scan everywhere by itself. The 5.3 classification is not lost: callers that need it go
-    through :func:`_remote_auto_map_tier`, and :func:`_check_config_needs_510` still calls
-    :func:`_remote_auto_map_scan_result` for the ``definitive`` flag.
+    through :func:`_remote_auto_map_tier`, which :func:`_check_config_needs_510` also calls
+    for the ``definitive`` flag and the scanned tier.
     """
     if not _TRANSFORMERS_510_REMOTE_IMPORT_MARKERS:
         return False
@@ -1541,13 +1655,21 @@ def _tokenizer_auto_map_needs_v5(
     return False, definitive
 
 
-def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = None) -> bool:
+def _check_tokenizer_config_needs_v5(
+    model_name: str,
+    hf_token: str | None = None,
+    scan_auto_map: bool = True,
+) -> bool:
     """True if the model's tokenizer_class requires transformers 5.x.
 
     Checks local tokenizer_config.json, else fetches from HuggingFace (authenticated with
     ``hf_token`` so gated/private repos resolve). Cached by (model, token) so an unauthenticated
     miss cannot poison a later authed read, plus the local scan signature so a replaced
     checkpoint is re-read. Returns False on any network/parse error (fail-open to default).
+
+    ``scan_auto_map=False`` answers from the tokenizer class alone and drops the ``auto_map``
+    closure scan, mirroring :func:`_check_config_needs_510`. The skip happens before the cache
+    write, so a probe=False negative never poisons a later activation.
     """
     signature = _local_scan_signature(model_name)
     cache_key = (*_token_cache_key(model_name, hf_token), signature)
@@ -1565,6 +1687,8 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
             result = tokenizer_class in _TRANSFORMERS_5_TOKENIZER_CLASSES
             definitive = True
             if not result:
+                if not scan_auto_map:
+                    return False
                 result, definitive = _tokenizer_auto_map_needs_v5(data, model_name, hf_token)
             if result:
                 logger.info(
@@ -1605,6 +1729,8 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
         result = tokenizer_class in _TRANSFORMERS_5_TOKENIZER_CLASSES
         definitive = True
         if not result:
+            if not scan_auto_map:
+                return False
             result, definitive = _tokenizer_auto_map_needs_v5(data, model_name, hf_token)
         if result:
             logger.info(
@@ -1858,12 +1984,20 @@ def _check_config_needs_510(
     model_name: str,
     hf_token: str | None = None,
     scan_auto_map: bool = True,
+    scan_out: dict | None = None,
 ) -> bool:
     """Check ``config.json`` for Gemma 4 Unified / 12B architectures (authenticated with
     ``hf_token``; cached by (model, token) only for a definitive read).
 
     ``scan_auto_map=False`` drops the remote-code scan for the cheap parent-side check
     (``probe=False``), which only asks "is this 5.x at all" and never activates a sidecar.
+
+    ``scan_out`` receives ``{"tier": ...}`` from the remote-code scan this call runs, for a
+    caller resolving the full tier. The return value is a 5.10 boolean, so a ``"530"`` scan
+    collapses to False here, and re-deriving the tier from a second scan is not equivalent:
+    only a definitive scan is memoized, so precisely when the first scan was inconclusive does
+    the second one refetch, and a 5.3 marker read on the first pass is lost if the ``.py``
+    carrying it fails on the second.
     """
     cache_key = _token_cache_key(model_name, hf_token)
     if cache_key in _config_needs_510_cache:
@@ -1890,7 +2024,10 @@ def _check_config_needs_510(
         # negative only says "no config match", and probe=True still scans.
         return False
 
-    remote_needs, remote_definitive = _remote_auto_map_scan_result(model_name, hf_token)
+    remote_tier, remote_definitive = _remote_auto_map_tier(model_name, hf_token)
+    remote_needs = remote_tier == "510"
+    if scan_out is not None:
+        scan_out["tier"] = remote_tier
     if remote_needs:
         logger.info(
             "config.json check: %s needs transformers %s (auto_map remote code)",
@@ -2606,7 +2743,10 @@ def get_transformers_tier(
         return tier
 
     # --- Slow config fallbacks (network for HF IDs; authenticated with hf_token) --------
-    if _check_config_needs_510(model_name, hf_token, scan_auto_map = probe):
+    # The remote-code scan this call runs already resolves a full tier; keep it so the 5.3
+    # check below reuses what this resolution observed instead of scanning a second time.
+    remote_scan: dict = {}
+    if _check_config_needs_510(model_name, hf_token, scan_auto_map = probe, scan_out = remote_scan):
         tier = _raise_tier_for_nested(_load_config_json(model_name, hf_token), "510")
         logger.info("Transformers tier %s selected for %s (config.json check)", tier, model_name)
         return tier
@@ -2645,7 +2785,10 @@ def get_transformers_tier(
                 model_name,
             )
             return static
-    if _check_tokenizer_config_needs_v5(model_name, hf_token):
+    # Same probe gate as the config fallback above: probe=False must not pay a repo listing
+    # plus a fetch per remote .py, which this check reaches through the tokenizer auto_map
+    # closure. The skipped result is never cached, so the activation path still resolves it.
+    if _check_tokenizer_config_needs_v5(model_name, hf_token, scan_auto_map = probe):
         if not probe:
             return "530"
         return _probe_tier(model_name, hf_token, "tokenizer needs 5.x")
@@ -2653,11 +2796,18 @@ def get_transformers_tier(
     # Same gap as the local branch, for a Hub id: remote code declared outside
     # tokenizer_config.json that imports the 5.x-only tokenizers backend. Activation path
     # only (see _check_config_needs_510's scan_auto_map note). 510 already returned above, so
-    # this can only add the 5.3 floor, and that call memoized the scan, so it is a cache hit
-    # except when the closure could not be read in full, which is when a negative must not
-    # be trusted anyway.
-    if probe and _remote_auto_map_tier(model_name, hf_token)[0] != "default":
-        return _probe_tier(model_name, hf_token, "auto_map needs 5.x")
+    # this can only add the 5.3 floor. Reuse the tier that call's scan resolved: a definitive
+    # scan is memoized and would be a cache hit anyway, while a non-definitive one is exactly
+    # the scan that must not be repeated, since the .py carrying the marker can be the one
+    # that fails on the second pass, dropping a 5.3 answer this activation already read.
+    if probe:
+        remote_tier = remote_scan.get("tier")
+        if remote_tier is None:
+            # No scan ran here: config.json answered on its own, or a memoized 5.10 answer
+            # short-circuited the call, so ask for the tier directly.
+            remote_tier = _remote_auto_map_tier(model_name, hf_token)[0]
+        if remote_tier != "default":
+            return _probe_tier(model_name, hf_token, "auto_map needs 5.x")
 
     if _config_saved_by_transformers_5(_cached_config_json(model_name, hf_token)):
         if not probe:
