@@ -307,6 +307,51 @@ def test_degrades_when_shared_helper_import_raises_importerror():
             sys.modules["utils.hf_xet_fallback"] = saved_shim
 
 
+def test_no_light_gpu_init_retry_on_an_accelerator_host(monkeypatch):
+    """The UNSLOTH_ZOO_DISABLE_GPU_INIT retry makes unsloth_zoo take its MLX/CPU path, which injects
+    triton and bitsandbytes STUBS into sys.modules for the whole process. On a GPU host whose
+    unsloth_zoo import failed for an unrelated reason (a bitsandbytes/CUDA mismatch, say), those
+    stubs raise "called on Apple Silicon / MLX" from the first CUDA-only kernel a later GGUF or
+    compiled diffusion generation touches, so a healthy GPU starts 500ing. The shim must degrade
+    instead of retrying there."""
+    import importlib
+    import os
+
+    monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
+    attempts = []
+
+    class _Blocker:
+        def find_spec(self, name, path = None, target = None):
+            if name == "unsloth_zoo":
+                attempts.append(os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT"))
+                raise RuntimeError("CUDA Setup failed despite GPU being available")
+            return None
+
+    finder = _Blocker()
+    saved = {
+        k: v
+        for k, v in list(sys.modules.items())
+        if k == "unsloth_zoo" or k.startswith("unsloth_zoo.")
+    }
+    for k in saved:
+        del sys.modules[k]
+    saved_shim = sys.modules.pop("utils.hf_xet_fallback", None)
+    sys.meta_path.insert(0, finder)
+    try:
+        shim = importlib.import_module("utils.hf_xet_fallback")
+        monkeypatch.setattr(shim, "_gpu_present", lambda: True)
+        assert shim._load_shared() is False
+        # Exactly ONE attempt, made without the light-init flag.
+        assert attempts == [None], attempts
+        assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop("utils.hf_xet_fallback", None)
+        sys.modules.update(saved)
+        if saved_shim is not None:
+            sys.modules["utils.hf_xet_fallback"] = saved_shim
+
+
 def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
     """GPU detection in unsloth_zoo's __init__ raises NotImplementedError on a GPU-less host. The shim
     retries under UNSLOTH_ZOO_DISABLE_GPU_INIT=1, restores the env, and degrades if the retry fails.
@@ -345,6 +390,9 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
     sys.meta_path.insert(0, finder)
     try:
         degraded = importlib.import_module("utils.hf_xet_fallback")
+        # The retry only applies to a host with no accelerator (see _gpu_present); pin that on the
+        # freshly imported module so this keeps exercising the light-init path.
+        monkeypatch.setattr(degraded, "_gpu_present", lambda: False)
         # Import is light (lazy backend); unsloth_zoo not loaded yet.
         assert seen_env == [], seen_env
         # First use of a heavy helper triggers the load (attempt without the light env, then a retry
