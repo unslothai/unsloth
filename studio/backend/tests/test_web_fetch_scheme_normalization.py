@@ -64,6 +64,15 @@ def test_schemeless_urls_are_fetched_as_https(resolved, url, hostname, port):
         # out-of-range ports are not host:port either
         "example.com:99999",
         "example.com:0",
+        # str.isdigit() is True for digits int() refuses, so a port must be
+        # matched as ASCII [0-9] or these raise instead of blocking
+        "example.com:²",
+        "example.com:²/x",
+        "example.com:①",
+        "example.com:1²",
+        "//example.com:²",
+        # non-ASCII decimal digits int() accepts are ports urlparse then refuses
+        "example.com:٤٤٣",
         # root-relative paths have no host to fetch
         "/login",
         "/github.com/owner/repo",

@@ -4147,6 +4147,9 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
 
 
 _DOTTED_HOST_RE = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
+# ASCII-only, and capped at 5 digits so the range check never converts an
+# unbounded integer. str.isdigit() is True for digits int() refuses ("²").
+_PORT_RE = re.compile(r"[0-9]{1,5}")
 
 
 def _normalize_url_scheme(url: str) -> str:
@@ -4175,7 +4178,7 @@ def _normalize_url_scheme(url: str) -> str:
     host, _, port = authority.partition(":")
     if not _DOTTED_HOST_RE.fullmatch(host):
         return url
-    if port and not (port.isdigit() and len(port) <= 5 and 1 <= int(port) <= 65535):
+    if port and not (_PORT_RE.fullmatch(port) and 1 <= int(port) <= 65535):
         return url
     return "https://" + rest
 
