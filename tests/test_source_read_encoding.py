@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import ast
 import os
+import subprocess
 from pathlib import Path
 
 TESTS = Path(__file__).resolve().parent
@@ -67,18 +68,46 @@ REPO = TESTS.parent
 SKIP_DIRS = {".git", ".venv", "build", "dist", "frontend", "node_modules", "site-packages"}
 
 
-def _test_roots(repo: Path) -> tuple:
-    """Every checked-in pytest tree, discovered rather than enumerated."""
-    roots = []
-    for dirpath, dirnames, _ in os.walk(repo):
+def _walked_test_files(repo: Path):
+    """Every *.py under a tests directory, found by walking."""
+    found = []
+    for dirpath, dirnames, filenames in os.walk(repo):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
-        if os.path.basename(dirpath) == "tests":
-            roots.append(Path(dirpath))
-            dirnames[:] = []  # rglob below already covers everything under it
-    return tuple(roots)
+        if "tests" not in Path(dirpath).relative_to(repo).parts:
+            continue
+        found.extend(Path(dirpath) / f for f in filenames if f.endswith(".py"))
+    return found
 
 
-ROOTS = _test_roots(REPO)
+def _tracked_test_files(repo: Path):
+    """The same, but only what git is actually tracking.
+
+    A walk picks up whatever happens to be lying in the checkout: a scratch
+    directory, a nested worktree, a vendored dependency. None of those are ours
+    to police, and a single syntax error in one would fail this test for
+    everybody who has one. Asking git keeps the promise the docstring makes.
+    """
+    try:
+        listed = subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "-z", "--", "*.py"],
+            capture_output = True,
+            timeout = 60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if listed.returncode != 0:
+        return None  # not a checkout, so fall back to walking
+    names = listed.stdout.decode("utf-8", errors = "replace").split("\0")
+    return [
+        repo / name
+        for name in names
+        if name and "tests" in Path(name).parts and not SKIP_DIRS.intersection(Path(name).parts)
+    ]
+
+
+SOURCES = _tracked_test_files(REPO)
+if SOURCES is None:
+    SOURCES = _walked_test_files(REPO)
 GUARDED_METHODS = {"read_text", "write_text"}
 # Openers that are somebody else's are recognised by the file's own imports
 # rather than a fixed list, so `import tarfile as tf` and `from PIL import
@@ -284,12 +313,24 @@ def _is_generator(func) -> bool:
 
 def _module_level_names(tree: ast.Module) -> set:
     """Names assigned at module scope."""
+
+    def _bound(target):
+        # `SOURCE, CONFIG = Path(...), Path(...)` binds both.
+        if isinstance(target, ast.Name):
+            yield target.id
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                yield from _bound(element)
+        elif isinstance(target, ast.Starred):
+            yield from _bound(target.value)
+
     names = set()
     for node in tree.body:
         if isinstance(node, ast.Assign):
-            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            names.add(node.target.id)
+            for target in node.targets:
+                names.update(_bound(target))
+        elif isinstance(node, ast.AnnAssign):
+            names.update(_bound(node.target))
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             # `start._CODEX_FALLBACK_PROMPT` is a path another module defines at
             # its own module scope, so the import is an anchor like any constant.
@@ -316,24 +357,55 @@ def _local_names(func) -> set:
     return names
 
 
-def _imported_names(tree: ast.Module) -> dict:
-    """Every name an import binds, mapped to where it came from.
+def _imported_names(node) -> dict:
+    """Names this scope's own imports bind, mapped to where they came from.
 
     The name alone is not enough in either direction. `import gzip as gz` binds
     a name nobody would recognise to an opener that does take an encoding, and
     `from PIL.Image import open` binds a name everybody recognises to one that
     does not. Keeping the origin settles both.
+
+    Nested function bodies are left out: an import inside one is that
+    function's business, and treating it as the module's would let a single
+    local `from PIL.Image import open` turn off the builtin check everywhere.
     """
     bound = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
+    stack = list(ast.iter_child_nodes(node))
+    while stack:
+        item = stack.pop()
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        if isinstance(item, ast.Import):
+            for alias in item.names:
                 bound[(alias.asname or alias.name).split(".")[0]] = alias.name
-        elif isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                origin = f"{node.module}.{alias.name}" if node.module else alias.name
+        elif isinstance(item, ast.ImportFrom):
+            for alias in item.names:
+                origin = f"{item.module}.{alias.name}" if item.module else alias.name
                 bound[alias.asname or alias.name] = origin
+        else:
+            stack.extend(ast.iter_child_nodes(item))
     return bound
+
+
+def _imports_at_each_call(tree: ast.Module) -> dict:
+    """The imports visible at every call, keyed by node id.
+
+    A function's own imports are added on the way in and go out of view again
+    on the way out, which is what keeps a local alias local.
+    """
+    visible_at = {}
+
+    def walk(node, visible):
+        if isinstance(node, ast.Call):
+            visible_at[id(node)] = visible
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                walk(child, {**visible, **_imported_names(child)})
+            else:
+                walk(child, visible)
+
+    walk(tree, _imported_names(tree))
+    return visible_at
 
 
 def _origin_root(name, modules) -> str:
@@ -605,7 +677,11 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
         good = grown
 
 
-def _checked_in_path_calls(tree: ast.Module, modules = NO_MODULES):
+def _checked_in_path_calls(
+    tree: ast.Module,
+    modules = NO_MODULES,
+    visible_at = None,
+):
     """Yield calls, at any depth, whose path is provably a checked-in file.
 
     The import-time walk alone leaves test bodies unguarded, and a bare read
@@ -621,6 +697,7 @@ def _checked_in_path_calls(tree: ast.Module, modules = NO_MODULES):
     """
     module_names = _module_level_names(tree)
     consumed = _eagerly_consumed(tree)
+    visible_at = _imports_at_each_call(tree) if visible_at is None else visible_at
     params = _checked_in_params(tree, module_names)
 
     def visit(
@@ -644,7 +721,7 @@ def _checked_in_path_calls(tree: ast.Module, modules = NO_MODULES):
                 yield from visit(node.generators[0].iter, shadowed, derived)
             return
         elif isinstance(node, ast.Call):
-            expr = _path_expr(node, modules)
+            expr = _path_expr(node, visible_at.get(id(node), modules))
             if expr is not None and _is_checked_in_root(expr, module_names, shadowed, derived):
                 yield node
         for child in ast.iter_child_nodes(node):
@@ -776,20 +853,20 @@ def _offender(call: ast.Call, modules = NO_MODULES) -> str | None:
 def _scan(tree: ast.Module, rel: str):
     """Offenders from both rules, reported once each and in source order."""
     modules = _imported_names(tree)
+    visible_at = _imports_at_each_call(tree)
     calls = {id(c): c for c in _import_time_calls(tree)}
-    calls.update({id(c): c for c in _checked_in_path_calls(tree, modules)})
+    calls.update({id(c): c for c in _checked_in_path_calls(tree, modules, visible_at)})
     for call in sorted(calls.values(), key = lambda c: (c.lineno, c.col_offset)):
-        name = _offender(call, modules)
+        name = _offender(call, visible_at.get(id(call), modules))
         if name is not None:
             yield f"{rel}:{call.lineno}: {name}"
 
 
 def test_checked_in_file_reads_name_an_encoding():
     offenders = []
-    for root in ROOTS:
-        for path in sorted(root.rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
-            offenders.extend(_scan(tree, path.relative_to(REPO).as_posix()))
+    for path in sorted(SOURCES):
+        tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
+        offenders.extend(_scan(tree, path.relative_to(REPO).as_posix()))
     assert offenders == [], (
         f"{len(offenders)} file reads in the test trees touch a checked-in file "
         "with the platform default encoding, so they break on Windows as soon "
