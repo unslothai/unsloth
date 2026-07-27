@@ -139,6 +139,24 @@ PLATFORM_DEFAULT_ENCODINGS = (None, "locale")
 # platform default, but the instance takes the first slot so every argument
 # shifts one place right.
 PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
+# Modules whose `open` IS the builtin: same signature, same platform default.
+BUILTIN_OPEN_MODULES = {"builtins", "io"}
+# Receivers `self.SOURCE` and `cls.SOURCE` reach a class attribute through.
+SELF_NAMES = {"cls", "self"}
+# Functions that hand back a path still pointing at their first argument. An
+# unlisted call is left unresolved: a helper may well return a temp copy of what
+# it was given, and following it would put test-created files back in scope.
+PATH_FUNCTIONS = {
+    "abspath",
+    "dirname",
+    "expanduser",
+    "fspath",
+    "join",
+    "normpath",
+    "realpath",
+    "relpath",
+    "str",
+}
 # Path methods that hand back another path, so the receiver is still the anchor.
 PATH_METHODS = {
     "absolute",
@@ -160,6 +178,39 @@ UNKNOWN_MODE = object()
 # Stand-in for a file whose imports are not to hand, so every helper can be
 # called on its own without pretending it knows what was imported.
 NO_MODULES: dict = {}
+
+
+def _static_truth(node: ast.AST):
+    """Whether a condition is a literal true or false, else None for "depends"."""
+    return bool(node.value) if isinstance(node, ast.Constant) else None
+
+
+def _live_branches(node: ast.AST):
+    """The children of a branch that can actually run, or None if it is not one.
+
+    `if False:` and the right of `False and ...` never execute, so reporting a
+    read there is a CI failure with no reachable cause and no correct edit.
+    """
+    if isinstance(node, ast.If):
+        taken = _static_truth(node.test)
+        if taken is None:
+            return None
+        return [node.test, *(node.body if taken else node.orelse)]
+    if isinstance(node, ast.IfExp):
+        taken = _static_truth(node.test)
+        if taken is None:
+            return None
+        return [node.test, node.body if taken else node.orelse]
+    if isinstance(node, ast.BoolOp) and node.values:
+        # `and` stops at the first false operand, `or` at the first true one.
+        stops = isinstance(node.op, ast.Or)
+        live = []
+        for value in node.values:
+            live.append(value)
+            if _static_truth(value) is stops:
+                break
+        return live if len(live) < len(node.values) else None
+    return None
 
 
 def _is_main_guard(node: ast.AST) -> bool:
@@ -251,6 +302,10 @@ def _import_time_calls(tree: ast.Module):
                 continue
             if _is_main_guard(node):
                 stack.extend(node.orelse)  # the else arm runs at import
+                continue
+            live = _live_branches(node)
+            if live is not None:
+                stack.extend(live)  # the dead arm never runs, so nothing in it does
                 continue
             if isinstance(node, ast.Call):
                 yield node
@@ -353,11 +408,22 @@ def _local_names(func) -> set:
     for extra in (args.vararg, args.kwarg):
         if extra is not None:
             names.add(extra.arg)
-    for node in ast.walk(func):
+    stack = list(ast.iter_child_nodes(func))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            # A comprehension target binds in its own scope, so it shadows
+            # nothing out here; the rest of the comprehension still does.
+            for gen in node.generators:
+                stack.append(gen.iter)
+                stack.extend(gen.ifs)
+            stack.extend([node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt])
+            continue
         if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
             names.add(node.id)
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             names.update((a.asname or a.name).split(".")[0] for a in node.names)
+        stack.extend(ast.iter_child_nodes(node))
     return names
 
 
@@ -425,7 +491,7 @@ def _open_alias(name, modules):
     parts = origin.split(".")
     if parts[-1] != "open":
         return None
-    if parts[0] == "io" or origin == "open":
+    if parts[0] in BUILTIN_OPEN_MODULES or origin == "open":
         return "builtin"
     return parts[0] if parts[0] in COMPRESSED_OPENERS else None
 
@@ -443,13 +509,31 @@ def _compressed_key(name, modules):
     return None
 
 
+def _is_path_class(name, modules) -> bool:
+    """True for a pathlib class, including under an alias.
+
+    `from pathlib import Path as P` still puts the instance in slot 0 of an
+    unbound `P.read_text(SOURCE)`, so matching the bare name is not enough.
+    """
+    if name is None:
+        return False
+    return (modules.get(name) or name).split(".")[-1] in PATH_CLASSES
+
+
+def _is_path_preserving(func) -> bool:
+    """True for a call whose result still points at its first argument."""
+    if isinstance(func, ast.Name):
+        return func.id in PATH_CLASSES or func.id in PATH_FUNCTIONS
+    return isinstance(func, ast.Attribute) and func.attr in PATH_FUNCTIONS
+
+
 def _is_module_receiver(name, modules) -> bool:
     """True for a receiver that is not itself a path."""
     return (
         name in modules
-        or name in PATH_CLASSES
+        or _is_path_class(name, modules)
         or _compressed_key(name, modules) is not None
-        or _origin_root(name, modules) == "io"
+        or _origin_root(name, modules) in BUILTIN_OPEN_MODULES
     )
 
 
@@ -463,15 +547,18 @@ def _path_expr(call: ast.Call, modules = NO_MODULES):
     func = call.func
     if isinstance(func, ast.Attribute):
         if isinstance(func.value, ast.Name) and _is_module_receiver(func.value.id, modules):
-            return call.args[0] if call.args else None
+            return call.args[0] if call.args else _path_keyword(call)
         return func.value
     if isinstance(func, ast.Name) and _open_alias(func.id, modules) is not None:
-        if call.args:
-            return call.args[0]
-        # open(file = CHECKED_IN) is the same call spelled out.
-        for kw in call.keywords:
-            if kw.arg == "file":
-                return kw.value
+        return call.args[0] if call.args else _path_keyword(call)
+    return None
+
+
+def _path_keyword(call: ast.Call):
+    """The path passed by keyword: `file` for open, `filename` for gzip and kin."""
+    for kw in call.keywords:
+        if kw.arg in ("file", "filename"):
+            return kw.value
     return None
 
 
@@ -488,6 +575,12 @@ def _path_root(node: ast.AST) -> ast.AST:
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
             node = node.left
         elif isinstance(node, (ast.Attribute, ast.Subscript)):
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id in SELF_NAMES
+            ):
+                return node  # self.SOURCE names the class attribute, not self
             node = node.value
         elif isinstance(node, ast.Call):
             func = node.func
@@ -495,11 +588,12 @@ def _path_root(node: ast.AST) -> ast.AST:
             # Path(x), str(x) and os.path.join(x, ...) anchor on the argument.
             if isinstance(func, ast.Attribute) and func.attr in PATH_METHODS:
                 node = func.value
-            elif node.args:
+            elif _is_path_preserving(func) and node.args:
                 node = node.args[0]
             else:
-                # An unrecognised no-argument method says nothing about where
-                # its result points, so tempfile.mkdtemp() stops here.
+                # An unrecognised call says nothing about where its result
+                # points, so tempfile.mkdtemp() and a helper that copies its
+                # argument into a temp dir both stop here.
                 return node
         else:
             return node
@@ -510,6 +604,7 @@ def _is_checked_in_root(
     module_names: set,
     shadowed,
     derived = (),
+    attrs = (),
 ) -> bool:
     """True when a path expression anchors on something that ships in the repo."""
     if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
@@ -521,6 +616,7 @@ def _is_checked_in_root(
                 module_names,
                 shadowed,
                 derived,
+                attrs,
             )
             for e in node.elts
         )
@@ -535,11 +631,40 @@ def _is_checked_in_root(
             return (REPO / value).exists()
         except OSError:
             return False  # too long to be a name, so not one
+    if isinstance(root, ast.Attribute):
+        # `self.SOURCE`, where the class body bound SOURCE to a checked-in path.
+        return root.attr in attrs
     if not isinstance(root, ast.Name):
         return False
     if root.id in derived:
         return True
     return root.id == "__file__" or (root.id in module_names and root.id not in shadowed)
+
+
+def _class_path_attrs(tree: ast.Module, module_names: set) -> set:
+    """Class-body names bound to a checked-in path, read back as `self.NAME`.
+
+    `class T: _SETUP_SH = ROOT / "setup.sh"` then `self._SETUP_SH.read_text()`
+    is as statically provable as the module-level spelling, and the repository
+    reads seven real source files exactly that way.
+    """
+    attrs, mixed = set(), set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for stmt in node.body:
+            if isinstance(stmt, ast.Assign):
+                targets = stmt.targets
+            elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+                targets = [stmt.target]
+            else:
+                continue
+            bound = {t.id for t in targets if isinstance(t, ast.Name)}
+            # One attribute name, two classes, two meanings: only one of them is
+            # provable, so neither is claimed. Same rule as the local walk.
+            found = attrs if _is_checked_in_root(stmt.value, module_names, ()) else mixed
+            found.update(bound)
+    return attrs - mixed
 
 
 def _reads_itself(name: str, value: ast.AST) -> bool:
@@ -668,12 +793,37 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
     `_source` is reading a file that ships in the repo; the bare
     `path.read_text()` inside it cannot say so on its own. One hop only, and a
     parameter any call leaves out, or passes anything else, is not tracked.
+
+    Definitions are held by identity, not by name. Two tests that each nest a
+    `_read` helper are two different functions, and merging them would let the
+    one handed a tmp_path rule out what the other proves.
     """
-    funcs = {
-        node.name: node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
+    # Every definition, plus which scope it was written in, so a call resolves
+    # to the nearest enclosing `def` of that name the way Python resolves it.
+    scope_of: dict = {}
+    defs_in: dict = {}
+
+    def _index(node, scope):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                defs_in.setdefault(id(scope), {}).setdefault(child.name, child)
+                scope_of[id(child)] = scope
+                _index(child, child)
+            elif isinstance(child, ast.ClassDef):
+                _index(child, scope)  # a class body is not a name lookup scope
+            else:
+                _index(child, scope)
+
+    _index(tree, tree)
+
+    def _lookup(name, scope):
+        while scope is not None:
+            found = defs_in.get(id(scope), {}).get(name)
+            if found is not None:
+                return found
+            scope = scope_of.get(id(scope))
+        return None
+
     # Which function each call sits in, so a parameter already known to hold a
     # checked-in path can be passed on to the next helper.
     owner: dict = {}
@@ -689,26 +839,26 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
     good: set = set()
     while True:
         grown, bad = set(), set()
-        for fname, fnode in funcs.items():
+        for fnode in [d for scope in defs_in.values() for d in scope.values()]:
             for argname, values in _parametrized_values(fnode).items():
                 ok = all(_is_checked_in_root(v, module_names, ()) for v in values)
-                (grown if ok else bad).add((fname, argname))
+                (grown if ok else bad).add((id(fnode), argname))
         # What the calling function itself can prove, recomputed each pass so a
         # parameter resolved last time can feed a local this time.
         scope: dict = {}
         for call in ast.walk(tree):
             if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
                 continue
-            func = funcs.get(call.func.id)
+            caller = owner.get(id(call))
+            func = _lookup(call.func.id, caller if caller is not None else tree)
             if func is None or any(isinstance(a, ast.Starred) for a in call.args):
                 continue
-            caller = owner.get(id(call))
             if caller is None:
                 here = set()
             elif id(caller) in scope:
                 here = scope[id(caller)]
             else:
-                params = {p for f, p in good if f == caller.name}
+                params = {p for f, p in good if f == id(caller)}
                 here = _checked_in_locals(caller, module_names, _local_names(caller), params)
                 scope[id(caller)] = here
             positional = [a.arg for a in [*func.args.posonlyargs, *func.args.args]]
@@ -720,7 +870,7 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
             for param in params:
                 value = supplied.get(param)
                 ok = value is not None and _is_checked_in_root(value, module_names, (), here)
-                (grown if ok else bad).add((func.name, param))
+                (grown if ok else bad).add((id(func), param))
         grown -= bad
         if grown == good:
             return good
@@ -749,6 +899,7 @@ def _checked_in_path_calls(
     consumed = _eagerly_consumed(tree)
     visible_at = _imports_at_each_call(tree) if visible_at is None else visible_at
     params = _checked_in_params(tree, module_names)
+    attrs = _class_path_attrs(tree, module_names)
 
     def visit(
         node,
@@ -759,7 +910,7 @@ def _checked_in_path_calls(
             shadowed = shadowed | _local_names(node)
             # Seed with the parameters first: `p = root / "x.py"` is only
             # derivable once `root` is known to hold a checked-in path.
-            seeded = {p for f, p in params if f == getattr(node, "name", None)}
+            seeded = {p for f, p in params if f == id(node)}
             derived = _checked_in_locals(node, module_names, shadowed, seeded)
         elif _is_main_guard(node):
             # Never runs under pytest, so rule 1 skips it for the same reason.
@@ -770,9 +921,15 @@ def _checked_in_path_calls(
             if node.generators:
                 yield from visit(node.generators[0].iter, shadowed, derived)
             return
+        elif (live := _live_branches(node)) is not None:
+            for child in live:
+                yield from visit(child, shadowed, derived)
+            return
         elif isinstance(node, ast.Call):
             expr = _path_expr(node, visible_at.get(id(node), modules))
-            if expr is not None and _is_checked_in_root(expr, module_names, shadowed, derived):
+            if expr is not None and _is_checked_in_root(
+                expr, module_names, shadowed, derived, attrs
+            ):
                 yield node
         for child in ast.iter_child_nodes(node):
             yield from visit(child, shadowed, derived)
@@ -846,7 +1003,7 @@ def _offender(call: ast.Call, modules = NO_MODULES) -> str | None:
     if isinstance(func, ast.Attribute):
         receiver = func.value.id if isinstance(func.value, ast.Name) else None
         # An unbound `Path.read_text(p)` puts the instance in slot 0.
-        shift = 1 if receiver in PATH_CLASSES else 0
+        shift = 1 if _is_path_class(receiver, modules) else 0
         if func.attr in GUARDED_METHODS:
             if func.attr == "read_text" and not shift and call.args:
                 first = call.args[0]
@@ -860,12 +1017,12 @@ def _offender(call: ast.Call, modules = NO_MODULES) -> str | None:
             position = ENCODING_POSITION[func.attr] + shift
             return None if _pins_encoding(call, position) else f"{func.attr}()"
         if func.attr == "open":
-            # io.open IS the builtin, so it takes the builtin's argument
-            # positions and carries the same platform default.
-            if receiver is not None and _origin_root(receiver, modules) == "io":
+            # io.open and builtins.open ARE the builtin, so they take the
+            # builtin's argument positions and the same platform default.
+            if receiver is not None and _origin_root(receiver, modules) in BUILTIN_OPEN_MODULES:
                 if not _is_text(call, 1) or _pins_encoding(call, ENCODING_POSITION["open"]):
                     return None
-                return "io.open()"
+                return f"{receiver}.open()"
             compressed = _compressed_key(receiver, modules) if receiver else None
             if compressed is not None:
                 mode = _open_mode(call, 1)
@@ -879,7 +1036,11 @@ def _offender(call: ast.Call, modules = NO_MODULES) -> str | None:
             # Any other module receiver is somebody else's opener: tarfile.open
             # takes a compression mode, Image.open takes a binary file. Neither
             # has an encoding to name, so demanding one leaves no correct edit.
-            if receiver is not None and receiver in modules and receiver not in PATH_CLASSES:
+            if (
+                receiver is not None
+                and receiver in modules
+                and not _is_path_class(receiver, modules)
+            ):
                 return None
             if not _is_text(call, shift):
                 return None
