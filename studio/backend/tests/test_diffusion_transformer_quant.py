@@ -49,8 +49,7 @@ def _stub_torch(
     torch.cuda = types.SimpleNamespace(
         is_available = lambda: cuda_available,
         get_device_capability = lambda *a: cc,
-        # A data-center name by default so the ladder tests get the data-center order; consumer tests pass
-        # a GeForce name (or monkeypatch _is_consumer_gpu).
+        # A data-center name by default so the ladder tests get the data-center order; consumer tests pass a GeForce name (or monkeypatch _is_consumer_gpu).
         get_device_name = lambda *a: device_name,
     )
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -92,8 +91,7 @@ def _allow(monkeypatch, allowed):
 
 def test_auto_blackwell_prefers_fp8_then_falls_back(monkeypatch):
     _stub_torch(monkeypatch, cc = (10, 0))
-    # Even with every scheme available, auto picks fp8 on Blackwell: measured on a B200, fp8 is both
-    # faster and more accurate than nvfp4 for the DiT's shapes.
+    # Even with every scheme available, auto picks fp8 on Blackwell: measured on a B200, fp8 is both faster and more accurate than nvfp4 for the DiT's shapes.
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
     # fp8 unavailable: nvfp4 is the next pick (above mxfp8 / int8).
@@ -108,8 +106,7 @@ def test_auto_blackwell_prefers_fp8_then_falls_back(monkeypatch):
 
 
 def test_auto_consumer_blackwell_prefers_int8(monkeypatch):
-    # Consumer Blackwell (RTX 50xx): fp8 FP32-accumulate is throughput-halved while int8 is full-rate,
-    # so auto prefers int8 even though fp8 is available.
+    # Consumer Blackwell (RTX 50xx): fp8 FP32-accumulate is throughput-halved while int8 is full-rate, so auto prefers int8 even though fp8 is available.
     _stub_torch(monkeypatch, cc = (10, 0), device_name = "NVIDIA GeForce RTX 5090")
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
@@ -133,8 +130,7 @@ def test_auto_workstation_unknown_prefers_int8(monkeypatch):
 
 
 def test_auto_professional_rtx_prefers_fp8(monkeypatch):
-    # Professional parts (RTX PRO 6000 Blackwell, RTX 6000 Ada) are classified datacenter by the rest
-    # of the backend, so auto keeps fp8 first, matching llama_cpp.
+    # Professional parts (RTX PRO 6000 Blackwell, RTX 6000 Ada) are classified datacenter by the rest of the backend, so auto keeps fp8 first, matching llama_cpp.
     for device_name, cc in (
         ("NVIDIA RTX PRO 6000 Blackwell Server Edition", (10, 0)),
         ("NVIDIA RTX 6000 Ada Generation", (8, 9)),
@@ -296,8 +292,7 @@ def test_is_consumer_gpu_false_for_datacenter(monkeypatch, name):
 
 
 def test_is_consumer_gpu_defaults_true_on_probe_failure(monkeypatch):
-    # No torch / no device name available assumes consumer (safe: fast accum is free on data center
-    # and a win on consumer).
+    # No torch / no device name available assumes consumer (safe: fast accum is free on data center and a win on consumer).
     torch = types.ModuleType("torch")
     torch.cuda = types.SimpleNamespace()  # no get_device_name
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -325,8 +320,7 @@ def test_make_filter_fn(monkeypatch):
 
 
 def test_require_bf16_schemes_excludes_nvfp4():
-    # fp8 and mxfp8 assert a bf16 weight (torchao 0.17 / B200), so they gate on it; nvfp4 quantises an
-    # fp32 weight fine, so it is NOT gated and keeps its large fp32 projections quantised.
+    # fp8 and mxfp8 assert a bf16 weight (torchao 0.17 / B200), so they gate on it; nvfp4 quantises an fp32 weight fine, so it is NOT gated and keeps its large fp32 projections quantised.
     from core.inference.diffusion_transformer_quant import (
         _REQUIRE_BF16_SCHEMES,
         TQ_FP8,
@@ -342,9 +336,7 @@ def test_require_bf16_schemes_excludes_nvfp4():
 
 
 def test_make_filter_fn_require_bf16_skips_non_bf16(monkeypatch):
-    # fp8 / mxfp8 assert a bf16 weight, so require_bf16 must skip an fp32 Linear (which Wan / Hunyuan
-    # video DiTs keep) while keeping the bf16 ones, else one fp32 layer raises inside quantize_ and
-    # no-ops the whole pass. int8 and nvfp4 leave it off.
+    # fp8 / mxfp8 assert a bf16 weight, so require_bf16 must skip an fp32 Linear (which Wan / Hunyuan video DiTs keep) while keeping the bf16 ones, else one fp32 layer raises inside quantize_ and no-ops the whole pass. int8 and nvfp4 leave it off.
     torch = types.ModuleType("torch")
     torch.bfloat16, torch.float32 = "bf16", "fp32"
 
@@ -365,9 +357,7 @@ def test_make_filter_fn_require_bf16_skips_non_bf16(monkeypatch):
 
 
 def test_make_filter_fn_int8_excludes_modulation_and_embedders(monkeypatch):
-    # The int8 path skips the large M=1 AdaLN modulation / conditioning-embedder projections (they
-    # crash torch._int_mm's M floor of 16) while keeping the attention / FFN compute layers and the
-    # sequence embedders. fp8 (no exclusion) keeps everything.
+    # The int8 path skips the large M=1 AdaLN modulation / conditioning-embedder projections (they crash torch._int_mm's M floor of 16) while keeping the attention / FFN compute layers and the sequence embedders. fp8 (no exclusion) keeps everything.
     from core.inference.diffusion_transformer_quant import _INT8_EXCLUDE_NAME_TOKENS
 
     class _Lin:
@@ -406,16 +396,13 @@ def test_make_filter_fn_int8_excludes_modulation_and_embedders(monkeypatch):
         assert keep(big(), fqn) is True, fqn
     # Without the exclusion (fp8 path), the modulation layer is kept.
     assert make_filter_fn(512)(big(), "transformer_blocks.0.norm1.linear") is True
-    # A None / empty fqn must not crash the exclusion check; with no name nothing matches, so it is
-    # kept.
+    # A None / empty fqn must not crash the exclusion check; with no name nothing matches, so it is kept.
     assert keep(big(), None) is True
     assert keep(big(), "") is True
 
 
 def test_exclude_tokens_for_scheme_shared_by_runtime_and_builder():
-    # The runtime quantiser and the offline prequant builder must apply the SAME int8 exclusion, or an
-    # int8 prequant artifact quantises the M=1 modulation/embedder linears and reintroduces the
-    # torch._int_mm crash.
+    # The runtime quantiser and the offline prequant builder must apply the SAME int8 exclusion, or an int8 prequant artifact quantises the M=1 modulation/embedder linears and reintroduces the torch._int_mm crash.
     from core.inference.diffusion_transformer_quant import (
         _INT8_EXCLUDE_NAME_TOKENS,
         exclude_tokens_for_scheme,
@@ -426,9 +413,7 @@ def test_exclude_tokens_for_scheme_shared_by_runtime_and_builder():
 
 
 def test_exclude_tokens_for_scheme():
-    # The shared scheme-to-exclusion decision used by BOTH the runtime quantise path and the offline
-    # prequant-checkpoint builder, so an int8 checkpoint skips exactly the layers the runtime path
-    # skips. int8 excludes the M=1 modulation / embedder tokens; every scaled_mm scheme excludes none.
+    # The shared scheme-to-exclusion decision used by BOTH the runtime quantise path and the offline prequant-checkpoint builder, so an int8 checkpoint skips exactly the layers the runtime path skips. int8 excludes the M=1 modulation / embedder tokens; every scaled_mm scheme excludes none.
     from core.inference.diffusion_transformer_quant import (
         _INT8_EXCLUDE_NAME_TOKENS,
         exclude_tokens_for_scheme,
@@ -441,9 +426,7 @@ def test_exclude_tokens_for_scheme():
 
 
 def test_exclude_tokens_for_scheme_family():
-    # Qwen-Image never pads its text stream (unlike FLUX's 512-token T5), so a short prompt runs the
-    # text-stream linears at M under 16 and torch._int_mm raises; they stay bf16 while the M ~ 4k image
-    # stream keeps int8 coverage. Unknown families keep the family-independent behaviour.
+    # Qwen-Image never pads its text stream (unlike FLUX's 512-token T5), so a short prompt runs the text-stream linears at M under 16 and torch._int_mm raises; they stay bf16 while the M ~ 4k image stream keeps int8 coverage. Unknown families keep the family-independent behaviour.
     from core.inference.diffusion_transformer_quant import (
         _INT8_EXCLUDE_NAME_TOKENS,
         _QWENIMAGE_INT8_EXCLUDES,
@@ -465,10 +448,7 @@ def test_exclude_tokens_for_scheme_family():
 
 
 def test_resolve_fast_accum(monkeypatch):
-    # None is fast accumulate on every GPU class; an explicit bool forces it. Deriving this from
-    # the GPU class made fp8 2.05x slower than int8 on RTX 6000 Ada (the precise-accumulate cuBLAS
-    # path costs there even though the card's published FP8 rates are equal for both modes), while
-    # on B200 the flag is a measured no-op, so there is nothing to trade away by defaulting it on.
+    # None is fast accumulate on every GPU class; an explicit bool forces it. Deriving this from the GPU class made fp8 2.05x slower than int8 on RTX 6000 Ada (the precise-accumulate cuBLAS path costs there even though the card's published FP8 rates are equal for both modes), while on B200 the flag is a measured no-op, so there is nothing to trade away by defaulting it on.
     for consumer in (True, False):
         monkeypatch.setattr(tq, "_is_consumer_gpu", lambda *a, _c = consumer: _c)
         assert tq._resolve_fast_accum(None) is True
@@ -569,8 +549,7 @@ def test_quantize_transformer_tolerates_failure(monkeypatch):
 
 
 def test_family_deny_auto_skips_fp8_for_qwen(monkeypatch):
-    # B200 with every scheme available: auto must NOT pick fp8 / nvfp4 / mxfp8 for the Qwen DiT
-    # (per-row fp8 renders black frames on it) and falls through the ladder to int8.
+    # B200 with every scheme available: auto must NOT pick fp8 / nvfp4 / mxfp8 for the Qwen DiT (per-row fp8 renders black frames on it) and falls through the ladder to int8.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image") == TQ_INT8
@@ -578,8 +557,7 @@ def test_family_deny_auto_skips_fp8_for_qwen(monkeypatch):
 
 
 def test_family_deny_refuses_explicit_fp8_for_qwen(monkeypatch):
-    # An explicit fp8 request on qwen-image returns None (same contract as an unsupported scheme).
-    # int8 stays honored on qwen, and fp8 stays honored outside the deny table.
+    # An explicit fp8 request on qwen-image returns None (same contract as an unsupported scheme). int8 stays honored on qwen, and fp8 stays honored outside the deny table.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "fp8", family = "qwen-image") is None
@@ -596,8 +574,7 @@ def test_family_deny_no_family_keeps_ladder(monkeypatch):
 
 
 def test_quantize_transformer_threads_family(monkeypatch):
-    # quantize_transformer passes the family down to the selector, so a denied (family, scheme) pair
-    # never reaches torchao.
+    # quantize_transformer passes the family down to the selector, so a denied (family, scheme) pair never reaches torchao.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_INT8})
     pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())

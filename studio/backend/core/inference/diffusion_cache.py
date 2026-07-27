@@ -27,13 +27,11 @@ TC_AUTO = "auto"
 TC_FBCACHE = "fbcache"
 TC_MODES = (TC_FBCACHE,)
 
-# FBCache residual thresholds: higher skips more steps (faster, lower quality). Quantised
-# transformers shift the residual distribution, so they need a higher threshold to trigger.
+# FBCache residual thresholds: higher skips more steps (faster, lower quality). Quantised transformers shift the residual distribution, so they need a higher threshold to trigger.
 DEFAULT_FBCACHE_THRESHOLD = 0.08
 QUANT_FBCACHE_THRESHOLD = 0.12
 
-# Auto step-count bar: FBCache's win scales with step count, so auto engages only at 20+ steps
-# ("dev" schedules qualify, distilled turbo never does).
+# Auto step-count bar: FBCache's win scales with step count, so auto engages only at 20+ steps ("dev" schedules qualify, distilled turbo never does).
 FBCACHE_MIN_STEPS = 20
 
 
@@ -71,8 +69,7 @@ def _invalidate_child_registry_cache(transformer: Any) -> None:
             pass
 
 
-# diffusers cache hook names whose compute branch we re-point at a compiled inner forward
-# (leader = measuring first block, block = the rest); both share the fn_ref layout.
+# diffusers cache hook names whose compute branch we re-point at a compiled inner forward (leader = measuring first block, block = the rest); both share the fn_ref layout.
 _CACHE_HOOK_NAMES = (
     "mag_cache_leader_block_hook",
     "mag_cache_block_hook",
@@ -118,8 +115,7 @@ def _compile_hooked_block_inners(transformer: Any, logger: Any = None) -> int:
                     continue
                 if getattr(orig, "__self__", None) is None:
                     continue  # not a plain bound method; arming would miss the block
-                # fullgraph=False / dynamic=True: a cache is active (its decision graph-breaks) and this matches
-                # the default tier. Dynamo caches per code object, so re-arming after a toggle is ~free.
+                # fullgraph=False / dynamic=True: a cache is active (its decision graph-breaks) and this matches the default tier. Dynamo caches per code object, so re-arming after a toggle is ~free.
                 fn_ref.original_forward = torch.compile(orig, fullgraph = False, dynamic = True)
                 hook._unsloth_orig_inner = orig
                 armed += 1
@@ -201,16 +197,12 @@ def apply_step_cache(
         if threshold is not None
         else (QUANT_FBCACHE_THRESHOLD if quant_active else DEFAULT_FBCACHE_THRESHOLD)
     )
-    # Engage only via the native enable_cache (CacheMixin path): the lower-level
-    # apply_first_block_cache hook would also install on a non-CacheMixin transformer whose pipeline
-    # opens no cache_context and crashes generation. Such a model runs uncached instead.
+    # Engage only via the native enable_cache (CacheMixin path): the lower-level apply_first_block_cache hook would also install on a non-CacheMixin transformer whose pipeline opens no cache_context and crashes generation. Such a model runs uncached instead.
     enable_cache = getattr(transformer, "enable_cache", None)
     if not callable(enable_cache):
         _warn(logger, mode, RuntimeError("transformer has no cache_context (not a CacheMixin)"))
         return None
-    # A CacheMixin transformer is necessary but not sufficient: the hook raises "No context is set"
-    # unless the PIPELINE wraps its denoise loop in cache_context(...). Flux Kontext / img2img /
-    # inpaint / controlnet reuse FluxTransformer2DModel yet open none, so run uncached.
+    # A CacheMixin transformer is necessary but not sufficient: the hook raises "No context is set" unless the PIPELINE wraps its denoise loop in cache_context(...). Flux Kontext / img2img / inpaint / controlnet reuse FluxTransformer2DModel yet open none, so run uncached.
     if not _pipeline_opens_cache_context(pipe):
         _warn(
             logger, mode, RuntimeError("pipeline __call__ opens no cache_context; running uncached")
@@ -224,11 +216,9 @@ def apply_step_cache(
 
         config = FirstBlockCacheConfig(threshold = thr)
         enable_cache(config)
-        # enable_cache after the pipe ran leaves a stale cached child-registry list, so the new block
-        # hooks would never receive the cache context. Must follow every enable_cache.
+        # enable_cache after the pipe ran leaves a stale cached child-registry list, so the new block hooks would never receive the cache context. Must follow every enable_cache.
         _invalidate_child_registry_cache(transformer)
-        # If blocks are already regionally compiled (toggle path), re-point the fresh hooks' compute
-        # branch at compiled inners; the load path is armed by _compile_repeated_blocks.
+        # If blocks are already regionally compiled (toggle path), re-point the fresh hooks' compute branch at compiled inners; the load path is armed by _compile_repeated_blocks.
         _compile_hooked_block_inners(transformer, logger)
         try:
             transformer._unsloth_step_cache = f"{mode}@{thr}"
@@ -238,9 +228,7 @@ def apply_step_cache(
             logger.info("diffusion.cache: %s engaged (threshold=%s)", mode, thr)
         return mode
     except Exception as exc:  # noqa: BLE001 — incompatible model -> run uncached
-        # enable_cache can fail after hooking some blocks; drop partial hooks so the reported-uncached
-        # model isn't half-cached. Restore armed compiled inners FIRST (remove_hook splices
-        # original_forward back into module.forward).
+        # enable_cache can fail after hooking some blocks; drop partial hooks so the reported-uncached model is not half-cached. Restore armed compiled inners FIRST (remove_hook splices original_forward back into module.forward).
         _restore_hooked_block_inners(transformer)
         try:
             transformer.disable_cache()
@@ -313,8 +301,7 @@ def maybe_toggle_step_cache(
         disable_cache = getattr(transformer, "disable_cache", None)
         if callable(disable_cache):
             try:
-                # Restore before remove_hook splices original_forward back, so compiled wrappers don't leak
-                # onto the uncached path.
+                # Restore before remove_hook splices original_forward back, so compiled wrappers do not leak onto the uncached path.
                 _restore_hooked_block_inners(transformer)
                 disable_cache()
                 transformer._unsloth_step_cache = None

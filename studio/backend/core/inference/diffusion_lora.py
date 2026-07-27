@@ -62,8 +62,7 @@ class ResolvedLora:
     weight: float
 
 
-# Curated, family-tagged catalog of known-good diffusion LoRAs (HF repos with a single-file
-# weight). Local discovery and any public HF LoRA repo id also work.
+# Curated, family-tagged catalog of known-good diffusion LoRAs (HF repos with a single-file weight). Local discovery and any public HF LoRA repo id also work.
 
 
 def _krea2_lora(style: str, display_name: str) -> LoraCatalogEntry:
@@ -123,8 +122,7 @@ def _scan_local() -> list[LoraCatalogEntry]:
     except OSError:
         return []
     files = [p for p in children if p.is_file() and p.suffix.lower() in _ALL_EXTS]
-    # Two files sharing a stem but differing in extension collide on id (== stem), so a colliding
-    # stem keeps the full filename as its id.
+    # Two files sharing a stem but differing in extension collide on id (== stem), so a colliding stem keeps the full filename as its id.
     stem_counts: dict[str, int] = {}
     for p in files:
         stem_counts[p.stem] = stem_counts.get(p.stem, 0) + 1
@@ -136,8 +134,7 @@ def _scan_local() -> list[LoraCatalogEntry]:
         except OSError:
             size = 0
         entry_id = p.name if stem_counts.get(p.stem, 0) > 1 else p.stem
-        # A ``<stem>.json`` sidecar (written by the trainer on publish) records the adapter's family +
-        # default weight so it is family-gated instead of "unknown". Best-effort.
+        # A ``<stem>.json`` sidecar (written by the trainer on publish) records the adapter's family + default weight so it is family-gated instead of "unknown". Best-effort.
         families, weight_default = _read_lora_sidecar(p)
         entries.append(
             LoraCatalogEntry(
@@ -243,8 +240,7 @@ def resolve_one(
         repo_id, _, weight_name = spec_id.partition(":")
         weight_name = weight_name or None
         if weight_name is not None:
-            # A client-supplied weight file must stay a plain filename inside the repo: reject traversal /
-            # absolute paths so it can't resolve outside the HF cache dir.
+            # A client-supplied weight file must stay a plain filename inside the repo: reject traversal / absolute paths so it cannot resolve outside the HF cache dir.
             if (
                 ".." in weight_name
                 or weight_name.startswith(("/", "\\", "~"))
@@ -381,8 +377,7 @@ def inject_prompt_tags(prompt: str, resolved: list[ResolvedLora]) -> str:
     must WIN over any user-typed `<lora:ALIAS:...>`, so strip ALL user tags first (unselected ones
     are dead anyway, not in the managed dir) then append the validated ones.
     """
-    # Drop every user-typed tag: unselected ones are dead, selected ones must not override the
-    # validated weight / 0-2 bounds.
+    # Drop every user-typed tag: unselected ones are dead, selected ones must not override the validated weight / 0-2 bounds.
     cleaned = _TAG_RE.sub("", prompt)
     # Collapse whitespace left by stripped tags.
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
@@ -399,8 +394,7 @@ def _fmt_weight(w: float) -> str:
     return s or "0"
 
 
-# Families sd-cli's LoRA name-conversion supports (Qwen-Image has no branch). Matched by
-# substring against the resolved family name.
+# Families sd-cli's LoRA name-conversion supports (Qwen-Image has no branch). Matched by substring against the resolved family name.
 _NATIVE_LORA_FAMILY_TOKENS = (
     "flux.1",
     "flux.2",
@@ -411,10 +405,8 @@ _NATIVE_LORA_FAMILY_TOKENS = (
     "sd3",
     "stable-diffusion",
 )
-# Diffusers quant schemes whose LoRA path is the load-time BAKE (adapters attach on the dense
-# transformer BEFORE torchao quantize_ + compile; peft's post-quant TorchaoLoraLinear dispatch
-# needs quantizer metadata a manual quantize_ never has). Verified on the Studio stack (peft
-# 0.18.1 / torchao 0.17 / torch 2.10): scale 0 reproduces the quantized base bit-exactly.
+# Diffusers quant schemes whose LoRA path is the load-time BAKE (adapters attach on the dense transformer BEFORE torchao quantize_ + compile; peft's post-quant TorchaoLoraLinear dispatch needs quantizer metadata a manual quantize_ never has).
+# Verified on the Studio stack (peft 0.18.1 / torchao 0.17 / torch 2.10): scale 0 reproduces the quantized base bit-exactly.
 _DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
 # Prototype schemes with no validated LoRA path (and no shipped families needing one).
 _DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")

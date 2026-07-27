@@ -36,9 +36,7 @@ TE_QUANT_MODES = (TE_QUANT_FP8, TE_QUANT_NVFP4, TE_QUANT_INT8, TE_QUANT_FP8_DYNA
 # Pipeline attributes that hold a text encoder, in order.
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 
-# int8 degrades on large text encoders unless the quant-sensitive decoder blocks stay bf16.
-# Per-family (skip_first, skip_last) blocks to keep dense, from measured hidden-state fidelity:
-# keeping first blocks stops early-layer error seeding, last blocks protect the read layer.
+# int8 degrades on large text encoders unless the quant-sensitive decoder blocks stay bf16. Per-family (skip_first, skip_last) blocks to keep dense, from measured hidden-state fidelity: keeping first blocks stops early-layer error seeding, last blocks protect the read layer.
 # Families absent have no schedule clearing the bar, so int8 falls back to fp8.
 #   qwen-image (Qwen2.5-VL-7B): first+last 6 gives ~0.997 cosine (both ends; outlier-bound).
 #   flux.2-dev (Mistral-Small-24B): first 3 gives ~0.98 cosine (early-layer seeding).
@@ -113,8 +111,7 @@ def quantize_text_encoders(
         if skip is None:
             _note(logger, f"int8 has no keep-bf16 schedule for family '{family}'; using fp8")
             mode = TE_QUANT_FP8
-    # torchao modes produce subclasses that reject Module.to(), which an offload placement uses.
-    # Layerwise fp8 streams fine.
+    # torchao modes produce subclasses that reject Module.to(), which an offload placement uses. Layerwise fp8 streams fine.
     if offload_active and mode in (TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC, TE_QUANT_NVFP4):
         _note(
             logger,
@@ -174,8 +171,7 @@ def _keep_bf16_block_fqns(encoder: Any, skip_first: int, skip_last: int) -> set[
 
 
 def _cast_int8_selective(encoder: Any, target: Any, skip_first: int, skip_last: int) -> None:
-    # torchao dynamic int8 on the FLOP-heavy Linears, keeping the first/last decoder blocks (and
-    # vision tower / lm_head / T5 wo) bf16. Reuses the transformer-quant factory so config can't drift.
+    # torchao dynamic int8 on the FLOP-heavy Linears, keeping the first/last decoder blocks (and vision tower / lm_head / T5 wo) bf16. Reuses the transformer-quant factory so config cannot drift.
     from torchao.quantization import quantize_
     from .diffusion_transformer_quant import (
         TQ_INT8,
@@ -215,9 +211,7 @@ def _weight_has_zero_output_row(module: Any) -> bool:
 
 
 def _cast_fp8_dynamic(encoder: Any, target: Any) -> None:
-    # torchao dynamic fp8 COMPUTE, per-row (torch._scaled_mm on the fp8 cores). Unlike layerwise
-    # `fp8` this keeps the matmul in fp8. Robust across encoder sizes, so no per-layer keep-bf16;
-    # only the vision tower / lm_head / T5 wo are excluded.
+    # torchao dynamic fp8 COMPUTE, per-row (torch._scaled_mm on the fp8 cores). Unlike layerwise `fp8` this keeps the matmul in fp8. Robust across encoder sizes, so no per-layer keep-bf16; only the vision tower / lm_head / T5 wo are excluded.
     from torchao.quantization import quantize_
     from .diffusion_transformer_quant import (
         TQ_FP8,
@@ -226,8 +220,7 @@ def _cast_fp8_dynamic(encoder: Any, target: Any) -> None:
         make_filter_fn,
     )
 
-    # require_bf16: scaled_mm asserts a bf16 weight, so skip a stray non-bf16 Linear rather than
-    # aborting the pass.
+    # require_bf16: scaled_mm asserts a bf16 weight, so skip a stray non-bf16 Linear rather than aborting the pass.
     base = make_filter_fn(
         DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder), require_bf16 = True
     )
@@ -245,26 +238,17 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
     from diffusers.hooks import apply_layerwise_casting
     from diffusers.hooks.layerwise_casting import DEFAULT_SKIP_MODULES_PATTERN
 
-    # Idempotent: a pre-cast encoder arrives with the layerwise hooks already installed, and
-    # re-registering the same hook name raises, which would report the engaged cast as failed. Keyed
-    # on the explicit completion marker, NOT hook presence: leftover hooks from a cast that failed
-    # mid-pass must still fail closed.
+    # Idempotent: a pre-cast encoder arrives with the layerwise hooks already installed, and re-registering the same hook name raises, which would report the engaged cast as failed. Keyed on the explicit completion marker, NOT hook presence: leftover hooks from a cast that failed mid-pass must still fail closed.
     if getattr(encoder, "_unsloth_te_cast_complete", False) and _has_layerwise_hooks(encoder):
         return
 
-    # Layerwise casting stores each leaf's weights in fp8 and upcasts per forward. Two things on a
-    # transformers encoder push an fp8 weight/activation into an op that can't handle it, both
-    # crashing only at generation, so skip the offending modules:
+    # Layerwise casting stores each leaf weights in fp8 and upcasts per forward. Two things on a transformers encoder push an fp8 weight/activation into an op that cannot handle it, both crashing only at generation, so skip the offending modules:
     skip = tuple(DEFAULT_SKIP_MODULES_PATTERN)
 
-    # (1) dtype-sensitive modules the encoder flags. T5 keeps "wo" in fp32: its gated FF reads
-    # self.wo.weight.dtype and casts activations to match BEFORE calling wo (transformers#20287),
-    # racing the upcast hook so F.linear sees fp8 input vs bf16 weight. Literal substrings.
+    # (1) dtype-sensitive modules the encoder flags. T5 keeps "wo" in fp32: its gated FF reads self.wo.weight.dtype and casts activations to match BEFORE calling wo (transformers#20287), racing the upcast hook so F.linear sees fp8 input vs bf16 weight. Literal substrings.
     skip += tuple(re.escape(m) for m in (getattr(encoder, "_keep_in_fp32_modules", None) or ()))
 
-    # (2) an output projection tied to the input embedding. A CausalLM encoder (FLUX.2's Qwen3) ties
-    # lm_head.weight to embed_tokens.weight; casting lm_head to fp8 drags the shared embedding down,
-    # which then emits fp8 activations that crash the first RMSNorm. lm_head is unused here anyway.
+    # (2) an output projection tied to the input embedding. A CausalLM encoder (FLUX.2's Qwen3) ties lm_head.weight to embed_tokens.weight; casting lm_head to fp8 drags the shared embedding down, which then emits fp8 activations that crash the first RMSNorm. lm_head is unused here anyway.
     get_out, get_in = (
         getattr(encoder, "get_output_embeddings", None),
         getattr(encoder, "get_input_embeddings", None),
@@ -281,23 +265,18 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
         storage_dtype = torch.float8_e4m3fn,
         compute_dtype = target.dtype,
         skip_modules_pattern = skip,
-        # Keep token-embedding tables full precision: the diffusers default only skips vision pos/patch
-        # embeds, and fp8'ing nn.Embedding quantizes every prompt token to the coarse fp8 grid.
+        # Keep token-embedding tables full precision: the diffusers default only skips vision pos/patch embeds, and fp8-ing nn.Embedding quantizes every prompt token to the coarse fp8 grid.
         skip_modules_classes = (torch.nn.Embedding,),
     )
 
-    # Module.dtype reports the first floating parameter, which is now fp8 STORAGE; pipelines derive
-    # tensor dtypes from encoder.dtype (Flux2 feeds it to randn_tensor, which has no fp8 kernel;
-    # VLM pipelines cast pixel_values to it, racing the upcast hooks). The encoder computes in
-    # target.dtype, so report that via a property shadowed on the ORIGINAL class reading a
-    # per-instance override. A dynamic __class__ swap instead breaks transformers' output recording.
+    # Module.dtype reports the first floating parameter, which is now fp8 STORAGE; pipelines derive tensor dtypes from encoder.dtype (Flux2 feeds it to randn_tensor, which has no fp8 kernel; VLM pipelines cast pixel_values to it, racing the upcast hooks).
+    # The encoder computes in target.dtype, so report that via a property shadowed on the ORIGINAL class reading a per-instance override. A dynamic __class__ swap instead breaks transformers' output recording.
     compute_dtype = getattr(target, "dtype", None)
     try:
         if compute_dtype is not None:
             _install_dtype_override(type(encoder))
             encoder._unsloth_te_compute_dtype = compute_dtype
-        # Marks the cast COMPLETE (hooks fully installed), enabling the idempotent early return above.
-        # Best-effort: a non-Module double without settable attributes just re-casts on a repeat call.
+        # Marks the cast COMPLETE (hooks fully installed), enabling the idempotent early return above. Best-effort: a non-Module double without settable attributes just re-casts on a repeat call.
         encoder._unsloth_te_cast_complete = True
     except Exception:  # noqa: BLE001 — real HF encoders are heap-type nn.Modules; only doubles fail
         pass
@@ -339,9 +318,7 @@ def _has_layerwise_hooks(encoder: Any) -> bool:
 
 
 def _cast_nvfp4(encoder: Any, target: Any) -> None:
-    # Weight-only NVFP4: linear weights become 4-bit NVFP4 on Blackwell FP4 cores; norms / embeddings
-    # untouched. Exclude the VLM vision tower / lm_head / T5 wo and sub-512 projections like the
-    # int8/fp8 TE modes; require_bf16 skips non-bf16 Linears so the cast engages instead of aborting.
+    # Weight-only NVFP4: linear weights become 4-bit NVFP4 on Blackwell FP4 cores; norms / embeddings untouched. Exclude the VLM vision tower / lm_head / T5 wo and sub-512 projections like the int8/fp8 TE modes; require_bf16 skips non-bf16 Linears so the cast engages instead of aborting.
     from torchao.quantization import quantize_
     from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
     from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES, make_filter_fn
