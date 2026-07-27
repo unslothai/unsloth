@@ -80,12 +80,10 @@ _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
 def canonical_long_flag(name: str) -> str:
     """Return ``name`` under llama.cpp's long-option underscore normalization.
 
-    ``common/arg.cpp`` replaces ``_`` with ``-`` in any argv token starting with
-    ``--`` before lookup, so ``--no_mmap`` reaches the child as ``--no-mmap``.
-    Matching that here stops an underscore spelling slipping past the managed and
-    shadowing groups and last-wins-overriding a setting Unsloth owns. Short flags
-    (``-lm``) are matched verbatim upstream and never carry underscores. Pass only
-    the flag name: an attached ``=value`` must not be rewritten.
+    ``common/arg.cpp`` rewrites ``_`` to ``-`` in ``--`` tokens before lookup, so ``--no_mmap``
+    reaches the child as ``--no-mmap``. Matching that stops an underscore spelling slipping past
+    the managed/shadowing groups and overriding a setting Unsloth owns. Short flags never carry
+    underscores. Pass only the flag name: an attached ``=value`` must not be rewritten.
     """
     return name.replace("_", "-") if name.startswith("--") else name
 
@@ -191,9 +189,9 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
         "--no-jinja",
     }
 )
-# Shadow the GGUF memory_mode field: pass-through in explicit extras, stripped on
-# inherit when the mode changes. New builds unify these under --load-mode; the
-# deprecated spellings stay for older/custom binaries.
+# Shadow the GGUF memory_mode field: pass-through in explicit extras, stripped on inherit
+# when the mode changes. New builds unify these under --load-mode; old spellings stay for
+# older/custom binaries.
 _MEMORY_MODE_FLAGS: frozenset[str] = frozenset(
     {
         "-lm",
@@ -217,9 +215,8 @@ _MEMORY_MODE_FLAGS: frozenset[str] = frozenset(
 _SPLIT_MODE_FLAGS: frozenset[str] = frozenset({"-sm", "--split-mode"})
 _TENSOR_SPLIT_FLAGS: frozenset[str] = frozenset({"-ts", "--tensor-split"})
 _SPLIT_SHADOWING_FLAGS: frozenset[str] = _SPLIT_MODE_FLAGS | _TENSOR_SPLIT_FLAGS
-# llama.cpp offload device list. Opt-in (valid under auto-select): stripped only
-# when gpu_ids is set, so it can't override the pin and offload to a GPU the
-# training guard never budgeted (#7188).
+# llama.cpp offload device list. Opt-in (valid under auto-select): stripped only when
+# gpu_ids is set, so it can't offload to a GPU the training guard never budgeted (#7188).
 _DEVICE_FLAGS: frozenset[str] = frozenset({"--device", "-dev"})
 
 # GPU-offload flags. Stripped only when the GPU Memory mode owns offload

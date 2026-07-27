@@ -653,9 +653,8 @@ function sameGpuIds(a?: number[] | null, b?: number[] | null): boolean {
   return a.length === b.length && a.every((id, i) => id === b[i]);
 }
 
-// A snapshot taken while the /api/system cache is cold carries no GPU index
-// namespace, and an untagged entry re-reads as a legacy physical pick, which
-// discards the same ids on a Vulkan host. Keep the stored entry's namespace.
+// A cold /api/system cache leaves the snapshot untagged, and an untagged entry re-reads
+// as a legacy physical pick that discards the ids on a Vulkan host. Keep the namespace.
 function keepStoredGpuIndexKind(
   map: StoredMap,
   modelId: string,

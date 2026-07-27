@@ -6054,9 +6054,8 @@ def validate_prebuilt_attempts(
 
 
 def force_vulkan_requested() -> bool:
-    """Whether the user selected the Vulkan llama.cpp backend, via the public
-    ``UNSLOTH_LLAMA_CPP_BACKEND=vulkan`` or the legacy ``UNSLOTH_FORCE_VULKAN``
-    alias. Scoped to llama.cpp: torch/training still sees the detected GPU."""
+    """Whether the user selected Vulkan via ``UNSLOTH_LLAMA_CPP_BACKEND=vulkan`` or the legacy
+    ``UNSLOTH_FORCE_VULKAN``. Scoped to llama.cpp: torch still sees the detected GPU."""
     backend = os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND", "").strip().lower()
     legacy = os.environ.get("UNSLOTH_FORCE_VULKAN", "").strip().lower()
     return backend == "vulkan" or legacy in (

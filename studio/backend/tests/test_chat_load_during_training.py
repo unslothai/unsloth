@@ -683,8 +683,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         self.assertIsNone(captured[0]["single_device_gpu"])
 
     def test_unclassified_gguf_on_cuda_build_keeps_single_device(self):
-        # Same unknown GGUF on a CUDA-indexed build: the Vulkan flag stays off and the
-        # single-device CUDA guard is preserved (no regression from the Vulkan gating) (#7188).
+        # Same unknown GGUF on a CUDA build: Vulkan flag off, single-device CUDA guard kept (#7188).
         captured = []
         config = SimpleNamespace(is_gguf = True)
         with (
@@ -976,8 +975,7 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             patch.object(self.route, "load_inference_config", return_value = {}),
             patch.object(self.route, "_requires_trust_remote_code_for_model", return_value = False),
             patch.object(self.route, "get_llama_cpp_backend", return_value = loaded),
-            # GPU-less CI has an empty parent-visible set, which would reject
-            # gpu_ids before the draft-device check under test.
+            # GPU-less CI has no parent-visible GPUs, which would reject gpu_ids first.
             patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [0]),
             _stub_guard_deps(training_active = True, decision = (True, {}), captured = captured),
         ):
@@ -1301,8 +1299,7 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
             patch.object(self.route, "get_llama_cpp_backend", return_value = llama),
             patch.object(self.route, "_hf_offline_if_dns_dead", lambda: contextlib.nullcontext()),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
-            # GPU-less CI has an empty parent-visible set, which would reject
-            # gpu_ids before the draft-device check under test.
+            # GPU-less CI has no parent-visible GPUs, which would reject gpu_ids first.
             patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [0]),
             _stub_guard_deps(training_active = True, decision = (True, {}), captured = captured),
         ):
@@ -1367,8 +1364,7 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
             patch.object(self.route, "get_llama_cpp_backend", return_value = llama),
             patch.object(self.route, "_hf_offline_if_dns_dead", lambda: contextlib.nullcontext()),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
-            # GPU-less CI has an empty parent-visible set, which would reject
-            # gpu_ids before the draft-device check under test.
+            # GPU-less CI has no parent-visible GPUs, which would reject gpu_ids first.
             patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [0]),
             _stub_guard_deps(training_active = True, decision = (True, {}), captured = captured),
         ):

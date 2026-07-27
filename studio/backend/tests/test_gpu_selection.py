@@ -1152,8 +1152,8 @@ class TestRouteErrors(unittest.TestCase):
         self.assertIn("cpu-only build", exc_info.exception.detail.lower())
 
     def test_cpu_only_llama_build_reject_covers_cpu_torch_host(self):
-        # Chat-only Studio (CPU torch) still enumerates NVIDIA cards, so the
-        # CPU-only llama.cpp reject must not be scoped to a CUDA torch build.
+        # Chat-only Studio (CPU torch) still enumerates NVIDIA cards, so the reject must
+        # not be scoped to a CUDA torch build.
         import utils.hardware as hardware_pkg
 
         inference_route = _load_route_module(
@@ -1178,8 +1178,7 @@ class TestRouteErrors(unittest.TestCase):
         self.assertIn("cpu-only build", exc_info.exception.detail.lower())
 
     def test_system_hides_gpu_picker_on_cpu_only_llama_build(self):
-        # /api/system must agree with the reject above, or the picker offers
-        # IDs that every GGUF load then 400s on.
+        # /api/system must agree with the reject above, or the picker offers IDs /load 400s on.
         import logging
 
         import utils.hardware as hardware_pkg

@@ -33,9 +33,8 @@ $PackageDir = Split-Path -Parent $ScriptDir
 # errors. Only use "master" temporarily when the latest release is missing
 # support for a new model architecture.
 #
-# UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", or "vulkan". "cpu"
-# forces the CPU-only prebuilt. "vulkan" selects Vulkan even when CUDA or
-# ROCm is detected.
+# UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", or "vulkan". "cpu" forces the
+# CPU-only prebuilt. "vulkan" selects Vulkan even when CUDA or ROCm is detected.
 $DefaultLlamaPrForce = ""
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
@@ -3705,9 +3704,8 @@ if ($LocalLlamaCppLinked) {
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
         }
-        # The backend override is case-insensitive and whitespace-trimmed. cpu
-        # maps to the persisted --force-cpu choice. vulkan is consumed directly
-        # by install_llama_prebuilt.py and does not change the torch backend.
+        # The override is case-insensitive and trimmed. cpu maps to --force-cpu; vulkan goes
+        # to install_llama_prebuilt.py and does not change the torch backend.
         $llamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
         $legacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()
         $explicitVulkanBackend = $false

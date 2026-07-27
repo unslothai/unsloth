@@ -654,8 +654,8 @@ export function ModelConfigPage({
   const rememberId = useId();
   const isActiveModel = loadedConfig != null;
   const loadedIsDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
-  // No header flag before load, so fall back to the backend's pre-download name
-  // check: the staged Load flow must also hide controls /validate and /load reject.
+  // No header flag before load, so fall back to the name check: staged Load must also
+  // hide the controls /validate and /load reject.
   const isDiffusionModel =
     (isActiveModel && loadedIsDiffusion) || looksLikeDiffusionGemma(target.id);
   const hfToken = useChatRuntimeStore((s) => s.hfToken);

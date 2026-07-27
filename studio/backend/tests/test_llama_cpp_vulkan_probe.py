@@ -218,9 +218,8 @@ def test_shell_wrapper_entrypoint_resolves_to_real_lib_dir(tmp_path):
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "soname versioning is POSIX")
 def test_versioned_only_vulkan_soname_is_probed(tmp_path):
-    # Split-library install: only the versioned soname libggml-vulkan.so.0 exists
-    # (no unversioned dev symlink). The reader must still classify Vulkan and run
-    # the probe instead of returning [] and rejecting gpu_ids before launch (#7188).
+    # Split-library install: only libggml-vulkan.so.0 exists (no dev symlink). The reader must
+    # still classify Vulkan and probe instead of returning [] and rejecting gpu_ids (#7188).
     bindir = tmp_path / "build" / "bin"
     bindir.mkdir(parents = True)
     binary = bindir / "llama-server"

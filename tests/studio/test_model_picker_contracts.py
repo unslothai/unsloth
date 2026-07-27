@@ -436,9 +436,8 @@ def test_initial_load_uses_staged_config_payload():
     assert "const pendingLoadConfig =" in runtime
     assert "pendingLoadConfig?.kvCacheDtype" in runtime
     assert "pendingLoadConfig?.customContextLength" in runtime
-    # The staged payload also carries the GGUF placement knobs, and the GPU pick
-    # must be reconciled WITH the namespace it was saved under: a remembered
-    # physical CUDA id re-read as a ggml Vulkan ordinal pins a different card.
+    # The staged payload also carries the GGUF placement knobs, and the pick must be reconciled
+    # WITH its saved namespace: a physical CUDA id read as a Vulkan ordinal pins another card.
     assert "pendingLoadConfig?.ggufMemoryMode" in runtime
     assert "pendingLoadConfig.selectedGpuIndexKind," in runtime
     assert "reconcilePersistedGpuIds(pendingLoadConfig.selectedGpuIds)" not in runtime
@@ -614,9 +613,8 @@ def test_legacy_migration_is_idempotent_and_non_destructive():
 def test_diffusion_gates_cover_the_staged_load_flow():
     """Every control the diffusion runner rejects must be hidden before the load.
 
-    ``_reject_diffusion_memory_mode`` 400s an explicit gguf_memory_mode for a
-    DiffusionGemma GGUF, classifying a not-yet-downloaded repo by name alone, so
-    gating Host Memory on the LOADED model alone left staged Load offering it.
+    ``_reject_diffusion_memory_mode`` 400s an explicit gguf_memory_mode for a DiffusionGemma
+    GGUF by name alone, so gating Host Memory on the LOADED model left staged Load offering it.
     """
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert "looksLikeDiffusionGemma(target.id)" in page
@@ -631,18 +629,16 @@ def test_diffusion_gates_cover_the_staged_load_flow():
 
 
 def test_gpu_picker_hidden_when_its_ordinals_mean_other_devices():
-    """A diffusion GGUF resolves gpu_ids as CUDA physical ids even on a Vulkan build,
-    while /api/system still advertises ggml Vulkan ordinals, so the picker must not
-    offer indices that would pin a different card."""
+    """A diffusion GGUF resolves gpu_ids as CUDA physical ids even on a Vulkan build, while
+    /api/system advertises ggml ordinals, so the picker must not offer another card's index."""
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert 'const gpuIdsMeanOtherDevices = isDiffusion && gpuIndexKind === "vulkan"' in page
     assert "!gpuIdsMeanOtherDevices &&" in page
 
 
 def test_cold_device_cache_never_untags_a_saved_gpu_pick():
-    """The snapshot cannot know the namespace before /api/system resolves, so storage
-    keeps the one on record rather than writing the pick back untagged (which re-reads
-    as legacy physical and is discarded on a Vulkan host)."""
+    """The snapshot cannot know the namespace before /api/system resolves, so storage keeps the
+    one on record rather than untagging the pick (untagged re-reads as legacy physical)."""
     config = _read("features/model-picker/model-config/per-model-config.ts")
     assert "function keepStoredGpuIndexKind(" in config
     assert "keepStoredGpuIndexKind(" in config.split("export function savePerModelConfig")[1]

@@ -970,8 +970,8 @@ def test_strip_memory_mode_kept_when_field_not_supplied():
 
 
 def test_canonical_long_flag_mirrors_llama_cpp_normalization():
-    """llama.cpp rewrites '_' to '-' for tokens starting with '--' (common/arg.cpp,
-    before the option lookup), so short flags and values must be left alone."""
+    """llama.cpp rewrites '_' to '-' in '--' tokens before lookup; short flags and values
+    must be left alone."""
     assert _lsa.canonical_long_flag("--no_mmap") == "--no-mmap"
     assert _lsa.canonical_long_flag("--load_mode") == "--load-mode"
     assert _lsa.canonical_long_flag("--no-mmap") == "--no-mmap"
@@ -996,8 +996,8 @@ def test_canonical_long_flag_mirrors_llama_cpp_normalization():
     ],
 )
 def test_denylist_covers_underscore_aliases(flag):
-    # llama.cpp accepts the underscore spelling, so accepting it here would let a
-    # pass-through arg last-wins-override a flag Unsloth owns.
+    # llama.cpp accepts the underscore spelling, so allowing it here would let a pass-through
+    # arg override a flag Unsloth owns.
     assert is_managed_flag(flag) is True
     with pytest.raises(ValueError, match = "managed by Unsloth Studio"):
         validate_extra_args([flag, "x"])
@@ -1014,8 +1014,8 @@ def test_denylist_covers_underscore_aliases(flag):
     ],
 )
 def test_strip_memory_mode_covers_underscore_aliases(args):
-    # gguf_memory_mode is Unsloth-owned once the caller supplies it; an
-    # inherited --no_mmap would otherwise survive and flip the applied mode.
+    # gguf_memory_mode is Unsloth-owned once supplied; an inherited --no_mmap would otherwise
+    # survive and flip the applied mode.
     assert strip_shadowing_flags(args, strip_memory_mode = True) == []
 
 
@@ -1044,8 +1044,7 @@ def test_underscore_alias_parsers_agree_with_hyphen_forms():
 
 
 def test_underscore_normalization_never_rewrites_values():
-    # Only the flag NAME is canonicalized: a value carrying underscores (an
-    # alias, a template, a path) must survive untouched.
+    # Only the flag NAME is canonicalized: a value carrying underscores survives untouched.
     assert strip_shadowing_flags(["--top-k", "my_value"]) == ["--top-k", "my_value"]
     assert validate_extra_args(["--top_k", "my_value"]) == ["--top_k", "my_value"]
     assert strip_shadowing_flags(["--chat-template", "a_b_c"], strip_template = False) == [
@@ -1055,7 +1054,6 @@ def test_underscore_normalization_never_rewrites_values():
 
 
 def test_underscore_alias_kept_when_group_not_stripped():
-    # Canonicalization must not widen what gets stripped: the memory-mode group
-    # is still opt-in, so an untouched Apply keeps the user's pass-through flag.
+    # Canonicalization must not widen what gets stripped: the memory-mode group is still opt-in.
     assert strip_shadowing_flags(["--no_mmap"]) == ["--no_mmap"]
     assert strip_shadowing_flags(["--device"], strip_device = False) == ["--device"]

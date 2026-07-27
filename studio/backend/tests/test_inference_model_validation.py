@@ -44,8 +44,8 @@ from models.inference import ValidateModelRequest  # noqa: E402
 
 @pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
 def test_blank_gguf_memory_mode_normalizes_to_auto(blank):
-    # A form may serialize the default placement as ""; map it to explicit "auto" so it
-    # counts as a choice and the scrub runs, not 422 or inherit LLAMA_ARG_MLOCK (#7164).
+    # A form may serialize the default as ""; map it to explicit "auto" so it counts as a
+    # choice and the scrub runs, rather than 422 or inheriting LLAMA_ARG_MLOCK (#7164).
     assert _base_load_request(gguf_memory_mode = blank).gguf_memory_mode == "auto"
     assert (
         ValidateModelRequest.model_validate(

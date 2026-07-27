@@ -2,12 +2,11 @@
 # Copyright 2026-present the Unsloth AI Inc. team.
 """Studio GGUF gpu_ids routing under spoofed NVIDIA / AMD / CPU-only hardware.
 
-Where test_gguf_placement_os_gpu_matrix.py mocks ``utils.hardware.get_device``,
-this drives the same decision through the REAL hardware layer with torch spoofed
-by tests/_zoo_aggressive_cuda_spoof.py (NVIDIA) and tests/_zoo_rocm_spoof.py
-(AMD), so each vendor's DeviceType is observed rather than assumed. Each case
-runs in its own subprocess (the spoofs mutate torch and ``utils.hardware`` caches
-globals), with the bundle layout faked per OS to cover all four on one host.
+Where test_gguf_placement_os_gpu_matrix.py mocks ``utils.hardware.get_device``, this drives
+the same decision through the REAL hardware layer with torch spoofed by
+tests/_zoo_aggressive_cuda_spoof.py (NVIDIA) and tests/_zoo_rocm_spoof.py (AMD), so each
+vendor's DeviceType is observed rather than assumed. Each case runs in its own subprocess
+(the spoofs mutate torch and ``utils.hardware`` globals), with the bundle layout faked per OS.
 """
 
 from __future__ import annotations
@@ -178,8 +177,8 @@ def test_gpu_ids_routing_under_spoofed_hardware(tmp_path, os_name, vendor):
         assert result["device"] == "CUDA"
         assert result["is_rocm"] is False
     elif vendor == "amd":
-        # PyTorch ROCm reuses torch.cuda over HIP, so Studio's DeviceType stays
-        # CUDA. The gpu_ids namespace is the same physical-index space.
+        # PyTorch ROCm reuses torch.cuda over HIP, so DeviceType stays CUDA and gpu_ids
+        # stays the same physical-index space.
         assert result["device"] == "CUDA"
         assert result["is_rocm"] is True
 
@@ -193,6 +192,5 @@ def test_gpu_ids_routing_under_spoofed_hardware(tmp_path, os_name, vendor):
     else:
         assert result["pin"] == {"resolved": [0], "vulkan": False}
 
-    # The pre-#7164 request shape (no pick) must load on every cell, including
-    # the CPU-only build that rejects an explicit pin.
+    # The pre-#7164 shape (no pick) must load on every cell, even the CPU-only build.
     assert result["no_pin"] == {"resolved": None, "vulkan": False}

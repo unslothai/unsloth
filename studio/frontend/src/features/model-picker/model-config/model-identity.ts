@@ -13,9 +13,8 @@ export {
 
 const MODEL_STORAGE_KEY_PREFIX = "v2:";
 
-// Mirror the backend's pre-download classifier (_classify_diffusion_gguf in
-// routes/inference.py): with no header to read, strip non-alphanumerics and look for
-// the DiffusionGemma family name, so staged Load agrees with /validate and /load.
+// Mirror the backend's _classify_diffusion_gguf (routes/inference.py): with no header,
+// strip non-alphanumerics and look for the DiffusionGemma name so staged Load agrees.
 export function looksLikeDiffusionGemma(
   ...parts: (string | null | undefined)[]
 ): boolean {

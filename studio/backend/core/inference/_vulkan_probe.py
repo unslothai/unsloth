@@ -67,8 +67,7 @@ def main() -> int:
         return 0
     bindir = sys.argv[1]
 
-    # A vendor name outside the pipe's encoding (Windows ANSI codepage) must not
-    # fail the whole probe.
+    # A vendor name outside the pipe's encoding (Windows ANSI) must not fail the probe.
     try:
         sys.stdout.reconfigure(errors = "replace")
     except Exception:

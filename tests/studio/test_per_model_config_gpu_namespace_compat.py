@@ -3,16 +3,11 @@
 
 """Persisted per-model GPU picks across the #7210 upgrade.
 
-Two things must keep working for a user upgrading an existing install:
-
-  * ``unsloth_model_configs`` entries written before ``selectedGpuIndexKind`` /
-    ``ggufMemoryMode`` existed, and
-  * the even older ``unsloth_load_settings`` blob the migration imports.
-
-Both are exercised against the REAL ``per-model-config.ts`` under node, with a
-localStorage shim, plus the real ``reconcilePersistedGpuIds`` body so an
-untagged legacy pick is proved to survive on the host it was saved from and to
-be dropped on a host using a different GPU index namespace.
+Two things must keep working on upgrade: ``unsloth_model_configs`` entries written before
+``selectedGpuIndexKind`` / ``ggufMemoryMode`` existed, and the older ``unsloth_load_settings``
+blob the migration imports. Both run against the REAL ``per-model-config.ts`` under node with a
+localStorage shim, plus the real ``reconcilePersistedGpuIds`` body, so an untagged legacy pick
+survives on the host it was saved from and is dropped under a different index namespace.
 """
 
 from __future__ import annotations
@@ -176,8 +171,7 @@ console.log("RESULT " + JSON.stringify({
     assert result["gpuLayers"] == 20
     assert result["nCpuMoe"] == 2
     assert result["selectedGpuIds"] == [0, 1]
-    # The new fields stay ABSENT rather than being invented as null: absent is
-    # what the reconcile reads as "legacy physical pick".
+    # The new fields stay ABSENT, not null: absent is what reconcile reads as legacy physical.
     assert result["hasIndexKind"] is False
     assert result["hasMemoryMode"] is False
     assert result["isDefault"] is False
@@ -306,9 +300,8 @@ console.log("RESULT " + JSON.stringify(out));
 
 
 def test_staged_load_config_forwards_the_saved_namespace():
-    """Run-settings Load stages a persisted config; it must carry the tag, or a
-    remembered CUDA pick is re-read as a ggml Vulkan ordinal and llama-server is
-    silently pinned to a different card."""
+    """Run-settings Load stages a persisted config; it must carry the tag, or a remembered CUDA
+    pick is re-read as a ggml Vulkan ordinal and llama-server is pinned to another card."""
     hook = _RUNTIME_HOOK.read_text()
     staged = re.findall(
         r"reconcilePersistedGpuIds\(\s*\n\s*pendingLoadConfig\.selectedGpuIds,"
@@ -330,10 +323,8 @@ def test_staged_load_config_forwards_the_saved_namespace():
 
 
 def test_cold_cache_resave_keeps_the_stored_gpu_namespace(tmp_path):
-    """Saving before /api/system resolves must not untag a Vulkan pick: the snapshot
-    reads the namespace from the cold device cache, and writing the pick back untagged
-    makes the next reconcile read it as legacy physical and discard it on the very
-    Vulkan host it was saved from."""
+    """Saving before /api/system resolves must not untag a Vulkan pick: writing it back untagged
+    makes the next reconcile read it as legacy physical and discard it on its own host."""
     snapshot = _extract_function(_APPLY_CONFIG.read_text(), "currentRuntimePerModelConfig")
     assert "cachedPinnableGpuIndexKind" in snapshot, "extracted the wrong function"
     reconcile = _extract_function(_RUNTIME_STORE.read_text(), "reconcilePersistedGpuIds")
@@ -438,9 +429,9 @@ console.log("RESULT " + JSON.stringify({
 def test_staged_diffusion_name_check_matches_the_backend(tmp_path):
     """The staged config page must classify DiffusionGemma like /validate does.
 
-    ``_classify_diffusion_gguf`` has no header before the download, so it strips
-    non-alphanumerics and looks for the family name. The frontend gates the Host
-    Memory control on the same rule; disagreement offers a mode /load 400s.
+    ``_classify_diffusion_gguf`` has no header before the download, so it strips non-alphanumerics
+    and looks for the family name. The frontend gates Host Memory on the same rule; disagreement
+    would offer a mode /load 400s.
     """
     identities = [
         "unsloth/DiffusionGemma-2B-GGUF",

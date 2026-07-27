@@ -218,8 +218,7 @@ def test_already_in_target_state_keeps_device_extras_without_gpu_ids():
 
 
 def test_already_in_target_state_strips_device_extras_under_gpu_ids():
-    # load_model stores device-stripped extras, so a duplicate /load carrying a user
-    # --device must strip the same way or needlessly restart the server (#7188).
+    # load_model stores device-stripped extras, so a duplicate /load must strip alike (#7188).
     backend = _loaded_backend(_gpu_ids = [0, 1], _extra_args = ["--flash-attn", "on"])
     kwargs = _base_target_state_kwargs(backend)
     kwargs["gpu_ids"] = [0, 1]
@@ -227,8 +226,7 @@ def test_already_in_target_state_strips_device_extras_under_gpu_ids():
     assert backend._already_in_target_state(**kwargs) is True
 
 
-# GPU selection launch behavior. Route-level validation lives in
-# test_gpu_selection.py; these tests cover the backend's emitted placement.
+# GPU selection launch behavior; route-level validation lives in test_gpu_selection.py.
 
 
 def _fit_fallback_backend(
@@ -787,9 +785,8 @@ def test_memory_mode_pinned_does_not_match_none():
 
 
 def test_omitted_mode_keeps_the_recorded_explicit_auto():
-    """A client that omits the field must not collapse a recorded auto to null:
-    omission and "auto" canonicalize alike, so the dedupe matches and the recorder
-    runs, preserving the /status echo and the replayed _last_load_kwargs."""
+    """A client that omits the field must not collapse a recorded auto to null: omission and
+    "auto" canonicalize alike, so the dedupe matches and the recorder preserves /status."""
     backend = _loaded_backend(_requested_memory_mode = "auto")
     backend._last_load_kwargs = {"memory_mode": "auto"}
     kwargs = _base_target_state_kwargs(backend)
@@ -1076,9 +1073,8 @@ def _memory_mode_preflight_backend(
 
 @pytest.mark.parametrize("mode", ["pinned", "resident", "RESIDENT"])
 def test_local_diffusion_memory_mode_rejected_before_teardown(tmp_path, mode):
-    """The reject is header-dependent, so it must not cost the live model: like the
-    Vulkan gpu_ids preflight (#7205), classify before Phase 1 rather than killing a
-    healthy server and then returning 400."""
+    """The reject is header-dependent, so it must not cost the live model: like the Vulkan
+    gpu_ids preflight (#7205), classify before Phase 1 instead of killing a healthy server."""
     killed: list[bool] = []
     backend, gguf = _memory_mode_preflight_backend(tmp_path, killed, arch = "diffusion-gemma")
 
@@ -1111,8 +1107,7 @@ def test_remote_diffusion_memory_mode_rejected_before_teardown(tmp_path):
         )
 
     assert killed == []
-    # The Phase 2 call reuses _preflight_model_path, so the classification
-    # must not cost a second fetch.
+    # Phase 2 reuses _preflight_model_path, so classification costs no second fetch.
     assert downloads == [True]
 
 

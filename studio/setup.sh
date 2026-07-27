@@ -37,9 +37,9 @@ fi
 #                             Only use "master" temporarily when the latest release
 #                             is missing support for a new model architecture.
 #
-#   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", or "vulkan". "cpu"
-#                               forces the CPU-only prebuilt. "vulkan" selects
-#                               Vulkan even when CUDA or ROCm is detected.
+#   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", or "vulkan". "cpu" forces the
+#                               CPU-only prebuilt. "vulkan" selects Vulkan even when
+#                               CUDA or ROCm is detected.
 # ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"

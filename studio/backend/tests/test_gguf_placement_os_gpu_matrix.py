@@ -3,17 +3,11 @@
 
 """OS x GPU matrix for the GGUF placement round-trip (#7210).
 
-gpu_ids and gguf_memory_mode are hardware-facing, so every decision they drive
-is spoofed here across [Windows, Linux, WSL, macOS] x [NVIDIA, AMD, CPU-only]
-plus the Vulkan llama.cpp bundle, with no GPU required:
-
-  * the llama.cpp bundle layout that ``_backend_lacks_gpu_lib`` reads
-    (``ggml-cuda.dll`` on Windows vs ``libggml-cuda.so`` elsewhere),
-  * ``/api/system``'s ``gguf_gpu_ids_supported``, which gates the picker,
-  * ``/load``'s ``_resolve_gguf_gpu_ids_for_request``, which must agree with it.
-
-It also pins the pre-existing paths this feature must not disturb: a request
-with no gpu_ids, a single-GPU host, a GPU-less host, and a CPU-only build.
+Spoofs [Windows, Linux, WSL, macOS] x [NVIDIA, AMD, CPU-only] plus the Vulkan bundle, with
+no GPU required, over: the bundle layout ``_backend_lacks_gpu_lib`` reads, ``/api/system``'s
+``gguf_gpu_ids_supported`` picker gate, and ``/load``'s ``_resolve_gguf_gpu_ids_for_request``,
+which must agree with it. Also pins the pre-existing paths this must not disturb: no gpu_ids,
+a single-GPU host, a GPU-less host, and a CPU-only build.
 """
 
 from __future__ import annotations
@@ -51,8 +45,7 @@ def _load_module(name: str, relative_path: str):
 # name -> (sys.platform value, shared-library suffix used by the llama.cpp bundle)
 OS_PROFILES = {
     "windows": ("win32", "dll"),
-    # WSL2 runs the Linux bundle; only the host kernel differs, so the layout
-    # and every gpu_ids decision below must match native Linux exactly.
+    # WSL2 runs the Linux bundle, so every decision below must match native Linux exactly.
     "wsl": ("linux", "so"),
     "linux": ("linux", "so"),
     "macos": ("darwin", "dylib"),
@@ -62,8 +55,7 @@ OS_PROFILES = {
 GPU_PROFILES = {
     # NVIDIA: CUDA physical ids, the original gpu_ids namespace.
     "nvidia": (("cpu", "cuda"), "CUDA", True),
-    # AMD/ROCm: torch-ROCm reuses torch.cuda, so DeviceType stays CUDA and the
-    # HIP ggml backend is what proves the build can honour a pin.
+    # AMD/ROCm: torch-ROCm reuses torch.cuda, so DeviceType stays CUDA; the HIP lib proves the pin.
     "amd": (("cpu", "hip"), "CUDA", True),
     # CPU-only llama.cpp: a pin would be silently ignored, so it must 400.
     "cpu_only": (("cpu",), "CPU", False),
@@ -139,8 +131,7 @@ def _system_gpu_ids_supported(
         {"index": 0, "index_kind": "physical", "name": "GPU0"},
         {"index": 1, "index_kind": "physical", "name": "GPU1"},
     ]
-    # Resolve against the real bundle layout BEFORE patching the classifier the
-    # gate calls, so the stub returns a value instead of recursing into itself.
+    # Resolve the real bundle layout BEFORE patching the classifier, so the stub can't recurse.
     lacks_gpu_lib = LlamaCppBackend._backend_lacks_gpu_lib(binary)
     main_mod._system_gpu_cache = None
     with (
@@ -188,15 +179,13 @@ def test_gpu_ids_decision_matrix(tmp_path, route, main_mod, os_name, gpu_name):
 
     with patch.object(sys, "platform", platform_name):
         lacks_gpu_lib = LlamaCppBackend._backend_lacks_gpu_lib(binary)
-        # macOS ships .dylib ggml libs, so the split-library probe sees an
-        # unknown layout and abstains rather than rejecting a Metal build.
+        # macOS ships .dylib ggml libs, so the probe abstains instead of rejecting a Metal build.
         expected_lacks = (gpu_name == "cpu_only") and os_name != "macos"
         assert lacks_gpu_lib is expected_lacks
 
         info = _system_gpu_ids_supported(main_mod, binary = binary, vulkan = False, device = device)
         assert info["gguf_gpu_ids_supported"] is not expected_lacks
-        # The device list is independent of the picker gate: hiding the picker
-        # must never zero the VRAM fit badges.
+        # The device list is independent of the picker gate: hiding it never zeroes fit badges.
         assert len(info["devices"]) == 2
 
         if pin_supported or os_name == "macos":
@@ -215,8 +204,7 @@ def test_gpu_ids_decision_matrix(tmp_path, route, main_mod, os_name, gpu_name):
 @pytest.mark.parametrize("os_name", ["windows", "linux", "wsl"])
 @pytest.mark.parametrize("gpu_name", sorted(GPU_PROFILES))
 def test_vulkan_bundle_matrix(tmp_path, route, main_mod, os_name, gpu_name):
-    """A Vulkan bundle pins by ggml ordinal on every host it ships for (not macOS,
-    which has no Vulkan prebuilt and uses Metal)."""
+    """A Vulkan bundle pins by ggml ordinal on every host it ships for (not macOS: Metal)."""
     _backends, device, _pin = GPU_PROFILES[gpu_name]
     platform_name, _suffix = OS_PROFILES[os_name]
     binary = _make_bundle(tmp_path, os_name, ("cpu", "vulkan"))
@@ -269,8 +257,7 @@ def test_vulkan_probe_failure_keeps_devices_and_hides_picker(tmp_path, route, ma
 @pytest.mark.parametrize("gpu_name", sorted(GPU_PROFILES))
 @pytest.mark.parametrize("gpu_ids", [None, []])
 def test_request_without_gpu_ids_never_rejects(tmp_path, route, os_name, gpu_name, gpu_ids):
-    """A client that sends no pick (every pre-#7164 client) is untouched; not even a
-    CPU-only build rejects, since there is nothing to ignore."""
+    """A client that sends no pick (every pre-#7164 client) is untouched, even on CPU-only."""
     backends, device, _pin = GPU_PROFILES[gpu_name]
     platform_name, _suffix = OS_PROFILES[os_name]
     binary = _make_bundle(tmp_path, os_name, backends)
@@ -328,8 +315,7 @@ def test_gpu_less_host_reports_no_picker_and_keeps_loading(tmp_path, route, main
         info = main_mod._get_cached_system_gpu_info(logging.getLogger("matrix"))
         assert info["available"] is False
         assert info["devices"] == []
-        # macOS abstains from the split-library probe (.dylib layout), so only
-        # the platforms the CPU bundle actually ships for hide the picker.
+        # macOS abstains from the split-library probe, so only the CPU bundle's hosts hide it.
         assert info["gguf_gpu_ids_supported"] is (os_name == "macos")
 
         assert _resolve(route, None, binary = binary, vulkan = False, device = "CPU") == (
@@ -346,8 +332,7 @@ def test_load_and_status_schemas_accept_pre_feature_payloads():
     assert request.gpu_ids is None
     assert request.gguf_memory_mode is None
 
-    # A response produced before these fields existed still validates, and the
-    # new fields read as "unset" rather than as a placement the UI would echo.
+    # An old response still validates, and the new fields read as unset, not as a placement.
     load = LoadResponse(
         status = "loaded",
         model = "unsloth/model-GGUF",
@@ -366,10 +351,9 @@ def test_load_and_status_schemas_accept_pre_feature_payloads():
 def test_diffusion_on_a_vulkan_bundle_resolves_physical_ids(tmp_path, route, main_mod):
     """A diffusion GGUF opts out of the Vulkan ordinal namespace at /load.
 
-    DiffusionGemma never runs through llama.cpp, so its gpu_ids stay CUDA physical
-    ids even on a Vulkan bundle, while /api/system (no model context) still
-    advertises ggml ordinals: the namespaces collide on the same integers, which is
-    why model-config-page.tsx hides the picker for this combination.
+    DiffusionGemma never runs through llama.cpp, so its gpu_ids stay CUDA physical ids even on
+    a Vulkan bundle, while /api/system still advertises ggml ordinals: the namespaces collide on
+    the same integers, which is why model-config-page.tsx hides the picker here.
     """
     binary = _make_bundle(tmp_path, "linux", ("cpu", "vulkan"))
     probed = [

@@ -643,9 +643,8 @@ class TestExtraArgsMtpDetection:
     @pytest.mark.parametrize(
         "args,expected",
         [
-            # llama.cpp normalises '_' to '-' for '--' tokens, so these place the
-            # drafter exactly like the hyphen spellings; missing them lets a
-            # pass-through arg escape the pin the coexistence guard budgeted.
+            # llama.cpp normalises '_' to '-' in '--' tokens, so these place the drafter like
+            # the hyphen spellings; missing them lets a pass-through arg escape the pin.
             (["--spec_draft_device", "CUDA1"], "CUDA1"),
             (["--device_draft", "Vulkan2"], "Vulkan2"),
             (["--spec_draft_device=CUDA1"], "CUDA1"),
@@ -679,8 +678,7 @@ class TestExtraArgsMtpDetection:
         ],
     )
     def test_gpu_device_pin_detects_underscore_aliases(self, cmd):
-        # A zero-offload launch masks the GPUs away from the child; a pin it
-        # cannot see aborts llama-server, so the alias must count as a pin.
+        # A zero-offload launch masks GPUs from the child; a pin it cannot see aborts the server.
         from core.inference.llama_cpp import LlamaCppBackend
         assert LlamaCppBackend._cmd_has_gpu_device_pin(cmd) is True
 
@@ -921,8 +919,7 @@ class TestExtraArgsMtpDetection:
         start = routes_src.index("def _request_matches_loaded_settings")
         end = routes_src.index("\ndef ", start + 1)
         body = "".join(routes_src[start:end].split())
-        # Gated on the VALUE, not model_fields_set: an explicit null must not strip,
-        # so it dedupes as "no opinion" (#7188).
+        # Gated on the VALUE, not model_fields_set: an explicit null dedupes as no opinion (#7188).
         assert "_strip_mem=request.gguf_memory_modeisnotNone" in body
         assert '"gguf_memory_mode"infields_set' not in body
         # The request side is stripped and compared against the UNstripped backend.

@@ -843,9 +843,8 @@ def _mem_loaded_backend(
 
 
 def test_explicit_auto_reloads_over_passthrough_mlock_in_extras():
-    """A server loaded with no memory_mode keeps a pass-through --mlock. An explicit
-    "auto" repeating it must NOT dedupe: stripping only the request side leaves the
-    backend --mlock visible, so the matcher reloads and the scrub runs (#7164)."""
+    """A server loaded with no memory_mode keeps a pass-through --mlock. An explicit "auto"
+    repeating it must NOT dedupe: the backend --mlock stays visible, so the scrub runs (#7164)."""
     from models.inference import LoadRequest
 
     inference_routes = _load_inference_routes_module()
@@ -861,9 +860,8 @@ def test_explicit_auto_reloads_over_passthrough_mlock_in_extras():
 
 
 def test_explicit_null_memory_mode_dedupes_over_passthrough_mlock():
-    """An explicit gguf_memory_mode=null (a client echoing /status) is "no opinion",
-    not a mode change: Pydantic marks it set, so the dedupe gates the strip on the
-    VALUE and a status-hydrated Apply keeps its --mlock and dedupes (#7188)."""
+    """An explicit gguf_memory_mode=null (a client echoing /status) is "no opinion", not a mode
+    change: the dedupe gates the strip on the VALUE, so a status-hydrated Apply dedupes (#7188)."""
     from models.inference import LoadRequest
 
     inference_routes = _load_inference_routes_module()
@@ -896,9 +894,8 @@ def test_explicit_pinned_dedupes_when_flags_already_applied():
 
 
 def test_explicit_gpu_ids_dedupes_when_device_already_stripped():
-    """A GGUF loaded with explicit gpu_ids had a user --device stripped from its stored
-    extras, so a repeat request re-sending it still dedupes via the gpu_ids-gated strip
-    instead of a needless reload / training 409 (#7188)."""
+    """A GGUF loaded with explicit gpu_ids had a user --device stripped from its stored extras,
+    so a repeat request still dedupes via the gpu_ids-gated strip, not a reload / 409 (#7188)."""
     from models.inference import LoadRequest
 
     inference_routes = _load_inference_routes_module()
@@ -915,9 +912,8 @@ def test_explicit_gpu_ids_dedupes_when_device_already_stripped():
 
 
 def test_empty_gpu_ids_dedupes_without_stripping_device():
-    """gpu_ids=[] means auto: the load path normalizes it to None and keeps its --device,
-    so the request-side strip is gated on an EFFECTIVE pin and an empty list re-sending
-    --device dedupes instead of forcing a reload / training 409 (#7188)."""
+    """gpu_ids=[] means auto: the load path normalizes it to None and keeps its --device, so the
+    request-side strip is gated on an EFFECTIVE pin and an empty list still dedupes (#7188)."""
     from models.inference import LoadRequest
 
     inference_routes = _load_inference_routes_module()

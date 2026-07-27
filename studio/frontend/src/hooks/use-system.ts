@@ -40,8 +40,7 @@ export interface SystemInfoResponse {
   gpu: {
     available: boolean;
     backend?: string;
-    /** Whether GGUF loads accept explicit gpu_ids in the device records'
-     * declared index space. */
+    /** Whether GGUF loads accept explicit gpu_ids in the declared index space. */
     gguf_gpu_ids_supported?: boolean;
     backend_cuda_visible_devices?: string | null;
     parent_visible_gpu_ids?: number[];
