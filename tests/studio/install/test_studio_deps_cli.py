@@ -50,7 +50,13 @@ def _studio_distributions() -> list:
     return [name for name, _ in (p for p in parsed if p is not None)]
 
 
-def _make_venv(root: pathlib.Path, *, unsloth_version: str, distributions, extra_requirement = ""):
+def _make_venv(
+    root: pathlib.Path,
+    *,
+    unsloth_version: str,
+    distributions,
+    extra_requirement = "",
+):
     """A venv tree: pyvenv.cfg, the shipped studio/ package and .dist-info dirs."""
     site_packages = root / "lib" / "python3.11" / "site-packages"
     (site_packages / "studio" / "backend").mkdir(parents = True)
@@ -58,28 +64,33 @@ def _make_venv(root: pathlib.Path, *, unsloth_version: str, distributions, extra
     shutil.copytree(REQUIREMENTS, site_packages / "studio" / "backend" / "requirements")
     if extra_requirement:
         studio_txt = site_packages / "studio" / "backend" / "requirements" / "studio.txt"
-        studio_txt.write_text(studio_txt.read_text(encoding = "utf-8") + extra_requirement, encoding = "utf-8")
+        studio_txt.write_text(
+            studio_txt.read_text(encoding = "utf-8") + extra_requirement, encoding = "utf-8"
+        )
     (root / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding = "utf-8")
     for name in [*distributions, "unsloth"]:
         version = unsloth_version if name == "unsloth" else "1.0.0"
         dist_info = site_packages / f"{name.replace('-', '_')}-{version}.dist-info"
         dist_info.mkdir()
         (dist_info / "METADATA").write_text(
-            f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n", encoding = "utf-8",
+            f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+            encoding = "utf-8",
         )
     return site_packages
 
 
 def _write_manifest(root: pathlib.Path, site_packages: pathlib.Path, version: str):
     (root / _MANIFEST.MANIFEST_NAME).write_text(
-        json.dumps({
-            "schema": _MANIFEST.MANIFEST_SCHEMA,
-            "package": "unsloth",
-            "package_version": version,
-            "requirement_files": _MANIFEST.requirement_digests(
-                site_packages / "studio" / "backend" / "requirements",
-            ),
-        }),
+        json.dumps(
+            {
+                "schema": _MANIFEST.MANIFEST_SCHEMA,
+                "package": "unsloth",
+                "package_version": version,
+                "requirement_files": _MANIFEST.requirement_digests(
+                    site_packages / "studio" / "backend" / "requirements",
+                ),
+            }
+        ),
         encoding = "utf-8",
     )
 
@@ -90,15 +101,24 @@ def cross_venv(tmp_path, monkeypatch):
 
     Returns a callable: build the managed venv, then ask about it.
     """
-    def build(*, managed_version = "2026.6.1", caller_version = "2026.7.9",
-              managed_distributions = None, extra_requirement = "", with_manifest = True):
+
+    def build(
+        *,
+        managed_version = "2026.6.1",
+        caller_version = "2026.7.9",
+        managed_distributions = None,
+        extra_requirement = "",
+        with_manifest = True,
+    ):
         caller = tmp_path / "caller_venv"
         caller_site = _make_venv(caller, unsloth_version = caller_version, distributions = [])
         managed = tmp_path / "studio_home" / "unsloth_studio"
         managed_site = _make_venv(
             managed,
             unsloth_version = managed_version,
-            distributions = _studio_distributions() if managed_distributions is None else managed_distributions,
+            distributions = _studio_distributions()
+            if managed_distributions is None
+            else managed_distributions,
             extra_requirement = extra_requirement,
         )
         if with_manifest:
@@ -109,6 +129,7 @@ def cross_venv(tmp_path, monkeypatch):
         monkeypatch.setattr(sys, "prefix", str(caller))
         deps = _load(caller_site / "unsloth_cli" / "_studio_deps.py", "studio_deps_cross_venv")
         return deps.install_state(extra_roots = (managed,))
+
     return build
 
 

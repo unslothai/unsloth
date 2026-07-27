@@ -122,6 +122,7 @@ def _distributions_in(root: Path) -> Optional[Dict[str, str]]:
     if not paths:
         return None
     from importlib.metadata import Distribution, DistributionFinder
+
     found: Dict[str, str] = {}
     try:
         for dist in Distribution.discover(context = DistributionFinder.Context(path = paths)):

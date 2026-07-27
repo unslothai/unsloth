@@ -84,10 +84,7 @@ def _canonical(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def _installed_version(
-    dist_name: str,
-    installed: Optional[Dict[str, str]] = None,
-) -> Optional[str]:
+def _installed_version(dist_name: str, installed: Optional[Dict[str, str]] = None) -> Optional[str]:
     if installed is not None:
         return installed.get(_canonical(dist_name))
     from importlib.metadata import PackageNotFoundError, version
@@ -194,8 +191,7 @@ def _marker_applies(marker: str) -> bool:
 
 
 def missing_requirements(
-    req_file: Optional[Path] = None,
-    installed: Optional[Dict[str, str]] = None,
+    req_file: Optional[Path] = None, installed: Optional[Dict[str, str]] = None
 ) -> List[str]:
     """Distribution names from a requirements file that are not installed.
 
