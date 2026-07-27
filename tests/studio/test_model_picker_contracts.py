@@ -1105,7 +1105,5 @@ def test_gguf_background_loads_never_download_companions():
     inference = _read_backend("core/inference/inference.py")
     # The vision processor fallback stays on the (possibly rewritten local)
     # load path instead of refetching by repo id.
-    assert (
-        "config.base_model if config.is_lora else config.path" in inference
-    )
+    assert "config.base_model if config.is_lora else config.path" in inference
     assert "config.base_model if config.is_lora else config.identifier" not in inference
