@@ -42,10 +42,8 @@ from typing import Any, Iterable, Optional
 
 # ── LoRA EMA ──────────────────────────────────────────────────────────────────
 
-# Warmup horizon for the EMA decay ramp: effective decay is
-# min(decay, (1 + updates) / (WARMUP_OFFSET + updates)), the standard inverse ramp. With the
-# offset at 10, step 1 averages aggressively (~0.18) and the ramp reaches 0.99 after ~1000
-# updates, so a 300-step run still ends with a shadow that absorbed most of the trajectory.
+# Warmup horizon for the EMA decay ramp: effective decay is min(decay, (1 + updates) / (WARMUP_OFFSET + updates)), the standard inverse ramp.
+# With the offset at 10, step 1 averages aggressively (~0.18) and the ramp reaches 0.99 after ~1000 updates, so a 300-step run still ends with a shadow that absorbed most of the trajectory.
 _EMA_WARMUP_OFFSET = 10.0
 
 
@@ -225,8 +223,7 @@ def source_revision(ref: Any) -> str:
                 roots += [
                     e.path
                     for e in it
-                    # vae too: cached latents come from it, so an in-place VAE swap must
-                    # invalidate them just like an encoder change.
+                    # vae too: cached latents come from it, so an in-place VAE swap must invalidate them just like an encoder change.
                     if e.is_dir() and e.name.startswith(("text_encoder", "tokenizer", "vae"))
                 ]
             for root in roots:
@@ -341,13 +338,10 @@ class PersistentConditioningCache:
 
 # ── aspect-ratio bucketing ────────────────────────────────────────────────────
 
-# Pixel-dimension divisor for bucket shapes. The DiT families divide by 8 in the VAE and 2 again
-# in latent patching, and regional torch.compile prefers few distinct shapes, so buckets snap to
-# multiples of 64 pixels.
+# Pixel-dimension divisor for bucket shapes. The DiT families divide by 8 in the VAE and 2 again in latent patching, and regional torch.compile prefers few distinct shapes, so buckets snap to multiples of 64 pixels.
 BUCKET_DIVISOR = 64
 
-# Widest aspect ratio a bucket may take; anything more extreme clamps to it (matching the common
-# practice of capping panoramas).
+# Widest aspect ratio a bucket may take; anything more extreme clamps to it (matching the common practice of capping panoramas).
 MAX_BUCKET_RATIO = 2.0
 
 

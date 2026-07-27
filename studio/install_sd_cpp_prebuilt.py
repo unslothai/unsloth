@@ -38,17 +38,12 @@ import zipfile
 from pathlib import Path
 from typing import Optional, Sequence
 
-# Default source: the Unsloth-built mirror, whose CPU/Apple prebuilts are published by
-# unslothai/stable-diffusion.cpp (like unslothai/llama.cpp ships its prebuilts). Override with
-# UNSLOTH_SD_CPP_REPO to point elsewhere (e.g. back to leejet). GPU hosts never reach here (they
-# run diffusers), so only CPU/Apple assets are needed.
+# Default source: the Unsloth-built mirror, whose CPU/Apple prebuilts are published by unslothai/stable-diffusion.cpp (like unslothai/llama.cpp ships its prebuilts). Override with UNSLOTH_SD_CPP_REPO to point elsewhere (e.g. back to leejet).
+# GPU hosts never reach here (they run diffusers), so only CPU/Apple assets are needed.
 DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
-# Upstream we fall back to if the mirror can't serve this host (mirror release missing, or
-# a host we don't yet build): resolve against leejet so native install still works.
+# Upstream we fall back to if the mirror cannot serve this host (mirror release missing, or a host we do not yet build): resolve against leejet so native install still works.
 UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
-# Pinned release tag for REPRODUCIBILITY: "releases/latest" silently swaps the binary under
-# users on every push. Override with UNSLOTH_SD_CPP_TAG; set it empty to track latest. If the
-# pinned tag is gone, install falls back to that repo's latest.
+# Pinned release tag for REPRODUCIBILITY: "releases/latest" silently swaps the binary under users on every push. Override with UNSLOTH_SD_CPP_TAG; set it empty to track latest. If the pinned tag is gone, install falls back to that repo latest.
 DEFAULT_TAG = "master-741-484baa4"
 
 # Back-compat alias (some callers/tests import REPO).
@@ -119,18 +114,14 @@ def resolve_release_asset(
         return pool[0] if pool else None
 
     if system == "windows":
-        # Filter by host architecture the same way Darwin and Linux do. Without it a Windows
-        # arm64 host matched the x64 assets, installed one, and only failed later when the
-        # extracted x64 sd-cli could not run. No compatible build is a real miss: return None so
-        # the caller falls back rather than installing something that cannot execute.
+        # Filter by host architecture the same way Darwin and Linux do. Without it a Windows arm64 host matched the x64 assets, installed one, and only failed later when the extracted x64 sd-cli could not run.
+        # No compatible build is a real miss: return None so the caller falls back rather than installing something that cannot execute.
         pool = [a for a in zips if "bin-win" in a.lower() and any(t in a.lower() for t in arch)]
         token = _WINDOWS_ACCEL_TOKEN.get(accel, accel)
         sel = [a for a in pool if token in a.lower()]
         if sel:
             return sel[0]
-        # An EXPLICIT GPU accelerator with no matching asset is a real miss, not a CPU request:
-        # return None so the caller can fall back to a repo that builds it, rather than installing
-        # a CPU build for a --accelerator cuda request.
+        # An EXPLICIT GPU accelerator with no matching asset is a real miss, not a CPU request: return None so the caller can fall back to a repo that builds it, rather than installing a CPU build for a --accelerator cuda request.
         if accel in ("cuda", "vulkan", "rocm"):
             return None
         # auto / cpu -> a plain avx2 CPU build, else any windows build.
@@ -140,8 +131,7 @@ def resolve_release_asset(
     # linux (and anything else unix-like)
     pool = [a for a in zips if "linux" in a.lower() and any(t in a.lower() for t in arch)]
     if accel in ("cuda", "vulkan", "rocm"):
-        # Explicit GPU accelerator: require its marker, else no match (let the caller
-        # fall back) -- never hand back a plain CPU build for a GPU request.
+        # Explicit GPU accelerator: require its marker, else no match (let the caller fall back) -- never hand back a plain CPU build for a GPU request.
         marker = _LINUX_ACCEL_TOKEN.get(accel, accel)
         sel = [a for a in pool if marker in a.lower()]
     else:  # auto / cpu -> the plain build with no accelerator marker
@@ -297,9 +287,7 @@ def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> Non
     print(f"downloading CUDA runtime {cudart['name']} ...", flush = True)
     try:
         _download(cudart["browser_download_url"], dest)
-        # Verify integrity BEFORE extracting, like the main sd-cli archive: these DLLs load into
-        # sd-cli.exe at runtime, so a corrupt/tampered runtime archive must be rejected rather than
-        # extracted next to the binary.
+        # Verify integrity BEFORE extracting, like the main sd-cli archive: these DLLs load into sd-cli.exe at runtime, so a corrupt/tampered runtime archive must be rejected rather than extracted next to the binary.
         _verify_sha256(dest, cudart.get("digest"))
         with zipfile.ZipFile(dest) as zf:
             _safe_extractall(zf, target)
@@ -350,16 +338,13 @@ def _resolve_with_fallback(
     ``--print-asset`` so both honour the same fallback."""
     tag = _pinned_tag()
     primary = _repo()
-    # Fall back to upstream ONLY when the user didn't pin a repo (env unset) and the built-in
-    # default is in use: an explicit UNSLOTH_SD_CPP_REPO (even one equal to the default) gets
-    # exactly that repo, with no surprise upstream substitution.
+    # Fall back to upstream ONLY when the user did not pin a repo (env unset) and the built-in default is in use: an explicit UNSLOTH_SD_CPP_REPO (even one equal to the default) gets exactly that repo, with no surprise upstream substitution.
     repo_pinned = bool((os.environ.get("UNSLOTH_SD_CPP_REPO") or "").strip())
     allow_upstream = (
         not repo_pinned and primary == DEFAULT_REPO and DEFAULT_REPO != UPSTREAM_FALLBACK_REPO
     )
 
-    # (repo, tag_to_fetch, allow_latest). With a pin set, try the exact pin on every repo
-    # first (allow_latest = False), then each repo's latest (tag = None).
+    # (repo, tag_to_fetch, allow_latest). With a pin set, try the exact pin on every repo first (allow_latest = False), then each repo latest (tag = None).
     attempts: list[tuple[str, Optional[str], bool]] = []
     if tag:
         attempts.append((primary, tag, False))
@@ -379,8 +364,7 @@ def _resolve_with_fallback(
         )
         if release is not None and chosen:
             if repo != primary:
-                # Diagnostic goes to stderr, not stdout: --print-asset documents its stdout as the
-                # asset name only, so a caller parsing it as a single line must not see this log.
+                # Diagnostic goes to stderr, not stdout: --print-asset documents its stdout as the asset name only, so a caller parsing it as a single line must not see this log.
                 print(
                     f"falling back to {repo} for {platform.system()}/{platform.machine()}",
                     file = sys.stderr,
@@ -405,9 +389,7 @@ def install(
     has no ``sd-cli``.
     """
     target = install_dir or default_install_dir()
-    # Only claim ownership of ``target`` (marking it for the uninstaller's recursive delete) when
-    # this install created it or it was empty, or it already carries our marker -- never adopt a
-    # pre-existing non-empty dir, else a later uninstall could wipe a user's own checkout.
+    # Only claim ownership of ``target`` (marking it for the uninstaller recursive delete) when this install created it or it was empty, or it already carries our marker -- never adopt a pre-existing non-empty dir, else a later uninstall could wipe a user own checkout.
     marker = target / ".unsloth-studio-owned"
     _may_own = True
     if target.exists():
@@ -419,9 +401,7 @@ def install(
             _pre_existing_entries = True
         # Empty dir, or one we already own, may be (re)claimed; a non-empty unowned dir may not.
         _may_own = (not _pre_existing_entries) or marker.is_file()
-    # Refuse to extract into a pre-existing, non-empty directory we do not own: merging the release
-    # in would overwrite or mix our binaries into the user's own files. Fail so they point us at a
-    # fresh/empty location.
+    # Refuse to extract into a pre-existing, non-empty directory we do not own: merging the release in would overwrite or mix our binaries into the user own files. Fail so they point us at a fresh/empty location.
     if not _may_own:
         raise RuntimeError(
             f"sd.cpp install target already exists and is not a Studio-managed directory: {target}. "
@@ -441,12 +421,8 @@ def install(
     asset = next(a for a in release["assets"] if a["name"] == chosen)
     url = asset["browser_download_url"]
     target.mkdir(parents = True, exist_ok = True)
-    # Claim ownership BEFORE any partial write (download/extract/cudart fetch below). An
-    # interrupted extraction (disk full, killed process, a raising _maybe_fetch_windows_cudart)
-    # leaves the target non-empty; without the marker the next lazy install would see it as
-    # non-empty-and-unowned and trip the refusal guard above, wedging native install until the
-    # user manually deletes the directory. Writing the marker first makes the retry treat this
-    # partial install as reclaimable (_may_own) and re-extract over it. Written only when
+    # Claim ownership BEFORE any partial write (download/extract/cudart fetch below). An interrupted extraction (disk full, killed process, a raising _maybe_fetch_windows_cudart) leaves the target non-empty; without the marker the next lazy install would see it as non-empty-and-unowned and trip the refusal guard above, wedging native install until the user manually deletes the directory.
+    # Writing the marker first makes the retry treat this partial install as reclaimable (_may_own) and re-extract over it. Written only when _may_own (empty/new or already ours), so it never adopts a user pre-existing files.
     # _may_own (empty/new or already ours), so it never adopts a user's pre-existing files.
     if _may_own:
         try:
@@ -465,8 +441,7 @@ def install(
         # Windows CUDA builds need the separately-published cudart runtime DLLs.
         _maybe_fetch_windows_cudart(release, chosen, target)
     finally:
-        # Always drop the archive: on a sha256 mismatch / corrupt zip / network error it
-        # must not linger (and a stale partial would defeat a later retry).
+        # Always drop the archive: on a sha256 mismatch / corrupt zip / network error it must not linger (and a stale partial would defeat a later retry).
         archive.unlink(missing_ok = True)
     sd_cli = _locate_sd_cli(target)
     if not sd_cli:
@@ -474,16 +449,13 @@ def install(
     if sys.platform != "win32":
         _make_executable(sd_cli)
     print(f"installed sd-cli -> {sd_cli}", flush = True)
-    # The same archive ships the persistent sd-server; make it runnable too so the
-    # native backend can prefer it (load once, serve many) over one-shot sd-cli.
+    # The same archive ships the persistent sd-server; make it runnable too so the native backend can prefer it (load once, serve many) over one-shot sd-cli.
     sd_server = _locate_sd_server(target)
     if sd_server is not None and sys.platform != "win32":
         _make_executable(sd_server)
     if sd_server is not None:
         print(f"installed sd-server -> {sd_server}", flush = True)
-    # The ownership marker (the same one setup.sh/_is_studio_root use, so the uninstaller deletes
-    # only Studio-installed sd.cpp) was already written above, before extraction, so a crashed
-    # partial install is still recognised as ours on a retry.
+    # The ownership marker (the same one setup.sh/_is_studio_root use, so the uninstaller deletes only Studio-installed sd.cpp) was already written above, before extraction, so a crashed partial install is still recognised as ours on a retry.
     return sd_cli
 
 
@@ -499,9 +471,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = p.parse_args(argv)
 
     if args.print_asset:
-        # Route through the same primary/fallback resolution as install(), so a host the mirror
-        # doesn't build (e.g. a Linux Vulkan request) reports the upstream asset it would actually
-        # download instead of a false "no matching prebuilt".
+        # Route through the same primary/fallback resolution as install(), so a host the mirror does not build (e.g. a Linux Vulkan request) reports the upstream asset it would actually download instead of a false "no matching prebuilt".
         _used, _release, chosen = _resolve_with_fallback(args.accelerator, None)
         print(chosen or "(no matching prebuilt; build from source)")
         return 0 if chosen else 2

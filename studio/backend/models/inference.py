@@ -2318,8 +2318,7 @@ class DiffusionLoadRequest(BaseModel):
     @field_validator("attention_backend", mode = "before")
     @classmethod
     def _normalize_attention_backend(cls, value):
-        # The dispatcher accepts case/whitespace variants ("CuDNN", " sage "), but the Literal above is
-        # validated before any normaliser runs, so fold a string to its canonical form here.
+        # The dispatcher accepts case/whitespace variants ("CuDNN", " sage "), but the Literal above is validated before any normaliser runs, so fold a string to its canonical form here.
         return value.strip().lower() if isinstance(value, str) else value
 
 
@@ -2376,8 +2375,7 @@ class ControlNetSpec(BaseModel):
 
     @model_validator(mode = "after")
     def _check_guidance_range(self) -> "ControlNetSpec":
-        # An inverted range means "act over no steps"; reject it as a clean 422 instead of letting the
-        # diffusers pipeline 500 deep in the denoise.
+        # An inverted range means "act over no steps"; reject it as a clean 422 instead of letting the diffusers pipeline 500 deep in the denoise.
         if self.guidance_start > self.guidance_end:
             raise ValueError("guidance_start must be <= guidance_end")
         return self
@@ -2396,17 +2394,14 @@ class DiffusionGenerateRequest(BaseModel):
     )
     steps: int = Field(9, ge = 1, le = 100, description = "Number of denoising steps")
     guidance: float = Field(0.0, ge = 0.0, le = 20.0, description = "Classifier-free guidance scale")
-    # le = 2**53-1: seeds round-trip through JSON gallery recipes, where JavaScript rounds integers
-    # above Number.MAX_SAFE_INTEGER and a restored recipe would generate a different image.
+    # le = 2**53-1: seeds round-trip through JSON gallery recipes, where JavaScript rounds integers above Number.MAX_SAFE_INTEGER and a restored recipe would generate a different image.
     seed: Optional[int] = Field(
         None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
     )
     batch_size: int = Field(
         1, ge = 1, le = 32, description = "Images generated in one forward pass (VRAM-heavy)"
     )
-    # Batched multi-image generation (diffusers engine): a prompt list renders one image per prompt
-    # in a single batched forward (txt2img only); a seed list renders one image per seed. Each image
-    # carries its OWN generator seed, so any batch member replays alone.
+    # Batched multi-image generation (diffusers engine): a prompt list renders one image per prompt in a single batched forward (txt2img only); a seed list renders one image per seed. Each image carries its OWN generator seed, so any batch member replays alone.
     prompts: Optional[list[str]] = Field(
         None,
         min_length = 1,
@@ -2452,10 +2447,8 @@ class DiffusionGenerateRequest(BaseModel):
             )
         return self
 
-    # Image-conditioned workflows (base64 or data-URL): init_image alone runs img2img, init_image +
-    # mask_image runs inpaint. Both require a family with the matching pipeline. Cap each base64
-    # string so one request can't buffer a multi-GB payload (decoded dimensions are bounded
-    # separately); ~32 MiB fits a full 4096px image yet rejects abuse.
+    # Image-conditioned workflows (base64 or data-URL): init_image alone runs img2img, init_image + mask_image runs inpaint. Both require a family with the matching pipeline.
+    # Cap each base64 string so one request cannot buffer a multi-GB payload (decoded dimensions are bounded separately); ~32 MiB fits a full 4096px image yet rejects abuse.
     init_image: Optional[str] = Field(
         None,
         max_length = 32 * 1024 * 1024,
@@ -2469,9 +2462,7 @@ class DiffusionGenerateRequest(BaseModel):
     )
     strength: Optional[float] = Field(
         None,
-        # EXCLUSIVE lower bound: strength 0 does not "keep the source". Every diffusers img2img/inpaint
-        # pipeline derives its step count from it, so 0 leaves zero denoising steps: FLUX/Qwen/Z-Image
-        # raise "the number of pipeline steps is 0", and SDXL img2img crashes on empty latents (a 500).
+        # EXCLUSIVE lower bound: strength 0 does not "keep the source". Every diffusers img2img/inpaint pipeline derives its step count from it, so 0 leaves zero denoising steps: FLUX/Qwen/Z-Image raise "the number of pipeline steps is 0", and SDXL img2img crashes on empty latents (a 500).
         gt = 0.0,
         le = 1.0,
         description = "img2img/inpaint denoise strength: low values stay close to the "
@@ -2508,9 +2499,7 @@ class DiffusionGenerateRequest(BaseModel):
     @field_validator("loras")
     @classmethod
     def _unique_lora_ids(cls, value: Optional[list[LoraSpec]]) -> Optional[list[LoraSpec]]:
-        # Both apply paths break alias collisions by suffixing the adapter name/file, so a repeated id
-        # would load the SAME adapter several times and stack its effect past the per-adapter weight
-        # bound. The UI already blocks duplicates; reject them for API clients too.
+        # Both apply paths break alias collisions by suffixing the adapter name/file, so a repeated id would load the SAME adapter several times and stack its effect past the per-adapter weight bound. The UI already blocks duplicates; reject them for API clients too.
         if value:
             seen: set[str] = set()
             for spec in value:
@@ -2524,8 +2513,7 @@ class DiffusionGenerateRequest(BaseModel):
     @field_validator("reference_images")
     @classmethod
     def _bounded_reference_items(cls, value: Optional[list[str]]) -> Optional[list[str]]:
-        # Each reference is a base64 image; bound its length like init_image/mask_image so several
-        # references can't buffer a multi-GB payload.
+        # Each reference is a base64 image; bound its length like init_image/mask_image so several references cannot buffer a multi-GB payload.
         if value is not None:
             for item in value:
                 if len(item) > 32 * 1024 * 1024:
@@ -2535,17 +2523,14 @@ class DiffusionGenerateRequest(BaseModel):
     @field_validator("width", "height")
     @classmethod
     def _multiple_of_16(cls, value: int) -> int:
-        # Z-Image requires dimensions divisible by 16 (8x VAE downsample + 2x patch). Non-multiples crash
-        # deep in the pipeline, so reject them here for a clean 422.
+        # Z-Image requires dimensions divisible by 16 (8x VAE downsample + 2x patch). Non-multiples crash deep in the pipeline, so reject them here for a clean 422.
         if value % 16 != 0:
             raise ValueError("must be a multiple of 16")
         return value
 
     @model_validator(mode = "after")
     def _batch_seeds_json_safe(self) -> "DiffusionGenerateRequest":
-        # A batch derives per-image seeds as seed .. seed+batch_size-1. The base seed is capped at 2**53-1
-        # to round-trip through the JSON recipe, but a derived top-of-batch seed near the cap can exceed
-        # it, where the frontend rounds it and a restored recipe replays a different image.
+        # A batch derives per-image seeds as seed .. seed+batch_size-1. The base seed is capped at 2**53-1 to round-trip through the JSON recipe, but a derived top-of-batch seed near the cap can exceed it, where the frontend rounds it and a restored recipe replays a different image.
         if self.seed is not None and self.seed + self.batch_size - 1 > 2**53 - 1:
             raise ValueError(
                 "seed + batch_size - 1 must not exceed 2**53 - 1 so every per-image seed "
@@ -2587,9 +2572,7 @@ class GalleryImage(BaseModel):
     controlnet: Optional[str] = Field(
         None, description = "ControlNet applied, formatted as 'id:control_type:strength'"
     )
-    # Conditioned-workflow settings. The images themselves are NOT persisted (user uploads with
-    # their own lifetime), so these say what ran and let the client tell the user which inputs it
-    # needs back instead of silently restoring a conditioned image as a plain Create.
+    # Conditioned-workflow settings. The images themselves are NOT persisted (user uploads with their own lifetime), so these say what ran and let the client tell the user which inputs it needs back instead of silently restoring a conditioned image as a plain Create.
     workflow: Optional[str] = Field(
         None,
         description = "Workflow that produced it: txt2img, img2img, inpaint, upscale, edit, "
@@ -2748,10 +2731,7 @@ class DiffusionStatusResponse(BaseModel):
         "picker's enabled state). Diffusers only, for families with a ControlNet pipeline; False "
         "for the native engine, GGUF-via-diffusers, and torchao fp8/int8 dense.",
     )
-    # Additive: per-Advanced-control provenance {control: {value, source, reason}}. Present only on
-    # backends that record it; null when nothing is loaded. The frontend renders an "Auto: X" badge
-    # next to each control whose source == "auto". Declared explicitly so pydantic's extra='ignore'
-    # doesn't drop it.
+    # Additive: per-Advanced-control provenance {control: {value, source, reason}}. Present only on backends that record it; null when nothing is loaded. The frontend renders an "Auto: X" badge next to each control whose source == "auto". Declared explicitly so pydantic extra='ignore' does not drop it.
     resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
         None,
         description = "Per-control resolved value + provenance (source auto|explicit + reason), "
@@ -2787,10 +2767,8 @@ class DiffusionInferenceInfoResponse(BaseModel):
 
 
 # ── OpenAI-compatible images API (POST /v1/images/generations) ──
-#
-# Shapes mirror OpenAI's CreateImageRequest / ImagesResponse so off-the-shelf clients work
-# unchanged. The loaded image GGUF stands in for the model; GPT-image-only knobs (quality, style,
-# background, output_format, ...) are accepted and ignored, like dall-e-2. The size string is
+# Shapes mirror OpenAI's CreateImageRequest / ImagesResponse so off-the-shelf clients work unchanged. The loaded image GGUF stands in for the model; GPT-image-only knobs (quality, style, background, output_format, ...) are accepted and ignored, like dall-e-2.
+# The size string is parsed and `stream` rejected in the route; everything Pydantic can check declaratively is here.
 # parsed and `stream` rejected in the route; everything Pydantic can check declaratively is here.
 
 
@@ -2813,8 +2791,7 @@ class ImageGenerationRequest(BaseModel):
         "url", description = "Return each image as a URL or a base64-encoded PNG."
     )
     user: Optional[str] = Field(None, description = "End-user identifier (accepted, unused).")
-    # gpt-image-only; declared so we can reject it clearly instead of returning JSON to a client that
-    # asked for an SSE stream.
+    # gpt-image-only; declared so we can reject it clearly instead of returning JSON to a client that asked for an SSE stream.
     stream: Optional[bool] = Field(
         None, description = "Streaming image generation is not supported; omit or set false."
     )
@@ -2822,8 +2799,7 @@ class ImageGenerationRequest(BaseModel):
     @field_validator("n", "size", "response_format", mode = "before")
     @classmethod
     def _null_means_default(cls, value, info):
-        # OpenAI marks these nullable WITH a default, so an explicit null means "use the default":
-        # coalesce it instead of 400-ing a spec-valid body.
+        # OpenAI marks these nullable WITH a default, so an explicit null means "use the default": coalesce it instead of 400-ing a spec-valid body.
         if value is None:
             return cls.model_fields[info.field_name].default
         return value
@@ -2955,8 +2931,7 @@ class VideoLoadRequest(BaseModel):
     @field_validator("attention_backend", mode = "before")
     @classmethod
     def _normalize_attention_backend(cls, value):
-        # The dispatcher accepts case/whitespace variants ("CuDNN", " sage "), but the Literal above is
-        # validated before any normaliser runs, so fold a string to its canonical form here.
+        # The dispatcher accepts case/whitespace variants ("CuDNN", " sage "), but the Literal above is validated before any normaliser runs, so fold a string to its canonical form here.
         return value.strip().lower() if isinstance(value, str) else value
 
 
@@ -2967,8 +2942,7 @@ class VideoGenerateRequest(BaseModel):
     negative_prompt: Optional[str] = Field(
         None, description = "What to avoid (if the model supports it)"
     )
-    # Width/height/num_frames/fps default per loaded family (the backend snaps them to its required
-    # multiples/lattice), so they are optional here.
+    # Width/height/num_frames/fps default per loaded family (the backend snaps them to its required multiples/lattice), so they are optional here.
     width: Optional[int] = Field(
         None, ge = 32, le = 2048, description = "Frame width in pixels (family multiple)"
     )
@@ -2999,8 +2973,7 @@ class VideoGenerateRequest(BaseModel):
         "pipeline default it to the main guidance. Ignored by single-DiT families (their pipeline "
         "signature has no second guidance kwarg).",
     )
-    # le = 2**53-1: seeds round-trip through JSON gallery recipes, where JavaScript rounds integers
-    # above Number.MAX_SAFE_INTEGER and a restored recipe would generate a different clip.
+    # le = 2**53-1: seeds round-trip through JSON gallery recipes, where JavaScript rounds integers above Number.MAX_SAFE_INTEGER and a restored recipe would generate a different clip.
     seed: Optional[int] = Field(
         None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
     )
@@ -3151,9 +3124,7 @@ class VideoStatusResponse(BaseModel):
     defaults: Optional[VideoGenerationDefaults] = Field(
         None, description = "Per-family generation defaults + shape constraints; null when unloaded"
     )
-    # Additive: per-Advanced-control provenance {control: {value, source, reason}}. Same shape as the
-    # diffusion status; null when nothing is loaded. The frontend renders an "Auto: X" badge next to
-    # each control whose source == "auto".
+    # Additive: per-Advanced-control provenance {control: {value, source, reason}}. Same shape as the diffusion status; null when nothing is loaded. The frontend renders an "Auto: X" badge next to each control whose source == "auto".
     resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
         None,
         description = "Per-control resolved value + provenance (source auto|explicit + reason), "

@@ -57,16 +57,14 @@ def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
 
 def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
-    # First thing in the child (before torch): self-bind to parent death and scrub the native path
-    # secret, like the other workers (multiprocessing children can't be given a preexec_fn).
+    # First thing in the child (before torch): self-bind to parent death and scrub the native path secret, like the other workers (multiprocessing children cannot be given a preexec_fn).
     from utils.native_path_leases import run_without_native_path_secret
     run_without_native_path_secret(
         _run_diffusion_child, event_queue = event_queue, stop_queue = stop_queue, config = config
     )
 
 
-# Cap on retained metric points; over it, arrays are decimated (every other point) so a long run
-# stays bounded while the loss chart keeps its shape.
+# Cap on retained metric points; over it, arrays are decimated (every other point) so a long run stays bounded while the loss chart keeps its shape.
 _METRIC_CAP = 4000
 
 
@@ -89,9 +87,7 @@ def _llm_training_active() -> bool:
 
 
 # ── persisted run history ──────────────────────────────────────────────────────
-# Every terminal run is recorded as one JSON file (summary + scrubbed config + metric logs) so
-# the Train tab can show history. JSON, not the LLM sqlite, so diffusion runs stay off the LLM
-# Runs page.
+# Every terminal run is recorded as one JSON file (summary + scrubbed config + metric logs) so the Train tab can show history. JSON, not the LLM sqlite, so diffusion runs stay off the LLM Runs page.
 def _runs_dir() -> Path:
     from utils.paths.storage_roots import studio_root
 
@@ -113,8 +109,7 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
             rec = json.loads(p.read_text(encoding = "utf-8"))
         except Exception:  # noqa: BLE001 -- a corrupt record never breaks the listing
             continue
-        # Skip a wrong-shape record (not a dict, or missing string job_id/status) so one bad file can't
-        # blow up the route's DiffusionTrainingRunSummary(**r) or the whole panel.
+        # Skip a wrong-shape record (not a dict, or missing string job_id/status) so one bad file cannot blow up the route DiffusionTrainingRunSummary(**r) or the whole panel.
         if not isinstance(rec, dict):
             continue
         if not (isinstance(rec.get("job_id"), str) and isinstance(rec.get("status"), str)):
@@ -194,8 +189,7 @@ def _append_metric(
     floss = _finite_or_none(loss)
     if floss is None:  # non-numeric or non-finite: skip, keep the curve JSON-safe
         return
-    # lr / grad_norm may be None or non-finite; non-finite is nulled (not dropped) to stay
-    # index-aligned.
+    # lr / grad_norm may be None or non-finite; non-finite is nulled (not dropped) to stay index-aligned.
     flr = _finite_or_none(lr)
     fgn = _finite_or_none(grad_norm)
     steps = state["metric_steps"]
@@ -231,16 +225,11 @@ class DiffusionTrainingService:
         self._ctx = ctx if ctx is not None else _CTX
         self._target = target if target is not None else _default_target
         self._lock = threading.Lock()
-        # Set by reserve() while a start is in flight (before the route frees GPU models) so the load
-        # guards refuse a concurrent load during the free-then-spawn window. Cleared by unreserve().
+        # Set by reserve() while a start is in flight (before the route frees GPU models) so the load guards refuse a concurrent load during the free-then-spawn window. Cleared by unreserve().
         self._reserved = False
-        # Dataset mutations in flight (caption edit, upload commit, image delete, example import).
-        # A start refuses while any is open and a mutation refuses once a start is reserved, both
-        # decided under _lock, so neither can slip through the other's check-then-act window.
+        # Dataset mutations in flight (caption edit, upload commit, image delete, example import). A start refuses while any is open and a mutation refuses once a start is reserved, both decided under _lock, so neither can slip through the other check-then-act window.
         self._dataset_mutations = 0
-        # GPU load admissions in flight (an image/video/chat load between its training guard and
-        # the moment it registers with the arbiter). Same two-sided rule as the dataset mutations:
-        # a start refuses while one is open, and an admission refuses once a start is reserved.
+        # GPU load admissions in flight (an image/video/chat load between its training guard and the moment it registers with the arbiter). Same two-sided rule as the dataset mutations: a start refuses while one is open, and an admission refuses once a start is reserved.
         self._gpu_admissions = 0
         self._proc: Any = None
         self._stop_queue: Any = None
@@ -277,19 +266,14 @@ class DiffusionTrainingService:
                     "then start the run."
                 )
             if self._gpu_admissions:
-                # A load already passed its training guard and is about to take the GPU. Reserving
-                # now would free residents it has not registered yet, so the trainer and a
-                # brand-new pipeline would allocate together. Refusing is safe: the admission is
-                # held only across the load's registration, not the load itself.
+                # A load already passed its training guard and is about to take the GPU. Reserving now would free residents it has not registered yet, so the trainer and a brand-new pipeline would allocate together.
+                # Refusing is safe: the admission is held only across the load registration, not the load itself.
                 raise RuntimeError(
                     "A model is being loaded onto the GPU right now. Wait for that to finish, "
                     "then start the run."
                 )
-            # The LLM trainer under the SAME lock, not just at the route's earlier check: that check
-            # and this reservation are separated by several network-bound preflights, so an LLM start
-            # could spawn in between and both trainers would allocate on one GPU. The LLM route holds
-            # gpu_load_admission() across its own spawn, so between the two either this raises or
-            # that one does -- never neither.
+            # The LLM trainer under the SAME lock, not just at the route earlier check: that check and this reservation are separated by several network-bound preflights, so an LLM start could spawn in between and both trainers would allocate on one GPU.
+            # The LLM route holds gpu_load_admission() across its own spawn, so between the two either this raises or that one does -- never neither.
             if _llm_training_active():
                 raise RuntimeError(
                     "An LLM training job is already running. "
@@ -366,8 +350,7 @@ class DiffusionTrainingService:
 
         _config_from_dict(config).normalized()
 
-        # Join a finished job's pump OUTSIDE the lock: its final state writes take this lock, so joining
-        # under it would stall the start and let the stale pump overwrite the new state.
+        # Join a finished job pump OUTSIDE the lock: its final state writes take this lock, so joining under it would stall the start and let the stale pump overwrite the new state.
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
                 raise RuntimeError("A diffusion training job is already running.")
@@ -549,8 +532,7 @@ class DiffusionTrainingService:
             elif etype == "model_load_completed":
                 s.update(in_model_load = False, message = "Training...")
             elif etype == "preparing":
-                # A long precompute phase (e.g. VAE latent cache) before the first step; surfaced so the UI shows
-                # progress instead of a silent "Loading base model..." stall.
+                # A long precompute phase (e.g. VAE latent cache) before the first step; surfaced so the UI shows progress instead of a silent "Loading base model..." stall.
                 done, total = ev.get("done"), ev.get("total")
                 stage = str(ev.get("stage", "prepare")).replace("_", " ")
                 s.update(
@@ -566,8 +548,7 @@ class DiffusionTrainingService:
                 # Non-fatal trainer notes; keep training state, surface the text.
                 s["message"] = str(ev.get("message", "warning"))
             elif etype == "progress":
-                # Null any non-finite float so the JSON stays strict-parseable; a missing key keeps the last
-                # value, a present-but-non-finite one becomes None.
+                # Null any non-finite float so the JSON stays strict-parseable; a missing key keeps the last value, a present-but-non-finite one becomes None.
                 loss = _finite_or_none(ev["loss"]) if "loss" in ev else s["loss"]
                 avg_loss = _finite_or_none(ev["avg_loss"]) if "avg_loss" in ev else s["avg_loss"]
                 learning_rate = (
@@ -602,8 +583,7 @@ class DiffusionTrainingService:
                     ev.get("grad_norm"),
                 )
             elif etype == "complete":
-                # Reset in_model_load: a stop during model load emits complete with no preceding
-                # model_load_completed, which would otherwise leave a stale loading indicator.
+                # Reset in_model_load: a stop during model load emits complete with no preceding model_load_completed, which would otherwise leave a stale loading indicator.
                 s.update(
                     active = False,
                     in_model_load = False,
