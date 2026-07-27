@@ -5,7 +5,9 @@
 // reached from the floating panel; this card is the way in from Settings.
 
 import { Switch } from "@/components/ui/switch";
-import { useApiMonitorOverlayStore } from "@/features/api-monitor";
+// Direct path, not the barrel: the barrel re-exports the page, which would
+// pull it into this chunk and defeat the route's dynamic import.
+import { useApiMonitorOverlayStore } from "@/features/api-monitor/overlay-store";
 import { getApiMonitor } from "@/features/chat/api/chat-api";
 import type { ApiMonitorResponse } from "@/features/chat/types/api";
 import { cn } from "@/lib/utils";

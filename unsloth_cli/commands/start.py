@@ -4,6 +4,7 @@
 """`unsloth start` — launch a coding agent against a running Unsloth server."""
 
 import atexit
+import base64
 import contextlib
 import json
 import os
@@ -2052,6 +2053,32 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
     return inline
 
 
+def _b64_path(path: Path) -> str:
+    """Path as base64, so it can cross a shell without being expanded."""
+    return base64.b64encode(str(path).encode("utf-8")).decode("ascii")
+
+
+_CLAUDE_PLAN_GATE_SCRIPT = '''\
+"""Deny the editing agent while the parent session is in plan mode."""
+import json, sys
+
+try:
+    mode = (json.load(sys.stdin) or {}).get("permission_mode")
+except Exception:
+    sys.exit(0)  # fail open: a hook error must never block the parent session
+if mode == "plan":
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": (
+            "Plan mode is active. Call the read-only Unsloth plan agent "
+            "(unsloth_plan_agent) instead of unsloth_agent."
+        ),
+    }}))
+sys.exit(0)
+'''
+
+
 def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
     """Write a session plugin that exposes the local Claude child through MCP."""
     plugin = path / "unsloth-local-agent"
@@ -2094,6 +2121,52 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
             }
         },
     )
+    # Claude already refuses the editing tool in plan mode, since it advertises
+    # readOnlyHint false. This PreToolUse hook replaces that dead end with a reason
+    # naming the read-only tool to call instead. Skipped under the WSL bridge, where
+    # the gate is a Linux path but the hook would run beside the Windows claude.
+    gate = plugin / "hooks" / "plan_gate.py"
+    if command == "wsl.exe":
+        # A persisted plugin dir may still hold a gate from an earlier non-WSL run.
+        for stale in (gate, plugin / "hooks" / "hooks.json"):
+            stale.unlink(missing_ok = True)
+    else:
+        _write_private_text(gate, _CLAUDE_PLAN_GATE_SCRIPT)
+        _write_private_json(
+            plugin / "hooks" / "hooks.json",
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": _CLAUDE_SUBAGENT_TOOL,
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    # Run through runpy rather than handing the path to
+                                    # the interpreter: a missing gate is then an
+                                    # ordinary traceback (exit 1, fails open) instead
+                                    # of exit 2, which Claude treats as a blocking
+                                    # error and would deny the tool in every mode.
+                                    # The path is base64'd because this string goes
+                                    # through a shell: a temp root holding $(..) or a
+                                    # backtick expands under sh, %VAR% under cmd, and
+                                    # the gate then silently fails open. base64's
+                                    # alphabet has no metacharacter in either.
+                                    "command": (
+                                        f'"{sys.executable}" -c '
+                                        f'"import base64,runpy; runpy.run_path('
+                                        f"base64.b64decode('{_b64_path(gate)}').decode())\""
+                                    ),
+                                    # A hook with no timeout stalls the parent for as
+                                    # long as it hangs; measured unbounded past 400s.
+                                    "timeout": 10,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            },
+        )
     skill = plugin / "skills" / "local-agent" / "SKILL.md"
     skill.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
     skill.write_text(

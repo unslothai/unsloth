@@ -28,7 +28,7 @@ import re as _re
 # Model size extraction (shared with core/inference/llama_cpp.py)
 from utils.models import extract_model_size_b as _extract_model_size_b
 
-from utils.api_errors import openai_error_body, anthropic_error_body
+from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token
 from core.inference.orchestrator import GenStreamError, GenStreamErrorRaised
@@ -387,7 +387,7 @@ def _raise_unsupported_n(path_label: str) -> None:
     _raise_unsupported_openai_parameter("n", f"n > 1 is not supported for {path_label}.")
 
 
-def _sse_streaming_response(content) -> StreamingResponse:
+def _sse_streaming_response(content, *, unstarted_cleanup = None) -> StreamingResponse:
     """A ``text/event-stream`` response with the standard SSE headers used by
     every streaming path here: no client/proxy caching, no proxy buffering, and
     a one-shot connection. Two callers build their response inline instead: the
@@ -409,6 +409,7 @@ def _sse_streaming_response(content) -> StreamingResponse:
             "Connection": "close",
             "X-Accel-Buffering": "no",
         },
+        unstarted_cleanup = unstarted_cleanup,
     )
 
 
@@ -1141,7 +1142,7 @@ def _openai_admission_request_path(request: Optional[Request]) -> Optional[str]:
         return None
 
 
-def _openai_admission_log(
+def _llama_admission_log(
     event: str,
     reservation: Optional[LlamaAdmissionReservation] = None,
     *,
@@ -1159,13 +1160,15 @@ def _openai_admission_log(
         wait_ms = int(max(0.0, time.monotonic() - wait_started_at) * 1000)
     log = getattr(logger, level, logger.debug)
     log(
-        "openai admission %s: mode=%s path=%s completion_id=%s capacity=%s active=%s queued=%s wait_ms=%s",
+        "llama admission %s: mode=%s path=%s completion_id=%s "
+        "pool=%s/%s free=%s queued=%s wait_ms=%s",
         event,
         mode,
         _openai_admission_request_path(request),
         completion_id,
-        getattr(snapshot, "capacity", None),
         getattr(snapshot, "active", None),
+        getattr(snapshot, "capacity", None),
+        getattr(snapshot, "free", None),
         getattr(snapshot, "queued", None),
         wait_ms,
     )
@@ -1186,6 +1189,23 @@ def _openai_admission_http_exception(exc: Exception, *, status_code: int) -> HTT
     return HTTPException(
         status_code = status_code,
         detail = _openai_admission_error_body(exc, status_code = status_code),
+    )
+
+
+def _anthropic_admission_http_exception(exc: Exception, *, status_code: int) -> HTTPException:
+    """Anthropic-shaped error for an admission reject/timeout/cancel (429/503/499)."""
+    snapshot = getattr(exc, "snapshot", None)
+    message = str(exc)
+    if snapshot is not None:
+        message = (
+            f"{message} "
+            f"(active={snapshot.active}, queued={snapshot.queued}, capacity={snapshot.capacity})"
+        )
+    # Types come from ANTHROPIC_TYPE_BY_STATUS (429 -> rate_limit_error, which is
+    # what Anthropic SDKs back off on); overloaded_error is reserved for 529.
+    return HTTPException(
+        status_code = status_code,
+        detail = anthropic_error_body(message, status = status_code),
     )
 
 
@@ -1492,6 +1512,24 @@ class _SameTaskStreamingResponse(StreamingResponse):
             raise ClientDisconnect()
         if self.background is not None:
             await self.background()
+
+
+async def _release_unstarted_anthropic_stream(iterator, prior_cleanup) -> None:
+    """Close a stream whose body never started, running the response's own
+    pre-start hook. aclose() on an unstarted async generator is a no-op, so its
+    finally never runs and anything the builder acquired eagerly (the passthrough
+    cancel tracker) would leak without the hook."""
+    aclose = getattr(iterator, "aclose", None)
+    if aclose is not None:
+        try:
+            await aclose()
+        except Exception:
+            pass
+    if prior_cleanup is not None:
+        try:
+            await prior_cleanup()
+        except Exception:
+            pass
 
 
 def _tracked_cancel_unstarted_cleanup(tracker):
@@ -3086,12 +3124,36 @@ def _monitor_context_length() -> Optional[int]:
     return None
 
 
+def _lifecycle_model_label(model: Optional[str], variant: Optional[str] = None) -> str:
+    """A path-free ``repo`` / ``repo:QUANT`` label for a monitor lifecycle row."""
+    clean = public_model_id(model) or model or "model"
+    return f"{clean}:{variant}" if variant and ":" not in clean else clean
+
+
+def _close_load_event(
+    entry_id: Optional[str], model: Optional[str], variant: Optional[str]
+) -> None:
+    """Close a monitor load row, relabelled with the id the load actually resolved
+    (the row opened on the request's model_path, which may be an HF snapshot dir)."""
+    api_monitor.relabel(entry_id, _lifecycle_model_label(model, variant))
+    api_monitor.finish(entry_id)
+
+
 def _monitor_active_model() -> Optional[str]:
+    """The loaded model as a client-facing id, quant included when known.
+
+    Cleaned like /v1/models: this is rendered in the settings UI and served over
+    the public --secure tunnel, so it must never be the on-disk load path.
+    """
     llama_backend = get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
-        return getattr(llama_backend, "model_identifier", None)
+        model_id = _llama_public_model_id(llama_backend)
+        variant = getattr(llama_backend, "hf_variant", None)
+        if model_id and variant and ":" not in model_id:
+            return f"{model_id}:{variant}"
+        return model_id
     backend = get_inference_backend()
-    return backend.active_model_name
+    return public_model_id(backend.active_model_name) or backend.active_model_name
 
 
 def _validate_native_gguf_companion(
@@ -3493,6 +3555,9 @@ _DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY = "_unsloth_disable_openai_auto_switch"
 # only restore an idle-freed model, never run the resolver (so a downloaded GGUF
 # literally named "default" can't be swapped to). The NUL keeps it off any index.
 _RELOAD_ONLY_MODEL = "\x00reload-only"
+# One cold scan is worth paying to avoid answering a named model with another; a
+# pathological install must not hang the request behind it forever.
+_COLD_INDEX_WAIT_S = 10.0
 
 
 def _switch_model_for_payload(payload) -> str:
@@ -3578,6 +3643,477 @@ def _no_model_loaded_detail(base: str) -> str:
     )
 
 
+# Cap on ids listed by a "not downloaded" error, so it stays readable in a terminal.
+_MAX_LISTED_AVAILABLE_MODELS = 8
+
+
+def _raw_body_model(body) -> Optional[str]:
+    """The ``model`` a raw-body endpoint was given, else None (same value
+    :func:`_auto_switch_from_request_body` fed the switch hook)."""
+    return body.get("model") if isinstance(body, dict) else None
+
+
+async def _available_model_ids() -> list[str]:
+    """Sorted ids a /v1 request may name, from the catalog ``GET /v1/models``
+    serves, so an error and the listing can't disagree."""
+    return sorted(
+        mid
+        for mid in (m.get("id") for m in await _openai_catalog_objects())
+        if isinstance(mid, str) and mid
+    )
+
+
+def _format_available_models(ids: list[str]) -> str:
+    if not ids:
+        return ""
+    shown = ", ".join(ids[:_MAX_LISTED_AVAILABLE_MODELS])
+    extra = len(ids) - _MAX_LISTED_AVAILABLE_MODELS
+    return f"{shown} and {extra} more" if extra > 0 else shown
+
+
+async def _unavailable_model_message(requested_model: str) -> str:
+    """Why a named model can't serve this request, and what can.
+
+    Auto-switch only loads already-downloaded GGUFs, so a request naming a real
+    model usually fails because it is not on this machine. Pointing the caller at
+    /inference/load cannot fix that; say what is actually wrong.
+    """
+    from core.inference.local_model_resolver import (
+        MISS_VARIANT_NOT_FOUND,
+        describe_local_miss,
+    )
+
+    reason, variants = await asyncio.to_thread(describe_local_miss, requested_model)
+    if reason == MISS_VARIANT_NOT_FOUND:
+        # Repo downloaded, only the quant missing: sibling quants beat the catalog.
+        base_id, _, wanted = requested_model.strip().rpartition(":")
+        return (
+            f"The model '{base_id}' is downloaded, but the quant '{wanted}' is not. "
+            f"Available quants: {', '.join(variants)}."
+        )
+    available = _format_available_models(await _available_model_ids())
+    if not available:
+        return (
+            f"The model '{requested_model}' is not downloaded on this server, and no "
+            "models are downloaded yet. Download one in Unsloth Studio."
+        )
+    return (
+        f"The model '{requested_model}' is not downloaded on this server. "
+        f"Available models: {available}. Download more in Unsloth Studio, "
+        "or list them with GET /v1/models."
+    )
+
+
+async def _no_model_loaded_error(
+    base: str, requested_model: Optional[str], fastapi_request: Optional[Request], *, status: int
+):
+    """``(status, detail)`` for the /v1 sites that fail because nothing is loaded.
+
+    Changes only the case the generic text describes wrongly: auto-switch on, a
+    model named, and that name resolves to nothing local, so the switch silently
+    did nothing. That becomes a 404 model_not_found. Toggle off or no model named
+    keeps ``status`` and the :func:`_no_model_loaded_detail` text verbatim.
+    """
+    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+    from core.inference.local_model_resolver import resolve_local_gguf
+
+    named = (
+        requested_model
+        if isinstance(requested_model, str)
+        and requested_model.strip()
+        and requested_model != _RELOAD_ONLY_MODEL
+        else None
+    )
+    if named is None or not get_openai_auto_switch_enabled():
+        return status, _no_model_loaded_detail(base)
+    try:
+        if _loaded_satisfies(named):
+            # Resident but on a backend this endpoint can't use, so "not downloaded" is false.
+            return status, _no_model_loaded_detail(base)
+        if await asyncio.to_thread(resolve_local_gguf, named) is not None:
+            # Resolvable but unloaded: the switch failed, which the generic text covers.
+            return status, _no_model_loaded_detail(base)
+        message = await _unavailable_model_message(named)
+    except Exception as exc:
+        # The diagnosis is a nicety; never let it turn a 4xx into a 500.
+        logger.debug("no-model-loaded diagnosis failed for %r: %s", named, exc)
+        return status, _no_model_loaded_detail(base)
+    path = getattr(getattr(fastapi_request, "url", None), "path", None)
+    if not isinstance(path, str):
+        # No request in hand: let the global /v1/* handler pick the envelope.
+        return 404, message
+    return 404, error_body_for_path(
+        path,
+        message,
+        status = 404,
+        code = "model_not_found",
+        param = "model",
+    )
+
+
+def _auto_download_hf_token(fastapi_request: Optional[Request]) -> Optional[str]:
+    """The token to fetch with: only one the caller sent themselves.
+
+    Never the server's ambient token. The repo here is named by whoever holds an
+    API key, so borrowing the owner's Hub identity would let that key pull the
+    owner's private repos and publish them in /v1/models for every other key.
+    The OpenAI bearer key is never used as an HF token either.
+    """
+    from hub.dependencies import HUB_HF_TOKEN_HEADER, HUB_HF_TOKEN_MAX_LENGTH
+
+    headers = getattr(fastapi_request, "headers", None)
+    if headers is None:
+        return None
+    supplied = (headers.get(HUB_HF_TOKEN_HEADER) or "").strip()
+    if supplied and len(supplied) <= HUB_HF_TOKEN_MAX_LENGTH:
+        return supplied
+    return None
+
+
+async def _maybe_auto_download_model(
+    requested_model: str,
+    fastapi_request: Optional[Request],
+    *,
+    require_vision: bool = False,
+) -> None:
+    """Opt-in: start fetching a named GGUF this server doesn't have.
+
+    Raises to stop the request when the model is downloading or cannot be
+    fetched. Off by default, and it never fires on a name that isn't shaped like
+    a Hub repo, so an unknown id like "gpt-4" still falls through to the resident
+    model as before.
+    """
+    from utils.openai_auto_switch_settings import get_openai_auto_download_enabled
+    from core.inference.openai_auto_download import is_downloadable_ref, maybe_auto_download
+
+    if not requested_model or not get_openai_auto_download_enabled():
+        return
+    if not is_downloadable_ref(requested_model):
+        return
+    # An Ollama-style tag (":latest") names no quant, so the resolver misses a servable model.
+    if _loaded_satisfies(requested_model):
+        return
+    try:
+        refusal = await maybe_auto_download(
+            requested_model,
+            hf_token = _auto_download_hf_token(fastapi_request),
+            require_vision = require_vision,
+        )
+    except Exception as exc:
+        # Never turn a servable request into a 500 over the download attempt.
+        logger.warning("auto-download failed for %r: %s", requested_model, exc)
+        return
+    if refusal is None:
+        return
+    path = getattr(getattr(fastapi_request, "url", None), "path", None)
+    detail = (
+        error_body_for_path(
+            path,
+            refusal.message,
+            status = refusal.status,
+            code = refusal.code,
+            param = "model",
+        )
+        if isinstance(path, str)
+        else refusal.message
+    )
+    raise HTTPException(
+        status_code = refusal.status,
+        detail = detail,
+        headers = ({"Retry-After": str(refusal.retry_after)} if refusal.retry_after else None),
+    )
+
+
+def _loaded_satisfies(requested: str) -> bool:
+    """Whether what is serving right now actually answers to *requested*.
+
+    A bare ``org/model`` is satisfied by any loaded quant of that repo; an
+    explicit ``:QUANT`` must match the loaded one.
+    """
+    from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+
+    base, variant = split_model_ref(requested)
+    llama_backend = get_llama_cpp_backend()
+    if getattr(llama_backend, "is_loaded", False):
+        candidates = [
+            candidate
+            for candidate in (
+                getattr(llama_backend, "model_identifier", None),
+                getattr(llama_backend, "_openai_advertised_id", None),
+                _llama_public_model_id(llama_backend),
+            )
+            if candidate
+        ]
+        if not _matches_any(base, candidates):
+            return False
+        if not looks_like_quant(variant):
+            # An Ollama-style tag (":latest", ":8b") names no file, so the repo is enough.
+            return True
+        return (getattr(llama_backend, "hf_variant", None) or "").lower() == variant.lower()
+    active = getattr(get_inference_backend(), "active_model_name", None)
+    if not active:
+        return False
+    # Only llama.cpp carries a quant identity, so this backend can only match on the repo.
+    if looks_like_quant(variant):
+        return False
+    return _matches_any(base, [active, public_model_id(active)])
+
+
+def _raise_still_indexing(requested_model: str, fastapi_request) -> None:
+    """Refuse a name we cannot yet place, rather than answer it with another model."""
+    path = getattr(getattr(fastapi_request, "url", None), "path", None)
+    message = (
+        f"This server is still indexing its local models, so it cannot confirm "
+        f"'{requested_model}' yet. Retry shortly."
+    )
+    raise HTTPException(
+        status_code = 503,
+        detail = (
+            error_body_for_path(path, message, status = 503, code = "model_indexing")
+            if isinstance(path, str)
+            else message
+        ),
+        headers = {"Retry-After": "5"},
+    )
+
+
+def _matches_any(requested: str, candidates) -> bool:
+    """Whether *requested* names any of *candidates*.
+
+    A repo alias is case-insensitive, a filesystem path is not: lowercasing both
+    made /srv/models/foo.gguf and /srv/models/Foo.gguf the same weights, which is
+    the same trap _norm_path exists for one comparison further down.
+    """
+    lowered = requested.strip().lower()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if _looks_like_local_path(requested) or _looks_like_local_path(candidate):
+            if _norm_path(requested) == _norm_path(candidate):
+                return True
+            continue
+        if lowered == str(candidate).strip().lower():
+            return True
+    return False
+
+
+def _looks_like_local_path(value: str) -> bool:
+    """A filesystem path rather than a repo id, so case matters."""
+    text = str(value)
+    return text.startswith("/") or text.startswith("~") or ":\\" in text or "\\" in text
+
+
+def _norm_path(value: str) -> str:
+    """Compare-ready path. normcase, not lower: on a case-sensitive filesystem
+    /srv/models/Foo and /srv/models/foo are different models."""
+    import os
+
+    # normcase after, not before: on Windows it folds case *and* rewrites the
+    # separator to a backslash, so normalizing first leaves the descendant checks
+    # below comparing a "/" against a path that no longer has any.
+    return os.path.normcase(str(value)).replace("\\", "/").rstrip("/")
+
+
+def _resident_quant_is(variant: Optional[str]) -> bool:
+    """Whether the loaded GGUF is that exact quant."""
+    resident = getattr(get_llama_cpp_backend(), "hf_variant", None) or ""
+    return bool(variant) and resident.lower() == variant.strip().lower()
+
+
+def _resolves_to_resident(load_path: Optional[str], *, llama_only: bool = False) -> bool:
+    """Whether a resolved on-disk path is what is already loaded.
+
+    ``llama_only`` drops the Transformers backend from the comparison. Only
+    llama.cpp carries a quant identity, so a Transformers model active from a
+    directory that also holds GGUF exports would otherwise match a request for
+    one of those quants and answer it with the safetensors weights.
+    """
+    if not load_path:
+        return False
+    target = _norm_path(load_path)
+    llama_backend = get_llama_cpp_backend()
+    for candidate in (
+        getattr(llama_backend, "gguf_path", None)
+        if getattr(llama_backend, "is_loaded", False)
+        else None,
+        getattr(llama_backend, "model_identifier", None)
+        if getattr(llama_backend, "is_loaded", False)
+        else None,
+        None if llama_only else getattr(get_inference_backend(), "active_model_name", None),
+    ):
+        if not candidate:
+            continue
+        current = _norm_path(candidate)
+        if current == target:
+            return True
+        if current.startswith(f"{target}/"):
+            # A model directory holding the weights loaded from it. Nested entries
+            # (/models/A alongside /models/A/sub/B) satisfied this too, so a request
+            # for A was answered with B. The innermost indexed model owns the file;
+            # with none indexed there is no nesting to tell apart, so keep matching.
+            owner = _innermost_indexed_owner(current)
+            if owner is None or owner == target:
+                return True
+            continue
+        if target.startswith(f"{current}/"):
+            return True
+    return False
+
+
+def _innermost_indexed_owner(path: str) -> Optional[str]:
+    """Longest catalog-listed model path containing *path*, or None if none does."""
+    best = None
+    for info in _CATALOG_CACHE["models"] or ():
+        listed = getattr(info, "path", None)
+        if not listed:
+            continue
+        normalized = _norm_path(listed)
+        if path == normalized or path.startswith(f"{normalized}/"):
+            if best is None or len(normalized) > len(best):
+                best = normalized
+    return best
+
+
+async def _reject_unservable_model(
+    requested_model: Optional[str], fastapi_request: Optional[Request]
+) -> None:
+    """Refuse rather than answer a named model with a different one.
+
+    Only for a reference this server can tell was meant for it: an explicit GGUF
+    quant, or a model that is actually here. A namespace decides nothing either
+    way. ``vendor/model`` is how LiteLLM and OpenRouter name every provider, so
+    ``anthropic/claude-3.5-sonnet`` falls through like ``gpt-4``; a standalone or
+    custom-folder GGUF is advertised without one, so a slashless id that does
+    resolve locally is still a concrete reference. Only runs while something is
+    serving; with nothing loaded the caller's own :func:`_no_model_loaded_error`
+    already says the right thing.
+    """
+    from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+
+    if (
+        not isinstance(requested_model, str)
+        or not requested_model.strip()
+        or requested_model == _RELOAD_ONLY_MODEL
+    ):
+        return
+    base, variant = split_model_ref(requested_model)
+    quantified = looks_like_quant(variant)
+    from core.inference.local_model_resolver import (
+        index_is_built,
+        recently_downloaded,
+        resolve_local_gguf,
+        warm_index_soon,
+    )
+    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+
+    still_indexing = False
+    try:
+        if _loaded_satisfies(requested_model):
+            return
+        if not (
+            get_llama_cpp_backend().is_loaded
+            or getattr(get_inference_backend(), "active_model_name", None)
+        ):
+            return
+        # Refresh in the background and read the index as-is: scanning here would stall the
+        # request, and a cold index only costs evidence (the gate below fails safe without it).
+        if index_is_built():
+            warm_index_soon()
+            resolved = resolve_local_gguf(requested_model, allow_scan = False)
+        else:
+            # Before the first scan there is nothing cached to reason from, and falling
+            # through would answer a named model with the resident one. Pay the scan
+            # once, off the loop and bounded, rather than reading "not scanned yet" as
+            # "not here". Later requests take the cached branch above.
+            try:
+                resolved = await asyncio.wait_for(
+                    asyncio.to_thread(resolve_local_gguf, requested_model),
+                    _COLD_INDEX_WAIT_S,
+                )
+            except (TimeoutError, asyncio.TimeoutError):
+                # Still scanning, so nothing is known about this name. Falling through
+                # would put the resident model behind it, which is the failure this
+                # whole hook exists to stop, so say "not yet" instead of guessing.
+                warm_index_soon()
+                still_indexing = True
+                resolved = None
+        # A manual load stores the on-disk path the resolver advertises under an alias, so
+        # match on the path too.
+        # Quants of one repo share a directory, so the path alone cannot tell them
+        # apart: without the variant check an explicit :Q8_0 would be answered by a
+        # resident Q4_K_M, which _loaded_satisfies has already refused by name.
+        if (
+            resolved is not None
+            and _resolves_to_resident(resolved[0], llama_only = quantified)
+            and (not quantified or _resident_quant_is(variant))
+        ):
+            return
+        downloaded = resolved is not None
+        # /v1/models may have advertised this id off its own scan while the index is cold.
+        advertised = _advertised_local_path(base)
+        if (
+            advertised is not None
+            and _resolves_to_resident(advertised, llama_only = quantified)
+            and (not quantified or _resident_quant_is(variant))
+        ):
+            return
+        # The exact ref may miss on the quant alone, so ask about the repo too.
+        here = (
+            downloaded
+            or advertised is not None
+            # Just landed, so no scan has indexed it yet and neither of the above sees it.
+            or recently_downloaded(base)
+            or (variant is not None and resolve_local_gguf(base, allow_scan = False) is not None)
+        )
+        switchable = downloaded and get_openai_auto_switch_enabled()
+    except HTTPException:
+        # A refusal decided above is the answer, not a failure to decide. Without this
+        # the handler below would log it and fall through to the resident model.
+        raise
+    except Exception as exc:
+        # Can't verify: an explicit quant still proves intent, so refuse; let anything else by.
+        logger.debug("unservable-model check failed for %r: %s", requested_model, exc)
+        if not quantified:
+            return
+        downloaded = here = switchable = False
+    if still_indexing:
+        _raise_still_indexing(requested_model, fastapi_request)
+    if not (quantified or here):
+        return
+    if switchable:
+        # On disk and switching allowed, so the swap failed: the resident model is wrong weights.
+        status_code, code = 503, "model_switch_failed"
+        message = (
+            f"The model '{requested_model}' is downloaded, but this server could not "
+            "switch to it. Retry shortly, or load it in Unsloth Studio."
+        )
+    elif downloaded:
+        status_code, code = 404, "model_not_found"
+        message = (
+            f"The model '{requested_model}' is downloaded but not loaded, and "
+            "'Switch model by request' is off, so this server can only serve the "
+            "loaded model. Turn it on in Unsloth Studio under Settings > API."
+        )
+    else:
+        status_code, code = 404, "model_not_found"
+        try:
+            message = await _unavailable_model_message(requested_model)
+        except Exception as exc:
+            # Only the wording is uncertain; the mismatch is already established.
+            logger.debug("unavailable-model diagnosis failed for %r: %s", requested_model, exc)
+            message = f"The model '{requested_model}' is not the model this server is serving."
+    path = getattr(getattr(fastapi_request, "url", None), "path", None)
+    raise HTTPException(
+        status_code = status_code,
+        detail = (
+            error_body_for_path(path, message, status = status_code, code = code, param = "model")
+            if isinstance(path, str)
+            else message
+        ),
+        headers = {"Retry-After": "5"} if status_code == 503 else None,
+    )
+
+
 async def _maybe_auto_switch_model(
     requested_model: Optional[str],
     fastapi_request: Request,
@@ -3589,7 +4125,8 @@ async def _maybe_auto_switch_model(
 
     No-op unless enabled and ``requested_model`` resolves to a downloaded local
     model different from the loaded one. Unknown names fall through (drop-in
-    compat) and no remote download is triggered. ``require_vision`` rejects a swap
+    compat); a miss only reaches the network when auto-download is also on, and
+    even then only for ``namespace/name`` ids. ``require_vision`` rejects a swap
     to a text-only target before it runs, so an image request can't evict the
     resident vision model only to 400 afterwards.
     """
@@ -3620,6 +4157,8 @@ async def _maybe_auto_switch_model(
     # loop freed is restored on the next request. The resolver-based switch still
     # requires the auto-switch toggle.
     if not auto_switch_on and get_auto_unload_idle_seconds() <= 0:
+        # No switching to do, but a named model must still not be answered by another.
+        await _reject_unservable_model(requested_model, fastapi_request)
         return
 
     async def _resolve_and_switch() -> None:
@@ -3633,6 +4172,11 @@ async def _maybe_auto_switch_model(
             else None
         )
         if resolved is None:
+            # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
+            if auto_switch_on and not reload_only:
+                await _maybe_auto_download_model(
+                    requested_model, fastapi_request, require_vision = require_vision
+                )
             # Idle-unload may have freed the model; reload exactly what it freed
             # (path + quant + advertised id) so an alias/unknown name stays servable
             # and keeps the override keyed by the advertised id, not the load path.
@@ -3659,7 +4203,13 @@ async def _maybe_auto_switch_model(
         backend = get_llama_cpp_backend()
         # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
         # repo, so it never reloads a different local quant that already serves it.
-        bare = ":" not in requested_model
+        from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+
+        # A tag that names no quant (":latest", ":8b") means the repo, exactly as
+        # _loaded_satisfies and the resolver read it. Treating it as a quant tears
+        # down a serving Q8 to load the preferred Q4 for a request either satisfies.
+        _, _requested_variant = split_model_ref(requested_model)
+        bare = not looks_like_quant(_requested_variant)
 
         def _already_serving() -> bool:
             # Match against both the concrete load path and the advertised repo id,
@@ -3825,6 +4375,8 @@ async def _maybe_auto_switch_model(
                 _note_switch_waiter(key, -1)
 
     await _resolve_and_switch()
+    # The switch may have missed, so refuse rather than answer as whatever is resident.
+    await _reject_unservable_model(requested_model, fastapi_request)
 
 
 async def _auto_switch_from_request_body(request: Request, current_subject: str):
@@ -3858,7 +4410,7 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
     if not adapter_cfg_path.exists():
         return load_in_4bit
     try:
-        with open(adapter_cfg_path) as f:
+        with open(adapter_cfg_path, encoding = "utf-8") as f:
             adapter_cfg = json.load(f)
         if not isinstance(adapter_cfg, dict):  # malformed -> keep requested
             return load_in_4bit
@@ -4407,6 +4959,13 @@ async def _load_model_impl(
     # sampled step logs even if it reports 100% immediately (cached/small load).
     _reset_load_progress_step()
 
+    # Live "loading" row: discarded if already loaded, relabelled on the real id, closed on exit.
+    _load_event = api_monitor.record_lifecycle(
+        event = "load",
+        model = _lifecycle_model_label(request.model_path, request.gguf_variant),
+        running = True,
+    )
+
     native_grant_backed = False
     model_log_label = request.model_path
     gguf_load_stack = ExitStack()
@@ -4500,6 +5059,8 @@ async def _load_model_impl(
                 and getattr(llama_backend, "_audio_probed", True)
             ):
                 llama_backend._record_matching_gpu_request(request.gpu_ids)
+                # Nothing was loaded, so the monitor must not show a load row.
+                api_monitor.discard(_load_event)
                 logger.info(
                     "Model already loaded (GGUF): "
                     f"{model_log_label} variant={request.gguf_variant or llama_backend.hf_variant}, skipping reload"
@@ -4553,6 +5114,7 @@ async def _load_model_impl(
                 backend.active_model_name
                 and backend.active_model_name.lower() == model_identifier.lower()
             ):
+                api_monitor.discard(_load_event)  # nothing loaded, no monitor row
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
                 inference_config = load_inference_config(backend.active_model_name)
                 _model_info = backend.models.get(backend.active_model_name, {})
@@ -4865,6 +5427,11 @@ async def _load_model_impl(
             logger.info(
                 f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
             )
+            _close_load_event(
+                _load_event,
+                model_log_label if native_grant_backed else config.identifier,
+                request.gguf_variant or getattr(llama_backend, "hf_variant", None),
+            )
             # Clear any idle-unload reload stash now, not only on the next poll.
             from core.inference.llama_keepwarm import note_model_loaded
 
@@ -4982,6 +5549,9 @@ async def _load_model_impl(
 
         logger.info(
             f"Loaded model: {model_log_label if native_grant_backed else config.identifier}"
+        )
+        _close_load_event(
+            _load_event, model_log_label if native_grant_backed else config.identifier, None
         )
         # Clear any idle-unload reload stash: a manual load supersedes an idle-freed
         # GGUF, so the next /v1 request must not resurrect it. Mirror the GGUF branch
@@ -5105,6 +5675,8 @@ async def _load_model_impl(
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
     finally:
         gguf_load_stack.close()
+        # Catch-all: an error or cancelled load would otherwise leave the row "loading".
+        api_monitor.fail_open(_load_event, "Load did not complete")
 
 
 def _requires_trust_remote_code_for_model(
@@ -5721,10 +6293,18 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
                 )
                 or not llama_backend.is_loaded
             ):
+                # Read the identity before teardown clears it, so the row reads repo:QUANT.
+                _unloaded = _llama_public_model_id(llama_backend, request.model_path)
+                _unloaded_variant = getattr(llama_backend, "hf_variant", None)
                 # A manual unload is a deliberate user action: tear down now even if a
                 # request is mid-stream (only the automatic idle loop defers to it).
                 llama_backend.unload_model()
                 note_model_unloaded()
+                api_monitor.record_lifecycle(
+                    event = "unload",
+                    model = _lifecycle_model_label(_unloaded, _unloaded_variant),
+                    reason = "manual",
+                )
                 logger.info(f"Unloaded GGUF model: {request.model_path}")
                 return UnloadResponse(status = "unloaded", model = request.model_path)
 
@@ -5734,6 +6314,11 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             backend = get_inference_backend()
             await asyncio.to_thread(backend.unload_model, request.model_path)
             note_model_unloaded()
+            api_monitor.record_lifecycle(
+                event = "unload",
+                model = _lifecycle_model_label(request.model_path),
+                reason = "manual",
+            )
             logger.info(f"Unloaded model: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
@@ -6004,6 +6589,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 and os.path.isabs(_model_id)
             ):
                 _display_model_id = os.path.basename(_model_id)
+            elif not _native_grant_backed and _display_model_id == _model_id:
+                # No label registered, so report the clean public id, not the snapshot's sha.
+                _display_model_id = _llama_public_model_id(llama_backend) or _display_model_id
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
             _audio_type = getattr(llama_backend, "_audio_type", None)
             # Don't surface Unsloth's auto-applied bundled family template (e.g. the
@@ -7884,10 +8472,13 @@ async def openai_chat_completions(
     else:
         backend = get_inference_backend()
         if not backend.active_model_name:
-            raise HTTPException(
-                status_code = 400,
-                detail = _no_model_loaded_detail("No model loaded. Call POST /inference/load first."),
+            _status, _detail = await _no_model_loaded_error(
+                "No model loaded. Call POST /inference/load first.",
+                _switch_model_for_payload(payload),
+                request,
+                status = 400,
             )
+            raise HTTPException(status_code = _status, detail = _detail)
         # Clean public id so the response never echoes a local path; the audio
         # branch below receives this sanitized label too.
         model_name = public_model_id(backend.active_model_name) or payload.model
@@ -8419,7 +9010,7 @@ async def openai_chat_completions(
                     llama_backend = llama_backend,
                 )
             except LlamaAdmissionQueueFull as exc:
-                _openai_admission_log(
+                _llama_admission_log(
                     "queue-full",
                     snapshot = exc.snapshot,
                     request = request,
@@ -8657,7 +9248,7 @@ async def openai_chat_completions(
                 admission_wait_started_at = None
                 if stream_lease is None:
                     admission_wait_started_at = time.monotonic()
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "queued",
                         reservation,
                         request = request,
@@ -8682,7 +9273,7 @@ async def openai_chat_completions(
                                     yield wait_item
                                     continue
                                 lease = wait_item
-                                _openai_admission_log(
+                                _llama_admission_log(
                                     "granted-after-wait",
                                     reservation,
                                     request = request,
@@ -8713,7 +9304,7 @@ async def openai_chat_completions(
                                 cancelled = stream_cancelled,
                             )
                     except LlamaAdmissionTimeout as exc:
-                        _openai_admission_log(
+                        _llama_admission_log(
                             "timeout",
                             reservation,
                             request = request,
@@ -8727,7 +9318,7 @@ async def openai_chat_completions(
                             _openai_admission_error_body(exc, status_code = 503)
                         )
                     except LlamaAdmissionCancelled:
-                        _openai_admission_log(
+                        _llama_admission_log(
                             "cancelled-before-upstream",
                             reservation,
                             request = request,
@@ -8838,7 +9429,7 @@ async def openai_chat_completions(
             try:
                 if reservation.lease_nowait() is None:
                     admission_wait_started_at = time.monotonic()
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "queued",
                         reservation,
                         request = request,
@@ -8853,7 +9444,7 @@ async def openai_chat_completions(
                     cancel_event = cancel_event,
                 )
                 if admission_wait_started_at is not None:
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "granted-after-wait",
                         reservation,
                         request = request,
@@ -8924,7 +9515,7 @@ async def openai_chat_completions(
                 _tracker.__exit__(None, None, None)
                 raise
             except LlamaAdmissionTimeout as exc:
-                _openai_admission_log(
+                _llama_admission_log(
                     "timeout",
                     reservation,
                     request = request,
@@ -8939,7 +9530,7 @@ async def openai_chat_completions(
                 _tracker.__exit__(None, None, None)
                 raise _openai_admission_http_exception(exc, status_code = 503)
             except LlamaAdmissionCancelled as exc:
-                _openai_admission_log(
+                _llama_admission_log(
                     "cancelled-before-upstream",
                     reservation,
                     request = request,
@@ -9019,7 +9610,7 @@ async def openai_chat_completions(
                 )
             except LlamaAdmissionQueueFull as exc:
                 _tracker.__exit__(None, None, None)
-                _openai_admission_log(
+                _llama_admission_log(
                     "queue-full",
                     snapshot = exc.snapshot,
                     request = request,
@@ -9191,7 +9782,7 @@ async def openai_chat_completions(
             admission_wait_started_at = None
             if stream_lease is None:
                 admission_wait_started_at = time.monotonic()
-                _openai_admission_log(
+                _llama_admission_log(
                     "queued",
                     reservation,
                     request = request,
@@ -9216,7 +9807,7 @@ async def openai_chat_completions(
                                 yield wait_item
                                 continue
                             lease = wait_item
-                            _openai_admission_log(
+                            _llama_admission_log(
                                 "granted-after-wait",
                                 reservation,
                                 request = request,
@@ -9247,7 +9838,7 @@ async def openai_chat_completions(
                             cancelled = stream_cancelled,
                         )
                 except LlamaAdmissionTimeout as exc:
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "timeout",
                         reservation,
                         request = request,
@@ -9261,7 +9852,7 @@ async def openai_chat_completions(
                         _openai_admission_error_body(exc, status_code = 503)
                     )
                 except LlamaAdmissionCancelled:
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "cancelled-before-upstream",
                         reservation,
                         request = request,
@@ -9317,7 +9908,7 @@ async def openai_chat_completions(
                     llama_backend = llama_backend,
                 )
             except LlamaAdmissionQueueFull as exc:
-                _openai_admission_log(
+                _llama_admission_log(
                     "queue-full",
                     snapshot = exc.snapshot,
                     request = request,
@@ -9336,7 +9927,7 @@ async def openai_chat_completions(
             try:
                 if reservation.lease_nowait() is None:
                     admission_wait_started_at = time.monotonic()
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "queued",
                         reservation,
                         request = request,
@@ -9351,7 +9942,7 @@ async def openai_chat_completions(
                     cancel_event = cancel_event,
                 )
                 if admission_wait_started_at is not None:
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "granted-after-wait",
                         reservation,
                         request = request,
@@ -9373,7 +9964,7 @@ async def openai_chat_completions(
                 _tracker.__exit__(None, None, None)
                 raise
             except LlamaAdmissionTimeout as exc:
-                _openai_admission_log(
+                _llama_admission_log(
                     "timeout",
                     reservation,
                     request = request,
@@ -9388,7 +9979,7 @@ async def openai_chat_completions(
                 _tracker.__exit__(None, None, None)
                 raise _openai_admission_http_exception(exc, status_code = 503)
             except LlamaAdmissionCancelled as exc:
-                _openai_admission_log(
+                _llama_admission_log(
                     "cancelled-before-upstream",
                     reservation,
                     request = request,
@@ -10597,6 +11188,9 @@ def _openai_model_objects() -> list[dict]:
             "created": _created,
             "owned_by": _OWNED_BY,
         }
+        _quant = getattr(llama_backend, "hf_variant", None)
+        if _quant and _quant_reference_resolves(entry["id"], _quant):
+            entry["quant"] = _quant
         _ctx = _positive_int_or_none(getattr(llama_backend, "context_length", None))
         if _ctx is not None:
             entry["context_length"] = _ctx
@@ -10637,6 +11231,50 @@ def _openai_model_objects() -> list[dict]:
 # Brief cache for the local-model filesystem scan so repeated /v1/models calls
 # don't rescan the HF cache and models dirs on every request.
 _CATALOG_CACHE: dict = {"at": 0.0, "models": []}
+# Ids the last catalog scan listed, rebuilt only when that scan is replaced.
+_ADVERTISED_CACHE: dict = {"at": None, "paths": {}}
+
+
+def _quant_reference_resolves(model_id: Optional[str], quant: str) -> bool:
+    """Whether ``<model_id>:<quant>`` still resolves once this model is not resident.
+
+    A standalone .gguf takes its quant from the filename, but the resolver stores
+    such files with no quants at all, so advertising one hands out a pin that dies
+    the moment another model loads.
+    """
+    from core.inference.local_model_resolver import (
+        index_is_built,
+        recently_downloaded,
+        resolve_local_gguf,
+        warm_index_soon,
+    )
+
+    if not model_id:
+        return False
+    # Cold index proves nothing, and publishing on no proof is what hands out the
+    # dead pin; warm so the next response carries the quant.
+    warm_index_soon()
+    return resolve_local_gguf(f"{model_id}:{quant}", allow_scan = False) is not None
+
+
+def _advertised_local_path(model: str) -> Optional[str]:
+    """On-disk path of *model* if the last /v1/models scan listed it, else None.
+
+    Cache-only, never scans. The catalog scans on its own schedule, so it can have
+    advertised a local model the resolver index has not picked up yet; having
+    advertised it is evidence the name means something other than the resident one.
+    """
+    if _ADVERTISED_CACHE["at"] != _CATALOG_CACHE["at"]:
+        paths = {}
+        for info in _CATALOG_CACHE["models"] or ():
+            cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
+            path = getattr(info, "path", None)
+            if cid and path:
+                paths.setdefault(cid.strip().lower(), path)
+        _ADVERTISED_CACHE.update(at = _CATALOG_CACHE["at"], paths = paths)
+    return _ADVERTISED_CACHE["paths"].get(model.strip().lower())
+
+
 _CATALOG_TTL_S = 30.0
 # Per-loop lock (like _auto_switch_lock): a module-level asyncio.Lock ties its
 # waiters to the loop that first awaited it, so a second event loop awaiting it
@@ -10703,11 +11341,14 @@ async def _openai_catalog_objects() -> list[dict]:
     # read from the on-disk files, not model_format: the HF-cache scanner leaves
     # model_format unset for GGUF snapshots, so a model_format filter would drop
     # every cached GGUF. The file checks run off the loop.
-    from core.inference.local_model_resolver import info_has_local_gguf
+    from core.inference.local_model_resolver import local_gguf_quants
 
     catalog = await _cached_local_catalog()
-    servable = await asyncio.to_thread(lambda: [i for i in catalog if info_has_local_gguf(i)])
-    for info in servable:
+    # One scan yields both "is this servable" and its on-disk quants, so no second pass.
+    servable = await asyncio.to_thread(
+        lambda: [(i, q) for i in catalog if (q := local_gguf_quants(i)) is not None]
+    )
+    for info, quants in servable:
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
         if not cid or cid in by_id:
             continue
@@ -10716,8 +11357,22 @@ async def _openai_catalog_objects() -> list[dict]:
             "object": "model",
             "created": _created,
             "owned_by": _OWNED_BY,
-            "loaded": False,
+            # A manual load keys the resident entry by path basename while the catalog uses
+            # the alias, so match on the path or the alias reads as not loaded. llama-only:
+            # these entries are advertised as GGUF with a GGUF quant, so a Transformers
+            # model live from a directory that also holds GGUF exports must not mark one
+            # loaded, or the examples pin a quant nothing can serve with switching off.
+            "loaded": _resolves_to_resident(getattr(info, "path", None), llama_only = True),
         }
+        # The id stays bare for OpenAI compat; a client appends ":<quant>" to pin one.
+        # For the resident model that has to be the quant actually loaded, not the
+        # preferred one on disk, or the listing advertises alias:Q4 as loaded while
+        # Q8 is serving and pinning it 404s.
+        resident_quant = getattr(get_llama_cpp_backend(), "hf_variant", None)
+        if obj["loaded"] and resident_quant:
+            obj["quant"] = resident_quant
+        elif quants:
+            obj["quant"] = quants[0]
         display = getattr(info, "display_name", None)
         if display:
             obj["display_name"] = display
@@ -10853,10 +11508,13 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     # Opt-in: load the requested local GGUF before the loaded-state check.
     body = await _auto_switch_from_request_body(request, current_subject)
     if not llama_backend.is_loaded:
-        raise HTTPException(
-            status_code = 503,
-            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+        _status, _detail = await _no_model_loaded_error(
+            "No GGUF model loaded. Load a GGUF model first.",
+            _raw_body_model(body),
+            request,
+            status = 503,
         )
+        raise HTTPException(status_code = _status, detail = _detail)
     if not isinstance(body, dict):
         # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
         # a valid non-dict body such as a list is a clean 400 rather than a 500.
@@ -11074,10 +11732,13 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     # a non-embedding target switches, then llama-server returns a no-pooling error.
     body = await _auto_switch_from_request_body(request, current_subject)
     if not llama_backend.is_loaded:
-        raise HTTPException(
-            status_code = 503,
-            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+        _status, _detail = await _no_model_loaded_error(
+            "No GGUF model loaded. Load a GGUF model first.",
+            _raw_body_model(body),
+            request,
+            status = 503,
         )
+        raise HTTPException(status_code = _status, detail = _detail)
     if not isinstance(body, dict):
         # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
         # a valid non-dict body such as a list is a clean 400 rather than a 500.
@@ -11816,14 +12477,15 @@ async def _responses_stream(
         # double-layer asyncgen close pattern that produces "Attempted to exit
         # cancel scope in a different task" on Python 3.13. Surface a typed 400
         # so the client sees a useful error instead of a dangling stream.
-        raise HTTPException(
-            status_code = 400,
-            detail = _no_model_loaded_detail(
-                "Streaming /v1/responses requires a GGUF model loaded via "
-                "llama-server. Use non-streaming /v1/responses, "
-                "/v1/chat/completions, or load a GGUF model."
-            ),
+        _status, _detail = await _no_model_loaded_error(
+            "Streaming /v1/responses requires a GGUF model loaded via "
+            "llama-server. Use non-streaming /v1/responses, "
+            "/v1/chat/completions, or load a GGUF model.",
+            _switch_model_for_payload(payload),
+            request,
+            status = 400,
         )
+        raise HTTPException(status_code = _status, detail = _detail)
 
     # Direct pass-through bypasses the openai_chat_completions image gate.
     if not llama_backend.is_vision and any(
@@ -11849,7 +12511,7 @@ async def _responses_stream(
             llama_backend = llama_backend,
         )
     except LlamaAdmissionQueueFull as exc:
-        _openai_admission_log(
+        _llama_admission_log(
             "queue-full",
             snapshot = exc.snapshot,
             request = request,
@@ -12707,7 +13369,7 @@ async def _responses_stream(
         try:
             if lease is None:
                 admission_wait_started_at = time.monotonic()
-                _openai_admission_log(
+                _llama_admission_log(
                     "queued",
                     reservation,
                     request = request,
@@ -12725,7 +13387,7 @@ async def _responses_stream(
                         yield wait_item
                         continue
                     lease = wait_item
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "granted-after-wait",
                         reservation,
                         request = request,
@@ -12757,7 +13419,7 @@ async def _responses_stream(
                     cancelled = stream_cancelled,
                 )
         except LlamaAdmissionTimeout as exc:
-            _openai_admission_log(
+            _llama_admission_log(
                 "timeout",
                 reservation,
                 request = request,
@@ -12769,7 +13431,7 @@ async def _responses_stream(
             api_monitor.fail(monitor_id, str(exc))
             yield _responses_admission_failed_sse(exc, status_code = 503)
         except LlamaAdmissionCancelled:
-            _openai_admission_log(
+            _llama_admission_log(
                 "cancelled-before-upstream",
                 reservation,
                 request = request,
@@ -13066,10 +13728,13 @@ async def anthropic_count_tokens(
 
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
-        raise HTTPException(
-            status_code = 503,
-            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+        _status, _detail = await _no_model_loaded_error(
+            "No GGUF model loaded. Load a GGUF model first.",
+            _switch_model_for_payload(payload),
+            request,
+            status = 503,
         )
+        raise HTTPException(status_code = _status, detail = _detail)
 
     # Same Anthropic → OpenAI translation as anthropic_messages: system is
     # folded into the messages list, so pass system=None to the counter.
@@ -13138,6 +13803,7 @@ async def anthropic_messages(
     # before any request-shape check, exactly as the pre-feature endpoint did. When
     # an automatic load can run (auto-switch or a standalone idle TTL), fall through
     # so validation runs before the reload hook gets a chance to restore the model.
+    # Plain detail, not _no_model_loaded_error: that helper leaves this case unchanged.
     if not llama_backend.is_loaded and not _automatic_model_load_may_run():
         raise HTTPException(
             status_code = 503,
@@ -13237,10 +13903,13 @@ async def anthropic_messages(
         require_vision = _anthropic_request_has_image(payload),
     )
     if not llama_backend.is_loaded:
-        raise HTTPException(
-            status_code = 503,
-            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+        _status, _detail = await _no_model_loaded_error(
+            "No GGUF model loaded. Load a GGUF model first.",
+            _switch_model_for_payload(payload),
+            request,
+            status = 503,
         )
+        raise HTTPException(status_code = _status, detail = _detail)
 
     # Advertised repo id after an auto-switch load, else a clean public id, never
     # the local .gguf path (and a legacy raw path in payload.model is sanitized).
@@ -13371,12 +14040,206 @@ async def anthropic_messages(
             cancel_event,
         )
 
+    # ── Admission control ─────────────────────────────────────
+    # Bound concurrent llama-server generations to the backend's serving slots via a
+    # FIFO queue keyed by base_url (shared with /v1/chat/completions, same slots).
+    # Excess requests queue; a streaming waiter gets SSE keep-alives, the queue 429s
+    # once full. Mirrors the OpenAI passthrough admission wiring. Streaming takes the
+    # slot when the response is built and drops it when the body finishes or is
+    # abandoned; the non-stream path holds it across the single awaited generation.
+    _anthropic_admission_mode = "anthropic_stream" if payload.stream else "anthropic_nonstream"
+
+    async def _admitted_anthropic_stream(
+        orig_body,
+        reservation,
+        admission_config,
+        stream_lease,
+        prior_cleanup = None,
+    ):
+        lease = stream_lease
+        stream_cancelled = False
+        body_started = False
+        wait_started_at = None
+        try:
+            if lease is None:
+                wait_started_at = time.monotonic()
+                _llama_admission_log(
+                    "queued",
+                    reservation,
+                    request = request,
+                    mode = _anthropic_admission_mode,
+                )
+                async for wait_item in _openai_admission_wait_stream_chunks(
+                    reservation,
+                    admission_config,
+                    request = request,
+                    cancel_event = cancel_event,
+                ):
+                    if isinstance(wait_item, str):
+                        yield wait_item
+                        continue
+                    lease = wait_item
+                    break
+                _llama_admission_log(
+                    "granted-after-wait",
+                    reservation,
+                    request = request,
+                    mode = _anthropic_admission_mode,
+                    wait_started_at = wait_started_at,
+                )
+            if lease is None:
+                return
+            body_started = True
+            async for chunk in orig_body:
+                yield chunk
+        except asyncio.CancelledError:
+            # Must reach the monitored generator as CancelledError, not aclose's
+            # GeneratorExit, or its handler never finalizes the monitor entry.
+            stream_cancelled = True
+            raise
+        except LlamaAdmissionTimeout as exc:
+            api_monitor.fail(monitor_id, str(exc))
+            _llama_admission_log(
+                "timeout",
+                reservation,
+                request = request,
+                mode = _anthropic_admission_mode,
+                wait_started_at = wait_started_at,
+                level = "warning",
+            )
+            yield build_anthropic_sse_event(
+                "error",
+                anthropic_error_body(str(exc), status = 503),
+            )
+        except LlamaAdmissionCancelled:
+            _llama_admission_log(
+                "cancelled-before-upstream",
+                reservation,
+                request = request,
+                mode = _anthropic_admission_mode,
+                wait_started_at = wait_started_at,
+            )
+            return
+        finally:
+            # Closing can raise (a raw body re-raises CancelledError after
+            # teardown), and a slot lost that way never comes back: with no queue
+            # timeout the pool just shrinks and later callers wait forever. Keep
+            # the release in its own finally, as the /responses wiring does.
+            try:
+                if body_started:
+                    await _close_openai_admitted_stream_iterator(
+                        orig_body,
+                        cancelled = stream_cancelled,
+                    )
+                else:
+                    # Gave up while queued: the monitored body never ran, so nothing
+                    # downstream finalizes the entry or exits the response's tracker.
+                    api_monitor.finish(monitor_id, "cancelled")
+                    await _release_unstarted_anthropic_stream(orig_body, prior_cleanup)
+            finally:
+                if lease is not None:
+                    lease.release()
+                else:
+                    reservation.cancel()
+
+    async def _admitted_anthropic(coro):
+        try:
+            reservation, admission_config = _openai_llama_admission_reserve(
+                request = request, llama_backend = llama_backend
+            )
+        except LlamaAdmissionQueueFull as exc:
+            coro.close()
+            api_monitor.fail(monitor_id, str(exc))
+            _llama_admission_log(
+                "queue-full",
+                snapshot = getattr(exc, "snapshot", None),
+                request = request,
+                mode = _anthropic_admission_mode,
+                level = "warning",
+            )
+            raise _anthropic_admission_http_exception(exc, status_code = 429)
+        except BaseException:
+            # Reserving never awaited the generation, so close it rather than
+            # leave an un-awaited coroutine behind.
+            coro.close()
+            raise
+
+        if payload.stream:
+            stream_lease = reservation.lease_nowait()
+            # Set up the stream (token count + tracker enter) and surface a pre-response
+            # cancel now, exactly as the un-admitted path did; the upstream generation is
+            # deferred to body iteration, so the slot is only held while tokens flow.
+            try:
+                # Token counting calls llama-server, so a dead backend raises here
+                # with the slot already taken. cancel() covers both cases: it
+                # releases the lease if one was granted, else drops the waiter.
+                monitored = await _monitored_anthropic(coro)
+            except BaseException:
+                reservation.cancel()
+                raise
+            orig_body = getattr(monitored, "body_iterator", None)
+            if orig_body is None:
+                reservation.cancel()
+                return monitored
+
+            # Replacing body_iterator would strand the response's own pre-start
+            # hook (the passthrough uses one to exit its cancel tracker), so chain
+            # to it instead of clobbering it.
+            prior_cleanup = getattr(monitored, "_unstarted_cleanup", None)
+
+            async def _unstarted_cleanup() -> None:
+                # The body never ran, so nothing else closes out the monitor entry.
+                api_monitor.finish(monitor_id, "cancelled")
+                try:
+                    await _release_unstarted_anthropic_stream(orig_body, prior_cleanup)
+                finally:
+                    # A BaseException here is swallowed upstream, so releasing
+                    # outside the finally would shrink the pool silently.
+                    reservation.cancel()
+
+            monitored.body_iterator = _admitted_anthropic_stream(
+                orig_body, reservation, admission_config, stream_lease, prior_cleanup
+            )
+            monitored._unstarted_cleanup = _unstarted_cleanup
+            return monitored
+
+        lease = None
+        try:
+            lease = await _wait_for_openai_admission_non_streaming(
+                reservation,
+                admission_config,
+                request = request,
+                cancel_event = cancel_event,
+            )
+            monitored = await _monitored_anthropic(coro)
+            return monitored
+        except LlamaAdmissionTimeout as exc:
+            coro.close()
+            api_monitor.fail(monitor_id, str(exc))
+            raise _anthropic_admission_http_exception(exc, status_code = 503)
+        except LlamaAdmissionCancelled as exc:
+            coro.close()
+            api_monitor.finish(monitor_id, "cancelled")
+            raise _anthropic_admission_http_exception(exc, status_code = 499)
+        except BaseException:
+            # Cancelled while queued (shutdown, outer task cancel): the generation
+            # coroutine was never awaited, so close it rather than leak it.
+            if lease is None:
+                coro.close()
+                api_monitor.finish(monitor_id, "cancelled")
+            raise
+        finally:
+            if lease is not None:
+                lease.release()
+            else:
+                reservation.cancel()
+
     # ── Client-side pass-through path ─────────────────────────
     if client_tools:
         openai_tools = openai_client_tools
 
         if payload.stream:
-            return await _monitored_anthropic(
+            return await _admitted_anthropic(
                 _anthropic_passthrough_stream(
                     request,
                     cancel_event,
@@ -13400,7 +14263,7 @@ async def anthropic_messages(
                     auto_heal_tool_calls = payload.auto_heal_tool_calls,
                 )
             )
-        return await _monitored_anthropic(
+        return await _admitted_anthropic(
             _anthropic_passthrough_non_streaming(
                 llama_backend,
                 openai_messages,
@@ -13505,7 +14368,7 @@ async def anthropic_messages(
             )
 
         if payload.stream:
-            return await _monitored_anthropic(
+            return await _admitted_anthropic(
                 _anthropic_tool_stream(
                     request,
                     cancel_event,
@@ -13518,7 +14381,7 @@ async def anthropic_messages(
                     disable_parallel_tool_use = _disable_parallel,
                 )
             )
-        return await _monitored_anthropic(
+        return await _admitted_anthropic(
             _anthropic_tool_non_streaming(
                 _run_tool_gen,
                 message_id,
@@ -13545,7 +14408,7 @@ async def anthropic_messages(
         )
 
     if payload.stream:
-        return await _monitored_anthropic(
+        return await _admitted_anthropic(
             _anthropic_plain_stream(
                 request,
                 cancel_event,
@@ -13556,7 +14419,7 @@ async def anthropic_messages(
                 openai_messages = openai_messages,
             )
         )
-    return await _monitored_anthropic(
+    return await _admitted_anthropic(
         _anthropic_plain_non_streaming(
             _run_plain_gen,
             message_id,
@@ -14068,6 +14931,28 @@ def _build_passthrough_payload(
     return body
 
 
+async def _anthropic_passthrough_retry_url(llama_backend, exc):
+    """Fresh upstream URL after respawning a dead llama-server, else None.
+
+    A crashed server relaunches on a NEW ephemeral port, so a passthrough still
+    holding the old base_url keeps failing until the next load. Mirrors the
+    respawn-and-retry in generate_chat_completion. None when an MTP+tensor crash
+    already scheduled its own recovery, or when nothing needed respawning.
+    """
+    recover = getattr(llama_backend, "_maybe_recover_from_mtp_crash", None)
+    if recover is not None and recover(exc):
+        return None
+    # Only the first caller gets True above; the rest must not respawn the same
+    # MTP config underneath the fallback that is already reloading without it.
+    if getattr(llama_backend, "_mtp_runtime_fallback_in_progress", False):
+        return None
+    respawn = getattr(llama_backend, "_respawn_if_dead", None)
+    if respawn is None or not await asyncio.to_thread(respawn):
+        return None
+    logger.warning("llama-server was unreachable; respawned it and retrying the passthrough")
+    return f"{llama_backend.base_url}/v1/chat/completions"
+
+
 async def _anthropic_passthrough_stream(
     request,
     cancel_event,
@@ -14135,8 +15020,15 @@ async def _anthropic_passthrough_stream(
                 openai_tools,
                 disable_parallel_tool_use = disable_parallel_tool_use,
             )
-        for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
-            yield line
+        # These yields sit outside the teardown try below, so a disconnect while
+        # the opening lines are being sent would strand the tracker. __exit__ is
+        # idempotent, so the normal path still exits once, down there.
+        try:
+            for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
+                yield line
+        except BaseException:
+            _tracker.__exit__(None, None, None)
+            raise
 
         # Manage the httpx client, response, AND the aiter_lines() async
         # generator MANUALLY -- no `async with`, no anonymous iterator.
@@ -14171,13 +15063,24 @@ async def _anthropic_passthrough_stream(
         cancel_watcher = None
         disconnect_watcher = None
         try:
-            req = client.build_request(
-                "POST", target_url, json = body, headers = {"Connection": "close"}
-            )
-            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-            resp = await _send_stream_with_preheader_cancel(
-                client, req, cancel_event, request = request
-            )
+            url = target_url
+            try:
+                req = client.build_request("POST", url, json = body, headers = {"Connection": "close"})
+                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                resp = await _send_stream_with_preheader_cancel(
+                    client, req, cancel_event, request = request
+                )
+            except httpx.ConnectError as exc:
+                # Nothing has streamed yet, so a respawned server can be retried once
+                # on its new port without duplicating output.
+                url = await _anthropic_passthrough_retry_url(llama_backend, exc)
+                if url is None:
+                    raise
+                req = client.build_request("POST", url, json = body, headers = {"Connection": "close"})
+                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                resp = await _send_stream_with_preheader_cancel(
+                    client, req, cancel_event, request = request
+                )
             if resp is None:
                 return
 
@@ -14256,7 +15159,13 @@ async def _anthropic_passthrough_stream(
         for line in emitter.finish():
             yield line
 
-    return _sse_streaming_response(_stream())
+    # The tracker is entered eagerly above, but _stream()'s finally is what exits
+    # it. Closing an async generator that never started is a no-op, so hand the
+    # response a cleanup hook or a pre-start give-up leaks the registry entry.
+    return _sse_streaming_response(
+        _stream(),
+        unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
+    )
 
 
 async def _anthropic_passthrough_non_streaming(
@@ -14296,11 +15205,24 @@ async def _anthropic_passthrough_non_streaming(
         backend_ctx = llama_backend.context_length,
     )
 
-    resp = await nonstreaming_client().post(
-        target_url,
-        json = body,
-        timeout = _llama_non_streaming_generation_timeout(),
-    )
+    try:
+        resp = await nonstreaming_client().post(
+            target_url,
+            json = body,
+            timeout = _llama_non_streaming_generation_timeout(),
+        )
+    except httpx.ConnectError as exc:
+        # Nothing was returned yet, so retry once against the respawned server's
+        # new port; the nudge retry below then reuses the same fresh URL.
+        retry_url = await _anthropic_passthrough_retry_url(llama_backend, exc)
+        if retry_url is None:
+            raise
+        target_url = retry_url
+        resp = await nonstreaming_client().post(
+            target_url,
+            json = body,
+            timeout = _llama_non_streaming_generation_timeout(),
+        )
 
     if resp.status_code != 200:
         raise HTTPException(
@@ -14805,7 +15727,7 @@ async def _openai_passthrough_stream(
         )
     except LlamaAdmissionQueueFull as exc:
         _tracker.__exit__(None, None, None)
-        _openai_admission_log(
+        _llama_admission_log(
             "queue-full",
             snapshot = exc.snapshot,
             request = request,
@@ -14850,7 +15772,7 @@ async def _openai_passthrough_stream(
         )
 
     admission_wait_started_at = time.monotonic()
-    _openai_admission_log(
+    _llama_admission_log(
         "queued",
         reservation,
         request = request,
@@ -14874,7 +15796,7 @@ async def _openai_passthrough_stream(
                 if isinstance(wait_item, str):
                     yield wait_item
                     continue
-                _openai_admission_log(
+                _llama_admission_log(
                     "granted-after-wait",
                     reservation,
                     request = request,
@@ -14919,7 +15841,7 @@ async def _openai_passthrough_stream(
                             await cleanup()
                 return
         except LlamaAdmissionTimeout as exc:
-            _openai_admission_log(
+            _llama_admission_log(
                 "timeout",
                 reservation,
                 request = request,
@@ -14931,7 +15853,7 @@ async def _openai_passthrough_stream(
             api_monitor.fail(monitor_id, str(exc))
             yield _openai_stream_error_sse(_openai_admission_error_body(exc, status_code = 503))
         except LlamaAdmissionCancelled:
-            _openai_admission_log(
+            _llama_admission_log(
                 "cancelled-before-upstream",
                 reservation,
                 request = request,
@@ -15708,7 +16630,7 @@ async def _openai_passthrough_non_streaming(
             llama_backend = llama_backend,
         )
     except LlamaAdmissionQueueFull as exc:
-        _openai_admission_log(
+        _llama_admission_log(
             "queue-full",
             snapshot = exc.snapshot,
             request = request,
@@ -15723,7 +16645,7 @@ async def _openai_passthrough_non_streaming(
     try:
         if reservation.lease_nowait() is None:
             admission_wait_started_at = time.monotonic()
-            _openai_admission_log(
+            _llama_admission_log(
                 "queued",
                 reservation,
                 request = request,
@@ -15737,7 +16659,7 @@ async def _openai_passthrough_non_streaming(
             cancel_event = cancel_event,
         )
         if admission_wait_started_at is not None:
-            _openai_admission_log(
+            _llama_admission_log(
                 "granted-after-wait",
                 reservation,
                 request = request,
@@ -15759,7 +16681,7 @@ async def _openai_passthrough_non_streaming(
             cancel_event = cancel_event,
         )
     except LlamaAdmissionTimeout as exc:
-        _openai_admission_log(
+        _llama_admission_log(
             "timeout",
             reservation,
             request = request,
@@ -15770,7 +16692,7 @@ async def _openai_passthrough_non_streaming(
         api_monitor.fail(monitor_id, str(exc))
         raise _openai_admission_http_exception(exc, status_code = 503)
     except LlamaAdmissionCancelled as exc:
-        _openai_admission_log(
+        _llama_admission_log(
             "cancelled-before-upstream",
             reservation,
             request = request,

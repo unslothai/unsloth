@@ -170,9 +170,9 @@ export function ApiKeysTab() {
 
       <MonitorLink />
 
-      <UsageExamples apiKey={revealed} />
-
       <ModelAutoSwitchSection />
+
+      <UsageExamples apiKey={revealed} />
 
       <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
         <DialogContent className="max-w-md">

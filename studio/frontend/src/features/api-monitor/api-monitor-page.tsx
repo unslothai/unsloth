@@ -19,6 +19,9 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { usePlatformStore } from "@/config/env";
+import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
+import { resolveInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import type { ApiMonitorEntry } from "@/features/chat/types/api";
 import { useSettingsDialogStore } from "@/features/settings";
 import { getApiBase, isTauri } from "@/lib/api-base";
@@ -31,6 +34,7 @@ import {
   Globe02Icon,
   PauseIcon,
   PlayIcon,
+  PowerSocket01Icon,
   RefreshIcon,
   Settings02Icon,
 } from "@hugeicons/core-free-icons";
@@ -80,6 +84,40 @@ function compactEndpoint(endpoint: string): string {
   return endpoint
     .replace(API_INFERENCE_PREFIX_RE, "/api")
     .replace(V1_PREFIX_RE, "/");
+}
+
+// A lifecycle row is a model load/unload/download, not an HTTP call: it carries
+// an event and reason instead of a prompt, so there is no payload to expand.
+export function isLifecycleEntry(entry: ApiMonitorEntry): boolean {
+  return entry.kind === "lifecycle";
+}
+
+export function lifecycleLabel(entry: ApiMonitorEntry): string {
+  if (entry.event === "unload") {
+    return entry.reason === "idle" ? "Model unloaded (idle)" : "Model unloaded";
+  }
+  if (entry.event === "download") {
+    if (entry.status === "running") {
+      const pct = entry.progress;
+      return typeof pct === "number"
+        ? `Downloading model (${Math.round(pct)}%)`
+        : "Downloading model";
+    }
+    if (entry.status === "completed") {
+      return "Model downloaded";
+    }
+    // A cancel is deliberate, so saying it failed misreads the user's own action.
+    return entry.status === "cancelled"
+      ? "Model download cancelled"
+      : "Model download failed";
+  }
+  if (entry.status === "running") {
+    return "Loading model";
+  }
+  if (entry.status === "completed") {
+    return "Model loaded";
+  }
+  return "Model load failed";
 }
 
 function statusDotClass(status: ApiMonitorEntry["status"]): string {
@@ -234,6 +272,37 @@ function RequestRow({
     entry.reply_preview ||
     entry.prompt_preview ||
     (entry.status === "running" ? "Waiting for output…" : "No preview");
+  // A load, unload or download has no prompt or reply, so it reads as a status
+  // line rather than a request with a payload behind it.
+  if (isLifecycleEntry(entry)) {
+    return (
+      <div className="flex w-full min-w-0 flex-col gap-1 border-b border-border/50 bg-muted/25 px-4 py-3 last:border-b-0">
+        <div className="flex min-w-0 items-center gap-2">
+          <span
+            className={cn(
+              "size-2 shrink-0 rounded-full",
+              statusDotClass(entry.status),
+            )}
+            aria-hidden={true}
+          />
+          <span className="truncate text-ui-13 font-medium text-foreground">
+            {lifecycleLabel(entry)}
+          </span>
+          <span className="ml-auto shrink-0 text-ui-11 tabular-nums text-muted-foreground">
+            {formatTime(entry.started_at)}
+          </span>
+        </div>
+        <div className="min-w-0 truncate pl-4 text-ui-11 text-muted-foreground">
+          {entry.model}
+        </div>
+        {entry.error ? (
+          <div className="min-w-0 break-words pl-4 text-ui-11 text-red-600 dark:text-red-400">
+            {entry.error}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
   return (
     <button
       type="button"
@@ -465,6 +534,34 @@ export function ApiMonitorPage(): ReactElement {
     requestDetail,
   } = useApiMonitor();
   const serverUrl = usePlatformStore((s) => s.serverUrl);
+  const [unloading, setUnloading] = useState(false);
+  const [unloadError, setUnloadError] = useState<string | null>(null);
+
+  // Manual release of the loaded model, so VRAM can be freed without waiting for
+  // the idle timer. /unload matches on the internal id, which the monitor does
+  // not carry (it advertises a host path), so read it from status.
+  const unloadActiveModel = async (): Promise<void> => {
+    setUnloading(true);
+    try {
+      const status = await getInferenceStatus();
+      const checkpoint = resolveInferenceCheckpointId(status);
+      if (!checkpoint) {
+        setUnloadError(null);
+        return;
+      }
+      await unloadModel({ model_path: checkpoint });
+      // Same as the chat eject flow: the store still holds the freed checkpoint.
+      useChatRuntimeStore.getState().clearCheckpoint();
+      setUnloadError(null);
+      refresh();
+    } catch (err: unknown) {
+      setUnloadError(
+        err instanceof Error ? err.message : "Failed to unload the model",
+      );
+    } finally {
+      setUnloading(false);
+    }
+  };
   const [statusFilter, setStatusFilter] = useState<MonitorStatusFilter>("all");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -554,6 +651,26 @@ export function ApiMonitorPage(): ReactElement {
               className="size-4"
             />
             {paused ? "Resume" : "Pause"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void unloadActiveModel()}
+            disabled={unloading || !data?.active_model}
+            title={
+              data?.active_model
+                ? `Unload ${data.active_model} and free its VRAM`
+                : "No model is loaded"
+            }
+            className="h-9 gap-1.5 rounded-full"
+          >
+            <HugeiconsIcon
+              icon={PowerSocket01Icon}
+              strokeWidth={1.75}
+              className="size-4"
+            />
+            {unloading ? "Unloading" : "Unload"}
           </Button>
           <Button
             type="button"
@@ -665,9 +782,9 @@ export function ApiMonitorPage(): ReactElement {
         ) : null}
       </section>
 
-      {error ? (
+      {error || unloadError ? (
         <div className="rounded-xl border border-red-500/40 bg-red-500/5 px-4 py-3 text-sm text-red-600 dark:text-red-400">
-          {error}
+          {error || unloadError}
         </div>
       ) : null}
 

@@ -24,6 +24,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { isLifecycleEntry, lifecycleLabel } from "./api-monitor-page";
 import { useApiMonitorOverlayStore } from "./overlay-store";
 import { computeStats } from "./use-api-monitor";
 
@@ -344,7 +345,9 @@ export function ApiMonitorOverlay(): ReactElement | null {
                       aria-hidden={true}
                     />
                     <span className="shrink-0 truncate text-ui-12p5 font-medium tracking-nav text-nav-fg">
-                      {compactEndpoint(entry.endpoint)}
+                      {isLifecycleEntry(entry)
+                        ? lifecycleLabel(entry)
+                        : compactEndpoint(entry.endpoint)}
                     </span>
                     <span
                       className={cn(
