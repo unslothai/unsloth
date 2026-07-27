@@ -74,6 +74,7 @@ import { ModelLoadDescription } from "@/features/chat/components/model-load-stat
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { cn } from "@/lib/utils";
+import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
 import { toast } from "@/lib/toast";
 
@@ -280,12 +281,18 @@ function matchAspect(width: number, height: number): { key: string; portrait: bo
 // Module cache of the backend-persisted gallery, so a tab switch re-renders
 // instantly. Object URLs are revoked only on delete (not unmount), so they stay
 // valid across remounts.
+// Blob budget for cached gallery PNGs. A 1024x1024 PNG is ~1-2 MB, and the page stays mounted
+// after its first visit, so an unbounded cache grew for the whole session as the user scrolled.
+// 192 MB is ~100-200 images: far more than any viewport holds, while capping what the webview
+// can be made to pin. On-screen and open-in-the-viewer images are never evicted.
+const IMAGE_BLOB_BUDGET_BYTES = 192 * 1024 * 1024;
+
 const galleryCache: {
   images: GalleryImage[];
   hasMore: boolean;
   selectedId: string | null;
   quant: string | null;
-  srcById: Map<string, string>;
+  srcById: BlobUrlCache;
   // Ids with a fetch in flight, so concurrent ensureSrc calls don't double-fetch
   // (and leak the duplicate object URL).
   inflight: Set<string>;
@@ -298,7 +305,7 @@ const galleryCache: {
   hasMore: false,
   selectedId: null,
   quant: null,
-  srcById: new Map(),
+  srcById: new BlobUrlCache(IMAGE_BLOB_BUDGET_BYTES),
   inflight: new Set(),
   deleted: new Set(),
 };
@@ -1193,13 +1200,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
   const [srcById, setSrcById] = useState<Record<string, string>>(() =>
-    Object.fromEntries(galleryCache.srcById),
+    galleryCache.srcById.toRecord(),
   );
   // Guards a "load more" so a fast scroll can't fire several at once.
   const loadingMore = useRef(false);
   // The gallery strip, used as the IntersectionObserver root so a tile's PNG is fetched as it
   // nears view instead of every tile of every page up front.
   const stripRef = useRef<HTMLDivElement | null>(null);
+  // Ids currently intersecting the strip. The blob cache never evicts these, so pruning cannot
+  // pull an image out from under a visible tile.
+  const visibleIds = useRef<Set<string>>(new Set());
   // False once the page truly unmounts (app close / chat-only eject). The page now
   // stays mounted across tab switches, so a switch does NOT flip this -- a batch keeps
   // generating off-tab; the multi-run loop only stops on a real unmount.
@@ -1372,13 +1382,23 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (galleryCache.srcById.has(image.id) || galleryCache.inflight.has(image.id)) return;
     galleryCache.inflight.add(image.id);
     try {
-      const url = await fetchGalleryObjectUrl(image.url);
+      const { url, bytes } = await fetchGalleryObjectUrl(image.url);
       if (galleryCache.deleted.has(image.id)) {
         URL.revokeObjectURL(url);
         return;
       }
-      galleryCache.srcById.set(image.id, url);
-      setSrcById((prev) => ({ ...prev, [image.id]: url }));
+      galleryCache.srcById.set(image.id, url, bytes);
+      // Evict the coldest off-screen images this one pushed over budget. On-screen tiles and the
+      // image open in the viewer are protected, so eviction is never visible; an evicted tile
+      // re-fetches when it is scrolled back to.
+      const evicted = galleryCache.srcById.prune(
+        new Set([image.id, ...visibleIds.current, galleryCache.selectedId ?? ""]),
+      );
+      setSrcById((prev) => {
+        const next = { ...prev, [image.id]: url };
+        for (const id of evicted) delete next[id];
+        return next;
+      });
     } catch {
       // Leave it without a src; the tile shows a placeholder.
     } finally {
@@ -1441,9 +1461,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     const io = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
           const id = (entry.target as HTMLElement).dataset.imageId;
-          const image = id ? images.find((i) => i.id === id) : undefined;
+          if (!id) continue;
+          // Visibility is also the cache's recency and protection signal: an on-screen tile is
+          // never evicted, and leaving the viewport makes it a candidate again.
+          if (!entry.isIntersecting) {
+            visibleIds.current.delete(id);
+            continue;
+          }
+          visibleIds.current.add(id);
+          galleryCache.srcById.touch(id);
+          const image = images.find((i) => i.id === id);
           if (image) void ensureSrc(image);
         }
       },
@@ -1477,9 +1505,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       toast.error(err instanceof Error ? err.message : "Failed to delete image");
       return;
     }
-    const url = galleryCache.srcById.get(id);
-    if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
-    galleryCache.srcById.delete(id);
+    galleryCache.srcById.delete(id); // revokes the URL with the entry
+    visibleIds.current.delete(id);
     // A fetch still in flight for this id must discard its blob rather than cache it.
     galleryCache.deleted.add(id);
     setSrcById((prev) => {

@@ -10,6 +10,7 @@ PNG -- no real ``sd-cli``, no GPU.
 
 from __future__ import annotations
 
+import inspect
 import os
 import sys
 import time
@@ -491,3 +492,21 @@ def test_routing_prefer_native_overrides_gpu():
         select_diffusion_engine("cuda", native_available = False, prefer_native = True)
         == ENGINE_DIFFUSERS
     )
+
+
+def test_native_generation_timeout_matches_the_ui_settle_window():
+    # The native engine exists for slow CPU hosts: measured on GPU-less CI runners a 512x512 4-step
+    # Q2_K generation took 900 s (Linux) and 1465 s (Windows), so the old 30-minute default killed
+    # still-progressing jobs at higher resolutions or step counts while the Images page waited hours
+    # for them. The ceiling now matches that page's SETTLE_MAX_MS.
+    from core.inference.sd_cpp_engine import NATIVE_GENERATION_TIMEOUT_S, SdCppEngine
+    from core.inference import sd_cpp_backend
+
+    assert NATIVE_GENERATION_TIMEOUT_S == 6 * 60 * 60
+    for fn in (SdCppEngine.generate, SdCppEngine.upscale):
+        assert (
+            inspect.signature(fn).parameters["timeout"].default == NATIVE_GENERATION_TIMEOUT_S
+        ), fn.__name__
+    # The resident-server path shares the same ceiling (applied per request, see
+    # test_server_generate_splits_batches_above_server_limit).
+    assert sd_cpp_backend.NATIVE_GENERATION_TIMEOUT_S == NATIVE_GENERATION_TIMEOUT_S

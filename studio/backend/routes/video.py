@@ -53,8 +53,10 @@ def _guard_video_load_against_training() -> None:
     try:
         llm_active = get_training_backend().is_training_active()
     except Exception as e:  # noqa: BLE001
+        # Independent probes: an unreadable LLM backend must not disable the diffusion interlock
+        # below, which reads a different service and may know a trainer IS running.
         logger.warning("Could not check training state for video-load guard: %s", e)
-        return
+        llm_active = False
     diffusion_active = False
     try:
         from core.training.diffusion_training_service import get_diffusion_training_service

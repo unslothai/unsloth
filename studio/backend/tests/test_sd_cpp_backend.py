@@ -577,11 +577,14 @@ def test_server_generate_splits_batches_above_server_limit(monkeypatch):
     assert len(out["images"]) == 10
     counts = [p["batch_count"] for p in servers[0].payloads]
     assert counts == [bk._MAX_SERVER_BATCH, 10 - bk._MAX_SERVER_BATCH]  # [8, 2]
-    # Each chunk's timeout scales with its image count, not one fixed batch deadline.
-    assert servers[0].timeouts == [
-        bk._SERVER_PER_IMAGE_TIMEOUT_S * 8,
-        bk._SERVER_PER_IMAGE_TIMEOUT_S * 2,
-    ]
+    # Chunks share ONE request deadline rather than each getting a full budget: a batch is split
+    # only because the server caps images per job, so per-chunk budgets would let a batch outlive
+    # the window the page is still waiting on. Each chunk therefore gets what is left, which is at
+    # most the ceiling and never increases.
+    assert servers[0].timeouts[0] <= bk.NATIVE_GENERATION_TIMEOUT_S
+    assert servers[0].timeouts[1] <= servers[0].timeouts[0]
+    # A single slow image can still use the whole window (the old per-image cap was 30 minutes).
+    assert servers[0].timeouts[-1] > 1800.0
     # Seeds run contiguously across chunks (chunk 2 submitted at base + 8).
     assert out["seeds"] == list(range(100, 110))
     assert servers[0].payloads[1]["seed"] == 108

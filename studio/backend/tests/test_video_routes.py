@@ -836,3 +836,33 @@ def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
     assert resp.status_code == 200
     assert seen["text_encoder_quant"] == "fp8"
     assert seen["hf_token"] == "hf_secret"
+
+
+def test_video_load_guard_still_checks_diffusion_when_the_llm_probe_raises(client, monkeypatch):
+    # Same independence rule as the image guard: a raising LLM probe used to return early, so a
+    # video load ran straight into an active diffusion trainer on the same GPU.
+    import core.training as core_training
+    import routes.video as video_routes
+
+    class _Broken:
+        def is_training_active(self):
+            raise RuntimeError("training backend unavailable")
+
+    class _Diffusion:
+        def is_active(self):
+            return True
+
+    monkeypatch.setattr(core_training, "get_training_backend", lambda: _Broken())
+    monkeypatch.setattr(
+        "core.training.diffusion_training_service.get_diffusion_training_service",
+        lambda: _Diffusion(),
+        raising = False,
+    )
+
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
+    )
+    assert resp.status_code == 409
+    assert "training" in resp.json()["detail"].lower()
+    assert video_routes is not None

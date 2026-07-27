@@ -58,6 +58,7 @@ from core.inference.sd_cpp_args import (
     offload_flags,
 )
 from core.inference.sd_cpp_engine import (
+    NATIVE_GENERATION_TIMEOUT_S,
     SdCppCancelled,
     SdCppEngine,
     find_sd_cpp_binary,
@@ -79,9 +80,6 @@ _install_lock = threading.Lock()
 
 # Max images per img_gen job; larger Studio batches (up to 32) are split into these chunks.
 _MAX_SERVER_BATCH = 8
-
-# Per-image server-job budget, so a batch's timeout scales with image count.
-_SERVER_PER_IMAGE_TIMEOUT_S = 1800.0
 
 
 def _default_threads() -> int:
@@ -928,6 +926,11 @@ class SdCppDiffusionBackend:
                     }
                     for m in materialized
                 ]
+        # One deadline for the whole request, shared by its chunks: a batch is chunked only because
+        # the server caps images per job, so giving each chunk its own full budget would let a batch
+        # run for a multiple of the window the page is still waiting on. Each chunk gets whatever is
+        # left, so a slow single image can use all of it and a long batch still ends on time.
+        deadline = time.monotonic() + NATIVE_GENERATION_TIMEOUT_S
         try:
             for offset in range(0, total, _MAX_SERVER_BATCH):
                 if cancel.is_set():
@@ -952,7 +955,7 @@ class SdCppDiffusionBackend:
                     payload,
                     on_step = self._on_log,
                     cancel_event = cancel,
-                    total_timeout = _SERVER_PER_IMAGE_TIMEOUT_S * count,
+                    total_timeout = max(deadline - time.monotonic(), 1.0),
                 )
                 # All-or-nothing per chunk: fail rather than silently drop images from the batch.
                 if not cancel.is_set() and len(blobs) != count:

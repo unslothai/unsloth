@@ -1063,3 +1063,33 @@ def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
     assert seen["memory_mode"] == "low_vram"
     assert seen["cpu_offload"] is True
     assert len(seen["loras"] or []) == 1
+
+
+def test_load_refused_when_only_the_diffusion_probe_can_be_read(client, monkeypatch):
+    # The two training probes are independent. An LLM backend that raises used to short-circuit the
+    # guard entirely, so an image load sailed past a KNOWN-active diffusion trainer and contended
+    # with it for VRAM. An unreadable LLM state must not disable the diffusion interlock.
+    import core.training as core_training
+    import routes.inference as inference_routes
+
+    class _Broken:
+        def is_training_active(self):
+            raise RuntimeError("training backend unavailable")
+
+    monkeypatch.setattr(core_training, "get_training_backend", lambda: _Broken())
+    monkeypatch.setattr(inference_routes, "_diffusion_training_active", lambda: True)
+
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"},
+    )
+    assert resp.status_code == 409
+    assert "training" in resp.json()["detail"].lower()
+
+    # With neither trainer active the unreadable LLM probe still must not block the load.
+    monkeypatch.setattr(inference_routes, "_diffusion_training_active", lambda: False)
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"},
+    )
+    assert resp.status_code == 200

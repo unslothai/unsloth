@@ -250,10 +250,15 @@ export async function clearVideoGallery(): Promise<void> {
 
 /** Fetch a gallery MP4 (auth-protected, so it can't be a plain <video src>) and wrap it
  *  in an object URL. Callers must revoke the URL when done. Mirrors the images gallery. */
-export async function fetchGalleryVideoObjectUrl(url: string): Promise<string> {
+export async function fetchGalleryVideoObjectUrl(
+  url: string,
+): Promise<{ url: string; bytes: number }> {
   const res = await authFetch(url);
   if (!res.ok) throw new Error(await readFastApiError(res));
-  return URL.createObjectURL(await res.blob());
+  // The blob's size travels with the URL: the gallery cache is budgeted in bytes, and a clip's
+  // size varies by two orders of magnitude, so the caller cannot estimate it.
+  const blob = await res.blob();
+  return { url: URL.createObjectURL(blob), bytes: blob.size };
 }
 
 /** Server-side transcode for the Download menu (WebM / GIF). The backend 501s

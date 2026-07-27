@@ -46,7 +46,11 @@ from typing import Any, Callable, Optional
 import httpx
 
 from core.inference.sd_cpp_args import SdCppModelFiles, build_sd_cpp_server_command
-from core.inference.sd_cpp_engine import SdCppCancelled, runtime_env
+from core.inference.sd_cpp_engine import (
+    NATIVE_GENERATION_TIMEOUT_S,
+    SdCppCancelled,
+    runtime_env,
+)
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
@@ -366,7 +370,7 @@ class SdCppServer:
         cancel_event: Optional[threading.Event] = None,
         poll_interval: float = 0.4,
         submit_timeout: float = 60.0,
-        total_timeout: float = 1800.0,
+        total_timeout: float = NATIVE_GENERATION_TIMEOUT_S,
     ) -> list[bytes]:
         """Submit one async ``img_gen`` job, poll it to completion, return image bytes.
 

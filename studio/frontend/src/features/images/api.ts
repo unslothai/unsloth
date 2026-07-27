@@ -353,10 +353,15 @@ export async function clearGallery(): Promise<void> {
 
 /** Fetch a gallery PNG (auth-protected, so it can't be a plain <img src>) and
  *  wrap it in an object URL. Callers must revoke the URL when done. */
-export async function fetchGalleryObjectUrl(url: string): Promise<string> {
+export async function fetchGalleryObjectUrl(
+  url: string,
+): Promise<{ url: string; bytes: number }> {
   const res = await authFetch(url);
   if (!res.ok) throw new Error(await readFastApiError(res));
-  return URL.createObjectURL(await res.blob());
+  // The blob's size travels with the URL: the gallery cache is budgeted in bytes (see
+  // BlobUrlCache), which the caller cannot work out from the URL alone.
+  const blob = await res.blob();
+  return { url: URL.createObjectURL(blob), bytes: blob.size };
 }
 
 // ── Diffusion LoRA training ───────────────────────────────────────────────────

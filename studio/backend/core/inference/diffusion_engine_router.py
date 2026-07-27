@@ -110,8 +110,19 @@ def _activate(name: str, reason: Optional[str]) -> Any:
             # evict the new (empty) engine while the old model is still freeing VRAM.
             try:
                 engine_to_unload.unload()
-            except Exception as exc:  # noqa: BLE001 -- best-effort; never block the switch
-                logger.warning("failed to unload previous engine %s: %s", old_name, exc)
+            except Exception as exc:
+                # Do NOT publish the new engine after a failed teardown. The old model (or the
+                # resident sd-server process) is still holding its memory, and flipping the name
+                # would make it unreachable through get_active_diffusion_engine(): the arbiter's
+                # evictor, /images/unload and the next load all resolve through that, so the
+                # leak would be permanent and the next load would allocate on top of it. Leaving
+                # the old engine active keeps it reclaimable and lets the caller retry.
+                logger.error("failed to unload previous engine %s: %s", old_name, exc)
+                raise RuntimeError(
+                    f"Could not switch the diffusion engine to {name}: unloading the current "
+                    f"{old_name} model failed ({exc}). The current model is still loaded; "
+                    "unload it and try again."
+                ) from exc
             with _lock:
                 _active_engine_name = name
                 _fallback_reason = reason if name == ENGINE_DIFFUSERS else None

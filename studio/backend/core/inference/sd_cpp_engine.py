@@ -44,6 +44,14 @@ _LEGACY_STEM = "sd"
 # The persistent HTTP server target, shipped next to sd-cli in both prebuilt and cmake builds.
 _SERVER_STEM = "sd-server"
 
+# Ceiling for one native run. The native engine exists FOR slow CPU hosts: measured on GPU-less
+# CI runners, a 512x512 4-step Q2_K generation took 900 s on Linux and 1465 s on Windows, so a
+# larger image or step count clears half an hour easily and a 30-minute cap killed jobs that were
+# still progressing. This matches the Images page's own SETTLE_MAX_MS (6 h), past which the UI has
+# given up anyway, so the ceiling only stops a WEDGED process from holding the lock forever.
+# It is not the user-facing abort path: cancel_event interrupts a run at any point.
+NATIVE_GENERATION_TIMEOUT_S = 6 * 60 * 60.0
+
 
 class SdCppCancelled(RuntimeError):
     """A generation cancelled via its ``cancel_event`` (unload / superseding load / arbiter
@@ -253,7 +261,7 @@ class SdCppEngine:
         threads: Optional[int] = None,
         verbose: bool = False,
         extra_args: Optional[list[str]] = None,
-        timeout: Optional[float] = 1800.0,
+        timeout: Optional[float] = NATIVE_GENERATION_TIMEOUT_S,
         env: Optional[dict[str, str]] = None,
         on_log: Optional[Callable[[str], None]] = None,
         cancel_event: Optional[threading.Event] = None,
@@ -294,7 +302,7 @@ class SdCppEngine:
         output_path: str,
         verbose: bool = False,
         extra_args: Optional[list[str]] = None,
-        timeout: Optional[float] = 1800.0,
+        timeout: Optional[float] = NATIVE_GENERATION_TIMEOUT_S,
         env: Optional[dict[str, str]] = None,
         on_log: Optional[Callable[[str], None]] = None,
         cancel_event: Optional[threading.Event] = None,

@@ -4048,8 +4048,10 @@ def _guard_chat_load_against_training(
     try:
         llm_active = get_training_backend().is_training_active()
     except Exception as e:
+        # Independent probes: an unreadable LLM backend must still fall through to the diffusion
+        # check below, which reads a different service and may know a trainer IS running.
         logger.warning("Could not check training state for chat-load guard: %s", e)
-        return
+        llm_active = False
 
     if not llm_active:
         # An SDXL LoRA trainer runs in its own subprocess and its VRAM can't be cheaply fit-checked here,
@@ -16008,8 +16010,10 @@ def _guard_diffusion_load_against_training() -> None:
     try:
         llm_active = get_training_backend().is_training_active()
     except Exception as e:
+        # The two probes are independent: an unreadable LLM backend must not disable the diffusion
+        # interlock below, which reads a different service and may well know a trainer IS running.
         logger.warning("Could not check training state for image-load guard: %s", e)
-        return
+        llm_active = False
     # An SDXL LoRA trainer runs in its own subprocess on the same GPU, so an image load must be
     # refused while one is active or the pipeline contends with the trainer for VRAM. Symmetric with
     # the diffusion-start interlock.

@@ -27,10 +27,14 @@ def _clean_env_and_state(monkeypatch):
         monkeypatch.delenv(e, raising = False)
     # A light status-capable stub so neither selection nor active_status() imports the heavy
     # diffusers/sd.cpp backends; the active engine NAME comes from module state.
+    # unload() is part of the engine contract (a switch tears the old engine down and now refuses to
+    # publish the new one if that fails), so the stub has to honour it.
     monkeypatch.setattr(
         r,
         "get_active_diffusion_engine",
-        lambda: SimpleNamespace(status = lambda: {"loaded": False, "repo_id": None}),
+        lambda: SimpleNamespace(
+            status = lambda: {"loaded": False, "repo_id": None}, unload = lambda: None
+        ),
     )
     # Default: no resident sd-server (so existing tests exercise the sd-cli path) and a stubbed
     # runnability probe, so neither reaches the real install/exec path.
@@ -326,3 +330,23 @@ def test_begin_load_on_holds_the_transition_lock_while_registering(monkeypatch):
     assert r._transition_lock.locked()
     release.set()
     t.join(2.0)
+
+
+def test_switch_aborts_when_the_old_engine_fails_to_unload(monkeypatch):
+    # A swallowed teardown failure published the new engine anyway, which stranded the old model:
+    # the arbiter's evictor, /images/unload and the next load all resolve through
+    # get_active_diffusion_engine(), so nothing could reach the still-resident pipeline (or a live
+    # sd-server) to reclaim it, and the next load allocated on top of it. Keep the old engine
+    # published and fail the switch instead.
+    def _fake_engine():
+        def _boom():
+            raise RuntimeError("sd-server would not die")
+
+        return SimpleNamespace(unload = _boom, status = lambda: {"loaded": True, "repo_id": "x"})
+
+    monkeypatch.setattr(r, "get_active_diffusion_engine", lambda: _fake_engine())
+    r._active_engine_name = ENGINE_SD_CPP
+    with pytest.raises(RuntimeError, match = "Could not switch the diffusion engine"):
+        r._activate(ENGINE_DIFFUSERS, "switch test")
+    # Still the old engine, so the resident model remains reachable and reclaimable.
+    assert r.active_engine_name() == ENGINE_SD_CPP
