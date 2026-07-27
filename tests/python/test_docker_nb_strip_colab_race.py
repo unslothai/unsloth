@@ -99,7 +99,9 @@ def test_a_save_during_the_cleanup_is_not_overwritten(strip, racing, tmp_path: P
     )
 
 
-def test_the_recorded_hash_still_matches_the_file_after_a_racing_save(strip, racing, tmp_path: Path):
+def test_the_recorded_hash_still_matches_the_file_after_a_racing_save(
+    strip, racing, tmp_path: Path
+):
     # migrate() rewrites STATE with the post-strip hash. If the write above is
     # allowed to clobber a save, the state ALSO says "pristine", so every later
     # refresh happily overwrites the notebook again.
@@ -136,4 +138,4 @@ def test_the_normal_no_race_cleanup_still_strips_and_rewrites(strip, tmp_path: P
     assert strip.strip_notebook(str(path)) is True
     cleaned = json.loads(path.read_text(encoding = "utf-8"))
     assert cleaned["cells"][0]["source"] == ["# Llama\n"]
-    assert strip.strip_notebook(str(path)) is False   # idempotent
+    assert strip.strip_notebook(str(path)) is False  # idempotent

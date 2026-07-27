@@ -175,7 +175,7 @@ def _run_llama_step(script: str, tmp_path: Path, *, curl_exit: int):
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
     env["GITHUB_OUTPUT"] = str(out)
-    env["INPUT_TAG"] = ""          # the default (push / schedule) trigger
+    env["INPUT_TAG"] = ""  # the default (push / schedule) trigger
     path = tmp_path / "llama_step.sh"
     path.write_text(_expand(script), encoding = "utf-8")
     return subprocess.run(
