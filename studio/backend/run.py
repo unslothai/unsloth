@@ -143,7 +143,12 @@ def _metadata_public_ip() -> str:
     import time
     import urllib.request
 
-    def _get(path, headers, data = None, method = None):
+    def _get(
+        path,
+        headers,
+        data = None,
+        method = None,
+    ):
         req = urllib.request.Request(
             f"http://{METADATA_HOST}{path}", headers = headers, data = data, method = method
         )
