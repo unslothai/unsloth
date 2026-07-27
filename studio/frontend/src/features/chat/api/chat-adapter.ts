@@ -2511,6 +2511,13 @@ export function createOpenAIStreamAdapter(
       const useAdapter = await resolveUseAdapter(resolvedThreadId, options);
 
       const threadKey = resolvedThreadId || "__default";
+      // A first turn files its handles under "__default"; autosave then assigns a real id
+      // and adoptDefaultThreadRun re-keys them mid-run. Resolve per use so later writes
+      // and the final clear follow the run instead of stranding entries behind.
+      const liveThreadKey = (owner: () => void) =>
+        threadKey === "__default"
+          ? useChatRuntimeStore.getState().runKeyForOwner(threadKey, owner)
+          : threadKey;
 
       // Per-run token so a delayed stop POST can't match the next run.
       const cancelId =
@@ -2581,8 +2588,9 @@ export function createOpenAIStreamAdapter(
           throw err;
         } finally {
           abortSignal.removeEventListener("abort", forwardAbort);
-          runtime.setThreadRunning(threadKey, false, { owner: audioCancel });
-          runtime.clearThreadServerCancel(threadKey, audioCancel);
+          const audioKey = liveThreadKey(audioCancel);
+          runtime.setThreadRunning(audioKey, false, { owner: audioCancel });
+          runtime.clearThreadServerCancel(audioKey, audioCancel);
         }
         return;
       }
@@ -3311,7 +3319,7 @@ export function createOpenAIStreamAdapter(
               )._toolStatus;
               if (toolStatusText !== undefined) {
                 runtime.setToolStatus(
-                  threadKey,
+                  liveThreadKey(serverCancel),
                   toolStatusText || null,
                   serverCancel,
                 );
@@ -3343,9 +3351,9 @@ export function createOpenAIStreamAdapter(
                 }
               )._diffusionFrame;
               if (diffusionFrame !== undefined) {
-                runtime.setActiveDiffusionCanvas({
-                  // Tagged so a background run's frames stay out of the visible chat.
-                  threadId: resolvedThreadKey,
+                // Keyed by thread so a background run's frames stay out of the
+                // visible chat instead of overwriting the frame it is painting.
+                runtime.setActiveDiffusionCanvas(liveThreadKey(serverCancel), {
                   block: diffusionFrame.block ?? 0,
                   step: diffusionFrame.step ?? 0,
                   total: diffusionFrame.total ?? 0,
@@ -4199,6 +4207,8 @@ export function createOpenAIStreamAdapter(
       } finally {
         runSignal.removeEventListener("abort", onAbortCancel);
         abortSignal.removeEventListener("abort", forwardAbort);
+        // Resolve once: the clears below drop the owner the lookup keys on.
+        const cleanupKey = liveThreadKey(serverCancel);
         const confirmStore = useChatRuntimeStore.getState();
         for (const part of toolCallParts) {
           confirmStore.clearToolConfirmation(part.toolCallId);
@@ -4206,7 +4216,7 @@ export function createOpenAIStreamAdapter(
         runtime.setGeneratingStatus(null);
         // Scoped by thread AND by run: a global clear wiped every other running chat's
         // badge, and an unowned one wiped a concurrent run's badge behind the same key.
-        runtime.setToolStatus(threadKey, null, serverCancel);
+        runtime.setToolStatus(cleanupKey, null, serverCancel);
         // Clear only this run's live keys (a concurrent pane owns its own). A
         // key still here streamed stdout but never reached tool_end (SSE drop or
         // cancel), so promote it to full output first, else the partial
@@ -4222,7 +4232,7 @@ export function createOpenAIStreamAdapter(
         runToolLiveOutputKeys.clear();
         // Drop the transient denoising canvas so the finished bubble shows only the
         // committed answer. Scoped: a global clear wiped another denoising chat's frame.
-        runtime.clearActiveDiffusionCanvasForThread(resolvedThreadKey);
+        runtime.clearActiveDiffusionCanvasForThread(cleanupKey);
         clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
           if (firstTokenSettled) {
@@ -4235,8 +4245,8 @@ export function createOpenAIStreamAdapter(
         }
         // serverCancel narrows both clears: runs with no resolved thread id share the
         // "__default" key, so a blind clear could drop a sibling's entry.
-        runtime.setThreadRunning(threadKey, false, { owner: serverCancel });
-        runtime.clearThreadServerCancel(threadKey, serverCancel);
+        runtime.setThreadRunning(cleanupKey, false, { owner: serverCancel });
+        runtime.clearThreadServerCancel(cleanupKey, serverCancel);
       }
     },
   };

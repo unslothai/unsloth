@@ -19,6 +19,10 @@ def _bare_orchestrator():
     """An orchestrator without the real __init__ subprocess/network."""
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
     o._gen_lock = threading.Lock()
+    o._send_order_lock = threading.Lock()
+    o._active_cancel_lock = threading.Lock()
+    o._active_cancel_events = []
+    o._executing_cancel_events = []
     o._cancel_event = threading.Event()  # stands in for the mp.Event
     o._drain_event = threading.Event()  # stands in for the unload-drain mp.Event
     o._proc = object()  # truthy so _ensure_subprocess_alive reports alive

@@ -210,11 +210,6 @@ export type ReasoningStyle =
 /** One live DiffusionGemma denoising snapshot: the current canvas text at a
  *  given step of a given block (block/step are 0-based; total = steps in block). */
 export type DiffusionCanvasFrame = {
-  /**
-   * Conversation that produced this frame, or null when the run started before its thread
-   * id was known. Untagged, one chat's denoising preview renders in every other bubble.
-   */
-  threadId: string | null;
   block: number;
   step: number;
   total: number;
@@ -971,9 +966,13 @@ type ChatRuntimeStore = {
   /** Active model is a block-diffusion model (DiffusionGemma): drives the
    *  denoising-canvas artifact auto-render. */
   loadedIsDiffusion: boolean;
-  /** Live denoising frame for the in-progress diffusion message. Transient: set
-   *  per step, cleared when the run ends, never persisted into the transcript. */
-  activeDiffusionCanvas: DiffusionCanvasFrame | null;
+  /**
+   * Live denoising frame per conversation ("__default" until the id exists). Transient:
+   * set per step, cleared when the run ends, never persisted into the transcript. Keyed,
+   * not global: two denoising chats overwrote each other's frame, so the visible preview
+   * flickered or vanished until that thread happened to emit again.
+   */
+  activeDiffusionCanvasByThreadId: Record<string, DiffusionCanvasFrame>;
   customContextLength: number | null;
   /** The pinned context the loaded model used (null = Auto), so dirty-tracking
    *  and a later fit Apply can tell an explicit pin apart from Auto. */
@@ -1032,6 +1031,21 @@ type ChatRuntimeStore = {
     running: boolean,
     options?: { local?: boolean; owner?: () => void },
   ) => void;
+  /**
+   * Re-key a first turn's run handles once its thread is persisted.
+   *
+   * A run that starts before its id exists files everything under "__default".
+   * Nothing moved it afterwards, so once the user navigated away the sidebar
+   * looked up the real id, found no run, and showed no spinner; stopChatThread
+   * had no handle either and the generation carried on holding a slot.
+   */
+  adoptDefaultThreadRun: (threadId: string) => void;
+  /**
+   * Which key this run's handles live under now. `adoptDefaultThreadRun` re-keys them
+   * mid-run, so a run that started under "__default" must look its owner up instead of
+   * reusing the key it captured, or its writes and its final clear miss the entries.
+   */
+  runKeyForOwner: (fallbackKey: string, owner: () => void) => string;
   registerThreadCancel: (threadId: string, cancel: () => void) => void;
   clearThreadCancel: (threadId: string) => void;
   registerThreadServerCancel: (threadId: string, cancel: () => void) => void;
@@ -1104,9 +1118,12 @@ type ChatRuntimeStore = {
   /** Drop a stale preserved full output (a new run is reusing the id). */
   clearToolFullOutput: (toolCallId: string) => void;
   setGeneratingStatus: (status: string | null) => void;
-  setActiveDiffusionCanvas: (canvas: DiffusionCanvasFrame | null) => void;
-  /** Drop the live canvas only when it belongs to `threadId`: a run ending in a background
-   * chat must not wipe the frame another chat is still painting. */
+  setActiveDiffusionCanvas: (
+    threadId: string | null,
+    canvas: DiffusionCanvasFrame,
+  ) => void;
+  /** Drop only `threadId`'s canvas: a run ending in a background chat must not wipe
+   * the frame another chat is still painting. */
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
@@ -1416,7 +1433,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   toolLiveOutput: {},
   toolFullOutput: {},
   generatingStatus: null,
-  activeDiffusionCanvas: null,
+  activeDiffusionCanvasByThreadId: {},
   autoHealToolCalls: true,
   nudgeToolCalls: true,
   maxToolCallsPerMessage: 25,
@@ -1607,6 +1624,42 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         runOwnerByThreadId: nextOwner,
       };
     }),
+  adoptDefaultThreadRun: (threadId) =>
+    set((state) => {
+      const key = "__default";
+      if (!threadId || threadId === key) return state;
+      // Only the transient run maps move. Anything already filed under the real
+      // id wins, since that is a later, better-identified run.
+      const moved: Partial<ChatRuntimeStore> = {};
+      const move = <T,>(
+        map: Record<string, T>,
+        name: keyof ChatRuntimeStore,
+      ) => {
+        const entry = map[key];
+        if (entry === undefined || map[threadId] !== undefined) return;
+        const next = { ...map };
+        delete next[key];
+        next[threadId] = entry;
+        (moved as Record<string, unknown>)[name as string] = next;
+      };
+      move(state.runningByThreadId, "runningByThreadId");
+      move(state.localRunByThreadId, "localRunByThreadId");
+      move(state.runOwnerByThreadId, "runOwnerByThreadId");
+      move(state.cancelByThreadId, "cancelByThreadId");
+      move(state.serverCancelByThreadId, "serverCancelByThreadId");
+      move(state.toolStatusByThreadId, "toolStatusByThreadId");
+      move(
+        state.activeDiffusionCanvasByThreadId,
+        "activeDiffusionCanvasByThreadId",
+      );
+      return Object.keys(moved).length > 0 ? moved : state;
+    }),
+  runKeyForOwner: (fallbackKey, owner) => {
+    for (const [key, entries] of Object.entries(get().runOwnerByThreadId)) {
+      if (entries.some((e) => e.owner === owner)) return key;
+    }
+    return fallbackKey;
+  },
   registerThreadCancel: (threadId, cancel) =>
     set((state) => {
       const next = { ...state.cancelByThreadId };
@@ -1748,7 +1801,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       toolStatusByThreadId: {},
       toolLiveOutput: {},
       toolFullOutput: {},
-      activeDiffusionCanvas: null,
+      activeDiffusionCanvasByThreadId: {},
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
       speculativeType: readPersistedSpeculativeType(),
@@ -2052,17 +2105,20 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       delete next[toolCallId];
       return { toolLiveOutput: next };
     }),
-  setActiveDiffusionCanvas: (activeDiffusionCanvas) =>
-    set({ activeDiffusionCanvas }),
+  setActiveDiffusionCanvas: (threadId, canvas) =>
+    set((state) => ({
+      activeDiffusionCanvasByThreadId: {
+        ...state.activeDiffusionCanvasByThreadId,
+        [threadId || "__default"]: canvas,
+      },
+    })),
   clearActiveDiffusionCanvasForThread: (threadId) =>
     set((state) => {
-      const current = state.activeDiffusionCanvas;
-      if (!current) return state;
-      // An untagged frame has no owner to defend, so any run may clear it.
-      if (current.threadId !== null && current.threadId !== threadId) {
-        return state;
-      }
-      return { activeDiffusionCanvas: null };
+      const key = threadId || "__default";
+      if (state.activeDiffusionCanvasByThreadId[key] === undefined) return state;
+      const next = { ...state.activeDiffusionCanvasByThreadId };
+      delete next[key];
+      return { activeDiffusionCanvasByThreadId: next };
     }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>

@@ -694,6 +694,10 @@ function createStudioDbAdapter(
 
     async initialize(threadId: string) {
       await ensureThreadRecord({ threadId, modelType, pairId, projectId });
+      // A run already streaming on this thread filed its handles under
+      // "__default" because the id did not exist yet. Re-key them now, or the
+      // sidebar row and Stop look up an id nothing is registered against.
+      useChatRuntimeStore.getState().adoptDefaultThreadRun(threadId);
       return { remoteId: threadId, externalId: undefined };
     },
 

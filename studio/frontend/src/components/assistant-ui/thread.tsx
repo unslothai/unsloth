@@ -3619,22 +3619,16 @@ const DiffusionCanvas: FC = () => {
   const isRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
-  // A non-null canvas is set only by diffusion_frame events (diffusion models only),
-  // so it is a sufficient gate; loadedIsDiffusion can lag the first frame on a fresh load.
-  const canvas = useChatRuntimeStore((s) => s.activeDiffusionCanvas);
-  const threadListItemId = useAuiState(
-    ({ threadListItem }) => threadListItem.id,
+  // Only this conversation's own frames render here; a first turn has no id yet, so it
+  // reads "__default", which is where its run files them until the thread persists.
+  const threadKey =
+    useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? "__default";
+  // A canvas is set only by diffusion_frame events (diffusion models only), so its
+  // presence is a sufficient gate; loadedIsDiffusion can lag the first frame on a fresh load.
+  const canvas = useChatRuntimeStore(
+    (s) => s.activeDiffusionCanvasByThreadId[threadKey],
   );
-  const threadListItemRemoteId = useAuiState(
-    ({ threadListItem }) => threadListItem.remoteId,
-  );
-  // Only this conversation's own frames may render here. An untagged frame
-  // (thread id not yet known) still does, so a first turn keeps its preview.
-  const ownsCanvas =
-    canvas?.threadId == null ||
-    canvas.threadId === threadListItemId ||
-    canvas.threadId === threadListItemRemoteId;
-  if (!isRunning || !canvas || !ownsCanvas) {
+  if (!isRunning || !canvas) {
     return null;
   }
   const stepLabel =
