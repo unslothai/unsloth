@@ -212,17 +212,15 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     if tool_name == "web_search":
         url = str(arguments.get("url") or "").strip()
         if url:
-            # Bare hosts are fetched as https, so normalize before reading the
-            # host or the badge falls back to the generic text for exactly the
-            # URLs the fetch layer accepts.
+            # Bare hosts are fetched as https, so normalize first or the badge
+            # stays generic for exactly the URLs the fetch layer accepts.
             from core.inference.tools import _normalize_url_scheme
 
             try:
                 parsed = urlparse(_normalize_url_scheme(url))
             except ValueError:
-                # This runs in prepare_call, before the fetch, and is not inside
-                # its exception handler: raising here kills the turn instead of
-                # letting _fetch_url_raw return the blocked message.
+                # Runs in prepare_call, outside the fetch's exception handler:
+                # raising here kills the turn instead of returning "Blocked:".
                 return "Reading page..."
             if parsed.scheme in ("http", "https") and parsed.hostname:
                 host = parsed.hostname

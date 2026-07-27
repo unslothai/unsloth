@@ -6333,7 +6333,7 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
     try:
         infos = socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM)
     except (OSError, UnicodeError) as e:
-        # UnicodeError (not an OSError) when IDNA encoding rejects the hostname.
+        # IDNA encoding rejects a hostname with UnicodeError, not OSError.
         return False, f"Failed to resolve host: {e}", ""
 
     if not infos:
@@ -6564,8 +6564,8 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
 
 
 _DOTTED_HOST_RE = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
-# ASCII-only, and capped at 5 digits so the range check never converts an
-# unbounded integer. str.isdigit() is True for digits int() refuses ("²").
+# ASCII-only because str.isdigit() is True for digits int() refuses ("²"), and
+# capped at 5 digits so the range check never converts an unbounded integer.
 _PORT_RE = re.compile(r"[0-9]{1,5}")
 
 
@@ -6591,8 +6591,7 @@ def _normalize_url_scheme(url: str) -> str:
     try:
         parsed = urlparse(url)
     except ValueError:
-        # Unmatched IPv6 brackets, or a netloc that NFKC-decomposes into a
-        # delimiter. Not a bare host; let the caller reject it.
+        # Unmatched IPv6 brackets, or an NFKC-decomposing netloc: not a bare host.
         return url
     if parsed.scheme:
         if parsed.netloc or not _DOTTED_HOST_RE.fullmatch(parsed.scheme):
@@ -6637,15 +6636,14 @@ def _fetch_url_raw(
     from urllib.parse import urlparse
     from .web_access_policy import check_url_access
 
-    # Normalize before the policy gate: it requires an http(s) scheme, so a bare
-    # host would be refused there and never reach the rest of the fetch.
+    # Before the policy gate: it requires an http(s) scheme, so a bare host
+    # would be refused there and never reach the fetch.
     url = _normalize_url_scheme(url)
     allowed, reason, canonical_host = check_url_access(url, website_policy)
     if not allowed:
         return reason, "", ""
 
-    # check_url_access already parsed this string and read .port, so neither
-    # call below can raise.
+    # check_url_access already parsed this and read .port, so this cannot raise.
     parsed = urlparse(url)
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     ok, reason, pinned_ip = _resolve_with_budget(
@@ -6707,9 +6705,8 @@ def _fetch_url_raw(
                 if not location:
                     return "Failed to fetch URL: redirect missing Location header.", "", ""
                 current_url = urljoin(current_url, location)
-                # A Location is server-controlled, so it is never scheme-upgraded;
-                # the policy gate validates it and reads .port, so the parse below
-                # cannot raise.
+                # Server-controlled, so never scheme-upgraded; the gate below
+                # reads .port first, so the parse after it cannot raise.
                 allowed, policy_reason, redirect_host = check_url_access(
                     current_url,
                     website_policy,
@@ -6934,8 +6931,7 @@ def _fetch_page_text(
     deadline = None if timeout is None else time.monotonic() + timeout
     from .web_access_policy import check_url_access
 
-    # Before both the policy gate (which requires a scheme) and the README
-    # routing (which reads the host and path).
+    # Before the policy gate (needs a scheme) and the README routing (reads host/path).
     url = _normalize_url_scheme(url)
     allowed, reason, _hostname = check_url_access(url, website_policy)
     if not allowed:

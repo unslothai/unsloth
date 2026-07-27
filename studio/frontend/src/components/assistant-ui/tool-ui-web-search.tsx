@@ -23,7 +23,7 @@ const RE_BLOCK_SEP = /\n---\n/;
 const RE_TITLE = /Title:\s*(.+)/;
 const RE_URL = /URL:\s*(.+)/;
 const RE_SNIPPET = /Snippet:\s*(.+)/s;
-// Mirrors _DOTTED_HOST_RE in the backend: the bare hosts it fetches as https.
+// Mirrors _DOTTED_HOST_RE: the bare hosts the backend fetches as https.
 const RE_BARE_HOST = /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(:\d{1,5})?([/?#]|$)/;
 
 /**
@@ -74,9 +74,8 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   const isUrlFetch = !!url;
   const displayDomain = (() => {
     if (!url) return "";
-    // The backend fetches bare dotted hosts as https, and new URL() throws on
-    // them, so mirror that grammar or the card names no destination for
-    // exactly the URLs that do get fetched.
+    // new URL() throws on the bare hosts the backend fetches, so mirror that
+    // grammar or the card names no host for exactly the URLs it does fetch.
     const bare = url.startsWith("//") ? url.slice(2) : url;
     const candidate = RE_BARE_HOST.test(bare) ? `https://${bare}` : url;
     try {

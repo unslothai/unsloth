@@ -64,8 +64,7 @@ def test_schemeless_urls_are_fetched_as_https(resolved, url, hostname, port):
         # out-of-range ports are not host:port either
         "example.com:99999",
         "example.com:0",
-        # str.isdigit() is True for digits int() refuses, so a port must be
-        # matched as ASCII [0-9] or these raise instead of blocking
+        # ports must match ASCII [0-9]: str.isdigit() is True for digits int() refuses
         "example.com:²",
         "example.com:²/x",
         "example.com:①",
@@ -95,8 +94,7 @@ def test_out_of_range_port_returns_error_instead_of_raising():
 
 
 def test_redirect_to_out_of_range_port_is_blocked(monkeypatch):
-    # A redirect target reads .port too, so it needs the same guard as the
-    # initial URL or a server can turn it into a generic fetch failure.
+    # A redirect target reads .port too, so it needs the same guard.
     import urllib.request
     from urllib.error import HTTPError
 
@@ -119,8 +117,7 @@ def test_redirect_to_out_of_range_port_is_blocked(monkeypatch):
 @pytest.mark.parametrize(
     "url",
     [
-        # urlparse itself raises on these; the URL is model-supplied, so they
-        # have to come back as an error string like every other bad input
+        # urlparse raises on these; a model-supplied URL must still return a string
         "//exam／ple.com",  # NFKC-decomposes into "/"
         "//example.com＠",  # NFKC-decomposes into "@"
         "//example.com：",  # NFKC-decomposes into ":"
@@ -154,8 +151,7 @@ def test_idna_failure_is_reported_instead_of_raising(monkeypatch):
     ],
 )
 def test_surrounding_whitespace_is_stripped(resolved, url, hostname):
-    # _web_search strips, but normalization now lives at the fetch layer, so
-    # direct callers of _fetch_page_text/_fetch_url_raw need it too.
+    # _web_search strips, but direct callers of the fetch layer do not.
     tools._fetch_url_raw(url)
     assert resolved["hostname"] == hostname
 
@@ -167,8 +163,7 @@ def test_normalization_does_not_bypass_ssrf_guard(url):
 
 
 def test_schemeless_github_repo_still_routes_to_readme_api():
-    # Normalization must run before _github_repo_readme_api_url, else a bare
-    # github.com/owner/repo scrapes the HTML page instead of the README.
+    # Must run before _github_repo_readme_api_url, else a bare repo URL scrapes HTML.
     normalized = tools._normalize_url_scheme("github.com/unslothai/unsloth")
     assert tools._github_repo_readme_api_url(normalized) == (
         "https://api.github.com/repos/unslothai/unsloth/readme"

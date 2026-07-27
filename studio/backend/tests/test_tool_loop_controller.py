@@ -98,7 +98,7 @@ def test_status_and_provenance_match_local_event_conventions():
 @pytest.mark.parametrize(
     "url, expected",
     [
-        # bare hosts are fetched, so the badge must name them too
+        # bare hosts are fetched, so the badge must name them
         ("google.com", "Reading: google.com"),
         ("www.google.com/x", "Reading: google.com"),
         ("//google.com", "Reading: google.com"),
@@ -107,8 +107,7 @@ def test_status_and_provenance_match_local_event_conventions():
         # still generic for what the fetch layer refuses
         ("/login", "Reading page..."),
         ("javascript:alert(1)", "Reading page..."),
-        # urlparse raises on these, and this runs before the fetch and outside
-        # its handler, so it must degrade rather than kill the turn
+        # urlparse raises on these, outside the fetch's handler: degrade, not raise
         ("https://[::1", "Reading page..."),
         ("https://::1]", "Reading page..."),
         ("//exam／ple.com", "Reading page..."),
