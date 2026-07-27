@@ -391,6 +391,7 @@ export function HistoryCardGrid({
             ? statusBadge.resumed_later
             : (statusBadge[run.status] ?? statusBadge.error);
           const isRunning = run.status === "running";
+          const isRecovered = run.id.startsWith("filesystem-");
           const canResume = run.can_resume && !wasContinued;
           const isResuming = resumeTarget === run.id;
 
@@ -534,7 +535,7 @@ export function HistoryCardGrid({
                 </span>
                 <span>{formatDuration(run.duration_seconds)}</span>
               </div>
-              {!isRunning && (
+              {!isRunning && !isRecovered && (
                 <button
                   type="button"
                   className="absolute right-3 top-3 rounded-md p-1 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"

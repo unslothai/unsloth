@@ -107,6 +107,70 @@ def test_get_run_detail_includes_preview_fields(monkeypatch: pytest.MonkeyPatch)
     assert detail.run.preview_sig is None
 
 
+def test_list_runs_recovers_checkpoint_folder_missing_from_db(monkeypatch, tmp_path):
+    run_dir = tmp_path / "recovered-run"
+    checkpoint = run_dir / "checkpoint-40"
+    checkpoint.mkdir(parents = True)
+    (checkpoint / "trainer_state.json").write_text(
+        '{"log_history":[{"step":40,"loss":0.2}]}'
+    )
+    monkeypatch.setattr(
+        training_history,
+        "scan_checkpoints",
+        lambda: [
+            (
+                "recovered-run",
+                [("checkpoint-40", str(checkpoint), 0.2)],
+                {"base_model": "org/recovered-model"},
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        training_history,
+        "list_runs",
+        lambda limit, offset: {"runs": [], "total": 0},
+    )
+    monkeypatch.setattr(training_history, "get_preview_sharing_enabled", lambda: False)
+
+    result = asyncio.run(
+        training_history.list_training_runs(limit = 50, offset = 0, current_subject = "test-user")
+    )
+
+    assert result.total == 1
+    recovered = result.runs[0]
+    assert recovered.id.startswith("filesystem-")
+    assert recovered.status == "stopped"
+    assert recovered.model_name == "org/recovered-model"
+    assert recovered.output_dir == str(run_dir)
+    assert recovered.final_step == 40
+    assert recovered.final_loss == 0.2
+    assert recovered.loss_sparkline == [0.2]
+    assert recovered.can_resume is False
+
+
+def test_list_runs_deduplicates_checkpoint_folder_owned_by_db(monkeypatch, tmp_path):
+    db_run = {**BASE_RUN, "output_dir": str(tmp_path / "existing-run")}
+    monkeypatch.setattr(
+        training_history,
+        "list_runs",
+        lambda limit, offset: {"runs": [db_run], "total": 1},
+    )
+    monkeypatch.setattr(
+        training_history,
+        "_filesystem_runs",
+        lambda: [{**db_run, "id": "filesystem-duplicate"}],
+    )
+    monkeypatch.setattr(training_history, "can_resume_run", lambda run: False)
+    monkeypatch.setattr(training_history, "get_preview_sharing_enabled", lambda: False)
+
+    result = asyncio.run(
+        training_history.list_training_runs(limit = 50, offset = 0, current_subject = "test-user")
+    )
+
+    assert result.total == 1
+    assert result.runs[0].id == "run-1"
+
+
 def test_update_run_rejects_unknown_fields():
     with pytest.raises(ValidationError):
         TrainingRunUpdateRequest.model_validate({"unknown": "value"})
