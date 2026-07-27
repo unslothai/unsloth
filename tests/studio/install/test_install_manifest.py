@@ -37,10 +37,7 @@ def req_root(tmp_path: pathlib.Path) -> pathlib.Path:
     root = tmp_path / "requirements"
     root.mkdir()
     (root / "studio.txt").write_text(
-        "# comment line\n"
-        "\n"
-        "pytest\n"
-        "unsloth-definitely-not-a-real-package\n",
+        "# comment line\n\npytest\nunsloth-definitely-not-a-real-package\n",
         encoding = "utf-8",
     )
     return root

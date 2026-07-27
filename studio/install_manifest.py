@@ -80,7 +80,6 @@ def requirement_digests(req_root: Optional[Path] = None) -> Dict[str, str]:
 
 def _installed_version(dist_name: str) -> Optional[str]:
     from importlib.metadata import PackageNotFoundError, version
-
     try:
         return version(dist_name)
     except PackageNotFoundError:

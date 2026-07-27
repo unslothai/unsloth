@@ -71,7 +71,7 @@ def test_studio_extra_matches_requirements_file():
     surplus = sorted(set(extra) - set(required))
     assert not missing, (
         f"studio.txt lists {missing} but the `studio` extra does not. "
-        "`pip install \"unsloth[studio]\"` would build a venv the Studio server "
+        '`pip install "unsloth[studio]"` would build a venv the Studio server '
         "cannot boot in. Add them to [project.optional-dependencies] studio."
     )
     assert not surplus, (

@@ -122,8 +122,7 @@ def studio_backend_imports(feature: str = "This command"):
     except ModuleNotFoundError as exc:
         missing = _missing_packages(exc.name)
         typer.echo(
-            f"Error: {feature} needs the Unsloth Studio dependencies, "
-            f"which are not installed.",
+            f"Error: {feature} needs the Unsloth Studio dependencies, " f"which are not installed.",
             err = True,
         )
         if missing:
