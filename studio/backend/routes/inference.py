@@ -4122,12 +4122,9 @@ def _guard_chat_load_against_training(
     if is_gguf:
         binary = LlamaCppBackend._find_llama_server_binary()
         is_vulkan_backend = bool(
-            gpu_ids_are_vulkan_ordinals
-            or (binary and LlamaCppBackend._is_vulkan_backend(binary))
+            gpu_ids_are_vulkan_ordinals or (binary and LlamaCppBackend._is_vulkan_backend(binary))
         )
-        if is_vulkan_backend and (
-            gpu_ids_are_vulkan_ordinals or diffusion_kind is False
-        ):
+        if is_vulkan_backend and (gpu_ids_are_vulkan_ordinals or diffusion_kind is False):
             vulkan_free_vram_gb = {
                 index: free_mib / 1024.0
                 for index, free_mib, _total_mib in LlamaCppBackend._get_gpu_memory(binary)
