@@ -79,6 +79,13 @@ _NON_ASSISTANT_CONTROL_MARKERS: tuple[tuple[str, str], ...] = (
     ("<start_of_turn>", f"<{_THINK_NEUTRAL_ZW}start_of_turn>"),
     ("<|end_of_turn|>", f"<|{_THINK_NEUTRAL_ZW}end_of_turn|>"),
     ("<|end|>", f"<|{_THINK_NEUTRAL_ZW}end|>"),
+    # Zephyr and Phi-3 open turns with a bare role sentinel rather than a
+    # header pair, so in those templates these ARE the turn boundary: Zephyr
+    # renders "<|user|>\n" + content + eos_token. Left raw, user text carrying
+    # its EOS then "<|assistant|>" reaches tokenization as a forged model turn.
+    ("<|user|>", f"<|{_THINK_NEUTRAL_ZW}user|>"),
+    ("<|assistant|>", f"<|{_THINK_NEUTRAL_ZW}assistant|>"),
+    ("<|system|>", f"<|{_THINK_NEUTRAL_ZW}system|>"),
 )
 
 
@@ -334,6 +341,16 @@ def neutralize_tool_call_arguments(tool_calls):
                     call = {**call, "id": new_id}
                     changed = True
             fn = call.get("function")
+            # The Gemma-4 templates concatenate the name straight into the
+            # <|tool_call> block, so a name like "lookup<tool_call|>" would
+            # close it and inject structure. The deep schema sanitizer already
+            # rewrites the same name on the tool definition side.
+            if isinstance(fn, dict) and isinstance(fn.get("name"), str):
+                new_name = neutralize_non_assistant_control_markup(fn["name"])
+                if new_name != fn["name"]:
+                    fn = {**fn, "name": new_name}
+                    call = {**call, "function": fn}
+                    changed = True
             if isinstance(fn, dict) and fn.get("arguments") is not None:
                 args = fn["arguments"]
                 if isinstance(args, str):

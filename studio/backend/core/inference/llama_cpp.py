@@ -12341,6 +12341,28 @@ class LlamaCppBackend:
                             logger.debug(f"Skipping malformed SSE line: {line[:100]}")
                     if _stream_done:
                         break  # exit outer for
+                if reasoning_markup_buffer:
+                    # Same hole the other two loops already close: this one fell
+                    # through to metadata without finalizing, so a stream ending
+                    # without "data: [DONE]" dropped the held marker prefix, and
+                    # a response consisting only of that prefix vanished (#7334).
+                    from core.inference.chat_template_helpers import (
+                        neutralize_think_markup_streaming,
+                    )
+
+                    flushed, reasoning_markup_buffer = neutralize_think_markup_streaming(
+                        reasoning_markup_buffer,
+                        finalize = True,
+                    )
+                    if flushed:
+                        reasoning_text += flushed
+                        if not in_thinking:
+                            cumulative += "<think>"
+                            in_thinking = True
+                        cumulative += flushed
+                        # This loop emits reasoning as the whole cumulative
+                        # under "content", not as a delta; match it.
+                        yield {"type": "content", "text": cumulative}
                 _meta = _build_metadata_event(
                     _metadata_usage, _metadata_timings, _metadata_finish_reason
                 )
