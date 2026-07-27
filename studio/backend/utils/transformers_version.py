@@ -1190,9 +1190,7 @@ def _local_scan_signature(model_name: str) -> str | None:
                 # Absent (or unreadable) contributes nothing; it starts contributing the
                 # moment it appears, which is exactly the change we must notice.
                 continue
-            parts.append(
-                f"{path}:{st.st_size}:{st.st_mtime_ns}:{st.st_ctime_ns}:{st.st_ino}"
-            )
+            parts.append(f"{path}:{st.st_size}:{st.st_mtime_ns}:{st.st_ctime_ns}:{st.st_ino}")
         return "\0".join(parts)
     except Exception as exc:
         logger.debug("Could not signature local scan inputs under %s: %s", model_name, exc)

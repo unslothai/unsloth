@@ -4321,9 +4321,7 @@ class TestScanSignatureSeesSameSizedReplacement:
 
         assert _remote_auto_map_tier(str(tmp_path))[0] == "530"
 
-    def test_untouched_checkpoint_is_still_served_from_cache(
-        self, monkeypatch, tmp_path: Path
-    ):
+    def test_untouched_checkpoint_is_still_served_from_cache(self, monkeypatch, tmp_path: Path):
         """Negative control: the extra fields must not turn every lookup into a re-scan."""
         import utils.transformers_version as tv
 
@@ -4973,9 +4971,7 @@ class TestInconclusiveScanFallsBackToTheHubCache:
         assert definitive is False
         assert not [key for key in _remote_auto_map_tier_cache if key[0] == "org/outage-5x"]
 
-    def test_tree_listing_failure_alone_still_uses_the_snapshot(
-        self, monkeypatch, tmp_path: Path
-    ):
+    def test_tree_listing_failure_alone_still_uses_the_snapshot(self, monkeypatch, tmp_path: Path):
         """Only the repo listing fails; the configs read fine. Still inconclusive."""
         import utils.transformers_version as tv
 
@@ -5023,9 +5019,7 @@ class TestInconclusiveScanFallsBackToTheHubCache:
         monkeypatch.setattr(tv, "_hub_urlopen", self._down)
         assert tv._remote_auto_map_tier("org/outage-plain") == ("default", False)
 
-    def test_definitive_negative_does_not_consult_the_snapshot(
-        self, monkeypatch, tmp_path: Path
-    ):
+    def test_definitive_negative_does_not_consult_the_snapshot(self, monkeypatch, tmp_path: Path):
         """Negative control: a repo that really has no auto_map keeps its cached negative.
 
         A 404 is an answer, so a stale snapshot left over from an older revision must not
@@ -5050,9 +5044,13 @@ class TestInconclusiveScanFallsBackToTheHubCache:
         _auto_map_checkpoint(ckpt, "import torch\n")
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
-        monkeypatch.setattr(tv, "_hf_cache_snapshot_dir", lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("local dir consulted the hub cache")
-        ))
+        monkeypatch.setattr(
+            tv,
+            "_hf_cache_snapshot_dir",
+            lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("local dir consulted the hub cache")
+            ),
+        )
         assert tv._remote_auto_map_tier(str(ckpt))[0] == "default"
 
 
