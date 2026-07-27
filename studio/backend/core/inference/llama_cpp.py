@@ -10668,7 +10668,6 @@ class LlamaCppBackend:
                     from core.inference.chat_template_helpers import (
                         neutralize_think_markup_streaming,
                     )
-
                     flushed, reasoning_markup_buffer = neutralize_think_markup_streaming(
                         reasoning_markup_buffer,
                         finalize = True,
@@ -11621,7 +11620,6 @@ class LlamaCppBackend:
                     from core.inference.chat_template_helpers import (
                         neutralize_think_markup_streaming,
                     )
-
                     _flushed, reasoning_markup_buffer = neutralize_think_markup_streaming(
                         reasoning_markup_buffer,
                         finalize = True,
