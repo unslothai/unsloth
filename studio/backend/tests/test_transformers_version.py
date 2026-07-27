@@ -969,7 +969,9 @@ class TestTierCheckTransientRetry:
         fresh = {"architectures": ["Gemma4ForConditionalGeneration"]}  # needs 550
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-        with patch("utils.transformers_version._hub_urlopen", return_value = _hf_response(fresh)) as mock_url:
+        with patch(
+            "utils.transformers_version._hub_urlopen", return_value = _hf_response(fresh)
+        ) as mock_url:
             assert _check_config_needs_550("org/model") is True
             assert _check_config_needs_550("org/model") is True
             assert mock_url.call_count == 1  # second call served from the tier cache
@@ -2860,7 +2862,9 @@ class TestOfflineCacheNotPoisoned:
             def __exit__(self, *a):
                 return False
 
-        monkeypatch.setattr("utils.transformers_version._hub_urlopen", lambda req, timeout = 10: _Resp())
+        monkeypatch.setattr(
+            "utils.transformers_version._hub_urlopen", lambda req, timeout = 10: _Resp()
+        )
         assert _check_tokenizer_config_needs_v5("org/needs5") is True
 
     def test_offline_config_miss_not_cached(self, monkeypatch):
@@ -3776,7 +3780,9 @@ class TestTokenizerAutoMapTransientScan:
         monkeypatch.setattr(
             tv, "_read_repo_text_file", lambda model, fn, tok = None: "import torch\n"
         )
-        with patch("utils.transformers_version._hub_urlopen", return_value = _hf_response(tok_cfg)) as mock_url:
+        with patch(
+            "utils.transformers_version._hub_urlopen", return_value = _hf_response(tok_cfg)
+        ) as mock_url:
             assert _check_tokenizer_config_needs_v5("org/tok-only") is False
             after_first = mock_url.call_count
             assert _check_tokenizer_config_needs_v5("org/tok-only") is False
@@ -4109,7 +4115,8 @@ class TestRemoteSourceEncoding:
             latin1.decode("utf-8")
 
         monkeypatch.setattr(
-            "utils.transformers_version._hub_urlopen", lambda req, timeout = 10: _PagedResponse(latin1)
+            "utils.transformers_version._hub_urlopen",
+            lambda req, timeout = 10: _PagedResponse(latin1),
         )
         text = tv._read_repo_text_file("org/custom-remote", "modeling_custom.py")
         assert text is not None
@@ -5106,8 +5113,7 @@ class TestHubRedirectDoesNotReplayTheToken:
         try:
             req = urllib.request.Request(
                 hub + "/api/models/org/m/tree/main",
-                headers = {"User-Agent": "unsloth-studio",
-                           "Authorization": "Bearer hf_SECRET_TOKEN"},
+                headers = {"User-Agent": "unsloth-studio", "Authorization": "Bearer hf_SECRET_TOKEN"},
             )
             with urllib.request.urlopen(req, timeout = 10) as resp:
                 resp.read()
@@ -5215,7 +5221,6 @@ class TestHubRedirectDoesNotReplayTheToken:
     )
     def test_redirect_predicate(self, old, new, drops):
         import utils.transformers_version as tv
-
         assert tv._redirect_drops_auth(old, new) is drops
 
     def test_every_authenticated_fetch_uses_the_opener(self):
@@ -5244,8 +5249,9 @@ class TestHubRedirectDoesNotReplayTheToken:
                 func = node.func
                 if isinstance(func, ast.Attribute) and func.attr == "urlopen":
                     if not set(self.stack) & exempt:
-                        offenders.append((self.stack[-1] if self.stack else "<module>",
-                                          node.lineno))
+                        offenders.append(
+                            (self.stack[-1] if self.stack else "<module>", node.lineno)
+                        )
                 self.generic_visit(node)
 
         _Visitor().visit(ast.parse(inspect.getsource(tv)))
