@@ -54,6 +54,8 @@ logger = structlog.get_logger(__name__)
 
 DEFAULT_PUBLISHED_REPO = "unslothai/llama.cpp"
 _INSTALL_TIMEOUT_SECONDS = 1800  # 30 min ceiling for download + build/validate
+# install_llama_prebuilt.py EXIT_NO_SPACE: out of disk, retrying will not help.
+_EXIT_NO_SPACE = 4
 
 # Background job state. Single in-flight update at a time, guarded by _job_lock.
 _JOB_IDLE = _flow.JOB_IDLE
@@ -496,6 +498,16 @@ def _run_llama_phase(
                 + (" Reload your model to use it." if model_was_active else "")
             ),
         }
+    except _flow.InstallerExit as exc:
+        # Raw "installer exited 4: <log tail>" says nothing actionable in the UI.
+        if exc.returncode == _EXIT_NO_SPACE:
+            logger.warning("llama update: out of disk space")
+            raise RuntimeError(
+                "Not enough disk space to install llama.cpp. Free up space or point "
+                "UNSLOTH_STUDIO_HOME/TMPDIR at a larger volume, then retry."
+            ) from exc
+        logger.warning("llama update: failed", error = str(exc))
+        raise
     except Exception as exc:
         logger.warning("llama update: failed", error = str(exc))
         raise

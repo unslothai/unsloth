@@ -19,6 +19,7 @@ from .hardware import (
     get_gpu_utilization,
     get_visible_gpu_utilization,
     get_backend_visible_gpu_info,
+    get_vulkan_inference_gpu_info,
     get_physical_gpu_count,
     get_visible_gpu_count,
     get_parent_visible_gpu_ids,
@@ -50,6 +51,11 @@ def export_capability() -> dict:
     return _hardware.export_capability()
 
 
+def get_torch_device_str() -> str:
+    """Return the torch device string ("cuda", "xpu", "cpu") for the detected hardware."""
+    return _hardware.get_torch_device_str()
+
+
 __all__ = [
     "DeviceType",
     "DEVICE",
@@ -67,6 +73,7 @@ __all__ = [
     "get_gpu_utilization",
     "get_visible_gpu_utilization",
     "get_backend_visible_gpu_info",
+    "get_vulkan_inference_gpu_info",
     "get_physical_gpu_count",
     "get_visible_gpu_count",
     "get_parent_visible_gpu_ids",
@@ -75,6 +82,7 @@ __all__ = [
     "estimate_required_model_memory_gb",
     "auto_select_gpu_ids",
     "prepare_gpu_selection",
+    "get_torch_device_str",
     "safe_num_proc",
     "safe_thread_num_proc",
     "dataset_map_num_proc",
