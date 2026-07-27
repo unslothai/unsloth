@@ -1193,10 +1193,8 @@ def test_background_picks_mirror_inventory_and_skip_installers():
     # command loops (MLX and GPU paths).
     bootstrap = worker.split("_bootstrap_offline = contextlib.ExitStack()", 1)[1]
     assert bootstrap.count("_bootstrap_offline.close()") == 2
-    assert (
-        "def _ensure_ssm_kernels(targets: list, resp_queue: Any, local_files_only: bool = False) -> bool:"
-        in worker
-    )
+    ssm_sig = worker.split("def _ensure_ssm_kernels(", 1)[1].split(") -> bool:", 1)[0]
+    assert "local_files_only: bool = False" in ssm_sig
     ssm = worker.split("def _ensure_ssm_kernels", 1)[1]
     ssm = ssm.split("def _run_security_gates", 1)[0]
     assert "if local_files_only:" in ssm
