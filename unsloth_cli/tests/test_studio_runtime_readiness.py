@@ -124,7 +124,7 @@ def test_desktop_runtime_check_rejects_version_mismatch(monkeypatch, capsys, tmp
 
 
 def test_desktop_runtime_check_rejects_metadata_without_an_unpacked_package(
-    monkeypatch, capsys, tmp_path,
+    monkeypatch, capsys, tmp_path
 ):
     """fastapi's wheel stores .dist-info/METADATA as its first archive entry, so
     an interrupted unpack leaves a readable version for modules that never
@@ -150,9 +150,7 @@ def test_desktop_runtime_check_rejects_metadata_without_an_unpacked_package(
     assert payload["module"] == "fastapi"
 
 
-def test_desktop_runtime_check_reports_a_rejected_setting_instead_of_exiting(
-    monkeypatch, capsys,
-):
+def test_desktop_runtime_check_reports_a_rejected_setting_instead_of_exiting(monkeypatch, capsys):
     """run.py raises SystemExit for values such as UNSLOTH_CPU_THREADS=invalid.
     Escaping without a payload makes the desktop app reinstall over an
     environment value no install can change."""
