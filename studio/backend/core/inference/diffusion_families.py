@@ -641,6 +641,25 @@ def assert_pipeline_class_available(pipeline_class: str, family_name: str) -> No
     )
 
 
+def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
+    """True when the installed diffusers actually has this family's pipeline class.
+
+    The boolean twin of ``assert_pipeline_class_available``, for the listing routes: the newer
+    families exist only from diffusers 0.39, and the packaging leaves an older diffusers
+    installable on Python 3.9 (diffusers dropped 3.9 in 0.38, so the 0.39 floor has to be
+    conditional or the extra becomes unresolvable). Advertising Z-Image or Krea 2 in the picker
+    on such an environment offers a pick that can only fail, and no `pip install -U diffusers`
+    can fix it without also upgrading Python. Fails OPEN (True) when diffusers cannot be
+    imported at all, so a listing never hides a model over an unrelated import problem."""
+    if fam is None:
+        return False
+    try:
+        import diffusers
+    except Exception:  # noqa: BLE001 -- no diffusers here: the load path reports it properly
+        return True
+    return hasattr(diffusers, fam.pipeline_class)
+
+
 def family_gguf_loadable(fam: DiffusionFamily) -> bool:
     """True when a GGUF transformer can be assembled for this family.
 

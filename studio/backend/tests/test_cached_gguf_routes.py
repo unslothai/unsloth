@@ -1854,3 +1854,44 @@ def test_cached_repo_task_agrees_with_the_image_loader(monkeypatch):
         assert (
             task == "text-to-image"
         ) == loader_accepts, f"{repo_id}: picker task={task} but loader accepts={loader_accepts}"
+
+
+def test_cached_picker_hides_a_family_this_diffusers_cannot_build(monkeypatch):
+    # The newer families exist only from diffusers 0.39, which cannot be installed on Python 3.9 at
+    # all (diffusers dropped 3.9 in 0.38). Advertising one there is a pick that can only fail, and
+    # `pip install -U diffusers` cannot fix it without a Python upgrade -- so the picker applies the
+    # same availability check validate_load_request does.
+    import types
+
+    import routes.models as models_module
+    from core.inference.diffusion_families import detect_family, family_pipeline_available
+
+    fam = detect_family("unsloth/Z-Image-Turbo")
+    assert fam is not None
+    # Present in this environment's diffusers, so the row is offered.
+    assert family_pipeline_available(fam) is True
+
+    monkeypatch.setattr(models_module, "_repo_is_diffusers", lambda info: True)
+    monkeypatch.setattr(
+        "core.inference.diffusion._is_trusted_diffusion_repo", lambda repo_id: True
+    )
+    info = types.SimpleNamespace(repo_id = "unsloth/Z-Image-Turbo")
+    assert models_module._cached_repo_task(info) == "text-to-image"
+
+    # An older diffusers without the pipeline class hides the row instead.
+    monkeypatch.setattr(
+        "core.inference.diffusion_families.family_pipeline_available", lambda f: False
+    )
+    assert models_module._cached_repo_task(info) is None
+
+
+def test_family_pipeline_available_fails_open_without_diffusers(monkeypatch):
+    # No diffusers at all is a different problem; the load path reports it properly, and a listing
+    # must not silently hide every image model over it.
+    import sys
+
+    from core.inference.diffusion_families import detect_family, family_pipeline_available
+
+    monkeypatch.setitem(sys.modules, "diffusers", None)
+    assert family_pipeline_available(detect_family("unsloth/Z-Image-Turbo")) is True
+    assert family_pipeline_available(None) is False

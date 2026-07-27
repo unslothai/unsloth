@@ -3672,11 +3672,18 @@ def _cached_repo_task(repo_info) -> Optional[str]:
     # the image families this backend can assemble, so an unsloth-hosted pipeline of an unsupported
     # class cleared the trust gate, was advertised as text-to-image, and then deterministically
     # failed validate_load_request, which detects the family the same way.
+    # The third gate is the installed diffusers: the newer families exist only from 0.39, which
+    # cannot be installed on Python 3.9 at all (diffusers dropped 3.9 in 0.38), so on such an
+    # environment a Z-Image / Krea 2 / FLUX.2 row is a pick that can only fail, and the suggested
+    # `pip install -U diffusers` cannot fix it. validate_load_request refuses the same way.
     try:
         from core.inference.diffusion import _is_trusted_diffusion_repo
-        from core.inference.diffusion_families import detect_family
+        from core.inference.diffusion_families import detect_family, family_pipeline_available
 
-        if not _is_trusted_diffusion_repo(repo_id) or detect_family(repo_id) is None:
+        fam = detect_family(repo_id)
+        if not _is_trusted_diffusion_repo(repo_id) or fam is None:
+            return None
+        if not family_pipeline_available(fam):
             return None
         return "text-to-image"
     except Exception:  # noqa: BLE001 -- an import failure must not hide a usable repo
