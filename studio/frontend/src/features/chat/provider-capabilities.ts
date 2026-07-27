@@ -409,7 +409,7 @@ function isGeminiImageModel(modelId: string): boolean {
  * Whether the saved Gemini connection points at a custom OpenAI-compat gateway
  * (any non-Google host). The backend `_is_openai_compatible` routes these
  * through `/chat/completions` instead of the native translator, so native Gemini
- * tool envelopes never reach them. Hide the matching Studio pills here so the
+ * tool envelopes never reach them. Hide the matching Unsloth pills here so the
  * request, builder, and UI agree.
  */
 export function isGeminiCustomOpenAICompatBase(

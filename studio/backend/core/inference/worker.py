@@ -151,7 +151,7 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     import json
 
     try:
-        with open(adapter_cfg_path) as f:
+        with open(adapter_cfg_path, encoding = "utf-8") as f:
             adapter_cfg = json.load(f)
         training_method = adapter_cfg.get("unsloth_training_method")
         if training_method == "lora" and load_in_4bit:
@@ -513,20 +513,25 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
 
         logger.info("Starting text generation for request_id=%s", request_id)
 
-        for cumulative_text in generator:
-            # cancel_event is an mp.Event — checked instantly, no queue polling.
-            if cancel_event.is_set():
-                logger.info("Generation cancelled for request %s", request_id)
-                break
+        try:
+            for cumulative_text in generator:
+                # cancel_event is an mp.Event — checked instantly, no queue polling.
+                if cancel_event.is_set():
+                    logger.info("Generation cancelled for request %s", request_id)
+                    break
 
-            _send_response(
-                resp_queue,
-                {
-                    "type": "token",
-                    "request_id": request_id,
-                    "text": cumulative_text,
-                },
-            )
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "token",
+                        "request_id": request_id,
+                        "text": cumulative_text,
+                    },
+                )
+        finally:
+            close = getattr(generator, "close", None)
+            if callable(close):
+                close()
 
         _send_response(
             resp_queue,
@@ -789,7 +794,7 @@ def run_inference_process(
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
-    apply_gpu_ids(config.get("resolved_gpu_ids"))
+    apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
     model_name = config["model_name"]
 
@@ -956,7 +961,10 @@ def run_inference_process(
     if _local_adapter_cfg.is_file():
         try:
             _lora_base = (
-                _json.loads(_local_adapter_cfg.read_text()).get("base_model_name_or_path") or None
+                _json.loads(_local_adapter_cfg.read_text(encoding = "utf-8")).get(
+                    "base_model_name_or_path"
+                )
+                or None
             )
         except Exception:
             _lora_base = None

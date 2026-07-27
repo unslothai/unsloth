@@ -3,7 +3,7 @@
 
 """Auto-override of the chat template for ``unsloth/gemma-4-*-GGUF``.
 
-Studio ships a bundled ``gemma-4.jinja`` (PR #118 based, ``preserve_thinking``
+Unsloth ships a bundled ``gemma-4.jinja`` (PR #118 based, ``preserve_thinking``
 defaulted off) and applies it to gemma-4 GGUF loads via the existing
 ``chat_template_override`` -> ``--chat-template-file`` path, so users do not need
 to re-download quants. Pins the family matcher, the resolver precedence, the

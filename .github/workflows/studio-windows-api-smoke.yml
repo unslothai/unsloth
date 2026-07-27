@@ -9,7 +9,7 @@
 # (Section 6) is Linux-only and short-circuits on non-POSIX; the rest
 # is platform-portable.
 
-name: Windows Studio API CI
+name: Windows Unsloth API CI
 
 on:
   pull_request:
@@ -34,7 +34,7 @@ permissions:
 
 jobs:
   api-smoke:
-    name: Studio API & Auth Tests
+    name: Unsloth API & Auth Tests
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
@@ -105,7 +105,7 @@ jobs:
           # studio-windows-update-smoke.yml for the full rationale --
           # creating an empty studio/frontend/dist trips setup.ps1's
           # mtime-based staleness check into "frontend up to date, skip
-          # rebuild" and Studio boots with an empty dist directory.
+          # rebuild" and Unsloth boots with an empty dist directory.
           # Add-MpPreference accepts paths that do not yet exist.
           foreach ($p in @(
             "$env:USERPROFILE\.unsloth",
@@ -121,7 +121,7 @@ jobs:
             }
           }
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -161,7 +161,7 @@ jobs:
           echo "install.ps1 installed the Windows prebuilt llama.cpp:"
           cat "$INFO"
 
-      - name: Add Studio shim to GITHUB_PATH
+      - name: Add Unsloth shim to GITHUB_PATH
         # install.ps1's User-PATH update doesn't propagate to a
         # running Git Bash session; export the shim dir so the
         # next `unsloth ...` invocation finds it.
@@ -177,7 +177,7 @@ jobs:
       - name: Install pyjwt for the JWT-expiry forge test
         run: python -m pip install 'pyjwt>=2.6'
 
-      - name: Reset auth + boot Studio (API-only)
+      - name: Reset auth + boot Unsloth (API-only)
         run: |
           unsloth studio reset-password
           mkdir -p logs
@@ -207,7 +207,7 @@ jobs:
           echo "STUDIO_NEW_PW=$NEW"  >> "$GITHUB_ENV"
           echo "STUDIO_NEW2_PW=$NEW2" >> "$GITHUB_ENV"
 
-      - name: Run Studio API & Auth tests
+      - name: Run Unsloth API & Auth tests
         # Do NOT pin STUDIO_AUTH_DIR here. The Mac/Linux mirrors
         # hardcode runner-specific paths (/Users/runner/...,
         # /home/runner/...), but on Windows the path is
@@ -219,7 +219,7 @@ jobs:
           BASE_URL: http://127.0.0.1:18895
         run: python tests/studio/studio_api_smoke.py
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true

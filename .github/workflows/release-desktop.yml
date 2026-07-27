@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       studio_version:
-        description: 'Studio version tag to release (for example, v0.1.39-beta)'
+        description: 'Unsloth version tag to release (for example, v0.1.39-beta)'
         type: string
         required: true
       pypi_version:
@@ -18,6 +18,19 @@ on:
 
 permissions:
   contents: read
+
+env:
+  DESKTOP_RELEASE_NOTES: |
+    Desktop app for Unsloth Studio.
+
+    **macOS**: Download the Apple Silicon `.dmg`.
+    **Windows**: Download the `-setup.exe` installer.
+    **Linux**: Download `.deb` for Ubuntu/Debian. `.AppImage` is experimental.
+
+    > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
+    > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
+    > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
+    > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
 
 concurrency:
   group: release-desktop-${{ github.repository }}
@@ -56,7 +69,7 @@ jobs:
           if not studio_version:
               sys.exit('studio_version is required, for example v0.1.39-beta')
           if re.fullmatch(r'v?20\d{2}\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?', studio_version):
-              sys.exit(f'studio_version must be a Studio SemVer tag, not a date-style backend version: {studio_version}')
+              sys.exit(f'studio_version must be an Unsloth SemVer tag, not a date-style backend version: {studio_version}')
 
           semver_tag = re.compile(
               r'^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
@@ -133,7 +146,7 @@ jobs:
               print(f'pypi_version={pypi_version}', file=output)
           PY
 
-      - name: Verify PyPI package and Studio stamp
+      - name: Verify PyPI package and Unsloth stamp
         shell: bash
         env:
           STUDIO_VERSION: ${{ steps.prepare.outputs.studio_version }}
@@ -198,7 +211,7 @@ jobs:
             fi
             python3 scripts/stamp_studio_release.py --verify-dist "$RUNNER_TEMP/pypi-unsloth-dist" --expected "$STUDIO_VERSION"
           else
-            echo "scripts/stamp_studio_release.py not found; release-desktop requires #5308 to verify the PyPI Studio stamp." >&2
+            echo "scripts/stamp_studio_release.py not found; release-desktop requires #5308 to verify the PyPI Unsloth stamp." >&2
             exit 1
           fi
 
@@ -295,14 +308,6 @@ jobs:
           PY
 
   build:
-    # TODO: split into a "build (no secrets)" + "publish (secrets)" job pair
-    # with actions/upload-artifact handoff so the matrix build cannot
-    # publish a Release on its own. The current matrix runs across
-    # Linux/macOS/Windows in a single job, so the split needs artefact
-    # collection across the OS matrix and is out of scope for this
-    # hardening pass.
-    permissions:
-      contents: write  # tauri-apps/tauri-action creates / uploads a GitHub Release
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -311,15 +316,21 @@ jobs:
           - platform: macos-latest
             args: '--target aarch64-apple-darwin'
             label: macOS (Apple Silicon)
+            artifact: macos-aarch64
+            release_arch: aarch64
           # - platform: macos-latest
           #   args: '--target x86_64-apple-darwin'
           #   label: macOS (Intel)
           - platform: ubuntu-22.04
             args: ''
             label: Linux (x64)
+            artifact: linux-x64
+            release_arch: x64
           - platform: windows-latest
             args: ''
             label: Windows (x64)
+            artifact: windows-x64
+            release_arch: x64
 
     name: Build ${{ matrix.label }}
     needs: prepare-version
@@ -465,41 +476,18 @@ jobs:
           if (chmodIdx !== -1 && sha256Idx > chmodIdx) {
             throw new Error('Desktop Linux release must verify the linuxdeploy digest before chmod +x');
           }
-          const releaseBodies = [];
-          for (let i = 0; i < lines.length; i += 1) {
-            const match = lines[i].match(/^(\s*)releaseBody:\s*\|\s*$/);
-            if (!match) continue;
-            const baseIndent = match[1].length;
-            const bodyLines = [];
-            i += 1;
-            for (; i < lines.length; i += 1) {
-              const line = lines[i];
-              if (line.trim() === '') {
-                bodyLines.push('');
-                continue;
-              }
-              const indent = line.match(/^\s*/)[0].length;
-              if (indent <= baseIndent) {
-                i -= 1;
-                break;
-              }
-              bodyLines.push(line.slice(baseIndent + 2));
-            }
-            releaseBodies.push(bodyLines.join('\n'));
+          const releaseBody = process.env.DESKTOP_RELEASE_NOTES;
+          if (!releaseBody) {
+            throw new Error('DESKTOP_RELEASE_NOTES must not be empty');
           }
-          if (releaseBodies.length === 0) {
-            throw new Error('Expected at least one desktop release body');
+          if (/\brpm\b|\.rpm/i.test(releaseBody)) {
+            throw new Error('Desktop release body must not advertise RPM packages');
           }
-          for (const body of releaseBodies) {
-            if (/\brpm\b|\.rpm/i.test(body)) {
-              throw new Error('Desktop release body must not advertise RPM packages');
-            }
-            if (/AppImage.*universal|universal.*AppImage/i.test(body)) {
-              throw new Error('Desktop release body must not advertise AppImage as universal');
-            }
-            if (!/AppImage.*experimental/i.test(body)) {
-              throw new Error('Desktop release body must mark AppImage as experimental');
-            }
+          if (/AppImage.*universal|universal.*AppImage/i.test(releaseBody)) {
+            throw new Error('Desktop release body must not advertise AppImage as universal');
+          }
+          if (!/AppImage.*experimental/i.test(releaseBody)) {
+            throw new Error('Desktop release body must mark AppImage as experimental');
           }
           JS
 
@@ -644,48 +632,33 @@ jobs:
           dest="$tools_dir/linuxdeploy-x86_64.AppImage"
           curl -fsSL "$LINUXDEPLOY_URL" -o "$dest"
           # Verify the digest BEFORE the binary is ever marked executable. The
-          # next step builds the AppImage with the Tauri signing key and a
-          # contents:write GITHUB_TOKEN in scope, so a substituted linuxdeploy
-          # that ran here could exfiltrate signing material or tamper with
-          # published release artifacts. Fail closed on any mismatch.
+          # next step builds the AppImage with the Tauri signing key, so a
+          # substituted linuxdeploy that ran here could exfiltrate signing
+          # material or tamper with release artifacts. Fail closed on any
+          # mismatch.
           echo "${LINUXDEPLOY_SHA256}  ${dest}" | sha256sum -c -
           chmod +x "$dest"
 
-      # ── Linux: build + sign + upload ──
+      # ── Linux: build + sign ──
       - name: Build Linux app
+        id: build_linux
         if: matrix.platform == 'ubuntu-22.04'
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           XDG_CACHE_HOME: ${{ runner.temp }}/tauri-tools-cache
         with:
           projectPath: studio
           tauriScript: npx --prefix . tauri
-          tagName: ${{ needs.prepare-version.outputs.desktop_release_tag }}
-          releaseName: 'Unsloth Studio (Desktop) ${{ needs.prepare-version.outputs.studio_version }}'
-          releaseBody: |
-            Desktop app for Unsloth Studio.
-
-            **macOS**: Download the Apple Silicon `.dmg`.
-            **Windows**: Download the `-setup.exe` installer.
-            **Linux**: Download `.deb` for Ubuntu/Debian. `.AppImage` is experimental.
-
-            > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
-            > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
-            > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
-            > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
-          releaseDraft: ${{ inputs.draft }}
-          prerelease: ${{ needs.prepare-version.outputs.prerelease }}
           args: -v ${{ matrix.args }}
 
-      # ── macOS: build + sign + notarize + upload ──
+      # ── macOS: build + sign + notarize ──
       - name: Build macOS app
+        id: build_macos
         if: matrix.platform == 'macos-latest'
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -695,29 +668,14 @@ jobs:
         with:
           projectPath: studio
           tauriScript: npx --prefix . tauri
-          tagName: ${{ needs.prepare-version.outputs.desktop_release_tag }}
-          releaseName: 'Unsloth Studio (Desktop) ${{ needs.prepare-version.outputs.studio_version }}'
-          releaseBody: |
-            Desktop app for Unsloth Studio.
-
-            **macOS**: Download the Apple Silicon `.dmg`.
-            **Windows**: Download the `-setup.exe` installer.
-            **Linux**: Download `.deb` for Ubuntu/Debian. `.AppImage` is experimental.
-
-            > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
-            > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
-            > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
-            > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
-          releaseDraft: ${{ inputs.draft }}
-          prerelease: ${{ needs.prepare-version.outputs.prerelease }}
           args: -v ${{ matrix.args }}
 
-      # ── Windows: build + sign + upload ──
+      # ── Windows: build + sign ──
       - name: Build Windows app
+        id: build_windows
         if: matrix.platform == 'windows-latest'
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -728,35 +686,83 @@ jobs:
         with:
           projectPath: studio
           tauriScript: npx --prefix . tauri
-          tagName: ${{ needs.prepare-version.outputs.desktop_release_tag }}
-          releaseName: 'Unsloth Studio (Desktop) ${{ needs.prepare-version.outputs.studio_version }}'
-          releaseBody: |
-            Desktop app for Unsloth Studio.
-
-            **macOS**: Download the Apple Silicon `.dmg`.
-            **Windows**: Download the `-setup.exe` installer.
-            **Linux**: Download `.deb` for Ubuntu/Debian. `.AppImage` is experimental.
-
-            > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
-            > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
-            > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
-            > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
-          releaseDraft: ${{ inputs.draft }}
-          prerelease: ${{ needs.prepare-version.outputs.prerelease }}
           args: -v ${{ matrix.args }}
 
-  # Release process note: only non-draft workflow runs advance the public
-  # desktop-latest updater channel. Draft builds are for private review; if a
-  # draft is manually published later, this channel intentionally remains
-  # unchanged until a narrow manual channel-publish flow is added or a public
-  # desktop release is created by running this workflow with draft=false.
-  publish-updater-channel:
-    name: Publish desktop updater channel
+      - name: Stage release assets
+        shell: bash
+        env:
+          ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths || steps.build_macos.outputs.artifactPaths || steps.build_windows.outputs.artifactPaths }}
+          RELEASE_ARCH: ${{ matrix.release_arch }}
+        run: |
+          set -euo pipefail
+          if command -v python3 >/dev/null 2>&1; then
+            PYTHON=python3
+          else
+            PYTHON=python
+          fi
+          "$PYTHON" <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import shutil
+          import sys
+          import unicodedata
+
+          raw_paths = os.environ.get('ARTIFACT_PATHS', '')
+          try:
+              artifact_paths = json.loads(raw_paths)
+          except json.JSONDecodeError as error:
+              sys.exit(f'Invalid tauri-action artifactPaths output: {error}')
+          if not isinstance(artifact_paths, list) or not artifact_paths:
+              sys.exit('tauri-action did not return any release artifacts')
+
+          destination = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-assets')
+          destination.mkdir(parents=True, exist_ok=True)
+          staged = []
+          for raw_path in artifact_paths:
+              source = pathlib.Path(raw_path)
+              if not source.is_file():
+                  continue
+              name = source.name
+              for extension in ('.app.tar.gz.sig', '.app.tar.gz'):
+                  if name.endswith(extension):
+                      name = f'{name[:-len(extension)]}_{os.environ["RELEASE_ARCH"]}{extension}'
+                      break
+              name = unicodedata.normalize('NFD', name)
+              name = ''.join(character for character in name if not unicodedata.combining(character))
+              name = re.sub(r'[ ()\[\]{}]', '.', name)
+              while '..' in name:
+                  name = name.replace('..', '.')
+              target = destination / name
+              if target.exists():
+                  sys.exit(f'Duplicate staged release asset name: {name}')
+              shutil.copy2(source, target)
+              staged.append(name)
+
+          if not staged:
+              sys.exit('No release files were staged')
+          print('Staged release assets:')
+          print('\n'.join(sorted(staged)))
+          PY
+
+      - name: Upload signed release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: desktop-release-${{ matrix.artifact }}
+          path: ${{ runner.temp }}/desktop-release-assets/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  # Only this job gets write access; builds hand off signed files via artifacts.
+  # Draft runs do not advance the public desktop-latest channel.
+  publish-release:
+    name: Publish desktop release
     needs: [prepare-version, build]
-    if: ${{ !inputs.draft }}
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write  # create the versioned Release and replace updater-channel metadata
     env:
       GH_REPO: ${{ github.repository }}
       APP_VERSION: ${{ needs.prepare-version.outputs.app_version }}
@@ -765,7 +771,164 @@ jobs:
       DESKTOP_PRERELEASE: ${{ needs.prepare-version.outputs.prerelease }}
 
     steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+
+      - name: Download signed release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: desktop-release-*
+          path: ${{ runner.temp }}/desktop-release-assets
+          merge-multiple: true
+
+      - name: Validate release asset set
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import pathlib
+          import os
+          import sys
+
+          asset_dir = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-assets')
+          files = [path for path in asset_dir.iterdir() if path.is_file()]
+          required_suffixes = (
+              '.dmg',
+              '.app.tar.gz',
+              '.app.tar.gz.sig',
+              '.deb',
+              '.AppImage',
+              '.AppImage.sig',
+              '-setup.exe',
+              '-setup.exe.sig',
+          )
+          for suffix in required_suffixes:
+              matches = [path for path in files if path.name.endswith(suffix)]
+              if len(matches) != 1:
+                  sys.exit(f'Expected exactly one {suffix} release asset, found {len(matches)}')
+          if any(path.name == 'latest.json' for path in files):
+              sys.exit('Build artifacts must not supply latest.json')
+          print('\n'.join(sorted(path.name for path in files)))
+          PY
+
+      - name: Create or validate versioned release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_DRAFT: ${{ inputs.draft }}
+        run: |
+          set -euo pipefail
+          notes_file="$RUNNER_TEMP/desktop-release-notes.md"
+          printf '%s\n' "$DESKTOP_RELEASE_NOTES" > "$notes_file"
+
+          release_json="$RUNNER_TEMP/versioned-release.json"
+          # REST tag lookup omits drafts; `gh release view` also checks pending tags.
+          if gh release view "$DESKTOP_RELEASE_TAG" \
+            --json tagName,isDraft,isPrerelease > "$release_json" 2>/dev/null; then
+            python3 <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          release = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'versioned-release.json').read_text())
+          expected_draft = os.environ['RELEASE_DRAFT'].lower() == 'true'
+          expected_prerelease = os.environ['DESKTOP_PRERELEASE'].lower() == 'true'
+          if release.get('tagName') != os.environ['DESKTOP_RELEASE_TAG']:
+              sys.exit('Existing desktop release tag does not match the requested tag')
+          if bool(release.get('isDraft')) != expected_draft:
+              sys.exit('Existing desktop release draft state does not match the workflow input')
+          if bool(release.get('isPrerelease')) != expected_prerelease:
+              sys.exit('Existing desktop release prerelease state does not match the requested version')
+          PY
+          else
+            release_flags=(
+              --title "Unsloth Studio (Desktop) ${STUDIO_VERSION}"
+              --notes-file "$notes_file"
+              --target "$GITHUB_SHA"
+            )
+            if [ "$RELEASE_DRAFT" = "true" ]; then
+              release_flags+=(--draft)
+            fi
+            if [ "$DESKTOP_PRERELEASE" = "true" ]; then
+              release_flags+=(--prerelease)
+            fi
+            gh release create "$DESKTOP_RELEASE_TAG" "${release_flags[@]}"
+          fi
+
+      - name: Publish versioned release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/desktop-release-assets"/* --clobber
+
+      - name: Generate and publish versioned updater metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import datetime
+          import json
+          import os
+          import pathlib
+          import sys
+          import urllib.parse
+
+          asset_dir = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-assets')
+          files = [path for path in asset_dir.iterdir() if path.is_file()]
+
+          def exactly_one(suffix: str) -> pathlib.Path:
+              matches = [path for path in files if path.name.endswith(suffix)]
+              if len(matches) != 1:
+                  sys.exit(f'Expected exactly one {suffix} updater asset, found {len(matches)}')
+              return matches[0]
+
+          def entry(signature_suffix: str) -> dict[str, str]:
+              signature_path = exactly_one(signature_suffix)
+              bundle_name = signature_path.name.removesuffix('.sig')
+              bundle_path = asset_dir / bundle_name
+              if not bundle_path.is_file():
+                  sys.exit(f'Missing updater bundle for {signature_path.name}: {bundle_name}')
+              encoded_tag = urllib.parse.quote(os.environ['DESKTOP_RELEASE_TAG'], safe='')
+              encoded_name = urllib.parse.quote(bundle_name, safe='')
+              return {
+                  'signature': signature_path.read_text(),
+                  'url': (
+                      f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/'
+                      f'{encoded_tag}/{encoded_name}'
+                  ),
+              }
+
+          darwin = entry('.app.tar.gz.sig')
+          linux = entry('.AppImage.sig')
+          windows = entry('.exe.sig')
+          notes = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-notes.md').read_text()
+          metadata = {
+              'version': os.environ['APP_VERSION'],
+              'notes': notes,
+              'pub_date': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
+              'platforms': {
+                  'darwin-aarch64': darwin,
+                  'darwin-aarch64-app': darwin,
+                  'linux-x86_64': linux,
+                  'linux-x86_64-appimage': linux,
+                  'windows-x86_64': windows,
+                  'windows-x86_64-nsis': windows,
+              },
+          }
+          output = pathlib.Path(os.environ['RUNNER_TEMP'], 'latest.json')
+          output.write_text(json.dumps(metadata, indent=2) + '\n')
+          PY
+          gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json" --clobber
+
       - name: Download versioned updater metadata
+        if: ${{ !inputs.draft }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -790,6 +953,7 @@ jobs:
           test -s "$RUNNER_TEMP/desktop-updater/latest.json"
 
       - name: Validate versioned updater metadata
+        if: ${{ !inputs.draft }}
         shell: bash
         run: |
           python3 <<'PY'
@@ -849,6 +1013,7 @@ jobs:
           PY
 
       - name: Ensure desktop updater channel release
+        if: ${{ !inputs.draft }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -881,6 +1046,7 @@ jobs:
           PY
 
       - name: Prevent updater channel downgrade
+        if: ${{ !inputs.draft }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -971,6 +1137,7 @@ jobs:
           PY
 
       - name: Publish desktop updater channel metadata
+        if: ${{ !inputs.draft }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

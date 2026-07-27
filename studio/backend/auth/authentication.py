@@ -148,7 +148,7 @@ async def authenticated_via_api_key(
 ) -> bool:
     """True when the caller used an sk-unsloth API key, not a UI session JWT.
 
-    Lets routes treat programmatic API callers differently from the Studio UI
+    Lets routes treat programmatic API callers differently from the Unsloth UI
     (e.g. refuse a teardown the UI would allow).
     """
     return bool(credentials and credentials.credentials.startswith(API_KEY_PREFIX))
@@ -164,6 +164,21 @@ async def get_current_subject_allow_password_change(
     )
 
 
+# The literal the examples ship with; pasted unedited more often than a revoked key.
+API_KEY_PLACEHOLDER = f"{API_KEY_PREFIX}YOUR_KEY"
+
+
+def _invalid_api_key_detail(token: str) -> str:
+    """Why the key failed. Only the example placeholder is called out; every real
+    key gets one indistinguishable message, so this leaks no key existence."""
+    if token == API_KEY_PLACEHOLDER:
+        return (
+            "This is the placeholder key from the example. Create an API key in "
+            f"Unsloth Studio under Settings > API and use it in place of {API_KEY_PLACEHOLDER}."
+        )
+    return "Invalid or expired API key"
+
+
 async def _get_current_subject(
     credentials: HTTPAuthorizationCredentials, *, allow_password_change: bool
 ) -> str:
@@ -176,7 +191,7 @@ async def _get_current_subject(
         if username is None:
             raise HTTPException(
                 status_code = status.HTTP_401_UNAUTHORIZED,
-                detail = "Invalid or expired API key",
+                detail = _invalid_api_key_detail(token),
             )
         return username
 

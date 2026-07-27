@@ -10,10 +10,242 @@ native-chat-template fallback used by the transformers and MLX backends.
 import copy
 import json
 import logging
+from dataclasses import dataclass
 from typing import Optional
 
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
+_GEMMA_CHANNEL_START = "<|channel>"
+_GEMMA_THOUGHT_OPEN = "<|channel>thought"
+_GEMMA_THOUGHT_CLOSE = "<channel|>"
+_GEMMA_TEMPLATE_OPENERS = (
+    _GEMMA_THOUGHT_OPEN + "\n",
+    _GEMMA_THOUGHT_OPEN + "\\n",
+    _GEMMA_THOUGHT_OPEN + _GEMMA_THOUGHT_CLOSE,
+)
+
+
+def _tokenizer_objects(tokenizer) -> tuple:
+    """Return a processor/tokenizer and its distinct nested tokenizer."""
+    if tokenizer is None:
+        return ()
+    nested = getattr(tokenizer, "tokenizer", None)
+    return (tokenizer,) if nested is None or nested is tokenizer else (tokenizer, nested)
+
+
+def _selected_template_strings_from_value(
+    template,
+    tools = None,
+    *,
+    prefer_tool_use: bool = True,
+) -> tuple[str, ...]:
+    """Return the named chat template matching HF's default selection rules."""
+    tools = tools or None
+    if isinstance(template, str):
+        return (template,)
+    if not isinstance(template, dict):
+        return ()
+    if prefer_tool_use and tools and isinstance(template.get("tool_use"), str):
+        return (template["tool_use"],)
+    if isinstance(template.get("default"), str):
+        return (template["default"],)
+    values = tuple(value for value in template.values() if isinstance(value, str))
+    return values if len(values) == 1 else ()
+
+
+def _selected_chat_template_strings(tokenizer, tools = None) -> tuple[str, ...]:
+    """Return the active chat template selected for this request."""
+    tools = tools or None
+    getter = getattr(tokenizer, "get_chat_template", None)
+    if callable(getter):
+        for kwargs in ({"chat_template": None, "tools": tools}, {"tools": tools}, {}):
+            try:
+                selected = getter(**kwargs)
+            except Exception:
+                continue
+            if isinstance(selected, str):
+                return (selected,)
+    # ProcessorMixin.apply_chat_template does not switch to "tool_use" implicitly;
+    # it uses "default" unless chat_template= names another template.
+    is_processor = getattr(tokenizer, "tokenizer", None) is not None and callable(
+        getattr(tokenizer, "apply_chat_template", None)
+    )
+    return _selected_template_strings_from_value(
+        getattr(tokenizer, "chat_template", None),
+        tools,
+        prefer_tool_use = not is_processor,
+    )
+
+
+def _detect_reasoning_channel_markers_from_templates(
+    templates: tuple[str, ...],
+) -> Optional[tuple[str, str]]:
+    """Return Gemma native reasoning markers only when a template emits them."""
+    if any(opener in template for template in templates for opener in _GEMMA_TEMPLATE_OPENERS):
+        return _GEMMA_THOUGHT_OPEN, _GEMMA_THOUGHT_CLOSE
+    return None
+
+
+def detect_reasoning_channel_markers(tokenizer, tools = None) -> Optional[tuple[str, str]]:
+    """Return native Gemma thought-channel markers supported by a tokenizer.
+
+    Detection uses the active chat template rather than model names or vocabulary
+    membership. Some models expose Gemma control tokens without using the native
+    thought-channel response protocol, and those must keep normal
+    ``skip_special_tokens`` streaming.
+    """
+    for obj in _tokenizer_objects(tokenizer):
+        templates = _selected_chat_template_strings(obj, tools)
+        if templates:
+            return _detect_reasoning_channel_markers_from_templates(templates)
+    return None
+
+
+def detect_reasoning_channel_markers_from_template(
+    template, tools = None
+) -> Optional[tuple[str, str]]:
+    """Return native Gemma thought-channel markers from a raw template value."""
+    return _detect_reasoning_channel_markers_from_templates(
+        _selected_template_strings_from_value(template, tools)
+    )
+
+
+def detect_reasoning_channel_markers_from_model_info(
+    tokenizer,
+    model_info: Optional[dict] = None,
+    tools = None,
+) -> Optional[tuple[str, str]]:
+    """Return reasoning markers from the active or cached native template."""
+    markers = detect_reasoning_channel_markers(tokenizer, tools = tools)
+    if markers is not None or not isinstance(model_info, dict):
+        return markers
+
+    native_templates = (
+        model_info.get("native_chat_template"),
+        (model_info.get("chat_template_info") or {}).get("template"),
+    )
+    for template in native_templates:
+        markers = detect_reasoning_channel_markers_from_template(template, tools)
+        if markers is not None:
+            return markers
+    return None
+
+
+@dataclass(frozen = True)
+class ChatTemplateRenderResult:
+    """Prompt plus response-protocol metadata selected by the renderer."""
+
+    prompt: str
+    reasoning_channel_markers: Optional[tuple[str, str]] = None
+
+
+def _split_partial_marker(text: str, marker: str) -> tuple[str, str]:
+    """Hold the longest suffix that may become ``marker`` in the next chunk."""
+    for length in range(min(len(text), len(marker) - 1), 0, -1):
+        if text.endswith(marker[:length]):
+            return text[:-length], text[-length:]
+    return text, ""
+
+
+class ReasoningChannelNormalizer:
+    """Incrementally convert one native reasoning channel to ``<think>``.
+
+    The parser follows mlx-vlm's streaming boundary behavior but emits Unsloth's
+    established canonical text contract. Only the configured opening and
+    closing markers are consumed; tool-call and other control markers remain
+    available to downstream parsers.
+    """
+
+    def __init__(self, opening_marker: str, closing_marker: str):
+        self._opening_marker = opening_marker
+        self._closing_marker = closing_marker
+        self._buffer = ""
+        self._in_reasoning = False
+        self._reasoning_done = False
+        self._skip_opening_newline = False
+
+    def feed(self, text: str) -> str:
+        """Consume a raw text delta and return the stable canonical delta."""
+        self._buffer += text or ""
+        output: list[str] = []
+        while self._buffer:
+            if self._reasoning_done:
+                output.append(self._buffer)
+                self._buffer = ""
+                break
+
+            if self._in_reasoning and self._skip_opening_newline:
+                if self._buffer.startswith("\n"):
+                    self._buffer = self._buffer[1:]
+                self._skip_opening_newline = False
+                if not self._buffer:
+                    break
+
+            marker = self._closing_marker if self._in_reasoning else self._opening_marker
+            index = self._buffer.find(marker)
+            if index < 0:
+                stable, self._buffer = _split_partial_marker(self._buffer, marker)
+                output.append(stable)
+                break
+
+            output.append(self._buffer[:index])
+            self._buffer = self._buffer[index + len(marker) :]
+            if self._in_reasoning:
+                output.append(_THINK_CLOSE)
+                self._in_reasoning = False
+                self._reasoning_done = True
+            else:
+                output.append(_THINK_OPEN)
+                self._in_reasoning = True
+                self._skip_opening_newline = True
+        return "".join(output)
+
+    def finish(self) -> str:
+        """Flush a naturally completed stream and close an open think block."""
+        output = self.drain()
+        if self._in_reasoning:
+            output += _THINK_CLOSE
+            self._in_reasoning = False
+            self._reasoning_done = True
+        return output
+
+    def drain(self) -> str:
+        """Flush buffered literal text without synthesizing a closing tag."""
+        output = self._buffer
+        self._buffer = ""
+        return output
+
+
+def normalize_reasoning_snapshots(
+    stream,
+    tokenizer = None,
+    cancel_event = None,
+    markers: Optional[tuple[str, str]] = None,
+    tools = None,
+):
+    """Normalize a prefix-monotonic cumulative text stream when supported."""
+    markers = markers or detect_reasoning_channel_markers(tokenizer, tools = tools)
+    if markers is None:
+        yield from stream
+        return
+
+    normalizer = ReasoningChannelNormalizer(*markers)
+    raw_output = ""
+    normalized_output = ""
+    for snapshot in stream:
+        if not snapshot.startswith(raw_output):
+            raise RuntimeError("Reasoning normalization requires cumulative text snapshots")
+        delta = normalizer.feed(snapshot[len(raw_output) :])
+        raw_output = snapshot
+        if delta:
+            normalized_output += delta
+            yield normalized_output
+
+    cancelled = cancel_event is not None and cancel_event.is_set()
+    tail = normalizer.drain() if cancelled else normalizer.finish()
+    if tail:
+        normalized_output += tail
+        yield normalized_output
 
 
 def detect_think_prefill(prompt: Optional[str], special_tokens = None) -> str:
@@ -166,7 +398,8 @@ def render_native_template(
     preserve_thinking: Optional[bool] = None,
     apply_fn = None,
     hf_token: Optional[str] = None,
-) -> Optional[str]:
+    return_metadata: bool = False,
+):
     """Render ``messages`` + ``tools`` with the model's NATIVE chat template.
 
     Some Unsloth override templates (e.g. ``mistral``, ``gemma-4``) do not emit
@@ -175,7 +408,9 @@ def render_native_template(
     tool-calling syntax. It is loaded straight from the repo (bypassing any
     override on the live tokenizer) and cached on ``model_info``. Returns the
     rendered prompt only if the native template actually emits the tools (render
-    differs with vs without tools); otherwise ``None``.
+    differs with vs without tools); otherwise ``None``. With ``return_metadata``,
+    returns ``ChatTemplateRenderResult`` so callers can stream with the response
+    protocol selected by this request's template.
 
     ``hf_token`` is the token the model was loaded with -- passed to the repo load
     so a gated/private model's native template can still be fetched (otherwise the
@@ -261,7 +496,16 @@ def render_native_template(
             exc,
         )
         return None
-    return with_tools if with_tools != no_tools else None
+    if with_tools == no_tools:
+        return None
+    if return_metadata:
+        return ChatTemplateRenderResult(
+            with_tools,
+            _detect_reasoning_channel_markers_from_templates(
+                _selected_template_strings_from_value(native_tpl, tools)
+            ),
+        )
+    return with_tools
 
 
 def render_with_native_template_fallback(
@@ -277,7 +521,8 @@ def render_with_native_template_fallback(
     preserve_thinking: Optional[bool] = None,
     apply_fn = None,
     hf_token: Optional[str] = None,
-) -> str:
+    return_metadata: bool = False,
+):
     """Return ``formatted_prompt``, swapping in a native-template render when an
     override template dropped the ``tools`` schema.
 
@@ -285,9 +530,27 @@ def render_with_native_template_fallback(
     them (detected by comparison, robust against tool names in the system prompt),
     re-render with the model's native template. Shared by the transformers and MLX
     backends so both advertise tools consistently. ``hf_token`` is forwarded so a
-    gated/private model's native template can still be fetched."""
+    gated/private model's native template can still be fetched. With
+    ``return_metadata``, returns the selected prompt plus reasoning-channel markers
+    for the exact template used by this request."""
+    live_markers = detect_reasoning_channel_markers(tokenizer, tools = tools)
+
+    def _result(prompt: str, markers = live_markers):
+        if return_metadata:
+            return ChatTemplateRenderResult(prompt, markers)
+        return prompt
+
     if not tools:
-        return formatted_prompt
+        # Gemma 4 can emit its native reasoning protocol even when a generation-time
+        # Unsloth override rendered a marker-free prompt. Preserve the live-verified
+        # no-tools thinking behavior without letting cached native metadata describe
+        # unrelated tool prompts that kept the active override.
+        markers = live_markers
+        if markers is None:
+            markers = detect_reasoning_channel_markers_from_model_info(
+                tokenizer, model_info, tools = None
+            )
+        return _result(formatted_prompt, markers)
     if apply_fn is None:
         apply_fn = apply_chat_template_for_generation
     # Probe whether the live template dropped the schema. A tools-requiring template
@@ -307,9 +570,9 @@ def render_with_native_template_fallback(
             active_model_name,
             exc,
         )
-        return formatted_prompt
+        return _result(formatted_prompt)
     if formatted_prompt != probe_no_tools:
-        return formatted_prompt  # template already emits the tools schema
+        return _result(formatted_prompt)  # template already emits the tools schema
     native_prompt = render_native_template(
         model_info = model_info,
         active_model_name = active_model_name,
@@ -320,6 +583,7 @@ def render_with_native_template_fallback(
         preserve_thinking = preserve_thinking,
         apply_fn = apply_fn,
         hf_token = hf_token,
+        return_metadata = return_metadata,
     )
     if native_prompt:
         logger.info(
@@ -328,4 +592,4 @@ def render_with_native_template_fallback(
             active_model_name,
         )
         return native_prompt
-    return formatted_prompt
+    return _result(formatted_prompt)

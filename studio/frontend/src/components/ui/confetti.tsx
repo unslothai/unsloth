@@ -34,7 +34,7 @@ export type ConfettiRef = Api | null;
 
 const ConfettiContext = createContext<Api>({} as Api);
 
-// Studio CSP blocks canvas-confetti's default blob: worker, so force
+// Unsloth CSP blocks canvas-confetti's default blob: worker, so force
 // useWorker: false. Module-scoped so the prop default keeps stable
 // identity across renders (`canvasRef` depends on `globalOptions`).
 const DEFAULT_GLOBAL_OPTIONS: ConfettiGlobalOptions = {

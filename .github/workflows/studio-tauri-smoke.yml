@@ -12,7 +12,7 @@
 # stay in release-desktop.yml (manual `workflow_dispatch`) because they need
 # code-signing secrets and ~30 min of runner time each.
 
-name: Studio Tauri CI
+name: Unsloth Tauri CI
 
 on:
   pull_request:

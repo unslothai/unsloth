@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Stamp and verify display-only Studio release metadata for builds."""
+"""Stamp and verify display-only Unsloth release metadata for builds."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ MAX_VERSION_LENGTH = 64
 PLACEHOLDER = """# SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-\"\"\"Build-stamped Studio release metadata.
+\"\"\"Build-stamped Unsloth release metadata.
 
 Release builds may rewrite this module in the build workspace before creating
 Python artifacts. Keep the committed value neutral so source checkouts do not
@@ -145,7 +145,7 @@ def build_info_source(version: str | None) -> str:
     return f'''# SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Build-stamped Studio release metadata."""
+"""Build-stamped Unsloth release metadata."""
 
 STUDIO_RELEASE_VERSION = {literal}
 '''
@@ -168,7 +168,7 @@ def stamp(require_release: bool) -> int:
     version, source = resolve_version()
     if version is not None and not is_valid_version(version):
         print(
-            f"Invalid Studio release version from {source}: {version!r}",
+            f"Invalid Unsloth release version from {source}: {version!r}",
             file = sys.stderr,
         )
         return 2
@@ -196,9 +196,9 @@ def stamp(require_release: bool) -> int:
     if version is None:
         if require_release:
             print(
-                "No Studio release version available. Set "
+                "No Unsloth release version available. Set "
                 "UNSLOTH_STUDIO_RELEASE_VERSION, build from a GitHub tag, "
-                "or run from an exact local Studio release tag.",
+                "or run from an exact local Unsloth release tag.",
                 file = sys.stderr,
             )
             return 2
@@ -207,7 +207,7 @@ def stamp(require_release: bool) -> int:
         return 0
 
     _atomic_write_text(BUILD_INFO_PATH, build_info_source(version), encoding = "utf-8")
-    print(f"Stamping Studio release version {version} from {source}", file = sys.stderr)
+    print(f"Stamping Unsloth release version {version} from {source}", file = sys.stderr)
     print(version)
     return 0
 
@@ -233,7 +233,7 @@ def _read_sdist_member(path: Path) -> str | None:
 
 def verify_dist(expected: str, dist_dir: Path) -> int:
     if not is_valid_version(expected):
-        print(f"Invalid expected Studio release version: {expected!r}", file = sys.stderr)
+        print(f"Invalid expected Unsloth release version: {expected!r}", file = sys.stderr)
         return 2
 
     artifacts = list(dist_dir.glob("*.whl")) + list(dist_dir.glob("*.tar.gz"))
@@ -251,14 +251,14 @@ def verify_dist(expected: str, dist_dir: Path) -> int:
         if content is None:
             failures.append(f"{artifact.name}: missing {BUILD_INFO_SUFFIX}")
         elif expected_line not in content:
-            failures.append(f"{artifact.name}: Studio release version mismatch")
+            failures.append(f"{artifact.name}: Unsloth release version mismatch")
 
     if failures:
         for failure in failures:
             print(failure, file = sys.stderr)
         return 2
 
-    print(f"Verified Studio release version {expected} in {len(artifacts)} artifact(s)")
+    print(f"Verified Unsloth release version {expected} in {len(artifacts)} artifact(s)")
     return 0
 
 

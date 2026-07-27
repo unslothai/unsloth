@@ -82,7 +82,7 @@ def _validate_url(url: str) -> str:
         if _looks_like_command(trimmed):
             detail = (
                 "Local commands aren't enabled on this server. To allow them, "
-                "set UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 and restart Studio, or use "
+                "set UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 and restart Unsloth, or use "
                 "an http:// or https:// URL instead."
             )
         else:

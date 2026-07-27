@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 #
-# Event-loop regression test for the Studio model-load orchestrator.
+# Event-loop regression test for the Unsloth model-load orchestrator.
 # Pins down issue #5642 (Win10 UI freeze on model load): the /load
 # route calls LlamaCppBackend.detect_audio_type synchronously, blocking
 # the FastAPI event loop on a chain of sync httpx.Client.post() probes.
@@ -14,7 +14,7 @@
 # danielhanchen/unsloth-staging-2 (Ubuntu / macOS / Windows all
 # green at PR time).
 
-name: Studio load-orchestrator CI
+name: Unsloth load-orchestrator CI
 
 on:
   pull_request:

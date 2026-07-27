@@ -1,4 +1,4 @@
-"""Studio GGUF export pins convert_hf_to_gguf.py via UNSLOTH_LLAMA_CPP_SCRIPTS_DIR, with a once-per-process warning fallback when unsloth_zoo lacks the local-script resolver."""
+"""Unsloth GGUF export pins convert_hf_to_gguf.py via UNSLOTH_LLAMA_CPP_SCRIPTS_DIR, with a once-per-process warning fallback when unsloth_zoo lacks the local-script resolver."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 SOURCE_PATH = (
     Path(__file__).resolve().parents[2] / "studio" / "backend" / "core" / "export" / "export.py"
 )
-SRC = SOURCE_PATH.read_text()
+SRC = SOURCE_PATH.read_text(encoding = "utf-8")
 TREE = ast.parse(SRC)
 
 

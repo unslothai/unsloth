@@ -36,6 +36,8 @@ from ._utils import (
     resolve_attention_implementation,
     _get_text_only_config,
     _is_family_text_decoder,
+    _config_get,
+    _is_flash_attention_requested,
     _apply_text_only_key_mapping,
     _select_moe_detection_targets,
     set_task_config_attr,
@@ -226,8 +228,7 @@ def _attach_bnb_multidevice_hooks(
                 param.__dict__[key] = val
 
         logger.info(
-            f"Unsloth: Attached accelerate AlignDevicesHook ({desc}) "
-            f"for bnb multi-GPU inference."
+            f"Unsloth: Attached accelerate AlignDevicesHook ({desc}) for bnb multi-GPU inference."
         )
     except Exception as exc:
         warnings.warn(
@@ -345,6 +346,117 @@ except:
     torch_compiler_set_stance = None
 
 
+def _uses_flash_attention_for_generation(config):
+    language_config_names = (
+        "text_config",
+        "llm_config",
+        "decoder_config",
+        "language_config",
+        "thinker_config",
+        "talker_config",
+        "decoder",
+        "generator",
+    )
+    non_language_config_names = (
+        "vision_config",
+        "audio_config",
+        "vision_encoder_config",
+        "audio_encoder_config",
+        "encoder_config",
+        "text_encoder",
+    )
+
+    def _mapping_uses_flash_attention(attn_implementation):
+        if not isinstance(attn_implementation, dict):
+            return _is_flash_attention_requested(attn_implementation)
+        language_implementations = [
+            implementation
+            for config_name, implementation in attn_implementation.items()
+            if config_name not in ("", *non_language_config_names) and implementation is not None
+        ]
+        if language_implementations:
+            return any(map(_is_flash_attention_requested, language_implementations))
+        return _is_flash_attention_requested(attn_implementation.get(""))
+
+    def _get_text_config(current_config):
+        get_text_config = _config_get(current_config, "get_text_config", None)
+        if not callable(get_text_config):
+            return None
+        try:
+            return get_text_config()
+        except Exception:
+            return None
+
+    language_configs = []
+    pending_configs = [config]
+    visited_config_ids = set()
+    while pending_configs:
+        current_config = pending_configs.pop()
+        if id(current_config) in visited_config_ids:
+            continue
+        visited_config_ids.add(id(current_config))
+
+        text_config = _get_text_config(current_config)
+        if (
+            text_config is not None
+            and text_config is not current_config
+            and all(text_config is not item for item in language_configs)
+        ):
+            language_configs.append(text_config)
+
+        nested_config_names = list(language_config_names)
+        declared_sub_configs = _config_get(current_config, "sub_configs", None)
+        if isinstance(declared_sub_configs, dict):
+            nested_config_names.extend(
+                config_name
+                for config_name in declared_sub_configs
+                if config_name not in nested_config_names
+            )
+        for config_name in nested_config_names:
+            nested_config = _config_get(current_config, config_name, None)
+            if nested_config is None or nested_config is current_config:
+                continue
+            pending_configs.append(nested_config)
+            nested_text_config = _get_text_config(nested_config)
+            if (
+                config_name in language_config_names
+                and (nested_text_config is None or nested_text_config is nested_config)
+                and all(nested_config is not item for item in language_configs)
+            ):
+                language_configs.append(nested_config)
+
+    language_implementations = [
+        _config_get(language_config, config_field, None)
+        for language_config in language_configs
+        for config_field in ("_attn_implementation", "attn_implementation")
+    ]
+    language_implementations = [
+        implementation for implementation in language_implementations if implementation is not None
+    ]
+    if language_implementations:
+        return any(map(_mapping_uses_flash_attention, language_implementations))
+
+    return any(
+        _mapping_uses_flash_attention(_config_get(config, config_field, None))
+        for config_field in ("_attn_implementation", "attn_implementation")
+    )
+
+
+def _clear_generation_caches(model):
+    for name, module in model.named_modules():
+        if hasattr(module, "_flex_attention_cache"):
+            try:
+                del module._flex_attention_cache
+            except:
+                pass
+        # Solves AttributeError: 'SlidingWindowLayer' object has no attribute 'max_batch_size'
+        if hasattr(module, "_cache") and "cache_utils" in str(module._cache.__class__):
+            try:
+                del module._cache
+            except:
+                pass
+
+
 def unsloth_base_fast_generate(self, *args, **kwargs):
     if len(args) != 0:
         input_ids = args[0]
@@ -444,6 +556,21 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     # Prepare LoRA
     # state_dict = convert_lora_modules(self, dtype = dtype)
 
+    # FlashAttention breaks on the forced static cache below (unfilled slots stay
+    # unmasked while decoding), so delegate after normalization but before it.
+    _clear_generation_caches(self)
+    if _uses_flash_attention_for_generation(self.config):
+        # Pin the literal "dynamic": None is merged back to the model default, and a
+        # static cache still arrives via kwargs / the caller's generation_config (TRL).
+        # The kwarg wins (update runs last); skip it when the caller passed a cache.
+        if kwargs.get("past_key_values") is None:
+            kwargs["cache_implementation"] = "dynamic"
+        try:
+            with torch.inference_mode(), autocaster:
+                return self._old_generate(*args, **kwargs)
+        finally:
+            _clear_generation_caches(self)
+
     # Set compile dynamic shapes
     torch._dynamo.mark_static(input_ids, 0)
     torch._dynamo.mark_dynamic(input_ids, 1)
@@ -491,36 +618,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if cache_implementation is not None:
             kwargs["compile_config"] = _compile_config
 
-    # Delete cached Flex Attention masks to reset inference
-    for name, module in self.named_modules():
-        if hasattr(module, "_flex_attention_cache"):
-            try:
-                del module._flex_attention_cache
-            except:
-                pass
-        # Solves AttributeError: 'SlidingWindowLayer' object has no attribute 'max_batch_size'
-        if hasattr(module, "_cache") and "cache_utils" in str(module._cache.__class__):
-            try:
-                del module._cache
-            except:
-                pass
-
-    with torch.inference_mode(), autocaster:
-        output = self._old_generate(*args, **kwargs)
-
-    # Delete cached Flex Attention masks to reset inference
-    for name, module in self.named_modules():
-        if hasattr(module, "_flex_attention_cache"):
-            try:
-                del module._flex_attention_cache
-            except:
-                pass
-        # Solves AttributeError: 'SlidingWindowLayer' object has no attribute 'max_batch_size'
-        if hasattr(module, "_cache") and "cache_utils" in str(module._cache.__class__):
-            try:
-                del module._cache
-            except:
-                pass
+    try:
+        with torch.inference_mode(), autocaster:
+            output = self._old_generate(*args, **kwargs)
+    finally:
+        _clear_generation_caches(self)
 
     # FastBaseModel.for_training(self)
     return output
@@ -529,7 +631,9 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 # Offline helpers live in loader_utils.py (shared canonical source).
 from .loader_utils import (
     _get_effective_local_files_only,
+    _hub_repo_or_local_path,
     _is_offline_related_error,
+    _load_pretrained_tokenizer_fast,
     _offline_aware_load,
 )
 
@@ -565,20 +669,27 @@ def _construct_vlm_processor_fallback(
     tell an offline failure (retry from cache) from a genuine one."""
     _fb_err = None
     try:
-        from transformers import AutoImageProcessor, PreTrainedTokenizerFast, AutoConfig
+        from transformers import AutoImageProcessor, AutoConfig
         from transformers.models.auto.processing_auto import PROCESSOR_MAPPING_NAMES
         import json
 
+        load_path = _hub_repo_or_local_path(
+            tokenizer_name,
+            token = token,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+        )
         # Load image processor
         image_processor = AutoImageProcessor.from_pretrained(
-            tokenizer_name,
+            load_path,
             token = token,
             trust_remote_code = trust_remote_code,
             cache_dir = cache_dir,
             local_files_only = local_files_only,
         )
-        # Load tokenizer via PreTrainedTokenizerFast (bypasses tokenizer_class check)
-        tok = PreTrainedTokenizerFast.from_pretrained(
+        # Load tokenizer via PreTrainedTokenizerFast (bypasses tokenizer_class check).
+        # Resolve the cached snapshot first so transformers does not call model_info (#7481).
+        tok = _load_pretrained_tokenizer_fast(
             tokenizer_name,
             padding_side = "left",
             token = token,
@@ -638,7 +749,7 @@ def _construct_vlm_processor_fallback(
             # Try the top-level config.model_type which often has the processor mapping.
             try:
                 config = AutoConfig.from_pretrained(
-                    tokenizer_name,
+                    load_path,
                     token = token,
                     trust_remote_code = trust_remote_code,
                     cache_dir = cache_dir,
@@ -1551,9 +1662,15 @@ class FastBaseModel:
             # Last resort: AutoTokenizer, then PreTrainedTokenizerFast (raise on network failure to retry).
             def _last_resort_tokenizer(lfo):
                 from transformers import AutoTokenizer as _AutoTokenizer
+                load_path = _hub_repo_or_local_path(
+                    tokenizer_name,
+                    token = token,
+                    cache_dir = kwargs.get("cache_dir"),
+                    local_files_only = lfo,
+                )
                 try:
                     return _AutoTokenizer.from_pretrained(
-                        tokenizer_name,
+                        load_path,
                         padding_side = "left",
                         token = token,
                         trust_remote_code = trust_remote_code,
@@ -1561,8 +1678,7 @@ class FastBaseModel:
                         local_files_only = lfo,
                     )
                 except Exception:
-                    from transformers import PreTrainedTokenizerFast
-                    return PreTrainedTokenizerFast.from_pretrained(
+                    return _load_pretrained_tokenizer_fast(
                         tokenizer_name,
                         padding_side = "left",
                         token = token,

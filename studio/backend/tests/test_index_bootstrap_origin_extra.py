@@ -26,7 +26,7 @@ def _build_request(
 
 
 def test_is_same_origin_request_ipv6_loopback_same_origin():
-    """Studio supports ``-H ::1`` binds; netloc is ``[::1]:8902``. Bare
+    """Unsloth supports ``-H ::1`` binds; netloc is ``[::1]:8902``. Bare
     ``partition(":")`` mis-parses the bracketed form and would refuse the
     bootstrap on legitimate same-origin navigation.
     """

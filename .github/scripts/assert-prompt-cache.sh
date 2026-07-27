@@ -31,7 +31,7 @@
 #   (llama_cpp.py:337-340). So default: ~/.unsloth/studio/logs/llama-server/.
 #
 #   <P> is the INTERNAL llama-server port (self._find_free_port(),
-#   llama_cpp.py:3489 / :4641) -- a RANDOM port, NOT the Studio port. So we must
+#   llama_cpp.py:3489 / :4641) -- a RANDOM port, NOT the Unsloth port. So we must
 #   NOT filter the log glob by STUDIO_PORT (the brief's `port-<STUDIO_PORT>`
 #   glob would never match). We pick the newest llama-*.log instead.
 #

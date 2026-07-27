@@ -44,7 +44,7 @@ def generate_bootstrap_password() -> str:
 
     # Persisted from a previous run?
     if _BOOTSTRAP_PW_PATH.is_file():
-        _bootstrap_password = _BOOTSTRAP_PW_PATH.read_text().strip()
+        _bootstrap_password = _BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8").strip()
         if _bootstrap_password:
             return _bootstrap_password
 
@@ -57,7 +57,7 @@ def generate_bootstrap_password() -> str:
 
     # Persist so the same passphrase survives restarts until password change.
     ensure_dir(_BOOTSTRAP_PW_PATH.parent)
-    _BOOTSTRAP_PW_PATH.write_text(_bootstrap_password)
+    _BOOTSTRAP_PW_PATH.write_text(_bootstrap_password, encoding = "utf-8")
     try:
         os.chmod(_BOOTSTRAP_PW_PATH, 0o600)
     except OSError:
@@ -76,7 +76,7 @@ def _load_bootstrap_password() -> Optional[str]:
     global _bootstrap_password
     _bootstrap_password = None
     if _BOOTSTRAP_PW_PATH.is_file():
-        bootstrap_password = _BOOTSTRAP_PW_PATH.read_text().strip()
+        bootstrap_password = _BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8").strip()
         if bootstrap_password:
             _bootstrap_password = bootstrap_password
     return _bootstrap_password
@@ -99,7 +99,7 @@ def clear_bootstrap_password() -> None:
             # stale plaintext can't be re-seeded by generate_bootstrap_password()
             # if a later reset-password deletes auth.db and re-validates it.
             try:
-                _BOOTSTRAP_PW_PATH.write_text("")
+                _BOOTSTRAP_PW_PATH.write_text("", encoding = "utf-8")
                 cleared = True
             except OSError:
                 cleared = False
@@ -146,7 +146,7 @@ def get_connection() -> sqlite3.Connection:
             pass
     conn.row_factory = sqlite3.Row
     # WAL lets token reads run concurrently with refresh-token writes;
-    # busy_timeout bounds lock waits. Matches the other Studio SQLite stores.
+    # busy_timeout bounds lock waits. Matches the other Unsloth SQLite stores.
     # Set busy_timeout first: switching journal_mode needs a lock, so if a
     # refresh-token write already holds one, journal_mode=WAL raises SQLITE_BUSY;
     # with busy_timeout already in effect it waits instead of failing and leaving
@@ -305,8 +305,8 @@ def get_or_create_identity_secret() -> bytes:
 def compute_identity_proof(nonce: bytes, host: str, port: int) -> str:
     """HMAC-SHA256 proof that the caller holds this install's identity secret,
     bound to the loopback address and port the connection landed on. A proof
-    relayed from a Studio on a different address/port (a squatter proxying to the
-    real one, e.g. localhost resolving to ::1 while Studio is on 127.0.0.1) was
+    relayed from an Unsloth on a different address/port (a squatter proxying to the
+    real one, e.g. localhost resolving to ::1 while Unsloth is on 127.0.0.1) was
     computed for that other endpoint and won't match the one the client dialed."""
     try:
         host = ipaddress.ip_address(host).compressed  # normalise 127.0.0.1 / ::1 forms

@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  ChevronDown,
-  CircleAlert,
-  CircleOff,
-  Hand,
-  ShieldCheck,
-  XIcon,
-} from "lucide-react";
+import { ChevronDown, CircleAlert, Hand, ShieldCheck } from "lucide-react";
+import type { ComponentType } from "react";
 import { useState } from "react";
 
 import {
@@ -30,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { SparklesGlyph } from "@/lib/sparkles-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -39,15 +34,14 @@ import {
 } from "./stores/chat-runtime-store";
 
 /**
- * Permission levels for the Bypass permissions dropdowns (General settings,
- * chat settings sheet, composer "+" menu). Off sits last as the toggle that
- * turns the feature off entirely.
+ * Permission levels for tool calls. Full access stays last because it disables
+ * both approval prompts and the code sandbox.
  */
 export const PERMISSION_MODE_OPTIONS: readonly {
   value: PermissionMode;
   label: string;
   description: string;
-  icon: typeof Hand;
+  icon: ComponentType<{ className?: string; strokeWidth?: number }>;
 }[] = [
   {
     value: "ask",
@@ -58,8 +52,15 @@ export const PERMISSION_MODE_OPTIONS: readonly {
   {
     value: "auto",
     label: "Approve for me",
-    description: "Only ask for actions detected as potentially unsafe",
+    description:
+      "Run tool calls, but ask before high-risk actions like credential access, privilege escalation, or destructive commands",
     icon: ShieldCheck,
+  },
+  {
+    value: "off",
+    label: "Run automatically",
+    description: "Run tool calls without approval prompts inside the sandbox",
+    icon: SparklesGlyph,
   },
   {
     value: "full",
@@ -68,17 +69,16 @@ export const PERMISSION_MODE_OPTIONS: readonly {
       "Unrestricted: no approval prompts and the code sandbox is disabled",
     icon: CircleAlert,
   },
-  {
-    value: "off",
-    label: "Off",
-    description: "Turn off bypass permissions",
-    icon: CircleOff,
-  },
 ] as const;
+
+export const FULL_ACCESS_WARNING =
+  "Full access lets tool calls run without approval prompts or the code sandbox. They can modify or delete files, run commands, and make network requests. Enable it only when you trust the current task.";
 
 export function permissionModeOption(mode: PermissionMode) {
   return (
     PERMISSION_MODE_OPTIONS.find((option) => option.value === mode) ??
+    // Unknown values fall back to the default ("Approve for me"), not row 0 ("Ask").
+    PERMISSION_MODE_OPTIONS.find((option) => option.value === "auto") ??
     PERMISSION_MODE_OPTIONS[0]
   );
 }
@@ -100,10 +100,10 @@ export function PermissionModeMenuItems({
         <DropdownMenuItem
           key={option.value}
           onSelect={() => {
-            // Reselecting the active level toggles the feature off.
             if (option.value === permissionMode) {
-              setPermissionMode("off");
-            } else if (option.value === "full") {
+              return;
+            }
+            if (option.value === "full") {
               onRequestFullAccess();
             } else {
               setPermissionMode(option.value);
@@ -119,7 +119,7 @@ export function PermissionModeMenuItems({
         >
           <option.icon className="mt-0.5 size-4 shrink-0" strokeWidth={2} />
           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className="text-[13px] leading-tight">{option.label}</span>
+            <span className="text-ui-13 leading-tight">{option.label}</span>
             <span className="text-xs font-normal leading-snug text-muted-foreground">
               {option.description}
             </span>
@@ -154,9 +154,7 @@ export function FullAccessConfirmDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Enable Full access?</AlertDialogTitle>
           <AlertDialogDescription>
-            Full access (Bypass permissions) is dangerous since the AI model
-            might delete, corrupt your machine, and or cause real world damage
-            to you or the world - only accept if you are certain
+            {FULL_ACCESS_WARNING}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -260,14 +258,9 @@ export function PermissionModeComposerPill({
   const setBypassConfirmOpen = useChatRuntimeStore(
     (s) => s.setBypassConfirmOpen,
   );
-  const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
   const active = permissionModeOption(permissionMode);
   const ActiveIcon = active.icon;
   const fullAccess = permissionMode === "full";
-
-  // Off means the feature is off: no pill (re-enable via the "+" menu or
-  // settings, like the pre-levels bypass badge).
-  if (permissionMode === "off") return null;
 
   return (
     <DropdownMenu>
@@ -281,32 +274,8 @@ export function PermissionModeComposerPill({
           aria-label="Permission level for tool calls"
           title={`${active.label}: ${active.description}`}
         >
-          {/* The icon doubles as an off switch (mirrors the MCP pill): hover
-              swaps it to an X; clicking it turns bypass permissions Off (no
-              prompts, sandbox on) without opening the menu. In compact
-              icon-only mode the glyph is the whole button, so clicks fall
-              through and open the menu instead. */}
-          <span
-            role="button"
-            aria-label="Turn off bypass permissions"
-            tabIndex={-1}
-            onPointerDown={(e) => {
-              if (e.currentTarget.closest('[data-pill-compact="true"]')) {
-                return;
-              }
-              e.stopPropagation();
-            }}
-            onClick={(e) => {
-              if (e.currentTarget.closest('[data-pill-compact="true"]')) {
-                return;
-              }
-              e.stopPropagation();
-              setPermissionMode("off");
-            }}
-            className="composer-pill-glyph cursor-pointer"
-          >
+          <span className="composer-pill-glyph">
             <ActiveIcon className="size-[15px]" strokeWidth={2} />
-            <XIcon className="composer-pill-x" />
           </span>
           <span>{active.label}</span>
           <HugeiconsIcon

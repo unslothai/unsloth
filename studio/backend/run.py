@@ -111,13 +111,26 @@ from startup_banner import print_studio_access_banner, print_studio_stop_hint
 
 logger = get_logger(__name__)
 
+DISABLE_PUBLIC_CHECK_ENV = "UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK"
+
+
+def public_check_disabled() -> bool:
+    """True when the operator has turned off the third-party startup lookups.
+
+    On a wildcard bind Unsloth asks ifconfig.me for the public IP and check-host.net
+    whether the port is reachable. Both are useful for sharing a Studio but both tell
+    an outside service this machine is running one, which lab and privacy-sensitive
+    deployments do not want (#7307 Problem 8). Set the var to opt out.
+    """
+    return os.environ.get(DISABLE_PUBLIC_CHECK_ENV, "").strip().lower() in {"1", "true", "yes"}
+
 
 def _resolve_external_ip() -> str:
     """Resolve the machine's external IP address.
 
     Tries, in order:
     1. GCE metadata server (instant on Google Cloud VMs)
-    2. ifconfig.me (anywhere with internet)
+    2. ifconfig.me (anywhere with internet, skipped by UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK)
     3. LAN IP via UDP socket trick (fallback)
     """
     import urllib.request
@@ -136,14 +149,15 @@ def _resolve_external_ip() -> str:
     except Exception:
         pass
 
-    # 2. Public IP service.
-    try:
-        with urllib.request.urlopen("https://ifconfig.me", timeout = 3) as resp:
-            ip = resp.read().decode().strip()
-            if ip:
-                return ip
-    except Exception:
-        pass
+    # 2. Public IP service. Third-party, so skippable; the LAN address below still works.
+    if not public_check_disabled():
+        try:
+            with urllib.request.urlopen("https://ifconfig.me", timeout = 3) as resp:
+                ip = resp.read().decode().strip()
+                if ip:
+                    return ip
+        except Exception:
+            pass
 
     # 3. Fallback: LAN IP via UDP socket trick
     try:
@@ -232,7 +246,7 @@ def _working_local_url(port: int) -> "str | None":
 def _localhost_ipv6_mismatch_url(bind_host: str, port: int) -> "str | None":
     """Return the IPv4 loopback URL when localhost won't reach 127.0.0.1.
 
-    Local Studio binds to 127.0.0.1. Where localhost resolves to IPv6 only (::1),
+    Local Unsloth binds to 127.0.0.1. Where localhost resolves to IPv6 only (::1),
     http://localhost:<port> fails (or hits a different process on ::1) even though
     http://127.0.0.1:<port> works. Return the IPv4 URL for the caller to surface.
     """
@@ -243,7 +257,7 @@ def _localhost_ipv6_mismatch_url(bind_host: str, port: int) -> "str | None":
 
     ipv4_url = f"http://127.0.0.1:{port}"
 
-    # Only warn once Studio is confirmed answering on IPv4 loopback.
+    # Only warn once Unsloth is confirmed answering on IPv4 loopback.
     if _working_local_url(port) != ipv4_url:
         return None
 
@@ -265,7 +279,7 @@ def _localhost_ipv6_mismatch_url(bind_host: str, port: int) -> "str | None":
             if host == "::1":
                 has_ipv6_loopback = True
 
-    # A connection to ::1 is NOT evidence Studio is reachable there: Studio binds
+    # A connection to ::1 is NOT evidence Unsloth is reachable there: Unsloth binds
     # 127.0.0.1 only, so anything on ::1 is a different process. Dual-stack
     # localhost is fine (browsers fall back to 127.0.0.1), so only the IPv6-only
     # case strands the user.
@@ -287,7 +301,7 @@ def _stdout_color_ok() -> bool:
 
 
 def _print_localhost_ipv6_mismatch_warning(local_url: str, port: int) -> None:
-    """Warn that localhost points at ::1 while Studio is bound to 127.0.0.1."""
+    """Warn that localhost points at ::1 while Unsloth is bound to 127.0.0.1."""
     use_color = _stdout_color_ok()
     warn_c = "\033[38;5;215;1m" if use_color else ""
     reset = "\033[0m" if use_color else ""
@@ -303,8 +317,9 @@ def _print_localhost_ipv6_mismatch_warning(local_url: str, port: int) -> None:
 def _verify_global_reachability(display_host: str, port: int) -> None:
     """Probe check-host.net to confirm display_host:port is reachable from the
     public internet. Synchronous so output lands between the banner URLs and the
-    stop hint. Bounded at ~15s; failures swallowed (verifier failing != Studio
-    failing). Only meaningful for a wildcard bind."""
+    stop hint. Bounded at ~15s; failures swallowed (verifier failing != Unsloth
+    failing). Only meaningful for a wildcard bind, and skipped entirely by
+    UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK."""
     global _public_reachable
     # Reset to "unknown" each run; set True/False only when the probe decides.
     _public_reachable = None
@@ -343,6 +358,11 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
     except ValueError:
         # Not an IP literal; probe by hostname.
         pass
+
+    # The probe hands display_host:port to a third party and asks it to connect.
+    if public_check_disabled():
+        logger.debug("Skipping the check-host.net probe (%s).", DISABLE_PUBLIC_CHECK_ENV)
+        return
 
     try:
         qs = urllib.parse.urlencode({"host": f"{display_host}:{port}", "max_nodes": 3})
@@ -563,15 +583,15 @@ def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1
                     "  Cloudflare tunnel: ON. This Cloudflare URL is PUBLIC, and the "
                     "raw port is also publicly reachable. --no-cloudflare disables "
                     f"only the Cloudflare URL; bind {loopback_host} or close firewall "
-                    "access to keep Studio private.",
+                    "access to keep Unsloth private.",
                     warn,
                 )
             else:
                 _emit(
                     "  Cloudflare tunnel: ON. This is a PUBLIC internet URL: anyone "
-                    "who has it can reach this Studio. Relaunch with --no-cloudflare "
+                    "who has it can reach this Unsloth. Relaunch with --no-cloudflare "
                     f"to disable the Cloudflare URL; bind {loopback_host} or close "
-                    "firewall access to keep Studio private.",
+                    "firewall access to keep Unsloth private.",
                     warn,
                 )
         return
@@ -580,12 +600,12 @@ def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1
             _emit(
                 "  Cloudflare tunnel: requested but failed to start. The raw port is "
                 "still reachable from the public internet (see the reachability check "
-                "above): anyone who can reach it can access this Studio.",
+                "above): anyone who can reach it can access this Unsloth.",
                 warn,
             )
         elif _public_reachable is False:
             _emit(
-                "  Cloudflare tunnel: requested but failed to start. Studio is reachable "
+                "  Cloudflare tunnel: requested but failed to start. Unsloth is reachable "
                 "on your local network only (no public link).",
                 warn,
             )
@@ -593,7 +613,7 @@ def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1
             _emit(
                 "  Cloudflare tunnel: requested but failed to start. There is no "
                 "Cloudflare public link. Raw port reachability was not verified; "
-                f"bind {loopback_host} or close firewall access to keep Studio private.",
+                f"bind {loopback_host} or close firewall access to keep Unsloth private.",
                 warn,
             )
     elif _cloudflare_flag:
@@ -601,19 +621,19 @@ def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1
             _emit(
                 "  Cloudflare tunnel: OFF for this mode. The raw port is still "
                 "reachable from the public internet (see the reachability check above): "
-                "anyone who can reach it can access this Studio.",
+                "anyone who can reach it can access this Unsloth.",
                 warn,
             )
         elif _public_reachable is False:
             _emit(
-                "  Cloudflare tunnel: OFF for this mode. Studio is reachable on your "
+                "  Cloudflare tunnel: OFF for this mode. Unsloth is reachable on your "
                 "local network only (no public link)."
             )
         else:
             _emit(
                 "  Cloudflare tunnel: OFF for this mode. There is no Cloudflare public "
                 "link. Raw port reachability was not verified; "
-                f"bind {loopback_host} or close firewall access to keep Studio private.",
+                f"bind {loopback_host} or close firewall access to keep Unsloth private.",
                 warn,
             )
     elif _cloudflare_flag is False or _cloudflare_flag is None:
@@ -624,12 +644,12 @@ def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1
                 f"  Cloudflare tunnel: OFF ({_reason}). The raw port is still "
                 "reachable from the public internet (see the reachability check above): "
                 "pass --cloudflare to also expose a public Cloudflare HTTPS link, or "
-                f"bind {loopback_host} to keep Studio private.",
+                f"bind {loopback_host} to keep Unsloth private.",
                 warn,
             )
         elif _public_reachable is False:
             _emit(
-                f"  Cloudflare tunnel: OFF ({_reason}). Studio is reachable on your "
+                f"  Cloudflare tunnel: OFF ({_reason}). Unsloth is reachable on your "
                 "local network only. Pass --cloudflare to expose a public "
                 "Cloudflare HTTPS link."
             )
@@ -638,7 +658,7 @@ def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1
                 f"  Cloudflare tunnel: OFF ({_reason}). There is no Cloudflare "
                 "public link. Raw port reachability was not verified; pass --cloudflare "
                 "to expose a public Cloudflare HTTPS link, or "
-                f"bind {loopback_host} or close firewall access to keep Studio private.",
+                f"bind {loopback_host} or close firewall access to keep Unsloth private.",
                 warn,
             )
 
@@ -674,7 +694,7 @@ def _is_port_free(host: str, port: int) -> bool:
 
     For a ``0.0.0.0`` wildcard host, also check whether anything is listening on
     ``127.0.0.1`` (and ``::1`` when IPv6 exists): an SSH tunnel may hold loopback
-    while the wildcard bind succeeds, making Studio unreachable via ``localhost``.
+    while the wildcard bind succeeds, making Unsloth unreachable via ``localhost``.
     """
     import socket
 
@@ -754,7 +774,7 @@ def _write_pid_file():
     """Write the current process PID to the studio PID file."""
     try:
         _PID_FILE.parent.mkdir(parents = True, exist_ok = True)
-        _PID_FILE.write_text(str(os.getpid()))
+        _PID_FILE.write_text(str(os.getpid()), encoding = "utf-8")
     except OSError:
         pass
 
@@ -763,10 +783,10 @@ def _remove_pid_file():
     """Remove the PID file if it belongs to this process."""
     try:
         if _PID_FILE.is_file():
-            stored = _PID_FILE.read_text().strip()
+            stored = _PID_FILE.read_text(encoding = "utf-8").strip()
             if stored == str(os.getpid()):
                 _PID_FILE.unlink(missing_ok = True)
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
 
 
@@ -914,7 +934,7 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
             for finder in sp.glob("__editable___*_finder.py"):
                 try:
                     src = finder.read_text(encoding = "utf-8")
-                except OSError:
+                except (OSError, UnicodeDecodeError):
                     continue
                 # Tolerate single/multi-line dict literals; [^}]* rejects nested
                 # dicts, which the setuptools editable template never emits.
@@ -991,8 +1011,86 @@ class _TeeStream:
         except Exception:
             pass
 
+    def close(self):
+        # We do NOT own the console stream (it is the terminal / Jupyter kernel
+        # stream we wrapped), so closing the tee must never take the server down.
+        # Flush the log copy, then forward close() to the wrapped stream
+        # best-effort: on Colab that stream is an ipykernel OutStream whose
+        # close() can raise (see _harden_console_close / ipython/ipykernel#867).
+        try:
+            self._log_fh.flush()
+        except Exception:
+            pass
+        try:
+            self._stream.close()
+        except Exception:
+            pass
+
     def __getattr__(self, name):
         return getattr(self._stream, name)
+
+
+_WATCH_FD_THREAD_ATTR = "watch_fd_thread"
+
+
+def _is_missing_watch_fd_thread(exc):
+    """True only for ipython/ipykernel#867's missing-``watch_fd_thread`` error.
+
+    ``AttributeError.name`` exists from Python 3.10; the message carries the
+    attribute name on every version (possibly with a "Did you mean" tail), so
+    check both and let every other AttributeError through.
+    """
+    if getattr(exc, "name", None) == _WATCH_FD_THREAD_ATTR:
+        return True
+    return _WATCH_FD_THREAD_ATTR in str(exc)
+
+
+def _harden_console_close(stream):
+    """Stop a displaced console stream's close() from aborting Studio startup.
+
+    ``_setup_server_disk_logging`` replaces ``sys.stdout``/``sys.stderr`` with a
+    tee. That changes the object identity of the console stream, so a third-party
+    logging handler that captured the ORIGINAL stream (notably Colab's ``absl``
+    logging handler, whose ``close()`` skips ``sys.stdout``/``sys.stderr`` but not
+    a stream that is no longer either) treats it as an ordinary stream and calls
+    ``close()`` on it during logging teardown -- ``uvicorn.Config()`` ->
+    ``logging.config.dictConfig()`` -> ``logging.shutdown()``.
+
+    A Jupyter/Colab ``ipykernel`` ``OutStream`` created with ``watchfd=False``
+    (the Colab default, and every in-process kernel) never gains a
+    ``watch_fd_thread``, yet the ``OutStream.close()`` shipped in the affected
+    ipykernel versions joins that thread unconditionally and raises
+    ``AttributeError: 'OutStream' object has no attribute 'watch_fd_thread'``
+    (ipython/ipykernel#867). That AttributeError propagates out of
+    ``uvicorn.Config(...)`` and aborts startup ("Unsloth Studio failed to start").
+
+    Wrap the stream's ``close()`` in a transparent pass-through that swallows
+    ONLY that specific teardown AttributeError. A healthy close() (a real console
+    stream, or an OutStream with fd-watching on) runs to completion exactly as
+    before and any other error still propagates, so nothing changes off Colab. A
+    stream whose ``close`` cannot be reassigned keeps its original close().
+    """
+    try:
+        _orig_close = stream.close
+    except Exception:
+        return
+
+    def _safe_close(*args, **kwargs):
+        try:
+            return _orig_close(*args, **kwargs)
+        except AttributeError as exc:
+            if not _is_missing_watch_fd_thread(exc):
+                # A real teardown failure; never hide it.
+                raise
+            # ipython/ipykernel#867: watchfd=False OutStream.close() joins a
+            # thread that was never created. Nothing to clean up; keep going.
+            return None
+
+    try:
+        stream.close = _safe_close
+    except (AttributeError, TypeError):
+        # A stream that forbids setting instance attributes; leave it as-is.
+        pass
 
 
 def _setup_server_disk_logging():
@@ -1036,6 +1134,11 @@ def _setup_server_disk_logging():
     # Children (training workers) inherit: their native-crash stacks land on
     # the stderr the server already captures.
     os.environ.setdefault("PYTHONFAULTHANDLER", "1")
+
+    # Replacing the console streams orphans them from third-party "is this the
+    # live console?" checks, so guard their close() first (ipython/ipykernel#867).
+    _harden_console_close(sys.stdout)
+    _harden_console_close(sys.stderr)
 
     sys.stdout = _TeeStream(sys.stdout, log_fh)
     sys.stderr = _TeeStream(sys.stderr, log_fh)
@@ -1087,7 +1190,7 @@ def _terminal_password_gate(
 ) -> Tuple[bool, bool]:
     """Force a terminal password change before the public tunnel goes up.
 
-    When the tunnel is about to publish Studio and the seeded admin password was
+    When the tunnel is about to publish Unsloth and the seeded admin password was
     never changed, ask for a new one (masked, confirmed) before any public URL
     exists. The CLI normally does this before re-exec'ing the backend; this is
     the backstop for direct `python run.py` launches and older-CLI installs.
@@ -1147,7 +1250,7 @@ def _terminal_password_gate(
         )
         if not deadline_arms:
             print(
-                "Refusing to publish Studio on a public Cloudflare URL: the "
+                "Refusing to publish Unsloth on a public Cloudflare URL: the "
                 "default admin password was never changed, no terminal is "
                 "attached to change it here, and the bootstrap shutdown "
                 "deadline does not apply to this launch (api-only, or "
@@ -1163,11 +1266,11 @@ def _terminal_password_gate(
         # terminal-attached run / reset-password instead of reading it from disk.
         print(
             "  WARNING: the default admin password is still active while "
-            "Studio is about to be published on a public Cloudflare URL, and "
+            "Unsloth is about to be published on a public Cloudflare URL, and "
             "no terminal is attached to change it here. The public page will "
             "NOT auto-fill the bootstrap credential. Set a new password by "
             "running `unsloth studio` locally with a terminal attached, or "
-            "`unsloth studio reset-password`. Studio shuts down after the "
+            "`unsloth studio reset-password`. Unsloth shuts down after the "
             "bootstrap deadline (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) "
             "unless the password is changed.",
             file = sys.stderr,
@@ -1222,7 +1325,7 @@ def _apply_supplied_password(password_value: "Optional[str]") -> None:
     _auth_storage.ensure_default_admin()
     if not _auth_storage.requires_password_change(_admin):
         print(
-            "Error: a Studio admin password is already set; --password only sets "
+            "Error: an Unsloth admin password is already set; --password only sets "
             "the initial password. Run `unsloth studio reset-password` first.",
             file = sys.stderr,
             flush = True,
@@ -1240,6 +1343,13 @@ def _apply_supplied_password(password_value: "Optional[str]") -> None:
         print(
             f"Error: password must be at least {_auth_storage.MIN_PASSWORD_LENGTH} "
             "characters; not starting.",
+            file = sys.stderr,
+            flush = True,
+        )
+        sys.exit(1)
+    if any(ch.isspace() for ch in supplied):
+        print(
+            "Error: password cannot contain spaces; not starting.",
             file = sys.stderr,
             flush = True,
         )
@@ -1337,7 +1447,7 @@ def run_server(
             pass
 
     # Persist a session log + native-crash stacks BEFORE importing main, so
-    # even import-time failures leave evidence on disk. Field report: Studio
+    # even import-time failures leave evidence on disk. Field report: Unsloth
     # "terminates without a warning" -- a native crash in the GPU runtime
     # kills the process with no Python traceback, and a desktop-shortcut
     # console closes before anything can be read. Console-only logging made
@@ -1354,11 +1464,23 @@ def run_server(
     if secure:
         os.environ["UNSLOTH_SECURE"] = "1"
 
-    import nest_asyncio
-
-    nest_asyncio.apply()
-
     import asyncio
+
+    # nest_asyncio is for Colab/IPython, where the main thread already runs a loop
+    # the blocking waits below would collide with. Apply it only with a loop running
+    # (a plain CLI start has nothing to nest) and only on Python <= 3.13: on 3.14+
+    # its global Task patch leaves asyncio.current_task() None (tracking moved into
+    # C), which also breaks the background uvicorn loop and 500s every request. It
+    # is archived upstream, so no 3.14 fix is coming; skip it there.
+    if sys.version_info < (3, 14):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            import nest_asyncio
+            nest_asyncio.apply()
+
     from threading import Thread, Event
     import uvicorn
 
@@ -1394,7 +1516,7 @@ def run_server(
     ensure_studio_directories()
 
     logger.info(
-        "Ensured Studio directories in %.1fms",
+        "Ensured Unsloth directories in %.1fms",
         (time.perf_counter() - boot_started) * 1000,
     )
 
@@ -1443,7 +1565,7 @@ def run_server(
                 installer_bin = home / "unsloth_studio" / "bin" / "unsloth"
             tried_lines = "\n".join(f"  - {p}" for p in attempted) or "  (none)"
             raise SystemExit(
-                "[ERROR] Studio frontend build not found.\n"
+                "[ERROR] Unsloth frontend build not found.\n"
                 f"Tried:\n{tried_lines}\n"
                 "\n"
                 "Likely cause: another 'unsloth' on PATH is shadowing the "
@@ -1545,7 +1667,7 @@ def run_server(
     )
     if not _pw_proceed:
         print(
-            "Not starting Studio; set a new admin password first, or launch "
+            "Not starting Unsloth; set a new admin password first, or launch "
             "without --secure/--cloudflare.",
             file = sys.stderr,
             flush = True,
@@ -1683,7 +1805,7 @@ def run_server(
                 logger = logger,
             )
             logger.info(
-                "Studio will shut down in %ds unless the default admin password is changed.",
+                "Unsloth will shut down in %ds unless the default admin password is changed.",
                 _bootstrap_timeout,
             )
     except Exception as e:  # best-effort: never block startup on the timeout
@@ -1741,11 +1863,11 @@ def _build_arg_parser():
         "--cloudflare",
         action = argparse.BooleanOptionalAction,
         default = None,
-        help = "Expose Studio on a PUBLIC internet URL via a free Cloudflare HTTPS "
+        help = "Expose Unsloth on a PUBLIC internet URL via a free Cloudflare HTTPS "
         "tunnel, for non-api-only wildcard binds (0.0.0.0 or ::). Off by default; "
         "pass --cloudflare to enable it (--secure implies it), --no-cloudflare to "
         "force it off. It does not change a raw wildcard bind. If the admin "
-        "password was never changed, Studio asks for a new one in the terminal "
+        "password was never changed, Unsloth asks for a new one in the terminal "
         "before publishing the URL.",
     )
     parser.add_argument(
@@ -1755,7 +1877,7 @@ def _build_arg_parser():
         help = "Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
         "if the tunnel can't start. Without it, --no-secure also serves the raw "
         "0.0.0.0 port, which is reachable from anywhere on the network. If the "
-        "admin password was never changed, Studio asks for a new one in the "
+        "admin password was never changed, Unsloth asks for a new one in the "
         "terminal before publishing the URL.",
     )
     # Back-compat: accept --not-secure as a hidden alias for --no-secure.
@@ -1782,6 +1904,12 @@ def _build_arg_parser():
         action = "store_false",
         default = None,
         help = "Force server-side tools off for every request.",
+    )
+    parser.add_argument(
+        "--disable-dns-pinning",
+        action = "store_true",
+        help = "Allow hostname-based web fetches for enterprise proxies. WARNING: weakens "
+        "DNS-rebinding protection; hostname and redirect validation remain enabled.",
     )
     parser.add_argument(
         "--parallel",
@@ -1822,6 +1950,10 @@ if __name__ == "__main__":
         parser.error(
             "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare"
         )
+    if args.disable_dns_pinning:
+        os.environ["UNSLOTH_STUDIO_DISABLE_DNS_PINNING"] = "1"
+    else:
+        os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "0")
 
     kwargs = dict(
         host = args.host,

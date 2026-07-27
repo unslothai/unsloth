@@ -3,7 +3,7 @@
 
 """Tests for the offload-avoidance serving-slot reduction (`_slots_that_fit_on_gpu`).
 
-When a pinned context does not fit at the requested `--parallel` slot count, Studio would
+When a pinned context does not fit at the requested `--parallel` slot count, Unsloth would
 flip to `--fit on` and llama-server offloads layers to host RAM, collapsing decode ~3x
 (oobabooga #6718). Instead the loader retries the on-GPU fit at fewer slots and keeps the
 largest count that stays fully on GPU (`-ngl -1`). These tests drive the real helper with
