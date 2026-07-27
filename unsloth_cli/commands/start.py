@@ -559,11 +559,18 @@ def _subagent_model_id(
             )
         if status.get("is_gguf"):
             variant = status.get("gguf_variant")
-    return (
-        _display_model_spec(model_id, str(variant))
-        if variant and _is_hub_model_id(model_id)
-        else model_id
-    )
+    if variant and _is_hub_model_id(model_id):
+        return _display_model_spec(model_id, str(variant))
+    if variant:
+        # A path load is advertised as a bare basename with no ":variant" channel,
+        # so the quant cannot be recorded and a later reload picks for itself.
+        typer.echo(
+            f"Warning: {model_id} loaded from a path, so the subagent config cannot "
+            f"pin the {variant} quant; a reload may choose a different one. Load the "
+            "model by repository id to pin it.",
+            err = True,
+        )
+    return model_id
 
 
 def _fail(message: str) -> NoReturn:
@@ -572,9 +579,8 @@ def _fail(message: str) -> NoReturn:
 
 
 def _reject_as_subagent(agent: str, args: list) -> None:
-    # Reject early; otherwise the flag reaches the agent binary and fails after
-    # Studio has already loaded the model.
-    if "--as-subagent" in args:
+    # Reject early, or the flag reaches the agent binary after Studio loaded the model.
+    if any(arg == "--as-subagent" or arg.startswith("--as-subagent=") for arg in args):
         _fail(f"--as-subagent is not supported for {agent}.")
 
 
@@ -1386,6 +1392,37 @@ def _is_hub_model_id(value: object) -> bool:
     return True
 
 
+def _is_model_path(value: str) -> bool:
+    """Mirrors core.inference.model_ids._looks_like_path: a repo id is exactly
+    ``org/model``; anything else with a separator, drive, prefix or .gguf is a path.
+
+    Deliberately not named _looks_like_path: that name is taken further down by the
+    WSLENV classifier, which only matches absolute paths and would shadow this one.
+    """
+    if value.lower().endswith(".gguf"):
+        return True
+    if value.startswith(("/", "\\", "./", "../", ".\\", "..\\", "~")):
+        return True
+    if len(value) >= 2 and value[1] == ":":
+        return True
+    return value.count("/") >= 2 or "\\" in value
+
+
+def _public_model_id(value: Optional[str]) -> Optional[str]:
+    """The id Unsloth advertises for a model loaded by path.
+
+    /v1/models never echoes a host path: it reports the file or directory name
+    with any .gguf suffix stripped (core.inference.model_ids.public_model_id), so
+    a path we asked to load has to be matched by that name too.
+    """
+    if not value or not _is_model_path(value):
+        return None
+    name = os.path.basename(value.replace("\\", "/").rstrip("/"))
+    if name.lower().endswith(".gguf"):
+        name = name[: -len(".gguf")]
+    return name or None
+
+
 def _model_id_matches(
     actual: object,
     requested: object,
@@ -1486,7 +1523,7 @@ def _resolve_model(
         # casing) that /v1/models echoes but which may differ from the path we
         # passed; match on the id the load reports so we don't silently fall
         # through to models[0] and connect to a different loaded model.
-        wanted = {requested}
+        wanted = {requested, _public_model_id(requested)} - {None}
         if isinstance(loaded, dict):
             wanted |= {loaded.get("model"), loaded.get("display_name")} - {None}
         models = _loaded_models(base, key)
@@ -1954,7 +1991,15 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
     def merge_provider_filters(effective_config: dict) -> None:
         enabled = effective_config.get("enabled_providers")
         if isinstance(enabled, list):
-            inline["enabled_providers"] = list(dict.fromkeys([*enabled, _OPENCODE_PROVIDER]))
+            inherited_enabled = inline.get("enabled_providers")
+            if not isinstance(inherited_enabled, list):
+                inherited_enabled = []
+            providers = [
+                provider
+                for provider in [*inherited_enabled, *enabled]
+                if provider != _OPENCODE_PROVIDER
+            ]
+            inline["enabled_providers"] = list(dict.fromkeys([*providers, _OPENCODE_PROVIDER]))
         disabled = effective_config.get("disabled_providers")
         if isinstance(disabled, list) and _OPENCODE_PROVIDER in disabled:
             inline["disabled_providers"] = [
@@ -2871,7 +2916,13 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
         typer.echo(f"Updated {path}")
 
 
-def write_pi_subagent_config(base: str, key: str, model: dict, path: Path) -> None:
+def write_pi_subagent_config(
+    base: str,
+    key: str,
+    model: dict,
+    path: Path,
+    approve: bool = False,
+) -> None:
     """Write private bootstrap data for the bundled Pi extension."""
     window = model.get("context_length") or model.get("max_context_length")
     window = int(window) if window else 32768
@@ -2883,6 +2934,7 @@ def write_pi_subagent_config(base: str, key: str, model: dict, path: Path) -> No
             "model": model["id"],
             "contextWindow": window,
             "maxTokens": min(window // 4, 8192),
+            "approve": approve,
         },
     )
 
@@ -3452,7 +3504,13 @@ def pi(
         extension = _agent_config_path(_PI_SUBAGENT_EXTENSION, ["pi"])
         with _session_config("pi-subagent", launch, persist = persist) as config:
             config_path = config / "subagent.json"
-            write_pi_subagent_config(base, key, subagent_model, config_path)
+            write_pi_subagent_config(
+                base,
+                key,
+                subagent_model,
+                config_path,
+                approve = yolo,
+            )
             command = [
                 "pi",
                 "--extension",

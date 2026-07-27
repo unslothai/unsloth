@@ -1108,7 +1108,7 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     monkeypatch.setattr(
         models_route,
         "_scan_hf_cache",
-        lambda d: scanned.append(("hf", str(Path(d).resolve()))) or [],
+        lambda d, **_: scanned.append(("hf", str(Path(d).resolve()))) or [],
     )
     monkeypatch.setattr(
         models_route,
@@ -1335,6 +1335,56 @@ def test_hf_cache_entry_loads_from_local_snapshot_path(tmp_path):
 
 
 # ── review round 5: concurrent-swap, repo-id identity, /v1/models id, gate, 503 ──
+
+
+def _revision_pair(root, complete: bool):
+    """Two revisions of one cache repo; the newer one is optionally half-downloaded."""
+    snaps = root / "models--org--Repo" / "snapshots"
+    old, new = snaps / "rev-old", snaps / "rev-new"
+    for path in (old, new):
+        path.mkdir(parents = True)
+    (old / "model-Q8_0.gguf").write_bytes(b"GGUF stub")
+    name = "model-Q4_K_M.gguf" if complete else "model-Q4_K_M-00001-of-00003.gguf"
+    (new / name).write_bytes(b"GGUF stub")
+    return old, new
+
+
+def test_sibling_revision_resolves_to_its_own_weights(tmp_path):
+    # /v1/models advertises only the snapshot dir name, so a durable pin holds one
+    # revision hash. A newer snapshot must not strand it, and the old revision must
+    # resolve to ITS OWN directory rather than be redirected onto the newest.
+    old, new = _revision_pair(tmp_path, complete = True)
+
+    found = dict(resolver._sibling_revision_entries(str(new), "org/Repo"))
+
+    assert "rev-old" in found
+    assert found["rev-old"].load_path == str(old)
+
+
+def test_incomplete_sibling_revision_is_not_indexed(tmp_path):
+    # A half-downloaded revision cannot load, so naming it must not resolve to it.
+    old, _new = _revision_pair(tmp_path, complete = False)
+    # Point the scan at the complete one; the partial sibling is the candidate here.
+    found = dict(resolver._sibling_revision_entries(str(old), "org/Repo"))
+
+    assert "rev-new" not in found
+
+
+def test_sibling_revisions_ignore_a_scan_folder_named_snapshots(tmp_path):
+    # A user scan folder called "snapshots" holds unrelated models, not revisions of
+    # one repo; treating them as revisions would silently serve model-a as model-b.
+    snaps = tmp_path / "snapshots"
+    for name in ("model-a", "model-b"):
+        (snaps / name).mkdir(parents = True)
+        (snaps / name / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
+
+    found = dict(resolver._sibling_revision_entries(str(snaps / "model-a"), "model-a"))
+
+    assert found == {}
+
+
+def test_sibling_revisions_skip_plain_repo_ids():
+    assert dict(resolver._sibling_revision_entries("org/Repo-GGUF", "org/Repo-GGUF")) == {}
 
 
 def test_already_loaded_by_repo_id_is_not_reswapped(monkeypatch):

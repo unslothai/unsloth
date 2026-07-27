@@ -11,6 +11,7 @@ export {
   type AuthFetchGuard,
 } from "./api";
 export {
+  AUTH_SESSION_CLEARED_EVENT,
   clearAuthTokens,
   getAuthToken,
   getAuthSubjectKey,

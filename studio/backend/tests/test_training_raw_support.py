@@ -163,13 +163,13 @@ class TestTrainingRawSupport(unittest.TestCase):
     def test_route_forwards_all_grad_clipping_fields(self):
         # The HTTP route builds the config dict by hand; a schema field that
         # is not forwarded here is silently dropped for REST callers.
-        source = (_BACKEND_ROOT / "routes" / "training.py").read_text()
+        source = (_BACKEND_ROOT / "routes" / "training.py").read_text(encoding = "utf-8")
         self.assertIn('"max_grad_norm": request.max_grad_norm', source)
         self.assertIn('"max_grad_value": request.max_grad_value', source)
         self.assertIn('"max_grad_leaf_norm": request.max_grad_leaf_norm', source)
 
     def test_mlx_worker_falls_back_init_seeds_to_random_seed(self):
-        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text()
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
 
         # random_seed itself is normalized first so explicit None coming
         # from a raw / backend caller does not propagate through the chain.
@@ -198,7 +198,7 @@ class TestTrainingRawSupport(unittest.TestCase):
         self.assertIn("seed = random_seed,", source)
 
     def test_mlx_worker_preserves_null_max_grad_value_for_trainer_default(self):
-        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text()
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
 
         # None must survive to the MLX trainer so it picks its own runtime
         # default, and any other value must coerce to float without
@@ -251,7 +251,7 @@ class TestTrainingRawSupport(unittest.TestCase):
         # unsloth-zoo update. Until that floor is in place, the
         # worker must gate them so releases that predate those fields can
         # still construct MLXTrainingConfig without TypeError.
-        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text()
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
 
         self.assertIn(
             'getattr(MLXTrainingConfig, "__dataclass_fields__", {})',
