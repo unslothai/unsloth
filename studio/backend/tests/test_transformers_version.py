@@ -180,7 +180,7 @@ class TestRemoteLoraBase:
     def test_fetches_base_from_remote_adapter_config(self, monkeypatch):
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         cfg = {"base_model_name_or_path": "nvidia/NVIDIA-Nemotron-3-Nano-4B"}
-        with patch("urllib.request.urlopen", return_value = self._resp(cfg)):
+        with patch("utils.transformers_version._hub_urlopen", return_value = self._resp(cfg)):
             assert (
                 _remote_lora_base("someuser/my-nemotron-lora") == "nvidia/NVIDIA-Nemotron-3-Nano-4B"
             )
@@ -199,7 +199,7 @@ class TestRemoteLoraBase:
             seen["url"] = req.full_url
             return self._resp({"base_model_name_or_path": "org/base"})
 
-        with patch("urllib.request.urlopen", side_effect = fake_urlopen):
+        with patch("utils.transformers_version._hub_urlopen", side_effect = fake_urlopen):
             assert _remote_lora_base("user/adapter") == "org/base"
         assert seen["url"].startswith("https://hf.mirror.internal/user/adapter/raw/main/")
 
@@ -221,7 +221,7 @@ class TestRemoteLoraBase:
         self._seed_adapter_cache(tmp_path, "user/cached-lora", "nvidia/Nemotron-H-8B")
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-        with patch("urllib.request.urlopen") as mock_url:
+        with patch("utils.transformers_version._hub_urlopen") as mock_url:
             assert _remote_lora_base("user/cached-lora") == "nvidia/Nemotron-H-8B"
             mock_url.assert_not_called()  # offline: cache only, no network
 
@@ -229,20 +229,20 @@ class TestRemoteLoraBase:
         self._seed_adapter_cache(tmp_path, "user/cached-lora", "nvidia/Nemotron-H-8B")
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+        with patch("utils.transformers_version._hub_urlopen", side_effect = OSError("boom")):
             assert _remote_lora_base("user/cached-lora") == "nvidia/Nemotron-H-8B"
 
     def test_offline_uncached_makes_no_request(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-        with patch("urllib.request.urlopen") as mock_url:
+        with patch("utils.transformers_version._hub_urlopen") as mock_url:
             assert _remote_lora_base("org/adapter") is None
             mock_url.assert_not_called()
 
     def test_non_adapter_repo_returns_none(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+        with patch("utils.transformers_version._hub_urlopen", side_effect = OSError("boom")):
             assert _remote_lora_base("org/not-an-adapter") is None
 
     def test_existing_relative_path_not_treated_as_repo(self, monkeypatch):
@@ -250,7 +250,7 @@ class TestRemoteLoraBase:
         # a Hub repo: no request, no risk of matching an unrelated remote/cached adapter.
         import utils.paths as paths
         monkeypatch.setattr(paths, "is_local_path", lambda p: True)
-        with patch("urllib.request.urlopen") as mock_url:
+        with patch("utils.transformers_version._hub_urlopen") as mock_url:
             assert _remote_lora_base("outputs/run1") is None
             mock_url.assert_not_called()
 
@@ -263,7 +263,7 @@ class TestRemoteLoraBase:
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         err = urllib.error.HTTPError("url", 404, "Not Found", {}, None)
-        with patch("urllib.request.urlopen", side_effect = err):
+        with patch("utils.transformers_version._hub_urlopen", side_effect = err):
             assert _remote_lora_base("user/was-a-lora") is None
 
     def test_transient_http_error_falls_back_to_cache(self, tmp_path: Path, monkeypatch):
@@ -273,7 +273,7 @@ class TestRemoteLoraBase:
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         err = urllib.error.HTTPError("url", 503, "Service Unavailable", {}, None)
-        with patch("urllib.request.urlopen", side_effect = err):
+        with patch("utils.transformers_version._hub_urlopen", side_effect = err):
             assert _remote_lora_base("user/cached-lora") == "nvidia/Nemotron-H-8B"
 
 
@@ -322,7 +322,7 @@ class TestCheckTokenizerConfigNeedsV5:
         tc = {"tokenizer_class": "LlamaTokenizerFast"}
         (tmp_path / "tokenizer_config.json").write_text(json.dumps(tc))
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("utils.transformers_version._hub_urlopen") as mock_urlopen:
             result = _check_tokenizer_config_needs_v5(str(tmp_path))
             mock_urlopen.assert_not_called()
         assert result is False
@@ -368,7 +368,7 @@ class TestCheckTokenizerConfigNeedsV5:
                 return _Resp(json.dumps({"tokenizer_class": "TokenizersBackend"}))
             raise OSError("HTTP 401")
 
-        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", fake_urlopen)
         assert _check_tokenizer_config_needs_v5("org/gated") is False  # unauth miss
         assert _check_tokenizer_config_needs_v5("org/gated", "tok") is True  # authed hit
         assert seen_auth == [None, "Bearer tok"]
@@ -455,7 +455,7 @@ class TestCheckConfigNeeds550:
     def test_no_config_json(self, tmp_path: Path):
         """Missing config.json should return False (fail-open)."""
         # Patch network call to avoid a real fetch.
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("utils.transformers_version._hub_urlopen") as mock_urlopen:
             mock_urlopen.side_effect = Exception("no network")
             assert _check_config_needs_550(str(tmp_path)) is False
 
@@ -474,7 +474,7 @@ class TestCheckConfigNeeds550:
         cfg = {"architectures": ["LlamaForCausalLM"]}
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("utils.transformers_version._hub_urlopen") as mock_urlopen:
             _check_config_needs_550(str(tmp_path))
             mock_urlopen.assert_not_called()
 
@@ -599,7 +599,7 @@ class TestCheckConfigNeeds510:
         (tmp_path / "config.json").write_text(json.dumps(cfg))
         monkeypatch.setattr(tv, "_env_offline", lambda: True)
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("utils.transformers_version._hub_urlopen") as mock_urlopen:
             assert get_transformers_tier(str(tmp_path), probe = False) == "default"
             mock_urlopen.assert_not_called()
 
@@ -628,7 +628,7 @@ class TestCheckConfigNeeds510:
             seen["url"] = req.full_url
             return _Resp()
 
-        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", _urlopen)
         text = _read_repo_text_file("org/custom-remote", "modeling_custom.py")
         assert "output_capturing" in text
         assert seen["url"].startswith("https://hf-mirror.example/org/custom-remote/raw/main/")
@@ -706,7 +706,7 @@ class TestCheckConfigNeeds510:
     def test_no_config_json(self, tmp_path: Path):
         """Missing config.json should return False (fail-open)."""
         # Patch network call to avoid real fetch
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("utils.transformers_version._hub_urlopen") as mock_urlopen:
             mock_urlopen.side_effect = Exception("no network")
             assert _check_config_needs_510(str(tmp_path)) is False
 
@@ -725,7 +725,7 @@ class TestCheckConfigNeeds510:
         cfg = {"architectures": ["LlamaForCausalLM"]}
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("utils.transformers_version._hub_urlopen") as mock_urlopen:
             _check_config_needs_510(str(tmp_path))
             mock_urlopen.assert_not_called()
 
@@ -838,7 +838,7 @@ class TestConfigJsonHfCacheFallback:
         self._seed_cache(tmp_path, "unsloth/NVIDIA-Nemotron-3-Nano-4B", cfg)
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-        with patch("urllib.request.urlopen") as mock_url:
+        with patch("utils.transformers_version._hub_urlopen") as mock_url:
             assert _load_config_json("unsloth/NVIDIA-Nemotron-3-Nano-4B") == cfg
             mock_url.assert_not_called()
 
@@ -849,7 +849,7 @@ class TestConfigJsonHfCacheFallback:
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
-        with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
+        with patch("utils.transformers_version._hub_urlopen", return_value = _hf_response(fresh)):
             assert _load_config_json("org/model") == fresh  # network wins, not stale cache
 
     def test_network_failure_falls_back_to_cache(self, tmp_path: Path, monkeypatch):
@@ -857,13 +857,13 @@ class TestConfigJsonHfCacheFallback:
         self._seed_cache(tmp_path, "org/model", cfg)
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+        with patch("utils.transformers_version._hub_urlopen", side_effect = OSError("boom")):
             assert _load_config_json("org/model") == cfg
 
     def test_offline_uncached_returns_none(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-        with patch("urllib.request.urlopen") as mock_url:
+        with patch("utils.transformers_version._hub_urlopen") as mock_url:
             assert _load_config_json("private/unknown") is None
             mock_url.assert_not_called()
 
@@ -894,10 +894,10 @@ class TestConfigJsonHfCacheFallback:
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         # Network fails -> serve the cached snapshot, but it must not be memoized.
-        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+        with patch("utils.transformers_version._hub_urlopen", side_effect = OSError("boom")):
             assert _load_config_json("org/model") == stale
         # Connectivity returns: the next call must hit the network for the fresh config.
-        with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
+        with patch("utils.transformers_version._hub_urlopen", return_value = _hf_response(fresh)):
             assert _load_config_json("org/model") == fresh
 
     def test_auth_failure_does_not_serve_cache(self, tmp_path: Path, monkeypatch):
@@ -912,7 +912,7 @@ class TestConfigJsonHfCacheFallback:
         for code in (401, 403, 404):
             _config_json_cache.clear()
             err = urllib.error.HTTPError("url", code, "denied", {}, None)
-            with patch("urllib.request.urlopen", side_effect = err):
+            with patch("utils.transformers_version._hub_urlopen", side_effect = err):
                 assert _load_config_json("private/model") is None
 
     def test_server_error_still_falls_back_to_cache(self, tmp_path: Path, monkeypatch):
@@ -924,7 +924,7 @@ class TestConfigJsonHfCacheFallback:
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         # A 5xx is transient, not an access decision: keep serving the cache.
         err = urllib.error.HTTPError("url", 503, "busy", {}, None)
-        with patch("urllib.request.urlopen", side_effect = err):
+        with patch("utils.transformers_version._hub_urlopen", side_effect = err):
             assert _load_config_json("org/model") == cfg
 
 
@@ -957,11 +957,11 @@ class TestTierCheckTransientRetry:
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         # Network blip -> serve the cache, but do NOT pin the tier result.
-        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+        with patch("utils.transformers_version._hub_urlopen", side_effect = OSError("boom")):
             assert _check_config_needs_510("org/model") is False
         assert ("org/model", None) not in _config_needs_510_cache
         # Connectivity returns: the next call re-fetches and sees the higher tier.
-        with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
+        with patch("utils.transformers_version._hub_urlopen", return_value = _hf_response(fresh)):
             assert _check_config_needs_510("org/model") is True
         assert _config_needs_510_cache[("org/model", None)] is True  # definitive read memoized
 
@@ -969,7 +969,7 @@ class TestTierCheckTransientRetry:
         fresh = {"architectures": ["Gemma4ForConditionalGeneration"]}  # needs 550
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-        with patch("urllib.request.urlopen", return_value = _hf_response(fresh)) as mock_url:
+        with patch("utils.transformers_version._hub_urlopen", return_value = _hf_response(fresh)) as mock_url:
             assert _check_config_needs_550("org/model") is True
             assert _check_config_needs_550("org/model") is True
             assert mock_url.call_count == 1  # second call served from the tier cache
@@ -1248,7 +1248,7 @@ class TestGetTransformersTier:
             json.dumps({"tokenizer_class": "TokenizersBackend"})
         )
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("utils.transformers_version._hub_urlopen") as mock_urlopen:
             assert get_transformers_tier(str(tmp_path)) == "510"
             mock_urlopen.assert_not_called()
 
@@ -1270,7 +1270,7 @@ class TestGetTransformersTier:
                     }
                 ).encode()
 
-        with patch("urllib.request.urlopen", return_value = _Response()):
+        with patch("utils.transformers_version._hub_urlopen", return_value = _Response()):
             assert get_transformers_tier("unsloth/NVIDIA-Nemotron-3-Nano-4B") == "510"
 
     def test_local_config_json_short_circuits_path_substrings(self, tmp_path: Path):
@@ -1289,7 +1289,7 @@ class TestGetTransformersTier:
             json.dumps({"tokenizer_class": "LlamaTokenizerFast"})
         )
 
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("utils.transformers_version._hub_urlopen") as mock_urlopen:
             assert get_transformers_tier(str(model_dir)) == "default"
             mock_urlopen.assert_not_called()
 
@@ -1327,7 +1327,7 @@ class TestGetTransformersTier:
             urls.append(req.full_url)
             return _Response()
 
-        with patch("urllib.request.urlopen", side_effect = _fake_urlopen):
+        with patch("utils.transformers_version._hub_urlopen", side_effect = _fake_urlopen):
             assert get_transformers_tier("org/no-fast-substring-model") == "550"
 
         assert sum(u.endswith("/config.json") for u in urls) == 1
@@ -1878,7 +1878,7 @@ class TestLocalCheckpointFilesAppear:
         def boom(*a, **k):
             raise AssertionError("a local checkpoint must not be fetched from the Hub")
 
-        monkeypatch.setattr("urllib.request.urlopen", boom)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", boom)
         # Before the file exists: not 5.x, no network, and the miss must not be pinned.
         assert _check_tokenizer_config_needs_v5(local) is False
         # The file appears with a 5.x-only tokenizer -> the next call must read it.
@@ -1893,7 +1893,7 @@ class TestLocalCheckpointFilesAppear:
         def boom(*a, **k):
             raise AssertionError("a local checkpoint must not be fetched from the Hub")
 
-        monkeypatch.setattr("urllib.request.urlopen", boom)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", boom)
         assert _load_config_json(local) is None
         (tmp_path / "config.json").write_text(json.dumps({"model_type": "gemma4"}))
         assert _load_config_json(local) == {"model_type": "gemma4"}
@@ -2860,7 +2860,7 @@ class TestOfflineCacheNotPoisoned:
             def __exit__(self, *a):
                 return False
 
-        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout = 10: _Resp())
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", lambda req, timeout = 10: _Resp())
         assert _check_tokenizer_config_needs_v5("org/needs5") is True
 
     def test_offline_config_miss_not_cached(self, monkeypatch):
@@ -3756,7 +3756,7 @@ class TestTokenizerAutoMapTransientScan:
                 "from transformers.tokenization_utils_tokenizers import TokenizersBackend\n"
             ),
         )
-        with patch("urllib.request.urlopen", return_value = _hf_response(tok_cfg)):
+        with patch("utils.transformers_version._hub_urlopen", return_value = _hf_response(tok_cfg)):
             assert _check_tokenizer_config_needs_v5("org/tok-only") is False
             assert not _tokenizer_class_cache  # nothing memoized at any key
             state["listing_ok"] = True
@@ -3776,7 +3776,7 @@ class TestTokenizerAutoMapTransientScan:
         monkeypatch.setattr(
             tv, "_read_repo_text_file", lambda model, fn, tok = None: "import torch\n"
         )
-        with patch("urllib.request.urlopen", return_value = _hf_response(tok_cfg)) as mock_url:
+        with patch("utils.transformers_version._hub_urlopen", return_value = _hf_response(tok_cfg)) as mock_url:
             assert _check_tokenizer_config_needs_v5("org/tok-only") is False
             after_first = mock_url.call_count
             assert _check_tokenizer_config_needs_v5("org/tok-only") is False
@@ -3793,7 +3793,7 @@ class TestProbeFalseSkipsAutoMapScan:
 
     def test_probe_false_does_no_hub_io(self, monkeypatch):
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-        with patch("urllib.request.urlopen") as mock_url:
+        with patch("utils.transformers_version._hub_urlopen") as mock_url:
             assert get_transformers_tier("Qwen/Qwen3.5-9B", probe = False) == "530"
             mock_url.assert_not_called()
         assert needs_transformers_5("Qwen/Qwen3.5-9B") is True
@@ -3878,7 +3878,7 @@ class TestHubTreePagination:
                 return _PagedResponse(json.dumps(page2).encode())
             raise _http_error(url, 404)
 
-        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", _urlopen)
         assert tv._list_hub_repo_py_files("org/big") == ({"modeling_custom.py"}, True)
 
     def test_single_page_still_one_request(self, monkeypatch):
@@ -3892,7 +3892,7 @@ class TestHubTreePagination:
             calls.append(req.full_url)
             return _PagedResponse(json.dumps([{"type": "file", "path": "a.py"}]).encode())
 
-        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", _urlopen)
         assert tv._list_hub_repo_py_files("org/small") == ({"a.py"}, True)
         assert len(calls) == 1
 
@@ -3908,7 +3908,7 @@ class TestHubTreePagination:
                 raise OSError("connection reset on page 2")
             return _PagedResponse(json.dumps([{"type": "file", "path": "a.py"}]).encode(), cursor)
 
-        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", _urlopen)
         assert tv._list_hub_repo_py_files("org/big") == (set(), False)
 
     def test_non_http_pagination_link_is_refused(self, monkeypatch):
@@ -3920,7 +3920,7 @@ class TestHubTreePagination:
         def _urlopen(req, timeout = 10):
             return _PagedResponse(json.dumps([]).encode(), "file:///etc/passwd")
 
-        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", _urlopen)
         assert tv._list_hub_repo_py_files("org/evil") == (set(), False)
 
 
@@ -3957,7 +3957,7 @@ class TestUnreadableAutoMapConfigIsInconclusive:
                 return _PagedResponse(_V5_IMPORT.encode())
             raise _http_error(url, 404)
 
-        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", _urlopen)
         needs, definitive = tv._remote_auto_map_scan_result("org/custom-remote")
         assert (needs, definitive) == (False, False)
         assert not _remote_auto_map_tier_cache  # the outage cached nothing
@@ -3976,7 +3976,7 @@ class TestUnreadableAutoMapConfigIsInconclusive:
         def _urlopen(req, timeout = 10):
             raise _http_error(req.full_url, 404)
 
-        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", _urlopen)
         assert tv._remote_auto_map_scan_result("org/plain-model") == (False, True)
         assert _remote_auto_map_tier_cache  # definitive, so memoized
 
@@ -4013,7 +4013,7 @@ class TestProcessorOnlyAutoMapIsScanned:
                 return _PagedResponse(_V5_IMPORT.encode())
             raise _http_error(url, 404)
 
-        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", _urlopen)
         assert tv._remote_auto_map_tier("org/vlm-remote")[0] == "530"
 
     def test_repo_without_any_auto_map_fetches_no_py(self, monkeypatch, tmp_path):
@@ -4030,7 +4030,7 @@ class TestProcessorOnlyAutoMapIsScanned:
                 return _PagedResponse(json.dumps({"model_type": "llama"}).encode())
             raise _http_error(req.full_url, 404)
 
-        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", _urlopen)
         assert tv._check_remote_auto_map_needs_510("org/plain-model") is False
         assert not any("/tree/" in u for u in urls)
         assert not any(u.endswith(".py") for u in urls)
@@ -4067,7 +4067,7 @@ class TestScanPrerequisiteConfigHonorsHfEndpoint:
                 return _PagedResponse(_V5_IMPORT.encode())
             raise _http_error(url, 404)
 
-        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", _urlopen)
         assert tv._load_config_json("org/custom-remote") is not None
         assert tv._remote_auto_map_tier("org/custom-remote")[0] == "530"
 
@@ -4084,7 +4084,7 @@ class TestScanPrerequisiteConfigHonorsHfEndpoint:
             seen["url"] = req.full_url
             return _PagedResponse(json.dumps({"model_type": "llama"}).encode())
 
-        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", _urlopen)
         tv._load_config_json("org/model")
         assert seen["url"] == "https://huggingface.co/org/model/raw/main/config.json"
 
@@ -4109,7 +4109,7 @@ class TestRemoteSourceEncoding:
             latin1.decode("utf-8")
 
         monkeypatch.setattr(
-            "urllib.request.urlopen", lambda req, timeout = 10: _PagedResponse(latin1)
+            "utils.transformers_version._hub_urlopen", lambda req, timeout = 10: _PagedResponse(latin1)
         )
         text = tv._read_repo_text_file("org/custom-remote", "modeling_custom.py")
         assert text is not None
@@ -4122,7 +4122,7 @@ class TestRemoteSourceEncoding:
 
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         monkeypatch.setattr(
-            "urllib.request.urlopen",
+            "utils.transformers_version._hub_urlopen",
             lambda req, timeout = 10: _PagedResponse(b"\xff\xfe\x00\x01 not utf-8"),
         )
         assert tv._read_repo_text_file("org/custom-remote", "modeling_custom.py") is not None
@@ -4134,7 +4134,7 @@ class TestRemoteSourceEncoding:
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         src = "# café\nfrom transformers.utils.output_capturing import capture\n"
         monkeypatch.setattr(
-            "urllib.request.urlopen",
+            "utils.transformers_version._hub_urlopen",
             lambda req, timeout = 10: _PagedResponse(src.encode("utf-8")),
         )
         assert tv._read_repo_text_file("org/custom-remote", "modeling_custom.py") == src
@@ -4332,7 +4332,7 @@ class TestTokenizerConfigFetchHonorsEndpoint:
                 return _PagedResponse(tok_cfg)
             raise _http_error(req.full_url, 404)
 
-        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", _urlopen)
         monkeypatch.setattr(
             tv, "_list_hub_repo_py_files", lambda repo, tok = None: ({"tokenization_my.py"}, True)
         )
@@ -4380,7 +4380,7 @@ class TestProbeFalseSkipsConfigFallbackScan:
                 return _PagedResponse(_V5_IMPORT.encode())
             raise _http_error(req.full_url, 404)
 
-        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", _urlopen)
         return urls
 
     def test_probe_false_does_not_list_or_fetch_repo_code(self, monkeypatch, tmp_path):
@@ -4451,7 +4451,7 @@ class TestPartialHubFetchKeepsProof:
                     return _PagedResponse(text.encode())
             raise _http_error(url, 404)
 
-        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", _urlopen)
 
     def test_marker_in_earlier_file_survives_a_later_fetch_failure(self, monkeypatch, tmp_path):
         import utils.transformers_version as tv
@@ -4718,7 +4718,7 @@ class TestHubPaginationStaysOnTheConfiguredOrigin:
                 ["a.py"], next_url = "https://evil.example/api/models/x/tree/main?cursor=2"
             )
 
-        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", _urlopen)
         assert tv._hf_api_get_json("/api/models/org/m/tree/main", "hf_secret") == (None, False)
         assert [url for url, _ in seen] == ["https://hub.internal/api/models/org/m/tree/main"]
         assert not any("evil.example" in url for url, _ in seen)
@@ -4740,7 +4740,7 @@ class TestHubPaginationStaysOnTheConfiguredOrigin:
                 next_url = "https://huggingface.co/api/models/org/m/tree/main?cursor=2",
             )
 
-        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", _urlopen)
         data, ok = tv._hf_api_get_json("/api/models/org/m/tree/main", "hf_secret")
         assert ok is True
         assert [item["path"] for item in data] == ["a.py", "b.py"]
@@ -4760,7 +4760,7 @@ class TestHubPaginationStaysOnTheConfiguredOrigin:
                 ["a.py"], next_url = "https://mirror.internal/api/models/org/m/tree?cursor=2"
             )
 
-        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        monkeypatch.setattr("utils.transformers_version._hub_urlopen", _urlopen)
         data, ok = tv._hf_api_get_json("/api/models/org/m/tree", None)
         assert ok is True and len(data) == 2
 
@@ -4985,14 +4985,14 @@ class TestImpossible510ScanIsSkipped:
         import utils.transformers_version as tv
 
         monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda *a, **k: None)
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("utils.transformers_version._hub_urlopen") as mock_urlopen:
             tier = get_transformers_tier("mistralai/Ministral-3-8B-Instruct-2512", probe = True)
         assert tier == "530"
         mock_urlopen.assert_not_called()
 
     def test_helper_is_false_without_reading_the_repo(self):
         """The 5.10 question is answerable offline while no 5.10-only marker exists."""
-        with patch("urllib.request.urlopen") as mock_urlopen:
+        with patch("utils.transformers_version._hub_urlopen") as mock_urlopen:
             assert _check_remote_auto_map_needs_510("org/custom-remote") is False
         mock_urlopen.assert_not_called()
 
@@ -5004,7 +5004,7 @@ class TestImpossible510ScanIsSkipped:
         monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda *a, **k: None)
         log: list = []
         monkeypatch.setattr(
-            "urllib.request.urlopen",
+            "utils.transformers_version._hub_urlopen",
             self._fake_hub(f"from {self._FUTURE_MARKER} import Thing\n", log),
         )
         tier = get_transformers_tier("mistralai/Ministral-3-8B-Instruct-2512", probe = True)
@@ -5019,7 +5019,7 @@ class TestImpossible510ScanIsSkipped:
         monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda *a, **k: None)
         log: list = []
         monkeypatch.setattr(
-            "urllib.request.urlopen",
+            "utils.transformers_version._hub_urlopen",
             self._fake_hub("from transformers.modeling_utils import PreTrainedModel\n", log),
         )
         tier = get_transformers_tier("mistralai/Ministral-3-8B-Instruct-2512", probe = True)
@@ -5031,3 +5031,222 @@ class TestImpossible510ScanIsSkipped:
         _auto_map_checkpoint(tmp_path, _V5_IMPORT)
         assert _check_remote_auto_map_needs_510(str(tmp_path)) is False
         assert _remote_auto_map_tier(str(tmp_path)) == ("530", True)
+
+
+def _throwaway_origin(respond):
+    """Start a local HTTP origin on an ephemeral port for the redirect tests.
+
+    ``respond(path)`` returns ``(status, extra_headers, body)``. Returns
+    ``(base_url, seen, close)`` where ``seen`` collects ``(path, Authorization)`` for every
+    request the origin received, so a leaked token is directly observable.
+    """
+    import http.server
+    import threading
+
+    seen: list = []
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            seen.append((self.path, self.headers.get("Authorization")))
+            status, extra, body = respond(self.path)
+            self.send_response(status)
+            for key, value in extra.items():
+                self.send_header(key, value)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target = srv.serve_forever, daemon = True).start()
+
+    def _close():
+        srv.shutdown()
+        srv.server_close()
+
+    return f"http://127.0.0.1:{srv.server_port}", seen, _close
+
+
+class TestHubRedirectDoesNotReplayTheToken:
+    """A 3xx must not hand ``Authorization: Bearer <hf_token>`` to another origin.
+
+    ``urllib.request.HTTPRedirectHandler.redirect_request`` copies every header except
+    content-length/content-type onto the redirect target with no host comparison, and this
+    module attaches the token via ``Request(headers=...)`` (so it lands in ``req.headers``,
+    not ``unredirected_hdrs``). ``HF_ENDPOINT`` is user-configurable, so the redirecting host
+    is not necessarily the Hub.
+    """
+
+    def setup_method(self):
+        _clear_scan_caches()
+
+    @staticmethod
+    def _online(monkeypatch):
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+
+    def test_stock_urlopen_leaks_the_token_across_origins(self):
+        """The mechanism itself, so this stays honest if urllib ever changes.
+
+        Nothing under test here: it is plain ``urllib.request.urlopen`` against two origins,
+        and it is exactly what every fetch in this module used to do.
+        """
+        import urllib.request
+
+        victim, victim_seen, close_victim = _throwaway_origin(
+            lambda path: (200, {"Content-Type": "application/json"}, b"[]")
+        )
+        hub, _, close_hub = _throwaway_origin(
+            lambda path: (302, {"Location": victim + "/moved"}, b"")
+        )
+        try:
+            req = urllib.request.Request(
+                hub + "/api/models/org/m/tree/main",
+                headers = {"User-Agent": "unsloth-studio",
+                           "Authorization": "Bearer hf_SECRET_TOKEN"},
+            )
+            with urllib.request.urlopen(req, timeout = 10) as resp:
+                resp.read()
+        finally:
+            close_hub()
+            close_victim()
+
+        assert victim_seen, "the redirect was not followed"
+        assert victim_seen[0][1] == "Bearer hf_SECRET_TOKEN", (
+            "stock urlopen is expected to replay the token; if this ever stops being true "
+            "the opener below can be dropped"
+        )
+
+    def test_cross_origin_redirect_drops_the_token(self, monkeypatch):
+        """The fix, driven through a real call site rather than the opener in isolation."""
+        import utils.transformers_version as tv
+
+        self._online(monkeypatch)
+        victim, victim_seen, close_victim = _throwaway_origin(
+            lambda path: (200, {"Content-Type": "application/json"}, b"[]")
+        )
+        hub, hub_seen, close_hub = _throwaway_origin(
+            lambda path: (302, {"Location": victim + "/moved"}, b"")
+        )
+        try:
+            monkeypatch.setenv("HF_ENDPOINT", hub)
+            data, ok = tv._hf_api_get_json("/api/models/org/m/tree/main", "hf_SECRET_TOKEN")
+        finally:
+            close_hub()
+            close_victim()
+
+        assert hub_seen[0][1] == "Bearer hf_SECRET_TOKEN", "the endpoint itself must authenticate"
+        assert victim_seen, "the redirect must still be followed"
+        assert victim_seen[0][1] is None, f"token replayed to another origin: {victim_seen}"
+        assert (data, ok) == ([], True)
+
+    def test_same_origin_redirect_keeps_the_token(self, monkeypatch):
+        """Negative control. The Hub really does this: ``/gpt2/raw/main/config.json`` 307s to
+        ``/openai-community/gpt2/raw/main/config.json``, and ``/api/models/gpt2/tree/main``
+        307s likewise. Dropping the header on those turns an authenticated read of a renamed
+        private repo into a 401, which this module caches as a definitive "absent".
+        """
+        import utils.transformers_version as tv
+
+        self._online(monkeypatch)
+
+        def _respond(path):
+            if path.endswith("/moved"):
+                return 200, {"Content-Type": "application/json"}, b"[]"
+            return 307, {"Location": "/api/models/org/renamed/tree/main/moved"}, b""
+
+        hub, hub_seen, close_hub = _throwaway_origin(_respond)
+        try:
+            monkeypatch.setenv("HF_ENDPOINT", hub)
+            data, ok = tv._hf_api_get_json("/api/models/org/m/tree/main", "hf_SECRET_TOKEN")
+        finally:
+            close_hub()
+
+        assert len(hub_seen) == 2, f"expected the redirect to be followed once: {hub_seen}"
+        assert [auth for _, auth in hub_seen] == ["Bearer hf_SECRET_TOKEN"] * 2
+        assert (data, ok) == ([], True)
+
+    def test_unauthenticated_redirect_is_unaffected(self, monkeypatch):
+        """Negative control: with no token nothing is stripped and the hop still works."""
+        import utils.transformers_version as tv
+
+        self._online(monkeypatch)
+        victim, victim_seen, close_victim = _throwaway_origin(
+            lambda path: (200, {"Content-Type": "application/json"}, b'[{"path": "a.py"}]')
+        )
+        hub, hub_seen, close_hub = _throwaway_origin(
+            lambda path: (302, {"Location": victim + "/moved"}, b"")
+        )
+        try:
+            monkeypatch.setenv("HF_ENDPOINT", hub)
+            data, ok = tv._hf_api_get_json("/api/models/org/m/tree/main", None)
+        finally:
+            close_hub()
+            close_victim()
+
+        assert [auth for _, auth in hub_seen + victim_seen] == [None, None]
+        assert ok is True and data == [{"path": "a.py"}]
+
+    @pytest.mark.parametrize(
+        "old,new,drops",
+        [
+            # same origin: keep
+            ("https://huggingface.co/a", "https://huggingface.co/b", False),
+            ("https://huggingface.co/a", "https://HuggingFace.CO/b", False),
+            ("https://huggingface.co:443/a", "https://huggingface.co/b", False),
+            # plain-http to TLS on the same host: keep (the token already went out in clear)
+            ("http://hub.internal/a", "https://hub.internal/b", False),
+            # different host: drop
+            ("https://huggingface.co/a", "https://us.aws.cdn.hf.co/x", True),
+            ("https://huggingface.co/a", "https://huggingface.co.evil.example/x", True),
+            ("https://hf.co/a", "https://huggingface.co/b", True),
+            ("https://huggingface.co/a", "https://huggingface.co@evil.example/x", True),
+            # same host, different port or a downgrade: drop
+            ("https://hub.internal/a", "https://hub.internal:8443/b", True),
+            ("https://hub.internal/a", "http://hub.internal/b", True),
+            # unparseable or non-http: drop
+            ("https://hub.internal/a", "file:///etc/passwd", True),
+            ("https://hub.internal/a", "http://hub.internal:notaport/b", True),
+        ],
+    )
+    def test_redirect_predicate(self, old, new, drops):
+        import utils.transformers_version as tv
+
+        assert tv._redirect_drops_auth(old, new) is drops
+
+    def test_every_authenticated_fetch_uses_the_opener(self):
+        """Guards the remaining call sites, and any added later.
+
+        ``hf_endpoint_unreachable`` is the one exemption: it sends no credentials, so it has
+        nothing to replay across a redirect.
+        """
+        import ast
+        import inspect
+        import utils.transformers_version as tv
+
+        exempt = {"hf_endpoint_unreachable", "_hub_opener", "_hub_urlopen"}
+        offenders: list = []
+
+        class _Visitor(ast.NodeVisitor):
+            def __init__(self):
+                self.stack: list = []
+
+            def visit_FunctionDef(self, node):
+                self.stack.append(node.name)
+                self.generic_visit(node)
+                self.stack.pop()
+
+            def visit_Call(self, node):
+                func = node.func
+                if isinstance(func, ast.Attribute) and func.attr == "urlopen":
+                    if not set(self.stack) & exempt:
+                        offenders.append((self.stack[-1] if self.stack else "<module>",
+                                          node.lineno))
+                self.generic_visit(node)
+
+        _Visitor().visit(ast.parse(inspect.getsource(tv)))
+        assert offenders == [], f"these fetch sites bypass _hub_urlopen: {offenders}"

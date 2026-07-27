@@ -575,6 +575,80 @@ def _adapter_base_from_hf_cache(model_name: str) -> str | None:
     return None
 
 
+def _redirect_drops_auth(old_url: str, new_url: str) -> bool:
+    """True when a redirect from *old_url* to *new_url* must not carry ``Authorization``.
+
+    Same rule ``requests`` (``SessionRedirectMixin.should_strip_auth``), curl and browsers
+    apply: a different host always drops the header, a plain-http to https upgrade of the
+    same host keeps it (that token was already on the wire), and any other scheme or port
+    change drops it. An unparseable ``Location`` drops it too.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        old, new = urlsplit(old_url), urlsplit(new_url)
+        if (old.hostname or "").lower() != (new.hostname or "").lower():
+            return True
+        defaults = {"http": 80, "https": 443}
+        old_scheme, new_scheme = old.scheme.lower(), new.scheme.lower()
+        old_port = old.port or defaults.get(old_scheme)
+        new_port = new.port or defaults.get(new_scheme)
+    except ValueError:
+        return True
+    if old_scheme == "http" and old_port == 80 and new_scheme == "https" and new_port == 443:
+        return False
+    return (old_scheme, old_port) != (new_scheme, new_port)
+
+
+_hub_opener_cache = None
+
+
+def _hub_opener():
+    """Opener used by every Hub fetch here that can carry ``Authorization``.
+
+    ``urllib``'s stock ``HTTPRedirectHandler.redirect_request`` copies every header except
+    content-length/content-type onto the redirect target without comparing hosts, so a 3xx
+    replays ``Authorization: Bearer <hf_token>`` to whatever host the ``Location`` names.
+    ``HF_ENDPOINT`` is user-configurable, so that host is not necessarily the Hub. Dropping
+    the header outright is not an option: the Hub 307s ``/gpt2/raw/main/config.json`` to
+    ``/openai-community/gpt2/raw/main/config.json`` and 301s http to https, both same-origin,
+    and a renamed private repo answers 401 unauthenticated (which this module caches as a
+    definitive "absent"). So the handler keeps the header on a same-origin hop and strips it
+    on a cross-origin one.
+
+    Built once and never handed to ``install_opener``, so the rest of the process keeps stock
+    ``urlopen`` behaviour. ``build_opener`` retains the default proxy/HTTPS handlers, so
+    ``*_PROXY`` / ``NO_PROXY`` work exactly as they did. Racing builders are harmless: the
+    openers are equivalent and stateless. ``urllib.request`` stays a lazy import like every
+    other fetch below, hence the nested handler.
+    """
+    global _hub_opener_cache
+    if _hub_opener_cache is not None:
+        return _hub_opener_cache
+
+    import urllib.request
+
+    class _AuthStrippingRedirectHandler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            new = super().redirect_request(req, fp, code, msg, headers, newurl)
+            if new is not None and _redirect_drops_auth(req.full_url, new.full_url):
+                for key in [k for k in new.headers if k.lower() == "authorization"]:
+                    del new.headers[key]
+            return new
+
+    _hub_opener_cache = urllib.request.build_opener(_AuthStrippingRedirectHandler)
+    return _hub_opener_cache
+
+
+def _hub_urlopen(req, timeout = 10):
+    """``urlopen`` for the Hub fetches here, via the redirect-aware opener above.
+
+    ``hf_endpoint_unreachable`` deliberately stays on plain ``urlopen``: it sends no
+    credentials, so it has nothing to leak across a redirect.
+    """
+    return _hub_opener().open(req, timeout = timeout)
+
+
 def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | None:
     """``base_model_name_or_path`` from a remote adapter's ``adapter_config.json``, or None.
 
@@ -604,7 +678,7 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
         headers["Authorization"] = f"Bearer {hf_token}"
     try:
         req = urllib.request.Request(url, headers = headers)
-        with urllib.request.urlopen(req, timeout = 10) as resp:
+        with _hub_urlopen(req, timeout = 10) as resp:
             cfg = json.loads(resp.read().decode())
         base = cfg.get("base_model_name_or_path")
         if base:
@@ -690,7 +764,7 @@ def _hf_api_get_json(path: str, hf_token: str | None = None) -> tuple[object | N
     try:
         for _ in range(_HF_API_MAX_PAGES):
             req = urllib.request.Request(url, headers = headers)
-            with urllib.request.urlopen(req, timeout = 10) as resp:
+            with _hub_urlopen(req, timeout = 10) as resp:
                 payload = json.loads(resp.read().decode())
                 next_url = _parse_link_next(resp.headers.get("Link"))
             if not isinstance(payload, list):
@@ -856,7 +930,7 @@ def _read_repo_text_file(
         headers["Authorization"] = f"Bearer {hf_token}"
     try:
         req = urllib.request.Request(url, headers = headers)
-        with urllib.request.urlopen(req, timeout = 10) as resp:
+        with _hub_urlopen(req, timeout = 10) as resp:
             return _decode_source_bytes(resp.read())
     except Exception as exc:
         logger.debug("Could not fetch %s for '%s': %s", filename, model_name, exc)
@@ -908,7 +982,7 @@ def _load_repo_json_checked(
         headers["Authorization"] = f"Bearer {hf_token}"
     try:
         req = urllib.request.Request(url, headers = headers)
-        with urllib.request.urlopen(req, timeout = 10) as resp:
+        with _hub_urlopen(req, timeout = 10) as resp:
             return json.loads(resp.read().decode()), True
     except urllib.error.HTTPError as exc:
         # 404 = genuinely absent; 401/403 = definitively unreadable with this token.
@@ -1328,7 +1402,7 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
         headers["Authorization"] = f"Bearer {hf_token}"
     try:
         req = urllib.request.Request(url, headers = headers)
-        with urllib.request.urlopen(req, timeout = 10) as resp:
+        with _hub_urlopen(req, timeout = 10) as resp:
             data = json.loads(resp.read().decode())
         tokenizer_class = data.get("tokenizer_class", "")
         result = tokenizer_class in _TRANSFORMERS_5_TOKENIZER_CLASSES
@@ -1446,7 +1520,7 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
         headers["Authorization"] = f"Bearer {hf_token}"
     try:
         req = urllib.request.Request(url, headers = headers)
-        with urllib.request.urlopen(req, timeout = 10) as resp:
+        with _hub_urlopen(req, timeout = 10) as resp:
             cfg = json.loads(resp.read().decode())
         _config_json_cache[cache_key] = cfg
         return cfg
