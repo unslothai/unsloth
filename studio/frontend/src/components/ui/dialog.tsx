@@ -70,6 +70,7 @@ function DialogContent({
   position = "fixed",
   overlayClassName,
   overlayPosition,
+  selectionBoundary,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean;
@@ -77,6 +78,13 @@ function DialogContent({
   position?: "fixed" | "absolute";
   overlayClassName?: string;
   overlayPosition?: "fixed" | "absolute";
+  /**
+   * Tags this dialog so an outside-press handler elsewhere can treat it, and
+   * only it, as part of its own boundary. Overlay and content are portal
+   * siblings rather than ancestor and descendant, so both are tagged and a
+   * backdrop press is recognised as readily as a press on the dialog itself.
+   */
+  selectionBoundary?: string;
 }) {
   const resolvedContainer = container ?? null;
   return (
@@ -85,9 +93,11 @@ function DialogContent({
         <DialogOverlay
           className={overlayClassName}
           position={overlayPosition ?? position}
+          data-selection-boundary={selectionBoundary}
         />
         <DialogPrimitive.Content
           data-slot="dialog-content"
+          data-selection-boundary={selectionBoundary}
           className={cn(
             "bg-background data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 ring-foreground/5 grid max-w-[calc(100%-2rem)] gap-6 rounded-4xl px-7 pt-8 pb-7 text-sm ring-1 duration-100 sm:max-w-md top-1/2 left-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2",
             position === "fixed" ? "fixed" : "absolute",

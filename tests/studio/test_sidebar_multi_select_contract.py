@@ -11,10 +11,15 @@ FRONTEND = REPO / "studio/frontend/src"
 APP_SIDEBAR = FRONTEND / "components/app-sidebar.tsx"
 SELECTION_HOOK = FRONTEND / "hooks/use-sidebar-list-selection.ts"
 BULK_BAR = FRONTEND / "components/sidebar-bulk-selection-bar.tsx"
+DIALOG = FRONTEND / "components/ui/dialog.tsx"
 
 
 def _hook() -> str:
     return SELECTION_HOOK.read_text(encoding = "utf-8")
+
+
+def _dialog() -> str:
+    return DIALOG.read_text(encoding = "utf-8")
 
 
 def _sidebar() -> str:
@@ -34,17 +39,55 @@ def test_outside_pointerdown_ignores_the_portaled_confirm_dialog():
     # Clearing on the portaled dialog's buttons would drop the batch it confirms.
     block = _between(_hook(), "const isInsideSelectionBoundary", "const onPointerDown")
     assert "listRootRef.current?.contains(target)" in block
-    assert '[role="dialog"], [role="alertdialog"]' in block
-    assert block.index("listRootRef.current?.contains(target)") < block.index('[role="dialog"]')
+    assert "SELECTION_BOUNDARY_SELECTOR" in block
+    assert block.index("listRootRef.current?.contains(target)") < block.index(
+        "SELECTION_BOUNDARY_SELECTOR"
+    )
     used = _between(_hook(), "const onPointerDown = (event: PointerEvent)", "clearSelection();")
     assert "isInsideSelectionBoundary(target)" in used
 
 
+def test_selection_boundary_is_scoped_to_the_bulk_confirm_dialog():
+    # Every role-bearing dialog matching would hand the exemption to unrelated
+    # overlays: the chat search palette opens with no outside press in front of
+    # it and navigates chat to chat, which leaves the Recents list mounted.
+    hook = _hook()
+    block = _between(hook, "const isInsideSelectionBoundary", "const onPointerDown")
+    assert '[role="dialog"]' not in block
+    assert '[data-slot$="-overlay"]' not in block
+    assert 'export const SIDEBAR_SELECTION_BOUNDARY = "sidebar-bulk-delete";' in hook
+    assert (
+        "const SELECTION_BOUNDARY_SELECTOR = "
+        '`[data-selection-boundary="${SIDEBAR_SELECTION_BOUNDARY}"]`;'
+    ) in hook
+    # Only the confirm dialog opts in.
+    sidebar = _sidebar()
+    assert "selectionBoundary={SIDEBAR_SELECTION_BOUNDARY}" in sidebar
+    assert sidebar.count("selectionBoundary=") == 1
+    assert "SIDEBAR_SELECTION_BOUNDARY," in sidebar
+
+
 def test_selection_boundary_covers_the_portaled_dialog_overlay():
     # Radix renders the overlay as a sibling of the role-bearing content, so a
-    # backdrop dismiss only counts as inside if the overlay matches on its own.
-    block = _between(_hook(), "const isInsideSelectionBoundary", "const onPointerDown")
-    assert '[data-slot$="-overlay"]' in block
+    # backdrop dismiss only counts as inside if the overlay is tagged too.
+    dialog = _dialog()
+    block = _between(dialog, "function DialogContent", "function DialogHeader")
+    assert "selectionBoundary?: string;" in block
+    overlay = _between(block, "<DialogOverlay", "<DialogPrimitive.Content")
+    assert "data-selection-boundary={selectionBoundary}" in overlay
+    content = _between(block, "<DialogPrimitive.Content", "{children}")
+    assert "data-selection-boundary={selectionBoundary}" in content
+
+
+def test_escape_leaves_a_dismissed_dialog_to_keep_the_batch():
+    # Escape dismisses the top layer; taking it here as well would make keyboard
+    # cancel the one path that loses the batch that Cancel and the backdrop keep.
+    hook = _hook()
+    assert "const DIALOG_LAYER_SELECTOR = '[role=\"dialog\"], [role=\"alertdialog\"]';" in hook
+    block = _between(hook, "const onKeyDown = (event: KeyboardEvent)", "window.addEventListener")
+    assert 'if (event.key !== "Escape") return;' in block
+    assert "if (target?.closest(DIALOG_LAYER_SELECTOR)) return;" in block
+    assert block.index("DIALOG_LAYER_SELECTOR") < block.index("clearSelection();")
 
 
 def test_keyboard_activation_outside_the_list_clears_the_batch():
@@ -114,7 +157,41 @@ def test_short_drag_is_not_undone_by_the_trailing_click():
     assert "suppressClickRef.current = true;" in up
     assert up.index("suppressClickRef.current = true;") < up.index("dragRef.current = null;")
     click = _between(_hook(), "const handleItemClick", "const isItemSelected")
-    assert "if (suppressClickRef.current) {" in click
+    assert "if (suppressClickRef.current && (event.detail ?? 1) > 0) {" in click
+
+
+def test_drag_suppression_never_swallows_a_keyboard_activation():
+    # A drag released off the row generates no row click, so nothing consumes the
+    # suppression; the next keyboard activation carries no pointerdown to clear
+    # it and would otherwise leave the row doing nothing.
+    click = _between(_hook(), "const handleItemClick", "const isItemSelected")
+    assert "detail?: number;" in click
+    assert "(event.detail ?? 1) > 0" in click
+    # The pointer path stays covered by the reset on the next press.
+    down = _between(_hook(), "const handleItemPointerDown", "const handleItemClick")
+    assert "suppressClickRef.current = false;" in down
+
+
+def test_bulk_delete_clears_only_the_batch_it_captured():
+    # Only Delete is disabled while a batch runs, so the rows stay clickable; a
+    # blanket clear would wipe a selection made while the loop was still going.
+    hook = _hook()
+    block = _between(hook, "const deselectIds = useCallback", "// One batch at a time.")
+    assert "const removed = new Set(ids);" in block
+    assert "if (removed.size === 0) return;" in block
+    assert "if (!removed.has(id)) next.add(id);" in block
+    # The anchor only goes if it was part of the batch.
+    assert "if (anchorIdRef.current != null && removed.has(anchorIdRef.current)) {" in block
+    assert "    deselectIds,\n" in hook
+    sidebar = _sidebar()
+    chats = _between(sidebar, 'if (target.kind === "chats-bulk")', 'if (target.kind === "chat")')
+    runs = _between(sidebar, 'if (target.kind === "runs-bulk")', "if (target.run.status ===")
+    assert (
+        "chatRecentsSelection.deselectIds(target.items.map((item) => item.id));" in chats
+    )
+    assert "runRecentsSelection.deselectIds(target.runs.map((run) => run.id));" in runs
+    assert "clearSelection()" not in chats
+    assert "clearSelection()" not in runs
 
 
 def test_stale_selection_prune_bails_out_before_setstate():

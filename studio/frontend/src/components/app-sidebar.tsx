@@ -156,7 +156,10 @@ import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { SidebarBulkSelectionBar } from "@/components/sidebar-bulk-selection-bar";
-import { useSidebarListSelection } from "@/hooks/use-sidebar-list-selection";
+import {
+  SIDEBAR_SELECTION_BOUNDARY,
+  useSidebarListSelection,
+} from "@/hooks/use-sidebar-list-selection";
 import { translate, useT, type TranslationKey } from "@/i18n";
 
 const EMPHASIS_MARKER = "__UNSLOTH_I18N_EMPHASIS_MARKER__";
@@ -839,7 +842,10 @@ export function AppSidebar() {
           if (!ok) failed += 1;
         }
         if (failed === 0) {
-          chatRecentsSelection.clearSelection();
+          // Only the rows this batch captured: the loop above can take a while
+          // and the rows stay clickable throughout, so a blanket clear would
+          // wipe a selection the user started while waiting for it.
+          chatRecentsSelection.deselectIds(target.items.map((item) => item.id));
         } else {
           toast.error(translate("shell.toast.failedToDeleteSomeChats"));
         }
@@ -900,7 +906,11 @@ export function AppSidebar() {
           }
         }
         if (failed === 0) {
-          runRecentsSelection.clearSelection();
+          // The captured batch only, for the same reason as the chats path.
+          // Runs skipped for being live are part of it: they were confirmed
+          // away with the rest, and leaving them selected would re-arm Delete
+          // on rows the user just chose to stop acting on.
+          runRecentsSelection.deselectIds(target.runs.map((run) => run.id));
         } else {
           toast.error(translate("shell.toast.failedToDeleteSomeRuns"));
         }
@@ -2204,7 +2214,12 @@ export function AppSidebar() {
         }
       }}
     >
-      <DialogContent className="menu-flat-destructive corner-squircle dialog-soft-surface sm:max-w-md">
+      <DialogContent
+        className="menu-flat-destructive corner-squircle dialog-soft-surface sm:max-w-md"
+        // Pressing this dialog, or its backdrop, must not read as a press
+        // outside the Recents list: it is confirming that very batch.
+        selectionBoundary={SIDEBAR_SELECTION_BOUNDARY}
+      >
         <DialogHeader>
           <DialogTitle>
             {confirmingDelete?.kind === "runs-bulk"

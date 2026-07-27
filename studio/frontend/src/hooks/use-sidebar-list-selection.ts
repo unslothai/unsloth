@@ -14,6 +14,17 @@ const DRAG_THRESHOLD_PX = 4;
 const AUTO_SCROLL_EDGE_PX = 28;
 const AUTO_SCROLL_STEP_PX = 10;
 
+// Stamped by DialogContent on the one dialog that confirms a bulk delete, over
+// both its overlay and its content. Exempting every [role="dialog"] instead
+// hands the exemption to unrelated overlays: the Ctrl/Cmd+K chat search opens
+// with no outside press in front of it, and picking a result is a press inside
+// a dialog followed by a chat-to-chat navigation that leaves Recents mounted,
+// so a forgotten destructive batch would ride along to the new chat.
+export const SIDEBAR_SELECTION_BOUNDARY = "sidebar-bulk-delete";
+const SELECTION_BOUNDARY_SELECTOR = `[data-selection-boundary="${SIDEBAR_SELECTION_BOUNDARY}"]`;
+// Escape belongs to the topmost layer, whichever dialog that is.
+const DIALOG_LAYER_SELECTOR = '[role="dialog"], [role="alertdialog"]';
+
 type DragState = {
   anchorIndex: number;
   // By id: the list can reorder mid-drag and shift every index.
@@ -91,6 +102,27 @@ export function useSidebarListSelection({
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
     anchorIdRef.current = null;
+  }, []);
+
+  // Drops just the rows handed in. A bulk delete only disables its own Delete
+  // button, so the rows stay clickable for the whole loop; clearing everything
+  // at the end would throw away a selection the user started while waiting,
+  // which was never part of the batch being deleted.
+  const deselectIds = useCallback((ids: Iterable<string>) => {
+    const removed = new Set(ids);
+    if (removed.size === 0) return;
+    setSelectedIds((prev) => {
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (!removed.has(id)) next.add(id);
+      }
+      return next.size === prev.size ? prev : next;
+    });
+    // Only if the anchor itself went: otherwise a later shift+click would lose
+    // the range the surviving selection is still anchored on.
+    if (anchorIdRef.current != null && removed.has(anchorIdRef.current)) {
+      anchorIdRef.current = null;
+    }
   }, []);
 
   // One batch at a time. The confirm dialog closes before the deletes finish,
@@ -283,7 +315,14 @@ export function useSidebarListSelection({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") clearSelection();
+      if (event.key !== "Escape") return;
+      // An open dialog traps focus, so an Escape aimed at it is delivered
+      // inside it and dismisses that layer alone. Clearing here as well would
+      // make keyboard cancel the one path that loses the batch, while Cancel
+      // and a backdrop press both keep it.
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest(DIALOG_LAYER_SELECTOR)) return;
+      clearSelection();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -296,13 +335,8 @@ export function useSidebarListSelection({
       if (listRootRef.current?.contains(target)) return true;
       // The confirm dialog is portaled out of the list, so clearing on it would
       // drop the batch it is confirming. Its overlay is a portal sibling of the
-      // role-bearing content, not a descendant, so a backdrop dismiss only
-      // counts as inside if the overlay is matched on its own.
-      return (
-        target.closest(
-          '[role="dialog"], [role="alertdialog"], [data-slot$="-overlay"]',
-        ) != null
-      );
+      // content, not a descendant, which is why both carry the marker.
+      return target.closest(SELECTION_BOUNDARY_SELECTOR) != null;
     };
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target : null;
@@ -350,9 +384,19 @@ export function useSidebarListSelection({
     (
       index: number,
       id: string,
-      event: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean },
+      event: {
+        metaKey: boolean;
+        ctrlKey: boolean;
+        shiftKey: boolean;
+        detail?: number;
+      },
     ): boolean => {
-      if (suppressClickRef.current) {
+      // Only the pointer-generated click of a drag can be the one to swallow.
+      // A drag released off the row produces no row click at all and leaves the
+      // flag set, and keyboard or assistive-technology activation, which carries
+      // detail 0, arrives with no pointerdown in front of it to clear the flag;
+      // consuming that would leave the row doing nothing.
+      if (suppressClickRef.current && (event.detail ?? 1) > 0) {
         suppressClickRef.current = false;
         return true;
       }
@@ -386,6 +430,7 @@ export function useSidebarListSelection({
     isBulkPending,
     runBulkAction,
     clearSelection,
+    deselectIds,
     handleItemPointerDown,
     handleItemClick,
     isItemSelected,
