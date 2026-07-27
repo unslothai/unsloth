@@ -1831,10 +1831,13 @@ def test_a_stale_mailbox_read_does_not_cancel_the_running_generation():
     o._claim_worker(a_cancel)
     o._claim_worker(b_cancel)
     # Worker finished A and moved on to B.
-    _dispatch(o, [
-        {"type": "gen_done", "request_id": "a"},
-        {"type": "token", "request_id": "b", "token": "yo"},
-    ])
+    _dispatch(
+        o,
+        [
+            {"type": "gen_done", "request_id": "a"},
+            {"type": "token", "request_id": "b", "token": "yo"},
+        ],
+    )
     assert o._owns_worker(b_cancel) and not o._owns_worker(a_cancel)
 
     # A's consumer now reads a token buffered before that, with A stopped.
@@ -1851,9 +1854,7 @@ def test_a_stale_mailbox_read_does_not_cancel_the_running_generation():
         )
     )
     assert drained, "the stopped stream still tears itself down"
-    assert not o._cancel_event.is_set(), (
-        "a retired request must not signal the shared worker event"
-    )
+    assert not o._cancel_event.is_set(), "a retired request must not signal the shared worker event"
 
     # The generation that does own the worker still can.
     b_cancel.set()
