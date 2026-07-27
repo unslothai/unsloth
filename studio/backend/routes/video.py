@@ -365,7 +365,6 @@ def _forget_terminal_video(video_id: Optional[str]) -> None:
     only means the stale record survives, which is what happened before this call existed."""
     try:
         from core.inference.video import get_video_backend
-
         get_video_backend().forget_terminal_video(video_id)
     except Exception as e:  # noqa: BLE001 -- never fail a delete over progress bookkeeping
         logger.debug(f"Could not clear the terminal video record for {video_id!r}: {e}")
@@ -385,6 +384,7 @@ async def delete_gallery_video(video_id: str, current_subject: str = Depends(get
 @router.delete("/video/gallery")
 async def clear_gallery_videos(current_subject: str = Depends(get_current_subject)):
     from core.inference import video_gallery
+
     removed = await asyncio.to_thread(video_gallery.clear)
     # Clear-all takes the terminal record's clip with it whatever its id.
     _forget_terminal_video(None)
