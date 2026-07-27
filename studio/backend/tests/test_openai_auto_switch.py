@@ -4404,3 +4404,34 @@ def test_a_non_gpu_load_failure_is_not_retried(monkeypatch):
     with pytest.raises(HTTPException):
         _run_hook("unsloth/B-GGUF")
     assert calls["n"] == 1
+
+
+def test_removal_clears_the_entry_a_load_would_actually_resolve(monkeypatch):
+    # The browser normalizes casing before storing, so a forget request can carry
+    # a different casing than the stored key. Removing only the literal key would
+    # leave the entry a load still resolves to, with no UI able to clear it.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 8192)
+    assert settings.get_model_override("unsloth/b-gguf:q4_k_m")["max_seq_length"] == 8192
+
+    settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(model_id = "unsloth/b-gguf:q4_k_m", remove = True),
+        "tester",
+    )
+    assert settings.get_model_overrides() == {}
+    assert settings.get_model_override("unsloth/B-GGUF:Q4_K_M") == {}
+
+
+def test_removal_of_a_path_still_only_touches_the_exact_key(monkeypatch):
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("/models/foo.gguf", max_seq_length = 8192)
+    settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(model_id = "/models/Foo.gguf", remove = True),
+        "tester",
+    )
+    # A different file must survive its neighbour being forgotten.
+    assert settings.get_model_override("/models/foo.gguf")["max_seq_length"] == 8192

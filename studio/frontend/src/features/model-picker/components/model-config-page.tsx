@@ -869,11 +869,13 @@ export function ModelConfigPage({
       isActiveModel && effectiveAtBaseline && rememberChanged;
     const defaultConfig = isDefaultConfig(effectiveRuntimeConfig);
     let saveFailed = false;
+    const evicted: { modelId: string; ggufVariant: string | null }[] = [];
     if (remember) {
       saveFailed = !savePerModelConfig(
         target.id,
         target.ggufVariant,
         effectiveRuntimeConfig,
+        evicted,
       );
     } else {
       saveFailed = !deletePerModelConfig(target.id, target.ggufVariant);
@@ -895,6 +897,12 @@ export function ModelConfigPage({
         target.ggufVariant,
         remember ? effectiveRuntimeConfig : null,
       );
+    }
+    // Saving can push the local map over budget and silently drop other models.
+    // Their server entries would otherwise keep being applied by API loads with
+    // nothing left in the UI showing them or able to forget them.
+    for (const dropped of evicted) {
+      syncModelOverride(dropped.modelId, dropped.ggufVariant, null);
     }
     if (effectivePersistenceOnly) {
       if (saveFailed) {

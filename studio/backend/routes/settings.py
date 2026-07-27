@@ -43,6 +43,7 @@ from utils.openai_auto_switch_settings import (
     get_auto_unload_keep_kv,
     get_model_overrides,
     get_openai_auto_switch_enabled,
+    resolve_model_override_key,
     get_stored_auto_unload_idle_seconds,
     set_model_override,
     set_openai_auto_switch,
@@ -394,7 +395,11 @@ def update_openai_auto_switch_override(
             # form field must not turn "forget this model" into an update that
             # keeps it. Only the explicit flag short-circuits; the legacy
             # inferred path still just gates launch-flag carry-over.
-            set_model_override(payload.model_id, llama_extra_args = [], max_seq_length = None)
+            # Remove the key a load would actually resolve to, not just the
+            # literal one sent: the browser normalizes casing before storing, so
+            # the two can differ and a stale entry would survive forgetting.
+            target_id = resolve_model_override_key(payload.model_id) or payload.model_id
+            set_model_override(target_id, llama_extra_args = [], max_seq_length = None)
         else:
             set_model_override(
                 payload.model_id,

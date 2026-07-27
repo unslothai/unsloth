@@ -217,6 +217,7 @@ function serializedMapEntrySize(key: string, value: StoredMap[string]): number {
 function deleteOldestEvictableEntry(
   map: StoredMap,
   protectedKeys?: ReadonlySet<string>,
+  evicted?: string[],
 ): { key: string; value: StoredMap[string] } | null {
   for (const key of Object.keys(map)) {
     // Never evict a future-schema entry an older client cannot interpret.
@@ -228,6 +229,7 @@ function deleteOldestEvictableEntry(
     }
     const value = map[key];
     delete map[key];
+    evicted?.push(key);
     return { key, value };
   }
   return null;
@@ -236,17 +238,18 @@ function deleteOldestEvictableEntry(
 function enforceStorageBudget(
   map: StoredMap,
   protectedKeys?: ReadonlySet<string>,
+  evicted?: string[],
 ): boolean {
   let entryCount = Object.keys(map).length;
   while (entryCount > MAX_ENTRIES) {
-    if (!deleteOldestEvictableEntry(map, protectedKeys)) {
+    if (!deleteOldestEvictableEntry(map, protectedKeys, evicted)) {
       return false;
     }
     entryCount -= 1;
   }
   let bytes = serializedMapSize(map);
   while (bytes > MAX_PER_MODEL_CONFIG_STORAGE_BYTES) {
-    const removed = deleteOldestEvictableEntry(map, protectedKeys);
+    const removed = deleteOldestEvictableEntry(map, protectedKeys, evicted);
     if (!removed) {
       return false;
     }
@@ -623,6 +626,13 @@ export function savePerModelConfig(
   modelId: string,
   ggufVariant: string | null | undefined,
   config: PerModelConfig,
+  /**
+   * Receives models dropped to stay inside the storage budget. Eviction is
+   * silent and still reports success, so without this their server-side
+   * overrides would keep being applied by API loads with nothing in the UI
+   * still showing them or able to forget them.
+   */
+  evicted?: { modelId: string; ggufVariant: string | null }[],
 ): boolean {
   if (
     typeof config.chatTemplateOverride === "string" &&
@@ -646,10 +656,22 @@ export function savePerModelConfig(
   const [key] = storageKeysForModelVariant(modelId, ggufVariant);
   deleteConfigEntriesForModelVariant(map, modelId, ggufVariant);
   map[key] = toStoredConfig(normalized);
-  if (!enforceStorageBudget(map, new Set([key]))) {
+  const evictedKeys: string[] = [];
+  if (!enforceStorageBudget(map, new Set([key]), evictedKeys)) {
     return false;
   }
-  return writeMap(map);
+  const written = writeMap(map);
+  if (written && evicted) {
+    for (const evictedKey of evictedKeys) {
+      const id = modelIdFromStorageKey(evictedKey);
+      if (!id) {
+        continue;
+      }
+      const variant = ggufVariantFromStorageKey(evictedKey);
+      evicted.push({ modelId: id, ggufVariant: variant ? variant : null });
+    }
+  }
+  return written;
 }
 
 /** Every saved per-model config, decoded back to the ids it was keyed by. */

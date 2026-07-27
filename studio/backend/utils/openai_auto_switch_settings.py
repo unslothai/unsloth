@@ -450,24 +450,36 @@ def get_model_override(model_id: str) -> dict:
     an ambiguous fallback matches nothing, so two POSIX paths differing only in
     case stay distinct.
     """
-    overrides = get_model_overrides()
-    override = overrides.get(model_id)
-    if isinstance(override, dict):
-        return override
-    if not isinstance(model_id, str):
+    key = resolve_model_override_key(model_id)
+    if key is None:
         return {}
+    override = get_model_overrides().get(key)
+    return override if isinstance(override, dict) else {}
+
+
+def resolve_model_override_key(model_id: str) -> Optional[str]:
+    """The stored key an override lookup for ``model_id`` would actually hit.
+
+    Shared by read and remove so "what a load applies" and "what forgetting this
+    model clears" can never disagree.
+    """
+    overrides = get_model_overrides()
+    if isinstance(overrides.get(model_id), dict):
+        return model_id
+    if not isinstance(model_id, str):
+        return None
     # Only repo-style ids fold. A POSIX path is case-sensitive and names a
     # different file, so matching "/models/Foo.gguf" against an entry saved for
     # "/models/foo.gguf" would replay another model's context and GPU pin.
     if _looks_like_filesystem_path(model_id):
-        return {}
+        return None
     folded = model_id.casefold()
     matches = [
-        value
+        key
         for key, value in overrides.items()
         if isinstance(key, str) and key.casefold() == folded and isinstance(value, dict)
     ]
-    return matches[0] if len(matches) == 1 else {}
+    return matches[0] if len(matches) == 1 else None
 
 
 def set_model_override(
