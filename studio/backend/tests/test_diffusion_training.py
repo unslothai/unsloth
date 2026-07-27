@@ -1877,3 +1877,37 @@ def test_diffusion_seed_is_bounded_to_torch_range():
     # The extremes torch does accept stay valid.
     for good in (2**64 - 1, -(2**63)):
         assert DiffusionTrainingStartRequest(**request, seed = good).seed == good
+
+
+def test_gpu_load_admission_and_reserve_exclude_each_other():
+    # The load guards read is_active() and only THEN acquire the arbiter and register the load, so a
+    # start reserving inside that window freed residents the load had not registered yet and the
+    # trainer came up beside a brand-new pipeline. The admission closes it from both sides, exactly
+    # like the dataset interlock.
+    from core.training.diffusion_training_service import TrainingActiveError
+
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+
+    # A start cannot reserve while a load is registering.
+    with svc.gpu_load_admission():
+        with pytest.raises(RuntimeError, match = "loaded onto the GPU"):
+            svc.reserve()
+    # ...and the admission is released afterwards, so the start goes through.
+    svc.reserve()
+    try:
+        # A load cannot register while a start is reserved, and it says why.
+        with pytest.raises(TrainingActiveError, match = "Diffusion training is running"):
+            with svc.gpu_load_admission():
+                pass
+    finally:
+        svc.unreserve()
+
+    # Nested/concurrent admissions are counted, not boolean: the first exit must not open the door
+    # while a second load is still registering.
+    with svc.gpu_load_admission():
+        with svc.gpu_load_admission():
+            pass
+        with pytest.raises(RuntimeError, match = "loaded onto the GPU"):
+            svc.reserve()
+    svc.reserve()
+    svc.unreserve()

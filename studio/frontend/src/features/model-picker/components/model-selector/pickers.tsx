@@ -1208,7 +1208,12 @@ export const IMAGE_GEN_TASKS = [
 // Video-generation pipeline tasks: handled by the Video page, never loadable as
 // chat models. The backend reports "text-to-video" for video-diffusion GGUFs. The
 // Video page reuses this as its picker's `task` filter, so it lives here.
-export const VIDEO_GEN_TASKS = ["text-to-video"] as const;
+// image-to-video is here because that is the pipeline_tag Hugging Face gives the LTX-2 family
+// (both Lightricks/LTX-2 and unsloth/LTX-2.3-GGUF report it, alongside text-to-video in their
+// tag list), so a text-to-video-only filter dropped the flagship audio family out of Video Hub
+// search while the rest of the app routed it to Video. Locally cached video GGUFs are unaffected
+// either way: the backend tags those text-to-video itself.
+export const VIDEO_GEN_TASKS = ["text-to-video", "image-to-video"] as const;
 
 // Diffusion GGUF archs the Images backend can't assemble yet (SD/SDXL/PixArt/Wan/...). The
 // backend tags them with this task so the chat picker hides them (they die with "unknown model
@@ -2135,11 +2140,14 @@ export function HubModelPicker({
       ),
     [cachedModels, downloadedSort, loadTimes, task, catalog],
   );
-  // Task-scoped loads put the whole pipeline on one device, so quant fit must use the
-  // largest device, not the multi-GPU sum. Chat keeps the sum (llama.cpp splits layers).
+  // Task-scoped loads put the whole pipeline on ONE device, so quant fit must use a single
+  // device, not the multi-GPU sum. Specifically the device the load will land on (the lowest
+  // visible ordinal), not the largest one: on a heterogeneous host sizing against the bigger
+  // card recommends a checkpoint that then OOMs the smaller card it actually loads onto.
+  // Chat keeps the sum (llama.cpp splits layers).
   const expanderGpuGb = gpu.available
     ? task
-      ? gpu.maxDeviceMemoryGb
+      ? gpu.loadDeviceMemoryGb || gpu.maxDeviceMemoryGb
       : gpu.memoryTotalGb
     : undefined;
 

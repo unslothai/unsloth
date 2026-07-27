@@ -23,7 +23,7 @@ from loggers import get_logger
 import asyncio
 import threading
 import weakref
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 
 
 import re as _re
@@ -16000,6 +16000,30 @@ def _diffusion_training_active() -> bool:
         return False
 
 
+@contextmanager
+def _diffusion_training_admission():
+    """Hold the diffusion trainer's GPU-admission interlock for this load's registration.
+
+    The guards below only cover the instant they run. A load then selects its engine, acquires
+    the arbiter and registers with the backend, and a ``/train/diffusion/start`` reserving inside
+    that window frees residents this load has not registered yet, so the trainer comes up beside
+    a brand-new pipeline. Registering the admission under the same lock ``reserve()`` takes makes
+    the two mutually exclusive: this raises (409) once a start is reserved, and a start raises
+    while an admission is open.
+
+    Fails open on an import error, like the guards it complements. Covers the DIFFUSION trainer
+    only; the LLM trainer admits loads that fit beside it, which is a different contract."""
+    try:
+        from core.training.diffusion_training_service import get_diffusion_training_service
+
+        service = get_diffusion_training_service()
+    except Exception:  # noqa: BLE001 -- unknowable state never blocks a load
+        yield
+        return
+    with service.gpu_load_admission():
+        yield
+
+
 def _guard_diffusion_load_against_training() -> None:
     """Refuse loading an image model while a training run is active. Unlike chat,
     a diffusion pipeline's VRAM can't be cheaply estimated before the load, so the
@@ -16178,8 +16202,14 @@ async def load_diffusion_model(
         if needs_gpu:
             # Register the in-flight load UNDER the arbiter lock (not after acquire_for returns): otherwise a
             # competing Video/chat acquire in that gap evicts DIFFUSION before the load is marked in-flight,
-            # finds nothing to cancel, and both loaders allocate VRAM at once.
-            status_dict = await asyncio.to_thread(acquire_for, DIFFUSION, _begin_load)
+            # finds nothing to cancel, and both loaders allocate VRAM at once. The training admission wraps
+            # the same span for the OTHER competitor: a diffusion-training start reserving here would free
+            # residents this load has not registered yet (see _diffusion_training_admission).
+            def _acquire_and_begin():
+                with _diffusion_training_admission():
+                    return acquire_for(DIFFUSION, _begin_load)
+
+            status_dict = await asyncio.to_thread(_acquire_and_begin)
         else:
             # A CPU-only native load never touches the GPU, so it neither acquires nor is tracked by the
             # arbiter. But switching here FROM a previous diffusers/GPU load leaves DIFFUSION still marked as

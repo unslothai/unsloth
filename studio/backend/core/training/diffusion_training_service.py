@@ -228,6 +228,10 @@ class DiffusionTrainingService:
         # A start refuses while any is open and a mutation refuses once a start is reserved, both
         # decided under _lock, so neither can slip through the other's check-then-act window.
         self._dataset_mutations = 0
+        # GPU load admissions in flight (an image/video/chat load between its training guard and
+        # the moment it registers with the arbiter). Same two-sided rule as the dataset mutations:
+        # a start refuses while one is open, and an admission refuses once a start is reserved.
+        self._gpu_admissions = 0
         self._proc: Any = None
         self._stop_queue: Any = None
         self._pump: Optional[threading.Thread] = None
@@ -262,6 +266,15 @@ class DiffusionTrainingService:
                     "The training images are being changed right now. Wait for that to finish, "
                     "then start the run."
                 )
+            if self._gpu_admissions:
+                # A load already passed its training guard and is about to take the GPU. Reserving
+                # now would free residents it has not registered yet, so the trainer and a
+                # brand-new pipeline would allocate together. Refusing is safe: the admission is
+                # held only across the load's registration, not the load itself.
+                raise RuntimeError(
+                    "A model is being loaded onto the GPU right now. Wait for that to finish, "
+                    "then start the run."
+                )
             self._reserved = True
 
     def unreserve(self) -> None:
@@ -294,6 +307,34 @@ class DiffusionTrainingService:
         finally:
             with self._lock:
                 self._dataset_mutations = max(0, self._dataset_mutations - 1)
+
+    @contextlib.contextmanager
+    def gpu_load_admission(self):
+        """Hold the GPU-admission interlock across a load's guard -> arbiter -> registration.
+
+        The load guards read ``is_active()`` and only THEN acquire the arbiter and register the
+        load, so a start reserving inside that gap freed residents the load had not registered
+        yet and the trainer came up beside a brand-new pipeline. Registering the admission under
+        the same lock ``reserve()`` uses closes it from both sides, exactly like
+        ``dataset_mutation``: this raises once a start is reserved or running, and ``reserve()``
+        raises while an admission is open, so neither waits on the other.
+
+        The span is deliberately short. ``begin_load`` returns as soon as the load is registered
+        (the download and build run on a daemon thread), and from that point
+        ``_free_gpu_for_diffusion_training`` preempts the in-flight load, so holding this for the
+        whole load would block starts for minutes to no purpose."""
+        with self._lock:
+            if self._reserved or (self._proc is not None and self._proc.is_alive()):
+                raise TrainingActiveError(
+                    "Diffusion training is running, so the GPU is in use. Stop the run before "
+                    "loading a model."
+                )
+            self._gpu_admissions += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._gpu_admissions = max(0, self._gpu_admissions - 1)
 
     def start(self, config: dict) -> str:
         """Validate ``config``, spawn the trainer, and start pumping its events.

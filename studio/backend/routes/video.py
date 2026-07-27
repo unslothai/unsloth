@@ -183,8 +183,16 @@ async def load_video_model(
             # Register the in-flight load UNDER the arbiter lock (not after acquire_for returns): otherwise a
             # competing Images/chat acquire in that gap evicts VIDEO before the load is marked in-flight,
             # finds nothing to cancel, and both loaders allocate VRAM at once. Mirrors the images/load
-            # handoff.
-            status_dict = await asyncio.to_thread(acquire_for, VIDEO, _begin_load)
+            # handoff. The training admission wraps the same span for the OTHER competitor: a
+            # diffusion-training start reserving here would free residents this load has not
+            # registered yet (see _diffusion_training_admission).
+            from routes.inference import _diffusion_training_admission
+
+            def _acquire_and_begin():
+                with _diffusion_training_admission():
+                    return acquire_for(VIDEO, _begin_load)
+
+            status_dict = await asyncio.to_thread(_acquire_and_begin)
         else:
             await asyncio.to_thread(release, VIDEO)
             status_dict = await asyncio.to_thread(_begin_load)

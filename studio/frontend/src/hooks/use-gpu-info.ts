@@ -10,8 +10,14 @@ export interface GpuInfo {
   name: string;
   memoryTotalGb: number;
   /** Largest single device's VRAM. Image/video loads live on ONE device (no
-   * tensor split), so their fit math must use this, not the multi-GPU sum. */
+   * tensor split), so their fit math must use a single device, not the multi-GPU sum. */
   maxDeviceMemoryGb: number;
+  /** VRAM of the device an image/video load will actually land on: the lowest visible
+   * ordinal, since resolve_diffusion_device_target() returns a bare "cuda" and torch places
+   * on the current device. On a heterogeneous host this is NOT maxDeviceMemoryGb, and sizing
+   * a pick against the larger card would recommend a checkpoint that then OOMs the smaller
+   * one it loads onto. */
+  loadDeviceMemoryGb: number;
   cpuCore: number;
   cpuThread: number;
   systemRamAvailableGb: number;
@@ -36,6 +42,7 @@ const DEFAULT_GPU: GpuInfo = {
   name: "Unknown",
   memoryTotalGb: 0,
   maxDeviceMemoryGb: 0,
+  loadDeviceMemoryGb: 0,
   cpuCore: 0,
   cpuThread: 0,
   systemRamAvailableGb: 0,
@@ -83,6 +90,14 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
     name: devices[0]?.name ?? "Unknown",
     memoryTotalGb: devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0),
     maxDeviceMemoryGb: devices.reduce((max, d) => Math.max(max, d.memory_total_gb ?? 0), 0),
+    // Lowest visible ordinal = torch's current device = where the pipeline lands. The list is
+    // already filtered by any CUDA_VISIBLE_DEVICES mask, so the minimum index is right whether
+    // the reported indices are physical or relative.
+    loadDeviceMemoryGb:
+      devices.reduce(
+        (pick, d) => ((d.index ?? 0) < (pick.index ?? 0) ? d : pick),
+        devices[0],
+      )?.memory_total_gb ?? 0,
   };
 }
 
