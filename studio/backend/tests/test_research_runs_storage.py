@@ -207,9 +207,9 @@ def test_synthesis_evidence_budget_tracks_loaded_context(monkeypatch):
 
 def test_loaded_context_length_reads_orchestrator(monkeypatch):
     # The probe must read the inference ORCHESTRATOR (what the API layer serves), not the
-    # low-level in-subprocess singleton that stays unpopulated in the main process. Patch the
-    # real accessor (not _loaded_context_length) so this exercises the production wiring; a probe
-    # that read the wrong backend would return None here and the adaptive budget would not engage.
+    # in-subprocess singleton that stays unpopulated in the main process. Patch the real accessor
+    # so this exercises the production wiring: a probe reading the wrong backend would return
+    # None here and the adaptive budget would not engage.
     import core.inference as core_inference
     from core import research_runs as worker
 
@@ -1724,9 +1724,8 @@ def test_auto_scrape_respects_char_budgets(research_home, monkeypatch):
             website_policy = None,
         )
     )
-    # the folded evidence is bounded chunks, not the 150k of raw page bodies
-    # (the retrieved chunk section is capped at _AUTO_SCRAPE_TOTAL_CHARS; a short fixed
-    # header is prepended on top)
+    # the folded evidence is bounded chunks, not the 150k of raw page bodies (capped at
+    # _AUTO_SCRAPE_TOTAL_CHARS plus a short fixed header)
     assert "<chunk" in section
     assert len(section) <= worker._AUTO_SCRAPE_TOTAL_CHARS + 200
     assert len(fetched) == worker._AUTO_SCRAPE_TOP_K

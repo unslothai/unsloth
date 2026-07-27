@@ -4,16 +4,15 @@
 """Ephemeral web-RAG for deep research auto-read.
 
 Deep research auto-reads the top search results so synthesis is grounded in page text rather
-than short snippets. Whole pages make a small local model loop on boilerplate, so the scraped
-pages go through the *same* retrieval pipeline the knowledge base uses and only the most
-relevant passages are folded into the evidence.
+than short snippets. Whole pages make a small local model loop on boilerplate, so scraped pages
+go through the *same* retrieval pipeline the knowledge base uses and only the most relevant
+passages are folded into the evidence.
 
 Nothing here re-implements chunking, embedding, retrieval, ranking, or rendering; it wires
-Studio's existing KB components (``chunk_pages``, ``embeddings.encode``, ``store.add_chunks``,
-``retrieval.retrieve_hybrid``, ``retrieval.filter_min_score``, ``tool._format``) to the live
-scrape. The only difference from a persisted KB is the corpus: pages are ingested under a
-unique throwaway scope deleted in a ``finally`` block, so an auto-read never pollutes a user's
-knowledge base, exactly like Studio's per-thread attachment RAG on the same store.
+Studio's existing KB components to the live scrape. The only difference from a persisted KB is
+the corpus: pages are ingested under a unique throwaway scope deleted in a ``finally`` block, so
+an auto-read never pollutes a user's knowledge base, like the per-thread attachment RAG already
+does on the same store.
 """
 
 from __future__ import annotations

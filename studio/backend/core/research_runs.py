@@ -90,30 +90,26 @@ _MAX_CONTEXT_CHARS = 12_000
 _MAX_CONTEXT_MESSAGE_CHARS = 4_000
 _MAX_SYNTHESIS_EVIDENCE_CHARS = 32_000
 # The synthesis prompt must fit the loaded context or it is silently truncated and the report
-# degenerates (echoes the evidence tail). GGUF auto-fit floors at 4096 and transformers models
-# default to 4096, but the context box accepts anything from 128 up, so the budget adapts: the
-# reserve covers the generated report, and every trimmable section is measured against what the
-# untrimmable scaffolding leaves. Unknown context keeps the full cap.
+# degenerates (echoes the evidence tail). The context box accepts anything from 128 up, so the
+# budget adapts: the reserve covers the generated report and every trimmable section is measured
+# against what the untrimmable scaffolding leaves. Unknown context keeps the full cap.
 _MIN_SYNTHESIS_EVIDENCE_CHARS = 1_500
-# The question and the evidence carry the request and the answer; trimming either to
-# nothing produces a confidently empty report, so each keeps a floor even when the
-# context cannot fit it. Overflow on a tiny context is recoverable, an empty prompt is not.
+# Trimming the question or the evidence to nothing produces a confidently empty report, so each
+# keeps a floor: overflow on a tiny context is recoverable, an empty prompt is not.
 _MIN_QUESTION_CHARS = 800
 _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN = 3.0
 _SYNTHESIS_CONTEXT_RESERVE_TOKENS = 4_096
 # Below this loaded context the prompt scaffolding alone fills the window and the grounded
 # report degenerates, so grounding is skipped (snippet-only) for smaller loads.
 _AUTO_SCRAPE_MIN_CONTEXT_TOKENS = 8_192
-# Optionally read the top search results so synthesis is grounded in page text, not just
-# snippets: each scraped page is ingested into an ephemeral RAG scope (deleted after, so a
-# user's knowledge base is untouched), the passages most relevant to the question are
-# hybrid-retrieved reusing the KB retriever, and the resulting <chunk> blocks replace the raw
-# search text (staying under the existing 12k per-note cap). OFF by default, opt in via
-# UNSLOTH_RESEARCH_AUTO_SCRAPE=1: benchmarking showed no reliable factoid-accuracy gain over
-# snippets on a local model (snippets usually already carry the fact) while adding latency.
-# Gated per run by budgets["maxAutoScrape"] (absent/0 means no scrape, so existing runs keep
-# legacy behavior). Safe only with the context gate in _research and the adaptive budget in
-# _synthesis_evidence_budget; without them, denser evidence overflows a small context.
+# Optionally ground synthesis in page text: the top results are ingested into an ephemeral RAG
+# scope (deleted after, so the user's knowledge base is untouched) and hybrid-retrieved into
+# <chunk> evidence. OFF by default, opt in via UNSLOTH_RESEARCH_AUTO_SCRAPE=1: benchmarking
+# showed no reliable factoid-accuracy gain over snippets on a local model (snippets usually
+# already carry the fact) while adding latency. Gated per run by budgets["maxAutoScrape"]
+# (absent/0 means no scrape, so existing runs keep legacy behavior). Safe only with the context
+# gate in _research and the adaptive budget in _synthesis_evidence_budget; without them, denser
+# evidence overflows a small context.
 _AUTO_SCRAPE_TOP_K = 3
 _AUTO_SCRAPE_TOTAL_CHARS = 6_000
 _WEB_RAG_TOP_N = 6
@@ -473,9 +469,8 @@ def _loaded_context_length() -> int | None:
 
     Mirrors routes.inference._monitor_context_length (llama.cpp backend, else the inference
     orchestrator) so grounding sizes evidence to the same context the API layer serves. The ML
-    backends live in a worker subprocess, so the low-level core.inference.inference singleton is
-    unpopulated in this (main) process and importing it pulls in the ML stack; read the
-    orchestrator the routes use instead."""
+    backends live in a worker subprocess, so the core.inference.inference singleton is unpopulated
+    here and importing it pulls in the ML stack; read the orchestrator the routes use instead."""
     # GGUF / llama.cpp keeps context on its own backend (checked first, like the API layer).
     try:
         from routes.inference import get_llama_cpp_backend
@@ -622,12 +617,10 @@ def _bounded_synthesis_evidence(
 def _merge_scraped_evidence(raw_result: str, scraped_section: str) -> str:
     """Combine the raw search snippets with grounded page-body chunks (additive).
 
-    Grounded auto-scrape used to REPLACE ``raw_result`` with ``scraped_section``.
-    When the retrieved chunk was a distractor or dropped the key fact, the
-    answer-bearing search snippet was lost and the grounded run regressed below
-    snippet-only accuracy. Keep the snippets first (they already carry the answer
-    for most factual queries) and append the grounded excerpts as supplementary
-    evidence. If either side is empty the other is returned unchanged.
+    Replacing ``raw_result`` with ``scraped_section`` regressed below snippet-only accuracy:
+    when the retrieved chunk was a distractor the answer-bearing snippet was lost. Keep the
+    snippets first and append the grounded excerpts. If either side is empty the other is
+    returned unchanged.
     """
     raw = (raw_result or "").strip()
     scraped = (scraped_section or "").strip()
@@ -737,10 +730,9 @@ def _split_rag_result(result: str) -> tuple[str, list[dict[str, Any]]]:
 def _citation_title(source: dict, fallback: str) -> str:
     """Title as it may appear in a markdown link label.
 
-    Brackets are stripped because the report prompt tells the model to copy titles verbatim
-    from the source catalog, and search titles routinely carry one ("[PDF] Annual Report").
-    A bracket inside the label makes the citation unmatchable, so the catalog and the
-    citation writer must agree on the same stripped form.
+    The prompt tells the model to copy titles verbatim from the source catalog, and search
+    titles routinely carry a bracket ("[PDF] Annual Report") which makes the citation
+    unmatchable, so the catalog and the citation writer strip them the same way.
     """
     title = str(source.get("title") or fallback).replace("[", "").replace("]", "").strip()
     return title or fallback
@@ -1047,9 +1039,9 @@ class ResearchSupervisor:
         tool_timeout: int,
         website_policy: dict | None,
     ) -> tuple[str, list[str]]:
-        """Concurrently read up to ``limit`` of this step's accepted source URLs, rank their
-        content against the research question with the knowledge-base embedding model, and
-        return the most relevant chunks as ``<chunk>`` evidence plus the URLs actually read.
+        """Concurrently read up to ``limit`` of this step's accepted source URLs and return the
+        chunks most relevant to the question as ``<chunk>`` evidence, plus the URLs read.
+
         URLs are already access checked and deduplicated by the caller, so no new sources are
         created. Failures, timeouts, unreadable pages, and low-relevance chunks are dropped;
         the caller enforces cancellation."""
@@ -1485,9 +1477,8 @@ class ResearchSupervisor:
                             response.raise_for_status()
                             break
                         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
-                            # Only reachable before a body byte is touched: send() returns on the
-                            # headers and raise_for_status() reads nothing, and the stream is
-                            # consumed after this loop, so a re-send cannot duplicate report text.
+                            # Only reachable before a body byte is touched (the stream is consumed
+                            # after this loop), so a re-send cannot duplicate report text.
                             unloaded = isinstance(
                                 exc, httpx.HTTPStatusError
                             ) and await _model_unloaded(exc.response)
@@ -1683,9 +1674,9 @@ class ResearchSupervisor:
             _planner_system_prompt(max_steps, run["config"].get("websitePolicy")),
             run["config"],
         )
-        # Same whole-prompt budget as the decision and synthesis paths. The question is the
-        # request, so it is budgeted before the history, but it is unbounded on its own (a
-        # pasted document arrives here verbatim) and would otherwise overflow before planning.
+        # Same whole-prompt budget as the decision and synthesis paths. The question is budgeted
+        # before the history, but it is unbounded on its own (a pasted document arrives here
+        # verbatim) and would otherwise overflow before planning.
         planning_total = _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS)
         planning_question = question[
             : max(
@@ -1736,8 +1727,7 @@ class ResearchSupervisor:
             await self._check_active(run["id"])
             raise
         run.update(result)
-        # The plan is rendered by the structured inline card. Avoid adding a
-        # second markdown copy to the assistant message beneath that card.
+        # The structured inline card renders the plan; no second markdown copy below it.
 
     async def _research(self, run: dict) -> None:
         resuming = run.get("claimedFromStatus") == "running"
@@ -1751,9 +1741,8 @@ class ResearchSupervisor:
         tool_timeout = int(budgets["toolTimeoutSeconds"])
         # Absent for runs created before auto-scrape: default 0 keeps their behavior unchanged.
         max_auto_scrape = int(budgets.get("maxAutoScrape", 0))
-        # Grounding needs the synthesis prompt to fit the loaded context; on a tiny context the
-        # prompt overhead alone fills the window and the report degenerates, so fall back to
-        # snippet-only when the context is too small.
+        # On a tiny context the prompt overhead alone fills the window and the grounded report
+        # degenerates, so fall back to snippet-only.
         if max_auto_scrape > 0:
             loaded_ctx = _loaded_context_length()
             if loaded_ctx is not None and loaded_ctx < _AUTO_SCRAPE_MIN_CONTEXT_TOKENS:
@@ -1873,8 +1862,8 @@ class ResearchSupervisor:
                 run["config"],
             )
             # Same whole-prompt budget as synthesis: a fixed 60k evidence tail is many times a
-            # small loaded context, and this runs on every step, so an overflow here kills the
-            # run long before it can synthesize what it already gathered.
+            # small context, and this runs every step, so an overflow here kills the run long
+            # before it can synthesize what it already gathered.
             decision_plan_json = json.dumps(run["plan"], ensure_ascii = False)
             decision_total = _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS)
             # The catalog is unbounded too (maxSources entries, snippets up to 4000 chars), so it
@@ -2058,9 +2047,9 @@ class ResearchSupervisor:
                 )
             elif rag_sources:
                 # Every chunk was refused by the source cap, so none has a catalog entry and the
-                # validator would strip any citation to it. Drop the evidence rather than let
+                # validator would strip any citation to it: drop the evidence rather than let
                 # synthesis build claims on it. Gated on rag_sources so a text-only KB reply
-                # ("No documents are attached to this chat.") is still passed through.
+                # ("No documents are attached to this chat.") still passes through.
                 rag_result = ""
             rag_sources = accepted_rag_sources
             step_sources = []
@@ -2110,9 +2099,8 @@ class ResearchSupervisor:
                 fetched_urls.update(scraped_urls)
                 await self._check_active(run["id"])
                 if scraped_section:
-                    # Additive merge (not replace): keep the answer-bearing search
-                    # snippets and append the grounded page-body chunks. See
-                    # _merge_scraped_evidence for why replacing regressed accuracy.
+                    # Additive, not replace: see _merge_scraped_evidence for why
+                    # replacing the snippets regressed accuracy.
                     result = _merge_scraped_evidence(result, scraped_section)
             note = (
                 f"### {action['title']} ({action['action']})\n"
@@ -2178,9 +2166,8 @@ class ResearchSupervisor:
             f"   Chunk ID: {source.get('chunkId') or '(unknown)'}"
             for index, source in enumerate(document_sources, 1)
         )
-        # Budget the whole prompt, not just the evidence: trim the conversation context first,
-        # then the evidence, so the untrimmable scaffolding cannot push the request past the
-        # loaded context and turn a finished run into a failure.
+        # Budget the whole prompt, not just the evidence, so the untrimmable scaffolding cannot
+        # push the request past the loaded context and turn a finished run into a failure.
         report_system = _system_prompt_with_instructions(_REPORT_SYSTEM_PROMPT, run["config"])
         plan_json = json.dumps(run["plan"], ensure_ascii = False)
         scaffold_chars = (

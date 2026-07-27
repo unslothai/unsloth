@@ -140,11 +140,11 @@ def scope_search_query(query: str, policy: dict[str, Any] | None) -> str:
     allowed = normalize_website_policy(policy)["allowedDomains"]
     if not allowed:
         return query
-    # Cap the site: filter (search engines limit OR operators) instead of dropping scoping
-    # entirely for large allow lists, which returned unrelated results that all got filtered out.
-    # Rotate the window by query so every allowed domain is reachable across a multi-step run;
-    # a fixed head made domains past the cap permanently undiscoverable. Keyed on the query so
-    # the same search is always scoped the same way.
+    # Cap the site: filter (search engines limit OR operators) instead of dropping scoping for
+    # large allow lists, which returned unrelated results that all got filtered out. Rotate the
+    # window by query so every allowed domain stays reachable across a multi-step run (a fixed
+    # head made domains past the cap permanently undiscoverable) and one query always scopes
+    # the same way.
     window = allowed
     if len(allowed) > _SITE_FILTER_LIMIT:
         offset = zlib.crc32(query.encode("utf-8")) % len(allowed)

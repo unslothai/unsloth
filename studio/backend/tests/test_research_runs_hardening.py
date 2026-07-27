@@ -75,13 +75,10 @@ def test_sanitize_query_redacts_recognizable_unlabeled_tokens():
 
 
 def test_sanitize_query_redacts_unlabeled_hf_and_gitlab_tokens():
-    # Unlabeled Hugging Face and GitLab tokens carry no "token:"/"secret:" label,
-    # so only the opaque-token allowlist can catch them before a query leaks to
-    # web search. Redact them without reintroducing public model/version-id
-    # over-redaction (see test_sanitize_query_keeps_public_model_ids).
-    # Prefixes are split from the bodies so these fixtures are not flagged as
-    # live credentials by push-time secret scanning; the runtime values are real
-    # token shapes.
+    # These carry no "token:"/"secret:" label, so only the opaque-token allowlist can catch
+    # them before a query leaks to web search, and without reintroducing public model/version-id
+    # over-redaction (see test_sanitize_query_keeps_public_model_ids). Prefixes are split from
+    # the bodies so push-time secret scanning does not flag these fixtures.
     hf_token = "hf_" + "QRSTuvWXyz0123456789abcdefGHIJklmn"
     gitlab_token = "glpat-" + "aB3dE7gH9jK1mN4pQ6sT"
     hf_cleaned = _sanitize_public_query(f"please rotate my {hf_token} for the run")
@@ -150,10 +147,9 @@ def test_document_citation_regex_does_not_backtrack_catastrophically():
 
 
 def test_citation_title_strips_brackets_for_catalog_and_citation():
-    # Search titles routinely carry a bracketed prefix ("[PDF] ..."), and the report prompt tells
-    # the model to copy the catalog title verbatim into the link label, where a bracket makes the
-    # citation unmatchable. The catalog and the citation writer share this helper so they cannot
-    # offer a label the validator then fails to match.
+    # Search titles routinely carry a bracketed prefix ("[PDF] ..."), and the prompt tells the
+    # model to copy the catalog title verbatim into the link label, where a bracket makes the
+    # citation unmatchable. Catalog and citation writer share this helper so they agree.
     assert (
         _citation_title({"title": "[PDF] Annual Report 2024"}, "https://x/a")
         == "PDF Annual Report 2024"

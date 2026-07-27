@@ -84,9 +84,9 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
 
 
 def test_research_reasoning_effort_is_clamped_to_the_loaded_model() -> None:
-    # A level the loaded model lacks is dropped by llama.cpp, so the whole durable run
-    # would silently fall back to the template default. Must use the same helper and the
-    # same levels as normal local chat so the two paths cannot drift apart again.
+    # A level the loaded model lacks is dropped by llama.cpp, so the durable run would silently
+    # fall back to the template default. Must use the same helper and levels as normal local
+    # chat so the two paths cannot drift apart again.
     adapter = source("features/chat/api/chat-adapter.ts")
     branch = adapter.split("Deep research requires a selected local model.", 1)[1].split(
         "createdRun = await createResearchRun({", 1
@@ -253,10 +253,9 @@ def test_settled_terminal_research_never_stays_disconnected() -> None:
 
 
 def test_replayed_history_never_borrows_another_attempts_step_result() -> None:
-    # A retry deletes the previous attempt's research_plan_steps rows but keeps its events,
-    # and the SSE route attaches the live run snapshot to every replayed historical event.
-    # Matching a replayed step only by position would show the newest attempt's evidence
-    # (or none) inside the older attempt's preserved activity.
+    # A retry deletes the previous attempt's research_plan_steps rows but keeps its events, and
+    # the SSE route attaches the live run snapshot to every replayed event. Matching a replayed
+    # step only by position would show the newest attempt's evidence inside the older one.
     coordinator = source("features/chat/stores/research-run-store.ts")
 
     assert "const snapshotIsSameAttempt = attempt === (event.run.retryCount ?? 0);" in coordinator

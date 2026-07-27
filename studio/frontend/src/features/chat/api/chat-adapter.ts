@@ -2277,10 +2277,9 @@ export function createOpenAIStreamAdapter(
           })) {
             const run = update.run;
             ingestResearchUpdate(run, update.event);
-            // The activity store coalesces these high-frequency events. Yielding
-            // them through assistant-ui would replace the entire hidden message
-            // content for every token and make long planning turns progressively
-            // more expensive.
+            // The activity store coalesces these high-frequency events. Yielding them
+            // through assistant-ui would replace the whole hidden message content per
+            // token, making long planning turns progressively more expensive.
             if (
               update.event?.event === "reasoning.updated" ||
               update.event?.event === "report.updated"

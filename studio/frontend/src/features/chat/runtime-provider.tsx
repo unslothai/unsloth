@@ -1231,11 +1231,10 @@ function useStudioRuntimeAdapters(
             (sameResearchRun ||
               !incomingMetadata?.serverManaged ||
               existingRevision > incomingRevision);
-          // A server-managed research message is owned by the backend, which stored
-          // only its own metadata. Echo that stored metadata verbatim on autosave:
-          // merging incomingMetadata re-adds client-only fields (researchRun /
-          // serverRevision) the server never persisted, so _research_message_would_change
-          // sees a diff and rejects every streamed/snapshot update with 409.
+          // Echo the backend's stored metadata verbatim on autosave: merging
+          // incomingMetadata re-adds client-only fields (researchRun / serverRevision) the
+          // server never persisted, so _research_message_would_change sees a diff and
+          // rejects every streamed/snapshot update with 409.
           const metadata = preserveServerManaged
             ? existingMetadata
             : incomingMetadata;

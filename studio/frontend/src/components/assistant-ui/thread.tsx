@@ -1509,8 +1509,7 @@ const Composer: FC<{
   }, [deepResearchEnabled, hasResearchMessage, researchThreadId, researchUsed]);
   // More than 4 pills: collapse to icons only. Search, Code, and permissions
   // always show; Images, RAG, Canvas, MCP and Deep Research are conditional.
-  // Narrow viewports collapse too: the labelled row is wider than a
-  // phone-width composer.
+  // Narrow viewports collapse too: the labelled row is wider than a phone composer.
   const isMobile = useIsMobile();
   const pillCount =
     3 +
@@ -4097,10 +4096,10 @@ const useOwnsResearchMessage = () => {
     );
 };
 
-// Whether the active thread has a non-terminal durable research run. After a
-// reload the run is followed by the research store rather than an assistant-ui
-// run, so `thread.isRunning` is false while research is still active; message
-// edit/reload/branch actions must also gate on this to preserve one-run-per-chat.
+// Whether the active thread has a non-terminal durable research run. After a reload the
+// research store follows the run instead of an assistant-ui run, so `thread.isRunning` is
+// false while research is active; edit/reload/branch must also gate on this to keep
+// one run per chat.
 const useThreadResearchActive = (): boolean => {
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   return useResearchRunStore((state) => {

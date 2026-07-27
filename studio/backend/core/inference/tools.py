@@ -3495,11 +3495,10 @@ def _search_knowledge_base_with_budget(
         if deadline is not None and time.monotonic() >= deadline:
             return "Error: knowledge base search timed out."
 
-    # The running search owns the admission slot until it actually stops: release it exactly once,
-    # from whichever path terminates the work. When the caller gives up (timeout/cancel) the worker
-    # is still doing embedding/index/GPU work, so it -- not the caller -- keeps the slot and frees
-    # it in its finally. Releasing on caller timeout would let a second search enter while the first
-    # worker runs, defeating the capacity-of-one bound and stacking concurrent GPU/SQLite work.
+    # The running search owns the admission slot until it actually stops; release it exactly once,
+    # from whichever path terminates the work. Releasing on caller timeout/cancel would let a
+    # second search in while the first worker is still doing embedding/index/GPU work, defeating
+    # the capacity-of-one bound, so the worker frees the slot in its finally instead.
     _slot_lock = threading.Lock()
     _slot_released = False
 
@@ -4642,10 +4641,10 @@ def _web_search(
         from .web_access_policy import check_url_access, scope_search_query
 
         effective_query = scope_search_query(query, website_policy)
-        # The policy filters below, so ask for a deeper pool when one actually restricts:
-        # otherwise a page whose top hits are all disallowed yields nothing even when valid
-        # results rank just under them, wasting a research step. Test the domain lists, not the
-        # dict: a run always stores a normalized policy, which is truthy even when unrestricted.
+        # The policy filters below, so ask for a deeper pool when one actually restricts: a page
+        # whose top hits are all disallowed otherwise yields nothing even when valid results rank
+        # just under them. Test the domain lists, not the dict: a run always stores a normalized
+        # policy, which is truthy even when unrestricted.
         restricted = any(
             (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
         )

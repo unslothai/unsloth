@@ -192,10 +192,9 @@ def create_run(
                     if isinstance(existing_metadata, dict)
                     else None
                 )
-                # Only bind to an empty placeholder or this run's own message. An
-                # untagged reply carries text/source parts that _update_assistant
-                # drops on completion, so binding one silently overwrites an
-                # existing answer (for example a retry reusing a prior answer id).
+                # Only bind to an empty placeholder or this run's own message: an untagged
+                # reply carries text/source parts that _update_assistant drops on completion,
+                # so binding one silently overwrites an existing answer.
                 existing_answer = any(
                     isinstance(part, dict)
                     and (
