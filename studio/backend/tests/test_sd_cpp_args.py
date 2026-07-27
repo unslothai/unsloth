@@ -75,14 +75,19 @@ def test_metal_text_encoder_flag_reaches_both_command_builders(monkeypatch):
         binary = "sd-server", files = files, host = "127.0.0.1", port = 1234
     )
     cli = build_sd_cpp_command(
-        binary = "sd-cli", files = files, params = SdCppGenParams(prompt = "x"),
+        binary = "sd-cli",
+        files = files,
+        params = SdCppGenParams(prompt = "x"),
         output_path = "/o/x.png",
     )
     assert server.count("--clip-on-cpu") == 1
     assert cli.count("--clip-on-cpu") == 1
     # An offload policy that already pins the encoder must not emit it twice.
     dual = build_sd_cpp_server_command(
-        binary = "sd-server", files = files, host = "127.0.0.1", port = 1234,
+        binary = "sd-server",
+        files = files,
+        host = "127.0.0.1",
+        port = 1234,
         offload = offload_flags("model"),
     )
     assert dual.count("--clip-on-cpu") == 1

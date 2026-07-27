@@ -3318,7 +3318,6 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
         # Same shape as the video branch: the arch is shared, so let the family detection the
         # loader itself uses decide, trying each hint separately (a repo id, then a filename).
         from core.inference.diffusion_families import detect_family_for_pick, family_gguf_loadable
-
         for hint in name_hints:
             if not hint:
                 continue

@@ -207,7 +207,6 @@ def test_disk_gate_matches_download_for_bf16_published_families(monkeypatch):
     # Families that publish bf16 download what they occupy (measured 0.99-1.07x), so the two
     # numbers stay equal and no factor entry is needed.
     import core.inference.diffusion_auto_policy as ap
-
     for name in ("flux.1", "flux.2-dev", "qwen-image", "krea-2", "hidream-i1"):
         est = ap.estimate_dense_quant(_fam(name), "int8")
         assert est.download_transformer_mib == est.transient_transformer_mib, name

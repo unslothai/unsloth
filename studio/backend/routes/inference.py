@@ -16377,7 +16377,10 @@ async def generate_diffusion_image(
                         "loras": (
                             [f"{l.id}:{l.weight:g}" for l in request.loras]
                             if request.loras
-                            else [f"{name}:{weight:g}" for name, weight in result.get("active_loras") or []]
+                            else [
+                                f"{name}:{weight:g}"
+                                for name, weight in result.get("active_loras") or []
+                            ]
                         ),
                         "controlnet": (
                             f"{request.controlnet.id}:{request.controlnet.control_type}:"

@@ -1397,9 +1397,9 @@ def test_arch_to_task_agrees_with_the_loader_on_ambiguous_archs():
             loader_accepts = True
         except (ValueError, FileNotFoundError):
             loader_accepts = False
-        assert (task == "text-to-image") == loader_accepts, (
-            f"{fam.name}: picker task={task} but loader accepts={loader_accepts}"
-        )
+        assert (
+            task == "text-to-image"
+        ) == loader_accepts, f"{fam.name}: picker task={task} but loader accepts={loader_accepts}"
 
 
 def _clear_chat_delete_guards(monkeypatch):

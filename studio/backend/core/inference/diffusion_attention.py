@@ -179,7 +179,6 @@ def _pip_requirement(backend: str, package: str) -> str:
         return package
     try:
         from diffusers.models.attention_dispatch import _REQUIRED_SAGE_VERSION as floor
-
         if isinstance(floor, str) and floor.strip():
             return f"sageattention>={floor.strip()}"
     except Exception:  # noqa: BLE001 — older/newer diffusers may not expose it; keep the static pin
