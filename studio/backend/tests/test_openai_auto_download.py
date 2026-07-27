@@ -105,7 +105,6 @@ def _hub_error(error_type, status_code: int, message: str):
         )
     if getattr(getattr(exc, "response", None), "status_code", None) != status_code:
         from types import SimpleNamespace
-
         try:
             exc.response = SimpleNamespace(status_code = status_code)
         except AttributeError:
