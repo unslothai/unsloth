@@ -27,6 +27,33 @@ from typing import Any, Callable, Optional
 _HELPERS: Optional[dict] = None
 
 
+def _retry_could_help(exc: BaseException) -> bool:
+    """Whether importing ``unsloth`` could turn ``exc`` into a successful retry.
+
+    See ``_helpers`` for why each condition is here; the short version is that the import is
+    expensive and must not run where it cannot succeed."""
+    import importlib.util
+    import os
+    import sys
+
+    if not isinstance(exc, ImportError) or "unsloth" in sys.modules:
+        return False
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return False
+    if os.environ.get("UNSLOTH_ALLOW_CPU", "").strip().lower() not in ("1", "true", "yes", "on"):
+        try:
+            xpu = getattr(torch, "xpu", None)
+            if not (torch.cuda.is_available() or (xpu is not None and xpu.is_available())):
+                return False
+        except Exception:  # noqa: BLE001 — an unprobeable device is not one unsloth can use
+            return False
+    try:
+        return importlib.util.find_spec("unsloth") is not None
+    except Exception:  # noqa: BLE001 — an unimportable package cannot set the sentinel either
+        return False
+
+
 def _helpers() -> Optional[dict]:
     """``{"patch": patch_function, "restore": restore_original}``, or None when unavailable.
 
@@ -37,12 +64,17 @@ def _helpers() -> Optional[dict]:
     False). So on failure, import ``unsloth`` and retry once, which is also the import order Unsloth
     documents.
 
-    The retry is gated, because it is not free: importing ``unsloth`` pulls torch in behind it and
-    costs ~940 MB of RSS in a process that had neither, only to fail anyway on a host with no
-    accelerator, which is enough to matter on a small CI runner mid-generation. So it runs only when
+    The retry is gated, because it is not free: importing ``unsloth`` costs ~940 MB of RSS measured
+    in a process that had not already loaded torch, and on a host unsloth does not support it pays
+    that and fails anyway. Ungated it took two cross-platform CI runners down -- a Linux job that had
+    generated fine at ~900 s died 19 s in with SIGTERM and every ``if: always()`` step skipped (the
+    runner torn down, not a step failing), and a 7 GB macOS runner lost the server 26 s into a load.
+    So it runs only when it can actually succeed:
 
-      * ``torch`` is already imported -- true of the server and of anything that patches a real
-        module, and the condition that keeps the retry from being the thing that loads torch,
+      * ``torch`` is already imported -- true of the server and of anything patching a real module,
+        and the condition that stops the retry from being what loads torch,
+      * an accelerator ``unsloth`` supports is present (CUDA/ROCm or XPU; ``UNSLOTH_ALLOW_CPU``
+        overrides). MPS and plain CPU are not, and there the import raises after paying,
       * ``unsloth`` is installed but not yet imported (if it were, the sentinel would be set and the
         first attempt would have worked),
       * and the first failure was the ImportError that guard raises."""
@@ -53,19 +85,6 @@ def _helpers() -> Optional[dict]:
     def _load() -> dict:
         from unsloth_zoo.temporary_patches.utils import patch_function, restore_original
         return {"patch": patch_function, "restore": restore_original}
-
-    def _retry_could_help(exc: BaseException) -> bool:
-        import importlib.util
-        import sys
-
-        if not isinstance(exc, ImportError) or "unsloth" in sys.modules:
-            return False
-        if "torch" not in sys.modules:
-            return False
-        try:
-            return importlib.util.find_spec("unsloth") is not None
-        except Exception:  # noqa: BLE001 — an unimportable package cannot set the sentinel either
-            return False
 
     for attempt in (0, 1):
         try:
