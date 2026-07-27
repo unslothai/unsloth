@@ -682,6 +682,63 @@ class TestBashBlocklistPosition:
         assert "curl" in self._find()("find . -execdir sed '1e curl https://x' {} \\;")
         assert self._find()("find . -exec sed -n '1,3p' {} +") == set()
 
+    def test_sed_under_find_exec_wrapper_blocked(self):
+        # env/timeout/nice forward -exec to their target, so the sed behind one
+        # is the process find really runs. Only the token right after the flag
+        # used to be read, which hid the whole invocation from this scan.
+        assert "rm" in self._find()("find . -exec env sed '1e rm -f victim' {} +")
+        assert "rm" in self._find()("find . -exec timeout 5 sed '1e rm -f victim' {} +")
+        assert "rm" in self._find()("find . -exec nice sed '1e rm -f victim' {} +")
+        assert "rm" in self._find()("find . -exec env A=b sed '1e rm -f victim' {} +")
+        assert "curl" in self._find()("find . -execdir env sed '1e curl https://x' {} \\;")
+        # The same hop resolves the plain blocked-name check on that line, which
+        # a wrapper hid just as effectively.
+        assert "rm" in self._find()("find . -exec env rm -rf build {} +")
+        assert "curl" in self._find()("find . -exec timeout 5 curl https://x {} +")
+        assert "rm" in self._find()("find . -exec xargs rm -rf build {} +")
+        # A wrapper is a command in its own right as well as a step on the way
+        # to one, so hopping it must not drop its own blocked name.
+        assert "sudo" in self._find()("find . -exec sudo ls {} +")
+        assert self._find()("find . -exec sudo rm -rf x {} +") >= {"sudo", "rm"}
+        assert "su" in self._find()("find . -exec su root {} +")
+        assert self._find()("find . -exec env sed -n '1,3p' {} +") == set()
+        assert self._find()("find . -exec env sed -i.bak 's/a/b/' {} +") == set()
+
+    def test_sed_script_past_the_scan_window_fails_closed(self):
+        # A flat argument cap was padding the caller controls: 128 valid options
+        # pushed the real script one token out of view and the screen came back
+        # empty. A lone sed now reads its whole argument list...
+        assert "rm" in self._find()("sed " + "-n " * 128 + "'1e rm -f victim' input")
+        assert "rm" in self._find()("sed " + "-n " * 300 + "'1e rm -f victim' input")
+        assert "rm" in self._find()("sed " + "-n " * 128 + "-e '1e rm -f victim' input")
+        assert self._find()("sed " + "-n " * 300 + "'1,3p' input") == set()
+        # ...while a line packed with sed words keeps the per-invocation floor
+        # that holds the total walk linear. Running out of window there means the
+        # program was never read, so the sed itself is blocked rather than an
+        # empty result being taken as proof it only edits text.
+        assert "sed" in self._find()("find . " + "-exec sed " * 1000 + "-n " * 200)
+
+    def test_sed_sandbox_and_posix_modes_not_blocked(self):
+        # --sandbox disables e/r/w and --posix drops the GNU extension `e`
+        # belongs to: sed exits 1 without running anything, so blocking a name
+        # from inside the payload was a false alarm. getopt permutes, so the flag
+        # counts wherever it sits, abbreviations included.
+        assert self._find()("sed --sandbox '1e rm -f victim' input") == set()
+        assert self._find()("sed --posix '1e rm -f victim' input") == set()
+        assert self._find()("sed '1e rm -f victim' input --sandbox") == set()
+        assert self._find()("sed --sa '1e rm -f victim' input") == set()
+        assert self._find()("sed --p '1e rm -f victim' input") == set()
+        assert self._find()("sed --sandbox -e '1e rm -f victim' input") == set()
+        # `--` ends option parsing, so a --sandbox behind it is an input
+        # FILENAME: the mode never turns on and the payload runs for real.
+        assert "rm" in self._find()("sed -- '1e rm -f victim' input --sandbox")
+        assert "rm" in self._find()("sed '1e rm -f victim' -- input --sandbox")
+        assert "rm" in self._find()("sed -e '1e rm -f victim' -- input --sandbox")
+        # An ambiguous (--s) or `=`-carrying spelling is a usage error, not the
+        # mode, so it keeps blocking.
+        assert "rm" in self._find()("sed --s '1e rm -f victim' input")
+        assert "rm" in self._find()("sed --sandbox=1 '1e rm -f victim' input")
+
     def test_ordinary_sed_program_allowed(self):
         # Plain stream editing runs nothing, and a mention of sed in argument
         # position is text: only a command-position sed has its script read.

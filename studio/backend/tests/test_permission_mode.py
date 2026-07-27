@@ -991,6 +991,52 @@ def test_terminal_classifier(command, unsafe):
         # operands leaves a program the scan can still read in full
         ("sed -i 's/$(CC)/gcc/' $(git ls-files '*.mk')", False),
         ("sed 's/`//g' $(ls *.md)", False),
+        # a paren the substitution QUOTES is text to the nested shell, so it must
+        # not raise the depth of the span: counting it left the closing `)`
+        # unmatched and dragged the following words in, and the text then no
+        # longer matched the program it had to be found inside
+        ("sed \"$(printf '(' >/dev/null; printf 'e rm -f victim')\" input", True),
+        ("sed \"$(printf ')' >/dev/null; printf 'e rm -f victim')\" input", True),
+        ("sed \"$(printf '()' >/dev/null; printf 'e rm -f victim')\" input", True),
+        # --- prompt: padding the options cannot push the script past the scan
+        # window, because a lone sed reads its whole argument list ---
+        ("sed " + "-n " * 128 + "'1e rm -f victim' input", True),
+        ("sed " + "-n " * 300 + "'1e rm -f victim' input", True),
+        ("sed " + "-n " * 128 + "-e '1e rm -f victim' input", True),
+        ("sed " + "-n " * 128 + "-n '1,3p' input", False),
+        ("sed " + "-n " * 300 + "'1,3p' input", False),
+        # --- prompt: a command prefix forwards -exec to its target, so the sed
+        # behind env/timeout/nice is the process find really runs ---
+        ("find . -exec env sed '1e rm -f victim' {} +", True),
+        ("find . -exec timeout 5 sed '1e rm -f victim' {} +", True),
+        ("find . -exec nice sed '1e rm -f victim' {} +", True),
+        ("find . -exec env A=b sed '1e rm -f victim' {} +", True),
+        ("find . -execdir env sed '1e rm -f victim' {} \\;", True),
+        ("find . -exec env sed -n '1,3p' {} +", False),
+        ("find . -exec env sed -i.bak 's/a/b/' {} +", False),
+        # --- run: --sandbox and --posix make GNU sed REFUSE e / s///e / a bare
+        # `e` and exit 1, so nothing reaches a shell and prompting was a false
+        # alarm. getopt permutes, so the flag counts wherever it sits, and an
+        # unambiguous abbreviation (--sa, --p) is the same option ---
+        ("sed --sandbox '1e rm -f victim' input", False),
+        ("sed --posix '1e rm -f victim' input", False),
+        ("sed '1e rm -f victim' --sandbox input", False),
+        ("sed '1e rm -f victim' input --posix", False),
+        ("sed --sandbox --posix '1e rm -f victim' input", False),
+        ("sed --sa '1e rm -f victim' input", False),
+        ("sed --p '1e rm -f victim' input", False),
+        ("sed --sandbox -e '1e rm -f victim' input", False),
+        ("sed --sandbox 's/aaa/rm -f victim/e' input", False),
+        ("sed --posix '1s/.*/rm -f victim/;1e' input", False),
+        # ...but `--` ends option parsing, so a --sandbox behind it is an input
+        # FILENAME, the mode never turns on and the payload runs for real
+        ("sed -- '1e rm -f victim' input --sandbox", True),
+        ("sed '1e rm -f victim' -- input --sandbox", True),
+        ("sed -e '1e rm -f victim' -- input --sandbox", True),
+        # an ambiguous (--s is silent/separate/sandbox) or `=`-carrying spelling
+        # is a usage error rather than the mode, so it keeps asking
+        ("sed --s '1e rm -f victim' input", True),
+        ("sed --sandbox=1 '1e rm -f victim' input", True),
         # --- run: a newline BETWEEN commands still separates them, so the
         # segment-scoped checks must not read the next line's words as
         # arguments of this one ---
