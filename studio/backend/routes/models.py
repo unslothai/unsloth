@@ -723,7 +723,7 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
 
             try:
                 manifest = json.loads(tag_file.read_text(encoding = "utf-8"))
-            except (json.JSONDecodeError, OSError) as e:
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
                 logger.debug(
                     "Skipping unreadable/invalid Ollama manifest %s: %s",
                     tag_file,
@@ -741,7 +741,7 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
                         cfg = json.loads(config_blob.read_text(encoding = "utf-8"))
                         model_type = cfg.get("model_type", "")
                         file_type = cfg.get("file_type", "")
-                    except (json.JSONDecodeError, OSError) as e:
+                    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
                         logger.debug(
                             "Could not parse Ollama config blob %s: %s",
                             config_blob,
