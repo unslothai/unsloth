@@ -205,8 +205,12 @@ def _get_new_mapper():
             namespace["NEW_INT_TO_FLOAT_MAPPER"],
             namespace["NEW_FLOAT_TO_INT_MAPPER"],
             namespace["NEW_MAP_TO_UNSLOTH_16bit"],
-            namespace["FLOAT_TO_FP8_BLOCK_MAPPER"],
-            namespace["FLOAT_TO_FP8_ROW_MAPPER"],
+            # .get, not []: these two come from the fetched file under its own names (unlike
+            # the NEW_ names above, renamed here), so an older or renamed mapper.py would
+            # KeyError into the bare except and take the 4bit half of the probe down too.
+            # {} is safe: the probe runs only after the installed tables already missed.
+            namespace.get("FLOAT_TO_FP8_BLOCK_MAPPER", {}),
+            namespace.get("FLOAT_TO_FP8_ROW_MAPPER", {}),
         )
     except:
         return {}, {}, {}, {}, {}
