@@ -21,6 +21,8 @@ canonical scanner loads in-repo so the fallback never silently takes over.
 from __future__ import annotations
 
 import hashlib
+import io
+import tokenize
 import importlib.util
 import pathlib
 import re
@@ -392,6 +394,20 @@ def scan_remote_code_files(files: dict[str, str]) -> ScanResult:
     return result
 
 
+def _read_python_source(path) -> str:
+    """Decode a .py the way Python will execute it.
+
+    A PEP 263 cookie (`# coding: cp1252`) decides the encoding, so forcing utf-8
+    would make the scanner read something other than what runs.
+    """
+    data = path.read_bytes()
+    try:
+        encoding = tokenize.detect_encoding(io.BytesIO(data).readline)[0]
+    except (SyntaxError, ValueError):
+        encoding = "utf-8"
+    return data.decode(encoding, errors = "replace")
+
+
 def remote_code_fingerprint(files: dict[str, str]) -> str:
     """Stable sha256 over the (sorted) file contents, for pinning consent."""
     h = hashlib.sha256()
@@ -430,9 +446,7 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
             # for an RCE gate (HIGH stays approvable; only CRITICAL hard-blocks).
             for p in root.rglob("*.py"):
                 if p.is_file():
-                    files[str(p.relative_to(root))] = p.read_text(
-                        errors = "replace", encoding = "utf-8"
-                    )
+                    files[str(p.relative_to(root))] = _read_python_source(p)
             # A local config can still point auto_map at an EXTERNAL Hub repo
             # (owner/name--module.Class) that executes on load, so fetch it. Every config
             # that can declare auto_map is checked, so a custom processor's external code

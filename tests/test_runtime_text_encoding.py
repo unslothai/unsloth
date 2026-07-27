@@ -164,6 +164,11 @@ def _is_path_class(name, modules) -> bool:
     return (modules.get(name) or name).split(".")[-1] in PATH_CLASSES
 
 
+def _is_path_attr(node) -> bool:
+    """True for a qualified path class, as in `pathlib.Path`."""
+    return isinstance(node, ast.Attribute) and node.attr in PATH_CLASSES
+
+
 def _foreign_receiver(node, modules) -> bool:
     """True when the thing before `.open` is an object another library built.
 
@@ -190,7 +195,7 @@ def _offender(call: ast.Call, modules = None) -> str | None:
         receiver = func.value.id if isinstance(func.value, ast.Name) else None
         # `Path.read_text(p)` is the unbound spelling of `p.read_text()`: the
         # instance takes slot 0, so every argument shifts one place right.
-        shift = 1 if _is_path_class(receiver, modules) else 0
+        shift = 1 if _is_path_class(receiver, modules) or _is_path_attr(func.value) else 0
         if func.attr in GUARDED_METHODS:
             if func.attr == "read_text" and not shift and call.args:
                 first = call.args[0]

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import locale
 import os
 import threading
 from pathlib import Path
@@ -63,6 +64,7 @@ class JsonlWriter:
         self.path = Path(path)
         self.path.parent.mkdir(parents = True, exist_ok = True)
         self._lock = threading.Lock()
+        self._migrate_legacy_encoding()
         self._fh = self.path.open("a", buffering = 1, encoding = "utf-8")
         self._count_seen_keys: set[str] = set()
         # Preload seen keys for dedup across resumes
@@ -79,6 +81,26 @@ class JsonlWriter:
                             pass
             except Exception:
                 pass
+
+    def _migrate_legacy_encoding(self) -> None:
+        """Rewrite a file an older build wrote in the operator's locale as utf-8.
+
+        Appending utf-8 to locale-encoded lines would leave one file in two
+        encodings, and the dedup preload would stop at the first byte it cannot
+        decode and re-append every record after it.
+        """
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            return
+        data = self.path.read_bytes()
+        try:
+            data.decode("utf-8")
+            return
+        except UnicodeDecodeError:
+            pass
+        text = data.decode(locale.getpreferredencoding(False), errors = "replace")
+        tmp = self.path.with_suffix(self.path.suffix + ".mig")
+        tmp.write_text(text, encoding = "utf-8")
+        os.replace(tmp, self.path)
 
     def _key(self, obj: dict) -> str | None:
         for k in ("id", "node_id", "number", "sha", "url"):
