@@ -602,7 +602,6 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
             # which the exact predicate above no longer matches. Without this the
             # plan carries no main hashes and the resume aborts below.
             from hub.utils.gguf import compatible_base_quant_label
-
             compatible = compatible_base_quant_label(
                 variant,
                 main_gguf_variant_labels(manifest.expected_files),
