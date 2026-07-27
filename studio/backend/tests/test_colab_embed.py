@@ -336,17 +336,71 @@ def test_colab_login_html_includes_credentials():
     html = colab._colab_login_html("unsloth", "alpha-beta-gamma-delta")
     assert "unsloth" in html
     assert "alpha-beta-gamma-delta" in html
+    # The username is fixed, so it reads inline rather than as its own field.
+    assert "Username:" not in html
 
 
-def test_show_and_embed_renders_cloudflare_before_colab_login(monkeypatch):
+def test_shareable_link_html_embeds_password_under_the_link():
+    """The credential belongs in the same card as the button it unlocks."""
+    html = colab._shareable_link_html("https://share.trycloudflare.com", "secret-pass", "unsloth")
+    assert "share.trycloudflare.com" in html
+    assert "secret-pass" in html
+    # Username is stated inline, not as its own labelled field.
+    assert "Username:" not in html
+    assert "unsloth" in html
+    # The password must sit after the link, not above it.
+    assert html.index("share.trycloudflare.com") < html.index("secret-pass")
+
+
+def test_shareable_link_html_renders_the_url_as_a_link():
+    """The printed URL is an anchor, using the popup-safe open the button uses."""
+    html = colab._shareable_link_html("https://share.trycloudflare.com")
+    assert '<a href="https://share.trycloudflare.com"' in html
+    assert ">https://share.trycloudflare.com</a>" in html
+    assert html.count("window.open(this.href,'_blank')") == 2
+
+
+def test_shareable_link_html_emphasises_the_password():
+    """The password is the one thing to copy, so it is enlarged and underlined."""
+    html = colab._shareable_link_html("https://share.trycloudflare.com", "secret-pass", "unsloth")
+    pw_tag = html[html.index("Password") : html.index("secret-pass")]
+    assert "font-size: 24px" in pw_tag
+    assert "text-decoration: underline" in pw_tag
+
+
+def test_shareable_link_html_password_has_no_adjacent_whitespace():
+    """Whitespace beside the password is selected with it on a double click."""
+    html = colab._shareable_link_html("https://share.trycloudflare.com", "secret-pass", "unsloth")
+    before, after = html.split("secret-pass", 1)
+    assert before.endswith(">")
+    assert after.startswith("<")
+    # Label on its own line, so nothing shares the password's text node.
+    assert "Password:" not in html
+    # Plain selectable text: user-select overrides break double click to select.
+    assert "user-select" not in html
+
+
+def test_shareable_link_html_omits_login_block_without_password():
+    html = colab._shareable_link_html("https://share.trycloudflare.com")
+    assert "Password" not in html
+
+
+def test_show_and_embed_folds_login_into_the_cloudflare_card(monkeypatch):
+    """One card, not two: the tunnel card carries the password itself."""
     displayed: list[str] = []
     ipython_display = SimpleNamespace(
         HTML = lambda html: SimpleNamespace(html = html),
         display = lambda html: displayed.append(html.html),
     )
+    login_cards: list[tuple] = []
 
     monkeypatch.setattr(colab, "get_colab_url", lambda port: "https://8888-test.prod.colab.dev/")
     monkeypatch.setattr(colab, "_is_colab_runtime", lambda: True)
+    monkeypatch.setattr(
+        colab,
+        "_show_colab_login_credentials",
+        lambda *args: login_cards.append(args),
+    )
     monkeypatch.setattr(
         colab,
         "show_link",
@@ -360,9 +414,74 @@ def test_show_and_embed_renders_cloudflare_before_colab_login(monkeypatch):
             colab_login = ("unsloth", "secret-pass"),
         )
 
-    assert len(displayed) == 2
+    assert len(displayed) == 1
     assert "share.trycloudflare.com" in displayed[0]
-    assert "secret-pass" in displayed[1]
+    assert "secret-pass" in displayed[0]
+    assert login_cards == []
+
+
+def test_show_and_embed_keeps_separate_login_card_without_tunnel(monkeypatch):
+    """No tunnel card to fold into, so the standalone login card still renders."""
+    login_cards: list[tuple] = []
+
+    monkeypatch.setattr(colab, "get_colab_url", lambda port: "https://8888-test.prod.colab.dev/")
+    monkeypatch.setattr(colab, "_is_colab_runtime", lambda: True)
+    monkeypatch.setattr(
+        colab,
+        "_show_colab_login_credentials",
+        lambda *args: login_cards.append(args),
+    )
+    monkeypatch.setattr(
+        colab,
+        "show_link",
+        lambda port, *, _url = None, has_cloudflare_link = False, cloudflare_requested = False: None,
+    )
+    monkeypatch.setattr(colab, "_embed_kernel_port_iframe", lambda port: True)
+    colab._show_and_embed(8888, colab_login = ("unsloth", "secret-pass"))
+
+    assert login_cards == [("unsloth", "secret-pass")]
+
+
+def test_show_and_embed_skips_ready_card_when_tunnel_is_up(monkeypatch):
+    """The ready card only restates the tunnel card and prints a proxy URL that 404s."""
+    calls: list[str] = []
+
+    monkeypatch.setattr(colab, "get_colab_url", lambda port: "https://8888-test.prod.colab.dev/")
+    monkeypatch.setattr(colab, "_is_colab_runtime", lambda: True)
+    monkeypatch.setattr(
+        colab,
+        "show_link",
+        lambda port,
+        *,
+        _url = None,
+        has_cloudflare_link = False,
+        cloudflare_requested = False: calls.append("show_link"),
+    )
+    monkeypatch.setattr(colab, "_embed_kernel_port_iframe", lambda port: True)
+    colab._show_and_embed(8888, cloudflare_url = "https://share.trycloudflare.com")
+
+    assert calls == []
+
+
+def test_show_and_embed_keeps_ready_card_without_tunnel(monkeypatch):
+    """Without a tunnel the ready card is the only guidance, so it must stay."""
+    calls: list[str] = []
+
+    monkeypatch.setattr(colab, "get_colab_url", lambda port: "https://8888-test.prod.colab.dev/")
+    monkeypatch.setattr(colab, "_is_colab_runtime", lambda: True)
+    monkeypatch.setattr(
+        colab,
+        "show_link",
+        lambda port,
+        *,
+        _url = None,
+        has_cloudflare_link = False,
+        cloudflare_requested = False: calls.append("show_link"),
+    )
+    monkeypatch.setattr(colab, "_embed_kernel_port_iframe", lambda port: True)
+    colab._show_and_embed(8888)
+
+    assert calls == ["show_link"]
 
 
 def test_show_and_embed_skips_iframe_on_colab_when_cloudflare_ready(monkeypatch):

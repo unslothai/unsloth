@@ -21,7 +21,7 @@ WANTED = {
 
 def _load_pad_helpers():
     """Exec only the pad-token helpers with a stub logger (no heavy imports)."""
-    tree = ast.parse(open(TOK_PATH).read())
+    tree = ast.parse(open(TOK_PATH, encoding = "utf-8").read())
     nodes = []
     for node in tree.body:
         if isinstance(node, ast.Assign):

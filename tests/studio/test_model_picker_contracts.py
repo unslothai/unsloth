@@ -23,7 +23,7 @@ FRONTEND = WORKDIR / "studio" / "frontend" / "src"
 def _read(rel: str) -> str:
     path = FRONTEND / rel
     assert path.exists(), f"missing source file: {path}"
-    return path.read_text()
+    return path.read_text(encoding = "utf-8")
 
 
 def test_models_api_sends_token_via_header_not_query():
@@ -346,6 +346,36 @@ def test_fixed_layer_gguf_pins_displayed_context():
     assert "customContextLength: activeLoadedContext" in src
 
 
+def test_fixed_layer_pin_recomputed_after_committing_gpu_layers():
+    """pinFixedLayerContext is computed from the render-time config, before a
+    same-click GPU Layers draft is committed. handleRun must recompute it from the
+    committed effectiveConfig; otherwise typing a positive GPU Layers value on an
+    auto-fit GGUF and clicking Reload saves customContextLength: null, so a later
+    fresh load sends the native context with fixed layers (the OOM the pin avoids)."""
+    src = _read("features/model-picker/components/model-config-page.tsx")
+    assert "const effectivePinFixedLayerContext =" in src
+    assert 'effectiveConfig.gpuMemoryMode === "manual"' in src
+    assert "effectiveConfig.gpuLayers != null" in src
+    assert "effectiveConfig.customContextLength == null" in src
+    assert "{ ...effectiveConfig, customContextLength: activeLoadedContext }" in src
+
+
+def test_blur_cache_cleared_on_every_settled_render():
+    """The lastBlurCommittedRef bridge is valid only across the single synchronous
+    same-click gesture that set it. Keying its clear on [value] missed a Reset (or
+    external edit) that restores the shown value unchanged after the blur dispatched
+    onChange: value nets back to its prior number, the effect never re-ran, and a
+    later Load/Save replayed the override Reset removed. Clear it on every settled
+    render instead."""
+    src = _read("features/model-picker/components/numeric-value-input.tsx")
+    # The clearing effect must run on every commit, not be gated on [value] alone.
+    assert not re.search(r"lastBlurCommittedRef\.current = null;\s*\}, \[value\]\);", src)
+    assert re.search(
+        r"useEffect\(\(\) => \{\s*lastBlurCommittedRef\.current = null;\s*\}\);",
+        src,
+    )
+
+
 def test_auto_defaults_not_persisted_as_overrides():
     """Auto GPU memory mode and Auto/default speculative type are follow-global
     defaults; normalization must not persist them as per-model overrides, else a
@@ -382,13 +412,88 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
     Reset) so isDefaultConfig can clear a remembered override; the concrete
     fallback is substituted only into the load request, not the saved record."""
     src = _read("features/model-picker/components/model-config-page.tsx")
-    # Load-only substitution of the resolved value.
-    assert "maxSeqLength: maxSeqLengthValue" in src
-    assert "const loadConfig" in src
-    # The persisted record is loaded via onRun(loadConfig), and save uses the
-    # untouched runtimeConfig (so a reset/default config stays default).
-    assert "onRun(loadConfig)" in src
+    # Load-only substitution of the resolved value (recomputed from any committed
+    # same-click Max Seq Length draft, so it is never dropped).
+    assert "maxSeqLength: effectiveMaxSeqLengthValue" in src
+    assert "const effectiveLoadConfig" in src
+    # The persisted record is saved from effectiveRuntimeConfig; the load request
+    # carries effectiveLoadConfig (with any committed context input).
+    assert "onRun(effectiveLoadConfig)" in src
     assert "savePerModelConfig(" in src
+
+
+def test_initial_load_uses_staged_config_payload():
+    """Run-settings Load must pass the staged config through to /load even when
+    React has not flushed NumericValueInput blur commits into the store yet."""
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "const pendingLoadConfig =" in runtime
+    assert "pendingLoadConfig?.kvCacheDtype" in runtime
+    assert "pendingLoadConfig?.customContextLength" in runtime
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "contextInputRef" in page
+    assert "contextInputRef.current?.commit()" in page
+    numeric = _read("features/model-picker/components/numeric-value-input.tsx")
+    assert "export type NumericValueInputHandle" in numeric
+    assert "commit:" in numeric
+    # P1: commit returns null unless the user actually edited the field,
+    # so Load/Save with untouched Auto does not pin native context.
+    assert "dirtyRef.current" in numeric
+    assert "return null;" in numeric
+    # P2: blur clears dirtyRef after commit so Reset/slider cannot be
+    # overwritten by a stale draft on a later Load.
+    assert "dirtyRef.current = false;" in numeric
+    assert "draftRef.current = String(final);" in numeric
+    # Same-click Load after blur still sees the committed draft.
+    assert "lastBlurCommittedRef" in numeric
+    # Invalid drafts must not turn Auto into an explicit pin.
+    assert "const commitDraft = (raw: string): number | null" in numeric
+    assert re.search(r"if \(!Number\.isFinite\(parsed\)\) \{\s*return null;", numeric)
+    assert re.search(
+        r"if \(final == null\) \{\s*"
+        r"draftRef\.current = String\(value\);\s*"
+        r"lastBlurCommittedRef\.current = null;",
+        numeric,
+    )
+    # handleRun only promotes commit() when non-null.
+    assert "committedContext != null" in page
+    assert "pendingPatch.customContextLength = committedContext;" in page
+
+
+def test_same_click_commit_covers_all_numeric_inputs():
+    """The same-click blur bridge must flush every NumericValueInput-backed
+    setting, not just Context Length. Max Seq Length (non-GGUF), GPU Layers and
+    MoE Layers (GGUF) also stage their draft only on blur, so handleRun must
+    imperatively commit each and fold the value into the staged load config;
+    otherwise a value the user typed right before clicking Load/Reload is lost."""
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    # Each numeric input owns an imperative handle that handleRun commits, and the
+    # handle is forwarded down to the actual NumericValueInput.
+    for ref in ("maxSeqLengthInputRef", "gpuLayersInputRef", "moeLayersInputRef"):
+        assert f"const {ref} = useRef<NumericValueInputHandle>(null);" in page
+        assert f"{ref}.current?.commit()" in page
+        assert f"inputRef={{{ref}}}" in page
+    # The leaf sub-components accept and forward the handle as a ref.
+    assert page.count("inputRef?: Ref<NumericValueInputHandle>;") >= 2
+    assert "ref={inputRef}" in page
+    # Committed drafts are folded into the staged config, gated on non-null so an
+    # untouched field never fabricates an override.
+    assert "committedMaxSeqLength != null" in page
+    assert "committedGpuLayers != null" in page
+    assert "committedMoeLayers != null" in page
+    assert "pendingPatch.gpuLayers = committedGpuLayers;" in page
+    assert "pendingPatch.nCpuMoe = committedMoeLayers;" in page
+    # The non-GGUF load path substitutes the committed Max Seq Length draft.
+    assert "const effectiveMaxSeqLengthValue =" in page
+    assert "maxSeqLength: effectiveMaxSeqLengthValue" in page
+
+
+def test_context_commit_rechecks_persistence_only_shortcut():
+    """Committed context changes must bypass persistence-only saves."""
+    src = _read("features/model-picker/components/model-config-page.tsx")
+    assert "const effectiveConfig =" in src
+    assert "perModelConfigsEqual(effectiveConfig, baseline)" in src
+    assert "const effectivePersistenceOnly =" in src
+    assert "if (effectivePersistenceOnly)" in src
 
 
 def test_reset_enabled_for_explicit_context_pin_at_native():

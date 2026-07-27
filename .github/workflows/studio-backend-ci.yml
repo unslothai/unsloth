@@ -30,6 +30,13 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - 'tests/**'
+      # The root installers: tests/sh/*.sh and tests/studio/install/* assert
+      # against these two files, so a change here must run the suite that
+      # covers it. Without them an install-only edit (the shape most AMD/ROCm
+      # routing fixes take) skipped Backend CI entirely.
+      - 'install.sh'
+      - 'install.ps1'
+      - 'scripts/**'
       - 'pyproject.toml'
       - '.github/workflows/studio-backend-ci.yml'
   push:
@@ -217,27 +224,32 @@ jobs:
             tests/studio/test_xpu_spoof_pipeline.py
 
       - name: Shell installer tests
-        # Subset that does not depend on a writable / pristine install.sh
-        # tree; test_install_host_defaults.sh checks install.ps1 layout
-        # which has drifted (separate followup).
+        # Auto-discovered rather than allowlisted. The old hardcoded list had
+        # silently fallen seven files behind tests/run_all.sh, including
+        # test_strixhalo_wsl_reroute.sh -- the only shell coverage of the ROCm
+        # WSL reroute -- so that suite never ran on a PR. Skips are explicit,
+        # each with a reason, and tests/studio/test_ci_shell_suite_coverage.py
+        # fails if this step stops discovering the directory or the skip list
+        # grows without one.
+        #
+        # Skipped:
+        #   test_install_host_defaults.sh: asserts an install.ps1 layout that
+        #     has drifted (separate followup).
+        #   test_install_rollback_lifecycle.sh: already runs on both platforms
+        #     in cross-platform-parity-ci.yml.
         run: |
           set -e
-          for s in \
-              tests/sh/test_get_torch_index_url.sh \
-              tests/sh/test_mac_intel_compat.sh \
-              tests/sh/test_node_decision.sh \
-              tests/sh/test_studio_home_node_dir.sh \
-              tests/sh/test_system_node_readonly.sh \
-              tests/sh/test_nvcc_meets_llama_minimum.sh \
-              tests/sh/test_resolve_cuda_archs.sh \
-              tests/sh/test_staged_validation_enabled.sh \
-              tests/sh/test_tauri_install_exit_order.sh \
-              tests/sh/test_torch_constraint.sh \
-              tests/sh/test_torch_flavor.sh \
-              tests/sh/test_with_llama_cpp_dir_flag.sh \
-              tests/sh/test_with_llama_cpp_dir_link_behavior.sh; do
+          skip="test_install_host_defaults.sh test_install_rollback_lifecycle.sh"
+          found=0
+          for s in tests/sh/test_*.sh; do
+              case " $skip " in
+                  *" $(basename "$s") "*) echo "skipping $s (see workflow comment)"; continue ;;
+              esac
+              found=$((found + 1))
               echo "::group::$s"
               bash "$s"
               echo "::endgroup::"
           done
+          [ "$found" -gt 0 ] || { echo "::error::no shell tests discovered under tests/sh"; exit 1; }
+          echo "ran $found shell installer test files"
 
