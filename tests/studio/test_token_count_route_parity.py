@@ -160,3 +160,26 @@ def test_the_helper_reads_a_count_payload_which_has_no_tool_choice():
 
     plain = ChatCountTokensRequest(messages = [{"role": "user", "content": "hi"}])
     assert inference._takes_tool_passthrough(plain, _Backend()) is False
+
+
+def test_the_passthrough_recount_keeps_adjacent_user_turns():
+    """Coalescing is a normal-GGUF-path step, so it must follow the routing.
+
+    ``_openai_messages_for_passthrough`` drops the empty assistant sentinel but
+    keeps the two user turns around it, which is the shape a thread has after a
+    response is stopped before its first token. Merging them before counting
+    renders a prompt that route never sends, and can even count clean where the
+    real strict template rejects the unmerged history (#7453).
+    """
+    src = (BACKEND / "routes/inference.py").read_text(encoding = "utf-8")
+
+    # The passthrough builder is the reference: it does not coalesce.
+    builder = src.split("def _openai_messages_for_passthrough", 1)[1].split("\ndef ", 1)[0]
+    assert "_coalesce_consecutive_user_turns" not in builder
+
+    # ... so the counter may only coalesce once it knows it is NOT that route.
+    counter = src.split("async def chat_count_tokens", 1)[1].split("\n@router", 1)[0]
+    assert "if not _takes_passthrough:" in counter
+    merge_at = counter.index("_coalesce_consecutive_user_turns(openai_messages)")
+    route_at = counter.index("_takes_tool_passthrough(payload, llama_backend)")
+    assert route_at < merge_at, "the route must be decided before the merge"

@@ -12980,13 +12980,19 @@ async def chat_count_tokens(
             detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
         )
 
-    openai_messages = _coalesce_consecutive_user_turns(
-        _strip_provider_synthetic_tool_history(
-            _drop_empty_assistant_sentinels(
-                [m.model_dump(exclude_none = True) for m in payload.messages]
-            )
+    # Route first: the passthrough forwards the messages that
+    # _openai_messages_for_passthrough builds, and that does NOT merge adjacent
+    # user turns, so coalescing here would render a prompt that route never
+    # sends. Two user turns separated by an empty assistant sentinel is the
+    # shape that reaches this, after a response is stopped before its first token.
+    _takes_passthrough = _takes_tool_passthrough(payload, llama_backend)
+    openai_messages = _strip_provider_synthetic_tool_history(
+        _drop_empty_assistant_sentinels(
+            [m.model_dump(exclude_none = True) for m in payload.messages]
         )
     )
+    if not _takes_passthrough:
+        openai_messages = _coalesce_consecutive_user_turns(openai_messages)
     # Normalize system turns as the completion path does, so this renders as the next request.
     _system_prompt, _, _ = _extract_content_parts(payload.messages)
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
@@ -13003,7 +13009,6 @@ async def chat_count_tokens(
     # request never sends. `--enable-tools` alone does not take that route back:
     # it sets the policy, while the passthrough turns on an explicit per-request
     # `enable_tools` / `mcp_enabled`.
-    _takes_passthrough = _takes_tool_passthrough(payload, llama_backend)
     _client_disabled_tool_calls = getattr(payload, "tool_choice", None) == "none" and not (
         _explicit_studio_tool_loop_requested(payload) and llama_backend.supports_tools
     )
