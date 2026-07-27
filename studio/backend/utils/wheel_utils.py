@@ -120,12 +120,19 @@ def probe_torch_wheel_env(*, timeout: int | None = None) -> dict[str, str] | Non
     return env
 
 
-# torch 2.11 has no native prebuilt wheels for flash-attn / causal-conv1d / mamba
-# yet, but their torch 2.10 CUDA wheels load and pass the projects' own test suites
-# on torch 2.11 (verified on B200: FA2 fwd/bwd, causal-conv1d, and mamba selective
-# scan all match reference). Reuse the torch 2.10 wheels on torch 2.11 so a 2.11
-# install still gets these prebuilt accelerators instead of building from source.
-_PREBUILT_WHEEL_TORCH_MM = {"2.11": "2.10"}
+# torch 2.11 and 2.12 ship no native prebuilt wheels for flash-attn /
+# causal-conv1d / mamba-ssm, but the torch2.10 CUDA wheels load and pass each
+# project's own suite on both (B200, py3.12, torch 2.12.1+cu130: causal-conv1d
+# 9412 passed / 3888 skipped / 0 failed, mamba tests/ops 20 passed, flash-attn
+# splitkv+qkvpacked 848 passed; pass/fail/skip counts and the failing test-ID
+# sets are identical to a torch 2.10 control). Reuse them so a 2.11 / 2.12
+# install still gets prebuilt accelerators instead of building from source.
+#
+# The window is bounded, not open ended: torch broke extension ABI between 2.9
+# and 2.10, and the torch2.9 flash-attn .so raises "undefined symbol" on torch
+# 2.10 and on 2.12 alike. A wheel cannot skip a torch minor backwards, so every
+# new key here must be measured against the real wheels before it is added.
+_PREBUILT_WHEEL_TORCH_MM = {"2.11": "2.10", "2.12": "2.10"}
 
 
 def prebuilt_wheel_torch_mm(torch_mm: str) -> str:
@@ -155,6 +162,12 @@ def direct_wheel_url(
 
 def flash_attn_package_version(torch_mm: str) -> str | None:
     if torch_mm == "2.10":
+        # Newest flash-attn release still carrying the full torch2.10 asset
+        # matrix (cu12 + cu13, cp312 + cp313, x86_64 + aarch64). Do not bump
+        # this to "the latest release": v2.8.3 publishes only cu13/cp312 for
+        # torch2.10 and v2.8.3.post1 dropped every torch2.10 asset, so both
+        # 404 most users back to a source build, and post1's newest tag is
+        # torch2.9, which will not load here at all.
         return "2.8.1"
     try:
         major, minor = (int(part) for part in torch_mm.split(".", 1))
