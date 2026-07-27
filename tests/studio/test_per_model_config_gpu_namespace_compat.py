@@ -753,7 +753,7 @@ console.log("RESULT " + JSON.stringify(out));
             "@/features/native-intents/api": "native-intents-stub.ts",
         },
         stubs = {
-            "chat-api-under-test.ts": f'export * from {json.dumps(_CHAT_API.as_uri())};\n',
+            "chat-api-under-test.ts": f"export * from {json.dumps(_CHAT_API.as_uri())};\n",
             "auth-stub.ts": _AUTH_CAPTURE_STUB,
             "hf-auth-stub.ts": _HF_AUTH_STUB,
             "native-intents-stub.ts": _NATIVE_INTENTS_STUB,
