@@ -44,10 +44,12 @@ says nothing about itself at the read. Text read from a checked-in file and
 then written back to a tmp_path, at test_studio_install_workspace_guard.py:851
 and test_scan_packages.py:40, is unsafe only because of where the string came
 from. And a read inside a `python -c` snippet, as test_studio_import_no_torch.py
-builds for eight subprocess tests, runs in a child interpreter this scan never
-parses: the snippet is an f-string whose paths are replacement fields, so
-recovering it would mean evaluating the interpolation. Reviewers have to catch
-those three.
+and test_e2e_no_torch_sandbox.py build for their subprocess tests, runs in a
+child interpreter this scan never parses: the snippet is an f-string whose paths
+are replacement fields, so recovering it would mean evaluating the
+interpolation. Reviewers have to catch those three; running the suite under
+LC_ALL=C is the cheapest way to find them, since ASCII rejects every byte cp1252
+does and more.
 """
 
 # `str | None` below is evaluated at import on Python 3.9 without this, and
