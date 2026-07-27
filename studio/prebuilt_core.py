@@ -1078,8 +1078,10 @@ def install_lock(lock_path: Path) -> Iterator[None]:
             except FileExistsError:
                 stale = False
                 try:
-                    raw = lock_path.read_text(encoding = "utf-8").strip()
-                except (FileNotFoundError, UnicodeDecodeError):
+                    # errors="replace" so an undecodable lock reaches the int()
+                    # below and is treated as a corrupt PID, not retried forever.
+                    raw = lock_path.read_text(encoding = "utf-8", errors = "replace").strip()
+                except FileNotFoundError:
                     # Lock vanished between our open and read -- retry
                     continue
                 if not raw:
