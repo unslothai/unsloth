@@ -13,6 +13,7 @@ import re
 import sqlite3
 import threading
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator
 
@@ -55,7 +56,8 @@ _PROMPT_DELIMITER_TAGS = re.compile(
     re.IGNORECASE,
 )
 _QUERY_CREDENTIAL = re.compile(
-    r"""(?ix)(?<![A-Za-z0-9])(?:api[\s_-]?key|access[\s_-]?(?:key|token)
+    r"""(?ix)(?<![A-Za-z0-9])(?:(?-i:[a-z][A-Za-z0-9]*(?:ClientSecret|RefreshToken
+    |SessionToken|SecretAccessKey))|api[\s_-]?key|access[\s_-]?(?:key|token)
     |auth[\s_-]?token|bearer[\s_-]?token|client[\s_-]?secret|private[\s_-]?key
     |refresh[\s_-]?token|session[\s_-]?token|authorization|password|secret|token)\s*[:=]\s*
     (?:"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,;]+)"""
@@ -564,15 +566,16 @@ def _fit_decision_inputs(
     """Fit the decision question and plan while keeping the plan valid JSON."""
     full_plan = json.dumps(plan, ensure_ascii = False)
     minimum_question_chars = min(len(question), _MIN_QUESTION_CHARS)
+    research_reserve = _MIN_SYNTHESIS_EVIDENCE_CHARS if total_budget is not None else 0
     plan_budget = _trimmable_budget(
         total_budget,
-        system_chars + minimum_question_chars,
+        system_chars + minimum_question_chars + research_reserve,
         len(full_plan),
     )
     if len(full_plan) <= plan_budget:
         fitted_plan = full_plan
     else:
-        fitted_plan = ""
+        fitted_plan = "{}"
         steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
         for count in range(len(steps) + 1):
             candidate = json.dumps(
@@ -586,11 +589,42 @@ def _fit_decision_inputs(
         minimum_question_chars,
         _trimmable_budget(
             total_budget,
-            system_chars + len(fitted_plan),
+            system_chars + len(fitted_plan) + research_reserve,
             _MAX_SYNTHESIS_EVIDENCE_CHARS,
         ),
     )
     return question[:question_budget], fitted_plan
+
+
+@asynccontextmanager
+async def _wall_clock_timeout(seconds: float) -> AsyncIterator[None]:
+    """Use asyncio.timeout when available, with the same behavior on Python 3.9/3.10."""
+    timeout = getattr(asyncio, "timeout", None)
+    if timeout is not None:
+        async with timeout(seconds):
+            yield
+        return
+
+    task = asyncio.current_task()
+    if task is None:
+        yield
+        return
+    expired = False
+
+    def cancel() -> None:
+        nonlocal expired
+        expired = True
+        task.cancel()
+
+    handle = asyncio.get_running_loop().call_later(seconds, cancel)
+    try:
+        yield
+    except asyncio.CancelledError as exc:
+        if expired:
+            raise asyncio.TimeoutError from exc
+        raise
+    finally:
+        handle.cancel()
 
 
 def _prompt_char_budget(reserve_tokens: int) -> int | None:
@@ -1491,7 +1525,7 @@ class ResearchSupervisor:
             model_timeout = float(config["budgets"]["modelTimeoutSeconds"])
             timeout = httpx.Timeout(model_timeout)
             async with (
-                asyncio.timeout(model_timeout),
+                _wall_clock_timeout(model_timeout),
                 httpx.AsyncClient(timeout = timeout, trust_env = False) as client,
             ):
                 response: httpx.Response | None = None
@@ -1607,7 +1641,7 @@ class ResearchSupervisor:
                         await response.aclose()
             await flush_progress()
             return report, reasoning, finish_reason
-        except TimeoutError as exc:
+        except (TimeoutError, asyncio.TimeoutError) as exc:
             raise httpx.ReadTimeout("Local model request exceeded its wall-clock timeout") from exc
         finally:
             try:

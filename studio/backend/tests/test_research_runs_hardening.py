@@ -72,6 +72,9 @@ def test_sanitize_query_keeps_public_terms():
         "refreshToken",
         "session_token",
         "sessionToken",
+        "oauthRefreshToken",
+        "googleClientSecret",
+        "awsSecretAccessKey",
         "access_key",
         "auth_token",
         "bearer_token",
@@ -265,7 +268,7 @@ def test_decision_inputs_fit_question_and_complete_plan_steps():
             for index in range(12)
         ],
     }
-    total = 3_072
+    total = 4_096
     system_chars = 1_000
 
     fitted_question, fitted_plan = research_runs._fit_decision_inputs(
@@ -279,7 +282,13 @@ def test_decision_inputs_fit_question_and_complete_plan_steps():
     assert 0 < len(parsed_plan["steps"]) < len(plan["steps"])
     assert len(fitted_question) >= research_runs._MIN_QUESTION_CHARS
     assert len(fitted_question) < len(question)
-    assert system_chars + len(fitted_question) + len(fitted_plan) <= total
+    assert (
+        system_chars
+        + len(fitted_question)
+        + len(fitted_plan)
+        + research_runs._MIN_SYNTHESIS_EVIDENCE_CHARS
+        <= total
+    )
 
 
 def test_decision_inputs_preserve_an_ordinary_plan_before_extra_question_text():
@@ -295,7 +304,21 @@ def test_decision_inputs_preserve_an_ordinary_plan_before_extra_question_text():
     )
 
     assert fitted_plan == full_plan
-    assert len(fitted_question) == 6_144 - 1_000 - len(full_plan)
+    assert len(fitted_question) == (
+        6_144 - 1_000 - len(full_plan) - research_runs._MIN_SYNTHESIS_EVIDENCE_CHARS
+    )
+
+
+def test_decision_plan_remains_valid_json_when_the_budget_is_tiny():
+    fitted_question, fitted_plan = research_runs._fit_decision_inputs(
+        "Q" * 2_000,
+        {"title": "P" * 200, "steps": [{"title": "S", "query": "Q"}]},
+        2_000,
+        2_100,
+    )
+
+    assert len(fitted_question) == research_runs._MIN_QUESTION_CHARS
+    assert json.loads(fitted_plan) == {}
 
 
 def _make_payload(**overrides) -> CreateResearchRun:
@@ -815,6 +838,17 @@ def test_stream_completion_timeout_is_absolute_despite_keepalives(monkeypatch):
 
     assert len(sent) == 1
     assert state == {"iteratorClosed": True, "responseClosed": True}
+
+
+def test_wall_clock_timeout_supports_python_without_asyncio_timeout(monkeypatch):
+    monkeypatch.delattr(research_runs.asyncio, "timeout")
+
+    async def run():
+        async with research_runs._wall_clock_timeout(0.01):
+            await asyncio.sleep(1)
+
+    with pytest.raises(asyncio.TimeoutError):
+        asyncio.run(run())
 
 
 def test_stream_completion_model_waits_do_not_refund_transport_attempts(monkeypatch):
