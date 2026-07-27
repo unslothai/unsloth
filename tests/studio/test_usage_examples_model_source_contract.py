@@ -71,7 +71,7 @@ def test_a_stored_checkpoint_needs_catalog_evidence():
     # had already proved absent, so the snippets 404d instead of falling back.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
-    assert "const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? \"\"));" in hook
+    assert 'const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));' in hook
     # Resident, or downloaded with switching able to reload it. Never the setting alone.
     assert "catalog === null || (!!entry && (entry.loaded || autoSwitch))" in hook
     assert "autoSwitch ||\n" not in hook
