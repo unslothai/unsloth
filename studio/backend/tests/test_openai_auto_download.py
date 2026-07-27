@@ -1407,3 +1407,49 @@ def test_a_timed_out_download_stops_holding_the_slot_once_unprobeable(monkeypatc
         return auto_dl._active
 
     assert asyncio.run(_drive()) is None
+
+
+def test_a_sibling_quant_in_the_same_directory_is_not_the_resident_one(monkeypatch):
+    # Quants of one repo share a directory, so the path match alone cannot tell
+    # them apart, and an explicit :Q8_0 was answered by a resident Q4_K_M that
+    # _loaded_satisfies had already refused by name.
+    from core.inference import local_model_resolver as resolver
+
+    entry = resolver._LocalGgufEntry("org/model", "/hf/org--model/snap", ("Q4_K_M", "Q8_0"))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/model": entry}))
+    loaded = _Loaded("org/model", "Q4_K_M")
+    loaded.gguf_path = "/hf/org--model/snap/model-Q4_K_M.gguf"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+    with pytest.raises(HTTPException):
+        asyncio.run(inference_route._reject_unservable_model("org/model:Q8_0", _Req()))
+    # The quant that is actually resident still answers.
+    assert (
+        asyncio.run(inference_route._reject_unservable_model("org/model:Q4_K_M", _Req())) is None
+    )
+
+
+def test_a_remote_tag_that_names_no_quant_picks_the_preferred_one(hub):
+    # ":latest" and ":8b" name no quant, so remote admission must default-select
+    # like a bare repo id instead of 404ing on a quant that never existed. Matches
+    # what the local resolver now does with the same tag.
+    assert _run("unsloth/x-GGUF").code == "model_downloading"
+    bare_repo, bare_variant, _ = hub["started"][0]
+    for tag in (":latest", ":8b"):
+        auto_dl.reset_for_tests()
+        hub["started"].clear()
+        assert _run(f"unsloth/x-GGUF{tag}").code == "model_downloading"
+        assert hub["started"][0][0] == bare_repo
+        assert hub["started"][0][1] == bare_variant, f"{tag} did not default-select"
+
+    # A real quant the repo does not have is still a 404, never a substitution.
+    auto_dl.reset_for_tests()
+    hub["started"].clear()
+    refusal = _run("unsloth/x-GGUF:Q2_K")
+    assert refusal.status == 404 and "no quant" in refusal.message
+    assert hub["started"] == []

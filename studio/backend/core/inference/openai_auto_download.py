@@ -610,10 +610,12 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
     """Resolve the requested quant against what the repo actually has.
 
     An explicit quant matches case-insensitively and must exist: never quietly
-    substitute another, unlike the loader's low-disk fallback. A bare repo id
-    uses the same preference order as a manual load.
+    substitute another, unlike the loader's low-disk fallback. A bare repo id, or
+    an Ollama-style tag that names no quant at all (":latest", ":8b"), uses the
+    same preference order as a manual load, matching what the local resolver does
+    with the same tag.
     """
-    if wanted:
+    if wanted and looks_like_quant(wanted):
         lowered = {name.lower(): name for name in variants}
         return lowered.get(wanted.strip().lower())
     from utils.models.model_config import _pick_best_gguf

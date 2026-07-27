@@ -3809,6 +3809,12 @@ def _norm_path(value: str) -> str:
     return os.path.normcase(str(value).replace("\\", "/").rstrip("/"))
 
 
+def _resident_quant_is(variant: Optional[str]) -> bool:
+    """Whether the loaded GGUF is that exact quant."""
+    resident = getattr(get_llama_cpp_backend(), "hf_variant", None) or ""
+    return bool(variant) and resident.lower() == variant.strip().lower()
+
+
 def _resolves_to_resident(load_path: Optional[str], *, llama_only: bool = False) -> bool:
     """Whether a resolved on-disk path is what is already loaded.
 
@@ -3883,12 +3889,23 @@ async def _reject_unservable_model(
         resolved = resolve_local_gguf(requested_model, allow_scan = False)
         # A manual load stores the on-disk path the resolver advertises under an alias, so
         # match on the path too.
-        if resolved is not None and _resolves_to_resident(resolved[0], llama_only = quantified):
+        # Quants of one repo share a directory, so the path alone cannot tell them
+        # apart: without the variant check an explicit :Q8_0 would be answered by a
+        # resident Q4_K_M, which _loaded_satisfies has already refused by name.
+        if (
+            resolved is not None
+            and _resolves_to_resident(resolved[0], llama_only = quantified)
+            and (not quantified or _resident_quant_is(variant))
+        ):
             return
         downloaded = resolved is not None
         # /v1/models may have advertised this id off its own scan while the index is cold.
         advertised = _advertised_local_path(base)
-        if advertised is not None and _resolves_to_resident(advertised, llama_only = quantified):
+        if (
+            advertised is not None
+            and _resolves_to_resident(advertised, llama_only = quantified)
+            and (not quantified or _resident_quant_is(variant))
+        ):
             return
         # The exact ref may miss on the quant alone, so ask about the repo too.
         here = (
