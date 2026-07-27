@@ -1152,9 +1152,11 @@ def _resolve_hub_repo_local_dir(
 ):
     """Return a local snapshot directory for a Hub repo id when files are cached.
 
-    ``PreTrainedTokenizerFast.from_pretrained`` on a repo id can call
-    ``is_base_mistral()`` -> ``model_info()`` even with ``local_files_only=True``
-    (issue #7481). Loading from the resolved snapshot dir avoids that probe.
+    On transformers 4.57.2 through 5.5.4, ``PreTrainedTokenizerFast.from_pretrained``
+    on a repo id can still call ``model_info()`` when ``local_files_only=True`` and
+    no offline env var is set. Loading from the resolved snapshot dir avoids that
+    Hub probe. Upstream fixed this in transformers 5.6.0 (huggingface/transformers#43603);
+    this helper can be removed once the supported floor is past that version.
     """
     if not isinstance(repo_id, str) or not repo_id:
         return None
@@ -1242,7 +1244,10 @@ def _load_pretrained_tokenizer_fast(
     cache_dir = None,
     local_files_only = False,
 ):
-    """Load ``PreTrainedTokenizerFast`` without Hub metadata probes when cached/offline."""
+    """Load ``PreTrainedTokenizerFast`` without Hub metadata probes when cached/offline.
+
+    Needed on transformers 4.57.2-5.5.4; redundant once the floor is past 5.6.0.
+    """
     from transformers import PreTrainedTokenizerFast
 
     lfo = bool(local_files_only) or _env_says_offline()
