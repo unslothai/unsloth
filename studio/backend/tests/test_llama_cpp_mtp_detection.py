@@ -2435,9 +2435,12 @@ def test_respawn_replays_the_snapshot_not_the_reported_extras():
     launched = ["--flash-attn", "off", "--cache-type-v", "f16"]
     # The recovery rewrite really does turn one into the other.
     cmd, start = _launch_argv(typed)
-    assert LlamaCppBackend._extras_after_startup_recovery(
-        LlamaCppBackend._with_flash_attn_off(cmd), typed, start
-    ) == launched
+    assert (
+        LlamaCppBackend._extras_after_startup_recovery(
+            LlamaCppBackend._with_flash_attn_off(cmd), typed, start
+        )
+        == launched
+    )
 
     # Reported and replayed deliberately disagree, so the assertion below can
     # only be satisfied by the snapshot.
