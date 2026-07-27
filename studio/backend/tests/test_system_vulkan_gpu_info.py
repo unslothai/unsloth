@@ -72,9 +72,7 @@ def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
     assert inference_gpu["devices"] == [vulkan_device]
 
 
-def test_system_gpu_info_withholds_gguf_pin_when_the_vulkan_probe_enumerates_nothing(
-    monkeypatch,
-):
+def test_system_gpu_info_withholds_gguf_pin_when_the_vulkan_probe_enumerates_nothing(monkeypatch):
     """A Vulkan build whose probe returns no ordinals has nothing valid to pin,
     so the picker must be told pins are unsupported rather than offered an empty
     namespace it would 400 on."""

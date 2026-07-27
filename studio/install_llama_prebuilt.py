@@ -6616,9 +6616,7 @@ def install_prebuilt(
     )
     # An explicit Vulkan choice only. The Windows-AMD auto-fallback is a rescue
     # from a missing HIP arch, so it must keep the CPU plans it can still use.
-    strict_vulkan = (
-        force_vulkan_requested(llama_backend) and not force_cpu and not host.is_macos
-    )
+    strict_vulkan = force_vulkan_requested(llama_backend) and not force_cpu and not host.is_macos
     host, published_repo, published_release_tag, persist_llama_backend = _route_to_vulkan_prebuilt(
         host,
         published_repo,
