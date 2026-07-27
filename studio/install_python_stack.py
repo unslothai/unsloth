@@ -1180,11 +1180,14 @@ def _has_usable_nvidia_gpu() -> bool:
         for _candidate in (
             os.path.join(
                 os.environ.get("ProgramFiles", r"C:\Program Files"),
-                "NVIDIA Corporation", "NVSMI", "nvidia-smi.exe",
+                "NVIDIA Corporation",
+                "NVSMI",
+                "nvidia-smi.exe",
             ),
             os.path.join(
                 os.environ.get("SystemRoot", r"C:\Windows"),
-                "System32", "nvidia-smi.exe",
+                "System32",
+                "nvidia-smi.exe",
             ),
         ):
             if os.path.isfile(_candidate):
