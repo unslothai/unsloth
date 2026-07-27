@@ -1133,6 +1133,45 @@ def test_terminal_classifier(command, unsafe):
         ("find . -exec sed '1e rm -f victim' {} \\; -exec grep -e safe {} \\;", True),
         ("find . -exec sed -n '1,3p' {} + -exec grep -e safe {} +", False),
         ("find . -exec sed -i.bak 's/a/b/' {} + -exec chmod 644 {} +", False),
+        # ...but ONLY inside such an action. shlex strips the quoting, so a sed
+        # FILE operand spelled `';'` or `'+'` arrives as the very token a real
+        # separator does, and stopping there discarded the `-e` script behind
+        # it. Verified on GNU sed 4.9: `sed -n ';' -e '1e touch MARKER' input`
+        # creates MARKER (sed reports the unreadable file, permutes the options
+        # and runs the script anyway), and the `'+'` twin does the same
+        ("sed -n ';' -e '1e rm -f victim' input", True),
+        ("sed -n '+' -e '1e rm -f victim' input", True),
+        ("sed ';' -e '1e rm -f victim' input", True),
+        ("sed '+' -e '1e rm -f victim' input", True),
+        ("sed -n '&' -e '1e rm -f victim' input", True),
+        ("sed -n '|' -e '1e rm -f victim' input", True),
+        ("sed -n '(' -e '1e rm -f victim' input", True),
+        ("sed -n ';' -e '1,3p' input", False),
+        ("sed -n '+' -e '1,3p' input", False),
+        ("sed ';' -n '1,3p' input", False),
+        # a BARE separator still ends the invocation, so the next command's
+        # words are not read as more sed arguments
+        ("sed -n '1,3p' input; grep -e safe input", False),
+        # --- prompt: fd runs its -x / -X / --exec / --exec-batch child
+        # directly, the same way find runs an -exec one ---
+        ("fd -x sed '1e rm -f victim' {}", True),
+        ("fd --exec sed '1e rm -f victim' {}", True),
+        ("fd -X sed '1e rm -f victim' {}", True),
+        ("fd --exec-batch sed '1e rm -f victim' {}", True),
+        ("fd -x env sed '1e rm -f victim' {}", True),
+        ("fd -x sed -n '1,3p' {}", False),
+        ("fd . -x wc -l {}", False),
+        # those letters belong to too many other tools to read a neighbour of
+        # them as a command, so they only count while find/fd is in scope and no
+        # action is open yet
+        ("grep -x rm file", False),
+        # --- prompt: a wrapper chain longer than the hop budget leaves the
+        # command find really runs UNREAD, which is not the same as there being
+        # none. Verified: `find . -exec` + 33 `env` + `sed '1e touch MARKER' {}
+        # +` creates MARKER ---
+        ("find . -exec " + "env " * 33 + "sed '1e rm -f victim' {} +", True),
+        ("find . -exec " + "env " * 8 + "sed '1e rm -f victim' {} +", True),
+        ("find . -exec " + "env " * 8 + "sed -n '1,3p' {} +", False),
         # --- prompt: a wrapper option whose value is a SEPARATE token consumes
         # that token, so the command behind it is the one that runs. Without
         # that, `env -u FOO sed ...` reported FOO as the command ---
@@ -1153,6 +1192,24 @@ def test_terminal_classifier(command, unsafe):
         ("p='1,3p'; sed -n \"$p\" input", False),
         ("p='s/old/new/g'; sed \"$p\" input", False),
         ("p='# harmless'; sed \"$p\" input", False),
+        # ...and the binding bash uses is the one performed most recently BEFORE
+        # the reference. Folding the line into a first-wins map kept the
+        # earliest instead, so an innocent first assignment hid the real
+        # program: verified that `p='1,3p'; p='1e touch MARKER'; sed "$p" input`
+        # creates MARKER, while the reverse order is genuinely inert
+        ("p='1,3p'; p='1e rm -f victim'; sed \"$p\" input", True),
+        ("p='s/a/b/'; p='1e rm -f victim'; sed \"$p\" input", True),
+        ("p='1e rm -f victim'; p='1,3p'; sed \"$p\" input", False),
+        ("p='1,3p'; p='s/a/b/'; sed \"$p\" input", False),
+        # only the assignments AHEAD of a sed can reach it, so a later one does
+        # not disarm an earlier program (verified: this creates MARKER too)
+        ("p='1e rm -f victim'; sed \"$p\" input; p='1,3p'", True),
+        # a non-literal reassignment CLEARS the name instead of leaving the
+        # stale earlier value standing, so the program is unread and asks
+        ("p='1,3p'; p=$(printf '1e rm -f victim'); sed \"$p\" input", True),
+        # each sed on the line is judged against its own scope
+        ("p='1,3p'; sed \"$p\" f; p='1e rm -f victim'; sed \"$p\" f", True),
+        ("p='1,3p'; sed \"$p\" f; p='s/a/b/'; sed \"$p\" f", False),
         # --- prompt: bash resolves a command-position GLOB after this scan, so
         # a pattern that could be sed is treated as sed ---
         ("/usr/bin/s[e]d '1e rm -f victim' input", True),

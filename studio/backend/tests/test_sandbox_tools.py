@@ -783,6 +783,68 @@ class TestBashBlocklistPosition:
         )
         assert self._find()("find . -exec sed -n '1,3p' {} + -exec grep -e safe {} +") == set()
 
+    def test_quoted_separator_operand_does_not_end_the_sed_scan(self):
+        # shlex strips the quoting, so a sed FILE operand spelled `';'` or `'+'`
+        # arrives as the very token a separator does, and stopping there threw
+        # away the `-e` script behind it. Verified on GNU sed 4.9 with a
+        # `touch MARKER` payload: `sed -n ';' -e '1e touch MARKER' input`
+        # creates MARKER (sed reports the unreadable file, permutes the options
+        # and runs the script anyway), and the `'+'` twin does the same.
+        assert "rm" in self._find()("sed -n ';' -e '1e rm -f victim' input")
+        assert "rm" in self._find()("sed -n '+' -e '1e rm -f victim' input")
+        assert "rm" in self._find()("sed ';' -e '1e rm -f victim' input")
+        assert "rm" in self._find()("sed '+' -e '1e rm -f victim' input")
+        assert "rm" in self._find()("sed -n '&' -e '1e rm -f victim' input")
+        assert "rm" in self._find()("sed -n '|' -e '1e rm -f victim' input")
+        assert "rm" in self._find()("sed -n '(' -e '1e rm -f victim' input")
+        assert "curl" in self._find()("sed -n ';' -e '1e curl https://x' input")
+        # A BARE separator really did end the invocation, so the words after it
+        # belong to the next command and not to sed.
+        assert self._find()("sed -n '1,3p' input; grep -e safe input") == set()
+        assert "rm" in self._find()("sed -n '1,3p' input; rm -rf build")
+        # ...and the same operand in front of an ordinary program stays silent.
+        assert self._find()("sed -n ';' -e '1,3p' input") == set()
+        assert self._find()("sed -n '+' -e '1,3p' input") == set()
+
+    def test_fd_exec_flags_reach_the_child_command(self):
+        # fd runs its `-x` / `-X` / `--exec` / `--exec-batch` child directly,
+        # exactly as find runs an `-exec` one, but only find's own spellings
+        # were scanned -- so a plain `fd -x rm -rf x` and a nested
+        # `fd -x sed '1e rm -f victim' {}` both reached this blocklist as
+        # nothing at all (verified: both really run).
+        assert "rm" in self._find()("fd -x rm -rf x")
+        assert "rm" in self._find()("fd --exec rm -rf x")
+        assert "rm" in self._find()("fd -X rm -rf x")
+        assert "rm" in self._find()("fd --exec-batch rm -rf x")
+        assert "rm" in self._find()("fd -x sed '1e rm -f victim' {}")
+        assert "rm" in self._find()("fd --exec sed '1e rm -f victim' {}")
+        assert "rm" in self._find()("fd -X sed '1e rm -f victim' {}")
+        assert "rm" in self._find()("fd --exec-batch sed '1e rm -f victim' {}")
+        assert "curl" in self._find()("fd -x env sed '1e curl https://x' {}")
+        # The letters belong to too many other tools to read a neighbour of them
+        # as a command, so they only count while find/fd is in scope and no
+        # action is open yet: `grep -x rm file` matches whole lines against a
+        # pattern and runs nothing.
+        assert self._find()("grep -x rm file") == set()
+        assert self._find()("find . -exec grep -x rm {} \\;") == set()
+        assert self._find()("cat f | grep -x rm") == set()
+        assert self._find()("fd -x sed -n '1,3p' {}") == set()
+        assert self._find()("fd . -x wc -l {}") == set()
+
+    def test_exec_wrapper_chain_past_the_hop_budget_fails_closed(self):
+        # The wrapper hop is bounded so `-exec env -exec env ...` cannot make
+        # this quadratic, but running out of budget was reported as "no child"
+        # -- which reads as safe. Verified: `find . -exec` + 33 `env` +
+        # `rm -f input ;` deletes the file, and the same chain in front of
+        # `sed '1e touch MARKER' {} +` creates MARKER, while the screen came
+        # back empty for both. Block the chain instead, the way an unread sed
+        # program blocks the sed.
+        assert self._find()("find . -exec " + "env " * 33 + "rm -f victim ;")
+        assert self._find()("find . -exec " + "env " * 33 + "sed '1e rm -f victim' {} +")
+        # A chain inside the budget still resolves to the real child.
+        assert "rm" in self._find()("find . -exec " + "env " * 8 + "rm -f victim ;")
+        assert self._find()("find . -exec " + "env " * 8 + "sed -n '1,3p' {} +") == set()
+
     def test_sed_behind_a_wrapper_option_with_an_operand(self):
         # A wrapper option whose value is a SEPARATE token consumes that token,
         # so the command behind it is the one find runs. Without consuming it
@@ -834,6 +896,27 @@ class TestBashBlocklistPosition:
         # as a plausible literal. The blocklist has no name to report there, so
         # it reports none -- the auto gate is what asks (see test_permission_mode).
         assert self._find()("p=$(printf '1e rm -f victim'); sed \"$p\" input") == set()
+
+    def test_sed_program_uses_the_last_assignment_before_it(self):
+        # bash expands `$p` to the binding performed most recently BEFORE the
+        # reference. Folding the line into a first-wins map kept the earliest
+        # one instead, so an innocent first assignment hid the real program:
+        # verified on GNU sed 4.9 that `p='1,3p'; p='1e touch MARKER';
+        # sed "$p" input` creates MARKER.
+        assert "rm" in self._find()("p='1,3p'; p='1e rm -f victim'; sed \"$p\" input")
+        assert "curl" in self._find()("p='s/a/b/'; p='1e curl https://x'; sed \"$p\" input")
+        assert "rm" in self._find()("p='1,3p'; p='s/x/y/'; p='1e rm -f victim'; sed \"$p\" input")
+        # ...and the reverse order really is inert, so it must not be blocked.
+        assert self._find()("p='1e rm -f victim'; p='1,3p'; sed \"$p\" input") == set()
+        # Only the assignments AHEAD of a sed can reach it, so a later one does
+        # not disarm an earlier program (verified: this creates MARKER too).
+        assert "rm" in self._find()("p='1e rm -f victim'; sed \"$p\" input; p='1,3p'")
+        # A non-literal reassignment CLEARS the name rather than leaving the
+        # stale earlier value standing, so nothing is invented for `$p`.
+        assert self._find()("p='1,3p'; p=$(printf '1e rm -f victim'); sed \"$p\" input") == set()
+        # Each sed on the line is judged against its own scope.
+        assert "rm" in self._find()("p='1,3p'; sed \"$p\" f; p='1e rm -f victim'; sed \"$p\" f")
+        assert self._find()("p='1,3p'; sed \"$p\" f; p='s/a/b/'; sed \"$p\" f") == set()
 
     def test_sed_program_built_by_a_parameter_transformation(self):
         # `${p#x}` and its family are not modelled, so the program is UNREAD

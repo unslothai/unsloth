@@ -378,6 +378,23 @@ _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 # posix mode; the escaped spelling survives verbatim in the non-posix (Windows)
 # lexer, so both are listed.
 _FIND_EXEC_TERMINATORS = frozenset({"+", ";", "\\;"})
+# ...but ONLY inside such an action. shlex strips quoting, so a sed FILE operand
+# spelled `';'` or `'+'` arrives as the very same token as a real separator, and
+# ending the argument scan there threw away the `-e` script behind it --
+# `sed -n ';' -e '1e rm -f victim' input` and its `'+'` twin both really run rm
+# (sed reports the missing file, permutes the options and executes anyway).
+# Outside an action a `+` is an ordinary operand and a `;` ends the invocation
+# only when the shell left it UNQUOTED; inside one both end it however they are
+# spelled, because the shell hands find the same word either way.
+
+# The characters a separator token can be built from, masked while the command
+# is lexed a second time so a quoted one is told apart from a real one.
+_SEPARATOR_CHARS = frozenset("".join(_SHELL_SEPARATORS))
+# Placeholder standing in for a quoted separator character during that second
+# lex. Any ordinary character serves: it must not be whitespace, a quote or one
+# of shlex's punctuation_chars, so the masked text splits into exactly the same
+# words and the two token lists line up index for index.
+_QUOTED_SEPARATOR_MARK = "\x00"
 
 # `[` and `[[` are the test builtins, not patterns.
 _TEST_BUILTINS = frozenset({"[", "[[", "]", "]]"})
@@ -478,6 +495,7 @@ def _sed_invocation(
     tokens: "list[str]",
     start: int,
     limit: int = _MAX_SED_ARG_SCAN,
+    stops: "frozenset[int]" = frozenset(),
 ) -> "tuple[str, bool]":
     """The sed invocation whose command word sits at ``start``, as
     ``(program, scan_overflowed)``.
@@ -524,9 +542,11 @@ def _sed_invocation(
     is an input FILENAME that leaves `e` live (verified: `sed -- '1e CMD' input
     --sandbox` still runs CMD).
 
-    The walk ends at a shell separator OR at a `find -exec` terminator, since a
-    `+` / `;` closes that action and the next predicate's words are not sed's
-    (see _FIND_EXEC_TERMINATORS).
+    The walk ends at one of the token indexes in ``stops`` -- a shell separator
+    the shell really performs, or a `+` / `;` closing the `find -exec` action
+    this sed belongs to, since the next predicate's words are not sed's. Working
+    from indexes rather than from the token TEXT is what tells those apart from
+    a sed operand that merely spells one (see _exec_scan_layout).
     """
     programs: "list[str]" = []
     first_positional = ""
@@ -541,8 +561,8 @@ def _sed_invocation(
     value_pending = ""  # "e", "f" or "l": the next token is that flag's value
     hit_separator = False  # the invocation ended before the window ran out
     window = tokens[start + 1 : start + 1 + limit]
-    for token in window:
-        if token in _SHELL_SEPARATORS or token in _FIND_EXEC_TERMINATORS:
+    for offset, token in enumerate(window):
+        if start + 1 + offset in stops:
             hit_separator = True
             break
         if value_pending:
@@ -736,31 +756,59 @@ def _sed_exec_payloads(program: str) -> "list[str]":
     return payloads
 
 
-def _assignment_values(tokens: "list[str]") -> "dict[str, str]":
-    """``NAME -> value`` for every `NAME=value` word in a token list.
+def _assignment_bindings(tokens: "list[str]") -> "list[tuple[int, str, str | None]]":
+    """Every `NAME=value` word as ``(token index, name, value)``, in the order
+    the shell performs the assignments.
 
     shlex has already removed the quoting, so the value is the exact text bash
     expands `$NAME` to -- spaces and NEWLINES included. That is what the
     string-level _expand_shell_assignments cannot give: its value pattern stops
-    at the first space, so a quoted multi-word value never enters its map at
-    all. The FIRST binding wins, matching the usual `p=...; use "$p"` shape; a
-    variable reassigned before its use resolves to the earlier value.
+    at the first space, so a quoted multi-word value never enters its map at all.
 
-    A value that is not itself literal is NOT recorded, because resolving to it
+    Kept as an ordered LIST rather than collapsed into a map, because bash uses
+    the binding performed most recently BEFORE the reference. Folding the whole
+    line into a first-wins map kept the earliest one instead, and a second
+    assignment then hid a payload behind an innocent first:
+    `p='1,3p'; p='1e rm -f victim'; sed "$p" input` really runs rm while the map
+    still read `1,3p` and blocked nothing. The index travels with the binding so
+    _bindings_before can also drop the assignments that only happen AFTER the
+    sed, which cannot reach it at all.
+
+    A value that is not itself literal is recorded as ``None``, which CLEARS the
+    name instead of leaving a stale earlier one standing: resolving to that
     would invent a program rather than read one. `p=$(printf '1e rm -f victim')`
-    is the case that matters: the lexer splits that word at the `(`, leaving the
-    binding `p` -> `$`, and substituting that bare `$` turned an unread program
-    into a plausible-looking literal that sailed past _sed_program_unresolved.
-    Dropping the binding leaves `$p` unresolved, which is the truth.
+    is the case that matters -- the lexer splits that word at the `(`, leaving
+    the binding `p` -> `$` -- and leaving `$p` unresolved is the truth, which is
+    what makes _sed_program_unresolved ask.
     """
-    env: "dict[str, str]" = {}
-    for token in tokens:
+    bindings: "list[tuple[int, str, str | None]]" = []
+    for index, token in enumerate(tokens):
         if _ASSIGNMENT_RE.match(token):
             name, _, value = token.partition("=")
-            if "$" in value or "`" in value:
-                continue
-            env.setdefault(name, value)
-    return env
+            bindings.append((index, name, None if "$" in value or "`" in value else value))
+    return bindings
+
+
+def _bindings_before(
+    bindings: "list[tuple[int, str, str | None]]", cursor: int, limit: int, env: "dict[str, str]"
+) -> int:
+    """Fold into ``env`` every binding sitting at a token index below ``limit``,
+    starting at ``cursor``, and return the cursor to pass in next time.
+
+    Later bindings overwrite earlier ones, so ``env`` ends up holding exactly
+    what the shell would have in scope at token ``limit``. The seds on one line
+    are visited left to right, so the cursor only ever moves forward: the whole
+    line costs ONE walk of the binding list however many seds share it, rather
+    than a rescan each, which is what keeps a line packed with sed words linear.
+    """
+    while cursor < len(bindings) and bindings[cursor][0] < limit:
+        _index, name, value = bindings[cursor]
+        if value is None:
+            env.pop(name, None)
+        else:
+            env[name] = value
+        cursor += 1
+    return cursor
 
 
 def _resolve_program_vars(program: str, env: "dict[str, str]") -> str:
@@ -822,6 +870,102 @@ def _sed_program_unresolved(variants: "list[str]", live: "set[str]") -> bool:
     )
 
 
+def _quoted_separator_indexes(text: str, tokens: "list[str]", punctuation: str) -> "frozenset[int]":
+    """Indexes of ``tokens`` that only LOOK like a shell separator because the
+    quoting has been stripped off them.
+
+    shlex hands back the identical token `;` for a real separator and for a
+    quoted `';'` a command passes as data, so `sed -n ';' -e '1e rm -f victim'
+    input` looked like a sed that had already ended and the `-e` script behind
+    the `;` was never read (verified against GNU sed 4.9: it runs rm).
+
+    Told apart by masking every separator character the shell QUOTES
+    (_shell_quote_states, which already knows single, double, ANSI-C and
+    backslash quoting) and lexing the result a second time. Only those
+    characters change, and each is replaced by an ordinary one INSIDE the word
+    it already belonged to, so the second lex splits the text into the same
+    words as the first; the index-for-index alignment is asserted by the length
+    check rather than assumed, and anything unexpected reports nothing, which
+    leaves the caller with the plain text-matching behaviour.
+    """
+    if not any(token in _SHELL_SEPARATORS for token in tokens):
+        # Nothing to tell apart: skip the quote walk and the second lex.
+        return frozenset()
+    if _QUOTED_SEPARATOR_MARK in text:
+        return frozenset()  # the mark is not ours to read back
+    states = _shell_quote_states(text)
+    masked = "".join(
+        _QUOTED_SEPARATOR_MARK if char in _SEPARATOR_CHARS and states[index] else char
+        for index, char in enumerate(text)
+    )
+    if _QUOTED_SEPARATOR_MARK not in masked:
+        return frozenset()  # every separator character was bare
+    try:
+        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
+        lexer.whitespace_split = True
+        marked = list(lexer)
+    except ValueError:
+        return frozenset()
+    if len(marked) != len(tokens):
+        return frozenset()
+    return frozenset(
+        index
+        for index, token in enumerate(marked)
+        if _QUOTED_SEPARATOR_MARK in token and tokens[index] in _SHELL_SEPARATORS
+    )
+
+
+def _exec_scan_layout(
+    tokens: "list[str]", quoted: "frozenset[int]"
+) -> "tuple[frozenset[int], frozenset[int]]":
+    """``(exec-flag indexes, invocation-stop indexes)`` for one token list, in a
+    single left-to-right pass.
+
+    An exec-flag index is a `find`/`fd` option whose following words are a
+    COMMAND that tool runs. find's own spellings are taken wherever they appear,
+    as they always were. fd's (`-x`, `--exec`, `-X`, `--exec-batch`) are taken
+    only while a find/fd command word is in scope and no action is already open,
+    because those letters belong to too many other tools to read a neighbour of
+    them as a command: `grep -x rm file` must not have rm hard-blocked, and
+    neither must the `-x` in `find . -exec grep -x rm {} \\;`, which is grep's.
+    Without them a plain `fd -x rm -rf x` reached the blocklist as nothing at
+    all, and `fd -x sed '1e rm -f victim' {}` hid a payload the same way
+    (verified: both really run).
+
+    A stop index ends a sed invocation: a separator the shell PERFORMS (so a
+    quoted one is excluded -- see _quoted_separator_indexes), or a `+` / `;`
+    while an exec action is open, which is where find stops handing words to the
+    child. Outside an action those two are ordinary operands, which is what
+    keeps `sed -n ';' -e '1e rm -f victim' input` readable to the end while
+    `find . -exec sed '1e rm -f victim' {} + -exec grep -e safe {} +` still
+    stops at the `+` instead of letting the second predicate's `-e safe` replace
+    the real script.
+    """
+    exec_flags: "set[int]" = set()
+    stops: "set[int]" = set()
+    forwarding = False  # a find/fd command word is in scope
+    in_action = False  # inside its `-exec CMD ...` action
+    for index, token in enumerate(tokens):
+        if token in _SHELL_SEPARATORS and index not in quoted:
+            stops.add(index)
+            forwarding = in_action = False
+            continue
+        if in_action and token in _FIND_EXEC_TERMINATORS:
+            stops.add(index)
+            in_action = False
+            continue
+        flag = token.split("=", 1)[0]
+        if flag in _FIND_EXEC_FLAGS or (
+            forwarding and not in_action and flag in _EXEC_FORWARD_FLAGS
+        ):
+            exec_flags.add(index)
+            in_action = True
+            continue
+        if os.path.basename(token.strip(";&|()`{}")).lower() in _EXEC_FLAG_FORWARDING_COMMANDS:
+            forwarding = True
+    return frozenset(exec_flags), frozenset(stops)
+
+
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
 
@@ -840,6 +984,7 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     # punctuation_chars splits separators into their own tokens, so command
     # position is detected even in `echo done; rm -rf x` (no whitespace).
+    lexed_posix = sys.platform != "win32"
     try:
         if sys.platform == "win32":
             tokens = shlex.split(command, posix = False)
@@ -849,6 +994,16 @@ def _find_blocked_commands(command: str) -> set[str]:
             tokens = list(lexer)
     except ValueError:
         tokens = command.split()
+        lexed_posix = False
+    # Which separator tokens the shell only produced because the quoting was
+    # stripped. The non-posix (Windows) lexer KEEPS the quote marks, so a quoted
+    # `';'` never looks like a separator there and nothing has to be recovered;
+    # the split() fallback has no quoting model at all, so it reports nothing
+    # either and both platforms reach the same verdict.
+    quoted_separators = (
+        _quoted_separator_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
+    )
+    exec_flag_indexes, invocation_stops = _exec_scan_layout(tokens, quoted_separators)
 
     def _token_basename(tok: str) -> str:
         # Strip glued-on meta-chars (`rm;`) so the basename still matches `rm`.
@@ -859,8 +1014,9 @@ def _find_blocked_commands(command: str) -> set[str]:
             base = stem
         return base
 
-    def _exec_child_index(start: int) -> int:
-        """Index of the command a `find -exec` actually runs, or -1.
+    def _exec_child_index(start: int) -> "tuple[int, bool]":
+        """The command a `find -exec` actually runs, as ``(index, overflowed)``;
+        the index is -1 when the action holds no command word at all.
 
         The command prefixes forward to their target, so `-exec env sed ...`
         runs sed and `-exec timeout 5 rm ...` runs rm. Only the token right
@@ -869,6 +1025,14 @@ def _find_blocked_commands(command: str) -> set[str]:
         prefixes and duration operands are stepped over the same way the walk
         above does, and the whole hop is bounded so `-exec env -exec env ...`
         cannot turn this into a quadratic rescan.
+
+        ``overflowed`` says the bound ran out with words still ahead. Running
+        out is NOT the same as finding nothing, and reporting both as "no child"
+        made a long enough wrapper chain read as safe: `-exec` + 33 `env` +
+        `rm -f victim ;` deletes the file for real, and `-exec` + 33 `env` +
+        `sed '1e rm -f victim' {} +` runs rm, while the blocklist came back
+        empty for both. The caller fails closed on it, the way the sed scan does
+        when _SED_SCAN_BUDGET runs out.
 
         A wrapper option whose value is a SEPARATE token consumes that token
         too, otherwise the value is read as the command and the real one behind
@@ -879,7 +1043,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         while i < len(tokens) and steps < _MAX_EXEC_PREFIX_SCAN:
             token = tokens[i]
             if token in _SHELL_SEPARATORS or token in _FIND_EXEC_TERMINATORS:
-                return -1
+                return -1, False
             steps += 1
             if wrapper and token in _WRAPPER_VALUE_FLAGS_BY_CMD.get(wrapper, frozenset()):
                 # `env -u NAME`, `stdbuf -o L`: the option and its operand, both
@@ -900,8 +1064,10 @@ def _find_blocked_commands(command: str) -> set[str]:
                 wrapper = base
                 i += 1
                 continue
-            return i
-        return -1
+            return i, False
+        # Walking off the end means the action really held nothing; stopping on
+        # the bound with words still ahead means the child is merely UNREAD.
+        return -1, steps >= _MAX_EXEC_PREFIX_SCAN and i < len(tokens)
 
     expect_command = True  # start of string is a command position
     prefix_pending = False  # last cmd-position token was a wrapper (env/time/xargs/...)
@@ -983,25 +1149,41 @@ def _find_blocked_commands(command: str) -> set[str]:
             if _sep and _value:
                 blocked |= _find_blocked_commands(_value)
 
-    # `find ... -exec CMD ... ;` and `-execdir CMD ... ;` invoke CMD directly.
+    # `find ... -exec CMD ... ;`, `-execdir CMD ... ;` and fd's `-x` / `-X` /
+    # `--exec` / `--exec-batch` all invoke CMD directly (_exec_scan_layout picks
+    # which spellings count where). Reading only find's own flags left every fd
+    # form unscanned, so `fd -x rm -rf x` and `fd -x sed '1e rm -f victim' {}`
+    # -- both verified to run -- reached the hard blocklist as nothing at all.
     for i, tok in enumerate(tokens):
-        # The long flags carry the command attached (fd --exec=rm). Only the long
-        # spellings: a short `-x` belongs to too many other utilities (grep -x rm
-        # file) to read its neighbour as a command.
+        # The long flags also carry the command attached (fd --exec=rm), where
+        # the value is command position rather than a discarded option argument.
         if "=" in tok and tok.split("=", 1)[0] in _ATTACHED_EXEC_FLAGS:
             attached = tok.split("=", 1)[1].strip("\"'")
             if attached:
                 attached_base = _token_basename(attached.split()[0])
+                if _is_sed_command(attached_base):
+                    # The words after the flag are that sed's arguments, so its
+                    # program is screened from the FLAG. fd 9 actually takes them
+                    # as search paths and runs nothing, so this only ever blocks
+                    # a command that could not have worked anyway; a spelling
+                    # that does forward them would otherwise be a free pass.
+                    sed_indexes.append(i)
                 if attached_base in _BLOCKED_COMMANDS:
                     blocked.add(attached_base)
                 else:
                     blocked |= _blocked_matching_glob(attached_base)
-        if tok in _FIND_EXEC_FLAGS and i + 1 < len(tokens):
+        if i in exec_flag_indexes and i + 1 < len(tokens):
             # The word right after the flag AND the command it forwards to: a
             # wrapper is a command in its own right (`-exec sudo ls`) as well as
             # a step on the way to another one (`-exec env rm -rf x`), so
             # dropping either half loses a real detection.
-            child = _exec_child_index(i + 1)
+            child, prefix_overflowed = _exec_child_index(i + 1)
+            if prefix_overflowed:
+                # The wrapper chain outran the hop budget, so the command that
+                # finally runs was never reached: block the chain itself rather
+                # than let `-exec env ...x33 rm -f victim ;` ride in behind it.
+                blocked.add(_token_basename(tokens[i + 1]))
+                continue
             exec_words = [i + 1] if child in (-1, i + 1) else [i + 1, child]
             for word in exec_words:
                 base = _token_basename(tokens[word])
@@ -1065,21 +1247,30 @@ def _find_blocked_commands(command: str) -> set[str]:
     # Built at most once per call, and only when some program actually names a
     # variable, so a line packed with sed words stays linear.
     sed_vars: "dict[str, str] | None" = None
-    for i in sed_indexes:
+    sed_bindings: "list[tuple[int, str, str | None]] | None" = None
+    sed_cursor = 0
+    # Visited left to right so the binding cursor below only moves forward.
+    for i in sorted(set(sed_indexes)):
         # A script --sandbox / --posix stops sed compiling is already left out of
         # the program (_sed_invocation), so a name inside one is never blocked.
-        program, scan_overflowed = _sed_invocation(tokens, i, sed_limit)
+        program, scan_overflowed = _sed_invocation(tokens, i, sed_limit, invocation_stops)
         if scan_overflowed:
             # The script sits past the scan window, so an empty program here is
             # only ignorance: block the sed itself rather than let an
             # `e rm -rf ~` ride in behind enough padding options.
             blocked.add(_token_basename(tokens[i]))
             continue
-        if "$" in program and sed_vars is None:
+        if "$" in program:
             # A program held in a variable (p='...e rm -f victim'; sed "$p" f)
             # only shows its `e` once the reference is resolved. shlex kept the
             # quoted value whole, newlines and all, so the binding is exact.
-            sed_vars = _assignment_values(tokens)
+            # Only the assignments AHEAD of this sed are in scope, and the last
+            # of them wins, which is the pair that `p='1,3p';
+            # p='1e rm -f victim'; sed "$p" input` turns on.
+            if sed_bindings is None:
+                sed_bindings = _assignment_bindings(tokens)
+                sed_vars = {}
+            sed_cursor = _bindings_before(sed_bindings, sed_cursor, i, sed_vars)
         for variant in _sed_program_variants(program, sed_vars or {}):
             for payload in _sed_exec_payloads(variant):
                 if payload:
@@ -4812,6 +5003,12 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         # Built at most once per pass, and only when a sed program actually
         # names a variable, so a line packed with sed words stays linear.
         sed_vars: "dict[str, str] | None" = None
+        sed_bindings: "list[tuple[int, str, str | None]] | None" = None
+        sed_cursor = 0
+        # Where a sed invocation really ends. Built at most once per pass, and
+        # only once a sed is actually reached, so a line without one never pays
+        # for the quote walk it needs (_quoted_separator_indexes).
+        sed_stops: "frozenset[int] | None" = None
         if find_like and any(t.split("=", 1)[0] in _HIGH_RISK_FIND_FLAGS for t in tokens):
             return True
         # GNU tar runs --checkpoint-action=exec=CMD at each checkpoint, hiding a
@@ -5186,19 +5383,34 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     # A script --sandbox / --posix stops sed compiling is already
                     # left out of the program (_sed_invocation), so a payload
                     # inside one never reaches this screen.
-                    sed_program, sed_overflowed = _sed_invocation(tokens, _tok_idx, sed_scan_limit)
+                    if sed_stops is None:
+                        # A quoted `';'` / `'+'` operand is a sed FILE, not the
+                        # end of the invocation; reading it as one dropped the
+                        # `-e` script behind it (`sed -n ';' -e '1e rm -f
+                        # victim' input` really runs rm).
+                        sed_stops = _exec_scan_layout(
+                            tokens, _quoted_separator_indexes(text, tokens, ";&|()")
+                        )[1]
+                    sed_program, sed_overflowed = _sed_invocation(
+                        tokens, _tok_idx, sed_scan_limit, sed_stops
+                    )
                     if sed_overflowed:
                         # The script was pushed past the scan window by padding
                         # options, so "no payload found" only means "not looked
                         # at": ask instead of falling through to safe.
                         return True
-                    if "$" in sed_program and sed_vars is None:
+                    if "$" in sed_program:
                         # A program held in a variable (p='# note<newline>e CMD';
                         # sed "$p" f) is only a program once the reference is
                         # resolved, and only THIS pass keeps the quoted newline
                         # that ends the comment: the blanket one turns the whole
-                        # value into a single inert comment line.
-                        sed_vars = _assignment_values(tokens)
+                        # value into a single inert comment line. Only the
+                        # assignments ahead of this sed can reach it, and the
+                        # last of them is the one bash uses.
+                        if sed_bindings is None:
+                            sed_bindings = _assignment_bindings(tokens)
+                            sed_vars = {}
+                        sed_cursor = _bindings_before(sed_bindings, sed_cursor, _tok_idx, sed_vars)
                     sed_variants = _sed_program_variants(sed_program, sed_vars or {})
                     if any(_sed_exec_payloads(variant) for variant in sed_variants):
                         return True
