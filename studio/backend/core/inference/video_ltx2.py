@@ -549,10 +549,15 @@ def load_ltx23_pipeline(
     torch_dtype: Any,
     is_gguf: bool,
     hf_token: Optional[str] = None,
+    text_encoder: Optional[Any] = None,
 ) -> Any:
     """Full LTX-2.3 pipeline from a single-file/GGUF checkpoint. Assembled per-component
     (constructor, not from_pretrained) because the base model_index pins LTX2Vocoder while 2.3
-    needs LTX2VocoderWithBWE, which the type gate would reject."""
+    needs LTX2VocoderWithBWE, which the type gate would reject.
+
+    ``text_encoder`` supplies an already-built encoder (the caller's pre-cast fp8 Gemma3);
+    None builds it dense from the base repo. Because the assembly bypasses
+    ``from_pretrained``, this is the only way an fp8 request reaches the 2.3 path."""
     import transformers
     from diffusers import LTX2Pipeline
     from diffusers.loaders.single_file_utils import load_single_file_checkpoint
@@ -613,7 +618,8 @@ def load_ltx23_pipeline(
 
     scheduler = _sub("scheduler")
     tokenizer = _sub("tokenizer")
-    text_encoder = _sub("text_encoder", torch_dtype = torch_dtype)
+    if text_encoder is None:
+        text_encoder = _sub("text_encoder", torch_dtype = torch_dtype)
 
     return LTX2Pipeline(
         scheduler = scheduler,

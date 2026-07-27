@@ -845,6 +845,37 @@ def test_generate_defaults_from_variant(fake_runtime, tmp_path):
     assert call["sigmas"] == list(LTX23_DISTILLED_SIGMAS)
 
 
+def test_ltx23_load_forwards_the_precast_encoder(fake_runtime, tmp_path, monkeypatch):
+    # The wiring half of the same bug: pipe_kwargs carries the pre-cast encoder for from_pretrained, and
+    # the 2.3 branch does not use pipe_kwargs, so the loader must pass it across explicitly.
+    from core.inference import diffusion_te_prequant, video_ltx2
+
+    precast = object()
+    monkeypatch.setattr(
+        diffusion_te_prequant, "te_prequant_pipe_kwargs", lambda *a, **k: {"text_encoder": precast}
+    )
+    monkeypatch.setattr(video_ltx2, "is_ltx23_checkpoint", lambda path: True)
+    seen: dict = {}
+
+    def _assemble(checkpoint_path, **kwargs):
+        seen.update(kwargs)
+        return _FakePipeline.from_pretrained("Lightricks/LTX-2")
+
+    monkeypatch.setattr(video_ltx2, "load_ltx23_pipeline", _assemble)
+
+    (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
+    backend = VideoBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+        text_encoder_quant = "fp8",
+    )
+    assert seen["text_encoder"] is precast
+    backend.unload()
+
+
 def test_generate_distilled_custom_steps_keep_scheduler_spacing(fake_runtime, tmp_path):
     # A non-default step count on the distilled DiT has no calibrated list, so the scheduler's spacing
     # applies and no sigmas kwarg is injected.
@@ -1070,6 +1101,90 @@ def test_ltx23_scaled_fp8_refused(monkeypatch, tmp_path):
         video_ltx2.load_ltx23_pipeline(
             path, base_repo = "Lightricks/LTX-2", torch_dtype = None, is_gguf = False
         )
+
+
+def _ltx23_assembly_stubs(monkeypatch, tmp_path):
+    """Module tree + component loaders for a 2.3 assembly, so only the encoder choice is under test."""
+    from core.inference import video_ltx2
+
+    class _Loaded:
+        def __init__(self, what: str) -> None:
+            self.what = what
+
+        @classmethod
+        def from_pretrained(cls, base, subfolder = None, token = None, **extra):
+            _Loaded.calls.append(subfolder)
+            return cls(subfolder or "?")
+
+    _Loaded.calls = []
+
+    class _FakeLTX2Pipeline:
+        last: dict = {}
+
+        def __init__(self, **kwargs):
+            _FakeLTX2Pipeline.last = kwargs
+
+        @staticmethod
+        def load_config(base_repo, token = None):
+            return {
+                "scheduler": ["diffusers", "_Loaded"],
+                "tokenizer": ["transformers", "_Loaded"],
+                "text_encoder": ["transformers", "_Loaded"],
+            }
+
+    diffusers = types.ModuleType("diffusers")
+    diffusers.LTX2Pipeline = _FakeLTX2Pipeline
+    diffusers._Loaded = _Loaded
+    loaders = types.ModuleType("diffusers.loaders")
+    sfu = types.ModuleType("diffusers.loaders.single_file_utils")
+    sfu.load_single_file_checkpoint = lambda path: {
+        "model.diffusion_model.transformer_blocks.0.attn1.to_q.weight": object(),
+    }
+    diffusers.loaders = loaders
+    loaders.single_file_utils = sfu
+    transformers = types.ModuleType("transformers")
+    transformers._Loaded = _Loaded
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+    monkeypatch.setitem(sys.modules, "diffusers.loaders", loaders)
+    monkeypatch.setitem(sys.modules, "diffusers.loaders.single_file_utils", sfu)
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+
+    monkeypatch.setattr(video_ltx2, "load_ltx23_transformer", lambda *a, **k: "dit")
+    monkeypatch.setattr(video_ltx2, "load_ltx23_connectors", lambda *a, **k: "connectors")
+    monkeypatch.setattr(video_ltx2, "load_ltx23_vae", lambda *a, **k: "vae")
+    monkeypatch.setattr(
+        video_ltx2, "load_ltx23_audio_vae_and_vocoder", lambda *a, **k: ("audio_vae", "vocoder")
+    )
+
+    path = tmp_path / "ltx-2.3-22b-distilled-Q4_K_M.gguf"
+    path.write_bytes(b"x")
+    return video_ltx2, _FakeLTX2Pipeline, _Loaded, path
+
+
+def test_ltx23_assembly_takes_a_supplied_text_encoder(monkeypatch, tmp_path):
+    # The 2.3 assembly builds every component itself, so an fp8 request only reaches it through this
+    # argument. Without it a pre-cast encoder is silently ignored and the dense ~49 GB Gemma3 loads.
+    video_ltx2, pipeline_cls, loaded, path = _ltx23_assembly_stubs(monkeypatch, tmp_path)
+    precast = object()
+
+    video_ltx2.load_ltx23_pipeline(
+        path,
+        base_repo = "Lightricks/LTX-2",
+        torch_dtype = None,
+        is_gguf = True,
+        text_encoder = precast,
+    )
+    assert pipeline_cls.last["text_encoder"] is precast
+    # Only the scheduler and tokenizer were fetched from the base repo.
+    assert loaded.calls == ["scheduler", "tokenizer"]
+
+    # No pre-cast encoder -> the dense one still loads from the base repo, as before.
+    loaded.calls.clear()
+    video_ltx2.load_ltx23_pipeline(
+        path, base_repo = "Lightricks/LTX-2", torch_dtype = None, is_gguf = True
+    )
+    assert loaded.calls == ["scheduler", "tokenizer", "text_encoder"]
+    assert isinstance(pipeline_cls.last["text_encoder"], loaded)
 
 
 def test_generate_without_load_raises(fake_runtime):
@@ -1888,6 +2003,170 @@ def test_download_plan_narrows_an_ltx23_pick_and_stages_its_extras(monkeypatch):
     for dropped in ("vae/", "vocoder/", "connectors/", "transformer/"):
         assert not any(f.startswith(dropped) for f in base["files"]), dropped
     assert plan["total_bytes"] == ckpt["bytes"] + base["bytes"]
+
+
+def _cuda_bf16_target(monkeypatch):
+    """Pretend the box can run layerwise fp8, so the pre-cast encoder resolves off-GPU."""
+    import torch
+
+    monkeypatch.setattr(
+        "core.inference.video.resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16),
+    )
+
+
+_LTX2_FP8_SIBLINGS = [_PlanSibling("LTX-2-text_encoder-FP8.pt", 13_000_000_000)]
+
+
+def test_base_download_files_skips_precast_text_encoder_weights():
+    # The pre-cast checkpoint supplies the encoder WEIGHTS only: the config and shard index stay, since
+    # the pre-cast loader meta-inits the encoder from the base repo's component config.
+    siblings = _LTX2_SIBLINGS + [
+        _sibling("text_encoder/config.json", 1),
+        _sibling("text_encoder/model.safetensors.index.json", 1),
+    ]
+    info = types.SimpleNamespace(siblings = siblings)
+    names = [
+        n
+        for n, _ in VideoBackend._base_download_files(
+            info, "gguf", skip_te_components = ("text_encoder",)
+        )
+    ]
+    assert not any(n.endswith(".safetensors") and n.startswith("text_encoder/") for n in names)
+    assert "text_encoder/config.json" in names
+    assert "text_encoder/model.safetensors.index.json" in names
+    # A different component's weights are untouched.
+    assert "vae/diffusion_pytorch_model.safetensors" in names
+
+
+def test_download_plan_swaps_the_dense_encoder_for_the_precast_checkpoint(monkeypatch):
+    # An fp8 encoder request loads unsloth/LTX-2-FP8 instead of the base's dense Gemma3, so staging that
+    # dense encoder downloads ~49 GB the pipeline never opens -- and the checkpoint it DOES read was
+    # missing from the plan, so it was pulled inline at load time outside the panel.
+    _cuda_bf16_target(monkeypatch)
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+            "unsloth/LTX-2-FP8": _LTX2_FP8_SIBLINGS,
+        },
+    )
+
+    plan = VideoBackend().download_plan(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "ltx-2.3-22b-distilled.gguf",
+        family_override = "ltx-2",
+        text_encoder_quant = "fp8",
+    )
+
+    by_repo = {e["repo_id"]: e for e in plan["entries"]}
+    assert by_repo["unsloth/LTX-2-FP8"]["files"] == ["LTX-2-text_encoder-FP8.pt"]
+    base = by_repo["Lightricks/LTX-2"]
+    assert not any(f.startswith("text_encoder/") for f in base["files"])
+    # The rest of the scoped base list is unchanged.
+    assert "scheduler/scheduler_config.json" in base["files"]
+    assert "tokenizer/tokenizer.json" in base["files"]
+    assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])
+
+
+def test_download_plan_keeps_the_dense_encoder_without_an_fp8_request(monkeypatch):
+    # No fp8 request means the dense encoder IS the encoder: dropping it would break the load.
+    _cuda_bf16_target(monkeypatch)
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+        },
+    )
+
+    plan = VideoBackend().download_plan(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "ltx-2.3-22b-distilled.gguf",
+        family_override = "ltx-2",
+    )
+
+    by_repo = {e["repo_id"]: e for e in plan["entries"]}
+    assert "unsloth/LTX-2-FP8" not in by_repo
+    assert any(f.startswith("text_encoder/") for f in by_repo["Lightricks/LTX-2"]["files"])
+
+
+def test_download_plan_keeps_the_dense_encoder_when_the_precast_repo_is_missing(monkeypatch):
+    # The hosted artifact can be unpublished, gated or renamed (unsloth/LTX-2-FP8 404s today). That must
+    # neither drop the dense encoder -- nothing else would supply one -- nor sink the whole plan, which
+    # is what an unguarded lookup did: every entry vanished and the panel offered a 0-byte download.
+    _cuda_bf16_target(monkeypatch)
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+        },
+    )
+
+    plan = VideoBackend().download_plan(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "ltx-2.3-22b-distilled.gguf",
+        family_override = "ltx-2",
+        text_encoder_quant = "fp8",
+    )
+
+    by_repo = {e["repo_id"]: e for e in plan["entries"]}
+    assert set(by_repo) == {"unsloth/LTX-2.3-GGUF", "Lightricks/LTX-2"}
+    assert any(f.startswith("text_encoder/") for f in by_repo["Lightricks/LTX-2"]["files"])
+    assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"]) > 0
+
+
+def test_fetch_te_prequant_only_reports_what_it_downloaded(monkeypatch):
+    # The dense skip is earned by the pre-cast file being on disk. An unreachable checkpoint must report
+    # nothing, or the base pull would drop an encoder nothing else supplies.
+    backend = VideoBackend()
+    source = types.SimpleNamespace(
+        kind = "repo", location = "unsloth/LTX-2-FP8", filename = "LTX-2-text_encoder-FP8.pt"
+    )
+
+    def _boom(repo, filename, token, cancel_event = None):
+        raise OSError("404")
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _boom)
+    assert backend._fetch_te_prequant({"text_encoder": source}, None) == ()
+
+    monkeypatch.setattr(
+        "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback",
+        lambda repo, filename, token, cancel_event = None: "/tmp/precast.pt",
+    )
+    assert backend._fetch_te_prequant({"text_encoder": source}, None) == ("text_encoder",)
+    # A local path override is the injection's business (allowlist), and nothing is fetched for it.
+    local = types.SimpleNamespace(kind = "path", location = "/tmp/x.pt", filename = None)
+    assert backend._fetch_te_prequant({"text_encoder": local}, None) == ()
+
+
+def test_load_pipeline_tops_up_the_dense_encoder_when_injection_fails(fake_runtime, tmp_path):
+    # Injection is best-effort, but the pre-download already dropped the dense shards on the strength of
+    # the pre-cast file. from_pretrained cannot re-fetch from a local snapshot dir, so a failed injection
+    # must restore them rather than crash the load.
+    backend = VideoBackend()
+    calls: list[dict] = []
+    backend._predownload_base = lambda *a, **k: (  # type: ignore[method-assign]
+        calls.append({"args": a, "kwargs": k}) or str(tmp_path)
+    )
+    backend.load_pipeline(
+        "Lightricks/LTX-2",
+        model_kind = "pipeline",
+        _base_local_dir = str(tmp_path),
+        _te_prequant_skipped = ("text_encoder",),
+    )
+    assert len(calls) == 1 and calls[0]["kwargs"]["ltx23"] is False
+    backend.unload()
+
+    # Nothing was skipped -> no second pull.
+    calls.clear()
+    backend.load_pipeline(
+        "Lightricks/LTX-2", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert calls == []
+    backend.unload()
 
 
 def test_download_plan_keeps_the_wide_base_for_a_plain_ltx2_pick(monkeypatch):

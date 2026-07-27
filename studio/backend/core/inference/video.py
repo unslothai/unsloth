@@ -553,8 +553,16 @@ class VideoBackend:
                 else resolve_video_base_repo(fam, kwargs.get("base_repo"))
             )
             kwargs["base_repo"] = base
+            # An fp8 encoder request loads a hosted pre-cast checkpoint instead of the base repo's dense
+            # encoder, so neither the estimate nor the pull below should include those shards.
+            te_sources = self._te_prequant_sources(fam, kwargs.get("text_encoder_quant"))
             expected = self._estimate_download_bytes(
-                kwargs["repo_id"], kwargs.get("gguf_filename"), base, kwargs.get("hf_token"), kind
+                kwargs["repo_id"],
+                kwargs.get("gguf_filename"),
+                base,
+                kwargs.get("hf_token"),
+                kind,
+                te_sources = te_sources,
             )
             with self._lock:
                 if self._load_token == token and self._loading is not None:
@@ -605,11 +613,21 @@ class VideoBackend:
                         kwargs.get("hf_token"),
                         kind,
                         ltx23 = True,
+                        te_sources = te_sources,
                     )
                     with self._lock:
                         if self._load_token == token and self._loading is not None:
                             self._loading.expected_bytes = expected
-            base_local = self._predownload_base(base, kwargs.get("hf_token"), kind, ltx23 = ltx23)
+            # Only a pre-cast checkpoint actually on disk earns the dense skip below.
+            te_skipped = self._fetch_te_prequant(te_sources, kwargs.get("hf_token"))
+            kwargs["_te_prequant_skipped"] = te_skipped
+            base_local = self._predownload_base(
+                base,
+                kwargs.get("hf_token"),
+                kind,
+                ltx23 = ltx23,
+                skip_te_components = te_skipped,
+            )
             # The 2.3 assembly pulls per component from the hub id (its snapshot lacks the base VAEs), so it
             # only gets the warmed cache; generic paths get the full local snapshot.
             kwargs["_base_local_dir"] = None if ltx23 else base_local
@@ -660,11 +678,54 @@ class VideoBackend:
     _LTX23_BASE_PREFIXES = ("scheduler/", "text_encoder/", "tokenizer/")
 
     @staticmethod
+    def _te_prequant_sources(fam: Any, text_encoder_quant: Optional[str]) -> dict[str, Any]:
+        """``{component: source}`` for the text encoders this load will take PRE-CAST from a
+        hosted checkpoint instead of the base repo's dense weights (``{}`` when none)."""
+        from .diffusion_te_prequant import te_prequant_sources
+
+        return te_prequant_sources(
+            fam,
+            te_quant_mode = text_encoder_quant,
+            target = resolve_diffusion_device_target(),
+        )
+
+    @staticmethod
+    def _te_prequant_hub_files(
+        sources: dict[str, Any], api: Any
+    ) -> dict[str, list[tuple[str, int]]]:
+        """``{component: [(rfilename, size)]}`` for every hosted pre-cast checkpoint that really
+        resolves on the Hub.
+
+        Only a component listed here may have its dense weights dropped from a plan or an
+        estimate: an unpublished / gated / renamed artifact keeps its dense encoder, exactly as
+        the load's own fallback does. Checked per source so one missing repo cannot sink the
+        whole plan."""
+        found: dict[str, list[tuple[str, int]]] = {}
+        for component, source in sources.items():
+            # A local path override is already on disk; only a hosted checkpoint is staged.
+            if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
+                continue
+            try:
+                info = api.model_info(source.location, files_metadata = True)
+            except Exception as exc:  # noqa: BLE001 -- unavailable pre-cast means the dense encoder
+                logger.warning("video.te_prequant_unavailable: %s: %s", source.location, exc)
+                continue
+            files = [
+                (s.rfilename, int(s.size or 0))
+                for s in (info.siblings or [])
+                if s.rfilename == source.filename
+            ]
+            if files:
+                found[component] = files
+        return found
+
+    @staticmethod
     def _base_download_files(
         info: Any,
         kind: str,
         *,
         ltx23: bool = False,
+        skip_te_components: tuple[str, ...] = (),
     ) -> list[tuple[str, int]]:
         """The (rfilename, size) list a load actually needs from the base repo.
 
@@ -678,7 +739,13 @@ class VideoBackend:
         - ``transformer/`` when a GGUF/single-file checkpoint replaces the DiT;
         - everything but scheduler / text encoder / tokenizer for an LTX-2.3
           checkpoint (``ltx23``), whose VAEs/vocoder/connectors come from the
-          checkpoint and its extras, not the 2.0 base."""
+          checkpoint and its extras, not the 2.0 base;
+        - the dense weight shards of any ``skip_te_components`` encoder, supplied
+          instead by a hosted pre-cast fp8 checkpoint (LTX-2's Gemma3 encoder is
+          ~49 GB of the base repo). Their configs stay: the pre-cast loader
+          meta-inits the encoder from the base repo's component config."""
+        from .diffusion_te_prequant import is_prequant_covered_weight
+
         files: list[tuple[str, int]] = []
         for sibling in info.siblings or []:
             name, size = sibling.rfilename, sibling.size or 0
@@ -694,6 +761,8 @@ class VideoBackend:
                 continue
             if ltx23 and "/" in name and not name.startswith(VideoBackend._LTX23_BASE_PREFIXES):
                 continue
+            if skip_te_components and is_prequant_covered_weight(name, skip_te_components):
+                continue
             files.append((name, int(size)))
         return files
 
@@ -705,13 +774,20 @@ class VideoBackend:
         hf_token: Optional[str],
         kind: str,
         ltx23: bool = False,
+        te_sources: Optional[dict[str, Any]] = None,
     ) -> Optional[int]:
-        """Total bytes this load will pull (checkpoint + companions), or None."""
+        """Total bytes this load will pull (checkpoint + companions), or None.
+
+        Dense encoder shards covered by an available pre-cast checkpoint are excluded, since
+        the pull below skips them too. The pre-cast checkpoint's own bytes are deliberately
+        NOT added: the progress bar counts cached bytes for the checkpoint and base repos
+        only, so a third repo in the total would leave the bar permanently short of 100%."""
         try:
             from huggingface_hub import HfApi
 
             total = 0
             api = HfApi(token = hf_token or None)
+            skip_te_components = tuple(self._te_prequant_hub_files(te_sources or {}, api))
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(repo_id, files_metadata = True)
                 for sibling in info.siblings or []:
@@ -719,7 +795,12 @@ class VideoBackend:
                         total += int(sibling.size)
             if base and not Path(base).expanduser().exists():
                 info = api.model_info(base, files_metadata = True)
-                total += sum(size for _, size in self._base_download_files(info, kind, ltx23 = ltx23))
+                total += sum(
+                    size
+                    for _, size in self._base_download_files(
+                        info, kind, ltx23 = ltx23, skip_te_components = skip_te_components
+                    )
+                )
             return total or None
         except Exception:  # noqa: BLE001 -- progress totals are best-effort only
             return None
@@ -733,10 +814,17 @@ class VideoBackend:
         family_override: Optional[str] = None,
         model_kind: Optional[str] = None,
         hf_token: Optional[str] = None,
+        text_encoder_quant: Optional[str] = None,
+        **load_kwargs: Any,
     ) -> dict[str, Any]:
         """The repos + exact files this pick needs, for staging through the Hub download
         manager. Mirrors the image backend's plan; the file list is the same scoped one
-        the load itself uses, so nothing extra is pulled. Local paths yield no entries."""
+        the load itself uses, so nothing extra is pulled. Local paths yield no entries.
+
+        ``text_encoder_quant`` is read for the same reason the image plan reads the DiT
+        quant: an fp8 request loads a hosted PRE-CAST encoder, so the base repo's dense
+        encoder shards must not be staged (~49 GB of Lightricks/LTX-2) and the pre-cast
+        checkpoint must be."""
         from huggingface_hub import HfApi
 
         fam = _detect_load_family(repo_id, gguf_filename, family_override)
@@ -803,9 +891,23 @@ class VideoBackend:
                             if s.rfilename in wanted
                         ],
                     )
+            # Pre-cast encoders first: only a checkpoint that really resolves earns the right to drop
+            # the base repo's dense shards below.
+            te_sources = self._te_prequant_sources(fam, text_encoder_quant)
+            te_files = self._te_prequant_hub_files(te_sources, api)
+            for component, files in te_files.items():
+                total += add(te_sources[component].location, files)
             if base and not Path(base).expanduser().exists():
                 info = api.model_info(base, files_metadata = True)
-                total += add(base, self._base_download_files(info, kind, ltx23 = ltx23))
+                total += add(
+                    base,
+                    self._base_download_files(
+                        info,
+                        kind,
+                        ltx23 = ltx23,
+                        skip_te_components = tuple(te_files),
+                    ),
+                )
         except Exception as exc:  # noqa: BLE001 -- an unavailable plan falls back to the inline pull
             logger.warning("video.download_plan_failed: %s", exc)
             return {"entries": [], "total_bytes": 0}
@@ -829,6 +931,45 @@ class VideoBackend:
         text = f"{repo_id} {gguf_filename or ''}".lower()
         return "2.3" in text or "2_3" in text or "23b" in text
 
+    def _fetch_te_prequant(
+        self, sources: dict[str, Any], hf_token: Optional[str]
+    ) -> tuple[str, ...]:
+        """Pre-fetch the hosted pre-cast encoder checkpoints; return the components whose
+        dense weights the base pull can therefore skip.
+
+        Downloading here rather than leaving it to the injection inside ``from_pretrained``
+        is what makes that skip safe: only a checkpoint already on disk earns the right to
+        drop the dense shards, and the pull becomes cancellable and resumable like every
+        other load download instead of an untracked stall. A component whose fetch fails
+        keeps its dense weights, so the load still has an encoder to fall back to."""
+        from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+
+        fetched: list[str] = []
+        for component, source in sources.items():
+            # A local path override is validated (allowlist) by the injection itself; nothing to fetch,
+            # and no basis here for skipping the dense download.
+            if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
+                continue
+            try:
+                hf_hub_download_with_xet_fallback(
+                    source.location,
+                    source.filename,
+                    hf_token,
+                    cancel_event = self._cancel_event,
+                )
+            except Exception as exc:  # noqa: BLE001 -- no pre-cast file just means the dense encoder
+                if self._cancel_event.is_set():
+                    raise
+                logger.warning(
+                    "video.te_prequant_fetch_failed: %s/%s: %s",
+                    source.location,
+                    source.filename,
+                    exc,
+                )
+                continue
+            fetched.append(component)
+        return tuple(fetched)
+
     def _predownload_base(
         self,
         base: str,
@@ -836,6 +977,7 @@ class VideoBackend:
         kind: str,
         *,
         ltx23: bool = False,
+        skip_te_components: tuple[str, ...] = (),
     ) -> Optional[str]:
         """Pull exactly the base-repo files the load needs; return the local snapshot dir.
 
@@ -852,7 +994,9 @@ class VideoBackend:
             from huggingface_hub import HfApi
 
             info = HfApi(token = hf_token or None).model_info(base, files_metadata = True)
-            files = self._base_download_files(info, kind, ltx23 = ltx23)
+            files = self._base_download_files(
+                info, kind, ltx23 = ltx23, skip_te_components = skip_te_components
+            )
             if not any(name == "model_index.json" for name, _ in files):
                 return None
             from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
@@ -962,6 +1106,7 @@ class VideoBackend:
         model_kind: Optional[str] = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
+        _te_prequant_skipped: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         import diffusers
         import torch
@@ -1126,6 +1271,22 @@ class VideoBackend:
                 logger = logger,
             )
         )
+        # Injection is best-effort (a missing / mismatched / unreadable checkpoint falls back to the dense
+        # encoder), but the scoped pre-download already dropped those dense shards on the strength of the
+        # pre-cast file being on disk. from_pretrained cannot re-fetch from a local snapshot dir, so top the
+        # dense weights up here for any skipped component that did not come back injected. ltx23 is False by
+        # construction: that path is handed the hub id (_base_local_dir is None), where from_pretrained
+        # resolves the dense encoder itself.
+        missing_dense = [c for c in (_te_prequant_skipped or ()) if c not in pipe_kwargs]
+        if missing_dense and _base_local_dir:
+            logger.warning(
+                "video.te_prequant: %s not injected; restoring the dense weights the "
+                "pre-download skipped",
+                ", ".join(missing_dense),
+            )
+            _base_local_dir = (
+                self._predownload_base(base, hf_token, kind, ltx23 = False) or _base_local_dir
+            )
         if kind == "pipeline":
             # The pre-downloaded snapshot dir keeps from_pretrained off the hub (its sweep would also pull
             # root checkpoints + duplicate shards); hub id when pre-download was skipped.
@@ -1155,6 +1316,10 @@ class VideoBackend:
                     torch_dtype = dtype,
                     is_gguf = kind == "gguf",
                     hf_token = hf_token,
+                    # The 2.3 assembly builds every component itself, so pipe_kwargs (which carries the
+                    # pre-cast encoder for from_pretrained) never reaches it. Hand the encoder over
+                    # explicitly, or an fp8 request silently loads the dense ~49 GB Gemma3 instead.
+                    text_encoder = pipe_kwargs.get("text_encoder"),
                 )
             else:
                 transformer = transformer_cls.from_single_file(str(checkpoint_path), **sf_kwargs)

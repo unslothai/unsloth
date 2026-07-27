@@ -806,3 +806,33 @@ def test_delete_guard_protects_the_loaded_video_companion_base(monkeypatch):
     assert deletion._video_blocks_delete("unsloth/LTX-2.3-GGUF") is not None
     assert deletion._video_blocks_delete("unsloth/LTX-2.3") is not None
     assert deletion._video_blocks_delete("unsloth/something-else") is None
+
+
+def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
+    # The plan drives the staged download, so it must be computed from the same encoder policy the load
+    # will run with: an fp8 request takes a hosted pre-cast encoder, and staging the base repo's dense
+    # one instead downloads ~49 GB of Gemma3 the pipeline never opens.
+    backend = video_module.get_video_backend()
+    seen: dict = {}
+
+    def _plan(model_path, **kwargs):
+        seen["model_path"] = model_path
+        seen.update(kwargs)
+        return {"entries": [], "total_bytes": 0}
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf",
+            "model_kind": "gguf",
+            "hf_token": "hf_secret",
+            "text_encoder_quant": "fp8",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert seen["text_encoder_quant"] == "fp8"
+    assert seen["hf_token"] == "hf_secret"

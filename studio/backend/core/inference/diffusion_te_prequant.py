@@ -26,7 +26,7 @@ None and the caller falls back to the dense download + cast. Inert with nothing 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 # Reuse the DiT module's operator allowlist for local paths: one env var, one policy.
 from .diffusion_prequant import (
@@ -143,6 +143,64 @@ def resolve_te_prequant_source(
             filename = te_prequant_repo_filename(repo_id, component, scheme),
         )
     return None
+
+
+def te_prequant_sources(
+    fam: Any,
+    *,
+    te_quant_mode: Optional[str],
+    target: Any,
+) -> dict[str, TePrequantSource]:
+    """``{component: source}`` for every text encoder this pick would load PRE-CAST rather
+    than dense; ``{}`` when none apply.
+
+    Pure (no IO, no ``torch.load``) and gated exactly like ``te_prequant_pipe_kwargs``
+    below, which calls it. Download planning uses the same resolver so a plan can never
+    disagree with the load about which dense encoders are still needed -- staging the dense
+    encoder for a pre-cast load wastes tens of GB (LTX's Gemma3 is ~49 GB), and dropping one
+    the load actually wants costs a surprise mid-load pull."""
+    try:
+        from . import diffusion_precision as precision
+        from .diffusion_precision import (
+            TE_QUANT_FP8,
+            normalize_te_quant,
+            te_quant_supported,
+        )
+
+        mode = normalize_te_quant(te_quant_mode)
+        if mode != TE_QUANT_FP8:
+            return {}
+        family = getattr(fam, "name", None)
+        # The per-family TE deny table ships on the video branch's precision module; the image branch has
+        # no denials. Resolve lazily so one module serves both.
+        denied = getattr(precision, "_te_family_denied", None)
+        if callable(denied) and denied(family, mode):
+            return {}
+        if not te_quant_supported(target, mode):
+            return {}
+        sources: dict[str, TePrequantSource] = {}
+        for component in TE_PREQUANT_COMPONENTS:
+            source = resolve_te_prequant_source(fam, component, mode)
+            if source is not None:
+                sources[component] = source
+        return sources
+    except Exception:  # noqa: BLE001 — an unresolvable pre-cast just means the dense encoder
+        return {}
+
+
+# Weight files a dense encoder folder holds. Everything else in the folder (config.json, the
+# shard index, tokenizer JSON) is kept when the pre-cast checkpoint replaces the weights: the
+# pre-cast loader still meta-inits the encoder from the base repo's component config.
+_TE_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pth", ".pt", ".msgpack", ".h5")
+
+
+def is_prequant_covered_weight(rfilename: str, components: Iterable[str]) -> bool:
+    """True when ``rfilename`` is a dense weight shard of one of ``components`` -- i.e. a file
+    a pre-cast checkpoint makes unnecessary to download."""
+    lowered = rfilename.lower()
+    if not lowered.endswith(_TE_WEIGHT_SUFFIXES):
+        return False
+    return any(rfilename.startswith(f"{component}/") for component in components)
 
 
 def load_prequant_text_encoder(
@@ -285,29 +343,13 @@ def te_prequant_pipe_kwargs(
     The later ``quantize_text_encoders`` call re-applies the cast idempotently and keeps
     status reporting truthful."""
     try:
-        from . import diffusion_precision as precision
-        from .diffusion_precision import (
-            TE_QUANT_FP8,
-            normalize_te_quant,
-            te_quant_supported,
-        )
+        from .diffusion_precision import TE_QUANT_FP8
 
-        mode = normalize_te_quant(te_quant_mode)
-        if mode != TE_QUANT_FP8:
-            return {}
-        family = getattr(fam, "name", None)
-        # The per-family TE deny table ships on the video branch's precision module; the image branch has
-        # no denials. Resolve lazily so one module serves both.
-        denied = getattr(precision, "_te_family_denied", None)
-        if callable(denied) and denied(family, mode):
-            return {}
-        if not te_quant_supported(target, mode):
-            return {}
+        sources = te_prequant_sources(fam, te_quant_mode = te_quant_mode, target = target)
+        # Non-empty only for the one hosted scheme (see te_prequant_sources' gate).
+        mode = TE_QUANT_FP8
         injected: dict[str, Any] = {}
-        for component in TE_PREQUANT_COMPONENTS:
-            source = resolve_te_prequant_source(fam, component, mode)
-            if source is None:
-                continue
+        for component, source in sources.items():
             encoder = load_prequant_text_encoder(
                 base,
                 component,

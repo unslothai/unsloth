@@ -109,6 +109,9 @@ async def video_download_plan(
             family_override = request.family_override,
             model_kind = kind,
             hf_token = request.hf_token,
+            # The plan has to see the encoder policy the load will use: an fp8 request takes a hosted
+            # pre-cast encoder, so staging the base repo's dense one wastes ~49 GB on LTX-2.
+            text_encoder_quant = request.text_encoder_quant,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
