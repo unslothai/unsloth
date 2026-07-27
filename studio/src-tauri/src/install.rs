@@ -193,6 +193,10 @@ fn emit_complete(app: &AppHandle) {
 
 // ── Spawn ──
 
+/// A start rejected because one is already running. Distinguished from a real
+/// spawn failure so the loser of the race leaves the winner's marker alone.
+const INSTALL_ALREADY_RUNNING: &str = "Installation is already running.";
+
 /// Spawns the install script in a process group.
 /// Returns (stdout, stderr) handles for streaming.
 /// The GroupChild is stored in state so stop_install() can kill the entire tree.
@@ -209,7 +213,7 @@ fn spawn_script(
 > {
     let mut install = state.lock().map_err(|e| e.to_string())?;
     if install.child.is_some() {
-        return Err("Installation is already running.".to_string());
+        return Err(INSTALL_ALREADY_RUNNING.to_string());
     }
     install.intentional_stop = false;
     install.needed_packages.clear();
@@ -514,8 +518,12 @@ fn run_install_with_event_mode(
     let (stdout, stderr) = match spawn_script(&script, &args, &state) {
         Ok(handles) => handles,
         Err(msg) => {
-            // Nothing ran, so nothing is half-installed.
-            clear_install_marker_best_effort();
+            // Nothing ran, so nothing is half-installed. Unless another
+            // installer is already inside the venv, in which case the marker
+            // is its own and clearing it here throws away its recovery signal.
+            if msg != INSTALL_ALREADY_RUNNING {
+                clear_install_marker_best_effort();
+            }
             diagnostics::finish_attempt(
                 &diagnostics,
                 &attempt,

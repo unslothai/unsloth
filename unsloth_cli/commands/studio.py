@@ -309,14 +309,11 @@ def _missing_studio_requirement(run_mod):
     from importlib.metadata import PackageNotFoundError, distribution
     from packaging.requirements import InvalidRequirement, Requirement
 
-    pending = [(root, True) for root in reversed(_studio_requirement_roots(run_mod))]
+    pending = []
     seen = set()
-    while pending:
-        requirement, is_root = pending.pop()
-        key = _canonical_distribution_name(requirement.name)
-        if key in seen:
-            continue
-        seen.add(key)
+
+    def visit(requirement, is_root):
+        """The name to report, or None; queues the requirement's dependencies."""
         try:
             installed = distribution(requirement.name)
         except PackageNotFoundError:
@@ -345,7 +342,27 @@ def _missing_studio_requirement(run_mod):
             # No extra is requested, so extras-only dependencies do not apply.
             if parsed.marker and not parsed.marker.evaluate({"extra": ""}):
                 continue
-            pending.append((parsed, False))
+            pending.append(parsed)
+        return None
+
+    # Every root is checked before the walk starts. Reached as a dependency
+    # first, a root would mark itself seen and never meet its own pin: datasets
+    # asks for huggingface-hub>=0.25,<2 and studio.txt pins it to ==0.36.2.
+    roots = _studio_requirement_roots(run_mod)
+    seen.update(_canonical_distribution_name(root.name) for root in roots)
+    for requirement in roots:
+        missing = visit(requirement, True)
+        if missing:
+            return missing
+    while pending:
+        requirement = pending.pop()
+        key = _canonical_distribution_name(requirement.name)
+        if key in seen:
+            continue
+        seen.add(key)
+        missing = visit(requirement, False)
+        if missing:
+            return missing
     return None
 
 

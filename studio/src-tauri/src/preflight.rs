@@ -410,6 +410,7 @@ mod tests {
         for reason in [
             "studio_runtime_missing_dependency",
             "studio_runtime_import_failed",
+            "studio_runtime_check_unsupported",
             "install_incomplete",
             "desktop_backend_version_too_old",
         ] {
@@ -750,10 +751,12 @@ exit 1
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn managed_cli_predating_the_runtime_check_is_not_forced_into_repair() {
+    async fn a_cli_predating_the_runtime_check_is_stale_for_its_own_reason() {
         // Every published CLI satisfies MIN_DESKTOP_BACKEND_VERSION but has no
         // `desktop-runtime-check`, so click exits 2 with an empty stdout. That
-        // must not repair an install that still launches Studio.
+        // is the CLI the interrupted installs shipped with, and -h passes
+        // without touching the backend, so launchable is not ready. Update it
+        // first, and keep the reason apart from a CLI that cannot answer.
         let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
         let _cache_home = ManagedCapabilityCacheHome::new("runtime-check-absent");
         remove_managed_capability_cache();
@@ -775,11 +778,12 @@ exit 1
         );
         let probe = probe_managed_bin(old.bin.clone()).await;
         assert!(
-            matches!(probe, ManagedProbe::Ready { .. }),
-            "CLI without the runtime-check subcommand must stay Ready, got {probe:?}"
+            matches!(&probe, ManagedProbe::Stale { reason, .. }
+                if reason == "studio_runtime_check_unsupported"),
+            "CLI without the runtime-check subcommand must be stale for it, got {probe:?}"
         );
 
-        // The fallback must not rescue a CLI that cannot launch at all.
+        // And a CLI that cannot launch at all keeps the plain probe failure.
         remove_managed_capability_cache();
         let broken = fake_cli(
             "runtime-check-unlaunchable",

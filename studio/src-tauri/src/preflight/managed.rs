@@ -303,10 +303,16 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> bool {
     }
 }
 
+/// The probe could not answer: the binary would not run, or it exited without
+/// a payload. Distinct from a CLI that is simply too old to know the command.
+const RUNTIME_PROBE_FAILED: &str = "studio_runtime_probe_failed";
 /// A hung binary, kept out of the fallback below: an older CLI rejects the
 /// unknown command at once, so only a broken one reaches the timeout, and
 /// running two more probes on it would treble the wait before repair.
 const RUNTIME_PROBE_TIMEOUT: &str = "studio_runtime_probe_timeout";
+/// A CLI predating the runtime probe. Repairable, and the update installs one
+/// that can answer, so the next preflight checks the venv for real.
+const RUNTIME_CHECK_UNSUPPORTED: &str = "studio_runtime_check_unsupported";
 
 /// True when the CLI is older than `desktop-runtime-check` yet still launches.
 /// Such a CLI exits with a usage error and no JSON, which is indistinguishable
@@ -347,10 +353,10 @@ async fn probe_cli_runtime(bin: &Path) -> Result<(), String> {
             "Managed runtime probe failed to spawn in {}ms",
             started.elapsed().as_millis()
         );
-        return Err("studio_runtime_probe_failed".to_string());
+        return Err(RUNTIME_PROBE_FAILED.to_string());
     };
     let Some(mut stdout) = child.stdout.take() else {
-        return Err("studio_runtime_probe_failed".to_string());
+        return Err(RUNTIME_PROBE_FAILED.to_string());
     };
 
     // Drain while waiting: the backend import this probe runs can print more than
@@ -377,7 +383,7 @@ async fn probe_cli_runtime(bin: &Path) -> Result<(), String> {
     };
 
     let Ok(output) = reader.await else {
-        return Err("studio_runtime_probe_failed".to_string());
+        return Err(RUNTIME_PROBE_FAILED.to_string());
     };
     let payload = String::from_utf8_lossy(&output)
         .lines()
@@ -396,11 +402,11 @@ async fn probe_cli_runtime(bin: &Path) -> Result<(), String> {
                 }
                 Some("backend_import_failed") => "studio_runtime_import_failed",
                 Some("backend_startup_failed") => super::STUDIO_RUNTIME_STARTUP_FAILED,
-                _ => "studio_runtime_probe_failed",
+                _ => RUNTIME_PROBE_FAILED,
             };
             Err(reason.to_string())
         }
-        None => Err("studio_runtime_probe_failed".to_string()),
+        None => Err(RUNTIME_PROBE_FAILED.to_string()),
     };
     info!(
         "Managed runtime probe finished ok={} in {}ms",
@@ -520,21 +526,21 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     // fingerprint only proves protocol compatibility, not that Studio's backend
     // imports are complete after an interrupted dependency transaction.
     if let Err(reason) = probe_cli_runtime(&bin).await {
-        // Every released CLI predates this subcommand, so a missing-command exit
-        // must not strand an install the launch probe still accepts.
-        if reason != "studio_runtime_probe_failed" || !predates_runtime_check(&bin).await {
-            info!(
-                "Managed preflight: runtime unusable for {:?} reason={} in {}ms",
-                bin,
-                reason,
-                started.elapsed().as_millis()
-            );
-            return ManagedProbe::Stale { bin, reason };
-        }
+        // A CLI too old for this subcommand is the one the interrupted installs
+        // shipped with, and -h passes without touching the backend, so accepting
+        // it here leaves those users on the same crash. Update it, then ask.
+        let reason = if reason == RUNTIME_PROBE_FAILED && predates_runtime_check(&bin).await {
+            RUNTIME_CHECK_UNSUPPORTED.to_string()
+        } else {
+            reason
+        };
         info!(
-            "Managed preflight: cli predates the runtime probe for {:?}; using the launch probe",
-            bin
+            "Managed preflight: runtime unusable for {:?} reason={} in {}ms",
+            bin,
+            reason,
+            started.elapsed().as_millis()
         );
+        return ManagedProbe::Stale { bin, reason };
     }
 
     if let Some(fingerprint) = managed_bin_fingerprint(&bin) {
