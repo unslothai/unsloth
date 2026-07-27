@@ -658,3 +658,33 @@ def test_legacy_migration_is_idempotent_and_non_destructive():
     # Layer 3: non-overwriting merge skips an existing (or default) key, so even a
     # forced re-run cannot duplicate or clobber a user's config.
     assert "if (isDefaultConfig(migrated) || Object.hasOwn(map, key)) {" in src
+
+
+def test_vulkan_inference_devices_are_the_pickable_set():
+    """GGUF loads run through llama-server, so on a Vulkan build the picker must
+    offer the inference inventory (ggml ordinals, the space `--device Vulkan<i>`
+    pins) rather than the torch view, which can miss cards llama-server drives.
+    The XPU ban must not apply there: it is about torch-xpu ordinals no
+    applicator speaks, and a Vulkan pick does not use them.
+    """
+    src = " ".join(_read("hooks/use-gpu-info.ts").split())
+    # The Vulkan inventory is consulted first, and only when it has devices.
+    assert (
+        "const inference = data?.inference_gpu; "
+        'if (inference?.backend === "vulkan" && (inference.devices ?? []).length) {' in src
+    )
+    # Pinnable on the ggml ordinal space, gated on the backend's own support flag.
+    assert "const picksAccepted = inference.gguf_gpu_ids_supported !== false;" in src
+    assert 'pinnable: picksAccepted && d.index_kind === "vulkan",' in src
+    # A Vulkan ordinal is not a CUDA ID, so the torch-side diffusion runner
+    # cannot take the pick even when llama-server can.
+    assert "diffusionPinnable: false," in src
+    # The torch fallback keeps the XPU ban for torch ordinals only: a Vulkan
+    # ordinal stays pickable even when this list arrives from an XPU host.
+    assert (
+        "pinnable: pinnableBackend && "
+        '(d.index_kind === "vulkan" || '
+        '(data?.device_backend !== "xpu" && d.index_kind === "physical")),' in src
+    )
+    # Only a physical CUDA/ROCm index is ever handed to the diffusion runner.
+    assert 'diffusionPinnable: diffusionBackend && d.index_kind === "physical",' in src

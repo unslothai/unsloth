@@ -254,7 +254,11 @@ def _read_studio_install_id() -> str:
     /api/health emits "" and the launcher accepts any healthy backend.
     Carries no install-path info (matters when Unsloth runs -H 0.0.0.0)."""
     try:
-        token = (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id").read_text().strip()
+        token = (
+            (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id")
+            .read_text(encoding = "utf-8")
+            .strip()
+        )
     except (OSError, ValueError):
         return ""
     return token if _STUDIO_INSTALL_ID_RE.fullmatch(token) else ""
@@ -358,7 +362,7 @@ def get_unsloth_version() -> str:
         for line in version_file.read_text(encoding = "utf-8").splitlines():
             if line.startswith("__version__ = "):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
     return "dev"
 
@@ -1253,8 +1257,10 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             from core.inference.llama_cpp import LlamaCppBackend
             from utils.hardware import DeviceType, get_device
 
-            is_vulkan = LlamaCppBackend._is_vulkan_backend()
-            if is_vulkan:
+            # A Vulkan build is pinnable even on an XPU host, since its picks are
+            # ggml ordinals rather than torch ones, but only once the probe has
+            # enumerated some: an empty namespace has nothing valid to offer.
+            if LlamaCppBackend._is_vulkan_backend():
                 gguf_devices = LlamaCppBackend._get_vulkan_gpu_info()
                 gpu_ids_supported = bool(gguf_devices)
             else:
@@ -1291,7 +1297,9 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             inference_gpu_info = (
                 {
                     **vulkan_info,
-                    "gguf_gpu_ids_supported": False,
+                    # Pinnable only once the probe actually enumerated devices:
+                    # without ordinals the frontend has nothing valid to offer.
+                    "gguf_gpu_ids_supported": bool(vulkan_info.get("devices")),
                 }
                 if vulkan_info is not None
                 else gpu_info

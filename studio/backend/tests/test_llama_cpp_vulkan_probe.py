@@ -53,7 +53,7 @@ _maybe_stub("loggers", _build_loggers_stub)
 _maybe_stub("structlog", lambda: _types.ModuleType("structlog"))
 
 from core.inference import llama_cpp as _llama_mod  # noqa: E402
-from core.inference._vulkan_probe import _device_metadata  # noqa: E402
+from core.inference._vulkan_probe import _igpu_flags_and_names  # noqa: E402
 from core.inference.llama_cpp import (  # noqa: E402
     LlamaCppBackend,
     _llama_lib_dir,
@@ -81,7 +81,7 @@ def test_missing_description_symbol_keeps_igpu_detection():
     )
     lib = _types.SimpleNamespace(ggml_backend_vk_reg = _FakeCFunction(1))
 
-    flags, names = _device_metadata(base, lib, 1)
+    flags, names = _igpu_flags_and_names(base, lib, 1)
 
     assert flags == [True]
     assert names == ["Legacy Vulkan iGPU"]
@@ -162,8 +162,23 @@ def test_vulkan_device_info_exposes_names_and_pinnable_ordinals(tmp_path):
         (1, "vulkan", "Radeon W7500"),
     ]
     assert devices[0]["memory_total_gb"] == 24
+    assert devices[0]["vram_total_gb"] == 24
     assert devices[0]["vram_free_gb"] == 6
     assert devices[0]["vram_used_gb"] == 18
+    assert devices[0]["vram_utilization_pct"] == 75.0
+
+
+def test_vulkan_device_info_keeps_two_decimals_on_a_non_round_card(tmp_path):
+    """Whole-GiB fixtures cannot tell 1dp from 2dp, nor a x100 from a x1000."""
+    binary = _make_vulkan_install(tmp_path)
+    rows = [_row(0, 3 * GIB // 2, is_igpu = 0, total_bytes = 13 * GIB // 2, name = "Arc A770")]
+    with _mock_probe(rows):
+        [device] = LlamaCppBackend._get_vulkan_gpu_info(binary)
+
+    assert device["memory_total_gb"] == 6.5
+    assert device["vram_free_gb"] == 1.5
+    assert device["vram_used_gb"] == 5.0
+    assert device["vram_utilization_pct"] == 76.9
 
 
 def test_vulkan_device_info_accepts_legacy_four_column_probe(tmp_path):

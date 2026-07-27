@@ -107,7 +107,33 @@ function toGpuInfo(
 }
 
 function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
-  // GGUF placement may use a different namespace from the global torch view.
+  // GGUF loads run through llama-server, so on a Vulkan build the pickable set
+  // is the inference inventory, not the torch view: it can see cards torch
+  // cannot, and its indices are the ggml ordinals `--device Vulkan<i>` pins.
+  // The XPU ban does not apply there, it is about torch-xpu ordinals that no
+  // applicator speaks; a Vulkan pick does not use them.
+  const inference = data?.inference_gpu;
+  if (inference?.backend === "vulkan" && (inference.devices ?? []).length) {
+    const picksAccepted = inference.gguf_gpu_ids_supported !== false;
+    return (inference.devices ?? [])
+      .filter((d) => typeof d.index === "number")
+      .map((d) => ({
+        index: d.index as number,
+        indexKind: d.index_kind === "vulkan" ? ("vulkan" as const) : null,
+        name: d.name ?? `GPU ${d.index}`,
+        memoryTotalGb: d.memory_total_gb ?? 0,
+        memoryFreeGb: d.vram_free_gb ?? 0,
+        pinnable: picksAccepted && d.index_kind === "vulkan",
+        // The DiffusionGemma runner is torch-side and never speaks ggml
+        // ordinals, so a Vulkan pick is not usable there.
+        diffusionPinnable: false,
+      }));
+  }
+  // Otherwise the torch view is the pickable set. Unpinnable configurations
+  // must hide every pick surface: the backend reports gguf_gpu_ids_supported,
+  // and absent support info defaults to pinnable (older backend). GGUF
+  // placement may use a different namespace from the global torch view, so
+  // prefer the gguf list when the backend sends one.
   const pinnableBackend = data?.gpu?.gguf_gpu_ids_supported !== false;
   const diffusionBackend =
     data?.device_backend === "cuda" || data?.device_backend === "rocm";
@@ -122,9 +148,13 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
       name: d.name ?? `GPU ${d.index}`,
       memoryTotalGb: d.memory_total_gb ?? 0,
       memoryFreeGb: d.vram_free_gb ?? 0,
+      // The XPU ban is about torch-xpu ordinals no applicator speaks, so /load
+      // and /validate 400 them. A Vulkan ordinal is not one of those, so it
+      // stays pickable even when this list arrives from an XPU host.
       pinnable:
         pinnableBackend &&
-        (d.index_kind === "physical" || d.index_kind === "vulkan"),
+        (d.index_kind === "vulkan" ||
+          (data?.device_backend !== "xpu" && d.index_kind === "physical")),
       diffusionPinnable:
         diffusionBackend && d.index_kind === "physical",
     }));

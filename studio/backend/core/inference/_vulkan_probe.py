@@ -6,13 +6,14 @@
 Run in a short-lived subprocess (``python _vulkan_probe.py <bindir>``) so the
 Vulkan instance never lives in the long-running backend process. Loads the
 bundled ggml Vulkan backend from ``<bindir>`` and prints one
-``<idx>\\t<free_bytes>\\t<is_igpu>\\t<total_bytes>\\t<name>`` line per device
-to stdout.
-Indices are ggml's own Vulkan device ordinals, which need not match nvidia-smi
-order. ``is_igpu`` (from ggml's device type) is ``1`` for an integrated GPU
-sharing system RAM. ``total_bytes`` is the device-local heap; the reader uses
-it to reserve absolute headroom on a discrete card (parity with the CUDA/ROCm
-fit) and ignores it for an iGPU, whose "VRAM" is shared system RAM.
+``<idx>\\t<free_bytes>\\t<is_igpu>\\t<total_bytes>\\t<name>`` line per device to
+stdout. Indices are ggml's own Vulkan device ordinals, which need not match
+nvidia-smi order. ``is_igpu`` (from ggml's device type) is ``1`` for an
+integrated GPU sharing system RAM. ``total_bytes`` is the device-local heap;
+the reader uses it to reserve absolute headroom on a discrete card (parity
+with the CUDA/ROCm fit) and ignores it for an iGPU, whose "VRAM" is shared
+system RAM. ``name`` is ggml's device description (the marketing name, e.g.
+"AMD Radeon RX 9070 XT"); empty when the registry lookup fails.
 
 Uses only the standard library so it stays runnable as a bare script.
 """
@@ -25,10 +26,17 @@ import sys
 _GGML_BACKEND_DEVICE_TYPE_IGPU = 2
 
 
-def _device_metadata(base, lib, count: int) -> tuple[list[bool], list[str]]:
-    """Read iGPU flags and names in Vulkan ordinal order."""
+def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str]]:
+    """Per-device integrated-GPU flags and descriptions via ggml's backend registry.
+
+    The Vulkan reg enumerates devices in the same order as
+    ``ggml_backend_vk_get_device_memory`` (each context uses ``ctx->device =
+    i``), so reg index == device ordinal. Returns all-False / empty-name on any
+    failure so the reader never over-caps a discrete card and the memory
+    readings still get through.
+    """
     flags = [False] * count
-    names = [f"Vulkan{i}" for i in range(count)]
+    names = [""] * count
     try:
         lib.ggml_backend_vk_reg.restype = ctypes.c_void_p
         lib.ggml_backend_vk_reg.argtypes = []
@@ -43,8 +51,14 @@ def _device_metadata(base, lib, count: int) -> tuple[list[bool], list[str]]:
             return flags, names
         dev_count = base.ggml_backend_reg_dev_count(reg)
     except Exception:
+        # Best-effort: any failure degrades to "discrete"/"unnamed" so the
+        # memory readings still get through instead of crashing the probe.
         return flags, names
 
+    # Bound outside the type-detection try above: a ggml-base without the
+    # description symbol (older/custom build) must degrade to unnamed devices,
+    # not abort before the iGPU flags are read (which would count an iGPU's
+    # shared RAM as VRAM).
     name_functions = []
     for symbol in ("ggml_backend_dev_description", "ggml_backend_dev_name"):
         try:
@@ -72,8 +86,9 @@ def _device_metadata(base, lib, count: int) -> tuple[list[bool], list[str]]:
             except Exception:
                 continue
             if raw_name:
+                # Tabs/newlines would corrupt the line protocol; spaces are safe.
                 name = raw_name.decode("utf-8", errors = "replace")
-                names[i] = name.replace("\t", " ").replace("\r", " ").replace("\n", " ")
+                names[i] = name.replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
                 break
     return flags, names
 
@@ -82,6 +97,14 @@ def main() -> int:
     if len(sys.argv) < 2:
         return 0
     bindir = sys.argv[1]
+
+    # Device names can be non-ASCII (localized drivers); the platform-default
+    # stdout encoding (e.g. cp1252) would raise on them and lose the whole
+    # inventory. The reader decodes UTF-8 with the same error mode.
+    try:
+        sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
+    except Exception:
+        pass
 
     # Hold add_dll_directory's handle for the rest of main() (the documented
     # idiom) so bindir stays on the search path while the sibling ggml DLLs
@@ -131,7 +154,7 @@ def main() -> int:
     ]
 
     count = lib.ggml_backend_vk_get_device_count()
-    igpu, names = _device_metadata(base, lib, count)
+    igpu, names = _igpu_flags_and_names(base, lib, count)
     rows = []
     for i in range(count):
         free, total = ctypes.c_size_t(0), ctypes.c_size_t(0)

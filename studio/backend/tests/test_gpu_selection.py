@@ -427,14 +427,16 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
 
         self.assertTrue(result["available"])
         self.assertEqual(result["backend"], "vulkan")
-        self.assertEqual(result["index_kind"], "relative")
+        # ggml Vulkan ordinals are the space `--device Vulkan<i>` pins, so they
+        # are selectable, unlike a torch-xpu relative ordinal.
+        self.assertEqual(result["index_kind"], "vulkan")
         self.assertEqual(result["parent_visible_gpu_ids"], [])
         self.assertEqual(
             result["devices"],
             [
                 {
                     "index": 0,
-                    "index_kind": "relative",
+                    "index_kind": "vulkan",
                     "visible_ordinal": 0,
                     "name": "Vulkan0",
                     "memory_total_gb": 8.0,
