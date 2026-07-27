@@ -97,6 +97,19 @@ def test_research_reasoning_effort_is_clamped_to_the_loaded_model() -> None:
     assert "const localReasoningEffort = clampReasoningEffortToLevels(" in adapter
 
 
+def test_research_presave_keeps_the_follow_up_parent() -> None:
+    adapter = source("features/chat/api/chat-adapter.ts")
+    presave = adapter.split("const userMessage =", 1)[1].split(
+        "const createdRun = await createResearchRun({", 1
+    )[0]
+
+    assert "const userMessageIndex = messages.indexOf(userMessage);" in presave
+    assert "const userMessageParentId =" in presave
+    assert "userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null" in presave
+    assert "parentId: storedUserMessage?.parentId ?? userMessageParentId" in presave
+    assert "parentId: storedUserMessage?.parentId ?? null" not in presave
+
+
 def test_research_metadata_and_server_merge_are_persisted() -> None:
     adapter = source("features/chat/api/chat-adapter.ts")
     runtime = source("features/chat/runtime-provider.tsx")

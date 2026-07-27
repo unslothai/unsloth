@@ -2130,6 +2130,9 @@ export function createOpenAIStreamAdapter(
         }
         const userMessage = [...messages].reverse().find((m) => m.role === "user");
         if (!userMessage) throw new Error("Research requires a user message.");
+        const userMessageIndex = messages.indexOf(userMessage);
+        const userMessageParentId =
+          userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null;
         const { params } = runtime;
         const model = params.checkpoint.trim();
         if (!model || parseExternalModelId(model)) {
@@ -2232,7 +2235,7 @@ export function createOpenAIStreamAdapter(
           await saveStoredChatMessage({
             id: userMessage.id,
             threadId: resolvedThreadId,
-            parentId: storedUserMessage?.parentId ?? null,
+            parentId: storedUserMessage?.parentId ?? userMessageParentId,
             role: "user",
             content: userMessage.content,
             ...(userMessage.attachments?.length
