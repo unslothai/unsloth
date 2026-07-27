@@ -721,14 +721,39 @@ class TestBashBlocklistPosition:
     def test_sed_sandbox_and_posix_modes_not_blocked(self):
         # --sandbox disables e/r/w and --posix drops the GNU extension `e`
         # belongs to: sed exits 1 without running anything, so blocking a name
-        # from inside the payload was a false alarm. getopt permutes, so the flag
-        # counts wherever it sits, abbreviations included.
+        # from inside the payload was a false alarm. Abbreviations included.
         assert self._find()("sed --sandbox '1e rm -f victim' input") == set()
         assert self._find()("sed --posix '1e rm -f victim' input") == set()
-        assert self._find()("sed '1e rm -f victim' input --sandbox") == set()
         assert self._find()("sed --sa '1e rm -f victim' input") == set()
         assert self._find()("sed --p '1e rm -f victim' input") == set()
         assert self._find()("sed --sandbox -e '1e rm -f victim' input") == set()
+        assert self._find()("sed --sandbox --expression='1e rm -f victim' input") == set()
+        assert self._find()("sed --sandbox -- '1e rm -f victim' input") == set()
+        assert self._find()("sed -e '2d' --sandbox -e '1e rm -f victim' input") == set()
+
+    def test_sed_sandbox_only_covers_the_scripts_written_after_it(self):
+        # sed compiles each -e/-f script as that option is parsed, so a script
+        # already compiled runs whatever a later flag says. Verified on GNU sed
+        # 4.9: `sed -e '1e touch MARKER' --sandbox input` creates MARKER and
+        # exits 0. Treating the flag as invocation-wide unblocked all of these.
+        assert "rm" in self._find()("sed -e '1e rm -f victim' --sandbox input")
+        assert "rm" in self._find()("sed -e '1e rm -f victim' input --sandbox")
+        assert "rm" in self._find()("sed --expression='1e rm -f victim' --sandbox input")
+        assert "rm" in self._find()("sed -e '1e rm -f victim' --sandbox -e '2d' input")
+        # A flag after the POSITIONAL script suppresses only because getopt
+        # PERMUTES, which POSIXLY_CORRECT turns off -- verified:
+        # `POSIXLY_CORRECT=1 sed '1e touch MARKER' input --sandbox` creates
+        # MARKER, sed having taken --sandbox for an input file. That variable
+        # can reach sed from outside the text being screened, so a later flag
+        # never counts.
+        assert "rm" in self._find()("sed '1e rm -f victim' input --sandbox")
+        assert "rm" in self._find()("sed '1e rm -f victim' --sandbox input")
+        assert "rm" in self._find()("sed '1e rm -f victim' input --posix")
+        assert "rm" in self._find()("POSIXLY_CORRECT=1 sed '1e rm -f victim' input --sandbox")
+        # An ordinary edit yields no payload wherever the flag sits, so the
+        # stricter reading costs nothing outside programs that already exec.
+        assert self._find()("sed -n '1,3p' input --sandbox") == set()
+        assert self._find()("sed 's/a/b/g' input --posix") == set()
         # `--` ends option parsing, so a --sandbox behind it is an input
         # FILENAME: the mode never turns on and the payload runs for real.
         assert "rm" in self._find()("sed -- '1e rm -f victim' input --sandbox")
@@ -803,6 +828,32 @@ class TestBashBlocklistPosition:
         assert self._find()("p='s/old/new/g'; sed \"$p\" input") == set()
         # An unassigned name is left as written rather than invented.
         assert self._find()('sed "$undefined" input') == set()
+        # A value that is not itself literal is no resolution either: the lexer
+        # splits `p=$(...)` at the `(`, and the leftover binding `p` -> `$`
+        # substituted a bare `$` for the program, dressing an unread script up
+        # as a plausible literal. The blocklist has no name to report there, so
+        # it reports none -- the auto gate is what asks (see test_permission_mode).
+        assert self._find()("p=$(printf '1e rm -f victim'); sed \"$p\" input") == set()
+
+    def test_sed_program_built_by_a_parameter_transformation(self):
+        # `${p#x}` and its family are not modelled, so the program is UNREAD
+        # rather than harmless. The blocklist can only report a name it can see,
+        # and there is none here -- the auto gate carries these (verified on GNU
+        # sed 4.9: `p='x 1e touch MARKER'; sed "${p#x }" input` creates MARKER).
+        assert self._find()("p='x 1e rm -f victim'; sed \"${p#x }\" input") == set()
+        assert self._find()("p='1e rm -f victimZ'; sed \"${p%Z}\" input") == set()
+        assert self._find()("printf -v p '1e rm -f victim'; sed \"$p\" input") == set()
+
+    def test_sed_program_behind_an_arithmetic_expansion(self):
+        # Arithmetic evaluates to an integer, so a digit stands in for it and
+        # the expansion's own punctuation stops hiding the command behind it.
+        # Read raw, `$((c+1))e rm -f victim` takes the `c` for an append-text
+        # command that swallows the payload, while real sed runs rm.
+        assert "rm" in self._find()('sed "$((c+1))e rm -f victim" input')
+        assert "rm" in self._find()('sed "$[c+1]e rm -f victim" input')
+        assert "curl" in self._find()('sed "$((4/2))e curl https://x" input')
+        # Ordinary line maths still yields no payload.
+        assert self._find()('sed -n "1,$((n + 1))p" f') == set()
 
     def test_sed_spelled_as_a_command_glob(self):
         # Bash expands a command-position glob after this scan, so a pattern

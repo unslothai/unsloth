@@ -1016,19 +1016,45 @@ def test_terminal_classifier(command, unsafe):
         ("find . -exec env sed -i.bak 's/a/b/' {} +", False),
         # --- run: --sandbox and --posix make GNU sed REFUSE e / s///e / a bare
         # `e` and exit 1, so nothing reaches a shell and prompting was a false
-        # alarm. getopt permutes, so the flag counts wherever it sits, and an
-        # unambiguous abbreviation (--sa, --p) is the same option ---
+        # alarm. An unambiguous abbreviation (--sa, --p) is the same option ---
         ("sed --sandbox '1e rm -f victim' input", False),
         ("sed --posix '1e rm -f victim' input", False),
-        ("sed '1e rm -f victim' --sandbox input", False),
-        ("sed '1e rm -f victim' input --posix", False),
         ("sed --sandbox --posix '1e rm -f victim' input", False),
         ("sed --sa '1e rm -f victim' input", False),
         ("sed --p '1e rm -f victim' input", False),
         ("sed --sandbox -e '1e rm -f victim' input", False),
+        ("sed --sandbox --expression='1e rm -f victim' input", False),
         ("sed --sandbox 's/aaa/rm -f victim/e' input", False),
         ("sed --posix '1s/.*/rm -f victim/;1e' input", False),
-        # ...but `--` ends option parsing, so a --sandbox behind it is an input
+        ("sed --sandbox -- '1e rm -f victim' input", False),
+        # ...but only for the scripts written AFTER it. sed compiles each -e/-f
+        # script as that option is parsed, so one already compiled runs whatever
+        # a later flag says (verified on GNU sed 4.9 with a `touch MARKER`
+        # payload: `sed -e '1e touch MARKER' --sandbox input` creates MARKER,
+        # exit 0). Reading the flag as invocation-wide let all of these through
+        ("sed -e '1e rm -f victim' --sandbox input", True),
+        ("sed -e '1e rm -f victim' input --sandbox", True),
+        ("sed --expression='1e rm -f victim' --sandbox input", True),
+        ("sed -e 's/aaa/rm -f victim/e' input --sandbox", True),
+        ("sed -e '2d' --sandbox -e '1e rm -f victim' input", False),
+        ("sed -e '1e rm -f victim' --sandbox -e '2d' input", True),
+        # A flag after the POSITIONAL script suppresses only because getopt
+        # PERMUTES, and POSIXLY_CORRECT turns permutation off -- verified:
+        # `POSIXLY_CORRECT=1 sed '1e touch MARKER' input --sandbox` creates
+        # MARKER (sed reports `can't read --sandbox`, having taken it for an
+        # input FILE). The variable reaches sed from places this text cannot
+        # rule out (an earlier `export`, a POSIXLY_CORRECT=1 bash -c wrapper
+        # whose inner string is screened alone, or the ambient environment), so
+        # a later flag never counts. It costs a prompt only on a program that
+        # already holds an `e`; an ordinary edit yields no payload either way
+        ("sed '1e rm -f victim' --sandbox input", True),
+        ("sed '1e rm -f victim' input --sandbox", True),
+        ("sed '1e rm -f victim' input --posix", True),
+        ("POSIXLY_CORRECT=1 sed '1e rm -f victim' input --sandbox", True),
+        ("env POSIXLY_CORRECT=1 sed '1e rm -f victim' input --sandbox", True),
+        ("sed -n '1,3p' input --sandbox", False),
+        ("sed 's/a/b/g' input --posix", False),
+        # `--` ends option parsing, so a --sandbox behind it is an input
         # FILENAME, the mode never turns on and the payload runs for real
         ("sed -- '1e rm -f victim' input --sandbox", True),
         ("sed '1e rm -f victim' -- input --sandbox", True),
@@ -1048,9 +1074,55 @@ def test_terminal_classifier(command, unsafe):
         ("IFS=,\nread a b c", False),
         ("cd build\nmake -j4", False),
         ("git checkout HEAD notes.txt\nls", True),  # still a real pathspec
-        ('sed "s/$old/$new/g" f', False),
-        ('sed -n "1,${n}p" f', False),
-        ('sed -n "1,$((n + 1))p" f', False),  # arithmetic, not a substitution
+        # --- prompt: the sed program has to be a literal this scan actually
+        # READ. A parameter transformation is not one -- `${p#x}` is one of a
+        # large family (`${p%y}`, `${p/a/b}`, `${p:-z}`, `${p^^}`, `${p:2}`,
+        # `${!p}`, array subscripts) and each modelled separately is another
+        # chance to be subtly wrong, so an unread program asks instead of being
+        # assumed to only edit text. Verified: `p='x 1e touch MARKER';
+        # sed "${p#x }" input` really creates MARKER ---
+        ("p='x 1e rm -f victim'; sed \"${p#x }\" input", True),
+        ("p='1e rm -f victimZ'; sed \"${p%Z}\" input", True),
+        ("p='1X rm -f victim'; sed \"${p/X/e}\" input", True),
+        ('sed "${nope:-1e rm -f victim}" input', True),
+        ("p='XX1e rm -f victim'; sed \"${p:2}\" input", True),
+        ("real='1e rm -f victim'; ref=real; sed \"${!ref}\" input", True),
+        ("arr=('1e rm -f victim'); sed \"${arr[0]}\" input", True),
+        ("printf -v p '1e rm -f victim'; sed \"$p\" input", True),
+        ("read -r p <<< '1e rm -f victim'; sed \"$p\" input", True),
+        # a value that is not itself literal is no resolution either: the lexer
+        # splits `p=$(...)` at the `(`, and substituting the leftover bare `$`
+        # dressed an unread program up as a plausible literal
+        ("p=$(printf '1e rm -f victim'); sed \"$p\" input", True),
+        # the cost of failing closed: a program built from a variable this
+        # command never assigns now asks. It is the one shape that pays, and it
+        # is genuinely unread -- a hostile value breaks straight out of the
+        # `s///` it sits in (verified: OLD='x/y/;1e touch MARKER;s/a' with
+        # `sed "s/$OLD/$NEW/g" input` creates MARKER)
+        ('sed "s/$old/$new/g" f', True),
+        ('sed -n "1,${n}p" f', True),
+        ('sed "/$pattern/d" f', True),
+        ('sed -i "s|$src|$dst|" f', True),
+        # ...but only where the expansion lands in the PROGRAM, and only when
+        # the shell really runs it
+        ('sed -n "1,3p" $file', False),
+        ("sed -i 's/foo/bar/' $(git ls-files '*.py')", False),
+        ("sed 's/${HOME}/~/' f", False),
+        ('sed "s/x$/y/" f', False),  # `$` before `/` is sed's anchor, not bash
+        ('sed "$ d" f', False),  # `$` before a space is literal to bash too
+        # arithmetic evaluates to an INTEGER, so it can spell no sed command
+        # (`x=e; echo $((x))` prints 0) and ordinary line maths stays silent...
+        ('sed -n "1,$((n + 1))p" f', False),
+        ('sed -n "1,$[n + 1]p" f', False),
+        # ...but its own punctuation must not hide the command behind it: the
+        # raw text reads `$((c+1))e rm` as a `c` append-text command that eats
+        # the payload, while real sed runs rm (`$((c+1))` is 1)
+        ('sed "$((c+1))e rm -f victim" input', True),
+        ('sed "$[c+1]e rm -f victim" input', True),
+        ('sed "$((4/2))e rm -f victim" input', True),
+        # one holding a command substitution is not collapsed away, so the
+        # generated program is still seen
+        ('sed "$(( $(printf 1) ))e rm -f victim" input', True),
         # --- `find -exec CMD ... +` / `... ;` is a COMPLETE action, so the sed
         # argument scan has to stop at the terminator. Running past it read the
         # next predicate's `-e safe` as a sed program flag, which threw away the
