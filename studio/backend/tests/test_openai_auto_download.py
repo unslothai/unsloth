@@ -1202,9 +1202,10 @@ def test_a_cold_index_is_scanned_rather_than_read_as_nothing_here(monkeypatch):
     assert scans == [1]
 
 
-def test_a_cold_scan_that_never_finishes_does_not_hang_the_request(monkeypatch):
-    # Correctness is worth one scan, not an unbounded wait: a pathological install
-    # falls through on the timeout rather than holding the request open.
+def test_a_cold_scan_that_never_finishes_says_so_instead_of_guessing(monkeypatch):
+    # The scan is bounded so a pathological install cannot hold the request open, but
+    # an unfinished scan knows nothing about the name, and falling through would put
+    # the resident model behind it. Answer "not yet", with a Retry-After.
     import threading
 
     from core.inference import local_model_resolver as resolver
@@ -1223,10 +1224,38 @@ def test_a_cold_scan_that_never_finishes_does_not_hang_the_request(monkeypatch):
         lambda: type("B", (), {"active_model_name": None})(),
     )
     try:
-        assert asyncio.run(inference_route._reject_unservable_model("gpt-4", _Req())) is None
-        assert warmed == [1]
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(inference_route._reject_unservable_model("gpt-4", _Req()))
+        assert excinfo.value.status_code == 503
+        assert excinfo.value.headers.get("Retry-After")
+        assert warmed == [1], "the scan was not left to finish in the background"
     finally:
         released.set()
+
+
+def test_a_refusal_is_never_swallowed_by_the_cannot_verify_handler(monkeypatch):
+    # The checks run inside a broad `except Exception` that turns a failure to decide
+    # into a fallthrough. An HTTPException raised in there is a decision, and was
+    # being logged as a failure and answered by the resident model instead.
+    loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+
+    def _boom(*_a, **_k):
+        raise HTTPException(status_code = 418, detail = "decided")
+
+    monkeypatch.setattr(inference_route, "_resolves_to_resident", _boom)
+    monkeypatch.setattr(
+        "core.inference.local_model_resolver.resolve_local_gguf",
+        lambda *_a, **_k: ("/srv/models/x", "Q4_K_M", "x"),
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route._reject_unservable_model("org/x", _Req()))
+    assert excinfo.value.status_code == 418
 
 
 def test_warming_the_index_never_waits_on_the_scan_lock(monkeypatch):
@@ -1667,3 +1696,20 @@ def test_a_completed_download_does_not_restage_the_scan_it_just_warmed(monkeypat
     src = inspect.getsource(auto_dl._watch)
     complete_branch = src[src.index('if state == "complete"') :]
     assert "invalidate_index" not in complete_branch
+
+
+def test_an_exact_generic_variant_beats_the_default_pick(hub):
+    # Canonicalizing generic labels made them real worker keys, but the matcher still
+    # read anything non-quant-shaped as a tag, so repo:llama-13b default-selected and
+    # fetched llama-7b instead of the model that was actually asked for.
+    gb = 1024**3
+    hub["info"] = _Info([_Sibling("llama-7b.gguf", 4 * gb), _Sibling("llama-13b.gguf", 8 * gb)])
+    assert _run("unsloth/generic-GGUF:llama-13b").code == "model_downloading"
+    assert hub["started"][0][1] == "llama-13b"
+
+    # A quant-shaped suffix that matches nothing is still a miss, never a swap.
+    auto_dl.reset_for_tests()
+    hub["started"].clear()
+    hub["info"] = _gguf_repo_info()
+    assert _run("unsloth/x-GGUF:Q2_K").status == 404
+    assert hub["started"] == []

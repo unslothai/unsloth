@@ -700,9 +700,15 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
     same preference order as a manual load, matching what the local resolver does
     with the same tag.
     """
-    if wanted and looks_like_quant(wanted):
+    if wanted:
+        # Exact first, whatever shape it is: a repo of generically named GGUFs has
+        # real variants like "llama-13b" that are valid worker keys but do not look
+        # like quants, and defaulting past one would fetch a model nobody asked for.
         lowered = {name.lower(): name for name in variants}
-        return lowered.get(wanted.strip().lower())
+        exact = lowered.get(wanted.strip().lower())
+        if exact is not None or looks_like_quant(wanted):
+            # A quant-shaped suffix that matches nothing is a miss, never a swap.
+            return exact
     return preferred_quant(variants)
 
 

@@ -276,6 +276,27 @@ def test_a_standalone_gguf_does_not_advertise_a_quant_that_stops_resolving(monke
     assert "quant" not in inf._openai_model_objects()[0]
 
 
+def test_a_loaded_alias_advertises_the_quant_that_is_actually_loaded(monkeypatch):
+    # Marking the alias loaded while still publishing the preferred on-disk quant said
+    # alias:Q4 was loaded while Q8 was serving, and pinning that 404s with switching off.
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
+    llama = _FakeLlama()
+    llama.hf_variant = "Q8_0"
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
+
+    alias = _Info("/srv/models", "Qwen3", model_id = "publisher/Qwen3")
+    alias.path = "/srv/models"  # holds the resident /srv/models/Qwen3-Q4.gguf
+
+    async def _fake_catalog():
+        return [alias]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
+    monkeypatch.setattr(resolver, "local_gguf_quants", lambda info: ("Q4_K_M", "Q8_0"))
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["publisher/Qwen3"]["loaded"] is True
+    assert ids["publisher/Qwen3"]["quant"] == "Q8_0"
+
+
 def test_an_alias_for_the_resident_weights_is_not_listed_as_unloaded(monkeypatch):
     # A GGUF loaded by absolute path keys the resident entry by basename, so an id-only dedup
     # would emit the alias again marked not loaded.

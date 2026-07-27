@@ -3804,6 +3804,24 @@ def _loaded_satisfies(requested: str) -> bool:
     return _matches_any(base, [active, public_model_id(active)])
 
 
+def _raise_still_indexing(requested_model: str, fastapi_request) -> None:
+    """Refuse a name we cannot yet place, rather than answer it with another model."""
+    path = getattr(getattr(fastapi_request, "url", None), "path", None)
+    message = (
+        f"This server is still indexing its local models, so it cannot confirm "
+        f"'{requested_model}' yet. Retry shortly."
+    )
+    raise HTTPException(
+        status_code = 503,
+        detail = (
+            error_body_for_path(path, message, status = 503, code = "model_indexing")
+            if isinstance(path, str)
+            else message
+        ),
+        headers = {"Retry-After": "5"},
+    )
+
+
 def _matches_any(requested: str, candidates) -> bool:
     """Whether *requested* names any of *candidates*.
 
@@ -3912,6 +3930,7 @@ async def _reject_unservable_model(
     )
     from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
 
+    still_indexing = False
     try:
         if _loaded_satisfies(requested_model):
             return
@@ -3936,7 +3955,11 @@ async def _reject_unservable_model(
                     _COLD_INDEX_WAIT_S,
                 )
             except (TimeoutError, asyncio.TimeoutError):
+                # Still scanning, so nothing is known about this name. Falling through
+                # would put the resident model behind it, which is the failure this
+                # whole hook exists to stop, so say "not yet" instead of guessing.
                 warm_index_soon()
+                still_indexing = True
                 resolved = None
         # A manual load stores the on-disk path the resolver advertises under an alias, so
         # match on the path too.
@@ -3967,12 +3990,18 @@ async def _reject_unservable_model(
             or (variant is not None and resolve_local_gguf(base, allow_scan = False) is not None)
         )
         switchable = downloaded and get_openai_auto_switch_enabled()
+    except HTTPException:
+        # A refusal decided above is the answer, not a failure to decide. Without this
+        # the handler below would log it and fall through to the resident model.
+        raise
     except Exception as exc:
         # Can't verify: an explicit quant still proves intent, so refuse; let anything else by.
         logger.debug("unservable-model check failed for %r: %s", requested_model, exc)
         if not quantified:
             return
         downloaded = here = switchable = False
+    if still_indexing:
+        _raise_still_indexing(requested_model, fastapi_request)
     if not (quantified or here):
         return
     if switchable:
@@ -11141,7 +11170,13 @@ async def _openai_catalog_objects() -> list[dict]:
             "loaded": _resolves_to_resident(getattr(info, "path", None)),
         }
         # The id stays bare for OpenAI compat; a client appends ":<quant>" to pin one.
-        if quants:
+        # For the resident model that has to be the quant actually loaded, not the
+        # preferred one on disk, or the listing advertises alias:Q4 as loaded while
+        # Q8 is serving and pinning it 404s.
+        resident_quant = getattr(get_llama_cpp_backend(), "hf_variant", None)
+        if obj["loaded"] and resident_quant:
+            obj["quant"] = resident_quant
+        elif quants:
             obj["quant"] = quants[0]
         display = getattr(info, "display_name", None)
         if display:
