@@ -24,6 +24,7 @@ export function StopRunningChatsDialog() {
   const titles = useStopRunningChatsDialogStore((s) => s.titles);
   const action = useStopRunningChatsDialogStore((s) => s.action);
   const hasNonChat = useStopRunningChatsDialogStore((s) => s.hasNonChat);
+  const effect = useStopRunningChatsDialogStore((s) => s.effect);
   const resolve = useStopRunningChatsDialogStore((s) => s.resolve);
 
   // Embeddings, raw completions and audio share the model but are not conversations,
@@ -35,6 +36,13 @@ export function StopRunningChatsDialog() {
     : count === 1
       ? "chat"
       : "chats";
+  const sharer = hasNonChat ? "request" : "conversation";
+  // Ejecting leaves no model loaded. Saying it "reloads the model" and offering "Stop and
+  // reload" promised the opposite of what confirming does, for the destructive one.
+  const unloads = effect === "unload";
+  const lead = unloads
+    ? `${action || "Unloading the model"} leaves no model loaded, and every open ${sharer} shares it, `
+    : `${action ? `${action} reloads the model, ` : "Reloading the model "}which every open ${sharer} shares, `;
   const shown = titles.slice(0, 5);
   const remaining = Math.max(0, titles.length - shown.length);
 
@@ -52,9 +60,7 @@ export function StopRunningChatsDialog() {
             Stop {count} running {noun}?
           </AlertDialogTitle>
           <AlertDialogDescription>
-            {action ? `${action} reloads the model, ` : "Reloading the model "}
-            which every open {hasNonChat ? "request" : "conversation"} shares,
-            so {count === 1 ? "this" : "these"} {noun} will stop
+            {lead}so {count === 1 ? "this" : "these"} {noun} will stop
             {hasNonChat ? "" : " generating"}. Work produced so far is kept.
           </AlertDialogDescription>
         </AlertDialogHeader>
@@ -77,7 +83,7 @@ export function StopRunningChatsDialog() {
             Keep generating
           </AlertDialogCancel>
           <AlertDialogAction onClick={() => resolve(true)}>
-            Stop and reload
+            {unloads ? "Stop and unload" : "Stop and reload"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

@@ -531,7 +531,17 @@ class InferenceOrchestrator:
             if rid and rid != request_id:
                 with self._mailbox_lock:
                     other = self._mailboxes.get(rid) or self._direct_mailboxes.get(rid)
+                    owner = self._request_cancel_events.get(rid)
                 if other is not None:
+                    # We beat the dispatcher to this response, so make its ownership move here
+                    # too. The compare consumer opts out of marking, so nothing else promotes
+                    # or retires that request: skipping it left this one recorded as the
+                    # executor, ignoring its Stop and letting a late reset cancel it.
+                    if owner is not None:
+                        if resp.get("type", "") in ("gen_done", "gen_error"):
+                            self._release_worker(owner)
+                        else:
+                            self._mark_worker_started(owner)
                     other.put(resp)
                     return None
             return resp
@@ -1705,6 +1715,11 @@ class InferenceOrchestrator:
                 # Won the lock handoff during a switch; don't start on the outgoing model.
                 yield GenStreamError("Error: model is being unloaded", public = True)
                 return
+            if cancel_event is not None and cancel_event.is_set():
+                # Stopped while queued on the lock. Sending anyway occupied the worker with a
+                # run the user ended: the cancel is only seen on a token, so a long prefill
+                # (or a generation that reaches gen_done without one) held up its siblings.
+                return
             request_id = str(uuid.uuid4())
             image_b64 = self._pil_to_base64(image) if image is not None else None
             cmd = self._build_generate_cmd(
@@ -1979,6 +1994,9 @@ class InferenceOrchestrator:
             if self._unload_pending or self.active_model_name != expected_model:
                 # Won the lock handoff during a switch; don't start on the outgoing model.
                 yield GenStreamError("Error: model is being unloaded", public = True)
+                return
+            if cancel_event is not None and cancel_event.is_set():
+                # Stopped while queued on the lock, same as _generate_inner.
                 return
             request_id = str(uuid.uuid4())
 

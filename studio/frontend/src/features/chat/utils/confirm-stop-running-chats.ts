@@ -3,7 +3,10 @@
 
 import { getActiveGenerations } from "../api/chat-api";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
-import { useStopRunningChatsDialogStore } from "../stores/stop-running-chats-dialog-store";
+import {
+  type StopRunningChatsEffect,
+  useStopRunningChatsDialogStore,
+} from "../stores/stop-running-chats-dialog-store";
 import { listStoredChatThreads } from "./chat-history-storage";
 
 export interface StopRunningChatsDecision {
@@ -20,6 +23,7 @@ export interface StopRunningChatsDecision {
  */
 export async function confirmStopRunningChatsIfNeeded(
   action = "Loading a different model",
+  effect: StopRunningChatsEffect = "reload",
 ): Promise<StopRunningChatsDecision> {
   // Local runs only: an external-provider chat is not stopped by the swap, so counting it
   // would block a safe load behind a dialog. The backend excludes them for the same reason.
@@ -36,19 +40,23 @@ export async function confirmStopRunningChatsIfNeeded(
   // The union stays local-only, since external-provider runs are never in it.
   try {
     const active = await getActiveGenerations();
+    const entries = active.active ?? [];
     const merged = new Set(running);
     for (const threadId of active.thread_ids ?? []) {
       merged.add(threadId);
     }
     running = [...merged];
-    // A first turn started before its id was persisted is counted but not named, so never
-    // claim fewer chats than the backend reports.
-    count = Math.max(active.count ?? 0, running.length);
+    // Count conversations, not handles: one chat holds several at once while a tool
+    // continuation registers its next leg before the previous unwinds, and active.count
+    // counts those separately. A first turn started before its id was persisted has no
+    // id to merge, so add those back or the prompt names fewer chats than will stop.
+    const unnamed = entries.filter((entry) => !entry.thread_id).length;
+    count = entries.length
+      ? running.length + unnamed
+      : Math.max(active.count ?? 0, running.length);
     // Embeddings / completions / audio share the model but are not conversations, so the
     // prompt must not offer to stop chats that do not exist.
-    hasNonChat = (active.active ?? []).some(
-      (entry) => (entry.kind ?? "chat") !== "chat",
-    );
+    hasNonChat = entries.some((entry) => (entry.kind ?? "chat") !== "chat");
   } catch {
     // Backend unreachable / older build: fall back to the local map only.
   }
@@ -80,7 +88,7 @@ export async function confirmStopRunningChatsIfNeeded(
 
   const confirmed = await useStopRunningChatsDialogStore
     .getState()
-    .requestConfirm({ count, titles, action, hasNonChat });
+    .requestConfirm({ count, titles, action, hasNonChat, effect });
 
   if (!confirmed) {
     return { proceed: false, forceCancelActive: false };

@@ -1632,9 +1632,11 @@ export function useChatModelRuntime() {
       return true;
     }
     try {
-      // Ejecting tears down llama-server, so every chat stops. Same prompt.
+      // Ejecting tears down llama-server, so every chat stops. Same prompt, but it
+      // leaves no model loaded, so it must not be worded as a reload.
       const stopDecision = await confirmStopRunningChatsIfNeeded(
         "Unloading the model",
+        "unload",
       );
       if (!stopDecision.proceed) return false;
       // Same window as selectModel: a load may have started during the confirm.

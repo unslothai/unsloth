@@ -1991,3 +1991,45 @@ def test_audio_input_claims_the_worker_before_sending():
     assert claim < send, "the claim has to happen before the command is enqueued"
     assert "with self._send_order_lock:" in body, "claim and send must be one critical section"
     assert "self._release_worker(cancel_event)" in body
+
+
+def test_generation_stopped_while_queued_is_never_sent(monkeypatch):
+    # Two chats on the serialized backend: the second blocks on _gen_lock, and Stop sets its
+    # event while it waits. Sending anyway occupied the worker with a run the user ended --
+    # the cancel is only checked on a token, so a long prefill (or a generation that reaches
+    # gen_done without one) still held up its siblings.
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_wait_dispatcher_idle", lambda *a, **k: None)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not send a generation already stopped")
+    )
+    stopped = threading.Event()
+    stopped.set()
+
+    out = list(
+        o._generate_inner(messages = [{"role": "user", "content": "hi"}], cancel_event = stopped)
+    )
+
+    assert out == [], "a stopped request yields nothing rather than an error banner"
+    assert o._active_cancel_events == [], "it must not claim the worker either"
+    assert o._gen_lock.acquire(blocking = False)
+    o._gen_lock.release()
+
+
+def test_audio_input_stopped_while_queued_is_never_sent(monkeypatch):
+    # Same lock, same hole.
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not send a generation already stopped")
+    )
+    stopped = threading.Event()
+    stopped.set()
+
+    out = list(o._generate_audio_input_inner(audio_array = [0.0, 0.1], cancel_event = stopped))
+
+    assert out == []
+    assert o._active_cancel_events == []
+    assert o._gen_lock.acquire(blocking = False)
+    o._gen_lock.release()
