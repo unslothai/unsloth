@@ -115,6 +115,8 @@ export interface GgufVariantDetail {
   download_size_bytes?: number;
   downloaded?: boolean;
   update_available?: boolean;
+  /** An interrupted download: some shards are missing, so it cannot load yet. */
+  partial?: boolean;
 }
 
 export interface GgufVariantsResponse {
@@ -169,7 +171,10 @@ export interface LoadModelResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   supports_reasoning?: boolean;
-  reasoning_style?: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
+  reasoning_style?:
+    | "enable_thinking"
+    | "reasoning_effort"
+    | "enable_thinking_effort";
   reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
@@ -220,7 +225,10 @@ export interface InferenceStatusResponse {
   } | null;
   requires_trust_remote_code?: boolean;
   supports_reasoning?: boolean;
-  reasoning_style?: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
+  reasoning_style?:
+    | "enable_thinking"
+    | "reasoning_effort"
+    | "enable_thinking_effort";
   reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
@@ -283,6 +291,12 @@ export interface ApiMonitorEntry {
   completion_tokens?: number | null;
   total_tokens?: number | null;
   error?: string | null;
+  // "lifecycle" is a model load/unload/download: event/reason instead of a prompt.
+  kind?: "request" | "lifecycle";
+  event?: "load" | "unload" | "download" | null;
+  reason?: "manual" | "idle" | "api" | null;
+  // 0-100 while a download row is running.
+  progress?: number | null;
 }
 
 export interface ApiMonitorResponse {
@@ -389,7 +403,7 @@ export interface OpenAIChatCompletionsRequest {
     | "xhigh"
     | null;
   preserve_thinking?: boolean | null;
-  thinking?: {type: "disabled" | "enabled";} | null;
+  thinking?: { type: "disabled" | "enabled" } | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];
   /** Local models + enable_tools only. */
