@@ -206,9 +206,18 @@ _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
 # module cannot match. Only modules ABSENT from 4.57.x belong here: ``modeling_layers``
 # (4.52+) and ``use_kernel_forward_from_hub`` (4.51+) import fine on default, so matching
 # them would push ordinary custom-code models (EXAONE, MiniMax, Molmo2, ...) onto a sidecar.
+#
+# ``transformers.TokenizersBackend`` is the public re-export of the same 5.x-only class, so
+# remote code that writes ``from transformers import TokenizersBackend`` never mentions the
+# defining submodule and would otherwise scan clean. Listing the symbol is safe because the
+# name does not exist anywhere in 4.57.x, so no 4.57.x-loadable repo can produce it; only
+# 5.x-only PUBLIC re-exports belong here, never a symbol 4.57.x also exports. The
+# ``transformers.utils.output_capturing`` names (``OutputRecorder``, ``capture_outputs``)
+# have no top-level re-export in 5.3.0, so the module spelling above is their only spelling.
 _TRANSFORMERS_5_REMOTE_IMPORT_MARKERS: tuple[str, ...] = (
     "transformers.tokenization_utils_tokenizers",
     "transformers.utils.output_capturing",
+    "transformers.TokenizersBackend",
 )
 
 # Remote modeling imports that not even the 5.3 sidecar can satisfy. A module belongs here
@@ -717,22 +726,122 @@ def _is_same_hub_origin(url: str) -> bool:
     from a compromised Hub, a hostile mirror or a MITM on a plain-http ``HF_ENDPOINT`` would
     hand the user's Hub token to an arbitrary host (and turn the backend into an SSRF probe).
     The real Hub answers with an absolute same-origin cursor, so requiring one costs nothing.
+
+    Origin is compared as ``(scheme, host, effective port)``, the RFC 6454 tuple, not as raw
+    ``netloc`` text: an endpoint configured as ``https://mirror.internal`` that echoes the
+    equally valid ``https://mirror.internal:443`` is the same origin, and a textual compare
+    would reject it and turn a multi-page listing inconclusive. Normalizing the default port
+    only ever accepts authorities that already denote the configured origin, so it cannot let
+    an attacker-chosen host through -- an explicit port that differs from the endpoint's
+    effective port is still cross-origin. Userinfo is rejected outright: ``hostname`` ignores
+    it, so ``https://user@host`` would compare equal to ``https://host`` while urllib sends
+    the whole ``user@host`` string as the connection host.
     """
     from urllib.parse import urlsplit
 
     base = urlsplit(_hf_endpoint_base())
     nxt = urlsplit(url)
-    if nxt.scheme not in ("http", "https"):
+    nxt_scheme = nxt.scheme.lower()
+    if nxt_scheme not in ("http", "https") or "@" in nxt.netloc:
         return False
-    return (nxt.scheme.lower(), nxt.netloc.lower()) == (base.scheme.lower(), base.netloc.lower())
+    defaults = {"http": 80, "https": 443}
+    base_scheme = base.scheme.lower()
+    try:
+        base_port = base.port or defaults.get(base_scheme)
+        nxt_port = nxt.port or defaults.get(nxt_scheme)
+    except ValueError:
+        return False  # out-of-range or non-numeric port
+    return (nxt_scheme, (nxt.hostname or "").lower(), nxt_port) == (
+        base_scheme, (base.hostname or "").lower(), base_port,
+    )
+
+
+def _iter_link_entries(header: str):
+    """Yield ``(uri, [(lowercased param name, value), ...])`` per RFC 8288 ``Link`` entry.
+
+    Written out rather than split on ``;`` because a parameter value is a quoted string that
+    may itself contain ``;`` or ``,``, and because ``rel`` may sit at any position in the
+    parameter list. Deliberately lenient about the ``<>`` around the URI: the caller's
+    failure mode for an entry it cannot read is to stop paginating, which reports a truncated
+    listing as a complete one, so an unrecognized cursor is the more dangerous answer than an
+    odd one (an odd one is still rejected by :func:`_is_same_hub_origin`).
+    """
+    i, n = 0, len(header)
+    while i < n:
+        while i < n and header[i] in ", \t":
+            i += 1
+        if i >= n:
+            return
+        if header[i] == "<":
+            end = header.find(">", i)
+            if end == -1:
+                return  # unterminated URI: the rest of the header cannot be split reliably
+            uri = header[i + 1:end].strip()
+            i = end + 1
+        else:
+            start = i
+            while i < n and header[i] not in ";,":
+                i += 1
+            uri = header[start:i].strip()
+        params: list[tuple[str, str]] = []
+        while i < n and header[i] != ",":
+            while i < n and header[i] in " \t":
+                i += 1
+            if i >= n or header[i] == ",":
+                break
+            if header[i] != ";":
+                return  # junk between parameters: stop rather than mis-attribute a rel
+            i += 1
+            start = i
+            while i < n and header[i] not in "=;,":
+                i += 1
+            name = header[start:i].strip().lower()
+            value = ""
+            if i < n and header[i] == "=":
+                i += 1
+                while i < n and header[i] in " \t":
+                    i += 1
+                if i < n and header[i] == '"':
+                    i += 1
+                    buf: list[str] = []
+                    while i < n and header[i] != '"':
+                        if header[i] == "\\" and i + 1 < n:
+                            i += 1
+                        buf.append(header[i])
+                        i += 1
+                    value = "".join(buf)
+                    i += 1  # closing quote
+                    while i < n and header[i] not in ";,":
+                        i += 1  # trailing junk after a quoted value
+                else:
+                    start = i
+                    while i < n and header[i] not in ";,":
+                        i += 1
+                    value = header[start:i].strip()
+            if name:
+                params.append((name, value))
+        if uri:
+            yield uri, params
 
 
 def _parse_link_next(link_header: str | None) -> str | None:
-    """Next-page URL from a GitHub-style ``Link`` header, or None."""
-    for part in (link_header or "").split(","):
-        seg = part.split(";")
-        if len(seg) >= 2 and 'rel="next"' in seg[1]:
-            return seg[0].strip().strip("<>")
+    """Next-page URL from an RFC 8288 ``Link`` header, or None.
+
+    ``rel`` may appear at any position among an entry's parameters, may be an unquoted token,
+    and may carry a space-separated list of relation types, which are case-insensitive. Only
+    matching ``rel="next"`` as the first parameter drops a perfectly valid
+    ``<...>; type="application/json"; rel="next"``, and dropping it is not a safe default:
+    :func:`_hf_api_get_json` treats "no next cursor" as "listing finished" and returns the
+    truncated first page with ``success=True``, so a repo whose 5.x-only import sits on a
+    later page would be cached as a confirmed default tier.
+    """
+    for uri, params in _iter_link_entries(link_header or ""):
+        for name, value in params:
+            if name != "rel":
+                continue
+            if "next" in value.lower().split():
+                return uri
+            break  # RFC 8288: only an entry's first rel parameter is significant
     return None
 
 
@@ -801,14 +910,61 @@ def _list_hub_repo_py_files(repo_id: str, hf_token: str | None = None) -> tuple[
     }, True
 
 
-def _fetch_hub_py_sources(repo_id: str, hf_token: str | None = None) -> tuple[list[str], bool]:
+# One activation's remote-code scan downloads every ``.py`` the ``auto_map`` closure can
+# reach, and training / inference / export workers run it BEFORE the remote-code consent
+# gate. Unbounded, a selected public repo can hold as many ``.py`` files as the 200-page
+# listing limit allows, or one enormous file, and keep a worker issuing 10-second requests
+# or exhaust its memory before Studio can reject the model. Survey of the 300
+# most-downloaded ``trust_remote_code`` repos: the largest holds 26 ``.py`` (p50 3, p95 11,
+# p99 21), the largest aggregate is 933 KiB and the largest single file is 216 KiB, so these
+# caps sit roughly 5x / 17x / 19x above the worst real repo and truncate none of them.
+_REMOTE_SCAN_MAX_FILES = 128
+_REMOTE_SCAN_MAX_TOTAL_CHARS = 16 * 1024 * 1024
+_REMOTE_SCAN_MAX_FILE_BYTES = 4 * 1024 * 1024
+
+
+class _RemoteScanBudget:
+    """Cap on the remote ``.py`` downloads of ONE scan, shared across every repo it reaches.
+
+    The budget spans the model's own repo and every external ``auto_map`` repo together, so
+    the ceiling is on the whole activation rather than per repo (otherwise N referenced repos
+    multiply it). Running out is reported as an incomplete closure, never as "no 5.x import":
+    the caller turns that into a non-definitive result, so a truncated scan is not memoized
+    as a confirmed default tier. Sources read before the cap are kept, since the scan already
+    trusts a positive from a partial closure.
+    """
+
+    __slots__ = ("files_left", "chars_left", "truncated")
+
+    def __init__(self) -> None:
+        self.files_left = _REMOTE_SCAN_MAX_FILES
+        self.chars_left = _REMOTE_SCAN_MAX_TOTAL_CHARS
+        self.truncated = False
+
+    def take_file(self) -> bool:
+        """Reserve one download slot. False once the file or aggregate budget is spent."""
+        if self.files_left <= 0 or self.chars_left <= 0:
+            self.truncated = True
+            return False
+        self.files_left -= 1
+        return True
+
+    def spend(self, size: int) -> None:
+        self.chars_left -= size
+
+
+def _fetch_hub_py_sources(
+    repo_id: str,
+    hf_token: str | None = None,
+    budget: "_RemoteScanBudget | None" = None,
+) -> tuple[list[str], bool]:
     """Fetch every present ``.py`` in a Hub repo. Returns (sources, definitive).
 
     A file that fails to fetch (transient error, or removed between the tree listing and
     the raw request) only makes the closure incomplete; the sources already read are still
     returned. The scan trusts a positive from a partial closure, so discarding them would
     throw away an already-observed 5.x-only import and route the worker to a sidecar that
-    cannot import the remote code.
+    cannot import the remote code. A spent *budget* is the same kind of incompleteness.
     """
     py_files, listing_ok = _list_hub_repo_py_files(repo_id, hf_token)
     if not listing_ok:
@@ -816,19 +972,33 @@ def _fetch_hub_py_sources(repo_id: str, hf_token: str | None = None) -> tuple[li
     sources: list[str] = []
     complete = True
     for fn in sorted(py_files):
+        if budget is not None and not budget.take_file():
+            logger.debug(
+                "Remote scan budget spent at '%s'; %d .py left unread", repo_id, len(py_files),
+            )
+            complete = False
+            break
         text = _read_repo_text_file(repo_id, fn, hf_token)
         if text is None:
             complete = False
             continue
+        if budget is not None:
+            budget.spend(len(text))
         sources.append(text)
     return sources, complete
 
 
-def _collect_external_py_sources(refs: set, hf_token: str | None = None) -> tuple[list[str], bool]:
+def _collect_external_py_sources(
+    refs: set,
+    hf_token: str | None = None,
+    budget: "_RemoteScanBudget | None" = None,
+) -> tuple[list[str], bool]:
     """Fetch all ``.py`` from external repos referenced by ``auto_map``.
 
     Like :func:`_fetch_hub_py_sources`, an unreachable repo marks the closure incomplete
-    without dropping the sources read from the repos that did answer.
+    without dropping the sources read from the repos that did answer. *budget* is the caller's
+    scan-wide download cap and is threaded through so every referenced repo draws on the same
+    ceiling.
     """
     external_repos = {repo for repo, _ in refs if repo is not None}
     if not external_repos:
@@ -836,7 +1006,7 @@ def _collect_external_py_sources(refs: set, hf_token: str | None = None) -> tupl
     sources: list[str] = []
     complete = True
     for repo in sorted(external_repos):
-        repo_sources, ok = _fetch_hub_py_sources(repo, hf_token)
+        repo_sources, ok = _fetch_hub_py_sources(repo, hf_token, budget)
         if not ok:
             complete = False
         sources.extend(repo_sources)
@@ -909,7 +1079,14 @@ def _read_repo_text_file(
     filename: str,
     hf_token: str | None = None,
 ) -> str | None:
-    """Return a repo-relative text file's contents; local first, else HuggingFace raw fetch."""
+    """Return a repo-relative text file's contents; local first, else HuggingFace raw fetch.
+
+    The remote read stops at ``_REMOTE_SCAN_MAX_FILE_BYTES``. The aggregate budget in
+    :class:`_RemoteScanBudget` can only be charged once a file has been read, so a single
+    oversized source would already be resident by the time it noticed; bounding the read
+    itself is what keeps one enormous ``.py`` from exhausting a worker. Over-cap is reported
+    as an unread file (``None``), which the caller counts as an incomplete closure.
+    """
     local_path = Path(model_name) / filename
     if _safe_is_file(local_path):
         try:
@@ -931,7 +1108,14 @@ def _read_repo_text_file(
     try:
         req = urllib.request.Request(url, headers = headers)
         with _hub_urlopen(req, timeout = 10) as resp:
-            return _decode_source_bytes(resp.read())
+            raw = resp.read(_REMOTE_SCAN_MAX_FILE_BYTES + 1)
+        if len(raw) > _REMOTE_SCAN_MAX_FILE_BYTES:
+            logger.debug(
+                "Skipping oversized remote source %s for '%s' (over %d bytes)",
+                filename, model_name, _REMOTE_SCAN_MAX_FILE_BYTES,
+            )
+            return None
+        return _decode_source_bytes(raw)
     except Exception as exc:
         logger.debug("Could not fetch %s for '%s': %s", filename, model_name, exc)
         return None
@@ -1014,6 +1198,9 @@ def _remote_auto_map_py_contents(
         return [], cfg_definitive
 
     ext_refs: set = set(known_refs or ()) | own_refs
+    # One ceiling for the whole closure: the model's own repo and every external auto_map
+    # repo draw on the same file/byte budget, so N referenced repos cannot multiply it.
+    budget = _RemoteScanBudget()
 
     local_root = Path(model_name)
     if _safe_is_dir(local_root):
@@ -1025,7 +1212,7 @@ def _remote_auto_map_py_contents(
                 except Exception as exc:
                     logger.debug("Could not read %s: %s", py_path, exc)
                     return [], False
-        ext_sources, ext_ok = _collect_external_py_sources(ext_refs, hf_token)
+        ext_sources, ext_ok = _collect_external_py_sources(ext_refs, hf_token, budget)
         sources.extend(ext_sources)
         if any(repo is not None for repo, _ in ext_refs) and not ext_ok:
             return sources, False
@@ -1036,8 +1223,8 @@ def _remote_auto_map_py_contents(
 
     # An incomplete own-repo listing/fetch does not end the scan: the external repos may
     # still hold the marker, and whatever was read stays available to prove the tier.
-    sources, repo_ok = _fetch_hub_py_sources(model_name, hf_token)
-    ext_sources, ext_ok = _collect_external_py_sources(ext_refs, hf_token)
+    sources, repo_ok = _fetch_hub_py_sources(model_name, hf_token, budget)
+    ext_sources, ext_ok = _collect_external_py_sources(ext_refs, hf_token, budget)
     sources.extend(ext_sources)
     if not repo_ok or (any(repo is not None for repo, _ in ext_refs) and not ext_ok):
         return sources, False
@@ -1346,7 +1533,7 @@ def _tokenizer_auto_map_needs_v5(
         # An own-repo entry file that has not been written yet (in-progress checkpoint)
         # means the closure is incomplete, not that it is 4.x-safe.
         definitive = all(repo is not None or _safe_is_file(local_root / fn) for repo, fn in refs)
-        ext_sources, ext_ok = _collect_external_py_sources(refs, hf_token)
+        ext_sources, ext_ok = _collect_external_py_sources(refs, hf_token, _RemoteScanBudget())
         if any(repo is not None for repo, _ in refs) and not ext_ok:
             # An unreachable external repo makes the closure incomplete, so the negative
             # stays uncached -- but the local sources already read can still PROVE 5.x.

@@ -172,7 +172,7 @@ class TestRemoteLoraBase:
             def __exit__(self, *a):
                 return False
 
-            def read(self):
+            def read(self, n = -1):
                 return json.dumps(cfg).encode()
 
         return _Resp()
@@ -352,7 +352,7 @@ class TestCheckTokenizerConfigNeedsV5:
             def __init__(self, body):
                 self._b = body
 
-            def read(self):
+            def read(self, n = -1):
                 return self._b.encode()
 
             def __enter__(self):
@@ -615,7 +615,7 @@ class TestCheckConfigNeeds510:
         seen = {}
 
         class _Resp:
-            def read(self):
+            def read(self, n = -1):
                 return b"from transformers.utils.output_capturing import X\n"
 
             def __enter__(self):
@@ -644,7 +644,7 @@ class TestCheckConfigNeeds510:
         }
         (tmp_path / "tokenizer_config.json").write_text(json.dumps(tc))
 
-        def _fake_fetch(repo_id, hf_token = None):
+        def _fake_fetch(repo_id, hf_token = None, budget = None):
             if repo_id == "other/tokenizer-repo":
                 return [
                     "from transformers.tokenization_utils_tokenizers import TokenizersBackend\n"
@@ -807,7 +807,7 @@ def _hf_response(cfg: dict):
         def __exit__(self, *a):
             return False
 
-        def read(self):
+        def read(self, n = -1):
             return json.dumps(cfg).encode()
 
     return _Resp()
@@ -1102,7 +1102,7 @@ class TestGetTransformersTier:
         }
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
-        def _fake_fetch(repo_id, hf_token = None):
+        def _fake_fetch(repo_id, hf_token = None, budget = None):
             if repo_id == "evilorg/evilrepo":
                 return [
                     "from .helper import run\n",
@@ -1264,7 +1264,7 @@ class TestGetTransformersTier:
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def read(self):
+            def read(self, n = -1):
                 return json.dumps(
                     {
                         "model_type": "nemotron_h",
@@ -1315,7 +1315,7 @@ class TestGetTransformersTier:
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def read(self):
+            def read(self, n = -1):
                 return json.dumps(
                     {
                         "architectures": ["Gemma4ForConditionalGeneration"],
@@ -2853,7 +2853,7 @@ class TestOfflineCacheNotPoisoned:
         monkeypatch.setattr(tv, "_env_offline", lambda: False)
 
         class _Resp:
-            def read(self):
+            def read(self, n = -1):
                 return json.dumps({"tokenizer_class": "TokenizersBackend"}).encode()
 
             def __enter__(self):
@@ -3846,7 +3846,7 @@ class _PagedResponse:
         self._payload = payload
         self.headers = {"Link": f'<{next_url}>; rel="next"'} if next_url else {}
 
-    def read(self):
+    def read(self, n = -1):
         return self._payload
 
     def __enter__(self):
@@ -5158,7 +5158,7 @@ class TestImpossible510ScanIsSkipped:
                 self._body = body
                 self.headers = {"Link": None}
 
-            def read(self):
+            def read(self, n = -1):
                 return self._body
 
             def __enter__(self):
@@ -5450,3 +5450,336 @@ class TestHubRedirectDoesNotReplayTheToken:
 
         _Visitor().visit(ast.parse(inspect.getsource(tv)))
         assert offenders == [], f"these fetch sites bypass _hub_urlopen: {offenders}"
+
+
+class TestPaginationOriginNormalizesDefaultPorts:
+    """``https://host`` and ``https://host:443`` are one origin (RFC 6454), so a textual
+    ``netloc`` compare rejects an endpoint's own cursor and turns a multi-page listing
+    inconclusive (round 8 Codex)."""
+
+    def setup_method(self):
+        _clear_scan_caches()
+
+    @pytest.mark.parametrize(
+        "endpoint,url,expected,why",
+        [
+            # The bug: an endpoint's own authority spelled with its default port.
+            ("https://mirror.internal", "https://mirror.internal:443/api/x", True, "https default"),
+            ("http://mirror.internal", "http://mirror.internal:80/api/x", True, "http default"),
+            ("https://mirror.internal:443", "https://mirror.internal/api/x", True, "other way round"),
+            # Negative controls: normalizing the default port must not widen the guard.
+            ("https://mirror.internal", "https://mirror.internal:8443/api/x", False, "other port"),
+            ("https://mirror.internal:8443", "https://mirror.internal/api/x", False, "port dropped"),
+            ("https://mirror.internal", "http://mirror.internal:443/api/x", False, "scheme differs"),
+            ("https://mirror.internal", "https://evil.example:443/api/x", False, "other host"),
+            ("https://mirror.internal", "https://mirror.internal.evil.example/api", False, "suffix"),
+            # ``hostname`` drops userinfo, so it must be rejected before the compare: urllib
+            # sends the whole ``user@host`` string as the connection host.
+            ("https://mirror.internal", "https://mirror.internal@evil.example/api", False, "decoy"),
+            ("https://mirror.internal", "https://evil.example@mirror.internal/api", False, "userinfo"),
+            # A port that ``urlsplit`` refuses to parse must not raise out of the guard.
+            ("https://mirror.internal", "https://mirror.internal:notaport/api", False, "bad port"),
+            ("https://mirror.internal", "https://mirror.internal:99999/api", False, "port range"),
+        ],
+    )
+    def test_origin_predicate_uses_effective_port(
+        self, monkeypatch, endpoint, url, expected, why
+    ):
+        import utils.transformers_version as tv
+
+        monkeypatch.setenv("HF_ENDPOINT", endpoint)
+        assert tv._is_same_hub_origin(url) is expected, why
+
+    def test_mirror_cursor_with_explicit_default_port_is_followed(self, monkeypatch):
+        """End to end: the second page is what carries the 5.x-only import."""
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_ENDPOINT", "https://mirror.internal")
+
+        def _urlopen(req, timeout = 10):
+            if "cursor=2" in req.full_url:
+                return _PagedResponse(
+                    json.dumps([{"type": "file", "path": "b.py"}]).encode()
+                )
+            return _PagedResponse(
+                json.dumps([{"type": "file", "path": "a.py"}]).encode(),
+                # Same origin, spelled with the port the scheme already implies.
+                next_url = "https://mirror.internal:443/api/models/o/m/tree/main?cursor=2",
+            )
+
+        monkeypatch.setattr(tv, "_hub_urlopen", _urlopen)
+        data, ok = tv._hf_api_get_json("/api/models/o/m/tree/main", "hf_secret")
+        assert ok is True
+        assert [item["path"] for item in data] == ["a.py", "b.py"]
+
+    def test_foreign_port_cursor_is_still_refused(self, monkeypatch):
+        """Negative control: the round-5 guard still holds for a non-default port."""
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_ENDPOINT", "https://mirror.internal")
+        seen = []
+
+        def _urlopen(req, timeout = 10):
+            seen.append(req.full_url)
+            return _PagedResponse(
+                json.dumps([{"type": "file", "path": "a.py"}]).encode(),
+                next_url = "https://mirror.internal:8443/api/models/o/m/tree/main?cursor=2",
+            )
+
+        monkeypatch.setattr(tv, "_hub_urlopen", _urlopen)
+        assert tv._hf_api_get_json("/api/models/o/m/tree/main", "hf_secret") == (None, False)
+        assert len(seen) == 1
+
+
+class TestLinkRelIsFoundAtAnyParameterPosition:
+    """RFC 8288 lets ``rel`` sit anywhere in an entry's parameter list. Missing it makes
+    ``_hf_api_get_json`` report a truncated first page as a complete listing, which is
+    cacheable as a confirmed default tier (round 8 Codex)."""
+
+    def setup_method(self):
+        _clear_scan_caches()
+
+    _NEXT = "https://huggingface.co/api/models/o/m/tree/main?cursor=2"
+
+    @pytest.mark.parametrize(
+        "header,expected,why",
+        [
+            (f'<{_NEXT}>; rel="next"', _NEXT, "the shape the real Hub sends"),
+            (f'<{_NEXT}>; type="application/json"; rel="next"', _NEXT, "rel is not first"),
+            (f'<{_NEXT}>; rel=next', _NEXT, "rel as an unquoted token"),
+            (f'<{_NEXT}>; rel="prev next"', _NEXT, "rel holds a relation list"),
+            (f'<{_NEXT}>; rel="NEXT"', _NEXT, "relation types are case-insensitive"),
+            (f'<{_NEXT}>; title="a,b"; rel="next"', _NEXT, "comma inside a quoted value"),
+            (f'<{_NEXT}>; title="x;y"; rel="next"', _NEXT, "semicolon inside a quoted value"),
+            (f'<https://h/p>; rel="prev", <{_NEXT}>; rel="next"', _NEXT, "second entry"),
+            # Negative controls: nothing that is not a next relation may be followed.
+            ('<https://h/p>; rel="prev"', None, "no next relation anywhere"),
+            ('<https://h/p>; rel="nextpage"', None, "relation must not substring-match"),
+            ('<https://h/p>; type="next"', None, "next as some other parameter's value"),
+            ('<https://h/p>; rel="prev"; rel="next"', None, "only the first rel counts"),
+            ('<https://h/p>', None, "entry with no parameters"),
+            ("", None, "empty header"),
+            ("garbage", None, "unparseable header"),
+        ],
+    )
+    def test_parse_link_next(self, header, expected, why):
+        import utils.transformers_version as tv
+
+        assert tv._parse_link_next(header) == expected, why
+
+    def test_no_header_is_the_last_page(self):
+        import utils.transformers_version as tv
+
+        assert tv._parse_link_next(None) is None
+
+    def test_later_page_marker_is_not_truncated_away(self, monkeypatch):
+        """End to end: the 5.x-only import lives on page 2, behind a decoy parameter."""
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.delenv("HF_ENDPOINT", raising = False)
+
+        class _Resp:
+            def __init__(self, payload, link = None):
+                self._payload = payload
+                self.headers = {"Link": link} if link else {}
+
+            def read(self, n = -1):
+                return self._payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def _urlopen(req, timeout = 10):
+            if req.full_url.endswith("modeling_late.py"):
+                return _Resp(_V5_IMPORT.encode())
+            if "cursor=2" in req.full_url:
+                return _Resp(json.dumps([{"type": "file", "path": "modeling_late.py"}]).encode())
+            return _Resp(
+                json.dumps([]).encode(),
+                link = f'<{self._NEXT}>; type="application/json"; rel="next"',
+            )
+
+        monkeypatch.setattr(tv, "_hub_urlopen", _urlopen)
+        sources, complete = tv._fetch_hub_py_sources("o/m", "hf_secret")
+        assert complete is True
+        assert sources == [_V5_IMPORT]
+        assert tv._remote_auto_map_py_matches(tv._TRANSFORMERS_5_REMOTE_IMPORT_MARKERS, sources)
+
+
+class TestPublicReExportOf5xSymbolIsRecognized:
+    """``from transformers import TokenizersBackend`` is the public spelling of a class the
+    default 4.57.x tier does not have (round 8 Codex)."""
+
+    def setup_method(self):
+        _clear_scan_caches()
+
+    @pytest.mark.parametrize(
+        "src,expected,why",
+        [
+            ("from transformers import TokenizersBackend\n", True, "public re-export"),
+            (
+                "from transformers import AutoModel, TokenizersBackend\n",
+                True, "public re-export beside a 4.x name",
+            ),
+            (_V5_TOK_IMPORT, True, "defining submodule still matches"),
+            (
+                "import importlib\nTB = importlib.import_module('transformers').TokenizersBackend\n",
+                False, "attribute access is not an import of the symbol",
+            ),
+            # Negative controls: only 5.x-only names may promote the tier.
+            ("from transformers import AutoModel\n", False, "4.57.x public name"),
+            (
+                "from transformers import PreTrainedTokenizerFast\n",
+                False, "re-exported by 5.x from the same module but present in 4.57.x",
+            ),
+            (
+                '"""Docs mention transformers.TokenizersBackend."""\nimport torch\n',
+                False, "a docstring is not an import",
+            ),
+            (
+                "from .transformers import TokenizersBackend\n",
+                False, "a repo's own same-named helper is relative",
+            ),
+        ],
+    )
+    def test_marker_match(self, src, expected, why):
+        import utils.transformers_version as tv
+
+        got = tv._remote_auto_map_py_matches(tv._TRANSFORMERS_5_REMOTE_IMPORT_MARKERS, [src])
+        assert got is expected, why
+
+    def test_marker_names_are_absent_from_the_default_tier(self):
+        """Guard on the marker list itself: a name 4.57.x also has would push ordinary
+        custom-code models onto a sidecar."""
+        import utils.transformers_version as tv
+
+        assert "transformers.TokenizersBackend" in tv._TRANSFORMERS_5_REMOTE_IMPORT_MARKERS
+        for marker in tv._TRANSFORMERS_5_REMOTE_IMPORT_MARKERS:
+            assert marker.startswith("transformers.")
+
+
+class TestRemoteScanDownloadsAreBounded:
+    """Workers activate a sidecar (and so run this scan) before the remote-code consent
+    gate, so a selected repo must not be able to spend unbounded requests or memory
+    (round 8 Codex)."""
+
+    def setup_method(self):
+        _clear_scan_caches()
+
+    def test_file_count_is_capped_and_reported_incomplete(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        advertised = tv._REMOTE_SCAN_MAX_FILES * 10
+        fetched = []
+        monkeypatch.setattr(
+            tv, "_list_hub_repo_py_files",
+            lambda repo, tok = None: ({f"m{i:05d}.py" for i in range(advertised)}, True),
+        )
+        monkeypatch.setattr(
+            tv, "_read_repo_text_file",
+            lambda repo, fn, tok = None: (fetched.append(fn), "import torch\n")[1],
+        )
+        budget = tv._RemoteScanBudget()
+        sources, complete = tv._fetch_hub_py_sources("org/hostile", None, budget)
+        assert len(fetched) == tv._REMOTE_SCAN_MAX_FILES
+        assert len(sources) == tv._REMOTE_SCAN_MAX_FILES
+        # Truncation is an incomplete closure, never a clean scan: the caller must not
+        # memoize a confirmed default tier from it.
+        assert complete is False
+        assert budget.truncated is True
+
+    def test_aggregate_size_is_capped(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        chunk = "x" * (tv._REMOTE_SCAN_MAX_TOTAL_CHARS // 4)
+        fetched = []
+        monkeypatch.setattr(
+            tv, "_list_hub_repo_py_files",
+            lambda repo, tok = None: ({f"m{i:03d}.py" for i in range(64)}, True),
+        )
+        monkeypatch.setattr(
+            tv, "_read_repo_text_file",
+            lambda repo, fn, tok = None: (fetched.append(fn), chunk)[1],
+        )
+        budget = tv._RemoteScanBudget()
+        _, complete = tv._fetch_hub_py_sources("org/hostile", None, budget)
+        assert len(fetched) < 64 and complete is False and budget.truncated is True
+
+    def test_budget_spans_every_repo_in_one_closure(self, monkeypatch):
+        """N referenced repos must not multiply the ceiling."""
+        import utils.transformers_version as tv
+
+        fetched = []
+        monkeypatch.setattr(
+            tv, "_list_hub_repo_py_files",
+            lambda repo, tok = None: ({f"m{i:05d}.py" for i in range(1000)}, True),
+        )
+        monkeypatch.setattr(
+            tv, "_read_repo_text_file",
+            lambda repo, fn, tok = None: (fetched.append((repo, fn)), "import torch\n")[1],
+        )
+        refs = {(f"org/ext{i}", "modeling.py") for i in range(5)}
+        _, complete = tv._collect_external_py_sources(refs, None, tv._RemoteScanBudget())
+        assert len(fetched) == tv._REMOTE_SCAN_MAX_FILES
+        assert complete is False
+
+    def test_one_enormous_source_is_not_read_into_memory(self, monkeypatch):
+        """The aggregate cap can only charge a file already read, so the read itself is
+        bounded."""
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        asked = []
+
+        class _Huge:
+            def read(self, n = -1):
+                asked.append(n)
+                # More than any cap, and more than the caller may hold.
+                return b"#" * (n if n and n > 0 else tv._REMOTE_SCAN_MAX_FILE_BYTES * 4)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(tv, "_hub_urlopen", lambda req, timeout = 10: _Huge())
+        assert tv._read_repo_text_file("org/hostile", "modeling.py") is None
+        assert asked == [tv._REMOTE_SCAN_MAX_FILE_BYTES + 1]
+
+    def test_real_sized_repo_is_not_truncated(self, monkeypatch):
+        """Negative control. Survey of the 300 most-downloaded trust_remote_code repos:
+        max 26 .py, max 933 KiB aggregate, max 216 KiB in one file."""
+        import utils.transformers_version as tv
+
+        src = "import torch\n" * 20_000  # ~260 KiB, above the largest real single file
+        monkeypatch.setattr(
+            tv, "_list_hub_repo_py_files",
+            lambda repo, tok = None: ({f"m{i:02d}.py" for i in range(26)}, True),
+        )
+        monkeypatch.setattr(
+            tv, "_read_repo_text_file", lambda repo, fn, tok = None: src,
+        )
+        budget = tv._RemoteScanBudget()
+        sources, complete = tv._fetch_hub_py_sources("org/big-but-real", None, budget)
+        assert len(sources) == 26 and complete is True and budget.truncated is False
+
+    def test_no_budget_keeps_the_previous_behaviour(self, monkeypatch):
+        """Back-compat: the parameter defaults to unbounded for any other caller."""
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(
+            tv, "_list_hub_repo_py_files",
+            lambda repo, tok = None: ({f"m{i:04d}.py" for i in range(300)}, True),
+        )
+        monkeypatch.setattr(
+            tv, "_read_repo_text_file", lambda repo, fn, tok = None: "import torch\n",
+        )
+        sources, complete = tv._fetch_hub_py_sources("org/m", None)
+        assert len(sources) == 300 and complete is True
