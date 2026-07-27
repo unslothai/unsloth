@@ -110,7 +110,7 @@ print(f"RESULT tier={tier} preload={preload} active={transformers.__version__}")
 """
 
 # Astral (#7353): custom-code checkpoints must activate the 5.10 sidecar, not default 4.57.x.
-# Uses a local stub checkpoint (no Hub fetch) with the same worker preflight + activation path.
+# Local stub checkpoint (no Hub fetch), same worker preflight + activation path.
 _SNIPPET_ASTRAL_510 = r"""
 import json, os, sys
 sys.path.insert(0, os.getcwd())
@@ -226,9 +226,8 @@ def test_worker_activates_correct_transformers_version(tmp_path):
 def test_worker_activates_transformers_510_for_astral(tmp_path):
     """Astral custom-code checkpoints (#7353) must route to tier 510 and swap in the 5.10 sidecar.
 
-    Without this, training fails before model load with
-    ``No module named 'transformers.tokenization_utils_tokenizers'`` because the default
-    4.57.x sidecar is still active after worker preflight.
+    Otherwise training fails before model load with ``No module named
+    'transformers.tokenization_utils_tokenizers'``, the default 4.57.x still active.
     """
     result = subprocess.run(
         [sys.executable, "-c", _SNIPPET_ASTRAL_510],

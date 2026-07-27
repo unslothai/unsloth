@@ -585,9 +585,8 @@ class TestCheckConfigNeeds510:
     ):
         """Offline must reach the Hub API for nothing, even via an external auto_map.
 
-        A local checkpoint is scanned offline, so its external ``auto_map`` refs would
-        otherwise hit the repo-tree endpoint and block on the connect timeout every
-        call (the incomplete scan is never cached).
+        A local checkpoint is still scanned offline, so its external ``auto_map`` refs would
+        otherwise block on the repo-tree connect timeout every call (the scan is never cached).
         """
         import utils.transformers_version as tv
 
@@ -1021,9 +1020,9 @@ class TestGetTransformersTier:
     def test_remote_code_importable_on_default_stays_default(self, tmp_path: Path):
         """4.57.x-importable remote code must NOT be pushed onto the sidecar.
 
-        ``transformers.modeling_layers`` (4.52+) and ``use_kernel_forward_from_hub``
-        (4.51+) both exist in the default tier, so custom-code models built on them
-        (EXAONE, MiniMax, Molmo2, step3, ...) must keep loading on default.
+        ``transformers.modeling_layers`` (4.52+) and ``use_kernel_forward_from_hub`` (4.51+)
+        exist in the default tier, so models built on them (EXAONE, MiniMax, Molmo2, step3)
+        must keep loading there.
         """
         cfg = {
             "model_type": "custom_remote",
@@ -1066,7 +1065,7 @@ class TestGetTransformersTier:
         assert get_transformers_tier(str(tmp_path)) == "default"
 
     def test_local_custom_remote_auto_map_returns_530(self, tmp_path: Path):
-        """Local unknown model_types must scan auto_map before default (#7353 Codex)."""
+        """Local unknown model_types must scan auto_map before default (#7353)."""
         cfg = {
             "model_type": "custom_remote",
             "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
@@ -1079,7 +1078,7 @@ class TestGetTransformersTier:
         assert get_transformers_tier(str(tmp_path), probe = False) == "530"
 
     def test_local_helper_auto_map_returns_530(self, tmp_path: Path):
-        """Helper modules imported by auto_map entry must be scanned (Codex #4)."""
+        """Helper modules imported by auto_map entry must be scanned."""
         cfg = {
             "model_type": "custom_remote",
             "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
@@ -1095,7 +1094,7 @@ class TestGetTransformersTier:
         assert get_transformers_tier(str(tmp_path), probe = False) == "530"
 
     def test_external_auto_map_repo_returns_530(self, monkeypatch, tmp_path: Path):
-        """External auto_map repos and their helpers must be scanned (Codex #4)."""
+        """External auto_map repos and their helpers must be scanned."""
         import utils.transformers_version as tv
 
         cfg = {
@@ -1123,7 +1122,7 @@ class TestGetTransformersTier:
         assert get_transformers_tier(str(tmp_path), probe = False) == "530"
 
     def test_local_lower_tier_model_type_with_auto_map_still_scans(self, tmp_path: Path):
-        """Lower-tier model_type must not skip auto_map scan (Codex round 2)."""
+        """Lower-tier model_type must not skip auto_map scan."""
         cfg = {
             "model_type": "qwen3_moe",
             "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
@@ -1137,7 +1136,7 @@ class TestGetTransformersTier:
         assert get_transformers_tier(str(tmp_path), probe = False) == "530"
 
     def test_name_substring_not_downgraded_by_remote_auto_map(self, monkeypatch):
-        """Name fast path keeps its tier once the auto_map scan agrees (Codex round 2)."""
+        """Name fast path keeps its tier once the auto_map scan agrees."""
         import utils.transformers_version as tv
 
         cfg = {
@@ -1173,7 +1172,7 @@ class TestGetTransformersTier:
         assert get_transformers_tier("org/qwen3.5-custom-remote") == "530"
 
     def test_tier_detection_does_not_import_huggingface_hub(self, monkeypatch, tmp_path: Path):
-        """Pre-activation tier scan must stay on stdlib urllib (Codex round 2)."""
+        """Pre-activation tier scan must stay on stdlib urllib."""
         import builtins
         import utils.transformers_version as tv
 
@@ -1306,10 +1305,10 @@ class TestGetTransformersTier:
     def test_remote_config_json_is_fetched_once_for_config_tiers(self):
         """510 and 550 slow-path checks should share one config.json fetch.
 
-        The auto_map scan additionally reads the remote-code configs once each (a processor
-        declared only in preprocessor/processor config is executable too), so pin the real
-        invariant: config.json is fetched exactly once, and nothing beyond the remote-code
-        config set is fetched for a repo that declares no auto_map.
+        The auto_map scan also reads each remote-code config once (a processor declared only
+        in preprocessor/processor config is executable too), so pin the real invariant:
+        config.json fetched exactly once, and nothing beyond the remote-code config set for a
+        repo that declares no auto_map.
         """
         from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES
 
@@ -3815,10 +3814,9 @@ class TestProbeFalseSkipsAutoMapScan:
     def test_probe_true_still_runs_the_auto_map_scan(self, monkeypatch):
         """probe=True scans -- once a 5.10-only marker makes the answer reachable.
 
-        The scan is gated on ``_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS``, empty today, so the
-        marker is patched in here to assert the activation path still reaches the repo. With
-        the tuple empty the fast path deliberately makes no request; that half of the
-        contract is covered by ``TestImpossible510ScanIsSkipped``.
+        The scan is gated on ``_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS``, empty today, so a
+        marker is patched in to assert the activation path still reaches the repo. The empty
+        case (no request) is covered by ``TestImpossible510ScanIsSkipped``.
         """
         import utils.transformers_version as tv
 
@@ -4282,11 +4280,11 @@ class TestScanSignatureCoversAutoMapConfigs:
 
 class TestScanSignatureSeesSameSizedReplacement:
     """size + mtime cannot see an archival redeploy that restores the timestamp, so the
-    signature also carries ctime and inode (round 7 Codex).
+    signature also carries ctime and inode.
 
-    ``rsync --archive`` / ``tar -xp`` put back the original mtime, and a same-sized rewrite
-    leaves the size alone, so a long-lived worker kept serving the tier it computed from
-    code no longer on disk.
+    ``rsync --archive`` / ``tar -xp`` put back the original mtime and a same-sized rewrite
+    leaves the size alone, so a long-lived worker kept serving a tier computed from code no
+    longer on disk.
     """
 
     # Same byte length, so only the content differs.
@@ -4505,9 +4503,9 @@ def _clear_scan_caches():
 class TestPartialHubFetchKeepsProof:
     """A .py that fails to fetch must not discard the sources already read.
 
-    The scan trusts a positive from an incomplete closure, so dropping the earlier files
-    throws away an already-observed 5.x-only import and routes the worker to a sidecar
-    that cannot import the remote code.
+    The scan trusts a positive from an incomplete closure, so dropping the earlier files would
+    throw away an observed 5.x-only import and route the worker to a sidecar that cannot
+    import the remote code.
     """
 
     def setup_method(self):
@@ -4568,9 +4566,9 @@ class TestPartialHubFetchKeepsProof:
 class TestLocalConfigRewriteIsRescanned:
     """A staged checkpoint can write its code first and its ``auto_map`` afterwards.
 
-    The changed scan signature forces a rescan; that rescan must read the new
-    ``config.json`` from disk instead of the process-lifetime ``_config_json_cache``,
-    or it memoizes a fresh negative under the new signature.
+    The changed scan signature forces a rescan, and that rescan must read the new
+    ``config.json`` from disk rather than the process-lifetime ``_config_json_cache``, or it
+    memoizes a fresh negative under the new signature.
     """
 
     def setup_method(self):
@@ -4612,8 +4610,8 @@ class TestLocalConfigRewriteIsRescanned:
 class TestAutoMapImportsOf5xTokenizerBackend:
     """Remote code reached through config.json, not tokenizer_config.json.
 
-    ``transformers.tokenization_utils_tokenizers`` does not exist on the default 4.57.x
-    tier, so a modeling/processor module importing it must not route there just because
+    ``transformers.tokenization_utils_tokenizers`` does not exist on 4.57.x, so a
+    modeling/processor module importing it must not route there just because
     ``tokenizer_config.json`` declares no ``auto_map`` of its own.
     """
 
@@ -4741,8 +4739,8 @@ class TestTypeCheckingImportsAreNotRuntimeImports:
 
 
 class TestOutputCapturingTakesThe53Floor:
-    """``transformers.utils.output_capturing`` ships since 5.2.0, so the 5.3 sidecar can
-    import it and the marker must not force the 5.10 one (round 5 Codex)."""
+    """``transformers.utils.output_capturing`` ships since 5.2.0, so the marker must take
+    the 5.3 sidecar, not the 5.10 one."""
 
     def setup_method(self):
         _clear_scan_caches()
@@ -4782,8 +4780,8 @@ class TestOutputCapturingTakesThe53Floor:
 
 
 class TestHubPaginationStaysOnTheConfiguredOrigin:
-    """A ``rel="next"`` cursor is refetched with the caller's ``Authorization`` header, so it
-    must never leave the configured endpoint (round 5 Codex)."""
+    """A ``rel="next"`` cursor is refetched with the caller's ``Authorization``, so it must
+    never leave the configured endpoint."""
 
     def setup_method(self):
         _clear_scan_caches()
@@ -4871,8 +4869,8 @@ class TestHubPaginationStaysOnTheConfiguredOrigin:
 
 
 class TestOfflineAutoMapScanUsesTheHubCache:
-    """Offline, a downloaded snapshot is exactly the code that will be executed, so it must
-    be scanned instead of assumed clean (round 5 Codex)."""
+    """Offline, a downloaded snapshot is the code that will run, so scan it rather than
+    assume it is clean."""
 
     def setup_method(self):
         _clear_scan_caches()
@@ -4904,8 +4902,7 @@ class TestOfflineAutoMapScanUsesTheHubCache:
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         tier, definitive = tv._remote_auto_map_tier("org/cached-5x")
         assert tier == "530"
-        # Offline can never reach an external auto_map repo, so the answer stays provisional
-        # and nothing is memoized under the Hub id.
+        # External auto_map repos are unreachable offline, so nothing is memoized.
         assert definitive is False
         assert not [key for key in _remote_auto_map_tier_cache if key[0] == "org/cached-5x"]
 
@@ -4946,13 +4943,12 @@ class TestOfflineAutoMapScanUsesTheHubCache:
 
 
 class TestInconclusiveScanFallsBackToTheHubCache:
-    """Online but inconclusive is not a negative: an already downloaded snapshot is the
-    code the load will execute, so read it instead of reporting the default tier (round 7
-    Codex).
+    """Online but inconclusive is not a negative: a downloaded snapshot is the code the load
+    will execute, so read it instead of reporting the default tier.
 
-    Same fallback as the offline branch above; the trigger here is a transient Hub failure
-    while nominally online, which otherwise hands ``get_transformers_tier`` a bare
-    ``"default"`` it cannot tell apart from a repo that really has no 5.x import.
+    Same fallback as the offline branch above, triggered by a transient Hub failure while
+    nominally online, which otherwise hands ``get_transformers_tier`` a bare ``"default"`` it
+    cannot tell apart from a repo that really has no 5.x import.
     """
 
     def setup_method(self):
@@ -4974,8 +4970,7 @@ class TestInconclusiveScanFallsBackToTheHubCache:
 
         tier, definitive = tv._remote_auto_map_tier("org/outage-5x")
         assert tier == "530"
-        # The Hub still never answered, so the result stays provisional and nothing is
-        # memoized under the Hub id: a recovered Hub must re-scan.
+        # The Hub never answered, so nothing is memoized: a recovered Hub must re-scan.
         assert definitive is False
         assert not [key for key in _remote_auto_map_tier_cache if key[0] == "org/outage-5x"]
 
@@ -5006,9 +5001,8 @@ class TestInconclusiveScanFallsBackToTheHubCache:
     def test_no_snapshot_stays_default(self, monkeypatch, tmp_path: Path):
         """Negative control: an outage with nothing downloaded invents no requirement.
 
-        A blanket 5.3 floor for every inconclusive scan would push plain repos onto the
-        5.3 sidecar for the length of any Hub outage, so the fallback is the snapshot and
-        only the snapshot.
+        A blanket 5.3 floor for every inconclusive scan would push plain repos onto the 5.3
+        sidecar for the length of any Hub outage, so the fallback is the snapshot and only it.
         """
         import utils.transformers_version as tv
 
@@ -5030,8 +5024,7 @@ class TestInconclusiveScanFallsBackToTheHubCache:
     def test_definitive_negative_does_not_consult_the_snapshot(self, monkeypatch, tmp_path: Path):
         """Negative control: a repo that really has no auto_map keeps its cached negative.
 
-        A 404 is an answer, so a stale snapshot left over from an older revision must not
-        override it (that would resurrect the Hub-side staleness this PR declined to fix).
+        A 404 is an answer, so a stale snapshot from an older revision must not override it.
         """
         import utils.transformers_version as tv
 
@@ -5067,8 +5060,8 @@ def _raise(exc):
 
 
 class TestDynamicImportsOfVersionedModules:
-    """Remote code that loads a module through ``importlib`` really does import it, so the
-    scan must see it (round 5 Codex)."""
+    """Remote code loading a module through ``importlib`` really imports it, so the scan
+    must see it."""
 
     MARKERS = ("transformers.tokenization_utils_tokenizers",)
 
@@ -5138,9 +5131,9 @@ class TestDynamicImportsOfVersionedModules:
 
 
 class TestQualifiedAccessToPublicExports:
-    """``import transformers`` then ``transformers.TokenizersBackend`` is the ordinary
-    spelling of a public-export marker; recording only ``transformers`` left the checkpoint
-    on 4.57.x, where the attribute does not exist (round 9 Codex)."""
+    """``import transformers`` then ``transformers.TokenizersBackend`` is the ordinary spelling
+    of a public-export marker; recording only ``transformers`` left the checkpoint on 4.57.x,
+    where the attribute does not exist."""
 
     MARKERS = ("transformers.TokenizersBackend", "transformers.utils.output_capturing")
 
@@ -5195,8 +5188,8 @@ class TestQualifiedAccessToPublicExports:
 
 class TestAliasedDynamicImportFunction:
     """``from importlib import import_module as load_module`` then ``load_module(...)``
-    imports the module for real, so the literal-name check alone missed it (round 9 Codex).
-    Only a callee the file itself bound to ``importlib.import_module`` counts."""
+    really imports, which the literal-name check alone missed. Only a callee the file itself
+    bound to ``importlib.import_module`` counts."""
 
     MARKERS = ("transformers.tokenization_utils_tokenizers",)
 
@@ -5235,11 +5228,10 @@ class TestAliasedDynamicImportFunction:
 class TestImpossible510ScanIsSkipped:
     """The name fast path must not pay Hub I/O for an answer it cannot use.
 
-    ``_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS`` is empty, so the auto_map scan cannot
-    classify anything as 5.10: on a ``_tier_from_name`` hit with ``probe=True`` it would read
-    every remote-code config, page the repo tree and fetch each ``.py`` only to return the
-    tier the name already produced. The skip is gated on the tuple, never on the call site,
-    so re-adding a 5.10-only module restores the scan by itself (proved below).
+    ``_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS`` is empty, so on a ``_tier_from_name`` hit with
+    ``probe=True`` the scan would read every remote-code config, page the repo tree and fetch
+    each ``.py`` only to return the tier the name already produced. The skip is gated on the
+    tuple, not the call site, so re-adding a 5.10-only module restores it (proved below).
     """
 
     _FUTURE_MARKER = "transformers.models.some_future_510_only"
@@ -5340,9 +5332,9 @@ class TestImpossible510ScanIsSkipped:
 def _throwaway_origin(respond):
     """Start a local HTTP origin on an ephemeral port for the redirect tests.
 
-    ``respond(path)`` returns ``(status, extra_headers, body)``. Returns
-    ``(base_url, seen, close)`` where ``seen`` collects ``(path, Authorization)`` for every
-    request the origin received, so a leaked token is directly observable.
+    ``respond(path)`` returns ``(status, extra_headers, body)``. Returns ``(base_url, seen,
+    close)``, where ``seen`` collects ``(path, Authorization)`` per request so a leaked token
+    is directly observable.
     """
     import http.server
     import threading
@@ -5378,11 +5370,10 @@ def _throwaway_origin(respond):
 class TestHubRedirectDoesNotReplayTheToken:
     """A 3xx must not hand ``Authorization: Bearer <hf_token>`` to another origin.
 
-    ``urllib.request.HTTPRedirectHandler.redirect_request`` copies every header except
-    content-length/content-type onto the redirect target with no host comparison, and this
-    module attaches the token via ``Request(headers=...)`` (so it lands in ``req.headers``,
-    not ``unredirected_hdrs``). ``HF_ENDPOINT`` is user-configurable, so the redirecting host
-    is not necessarily the Hub.
+    Stock ``HTTPRedirectHandler.redirect_request`` copies every header onto the target with no
+    host comparison, and this module attaches the token via ``Request(headers=...)`` (so it
+    lands in ``req.headers``, not ``unredirected_hdrs``). ``HF_ENDPOINT`` is user-configurable,
+    so the redirecting host is not necessarily the Hub.
     """
 
     def setup_method(self):
@@ -5396,8 +5387,8 @@ class TestHubRedirectDoesNotReplayTheToken:
     def test_stock_urlopen_leaks_the_token_across_origins(self):
         """The mechanism itself, so this stays honest if urllib ever changes.
 
-        Nothing under test here: it is plain ``urllib.request.urlopen`` against two origins,
-        and it is exactly what every fetch in this module used to do.
+        Nothing under test: plain ``urllib.request.urlopen`` against two origins, exactly what
+        every fetch in this module used to do.
         """
         import urllib.request
 
@@ -5448,10 +5439,10 @@ class TestHubRedirectDoesNotReplayTheToken:
         assert (data, ok) == ([], True)
 
     def test_same_origin_redirect_keeps_the_token(self, monkeypatch):
-        """Negative control. The Hub really does this: ``/gpt2/raw/main/config.json`` 307s to
-        ``/openai-community/gpt2/raw/main/config.json``, and ``/api/models/gpt2/tree/main``
-        307s likewise. Dropping the header on those turns an authenticated read of a renamed
-        private repo into a 401, which this module caches as a definitive "absent".
+        """Negative control. The Hub really 307s ``/gpt2/raw/main/config.json`` to
+        ``/openai-community/gpt2/raw/main/config.json`` (and the tree endpoint likewise), so
+        dropping the header there turns an authenticated read of a renamed private repo into a
+        401, which this module caches as a definitive "absent".
         """
         import utils.transformers_version as tv
 
@@ -5523,8 +5514,7 @@ class TestHubRedirectDoesNotReplayTheToken:
     def test_every_authenticated_fetch_uses_the_opener(self):
         """Guards the remaining call sites, and any added later.
 
-        ``hf_endpoint_unreachable`` is the one exemption: it sends no credentials, so it has
-        nothing to replay across a redirect.
+        ``hf_endpoint_unreachable`` is the one exemption: it sends no credentials.
         """
         import ast
         import inspect
@@ -5557,8 +5547,7 @@ class TestHubRedirectDoesNotReplayTheToken:
 
 class TestPaginationOriginNormalizesDefaultPorts:
     """``https://host`` and ``https://host:443`` are one origin (RFC 6454), so a textual
-    ``netloc`` compare rejects an endpoint's own cursor and turns a multi-page listing
-    inconclusive (round 8 Codex)."""
+    ``netloc`` compare would reject an endpoint's own cursor."""
 
     def setup_method(self):
         _clear_scan_caches()
@@ -5596,8 +5585,8 @@ class TestPaginationOriginNormalizesDefaultPorts:
                 False,
                 "suffix",
             ),
-            # ``hostname`` drops userinfo, so it must be rejected before the compare: urllib
-            # sends the whole ``user@host`` string as the connection host.
+            # ``hostname`` drops userinfo, but urllib connects to the whole ``user@host``
+            # string, so reject it before comparing.
             ("https://mirror.internal", "https://mirror.internal@evil.example/api", False, "decoy"),
             (
                 "https://mirror.internal",
@@ -5657,9 +5646,8 @@ class TestPaginationOriginNormalizesDefaultPorts:
 
 
 class TestLinkRelIsFoundAtAnyParameterPosition:
-    """RFC 8288 lets ``rel`` sit anywhere in an entry's parameter list. Missing it makes
-    ``_hf_api_get_json`` report a truncated first page as a complete listing, which is
-    cacheable as a confirmed default tier (round 8 Codex)."""
+    """RFC 8288 lets ``rel`` sit anywhere in an entry's parameter list; missing it makes
+    ``_hf_api_get_json`` cache a truncated first page as a confirmed default tier."""
 
     def setup_method(self):
         _clear_scan_caches()
@@ -5738,8 +5726,8 @@ class TestLinkRelIsFoundAtAnyParameterPosition:
 
 
 class TestPublicReExportOf5xSymbolIsRecognized:
-    """``from transformers import TokenizersBackend`` is the public spelling of a class the
-    default 4.57.x tier does not have (round 8 Codex)."""
+    """``from transformers import TokenizersBackend`` is the public spelling of a class
+    4.57.x does not have."""
 
     def setup_method(self):
         _clear_scan_caches()
@@ -5794,9 +5782,8 @@ class TestPublicReExportOf5xSymbolIsRecognized:
 
 
 class TestRemoteScanDownloadsAreBounded:
-    """Workers activate a sidecar (and so run this scan) before the remote-code consent
-    gate, so a selected repo must not be able to spend unbounded requests or memory
-    (round 8 Codex)."""
+    """Workers run this scan before the remote-code consent gate, so a selected repo must not
+    be able to spend unbounded requests or memory."""
 
     def setup_method(self):
         _clear_scan_caches()
@@ -5820,8 +5807,7 @@ class TestRemoteScanDownloadsAreBounded:
         sources, complete = tv._fetch_hub_py_sources("org/hostile", None, budget)
         assert len(fetched) == tv._REMOTE_SCAN_MAX_FILES
         assert len(sources) == tv._REMOTE_SCAN_MAX_FILES
-        # Truncation is an incomplete closure, never a clean scan: the caller must not
-        # memoize a confirmed default tier from it.
+        # Truncation is an incomplete closure, never a clean scan, so nothing is memoized.
         assert complete is False
         assert budget.truncated is True
 
@@ -5865,8 +5851,7 @@ class TestRemoteScanDownloadsAreBounded:
         assert complete is False
 
     def test_one_enormous_source_is_not_read_into_memory(self, monkeypatch):
-        """The aggregate cap can only charge a file already read, so the read itself is
-        bounded."""
+        """The aggregate cap can only charge a file already read, so bound the read."""
         import utils.transformers_version as tv
 
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
