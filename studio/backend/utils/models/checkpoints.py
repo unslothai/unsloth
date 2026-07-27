@@ -139,6 +139,36 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
     return None
 
 
+def _read_model_metadata(model_dir: Path) -> dict:
+    """Read export-relevant metadata from a model or adapter directory."""
+    config_file = model_dir / "config.json"
+    adapter_config = model_dir / "adapter_config.json"
+    metadata: dict = {}
+    try:
+        if adapter_config.exists():
+            cfg = json.loads(adapter_config.read_text())
+            metadata["base_model"] = cfg.get("base_model_name_or_path")
+            metadata["peft_type"] = cfg.get("peft_type")
+            metadata["lora_rank"] = cfg.get("r")
+        elif config_file.exists():
+            cfg = json.loads(config_file.read_text())
+            metadata["base_model"] = cfg.get("_name_or_path")
+
+        if config_file.exists():
+            config = json.loads(config_file.read_text())
+            quant_cfg = config.get("quantization_config")
+            if (
+                isinstance(quant_cfg, dict)
+                and quant_cfg.get("quant_method") == "bitsandbytes"
+            ):
+                metadata["is_quantized"] = True
+                logger.info("Detected BNB-quantized model: %s", model_dir.name)
+    except (OSError, TypeError, json.JSONDecodeError):
+        # A damaged metadata file must not hide other usable checkpoints in the run.
+        pass
+    return metadata
+
+
 def scan_checkpoints(
     outputs_dir: str = str(outputs_root()),
 ) -> List[Tuple[str, List[Tuple[str, str, Optional[float]]], dict]]:
@@ -147,10 +177,12 @@ def scan_checkpoints(
     Returns:
         [(model_name, [(display_name, checkpoint_path, loss), ...], metadata), ...]
         metadata keys (optional): base_model, peft_type, lora_rank.
-        First checkpoint entry is the main adapter; its loss mirrors the latest
-        (highest-step) intermediate checkpoint. Numbered checkpoints are sorted
-        by numeric step descending; non-numbered checkpoint-* dirs keep the
-        previous lexicographic directory order.
+        For a completed run, the first checkpoint entry is the main adapter and
+        its loss mirrors the latest (highest-step) intermediate checkpoint. An
+        interrupted run without a loadable root contains only its usable
+        intermediate checkpoints. Numbered checkpoints are sorted by numeric
+        step descending; non-numbered checkpoint-* dirs keep the previous
+        lexicographic directory order.
     """
     models = []
     outputs_path = resolve_output_dir(outputs_dir)
@@ -164,37 +196,28 @@ def scan_checkpoints(
             if not item.is_dir():
                 continue
 
-            config_file = item / "config.json"
-            adapter_config = item / "adapter_config.json"
+            root_is_model = _is_model_dir(item)
 
-            if not (config_file.exists() or adapter_config.exists()):
+            # Discover checkpoints from disk rather than training history. This
+            # also recovers interrupted/copied runs whose root adapter was never
+            # saved (or whose Studio database no longer contains the run).
+            valid_checkpoints = []
+            for sub in item.iterdir():
+                if (
+                    sub.is_dir()
+                    and sub.name.startswith("checkpoint-")
+                    and _is_model_dir(sub)
+                ):
+                    valid_checkpoints.append(sub)
+            valid_checkpoints.sort(key = _checkpoint_sort_key)
+
+            if not root_is_model and not valid_checkpoints:
                 continue
 
-            # Training metadata from adapter_config.json / config.json
-            metadata: dict = {}
-            try:
-                if adapter_config.exists():
-                    cfg = json.loads(adapter_config.read_text())
-                    metadata["base_model"] = cfg.get("base_model_name_or_path")
-                    metadata["peft_type"] = cfg.get("peft_type")
-                    metadata["lora_rank"] = cfg.get("r")
-                elif config_file.exists():
-                    cfg = json.loads(config_file.read_text())
-                    metadata["base_model"] = cfg.get("_name_or_path")
-
-                # Detect BNB quantization from config.json
-                if config_file.exists():
-                    if "cfg" not in dir():
-                        cfg = json.loads(config_file.read_text())
-                    quant_cfg = cfg.get("quantization_config")
-                    if (
-                        isinstance(quant_cfg, dict)
-                        and quant_cfg.get("quant_method") == "bitsandbytes"
-                    ):
-                        metadata["is_quantized"] = True
-                        logger.info("Detected BNB-quantized model: %s", item.name)
-            except Exception:
-                pass
+            # Prefer root metadata for completed runs and otherwise use the
+            # newest on-disk checkpoint as the authoritative source.
+            metadata_source = item if root_is_model else valid_checkpoints[0]
+            metadata = _read_model_metadata(metadata_source)
 
             # Fallback: extract base model name from the folder name, e.g.
             # "unsloth_Llama-3.2-3B-Instruct_1771227800" → "unsloth/Llama-3.2-3B-Instruct"
@@ -213,28 +236,20 @@ def scan_checkpoints(
             # Valid training run.
             checkpoints = []
 
-            # Main adapter placeholder — loss filled from the last checkpoint below.
-            checkpoints.append((item.name, str(item), None))
-
-            # Scan for intermediate checkpoints (checkpoint-N subdirs).
-            valid_checkpoints = []
-            for sub in item.iterdir():
-                if not sub.is_dir() or not sub.name.startswith("checkpoint-"):
-                    continue
-                sub_config = sub / "config.json"
-                sub_adapter = sub / "adapter_config.json"
-                if sub_config.exists() or sub_adapter.exists():
-                    valid_checkpoints.append(sub)
+            # Only expose the run root when it is itself loadable. Interrupted
+            # runs still expose every usable checkpoint found underneath it.
+            if root_is_model:
+                checkpoints.append((item.name, str(item), None))
 
             intermediate_checkpoints = []
-            for sub in sorted(valid_checkpoints, key = _checkpoint_sort_key):
+            for sub in valid_checkpoints:
                 loss = _read_checkpoint_loss(sub)
                 intermediate_checkpoints.append((sub.name, str(sub), loss))
 
             checkpoints.extend(intermediate_checkpoints)
 
             # Assign the latest checkpoint's loss to the main adapter entry.
-            if intermediate_checkpoints:
+            if root_is_model and intermediate_checkpoints:
                 last_checkpoint_loss = intermediate_checkpoints[0][2]
                 checkpoints[0] = (
                     checkpoints[0][0],
