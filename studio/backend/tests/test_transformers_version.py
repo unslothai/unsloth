@@ -4272,6 +4272,81 @@ class TestScanSignatureCoversAutoMapConfigs:
         assert _remote_auto_map_tier(str(tmp_path))[0] == "530"
 
 
+class TestScanSignatureSeesSameSizedReplacement:
+    """size + mtime cannot see an archival redeploy that restores the timestamp, so the
+    signature also carries ctime and inode (round 7 Codex).
+
+    ``rsync --archive`` / ``tar -xp`` put back the original mtime, and a same-sized rewrite
+    leaves the size alone, so a long-lived worker kept serving the tier it computed from
+    code no longer on disk.
+    """
+
+    # Same byte length, so only the content differs.
+    V4_SRC = "from transformers.modeling_utils import PreTrainedModel  # pad!\n"
+
+    def setup_method(self):
+        _config_json_cache.clear()
+        _tokenizer_class_cache.clear()
+        _remote_auto_map_tier_cache.clear()
+        assert len(self.V4_SRC) == len(_V5_IMPORT)
+
+    def test_in_place_rewrite_with_restored_mtime_is_rescanned(self, tmp_path: Path):
+        _auto_map_checkpoint(tmp_path, self.V4_SRC)
+        assert _remote_auto_map_tier(str(tmp_path))[0] == "default"
+
+        entry = tmp_path / "modeling_custom.py"
+        before = entry.stat()
+        with open(entry, "r+") as handle:
+            handle.write(_V5_IMPORT)
+            handle.truncate()
+        os.utime(entry, ns = (before.st_atime_ns, before.st_mtime_ns))
+        after = entry.stat()
+        assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+
+        assert _remote_auto_map_tier(str(tmp_path))[0] == "530"
+
+    def test_atomic_replace_with_restored_mtime_is_rescanned(self, tmp_path: Path):
+        """The rename spelling of the same redeploy: new inode, same size and mtime."""
+        _auto_map_checkpoint(tmp_path, self.V4_SRC)
+        assert _remote_auto_map_tier(str(tmp_path))[0] == "default"
+
+        entry = tmp_path / "modeling_custom.py"
+        before = entry.stat()
+        staged = tmp_path / ".staged.py"
+        staged.write_text(_V5_IMPORT)
+        os.replace(staged, entry)
+        os.utime(entry, ns = (before.st_atime_ns, before.st_mtime_ns))
+        after = entry.stat()
+        assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+
+        assert _remote_auto_map_tier(str(tmp_path))[0] == "530"
+
+    def test_untouched_checkpoint_is_still_served_from_cache(
+        self, monkeypatch, tmp_path: Path
+    ):
+        """Negative control: the extra fields must not turn every lookup into a re-scan."""
+        import utils.transformers_version as tv
+
+        _auto_map_checkpoint(tmp_path, _V5_IMPORT)
+        assert _remote_auto_map_tier(str(tmp_path))[0] == "530"
+        monkeypatch.setattr(
+            tv,
+            "_remote_auto_map_py_contents",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("rescanned unchanged inputs")),
+        )
+        assert _remote_auto_map_tier(str(tmp_path))[0] == "530"
+        assert _remote_auto_map_tier(str(tmp_path))[0] == "530"
+
+    def test_reading_a_file_does_not_bust_the_cache(self, monkeypatch, tmp_path: Path):
+        """Negative control: atime moves on every read; only ctime/inode may invalidate."""
+        import utils.transformers_version as tv
+
+        _auto_map_checkpoint(tmp_path, _V5_IMPORT)
+        signature = tv._local_scan_signature(str(tmp_path))
+        (tmp_path / "modeling_custom.py").read_text()
+        assert tv._local_scan_signature(str(tmp_path)) == signature
+
+
 class TestTokenizerScanCacheFreshness:
     """The tokenizer cache must not answer from a checkpoint that has since changed."""
 
@@ -4862,6 +4937,127 @@ class TestOfflineAutoMapScanUsesTheHubCache:
         assert tv._hf_cache_snapshot_dir(str(tmp_path)) is None
         assert tv._hf_cache_snapshot_dir("./org/model") is None
         assert tv._hf_cache_snapshot_dir("org/sub/model") is None
+
+
+class TestInconclusiveScanFallsBackToTheHubCache:
+    """Online but inconclusive is not a negative: an already downloaded snapshot is the
+    code the load will execute, so read it instead of reporting the default tier (round 7
+    Codex).
+
+    Same fallback as the offline branch above; the trigger here is a transient Hub failure
+    while nominally online, which otherwise hands ``get_transformers_tier`` a bare
+    ``"default"`` it cannot tell apart from a repo that really has no 5.x import.
+    """
+
+    def setup_method(self):
+        _clear_scan_caches()
+
+    _snapshot = staticmethod(TestOfflineAutoMapScanUsesTheHubCache._snapshot)
+
+    @staticmethod
+    def _down(_req, timeout = 10):
+        raise OSError("temporary Hub outage")
+
+    def test_snapshot_answers_when_the_hub_is_unreachable(self, monkeypatch, tmp_path: Path):
+        import utils.transformers_version as tv
+
+        self._snapshot(tmp_path, "org/outage-5x", _V5_IMPORT)
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.setattr(tv, "_hub_urlopen", self._down)
+
+        tier, definitive = tv._remote_auto_map_tier("org/outage-5x")
+        assert tier == "530"
+        # The Hub still never answered, so the result stays provisional and nothing is
+        # memoized under the Hub id: a recovered Hub must re-scan.
+        assert definitive is False
+        assert not [key for key in _remote_auto_map_tier_cache if key[0] == "org/outage-5x"]
+
+    def test_tree_listing_failure_alone_still_uses_the_snapshot(
+        self, monkeypatch, tmp_path: Path
+    ):
+        """Only the repo listing fails; the configs read fine. Still inconclusive."""
+        import utils.transformers_version as tv
+
+        self._snapshot(tmp_path, "org/partial-5x", _V5_IMPORT)
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        cfg = json.dumps(
+            {
+                "model_type": "custom_remote",
+                "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
+            }
+        ).encode()
+
+        def _urlopen(req, timeout = 10):
+            if "/tree/" in req.full_url:
+                raise OSError("temporary Hub outage")
+            if req.full_url.endswith("/config.json"):
+                return _PagedResponse(cfg)
+            raise _http_error(req.full_url, 404)
+
+        monkeypatch.setattr(tv, "_hub_urlopen", _urlopen)
+        assert tv._remote_auto_map_tier("org/partial-5x") == ("530", False)
+
+    def test_no_snapshot_stays_default(self, monkeypatch, tmp_path: Path):
+        """Negative control: an outage with nothing downloaded invents no requirement.
+
+        A blanket 5.3 floor for every inconclusive scan would push plain repos onto the
+        5.3 sidecar for the length of any Hub outage, so the fallback is the snapshot and
+        only the snapshot.
+        """
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.setattr(tv, "_hub_urlopen", self._down)
+        assert tv._remote_auto_map_tier("org/never-downloaded") == ("default", False)
+
+    def test_snapshot_without_the_marker_stays_default(self, monkeypatch, tmp_path: Path):
+        """Negative control: the fallback reads the snapshot, it does not assume 5.x."""
+        import utils.transformers_version as tv
+
+        self._snapshot(tmp_path, "org/outage-plain", "import torch\n")
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.setattr(tv, "_hub_urlopen", self._down)
+        assert tv._remote_auto_map_tier("org/outage-plain") == ("default", False)
+
+    def test_definitive_negative_does_not_consult_the_snapshot(
+        self, monkeypatch, tmp_path: Path
+    ):
+        """Negative control: a repo that really has no auto_map keeps its cached negative.
+
+        A 404 is an answer, so a stale snapshot left over from an older revision must not
+        override it (that would resurrect the Hub-side staleness this PR declined to fix).
+        """
+        import utils.transformers_version as tv
+
+        self._snapshot(tmp_path, "org/plain-model", _V5_IMPORT)
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.setattr(
+            tv, "_hub_urlopen", lambda req, timeout = 10: _raise(_http_error(req.full_url, 404))
+        )
+        assert tv._remote_auto_map_tier("org/plain-model") == ("default", True)
+
+    def test_local_dir_does_not_consult_the_hub_cache(self, monkeypatch, tmp_path: Path):
+        """Negative control: a local checkpoint scans itself, never a same-named snapshot."""
+        import utils.transformers_version as tv
+
+        ckpt = tmp_path / "ckpt"
+        ckpt.mkdir()
+        _auto_map_checkpoint(ckpt, "import torch\n")
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.setattr(tv, "_hf_cache_snapshot_dir", lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("local dir consulted the hub cache")
+        ))
+        assert tv._remote_auto_map_tier(str(ckpt))[0] == "default"
+
+
+def _raise(exc):
+    raise exc
 
 
 class TestDynamicImportsOfVersionedModules:

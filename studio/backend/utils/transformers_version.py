@@ -1151,8 +1151,8 @@ def _remote_auto_map_py_matches(markers: tuple[str, ...], sources: list[str]) ->
 
 
 def _local_scan_signature(model_name: str) -> str | None:
-    """Signature of a local checkpoint's scan inputs (path + size + mtime), or ``""`` for a
-    Hub id. ``None`` when the walk fails, which means "do not cache".
+    """Signature of a local checkpoint's scan inputs (path + size + mtime + ctime + inode),
+    or ``""`` for a Hub id. ``None`` when the walk fails, which means "do not cache".
 
     Covers the ``.py`` files AND every config that can declare an ``auto_map``, because both
     decide the answer. A checkpoint materialized in stages can land its code first and gain
@@ -1162,6 +1162,19 @@ def _local_scan_signature(model_name: str) -> str | None:
     Folded into the scan cache keys (mirrors ``_probe_cache_key``) so a checkpoint whose
     remote code or whose declaration is written or replaced after a first lookup is
     re-scanned instead of reusing a stale answer.
+
+    Size and mtime alone do not see a same-sized replacement that restores the timestamp,
+    which is what an archival redeploy does (``rsync --archive``, ``tar -xp``): the
+    signature stays byte-identical and a long-lived worker keeps serving the tier it
+    computed from code that is no longer on disk. ``st_ctime_ns`` moves on any write to an
+    existing inode and ``st_ino`` moves when the file is replaced by rename, so the two
+    together cover both spellings of that redeploy at no extra cost -- both fields come
+    from the ``stat`` call already being made. A digest would also work but would read
+    every ``.py`` on each lookup, and this signature is recomputed on the hot path. On
+    Windows ``st_ctime_ns`` is a creation time rather than a change time, so only the
+    ``st_ino`` half applies there; that is strictly more than the previous signature saw.
+    A spurious miss (a touch, a chmod, a restore that moves the inode without changing
+    content) only costs one re-scan of local files, so this errs toward re-reading.
     """
     root = Path(model_name)
     if not _safe_is_dir(root):
@@ -1177,7 +1190,9 @@ def _local_scan_signature(model_name: str) -> str | None:
                 # Absent (or unreadable) contributes nothing; it starts contributing the
                 # moment it appears, which is exactly the change we must notice.
                 continue
-            parts.append(f"{path}:{st.st_size}:{st.st_mtime_ns}")
+            parts.append(
+                f"{path}:{st.st_size}:{st.st_mtime_ns}:{st.st_ctime_ns}:{st.st_ino}"
+            )
         return "\0".join(parts)
     except Exception as exc:
         logger.debug("Could not signature local scan inputs under %s: %s", model_name, exc)
@@ -1256,6 +1271,22 @@ def _remote_auto_map_tier(model_name: str, hf_token: str | None = None) -> tuple
         logger.info("Remote auto_map check: %s requires transformers 5.x", model_name)
     else:
         tier = "default"
+    if not definitive and tier == "default" and not _safe_is_dir(Path(model_name)):
+        # An inconclusive scan is not a negative. Nothing was read that says "default";
+        # the Hub simply did not answer, and the caller (get_transformers_tier) can only
+        # see the tier, so a bare "default" here is indistinguishable from a repo that
+        # really has no 5.x import and activates 4.57.x for code that needs 5.x. A
+        # snapshot already in the hub cache is the same code an offline load would
+        # execute, so read it instead of guessing -- the same fallback the _env_offline
+        # branch above makes, now also for a transient failure while nominally online.
+        # Only ever raises the tier (_higher_tier), and the answer stays non-definitive so
+        # nothing is cached under the Hub id and a recovered Hub re-scans. Deliberately
+        # not a blanket 5.3 floor: an unread config is inconclusive for every model, so
+        # flooring here would push plain non-remote-code repos onto the 5.3 sidecar for
+        # the length of any Hub outage.
+        snapshot = _hf_cache_snapshot_dir(model_name)
+        if snapshot is not None:
+            tier = _higher_tier(tier, _remote_auto_map_tier(str(snapshot), hf_token)[0])
     if definitive and signature is not None:
         _remote_auto_map_tier_cache[cache_key] = tier
     return tier, definitive
