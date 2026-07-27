@@ -61,6 +61,47 @@ def test_sanitize_query_keeps_public_terms():
     assert "FastAPI" in query and "SSE" in query
 
 
+@pytest.mark.parametrize(
+    "label",
+    (
+        "client_secret",
+        "client-secret",
+        "client secret",
+        "clientSecret",
+        "refresh_token",
+        "refreshToken",
+        "session_token",
+        "sessionToken",
+        "access_key",
+        "auth_token",
+        "bearer_token",
+        "private_key",
+    ),
+)
+def test_sanitize_query_redacts_composite_credential_labels(label):
+    value = "ordinarycredentialvalue"
+    assert _sanitize_public_query(f"Acme {label}={value} public sources") == "Acme public sources"
+
+
+def test_sanitize_query_redacts_namespaced_composite_credential_label():
+    value = "ordinarycredentialvalue"
+    cleaned = _sanitize_public_query(f"Acme oauth_refresh_token={value} public sources")
+    assert value not in cleaned
+    assert "public sources" in cleaned
+
+
+@pytest.mark.parametrize(
+    "query",
+    (
+        "OAuth client secret rotation and refresh token lifecycle",
+        "client_secret configuration and refresh_token rotation",
+        "token_count=128000 and secret_santa=history",
+    ),
+)
+def test_sanitize_query_keeps_public_composite_terms(query):
+    assert _sanitize_public_query(query) == query
+
+
 def test_sanitize_query_keeps_public_model_ids():
     query = _sanitize_public_query(
         "compare Claude-3-7-Sonnet-20250219 with Llama-4-Maverick-17B-128E-Instruct"

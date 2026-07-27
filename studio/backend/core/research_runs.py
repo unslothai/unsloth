@@ -55,7 +55,9 @@ _PROMPT_DELIMITER_TAGS = re.compile(
     re.IGNORECASE,
 )
 _QUERY_CREDENTIAL = re.compile(
-    r"""(?ix)\b(?:api[\s_-]?key|access[\s_-]?token|authorization|password|secret|token)\s*[:=]\s*
+    r"""(?ix)(?<![A-Za-z0-9])(?:api[\s_-]?key|access[\s_-]?(?:key|token)
+    |auth[\s_-]?token|bearer[\s_-]?token|client[\s_-]?secret|private[\s_-]?key
+    |refresh[\s_-]?token|session[\s_-]?token|authorization|password|secret|token)\s*[:=]\s*
     (?:"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,;]+)"""
 )
 # Bearer authorization tokens carry no key=value label, so the credential pattern above misses
