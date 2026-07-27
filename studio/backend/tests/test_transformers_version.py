@@ -4047,9 +4047,7 @@ class TestCachedConfigFallbackStaysInconclusive:
 
         monkeypatch.setattr(tv, "_hub_urlopen", _urlopen)
         # The stale snapshot on disk, downloaded before auto_map was added.
-        monkeypatch.setattr(
-            tv, "_config_json_from_hf_cache", lambda name: {"model_type": "custom"}
-        )
+        monkeypatch.setattr(tv, "_config_json_from_hf_cache", lambda name: {"model_type": "custom"})
         monkeypatch.setattr(tv, "_hf_cache_snapshot_dir", lambda name: None)
 
     def test_stale_snapshot_answer_is_not_definitive(self, monkeypatch, tmp_path):
