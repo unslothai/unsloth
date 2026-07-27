@@ -21,9 +21,9 @@ import {
   DocumentAttachmentIcon,
   PlusSignIcon,
   Search01Icon,
-  Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   useCallback,
@@ -205,12 +205,12 @@ function BlockSheetButton({
             {title}
           </p>
           {badge ? (
-            <Badge variant="outline" className="rounded-full text-[10px]">
+            <Badge variant="outline" className="rounded-full text-ui-10">
               {badge}
             </Badge>
           ) : null}
         </div>
-        <p className="break-words text-[11px] text-muted-foreground">
+        <p className="break-words text-ui-11 text-muted-foreground">
           {description}
         </p>
       </div>

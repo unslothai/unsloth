@@ -1,12 +1,4 @@
-"""Tests for install_python_stack NO_TORCH / IS_MACOS filtering logic.
-
-Covers:
-- _filter_requirements unit tests (synthetic + REAL requirements files)
-- NO_TORCH / IS_MACOS / IS_WINDOWS env var parsing
-- Subprocess-mock of install_python_stack() to verify overrides/triton/filtering
-  actually happen (or get skipped) under each platform/config combination
-- VCS URL and environment marker edge cases in filtering
-"""
+"""Tests for install_python_stack NO_TORCH / IS_MACOS requirement filtering."""
 
 from __future__ import annotations
 
@@ -21,7 +13,7 @@ from unittest import mock
 
 import pytest
 
-# Add the studio directory so we can import install_python_stack
+# Add the studio directory so install_python_stack is importable.
 STUDIO_DIR = Path(__file__).resolve().parents[2] / "studio"
 sys.path.insert(0, str(STUDIO_DIR))
 
@@ -59,7 +51,6 @@ class TestFilterRequirements:
         )
         result = ips._filter_requirements(req, ips.NO_TORCH_SKIP_PACKAGES)
         lines = Path(result).read_text(encoding = "utf-8").splitlines()
-        # Only numpy should remain (non-blank lines)
         non_blank = [l.strip() for l in lines if l.strip()]
         assert non_blank == ["numpy"], f"Expected only numpy, got: {non_blank}"
 
@@ -80,7 +71,7 @@ class TestFilterRequirements:
         result = ips._filter_requirements(req, ips.NO_TORCH_SKIP_PACKAGES)
         lines = Path(result).read_text(encoding = "utf-8").splitlines()
         non_blank = [l.strip() for l in lines if l.strip()]
-        # Comment starts with "#", not "torch-stoi", so it's preserved
+        # Comment lines start with "#", so they are preserved.
         assert len(non_blank) == 2
         assert non_blank[0].startswith("#")
         assert non_blank[1] == "numpy"
@@ -139,7 +130,7 @@ class TestFilterRequirements:
         )
         result = ips._filter_requirements(req, ips.NO_TORCH_SKIP_PACKAGES)
         content = Path(result).read_text(encoding = "utf-8")
-        # Blank lines should be preserved (not stripped)
+        # Blank lines must be preserved.
         assert "\n\n" in content or content.count("\n") >= 3
 
     def test_stacked_windows_and_no_torch_filters(self, tmp_path):
@@ -147,18 +138,15 @@ class TestFilterRequirements:
         req = self._write_req(
             tmp_path,
             """\
-            open_spiel
             triton_kernels
             torch-stoi
             timm
             numpy
         """,
         )
-        # First filter Windows packages, then NO_TORCH packages
+        # Filter Windows packages, then NO_TORCH packages.
         intermediate = ips._filter_requirements(req, ips.WINDOWS_SKIP_PACKAGES)
-        result = ips._filter_requirements(
-            Path(intermediate), ips.NO_TORCH_SKIP_PACKAGES
-        )
+        result = ips._filter_requirements(Path(intermediate), ips.NO_TORCH_SKIP_PACKAGES)
         lines = Path(result).read_text(encoding = "utf-8").splitlines()
         non_blank = [l.strip() for l in lines if l.strip()]
         assert non_blank == [
@@ -177,9 +165,7 @@ class TestFilterRequirements:
         result = ips._filter_requirements(req, ips.NO_TORCH_SKIP_PACKAGES)
         lines = Path(result).read_text(encoding = "utf-8").splitlines()
         non_blank = [l.strip() for l in lines if l.strip()]
-        assert non_blank == [
-            "numpy"
-        ], f"VCS URL line should be filtered, got: {non_blank}"
+        assert non_blank == ["numpy"], f"VCS URL line should be filtered, got: {non_blank}"
 
     def test_env_marker_line_filtered(self, tmp_path):
         """Package lines with env markers are still filtered by prefix."""
@@ -193,9 +179,7 @@ class TestFilterRequirements:
         result = ips._filter_requirements(req, ips.NO_TORCH_SKIP_PACKAGES)
         lines = Path(result).read_text(encoding = "utf-8").splitlines()
         non_blank = [l.strip() for l in lines if l.strip()]
-        assert non_blank == [
-            "numpy"
-        ], f"Env marker line should be filtered, got: {non_blank}"
+        assert non_blank == ["numpy"], f"Env marker line should be filtered, got: {non_blank}"
 
     def test_git_plus_url_not_over_matched(self, tmp_path):
         """A git+ URL whose path contains a skip package name but does NOT start with it."""
@@ -209,7 +193,7 @@ class TestFilterRequirements:
         result = ips._filter_requirements(req, ips.NO_TORCH_SKIP_PACKAGES)
         lines = Path(result).read_text(encoding = "utf-8").splitlines()
         non_blank = [l.strip() for l in lines if l.strip()]
-        # The git+ URL doesn't start with any skip package, so it is preserved
+        # git+ URL starts with no skip package, so it is preserved.
         assert len(non_blank) == 2, f"git+ URL should be preserved, got: {non_blank}"
 
 
@@ -237,19 +221,17 @@ class TestRealRequirementsFiltering:
         filtered = self._non_blank_non_comment(Path(result))
         original = self._non_blank_non_comment(EXTRAS_TXT)
 
-        # These must be gone
-        for pkg in ["torch-stoi", "timm", "openai-whisper", "transformers-cfg"]:
+        # Every NO_TORCH skip package present in extras.txt must be gone.
+        for pkg in ips.NO_TORCH_SKIP_PACKAGES:
             assert not any(
                 l.lower().startswith(pkg) for l in filtered
             ), f"{pkg} should be removed from extras.txt"
 
-        # Everything else must remain
+        # Everything else must remain.
         expected = [
             l
             for l in original
-            if not any(
-                l.strip().lower().startswith(p) for p in ips.NO_TORCH_SKIP_PACKAGES
-            )
+            if not any(l.strip().lower().startswith(p) for p in ips.NO_TORCH_SKIP_PACKAGES)
         ]
         assert filtered == expected, (
             f"Filtered extras.txt should match expected.\n"
@@ -259,9 +241,7 @@ class TestRealRequirementsFiltering:
 
     def test_extras_no_deps_txt_torchcodec_and_dlpack_removed(self):
         """extras-no-deps.txt: torchcodec and torch-c-dlpack-ext must be removed."""
-        result = ips._filter_requirements(
-            EXTRAS_NO_DEPS_TXT, ips.NO_TORCH_SKIP_PACKAGES
-        )
+        result = ips._filter_requirements(EXTRAS_NO_DEPS_TXT, ips.NO_TORCH_SKIP_PACKAGES)
         filtered = self._non_blank_non_comment(Path(result))
         original = self._non_blank_non_comment(EXTRAS_NO_DEPS_TXT)
 
@@ -273,9 +253,7 @@ class TestRealRequirementsFiltering:
         expected = [
             l
             for l in original
-            if not any(
-                l.strip().lower().startswith(p) for p in ips.NO_TORCH_SKIP_PACKAGES
-            )
+            if not any(l.strip().lower().startswith(p) for p in ips.NO_TORCH_SKIP_PACKAGES)
         ]
         assert filtered == expected
 
@@ -291,9 +269,7 @@ class TestRealRequirementsFiltering:
 
     def test_extras_no_deps_txt_trl_preserved(self):
         """trl should survive NO_TORCH filtering in extras-no-deps.txt."""
-        result = ips._filter_requirements(
-            EXTRAS_NO_DEPS_TXT, ips.NO_TORCH_SKIP_PACKAGES
-        )
+        result = ips._filter_requirements(EXTRAS_NO_DEPS_TXT, ips.NO_TORCH_SKIP_PACKAGES)
         filtered_text = Path(result).read_text(encoding = "utf-8").lower()
         assert "trl" in filtered_text, "trl should survive NO_TORCH filtering"
 
@@ -370,7 +346,6 @@ class TestIsMacosConstant:
 
     def test_is_macos_matches_platform(self):
         import sys
-
         expected = sys.platform == "darwin"
         assert ips.IS_MACOS is expected
 
@@ -379,9 +354,7 @@ class TestIsMacosConstant:
 
 
 class TestInstallPythonStackSubprocessMock:
-    """Monkeypatch subprocess.run to capture all pip/uv commands,
-    then verify which requirements files are used/skipped under
-    different NO_TORCH / IS_MACOS / IS_WINDOWS configurations."""
+    """Mock subprocess.run to verify which req files are used/skipped per config."""
 
     @pytest.fixture(autouse = True)
     def _check_req_files(self):
@@ -398,16 +371,11 @@ class TestInstallPythonStackSubprocessMock:
         *,
         skip_base: bool = True,
     ):
-        """Run install_python_stack() with mocked subprocess, capturing all commands.
-
-        Returns a list of string-joined commands (each element is ' '.join(cmd)).
-        """
+        """Run install_python_stack() with mocked subprocess; return joined commands."""
         captured_cmds: list[list[str]] = []
 
         def mock_run(cmd, **kw):
-            captured_cmds.append(
-                list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)]
-            )
+            captured_cmds.append(list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)])
             return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
         env = {"SKIP_STUDIO_BASE": "1"} if skip_base else {}
@@ -419,11 +387,12 @@ class TestInstallPythonStackSubprocessMock:
             mock.patch.object(ips, "USE_UV", True),
             mock.patch.object(ips, "UV_NEEDS_SYSTEM", False),
             mock.patch.object(ips, "VERBOSE", False),
+            mock.patch.object(ips, "_ensure_flash_attn", return_value = None),
+            mock.patch.object(ips, "_has_usable_nvidia_gpu", return_value = False),
+            mock.patch.object(ips, "_has_rocm_gpu", return_value = False),
             mock.patch("subprocess.run", side_effect = mock_run),
             mock.patch.object(ips, "_bootstrap_uv", return_value = True),
-            mock.patch.object(
-                ips, "LOCAL_DD_UNSTRUCTURED_PLUGIN", Path("/fake/plugin")
-            ),
+            mock.patch.object(ips, "LOCAL_DD_UNSTRUCTURED_PLUGIN", Path("/fake/plugin")),
             mock.patch("pathlib.Path.is_dir", return_value = True),
             mock.patch("pathlib.Path.is_file", return_value = True),
         ):
@@ -466,9 +435,7 @@ class TestInstallPythonStackSubprocessMock:
         has_extras_nd = self._cmds_contain_file(cmds, "extras-no-deps.txt") or any(
             "-r" in cmd and "tmp" in cmd.lower() for cmd in cmds
         )
-        assert (
-            has_extras_nd
-        ), "extras-no-deps.txt (or its filtered temp) should be called"
+        assert has_extras_nd, "extras-no-deps.txt (or its filtered temp) should be called"
 
     # -- IS_WINDOWS=True + NO_TORCH=True (stacked) --
 
@@ -489,11 +456,11 @@ class TestInstallPythonStackSubprocessMock:
     # -- Normal Linux path (NO_TORCH=False, IS_MACOS=False, IS_WINDOWS=False) --
 
     def test_normal_linux_includes_overrides(self):
-        """Normal Linux: overrides.txt IS called."""
+        """Normal Linux: torchao override step runs (via --reinstall, not overrides.txt)."""
         cmds = self._capture_install(no_torch = False, is_macos = False, is_windows = False)
-        assert self._cmds_contain_file(
-            cmds, "overrides.txt"
-        ), "overrides.txt should be called on normal Linux"
+        assert any(
+            "--reinstall" in cmd for cmd in cmds
+        ), "torchao override step (--reinstall) should be called on normal Linux"
 
     def test_normal_linux_includes_triton(self):
         """Normal Linux: triton-kernels.txt IS called."""
@@ -526,12 +493,7 @@ class TestInstallPythonStackSubprocessMock:
         ), "triton-kernels.txt should be skipped on Windows even without NO_TORCH"
 
     def test_windows_only_includes_overrides(self):
-        """Windows (without NO_TORCH): overrides IS called (via filtered temp file).
-
-        On Windows, all req files go through _filter_requirements(WINDOWS_SKIP_PACKAGES),
-        so the command uses a temp file, not overrides.txt directly. We check for
-        --reinstall (uv translation of --force-reinstall) which is unique to overrides.
-        """
+        """Windows (no NO_TORCH): overrides runs via filtered temp file (check --reinstall)."""
         cmds = self._capture_install(no_torch = False, is_macos = False, is_windows = True)
         assert any(
             "--reinstall" in cmd for cmd in cmds
@@ -567,17 +529,13 @@ class TestOverridesSkip:
     def test_no_torch_guard_exists_in_source(self):
         """The install_python_stack source must contain a NO_TORCH guard around overrides."""
         source = Path(ips.__file__).read_text(encoding = "utf-8")
-        assert (
-            "if NO_TORCH:" in source
-        ), "NO_TORCH guard not found in install_python_stack.py"
+        assert "if NO_TORCH:" in source, "NO_TORCH guard not found in install_python_stack.py"
 
     def test_overrides_skipped_when_no_torch(self):
         """With NO_TORCH=True on the module, pip_install should NOT be called for overrides."""
         source = Path(ips.__file__).read_text(encoding = "utf-8")
         overrides_match = re.search(r"if NO_TORCH:.*?overrides", source, re.DOTALL)
-        assert (
-            overrides_match is not None
-        ), "Expected NO_TORCH conditional before overrides install"
+        assert overrides_match is not None, "Expected NO_TORCH conditional before overrides install"
 
 
 # ── install.sh --no-torch flag tests ──────────────────────────────────
@@ -596,33 +554,21 @@ class TestInstallShNoTorchFlag:
 
     def test_no_torch_flag_in_case_statement(self):
         """--no-torch must appear in the flag parser case statement."""
-        assert (
-            "--no-torch)" in self.source
-        ), "--no-torch not found in install.sh flag parser"
+        assert "--no-torch)" in self.source, "--no-torch not found in install.sh flag parser"
 
     def test_no_torch_flag_variable_initialized(self):
         """_NO_TORCH_FLAG must be initialized to false."""
-        assert (
-            "_NO_TORCH_FLAG=false" in self.source
-        ), "_NO_TORCH_FLAG=false not found in install.sh"
+        assert "_NO_TORCH_FLAG=false" in self.source, "_NO_TORCH_FLAG=false not found in install.sh"
 
     def test_skip_torch_variable_exists(self):
         """SKIP_TORCH variable must be defined."""
-        assert (
-            "SKIP_TORCH=false" in self.source
-        ), "SKIP_TORCH=false not found in install.sh"
-        assert (
-            "SKIP_TORCH=true" in self.source
-        ), "SKIP_TORCH=true not found in install.sh"
+        assert "SKIP_TORCH=false" in self.source, "SKIP_TORCH=false not found in install.sh"
+        assert "SKIP_TORCH=true" in self.source, "SKIP_TORCH=true not found in install.sh"
 
     def test_skip_torch_driven_by_flag_and_mac_intel(self):
         """SKIP_TORCH must check both _NO_TORCH_FLAG and MAC_INTEL."""
-        assert (
-            "_NO_TORCH_FLAG" in self.source
-        ), "_NO_TORCH_FLAG not referenced in SKIP_TORCH logic"
-        assert (
-            "MAC_INTEL" in self.source
-        ), "MAC_INTEL not referenced in SKIP_TORCH logic"
+        assert "_NO_TORCH_FLAG" in self.source, "_NO_TORCH_FLAG not referenced in SKIP_TORCH logic"
+        assert "MAC_INTEL" in self.source, "MAC_INTEL not referenced in SKIP_TORCH logic"
 
     def test_unsloth_no_torch_uses_skip_torch(self):
         """UNSLOTH_NO_TORCH must reference $SKIP_TORCH, not $MAC_INTEL."""
@@ -630,18 +576,12 @@ class TestInstallShNoTorchFlag:
 
         matches = re.findall(r'UNSLOTH_NO_TORCH="\$(\w+)"', self.source)
         for var in matches:
-            assert (
-                var == "SKIP_TORCH"
-            ), f"UNSLOTH_NO_TORCH references ${var} instead of $SKIP_TORCH"
+            assert var == "SKIP_TORCH", f"UNSLOTH_NO_TORCH references ${var} instead of $SKIP_TORCH"
 
     def test_cpu_hint_message_exists(self):
         """CPU hint message must exist in install.sh."""
-        assert (
-            "No NVIDIA GPU detected" in self.source
-        ), "CPU hint message not found in install.sh"
-        assert (
-            "--no-torch" in self.source
-        ), "--no-torch suggestion not found in CPU hint"
+        assert "No GPU detected" in self.source, "CPU hint message not found in install.sh"
+        assert "--no-torch" in self.source, "--no-torch suggestion not found in CPU hint"
 
     def test_no_torch_flag_parsing_subprocess(self):
         """--no-torch flag sets _NO_TORCH_FLAG=true (subprocess test)."""

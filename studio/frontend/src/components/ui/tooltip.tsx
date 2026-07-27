@@ -10,8 +10,12 @@ import { cn } from "@/lib/utils";
 type ToggleFn = () => void;
 const TooltipToggleCtx = createContext<ToggleFn | null>(null);
 
+// Default to instant open (no hover delay). Most tooltips in the app —
+// chat-area icon labels, sidebar nav labels, the context/token
+// calculators — should feel snappy. Consumers that want a delay still
+// pass an explicit `delayDuration` prop.
 function TooltipProvider({
-  delayDuration = 400,
+  delayDuration = 0,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
   return (
@@ -44,16 +48,14 @@ function Tooltip({
   }, []);
 
   return (
-    <TooltipProvider>
-      <TooltipToggleCtx.Provider value={toggle}>
-        <TooltipPrimitive.Root
-          data-slot="tooltip"
-          open={isControlled ? controlledOpen : clickOpen || undefined}
-          onOpenChange={onOpenChange}
-          {...props}
-        />
-      </TooltipToggleCtx.Provider>
-    </TooltipProvider>
+    <TooltipToggleCtx.Provider value={toggle}>
+      <TooltipPrimitive.Root
+        data-slot="tooltip"
+        open={isControlled ? controlledOpen : clickOpen || undefined}
+        onOpenChange={onOpenChange}
+        {...props}
+      />
+    </TooltipToggleCtx.Provider>
   );
 }
 
@@ -65,9 +67,14 @@ function TooltipTrigger({
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLButtonElement>) => {
+      // Run the composed handler first: when this trigger wraps another Radix
+      // trigger (e.g. DialogTrigger around an attachment tile), that trigger's
+      // action is skipped if the event is already default-prevented.
+      onClick?.(e);
+      // preventDefault keeps Radix Tooltip's internal close-on-click from
+      // undoing the tap-toggle below (its composed handler checks it).
       e.preventDefault();
       toggle?.();
-      onClick?.(e);
     },
     [toggle, onClick],
   );
@@ -81,25 +88,53 @@ function TooltipTrigger({
   );
 }
 
+type TooltipVariant = "default" | "rich" | "none";
+
+// `default` applies the compact black-pill styling shared with the
+// sidebar/chat icon labels. `rich` opts into the larger multi-row
+// popover surface used for timing/context breakdowns. `none` is an
+// escape hatch for tooltips that need to bring their own surface.
 function TooltipContent({
+  variant = "default",
   className,
   sideOffset = 0,
   children,
   ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Content>) {
+}: React.ComponentProps<typeof TooltipPrimitive.Content> & {
+  variant?: TooltipVariant;
+}) {
+  // Single-line compact tooltips render as a full pill; wrapped ones keep
+  // the squarer corners so tall pills do not look like capsules. A ref
+  // callback measures on mount: Radix mounts the portal content without
+  // re-rendering this wrapper, so an effect here would never see the node.
+  const measureRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      if (!el || variant !== "default") return;
+      const cs = getComputedStyle(el);
+      const lineHeight = Number.parseFloat(cs.lineHeight) || 16;
+      const innerHeight =
+        el.clientHeight -
+        Number.parseFloat(cs.paddingTop) -
+        Number.parseFloat(cs.paddingBottom);
+      el.classList.toggle("rounded-full!", innerHeight < lineHeight * 1.5);
+    },
+    [variant],
+  );
   return (
     <TooltipPrimitive.Portal>
       <TooltipPrimitive.Content
+        ref={measureRef}
         data-slot="tooltip-content"
         sideOffset={sideOffset}
         className={cn(
-          "data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-[state=delayed-open]:animate-in data-[state=delayed-open]:fade-in-0 data-[state=delayed-open]:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 rounded-2xl corner-squircle px-3 py-1.5 text-xs **:data-[slot=kbd]:rounded-4xl bg-foreground text-background border border-foreground/40 shadow-lg z-[999999] w-fit max-w-xs origin-(--radix-tooltip-content-transform-origin)",
+          "z-[999999] w-fit max-w-xs",
+          variant === "default" && "tooltip-compact",
+          variant === "rich" && "tooltip-rich",
           className,
         )}
         {...props}
       >
         {children}
-        <TooltipPrimitive.Arrow className="size-2.5 translate-y-[calc(-50%_-_2px)] rotate-45 rounded-[2px] data-[side=left]:translate-x-[-1.5px] data-[side=right]:translate-x-[1.5px] bg-foreground fill-foreground z-[999999] translate-y-[calc(-50%_-_2px)]" />
       </TooltipPrimitive.Content>
     </TooltipPrimitive.Portal>
   );

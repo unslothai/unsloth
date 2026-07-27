@@ -10,6 +10,7 @@ export type CheckFormatResponse = {
   detected_audio_column?: string | null;
   detected_text_column?: string | null;
   detected_speaker_column?: string | null;
+  chat_column?: string | null;
   preview_samples?: Record<string, unknown>[] | null;
   total_rows?: number | null;
   is_image?: boolean;

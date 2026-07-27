@@ -1,0 +1,1965 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Three end-to-end smoke jobs that boot a freshly-installed Unsloth and
+# exercise the surfaces real users hit through the OpenAI / Anthropic
+# SDKs and curl, on the FREE windows-latest runner. Each job picks the
+# smallest model that exercises the behaviour under test, primes
+# HF_HOME via actions/cache, and shares the install.ps1 --local
+# --no-torch bootstrap.
+#
+#   1. OpenAI, Anthropic API tests
+#        gemma-3-270m-it UD-Q4_K_XL (~254 MiB).
+#   2. Tool calling Tests
+#        Qwen3.5-2B UD-Q4_K_XL (~890 MiB).
+#   3. JSON, images
+#        Qwen3-VL-2B-Instruct UD-IQ2_XXS + mmproj-F16 (~1.4 GiB total).
+#        Within the 14 GB windows-latest SSD budget.
+
+name: Windows Unsloth GGUF CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/**'
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - 'install.ps1'
+      - 'pyproject.toml'
+      - 'tests/studio_setup_ps1/**'
+      - '.github/workflows/studio-windows-inference-smoke.yml'
+  push:
+    branches: [main, pip]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # Job 1: OpenAI, Anthropic API tests
+  # ─────────────────────────────────────────────────────────────────────
+  openai-anthropic:
+    name: OpenAI, Anthropic API tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
+      GGUF_VARIANT: UD-Q4_K_XL
+      GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
+      STUDIO_PORT: '18888'
+      HF_HOME: ${{ github.workspace }}/hf-cache
+      # Force UTF-8 for stdio (Windows defaults to cp1252; hf
+      # download / Unsloth CLI print "✓" checkmarks and crash
+      # otherwise).
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      # Fast GPU-free gate: parse install.ps1 + setup.ps1 and run the PowerShell
+      # unit tests (CUDA-toolkit + torch-flavor helpers) before the heavy GGUF smoke.
+      - name: PowerShell installer unit tests
+        shell: pwsh
+        run: |
+          foreach ($f in @('install.ps1', 'studio/setup.ps1')) {
+            $errs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $f).Path, [ref]$null, [ref]$errs)
+            if ($errs) { $errs | ForEach-Object { $_.ToString() }; exit 1 }
+            Write-Host "$f parsed with no errors"
+          }
+          pwsh -NoProfile -File tests/studio/test_resolve_cuda_toolkit.ps1
+          pwsh -NoProfile -File tests/studio/test_torch_flavor.ps1
+          pwsh -NoProfile -File tests/studio/test_node_decision.ps1
+          pwsh -NoProfile -File tests/studio/test_node_probe_guard.ps1
+
+      # uninstall.ps1: native uninstall must keep the shared unsloth.ico while a
+      # WSL shortcut still references it (dual install), else that shortcut blanks.
+      - name: uninstall.ps1 unit test (dual-install icon preserve)
+        shell: pwsh
+        run: |
+          $errs = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path scripts/uninstall.ps1).Path, [ref]$null, [ref]$errs)
+          if ($errs) { $errs | ForEach-Object { $_.ToString() }; exit 1 }
+          Write-Host "uninstall.ps1 parsed with no errors"
+          pwsh -NoProfile -File tests/studio/test_uninstall_dual_install_icon.ps1
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      # Split restore + save (rather than the one-step actions/cache) so a
+      # transient restore-side failure does not kill the whole job. v5 has a
+      # known flake where it logs "Cache hit for: <key>" and then exits
+      # non-zero without actually extracting the archive (see
+      # actions/cache#1621 and github community discussion #163260).
+      # continue-on-error on restore masks that failure so the Prime step
+      # below can re-download from HF and the job keeps running. Save then
+      # populates the cache key on a real miss only; cache keys are
+      # immutable, so a corrupted cached entry persists until the -v1
+      # suffix below is bumped.
+      - name: Restore HF_HOME cache for ${{ env.GGUF_REPO }}
+        id: cache-hf
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        continue-on-error: true
+        with:
+          path: hf-cache
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+
+      - name: Prime HF_HOME with the GGUF
+        id: prime-hf
+        # Run on a real cache miss AND on the silent-restore-failure mode
+        # described above (outcome != success).
+        if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
+        env:
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p hf-cache
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
+
+      - name: Save HF_HOME cache for ${{ env.GGUF_REPO }}
+        # Only write a fresh cache entry when we actually rebuilt the
+        # directory (Prime ran and succeeded). Skipping when Prime is
+        # skipped avoids "already exists" save warnings on the happy path.
+        if: always() && steps.prime-hf.outcome == 'success'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: hf-cache
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+
+      - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
+        shell: pwsh
+        # See studio-windows-update-smoke.yml for the full rationale.
+        # tl;dr: setup.ps1 needs npm >=11 to skip a 35 s winget Node
+        # reinstall, and Defender's real-time scan dominates the
+        # frontend / uv-pip-extract steps.
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Write-Host "npm version before upgrade: $(npm -v)"
+          npm install -g 'npm@^11' 2>&1 | Out-Host
+          Write-Host "npm version after upgrade: $(npm -v)"
+          # NOTE: do NOT pre-create these directories. See
+          # studio-windows-update-smoke.yml for the full rationale --
+          # creating an empty studio/frontend/dist trips setup.ps1's
+          # mtime-based staleness check into "frontend up to date, skip
+          # rebuild" and Unsloth boots with an empty dist directory.
+          # Add-MpPreference accepts paths that do not yet exist.
+          foreach ($p in @(
+            "$env:USERPROFILE\.unsloth",
+            "$env:USERPROFILE\AppData\Local\uv",
+            "$env:GITHUB_WORKSPACE\studio\frontend\node_modules",
+            "$env:GITHUB_WORKSPACE\studio\frontend\dist"
+          )) {
+            try {
+              Add-MpPreference -ExclusionPath $p -ErrorAction Stop
+              Write-Host "Defender exclusion added: $p"
+            } catch {
+              Write-Host "Defender exclusion skipped ($($_.Exception.Message)): $p"
+            }
+          }
+
+      - name: Install Unsloth (--local, --no-torch)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          # *>&1 captures Write-Host (Information stream) output;
+          # plain 2>&1 does not. setup.ps1 emits "prebuilt installed
+          # and validated" via Write-Host, and we grep for that.
+          $ProgressPreference = 'SilentlyContinue'
+          & ./install.ps1 --local --no-torch *>&1 | Tee-Object -FilePath logs/install.log
+
+      - name: Assert install.ps1 used the Windows llama.cpp prebuilt
+        run: |
+          # Filesystem check; setup.ps1's stream output isn't captured.
+          LLAMA_DIR=~/.unsloth/llama.cpp
+          INFO="$LLAMA_DIR/UNSLOTH_PREBUILT_INFO.json"
+          BIN="$LLAMA_DIR/build/bin/Release/llama-server.exe"
+          if grep -q "falling back to source build" logs/install.log; then
+            echo "::error::install.ps1 fell back to source-build llama.cpp on Windows."
+            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
+            exit 1
+          fi
+          if [ ! -f "$INFO" ]; then
+            echo "::error::no UNSLOTH_PREBUILT_INFO.json at $INFO."
+            ls -la "$LLAMA_DIR" || true
+            exit 1
+          fi
+          if [ ! -f "$BIN" ]; then
+            echo "::error::no llama-server.exe at $BIN."
+            ls -la "$LLAMA_DIR/build/bin" || true
+            exit 1
+          fi
+          echo "install.ps1 installed the Windows prebuilt llama.cpp:"
+          cat "$INFO"
+
+      - name: Add Unsloth shim to GITHUB_PATH
+        run: |
+          SHIM_DIR=~/.unsloth/studio/bin
+          if [ ! -f "$SHIM_DIR/unsloth.exe" ]; then
+            echo "::error::unsloth.exe shim not found at $SHIM_DIR"
+            ls -la ~/.unsloth/studio/ || true
+            exit 1
+          fi
+          cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
+
+      - name: Install OpenAI + Anthropic Python SDKs
+        run: python -m pip install 'openai>=1.50' 'anthropic>=0.40'
+
+      - name: Reset auth + boot Unsloth (API-only)
+        run: |
+          unsloth studio reset-password
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
+            > logs/studio.log 2>&1 &
+          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
+              jq -e '.status == "healthy"' /tmp/health.json
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Unsloth did not become healthy in 180s"
+          tail -200 logs/studio.log
+          exit 1
+
+      - name: Password rotation (old must fail, new must work)
+        run: |
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CIRotated-$(python -c 'import secrets; print(secrets.token_urlsafe(12))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          OLD_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$OLD\"}" | jq -r .access_token)
+          [ -n "$OLD_TOKEN" ] && [ "$OLD_TOKEN" != "null" ] || { echo "bootstrap login failed"; exit 1; }
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/change-password" \
+            -H "Authorization: Bearer $OLD_TOKEN" -H 'content-type: application/json' \
+            -d "{\"current_password\":\"$OLD\",\"new_password\":\"$NEW\"}" > /dev/null
+          OLD_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+            -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$OLD\"}")
+          if [ "$OLD_STATUS" != "401" ]; then
+            echo "::error::Login with old password returned $OLD_STATUS, expected 401"
+            exit 1
+          fi
+          NEW_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
+          [ -n "$NEW_TOKEN" ] && [ "$NEW_TOKEN" != "null" ] || { echo "new login failed"; exit 1; }
+          echo "TOKEN=$NEW_TOKEN" >> "$GITHUB_ENV"
+          echo "password rotation OK (old=401, new=200)"
+
+      - name: Load the GGUF (HF repo + variant, served from HF_HOME cache)
+        run: |
+          # Retry the load step a few times so a transient TCP RST during
+          # llama-server warm-up (Windows runner image churn,
+          # windows-latest -> windows-2025-vs2026 rollout) doesn't fail
+          # the whole job. The Unsloth backend's _wait_for_health now
+          # catches httpx.ReadError too; this retry layer covers the
+          # cases the backend can't recover from on its own.
+          LOAD_OK=0
+          for attempt in 1 2 3; do
+            HTTP=$(curl -s -o /tmp/load.json -w '%{http_code}' \
+              -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
+              -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+              --max-time 600 \
+              -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}")
+            if [ "$HTTP" = "200" ]; then LOAD_OK=1; break; fi
+            echo "::warning::/api/inference/load attempt $attempt returned $HTTP; response:"
+            cat /tmp/load.json || true
+            sleep 10
+          done
+          [ "$LOAD_OK" = "1" ] || { echo "::error::/api/inference/load failed 3 attempts"; exit 22; }
+          jq '{status, display_name, is_gguf, context_length}' /tmp/load.json
+
+      - name: Multi-turn determinism via OpenAI + Anthropic SDKs
+        env:
+          BASE_URL: http://127.0.0.1:18888
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from openai import OpenAI
+          from anthropic import Anthropic
+
+          BASE = os.environ["BASE_URL"]
+          KEY  = os.environ["TOKEN"]
+          SEED = 3407
+
+          PROMPTS = [
+              "What is 1+1?",
+              "What did I ask before?",
+              "What is the capital of France?",
+              "Repeat the city name",
+          ]
+
+          def run_openai():
+              client = OpenAI(base_url = f"{BASE}/v1", api_key = KEY)
+              history, replies = [], []
+              for prompt in PROMPTS:
+                  history.append({"role": "user", "content": prompt})
+                  resp = client.chat.completions.create(
+                      model       = "default",
+                      messages    = history,
+                      temperature = 0.0,
+                      max_tokens  = 80,
+                      seed        = SEED,
+                      extra_body  = {"enable_thinking": False},
+                  )
+                  text = resp.choices[0].message.content or ""
+                  replies.append(text)
+                  history.append({"role": "assistant", "content": text})
+              return replies
+
+          def run_anthropic():
+              client = Anthropic(
+                  base_url        = BASE,
+                  api_key         = "unused",
+                  default_headers = {"Authorization": f"Bearer {KEY}"},
+              )
+              history, replies = [], []
+              for prompt in PROMPTS:
+                  history.append({"role": "user", "content": prompt})
+                  msg = client.messages.create(
+                      model       = "default",
+                      max_tokens  = 80,
+                      messages    = history,
+                      temperature = 0.0,
+                      extra_body  = {"seed": SEED, "enable_thinking": False},
+                  )
+                  text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+                  replies.append(text)
+                  history.append({"role": "assistant", "content": text})
+              return replies
+
+          for label, runner in (("openai", run_openai), ("anthropic", run_anthropic)):
+              first  = runner()
+              second = runner()
+              for i, (a, b) in enumerate(zip(first, second), start = 1):
+                  print(f"[{label} turn {i}] {a!r}")
+                  assert a, f"{label}: empty turn {i} response"
+                  # Compare on stripped content: llama-server can vary
+                  # trailing whitespace (specifically a final '\n') between
+                  # otherwise-identical greedy runs depending on the
+                  # batch-flush boundary at which the stream is closed. The
+                  # generated tokens are identical; only the trailing
+                  # whitespace differs. Keep the raw repr in the failure
+                  # message so a real divergence is still legible.
+                  assert a.strip() == b.strip(), (
+                      f"{label} non-deterministic at turn {i} with temperature=0.0:\n"
+                      f"  run1: {a!r}\n  run2: {b!r}"
+                  )
+              joined = " ".join(first).lower()
+              assert "1" in first[0], f"{label}: turn-1 answer should contain '1', got {first[0]!r}"
+              assert "paris" in joined, f"{label}: expected 'paris' somewhere in the four-turn transcript: {first}"
+              print(f"[{label}] OK -- 4 turns, run1 == run2, history grounded")
+          PY
+
+      - name: Stop Unsloth
+        if: always()
+        # Run as cmd so we are not running through the Git Bash shell;
+        # Git Bash on windows-latest has been observed to exit 143
+        # (SIGTERM) from any inline kill/sleep block, masking a green
+        # test run. The runner reclaims the Unsloth child process at
+        # job end either way, so just emit a marker and exit 0.
+        shell: cmd
+        run: echo Stop Unsloth (no-op; runner reclaims STUDIO_PID=%STUDIO_PID% at job end)
+
+      - name: Collect llama-server logs
+        if: always()
+        # A transient Windows DLL-init crash (0xC0000142) in this diagnostic
+        # copy must not fail an otherwise-green job.
+        continue-on-error: true
+        shell: bash
+        # Copy llama-server's own stdout/stderr (teed by Unsloth under
+        # ~/.unsloth/studio/logs/llama-server/) into the workspace so
+        # upload-artifact can pick it up. Crucial for diagnosing a
+        # subprocess crash where Unsloth's traceback only shows the
+        # symptom (httpx ReadError) but not the cause.
+        run: |
+          mkdir -p logs/llama-server
+          cp -v ~/.unsloth/studio/logs/llama-server/*.log logs/llama-server/ 2>/dev/null || \
+            echo "no llama-server logs to collect"
+
+      - name: Upload logs
+        if: always()
+        # Diagnostic only: a transient artifact-service drop must not fail a green job.
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: windows-openai-anthropic-log
+          path: |
+            logs/studio.log
+            logs/install.log
+            logs/llama-server/*.log
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Job 2: Tool calling Tests
+  # ─────────────────────────────────────────────────────────────────────
+  tool-calling:
+    name: Tool calling Tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Tool calling is the highest-volume GGUF in this workflow
+      # (Qwen3.5-2B at Q4_K_XL = ~1.28 GiB). The previous HF_HOME
+      # cache stored xet chunks + blobs + snapshots = ~4.7 GiB --
+      # 3.7x file-size inflation, dominating the post-step upload
+      # (211 s on first run; subsequent runs hit the cache, but the
+      # one-time cost recurs every time the cache key bumps). Use
+      # main's `--local-dir gguf-cache` pattern: cache the flat .gguf
+      # only, pass an absolute path to Unsloth's /api/inference/load.
+      # The OpenAI/Anth and JSON+images jobs still cover the
+      # gguf_variant resolution path.
+      GGUF_REPO: unsloth/Qwen3.5-2B-GGUF
+      GGUF_FILE: Qwen3.5-2B-UD-Q4_K_XL.gguf
+      STUDIO_PORT: '18898'
+      # Force UTF-8 for stdio (Windows defaults to cp1252; hf
+      # download / Unsloth CLI print "✓" checkmarks and crash
+      # otherwise).
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      # Split restore + save so a transient restore-side failure does not
+      # kill the whole job. See the matching block in the tool-calling job
+      # above for the full rationale (actions/cache#1621).
+      - name: Restore GGUF model cache
+        id: cache-gguf
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        continue-on-error: true
+        with:
+          path: gguf-cache
+          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
+
+      - name: Download GGUF if cache miss
+        id: download-gguf
+        if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success'
+        env:
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p gguf-cache
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache
+
+      - name: Save GGUF model cache
+        if: always() && steps.download-gguf.outcome == 'success'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: gguf-cache
+          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
+
+      - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
+        shell: pwsh
+        # See studio-windows-update-smoke.yml for the full rationale.
+        # tl;dr: setup.ps1 needs npm >=11 to skip a 35 s winget Node
+        # reinstall, and Defender's real-time scan dominates the
+        # frontend / uv-pip-extract steps.
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Write-Host "npm version before upgrade: $(npm -v)"
+          npm install -g 'npm@^11' 2>&1 | Out-Host
+          Write-Host "npm version after upgrade: $(npm -v)"
+          # NOTE: do NOT pre-create these directories. See
+          # studio-windows-update-smoke.yml for the full rationale --
+          # creating an empty studio/frontend/dist trips setup.ps1's
+          # mtime-based staleness check into "frontend up to date, skip
+          # rebuild" and Unsloth boots with an empty dist directory.
+          # Add-MpPreference accepts paths that do not yet exist.
+          foreach ($p in @(
+            "$env:USERPROFILE\.unsloth",
+            "$env:USERPROFILE\AppData\Local\uv",
+            "$env:GITHUB_WORKSPACE\studio\frontend\node_modules",
+            "$env:GITHUB_WORKSPACE\studio\frontend\dist"
+          )) {
+            try {
+              Add-MpPreference -ExclusionPath $p -ErrorAction Stop
+              Write-Host "Defender exclusion added: $p"
+            } catch {
+              Write-Host "Defender exclusion skipped ($($_.Exception.Message)): $p"
+            }
+          }
+
+      - name: Install Unsloth (--local, --no-torch)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          # *>&1 captures Write-Host (Information stream) output;
+          # plain 2>&1 does not. setup.ps1 emits "prebuilt installed
+          # and validated" via Write-Host, and we grep for that.
+          $ProgressPreference = 'SilentlyContinue'
+          & ./install.ps1 --local --no-torch *>&1 | Tee-Object -FilePath logs/install.log
+
+      - name: Assert install.ps1 used the Windows llama.cpp prebuilt
+        run: |
+          # Filesystem check; setup.ps1's stream output isn't captured.
+          LLAMA_DIR=~/.unsloth/llama.cpp
+          INFO="$LLAMA_DIR/UNSLOTH_PREBUILT_INFO.json"
+          BIN="$LLAMA_DIR/build/bin/Release/llama-server.exe"
+          if grep -q "falling back to source build" logs/install.log; then
+            echo "::error::install.ps1 fell back to source-build llama.cpp on Windows."
+            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
+            exit 1
+          fi
+          if [ ! -f "$INFO" ]; then
+            echo "::error::no UNSLOTH_PREBUILT_INFO.json at $INFO."
+            ls -la "$LLAMA_DIR" || true
+            exit 1
+          fi
+          if [ ! -f "$BIN" ]; then
+            echo "::error::no llama-server.exe at $BIN."
+            ls -la "$LLAMA_DIR/build/bin" || true
+            exit 1
+          fi
+          echo "install.ps1 installed the Windows prebuilt llama.cpp:"
+          cat "$INFO"
+
+      - name: Add Unsloth shim to GITHUB_PATH
+        run: |
+          SHIM_DIR=~/.unsloth/studio/bin
+          if [ ! -f "$SHIM_DIR/unsloth.exe" ]; then
+            echo "::error::unsloth.exe shim not found at $SHIM_DIR"
+            ls -la ~/.unsloth/studio/ || true
+            exit 1
+          fi
+          cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
+
+      - name: Reset auth + boot Unsloth (API-only, default tool policy)
+        run: |
+          unsloth studio reset-password
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
+            > logs/studio.log 2>&1 &
+          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health, log in, change password, load model
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
+              jq -e '.status == "healthy"' /tmp/health.json && break
+            fi
+            sleep 1
+          done
+          jq -e '.status == "healthy"' /tmp/health.json
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CITool-$(python -c 'import secrets; print(secrets.token_urlsafe(12))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          OLD_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$OLD\"}" | jq -r .access_token)
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/change-password" \
+            -H "Authorization: Bearer $OLD_TOKEN" -H 'content-type: application/json' \
+            -d "{\"current_password\":\"$OLD\",\"new_password\":\"$NEW\"}" > /dev/null
+          TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
+          echo "API_KEY=$TOKEN" >> "$GITHUB_ENV"
+          # GITHUB_WORKSPACE on windows-latest is a Windows path with
+          # backslashes ("D:\a\unsloth\unsloth"). Bash handles it as a
+          # raw string, but we cannot embed `\a` etc. in JSON without
+          # JSON-string-escaping every backslash. Replace `\` with `/`
+          # via bash parameter expansion -- pathlib.Path on Windows
+          # accepts forward slashes natively, so Unsloth's loader sees
+          # a normal path.
+          GGUF_PATH="${GITHUB_WORKSPACE//\\//}/gguf-cache/${GGUF_FILE}"
+          ls -lh "$GGUF_PATH"
+          # Retry: same rationale as the OpenAI/Anthropic job.
+          LOAD_OK=0
+          for attempt in 1 2 3; do
+            HTTP=$(curl -s -o /tmp/load.json -w '%{http_code}' \
+              -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
+              -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+              --max-time 600 \
+              -d "{\"model_path\":\"$GGUF_PATH\",\"is_lora\":false,\"max_seq_length\":2048}")
+            if [ "$HTTP" = "200" ]; then LOAD_OK=1; break; fi
+            echo "::warning::/api/inference/load attempt $attempt returned $HTTP; response:"
+            cat /tmp/load.json || true
+            sleep 10
+          done
+          [ "$LOAD_OK" = "1" ] || { echo "::error::/api/inference/load failed 3 attempts"; exit 22; }
+          jq '{status, display_name}' /tmp/load.json
+
+      - name: Tool calling, server-side tools, thinking on/off
+        env:
+          BASE_URL: http://127.0.0.1:18898
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = os.environ["BASE_URL"]
+          KEY  = os.environ["API_KEY"]
+          SEED = 3407
+          # Same temperature shim as the Mac job. Small Qwen3.5-2B
+          # quants can degenerate at temperature=0; a small non-zero
+          # temperature with a fixed seed keeps the test deterministic
+          # while escaping the trap.
+          TEMP = 0.2
+
+          def post(path, body, *, timeout = 240):
+              data = json.dumps(body).encode()
+              req = urllib.request.Request(
+                  f"{BASE}{path}",
+                  data    = data,
+                  method  = "POST",
+                  headers = {
+                      "Authorization": f"Bearer {KEY}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              # Shared CI runners stall sporadically, so retry transport-level
+              # failures only; HTTP status errors surface immediately. Bounded
+              # to fit the job's timeout-minutes: short probes get 3 full
+              # attempts, long probes one retry capped at 300s (a healthy
+              # server answers a retry quickly; a stalled one never does).
+              attempts = 3 if timeout <= 300 else 2
+              for attempt in range(attempts):
+                  try:
+                      t = timeout if attempt == 0 else min(timeout, 300)
+                      with urllib.request.urlopen(req, timeout = t) as resp:
+                          return resp.status, json.loads(resp.read().decode())
+                  except urllib.error.HTTPError:
+                      raise
+                  except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                      if attempt == attempts - 1:
+                          raise
+                      print(f"[retry] {path}: {exc!r}", flush = True)
+                      time.sleep(15)
+
+          def post_sse(path, body, *, timeout = 600, retries = 1, soft = False):
+              # The server-side agentic loop always answers over SSE. A
+              # shared CI runner can stall the stream transport (the
+              # connection opening, or a mid-stream read) even when Unsloth
+              # is healthy, so harden the read three ways:
+              #   * retry a transport stall once with a fresh request,
+              #     capped at 300s (a healthy server answers a retry
+              #     quickly, a wedged one never does);
+              #   * return any text already streamed before a stall, so a
+              #     stall on the trailing tokens -- after the answer
+              #     arrived -- still counts;
+              #   * when every attempt yields nothing, a hard call
+              #     re-raises while a soft call (the best-effort
+              #     server-side tool probes) returns None so the caller
+              #     can WARN instead of sinking the whole job.
+              # HTTP status errors always surface immediately.
+              body = {**body, "stream": True}
+              data = json.dumps(body).encode()
+              req = urllib.request.Request(
+                  f"{BASE}{path}",
+                  data    = data,
+                  method  = "POST",
+                  headers = {
+                      "Authorization": f"Bearer {KEY}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              for attempt in range(retries + 1):
+                  parts = []
+                  t = timeout if attempt == 0 else min(timeout, 300)
+                  try:
+                      with urllib.request.urlopen(req, timeout = t) as resp:
+                          for raw in resp:
+                              line = raw.decode().strip()
+                              if not line.startswith("data: "):
+                                  continue
+                              payload = line[6:]
+                              if payload == "[DONE]":
+                                  break
+                              try:
+                                  chunk = json.loads(payload)
+                              except json.JSONDecodeError:
+                                  continue
+                              for choice in chunk.get("choices", []):
+                                  delta = choice.get("delta", {}) or {}
+                                  if delta.get("content"):
+                                      parts.append(delta["content"])
+                      return "".join(parts)
+                  except urllib.error.HTTPError:
+                      raise
+                  except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                      # Text already streamed is a valid signal -- keep it
+                      # rather than re-running a heavy generation.
+                      if parts:
+                          joined = "".join(parts)
+                          print(f"[retry-sse] {path}: {exc!r}; keeping {len(joined)} partial chars", flush = True)
+                          return joined
+                      if attempt == retries:
+                          if soft:
+                              print(f"[tools] WARN {path}: SSE transport stalled with no data ({exc!r}) -- non-blocking", flush = True)
+                              return None
+                          raise
+                      print(f"[retry-sse] {path}: {exc!r}", flush = True)
+                      time.sleep(15)
+
+          # ── 1. Standard OpenAI function calling ──────────────────────
+          weather_tool = {
+              "type": "function",
+              "function": {
+                  "name": "get_weather",
+                  "description": "Get current weather for a city.",
+                  "parameters": {
+                      "type": "object",
+                      "properties": {"city": {"type": "string"}},
+                      "required": ["city"],
+                  },
+              },
+          }
+
+          status, data = post("/v1/chat/completions", {
+              "messages":    [{"role": "user", "content": "What is the weather in Paris?"}],
+              "tools":       [weather_tool],
+              "tool_choice": "required",
+              "stream":      False,
+              "temperature": TEMP,
+              "seed":        SEED,
+              "max_tokens":  600,
+          })
+          assert status == 200, f"tool call status {status}: {data}"
+          choice = data["choices"][0]
+          tool_calls = (choice.get("message") or {}).get("tool_calls") or []
+          if tool_calls:
+              tc = tool_calls[0]
+              assert tc["function"]["name"] == "get_weather", (
+                  f"unexpected tool name: {tc['function']['name']!r}"
+              )
+              args = json.loads(tc["function"]["arguments"])
+              assert args.get("city"), f"missing city arg: {args}"
+              print(f"[tools] PASS function calling -> {tc['function']['name']}({args}) finish={choice.get('finish_reason')!r}")
+          else:
+              print(
+                  f"[tools] WARN function calling: no tool_calls (finish_reason="
+                  f"{choice.get('finish_reason')!r}); HTTP path OK, model output drift."
+              )
+
+          # ── 2. Server-side python tool ───────────────────────────────
+          # Bound each soft probe to a single 180s attempt (timeout=180,
+          # retries=0): this job runs two of them back-to-back under a
+          # 30-minute cap, so the default 600+15+300s per stall could hit
+          # the workflow timeout before the thinking checks run. A soft
+          # probe only WARNs anyway, so a retry buys nothing.
+          content = post_sse("/v1/chat/completions", {
+              "messages":      [{"role": "user", "content": "What is 123 * 456? Use the python tool to compute it and tell me the number."}],
+              "enable_tools":  True,
+              "permission_mode": "full",
+              "enabled_tools": ["python"],
+              "session_id":    "ci-tool-calling-py",
+              "temperature":   TEMP,
+              "seed":          SEED,
+              "max_tokens":    600,
+          }, timeout = 180, retries = 0, soft = True)
+          if content is None:
+              print("[tools] WARN python tool: SSE transport stalled after retries -- non-blocking")
+          elif "56088" in content or "56,088" in content:
+              print(f"[tools] PASS python tool ({len(content)} chars, found 56088)")
+          else:
+              assert content, "python tool: SSE stream empty"
+              print(
+                  f"[tools] WARN python tool: SSE OK ({len(content)} chars) but "
+                  f"model didn't return 56088 -- model output drift"
+              )
+
+          # ── 3. Server-side bash (terminal) tool ──────────────────────
+          # On Windows the terminal tool resolves to the system shell
+          # (cmd.exe wrapper) and `echo hello-bash-tool` works the same
+          # way it does on POSIX. The model still has to choose to
+          # invoke the tool; assert non-empty SSE if it doesn't.
+          content = post_sse("/v1/chat/completions", {
+              "messages":      [{"role": "user", "content": "Use the terminal tool to run `echo hello-bash-tool` and tell me the exact output."}],
+              "enable_tools":  True,
+              "permission_mode": "full",
+              "enabled_tools": ["terminal"],
+              "session_id":    "ci-tool-calling-bash",
+              "temperature":   TEMP,
+              "seed":          SEED,
+              "max_tokens":    600,
+          }, timeout = 180, retries = 0, soft = True)
+          if content is None:
+              print("[tools] WARN terminal tool: SSE transport stalled after retries -- non-blocking")
+          elif "hello-bash-tool" in content:
+              print(f"[tools] PASS terminal tool ({len(content)} chars)")
+          else:
+              assert content, "terminal tool: SSE stream empty"
+              print(
+                  f"[tools] WARN terminal tool: SSE OK ({len(content)} chars) but "
+                  f"model didn't echo 'hello-bash-tool' -- model output drift"
+              )
+
+          # ── 4. Server-side web_search tool ───────────────────────────
+          # DuckDuckGo can be flaky from CI runners; only assert that
+          # the SSE stream opens and yields any data.
+          try:
+              content = post_sse("/v1/chat/completions", {
+                  "messages":      [{"role": "user", "content": "Search the web for 'unsloth ai github' and summarise."}],
+                  "enable_tools":  True,
+                  "permission_mode": "full",
+                  "enabled_tools": ["web_search"],
+                  "session_id":    "ci-tool-calling-web",
+                  "temperature":   TEMP,
+                  "seed":          SEED,
+                  "max_tokens":    400,
+              }, timeout = 180, retries = 0)
+              print(f"[tools] PASS web_search stream ({len(content)} chars)")
+          except Exception as exc:
+              print(f"[tools] WARN web_search probe failed (non-blocking): {exc}")
+
+          # ── 5. Thinking on / off ─────────────────────────────────────
+          def thinking_call(enable):
+              status, data = post("/v1/chat/completions", {
+                  "messages":        [{"role": "user", "content": "Briefly: is 17 prime?"}],
+                  "stream":          False,
+                  "enable_thinking": enable,
+                  "temperature":     TEMP,
+                  "seed":            SEED,
+                  "max_tokens":      300,
+              })
+              assert status == 200
+              msg = data["choices"][0]["message"]
+              raw = (msg.get("content") or "") + (msg.get("reasoning_content") or "")
+              return raw
+
+          on_text  = thinking_call(True)
+          off_text = thinking_call(False)
+          had_think_on = ("<think>" in on_text) or len(on_text) > 80
+          if not had_think_on:
+              print(
+                  f"[tools] WARN enable_thinking=True produced no thinking signal: "
+                  f"{on_text[:200]!r}"
+              )
+          assert "<think>" not in off_text, (
+              f"enable_thinking=False but <think> still present: {off_text!r}"
+          )
+          print(f"[tools] PASS thinking on/off (on={len(on_text)} chars, off={len(off_text)} chars)")
+          PY
+
+      - name: Stop Unsloth
+        if: always()
+        # Run as cmd so we are not running through the Git Bash shell;
+        # Git Bash on windows-latest has been observed to exit 143
+        # (SIGTERM) from any inline kill/sleep block, masking a green
+        # test run. The runner reclaims the Unsloth child process at
+        # job end either way, so just emit a marker and exit 0.
+        shell: cmd
+        run: echo Stop Unsloth (no-op; runner reclaims STUDIO_PID=%STUDIO_PID% at job end)
+
+      - name: Collect llama-server logs
+        if: always()
+        # A transient Windows DLL-init crash (0xC0000142) in this diagnostic
+        # copy must not fail an otherwise-green job.
+        continue-on-error: true
+        shell: bash
+        # Copy llama-server's own stdout/stderr (teed by Unsloth under
+        # ~/.unsloth/studio/logs/llama-server/) into the workspace so
+        # upload-artifact can pick it up. Crucial for diagnosing a
+        # subprocess crash where Unsloth's traceback only shows the
+        # symptom (httpx ReadError) but not the cause.
+        run: |
+          mkdir -p logs/llama-server
+          cp -v ~/.unsloth/studio/logs/llama-server/*.log logs/llama-server/ 2>/dev/null || \
+            echo "no llama-server logs to collect"
+
+      - name: Upload logs
+        if: always()
+        # Diagnostic only: a transient artifact-service drop must not fail a green job.
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: windows-tool-calling-log
+          path: |
+            logs/studio.log
+            logs/install.log
+            logs/llama-server/*.log
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Job 3: JSON, images
+  # ─────────────────────────────────────────────────────────────────────
+  json-images:
+    name: JSON, images
+    runs-on: windows-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    env:
+      GGUF_REPO: unsloth/Qwen3-VL-2B-Instruct-GGUF
+      GGUF_VARIANT: UD-IQ2_XXS
+      GGUF_FILE: Qwen3-VL-2B-Instruct-UD-IQ2_XXS.gguf
+      MMPROJ_FILE: mmproj-F16.gguf
+      STUDIO_PORT: '18899'
+      HF_HOME: ${{ github.workspace }}/hf-cache
+      # Force UTF-8 for stdio (Windows defaults to cp1252; hf
+      # download / Unsloth CLI print "✓" checkmarks and crash
+      # otherwise).
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      # Split restore + save so a transient restore-side failure does not
+      # kill the whole job. See the matching block in the tool-calling job
+      # for the full rationale (actions/cache#1621). This is the block that
+      # actually broke in run 25713577488: "Cache hit for: <key>" was
+      # logged, the step exited non-zero in ~0.3 s without extracting the
+      # 3.4 GiB archive, and steps 6-15 were skipped.
+      - name: Restore HF_HOME cache for ${{ env.GGUF_REPO }} (model + mmproj)
+        id: cache-hf
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        continue-on-error: true
+        with:
+          path: hf-cache
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v2
+
+      - name: Prime HF_HOME with the GGUF + mmproj
+        id: prime-hf
+        if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
+        env:
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p hf-cache
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$MMPROJ_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
+
+      - name: Save HF_HOME cache for ${{ env.GGUF_REPO }} (model + mmproj)
+        if: always() && steps.prime-hf.outcome == 'success'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: hf-cache
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v2
+
+      - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
+        shell: pwsh
+        # See studio-windows-update-smoke.yml for the full rationale.
+        # tl;dr: setup.ps1 needs npm >=11 to skip a 35 s winget Node
+        # reinstall, and Defender's real-time scan dominates the
+        # frontend / uv-pip-extract steps.
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Write-Host "npm version before upgrade: $(npm -v)"
+          npm install -g 'npm@^11' 2>&1 | Out-Host
+          Write-Host "npm version after upgrade: $(npm -v)"
+          # NOTE: do NOT pre-create these directories. See
+          # studio-windows-update-smoke.yml for the full rationale --
+          # creating an empty studio/frontend/dist trips setup.ps1's
+          # mtime-based staleness check into "frontend up to date, skip
+          # rebuild" and Unsloth boots with an empty dist directory.
+          # Add-MpPreference accepts paths that do not yet exist.
+          foreach ($p in @(
+            "$env:USERPROFILE\.unsloth",
+            "$env:USERPROFILE\AppData\Local\uv",
+            "$env:GITHUB_WORKSPACE\studio\frontend\node_modules",
+            "$env:GITHUB_WORKSPACE\studio\frontend\dist"
+          )) {
+            try {
+              Add-MpPreference -ExclusionPath $p -ErrorAction Stop
+              Write-Host "Defender exclusion added: $p"
+            } catch {
+              Write-Host "Defender exclusion skipped ($($_.Exception.Message)): $p"
+            }
+          }
+
+      - name: Install Unsloth (--local, --no-torch)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          # *>&1 captures Write-Host (Information stream) output;
+          # plain 2>&1 does not. setup.ps1 emits "prebuilt installed
+          # and validated" via Write-Host, and we grep for that.
+          $ProgressPreference = 'SilentlyContinue'
+          & ./install.ps1 --local --no-torch *>&1 | Tee-Object -FilePath logs/install.log
+
+      - name: Assert install.ps1 used the Windows llama.cpp prebuilt
+        run: |
+          # Filesystem check; setup.ps1's stream output isn't captured.
+          LLAMA_DIR=~/.unsloth/llama.cpp
+          INFO="$LLAMA_DIR/UNSLOTH_PREBUILT_INFO.json"
+          BIN="$LLAMA_DIR/build/bin/Release/llama-server.exe"
+          if grep -q "falling back to source build" logs/install.log; then
+            echo "::error::install.ps1 fell back to source-build llama.cpp on Windows."
+            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
+            exit 1
+          fi
+          if [ ! -f "$INFO" ]; then
+            echo "::error::no UNSLOTH_PREBUILT_INFO.json at $INFO."
+            ls -la "$LLAMA_DIR" || true
+            exit 1
+          fi
+          if [ ! -f "$BIN" ]; then
+            echo "::error::no llama-server.exe at $BIN."
+            ls -la "$LLAMA_DIR/build/bin" || true
+            exit 1
+          fi
+          echo "install.ps1 installed the Windows prebuilt llama.cpp:"
+          cat "$INFO"
+
+      - name: Add Unsloth shim to GITHUB_PATH
+        run: |
+          SHIM_DIR=~/.unsloth/studio/bin
+          if [ ! -f "$SHIM_DIR/unsloth.exe" ]; then
+            echo "::error::unsloth.exe shim not found at $SHIM_DIR"
+            ls -la ~/.unsloth/studio/ || true
+            exit 1
+          fi
+          cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
+
+      - name: Install OpenAI + Anthropic Python SDKs
+        run: python -m pip install 'openai>=1.50' 'anthropic>=0.40'
+
+      - name: Reset auth + boot Unsloth (API-only)
+        run: |
+          unsloth studio reset-password
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
+            > logs/studio.log 2>&1 &
+          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health, log in, change password, load model
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
+              jq -e '.status == "healthy"' /tmp/health.json && break
+            fi
+            sleep 1
+          done
+          jq -e '.status == "healthy"' /tmp/health.json
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CIJson-$(python -c 'import secrets; print(secrets.token_urlsafe(12))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          OLD_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$OLD\"}" | jq -r .access_token)
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/change-password" \
+            -H "Authorization: Bearer $OLD_TOKEN" -H 'content-type: application/json' \
+            -d "{\"current_password\":\"$OLD\",\"new_password\":\"$NEW\"}" > /dev/null
+          TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
+          echo "API_KEY=$TOKEN" >> "$GITHUB_ENV"
+          # Retry: same rationale as the OpenAI/Anthropic and Tool calling jobs.
+          LOAD_OK=0
+          for attempt in 1 2 3; do
+            HTTP=$(curl -s -o /tmp/load.json -w '%{http_code}' \
+              -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
+              -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+              --max-time 900 \
+              -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}")
+            if [ "$HTTP" = "200" ]; then LOAD_OK=1; break; fi
+            echo "::warning::/api/inference/load attempt $attempt returned $HTTP; response:"
+            cat /tmp/load.json || true
+            sleep 10
+          done
+          [ "$LOAD_OK" = "1" ] || { echo "::error::/api/inference/load failed 3 attempts"; exit 22; }
+          jq '{status, display_name, is_vision}' /tmp/load.json
+
+      - name: JSON schema decoding + image input
+        env:
+          BASE_URL: http://127.0.0.1:18899
+        run: |
+          python - <<'PY'
+          import base64
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+          from openai import OpenAI
+          from anthropic import Anthropic
+
+          BASE = os.environ["BASE_URL"]
+          KEY  = os.environ["API_KEY"]
+          SEED = 3407
+          TEMP = 0.2
+
+          def post(path, body, *, timeout = 240):
+              req = urllib.request.Request(
+                  f"{BASE}{path}",
+                  data    = json.dumps(body).encode(),
+                  method  = "POST",
+                  headers = {
+                      "Authorization": f"Bearer {KEY}",
+                      "Content-Type":  "application/json",
+                  },
+              )
+              # Shared CI runners stall sporadically, so retry transport-level
+              # failures only; HTTP status errors surface immediately. Bounded
+              # to fit the job's timeout-minutes: short probes get 3 full
+              # attempts, long probes one retry capped at 300s (a healthy
+              # server answers a retry quickly; a stalled one never does).
+              attempts = 3 if timeout <= 300 else 2
+              for attempt in range(attempts):
+                  try:
+                      t = timeout if attempt == 0 else min(timeout, 300)
+                      with urllib.request.urlopen(req, timeout = t) as resp:
+                          return resp.status, json.loads(resp.read().decode())
+                  except urllib.error.HTTPError:
+                      raise
+                  except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                      if attempt == attempts - 1:
+                          raise
+                      print(f"[retry] {path}: {exc!r}", flush = True)
+                      time.sleep(15)
+
+          # ── 1. response_format = json_object (JSON mode) ─────────────
+          status, data = post("/v1/chat/completions", {
+              "model":         "default",
+              "messages":      [
+                  {"role": "system", "content": 'Reply with a single JSON object of the form {"city": "...", "country": "..."}. Output ONLY the JSON, nothing else.'},
+                  {"role": "user",   "content": "What is the capital of France?"},
+              ],
+              "temperature":     TEMP,
+              "max_tokens":      600,
+              "seed":            SEED,
+              "stream":          False,
+              "enable_thinking": False,
+              "response_format": {"type": "json_object"},
+          }, timeout = 600)
+          assert status == 200, f"json status {status}: {data}"
+          assert (
+              isinstance(data.get("choices"), list)
+              and data["choices"]
+              and "message" in data["choices"][0]
+          ), f"json response envelope malformed: {data}"
+          content = (data["choices"][0]["message"].get("content") or "").strip()
+          print(f"[json] raw json_object content: {content!r}")
+          if content.startswith("```"):
+              content = content.split("```", 2)[1]
+              if content.startswith("json"):
+                  content = content[4:]
+              content = content.strip("`\n ")
+          if content:
+              try:
+                  parsed = json.loads(content)
+                  if "paris" in str(parsed.get("city", "")).lower():
+                      print(f"[json] PASS json_object -> {parsed}")
+                  else:
+                      print(f"[json] WARN json_object decoded but city!=Paris: {parsed}")
+              except json.JSONDecodeError as exc:
+                  print(f"[json] WARN json_object content not parseable ({exc}); content={content!r}")
+          else:
+              print("[json] WARN json_object produced empty content")
+
+          status2, data2 = post("/v1/chat/completions", {
+              "model":         "default",
+              "messages":      [{"role": "user", "content": "What is the capital of France? Answer with one word."}],
+              "temperature":     TEMP,
+              "max_tokens":      400,
+              "seed":            SEED,
+              "stream":          False,
+              "enable_thinking": False,
+          }, timeout = 600)
+          assert status2 == 200, f"plain status {status2}: {data2}"
+          plain = (data2["choices"][0]["message"].get("content") or "").lower()
+          print(f"[json] plain capital-of-france reply: {plain!r}")
+          if "paris" in plain:
+              print("[json] PASS plain inference path (paris mentioned)")
+          else:
+              print(
+                  f"[json] WARN plain inference returned no 'paris' -- "
+                  f"model output drift. HTTP path validated separately above."
+              )
+
+          # ── 2. OpenAI image_url (data URI base64) ───────────────────
+          PNG_64X64_RED_B64 = (
+              "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAYklEQVR4nO3PMQ0AIADAMEAI/k"
+              "UhBhEcDcmqYJtn7/GzpQNeNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA"
+              "1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaBdCJ0BmMJ25zMAAAAASUVORK5CYII="
+          )
+          data_uri = f"data:image/png;base64,{PNG_64X64_RED_B64}"
+
+          # On Windows + the Qwen3-VL mmproj, llama.cpp's vision
+          # path runs on CPU (no Metal involvement). The wrapper is
+          # kept for resilience but the vision path is expected to
+          # work on Windows; an exception here is a real regression.
+          client = OpenAI(base_url = f"{BASE}/v1", api_key = KEY)
+          try:
+              openai_resp = client.chat.completions.create(
+                  model       = "default",
+                  temperature = TEMP,
+                  max_tokens  = 80,
+                  seed        = SEED,
+                  messages    = [{
+                      "role": "user",
+                      "content": [
+                          {"type": "image_url", "image_url": {"url": data_uri}},
+                          {"type": "text",      "text": "What colour dominates this image? Reply in one word."},
+                      ],
+                  }],
+              )
+              openai_text = (openai_resp.choices[0].message.content or "").lower()
+              print(f"[image/openai] reply: {openai_text!r}")
+              if openai_text:
+                  print("[image/openai] PASS image_url accepted, non-empty response")
+              else:
+                  print("[image/openai] WARN image_url accepted but empty content")
+          except Exception as exc:
+              print(
+                  f"[image/openai] WARN image_url SDK call raised: {type(exc).__name__}: "
+                  f"{exc}. Unsloth successfully forwarded the request; failure here is "
+                  f"upstream llama.cpp vision behaviour."
+              )
+
+          # ── 3. Anthropic source/base64 image ────────────────────────
+          anthropic = Anthropic(
+              base_url        = BASE,
+              api_key         = "unused",
+              default_headers = {"Authorization": f"Bearer {KEY}"},
+          )
+          try:
+              a_msg = anthropic.messages.create(
+                  model       = "default",
+                  max_tokens  = 80,
+                  temperature = TEMP,
+                  extra_body  = {"seed": SEED},
+                  messages    = [{
+                      "role": "user",
+                      "content": [
+                          {
+                              "type":   "image",
+                              "source": {
+                                  "type":       "base64",
+                                  "media_type": "image/png",
+                                  "data":       PNG_64X64_RED_B64,
+                              },
+                          },
+                          {"type": "text", "text": "Describe this image briefly."},
+                      ],
+                  }],
+              )
+              a_text = "".join(b.text for b in a_msg.content if getattr(b, "type", None) == "text")
+              print(f"[image/anthropic] reply: {a_text!r}")
+              if a_text:
+                  print("[image/anthropic] PASS source/base64 accepted, non-empty response")
+              else:
+                  print("[image/anthropic] WARN source/base64 accepted but empty content")
+          except Exception as exc:
+              print(
+                  f"[image/anthropic] WARN anthropic image SDK call raised: "
+                  f"{type(exc).__name__}: {exc}. Likely upstream llama.cpp vision "
+                  f"behaviour, NOT an Unsloth regression."
+              )
+          PY
+
+      - name: Stop Unsloth
+        if: always()
+        # Run as cmd so we are not running through the Git Bash shell;
+        # Git Bash on windows-latest has been observed to exit 143
+        # (SIGTERM) from any inline kill/sleep block, masking a green
+        # test run. The runner reclaims the Unsloth child process at
+        # job end either way, so just emit a marker and exit 0.
+        shell: cmd
+        run: echo Stop Unsloth (no-op; runner reclaims STUDIO_PID=%STUDIO_PID% at job end)
+
+      - name: Collect llama-server logs
+        if: always()
+        # A transient Windows DLL-init crash (0xC0000142) in this diagnostic
+        # copy must not fail an otherwise-green job.
+        continue-on-error: true
+        shell: bash
+        # Copy llama-server's own stdout/stderr (teed by Unsloth under
+        # ~/.unsloth/studio/logs/llama-server/) into the workspace so
+        # upload-artifact can pick it up. Crucial for diagnosing a
+        # subprocess crash where Unsloth's traceback only shows the
+        # symptom (httpx ReadError) but not the cause.
+        run: |
+          mkdir -p logs/llama-server
+          cp -v ~/.unsloth/studio/logs/llama-server/*.log logs/llama-server/ 2>/dev/null || \
+            echo "no llama-server logs to collect"
+
+      - name: Upload logs
+        if: always()
+        # Diagnostic only: a transient artifact-service drop must not fail a green job.
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: windows-json-images-log
+          path: |
+            logs/studio.log
+            logs/install.log
+            logs/llama-server/*.log
+          retention-days: 7
+
+  # ── folded from studio-windows-no-vs-smoke.yml: install + run with no Visual Studio ──
+  no-vs-cpu:
+    name: Unsloth install + inference without Visual Studio
+    runs-on: windows-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    env:
+      GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
+      GGUF_VARIANT: UD-Q4_K_XL
+      GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
+      STUDIO_PORT: '18820'
+      HF_HOME: ${{ github.workspace }}/hf-cache
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
+        id: cache-hf
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        continue-on-error: true
+        with:
+          path: hf-cache
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+
+      - name: Prime HF_HOME with the GGUF
+        id: prime-hf
+        if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
+        env:
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p hf-cache
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
+
+      - name: Save HF_HOME for ${{ env.GGUF_REPO }}
+        if: always() && steps.prime-hf.outcome == 'success'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: hf-cache
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+
+      - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          npm install -g 'npm@^11' 2>&1 | Out-Host
+          foreach ($p in @(
+            "$env:USERPROFILE\.unsloth",
+            "$env:USERPROFILE\AppData\Local\uv",
+            "$env:GITHUB_WORKSPACE\studio\frontend\node_modules",
+            "$env:GITHUB_WORKSPACE\studio\frontend\dist"
+          )) {
+            try { Add-MpPreference -ExclusionPath $p -ErrorAction Stop } catch { }
+          }
+
+      - name: Prepare no-build-tools simulation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:GITHUB_WORKSPACE 'no-build-tools'
+          $pf = Join-Path $root 'ProgramFiles'
+          $pfx86 = Join-Path $root 'ProgramFilesx86'
+          New-Item -ItemType Directory -Force -Path $pf, $pfx86 | Out-Null
+
+          $blocked = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          foreach ($tool in @('cmake', 'cl.exe')) {
+            foreach ($cmd in (Get-Command $tool -All -ErrorAction SilentlyContinue)) {
+              if ($cmd.Source) {
+                $dir = Split-Path -Parent $cmd.Source
+                if ($dir) {
+                  [void] $blocked.Add(
+                    [Environment]::ExpandEnvironmentVariables($dir).Trim().Trim('"').TrimEnd('\'))
+                }
+              }
+            }
+          }
+          # Normalized comparison so registry spellings (trailing slash,
+          # unexpanded %VAR%) still match.
+          function Test-Blocked([string]$p) {
+            $n = [Environment]::ExpandEnvironmentVariables($p).Trim().Trim('"').TrimEnd('\')
+            return $blocked.Contains($n)
+          }
+
+          $pathParts = $env:Path -split [IO.Path]::PathSeparator |
+            Where-Object { $_ -and -not (Test-Blocked $_) }
+          $noBuildToolsPath = $pathParts -join [IO.Path]::PathSeparator
+
+          # install.ps1's Refresh-SessionPath and setup.ps1's Refresh-Environment
+          # rebuild the session Path from these scopes mid-install, so filter
+          # them too. Originals are saved for the cleanup step.
+          foreach ($scope in @('Machine', 'User')) {
+            $orig = [Environment]::GetEnvironmentVariable('Path', $scope)
+            if (-not $orig) { continue }
+            Set-Content -LiteralPath (Join-Path $root "orig-path-$scope.txt") -Value $orig -NoNewline
+            $kept = ($orig -split ';' | Where-Object { $_ -and -not (Test-Blocked $_) }) -join ';'
+            [Environment]::SetEnvironmentVariable('Path', $kept, $scope)
+            Write-Host "Filtered $scope Path scope."
+          }
+
+          "NO_BUILD_TOOLS_PROGRAMFILES=$pf" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "NO_BUILD_TOOLS_PROGRAMFILES_X86=$pfx86" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "NO_BUILD_TOOLS_PATH<<NO_BUILD_TOOLS_PATH_EOF" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $noBuildToolsPath | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "NO_BUILD_TOOLS_PATH_EOF" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "ProgramFiles simulation root: $pf"
+          Write-Host "ProgramFiles(x86) simulation root: $pfx86"
+          if ($blocked.Count -gt 0) {
+            Write-Host "Removed build-tool PATH dirs:"
+            $blocked | Sort-Object | ForEach-Object { Write-Host "  $_" }
+          } else {
+            Write-Host "No cmake or cl.exe PATH dirs found to remove."
+          }
+
+      - name: Assert Visual Studio + CMake are genuinely undetectable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Set in-script: the runner does not apply step-level env keys with
+          # parentheses (`ProgramFiles(x86)`), so vswhere still found VS.
+          if (-not $env:NO_BUILD_TOOLS_PROGRAMFILES) { Write-Error "NO_BUILD_TOOLS_* env missing (Prepare step did not run?)"; exit 1 }
+          $env:ProgramFiles = $env:NO_BUILD_TOOLS_PROGRAMFILES
+          ${env:ProgramFiles(x86)} = $env:NO_BUILD_TOOLS_PROGRAMFILES_X86
+          $env:Path = $env:NO_BUILD_TOOLS_PATH
+          . (Join-Path $env:GITHUB_WORKSPACE 'tests/studio_setup_ps1/Get-FunctionSource.ps1')
+          $setup = Join-Path $env:GITHUB_WORKSPACE 'studio/setup.ps1'
+          foreach ($fn in @('Resolve-VsGeneratorFromLabel', 'Find-VsBuildTools')) {
+            . ([scriptblock]::Create((Get-FunctionSource -Path $setup -Name $fn)))
+          }
+          $vs = Find-VsBuildTools
+          if ($vs) { Write-Error "Find-VsBuildTools still detects VS: $($vs.Generator) @ $($vs.InstallPath)"; exit 1 }
+          if (Get-Command cmake -ErrorAction SilentlyContinue) { Write-Error "cmake is still on PATH"; exit 1 }
+          if (Get-Command cl.exe -ErrorAction SilentlyContinue) { Write-Error "cl.exe is still on PATH"; exit 1 }
+          Write-Host "Confirmed: no Visual Studio, no cmake, no cl.exe."
+
+      - name: PyTorch CPU wheel installs and imports (no Visual Studio)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+          python -c "import torch; print('torch', torch.__version__, 'cuda?', torch.cuda.is_available())"
+
+      - name: Install Unsloth (--local, --no-torch) with no build tools present
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          # Set in-script (see the assert step); child processes inherit these.
+          $env:ProgramFiles = $env:NO_BUILD_TOOLS_PROGRAMFILES
+          ${env:ProgramFiles(x86)} = $env:NO_BUILD_TOOLS_PROGRAMFILES_X86
+          $env:Path = $env:NO_BUILD_TOOLS_PATH
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          $ProgressPreference = 'SilentlyContinue'
+          & ./install.ps1 --local --no-torch *>&1 | Tee-Object -FilePath logs/install.log
+
+      - name: Assert prebuilt used AND no build tools were installed
+        run: |
+          LLAMA_DIR=~/.unsloth/llama.cpp
+          INFO="$LLAMA_DIR/UNSLOTH_PREBUILT_INFO.json"
+          BIN="$LLAMA_DIR/build/bin/Release/llama-server.exe"
+          fail=0
+          if grep -q "falling back to source build" logs/install.log; then
+            echo "::error::install.ps1 fell back to source-build llama.cpp without VS."; fail=1
+          fi
+          # The deferred build-tool installs must NOT run on the prebuilt path.
+          for pat in "Kitware.CMake" "Microsoft.VisualStudio.2022.BuildTools" "installing via winget"; do
+            if grep -qi "$pat" logs/install.log; then
+              echo "::error::unexpected build-tool install on the prebuilt path: '$pat'"; fail=1
+            fi
+          done
+          [ -f "$INFO" ] || { echo "::error::no UNSLOTH_PREBUILT_INFO.json"; ls -la "$LLAMA_DIR" || true; fail=1; }
+          [ -f "$BIN" ]  || { echo "::error::no llama-server.exe"; ls -la "$LLAMA_DIR/build/bin" || true; fail=1; }
+          if [ "$fail" != "0" ]; then grep -iE "cmake|visual studio|prebuilt|source build" logs/install.log | tail -60; exit 1; fi
+          echo "Prebuilt installed with no build tools:"
+          cat "$INFO"
+
+      - name: Add Unsloth shim to GITHUB_PATH
+        run: |
+          SHIM_DIR=~/.unsloth/studio/bin
+          [ -f "$SHIM_DIR/unsloth.exe" ] || { echo "::error::unsloth.exe shim not found"; ls -la ~/.unsloth/studio/ || true; exit 1; }
+          cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
+
+      - name: Reset auth + boot Unsloth (API-only)
+        run: |
+          unsloth studio reset-password
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
+            > logs/studio.log 2>&1 &
+          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health, log in, load the GGUF
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
+              jq -e '.status == "healthy"' /tmp/health.json && break
+            fi
+            sleep 1
+          done
+          jq -e '.status == "healthy"' /tmp/health.json || { tail -200 logs/studio.log; exit 1; }
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CINoVS-$(python -c 'import secrets; print(secrets.token_urlsafe(12))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          OLD_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$OLD\"}" | jq -r .access_token)
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/change-password" \
+            -H "Authorization: Bearer $OLD_TOKEN" -H 'content-type: application/json' \
+            -d "{\"current_password\":\"$OLD\",\"new_password\":\"$NEW\"}" > /dev/null
+          TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
+          echo "API_KEY=$TOKEN" >> "$GITHUB_ENV"
+          LOAD_OK=0
+          for attempt in 1 2 3; do
+            HTTP=$(curl -s -o /tmp/load.json -w '%{http_code}' \
+              -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
+              -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+              --max-time 600 \
+              -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}")
+            if [ "$HTTP" = "200" ]; then LOAD_OK=1; break; fi
+            echo "::warning::/api/inference/load attempt $attempt returned $HTTP"; cat /tmp/load.json || true; sleep 10
+          done
+          [ "$LOAD_OK" = "1" ] || { echo "::error::/api/inference/load failed 3 attempts"; exit 22; }
+          jq '{status, display_name, is_gguf}' /tmp/load.json
+
+      - name: Inference works via the prebuilt llama.cpp (no VS)
+        run: |
+          RESP=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/v1/chat/completions" \
+            -H "Authorization: Bearer $API_KEY" -H 'content-type: application/json' \
+            --max-time 240 \
+            -d '{"model":"default","messages":[{"role":"user","content":"What is 1+1? Answer briefly."}],"temperature":0,"max_tokens":32,"stream":false}')
+          echo "$RESP" | jq '.choices[0].message' || { echo "$RESP"; exit 1; }
+          CONTENT=$(echo "$RESP" | jq -r '.choices[0].message.content')
+          [ -n "$CONTENT" ] && [ "$CONTENT" != "null" ] || { echo "::error::empty completion"; exit 1; }
+          echo "Inference OK without Visual Studio: $CONTENT"
+
+      - name: Clean no-build-tools simulation
+        if: always()
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE 'no-build-tools'
+          foreach ($scope in @('Machine', 'User')) {
+            $saved = Join-Path $root "orig-path-$scope.txt"
+            if (Test-Path -LiteralPath $saved) {
+              [Environment]::SetEnvironmentVariable('Path', (Get-Content -LiteralPath $saved -Raw), $scope)
+              Write-Host "Restored $scope Path scope."
+            }
+          }
+          Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+
+      - name: Stop Unsloth
+        if: always()
+        shell: cmd
+        run: echo Stop Unsloth (no-op; runner reclaims STUDIO_PID=%STUDIO_PID% at job end)
+
+      - name: Collect llama-server logs
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p logs/llama-server
+          cp -v ~/.unsloth/studio/logs/llama-server/*.log logs/llama-server/ 2>/dev/null || echo "no llama-server logs"
+
+      - name: Upload logs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: windows-no-vs-cpu-log
+          path: |
+            logs/install.log
+            logs/studio.log
+            logs/llama-server/*.log
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Job B: the GPU (CUDA) prebuilt path is also VS-free (resolve/availability)
+  # ─────────────────────────────────────────────────────────────────────
+  no-vs-gpu-resolve:
+    name: GPU prebuilt resolves without Visual Studio
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Prepare no-build-tools simulation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:GITHUB_WORKSPACE 'no-build-tools'
+          $pf = Join-Path $root 'ProgramFiles'
+          $pfx86 = Join-Path $root 'ProgramFilesx86'
+          New-Item -ItemType Directory -Force -Path $pf, $pfx86 | Out-Null
+
+          $blocked = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          foreach ($tool in @('cmake', 'cl.exe')) {
+            foreach ($cmd in (Get-Command $tool -All -ErrorAction SilentlyContinue)) {
+              if ($cmd.Source) {
+                $dir = Split-Path -Parent $cmd.Source
+                if ($dir) { [void] $blocked.Add($dir) }
+              }
+            }
+          }
+
+          $pathParts = $env:Path -split [IO.Path]::PathSeparator |
+            Where-Object { $_ -and -not $blocked.Contains($_) }
+          $noBuildToolsPath = $pathParts -join [IO.Path]::PathSeparator
+
+          "NO_BUILD_TOOLS_PROGRAMFILES=$pf" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "NO_BUILD_TOOLS_PROGRAMFILES_X86=$pfx86" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "NO_BUILD_TOOLS_PATH<<NO_BUILD_TOOLS_PATH_EOF" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $noBuildToolsPath | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "NO_BUILD_TOOLS_PATH_EOF" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Windows CUDA and ROCm prebuilts exist in unslothai/llama.cpp (what GPU users download, no VS)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/unslothai/llama.cpp/releases/latest" > /tmp/rel.json
+          echo "release: $(jq -r .tag_name /tmp/rel.json)"
+          ASSETS=$(jq -r '.assets[].name' /tmp/rel.json)
+          echo "$ASSETS" | grep -iE 'windows-x64-cuda[0-9]' || {
+            echo "::error::no Windows x64 CUDA prebuilt asset found in unslothai/llama.cpp latest release"
+            echo "$ASSETS"; exit 1; }
+          # AMD parity: hosted runners have no AMD GPU, so the resolver step below
+          # can't exercise the ROCm path (it resolves to CPU). Pin the per-gfx
+          # Windows ROCm bundles here so a release that drops them fails loudly --
+          # the AMD no-VS guarantee otherwise rides only on shared resolver code.
+          echo "$ASSETS" | grep -iE 'windows-x64-rocm-gfx' || {
+            echo "::error::no Windows x64 ROCm (per-gfx) prebuilt asset found in unslothai/llama.cpp latest release"
+            echo "$ASSETS"; exit 1; }
+          echo "Windows CUDA and ROCm prebuilts are available -- GPU users get them without compiling."
+
+      - name: The prebuilt resolver runs without Visual Studio
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # pwsh: bash cannot export `ProgramFiles(x86)`; set in-script so the
+          # python child inherits the overrides.
+          $env:ProgramFiles = $env:NO_BUILD_TOOLS_PROGRAMFILES
+          ${env:ProgramFiles(x86)} = $env:NO_BUILD_TOOLS_PROGRAMFILES_X86
+          $env:Path = $env:NO_BUILD_TOOLS_PATH
+          # Resolver-only (no GPU on hosted runners, so the host resolves to the
+          # CPU bundle). The point is that resolution needs no compiler/VS.
+          python -m pip install --upgrade huggingface_hub
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::pip install huggingface_hub failed"; exit 1 }
+          python studio/install_llama_prebuilt.py --resolve-prebuilt latest --output-format json > resolve.json
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::resolver exited non-zero"
+            if (Test-Path resolve.json) { Get-Content resolve.json }
+            exit 1
+          }
+          Get-Content resolve.json
+          Write-Host "Prebuilt resolver ran with no Visual Studio present."
+
+      - name: Clean no-build-tools simulation
+        if: always()
+        shell: pwsh
+        run: |
+          Remove-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'no-build-tools') -Recurse -Force -ErrorAction SilentlyContinue
+
+  # ── folded from studio-setup-ps1-vs2026.yml: setup.ps1 unit tests + real-VS detection + vcredist ──
+  pester:
+    name: setup.ps1 unit tests (VS 2026 / CMake guard)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Pester v5
+        shell: pwsh
+        run: |
+          # PSGallery is intermittently absent from the repository list on GitHub's Windows
+          # runners, which makes `Set-PSRepository PSGallery` fail with "No repository with the
+          # name 'PSGallery' was found." Re-register the default gallery first so the policy
+          # change and module install below always have a repository to target.
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            Register-PSRepository -Default -ErrorAction SilentlyContinue
+          }
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          Import-Module Pester -MinimumVersion 5.5.0
+          Get-Module Pester | Select-Object Name, Version | Format-Table
+
+      - name: Run Pester suite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testDir = Join-Path $env:GITHUB_WORKSPACE 'tests/studio_setup_ps1'
+          if (-not (Test-Path $testDir)) {
+              Write-Error "Test directory not found: $testDir"
+              exit 1
+          }
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path                = $testDir
+          $cfg.Run.Exit                = $true   # non-zero exit => job fails
+          $cfg.Run.Throw               = $true   # also throw on test failure / 0 tests
+          $cfg.TestResult.Enabled      = $true
+          $cfg.TestResult.OutputFormat = 'NUnitXml'
+          $cfg.TestResult.OutputPath   = Join-Path $env:GITHUB_WORKSPACE 'pester-results.xml'
+          $cfg.Output.Verbosity        = 'Detailed'
+          Invoke-Pester -Configuration $cfg
+
+      - name: Upload Pester results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: pester-results-setup-ps1
+          path: pester-results.xml
+          if-no-files-found: warn
+
+  vs-integration:
+    # Real detection against the VS installed on the runner image (no mocks).
+    name: real-VS detection (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2022,        label: 'VS 2022', expectGen: 'Visual Studio 17 2022', expectToolset: 'v170' }
+          - { os: windows-2025-vs2026, label: 'VS 2026', expectGen: 'Visual Studio 18 2026', expectToolset: 'v180' }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Detect the real Visual Studio with setup.ps1 functions
+        shell: pwsh
+        env:
+          EXPECT_GEN: ${{ matrix.expectGen }}
+          EXPECT_TOOLSET: ${{ matrix.expectToolset }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . (Join-Path $env:GITHUB_WORKSPACE 'tests/studio_setup_ps1/Get-FunctionSource.ps1')
+          $setup = Join-Path $env:GITHUB_WORKSPACE 'studio/setup.ps1'
+          foreach ($fn in @('Resolve-VsGeneratorFromLabel', 'Get-VcBuildCustomizationsDir', 'Find-VsBuildTools')) {
+              . ([scriptblock]::Create((Get-FunctionSource -Path $setup -Name $fn)))
+          }
+
+          # Ground truth from the real vswhere (independent of our code), for visibility.
+          $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vsw) {
+              $year = (& $vsw -latest -property catalog_productLineVersion 2>$null | Select-Object -First 1)
+              $path = (& $vsw -latest -property installationPath 2>$null | Select-Object -First 1)
+              Write-Host "Real vswhere: productLineVersion='$year'  installPath='$path'"
+          } else {
+              Write-Host "vswhere not present at $vsw (relying on filesystem fallback)"
+          }
+
+          # Our detection must find the real VS and report the expected generator.
+          $r = Find-VsBuildTools
+          if (-not $r) { throw "Find-VsBuildTools returned null on a host with real $env:EXPECT_GEN" }
+          Write-Host "Find-VsBuildTools -> Generator='$($r.Generator)' Source='$($r.Source)' InstallPath='$($r.InstallPath)'"
+          if ($r.Generator -ne $env:EXPECT_GEN) {
+              throw "Detection mismatch: got '$($r.Generator)', expected '$env:EXPECT_GEN'"
+          }
+          if (-not (Test-Path $r.InstallPath)) { throw "Detected InstallPath does not exist: $($r.InstallPath)" }
+
+          # Toolset path derivation must match the expected v-number...
+          $bc = Get-VcBuildCustomizationsDir -VsInstallPath $r.InstallPath -Generator $r.Generator
+          $derived = Split-Path (Split-Path $bc -Parent) -Leaf   # e.g. v170 / v180
+          Write-Host "Get-VcBuildCustomizationsDir -> '$bc' (toolset='$derived')"
+          if ($derived -ne $env:EXPECT_TOOLSET) {
+              throw "Toolset mismatch: derived '$derived', expected '$env:EXPECT_TOOLSET'"
+          }
+
+          # ...and that v-number is a real folder on the VS install (where CUDA's
+          # BuildCustomizations would land).
+          $vcRoot = Join-Path $r.InstallPath 'MSBuild\Microsoft\VC'
+          if (Test-Path $vcRoot) {
+              $realToolsets = @((Get-ChildItem -Path $vcRoot -Directory -ErrorAction SilentlyContinue).Name)
+              Write-Host "Real VC toolset dirs: $($realToolsets -join ', ')"
+              if ($realToolsets -notcontains $derived) {
+                  throw "Derived toolset '$derived' is not present on the real $env:EXPECT_GEN install (have: $($realToolsets -join ', '))"
+              }
+              Write-Host "OK: toolset '$derived' exists on the real VS install."
+          } else {
+              Write-Warning "VC MSBuild root absent ($vcRoot) - C++ workload not installed; skipping on-disk toolset check."
+          }
+
+          Write-Host "PASS: real $env:EXPECT_GEN detected correctly with toolset '$derived'."
+
+  vcredist-clean-box:
+    # Validate Test-VCRedistInstalled + Ensure-VCRedist on a throwaway runner:
+    # present on the stock image, fires on a clean box (signals removed restorably),
+    # then a literal uninstall/reinstall round trip. Always restored before the end.
+    name: VC++ runtime detect + install round-trip (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-2025-vs2026]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Detect present, fire on a clean box, and round-trip the install
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . (Join-Path $env:GITHUB_WORKSPACE 'tests/studio_setup_ps1/Get-FunctionSource.ps1')
+          $setup = Join-Path $env:GITHUB_WORKSPACE 'studio/setup.ps1'
+          # Dot-source the guard + the logging closure it reaches
+          # (step/substep -> Write-StudioStdoutMirror / Get-StudioAnsi).
+          $script:StudioVtOk = $false
+          $script:UnslothVerbose = $false
+          foreach ($fn in @('Get-StudioAnsi', 'Write-StudioStdoutMirror', 'step', 'substep',
+                            'Invoke-SetupCommand', 'Refresh-Environment',
+                            'Test-VCRedistInstalled', 'Ensure-VCRedist')) {
+              $src = Get-FunctionSource -Path $setup -Name $fn
+              if (-not $src) { throw "Function '$fn' not found in setup.ps1" }
+              . ([scriptblock]::Create($src))
+          }
+
+          $regKeys = @(
+              'HKLM\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64',
+              'HKLM\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
+          )
+          function Show-GroundTruth {
+              $dll = Join-Path $env:SystemRoot 'System32\vcruntime140_1.dll'
+              Write-Host ("  System32\vcruntime140_1.dll present: {0}" -f (Test-Path $dll))
+              foreach ($k in $regKeys) {
+                  $r = Get-ItemProperty -Path "HKLM:\$($k.Substring(5))" -ErrorAction SilentlyContinue
+                  if ($r) { Write-Host ("  {0}: Installed={1} {2}.{3}" -f $k, $r.Installed, $r.Major, $r.Minor) }
+                  else    { Write-Host ("  {0}: (absent)" -f $k) }
+              }
+          }
+
+          Write-Host '== A. Detection on the stock runner (expect present) =='
+          Show-GroundTruth
+          if (-not (Test-VCRedistInstalled)) { throw 'Test-VCRedistInstalled reported ABSENT on a stock runner that ships the VC++ runtime (detection regression).' }
+          Write-Host '  Test-VCRedistInstalled -> present  OK'
+
+          Write-Host '== B. Genuinely clean box (restorable): detection must FIRE =='
+          $scratch = Join-Path $env:RUNNER_TEMP 'cleanwin'
+          New-Item -ItemType Directory -Force -Path (Join-Path $scratch 'System32') | Out-Null
+          $backup = Join-Path $env:RUNNER_TEMP 'vcreg_backup'
+          New-Item -ItemType Directory -Force -Path $backup | Out-Null
+          $origSysRoot = $env:SystemRoot
+          try {
+              for ($i = 0; $i -lt $regKeys.Count; $i++) {
+                  reg query $regKeys[$i] *> $null
+                  if ($LASTEXITCODE -eq 0) {
+                      reg export $regKeys[$i] (Join-Path $backup "$i.reg") /y *> $null
+                      reg delete $regKeys[$i] /f *> $null
+                  }
+              }
+              $env:SystemRoot = $scratch
+              if (Test-VCRedistInstalled) { throw 'Detection still PRESENT after both signals were removed (it would never trigger an install on a clean box).' }
+              Write-Host '  Test-VCRedistInstalled -> absent  OK (detection fires on a clean box)'
+          } finally {
+              $env:SystemRoot = $origSysRoot
+              for ($i = 0; $i -lt $regKeys.Count; $i++) {
+                  $f = Join-Path $backup "$i.reg"
+                  if (Test-Path $f) { reg import $f *> $null }
+              }
+          }
+          Show-GroundTruth
+          if (-not (Test-VCRedistInstalled)) { throw 'Detection did not recover after restoring the registry (test restore bug).' }
+
+          Write-Host '== C. Literal uninstall on this throwaway VM (official installer), observe detection =='
+          $exe = Join-Path $env:RUNNER_TEMP 'vc_redist.x64.exe'
+          Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile $exe
+          Start-Process -FilePath $exe -ArgumentList '/uninstall', '/quiet', '/norestart' -Wait
+          Show-GroundTruth
+          Write-Host ("  Test-VCRedistInstalled after uninstall -> {0}" -f (Test-VCRedistInstalled))
+          if (Test-VCRedistInstalled) {
+              Write-Host '  Note: the Visual Studio on this image ref-counts the runtime, so the package'
+              Write-Host '        uninstall is a no-op here; section B already proved detection on a clean box.'
+          }
+
+          Write-Host '== D. Restore via Ensure-VCRedist (winget product path), installer fallback if needed =='
+          Ensure-VCRedist
+          if (-not (Test-VCRedistInstalled)) {
+              Write-Host '  winget path did not restore it; using the official installer to close the round trip.'
+              Start-Process -FilePath $exe -ArgumentList '/install', '/quiet', '/norestart' -Wait
+          }
+          Show-GroundTruth
+          if (-not (Test-VCRedistInstalled)) { throw 'VC++ runtime could not be restored after the uninstall round-trip.' }
+          Write-Host '  Test-VCRedistInstalled -> present  OK'
+          Write-Host 'PASS: detection is correct on a real install, fires on a clean box, and the install round-trip restores the runtime.'

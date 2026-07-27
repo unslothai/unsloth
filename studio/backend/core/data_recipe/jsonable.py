@@ -23,7 +23,6 @@ def _pil_to_preview_payload(image: Any) -> dict[str, Any]:
 
 def _open_pil_image_from_bytes(raw_bytes: bytes):
     from PIL import Image  # type: ignore
-
     with Image.open(io.BytesIO(raw_bytes)) as image:
         return image.copy()
 
@@ -52,7 +51,6 @@ def _to_pil_from_hf_image_dict(value: Any) -> Any | None:
     if isinstance(path_value, str) and path_value.strip():
         try:
             from PIL import Image  # type: ignore
-
             with Image.open(Path(path_value)) as image:
                 return image.copy()
         except (OSError, ValueError, TypeError):

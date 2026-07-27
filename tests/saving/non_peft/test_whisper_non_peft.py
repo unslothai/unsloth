@@ -27,8 +27,6 @@ model, tokenizer = FastModel.from_pretrained(
 
 print("✅ Base model loaded successfully!")
 
-### Attemtping save merge
-
 
 print(f"\n{'='*80}")
 print("🔍 PHASE 2: Attempting save_pretrained_merged (Should Warn)")
@@ -38,7 +36,6 @@ with warnings.catch_warnings(record = True) as w:
     warnings.simplefilter("always")
     model.save_pretrained_merged("test_output", tokenizer)
 
-    # Verify warning
     assert len(w) >= 1, "Expected warning but none raised"
     warning_msg = str(w[0].message)
     expected_msg = "Model is not a PeftModel (no Lora adapters detected). Skipping Merge. Please use save_pretrained() or push_to_hub() instead!"
@@ -55,7 +52,7 @@ print(f"{'='*80}")
 
 try:
     with warnings.catch_warnings():
-        warnings.simplefilter("error")  # Treat warnings as errors here
+        warnings.simplefilter("error")  # any warning -> failure
         model.save_pretrained("test_output")
         print("✅ Standard save_pretrained completed successfully!")
 except Exception as e:

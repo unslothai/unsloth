@@ -3,26 +3,24 @@
 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { MascotImg } from "@/components/mascot-img";
 import { motion } from "motion/react";
 
 interface SplashScreenProps {
   onStartOnboarding: () => void;
-  onGoToStudio: () => void;
+  onSkipOnboarding: () => void;
 }
 
 export function SplashScreen({
   onStartOnboarding,
-  onGoToStudio,
+  onSkipOnboarding,
 }: SplashScreenProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-gradient-to-b from-background via-background to-primary/5 p-6">
       <Card className="w-full max-w-md px-8 py-8 shadow-border ring-1 ring-border">
         {/* Mascot */}
         <div className="flex justify-center">
-          <motion.img
-            src="/Sloth emojis/Sloth loca pc.png"
-            alt="Sloth mascot"
-            className="size-30"
+          <motion.div
             initial={{ opacity: 0, y: 40, scale: 0.95 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             transition={{
@@ -31,7 +29,9 @@ export function SplashScreen({
               bounce: 0.3,
               delay: 0.1,
             }}
-          />
+          >
+            <MascotImg src="Sloth emojis/Sloth loca pc.png" className="size-30" />
+          </motion.div>
         </div>
 
         {/* Brand text */}
@@ -65,7 +65,7 @@ export function SplashScreen({
           <Button size="lg" onClick={onStartOnboarding}>
             Start Onboarding
           </Button>
-          <Button size="lg" variant="outline" onClick={onGoToStudio}>
+          <Button size="lg" variant="outline" onClick={onSkipOnboarding}>
             Skip Onboarding
           </Button>
         </motion.div>

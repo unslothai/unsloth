@@ -10,21 +10,23 @@ import { ArrowRight02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { WizardStepItem } from "./wizard-step-item";
 
-export function WizardSidebar() {
+export function WizardSidebar({ returnTo }: { returnTo: string }) {
   const currentStep = useTrainingConfigStore((s) => s.currentStep);
   const progress = ((currentStep - 1) / (STEPS.length - 1)) * 100;
 
   return (
     <aside className="w-full shrink-0 bg-muted/70 p-4 md:w-64 md:p-6">
       <div className="flex items-center gap-3 py-1 md:py-2">
+        {/* Logo lockup follows the UI font size at half rate:
+            base + (root scale - 1) * 8px. Exact base sizes at 16px. */}
         <img
-          src="https://unsloth.ai/cgi/image/unsloth_sticker_no_shadow_ldN4V4iydw00qSIIWDCUv.png?width=96&quality=80&format=auto"
+          src={`${import.meta.env.BASE_URL}sticker.png`}
           alt="Unsloth"
-          className="size-12"
+          className="size-[calc(40px+0.5rem*var(--ui-font-scale,1))]"
         />
         <div className="flex flex-col">
-          <span className="font-semibold text-lg leading-tight">Unsloth</span>
-          <span className="text-xs text-muted-foreground">Studio</span>
+          <span className="font-semibold text-[calc(10px+0.5rem*var(--ui-font-scale,1))] leading-tight">Unsloth</span>
+          <span className="text-[calc(4px+0.5rem*var(--ui-font-scale,1))] text-muted-foreground">Studio</span>
         </div>
       </div>
       <div className="mt-3 md:mt-0">
@@ -38,10 +40,10 @@ export function WizardSidebar() {
         className="mt-2 w-full md:hidden"
         onClick={() => {
           markOnboardingDone();
-          window.location.href = "/chat";
+          window.location.assign(returnTo);
         }}
       >
-        Skip to Chat
+        Skip onboarding
         <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
       </Button>
       <nav className="mt-3 hidden flex-col gap-1 md:flex">
@@ -54,10 +56,10 @@ export function WizardSidebar() {
         className="mt-3 hidden w-full md:flex"
         onClick={() => {
           markOnboardingDone();
-          window.location.href = "/chat";
+          window.location.assign(returnTo);
         }}
       >
-        Skip to Chat
+        Skip onboarding
         <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
       </Button>
     </aside>

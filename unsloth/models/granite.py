@@ -23,6 +23,7 @@ from ..utils.attention_dispatch import (
     AttentionContext,
     run_attention,
     select_attention_backend,
+    resolve_prefix_seg_info,
     SDPA,
 )
 from .llama import (
@@ -110,9 +111,7 @@ def GraniteAttention_fast_forward(
 
     assert position_embeddings is not None
     cos, sin = position_embeddings
-    rope_position_ids = (
-        position_ids if position_ids is not None else kwargs.get("position_ids")
-    )
+    rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
     if rope_position_ids is not None:
         # Useful for LongRoPE
         Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
@@ -125,13 +124,9 @@ def GraniteAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    use_varlen = (
-        attention_mask is None and seq_info is not None and past_key_value is None
-    )
+    use_varlen = attention_mask is None and seq_info is not None and past_key_value is None
 
-    backend = (
-        SDPA if attention_mask is not None else select_attention_backend(use_varlen)
-    )
+    backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
 
     window = (kv_seq_len, kv_seq_len)
     softmax_scale = getattr(self, "scaling", None)
@@ -165,6 +160,9 @@ def GraniteAttention_fast_forward(
         },
     )
 
+    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse
+    # (KV cache / padding mask) raises. None => byte-identical default.
+    _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
         q_len = q_len,
@@ -175,6 +173,7 @@ def GraniteAttention_fast_forward(
         seq_info = seq_info,
         attention_mask = attention_mask,
         causal_mask = causal_mask,
+        prefix_seg_info = _pg_seg,
     )
 
     A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
@@ -205,13 +204,9 @@ def GraniteDecoderLayer_fast_forward(
         else self.config.residual_multiplier
     )
 
-    if use_cache and hasattr(
-        self, "_flag_for_generation"
-    ):  # past_key_value is not None:
+    if use_cache and hasattr(self, "_flag_for_generation"):  # past_key_value is not None:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference(
-            self.input_layernorm, hidden_states
-        )
+        hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
@@ -229,9 +224,7 @@ def GraniteDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference(
-            self.post_attention_layernorm, hidden_states
-        )
+        hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
         hidden_states = fast_swiglu_inference(self.mlp, hidden_states)
         hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
     else:
@@ -316,12 +309,8 @@ def GraniteAttention_fast_forward_inference(
         self.paged_attention_V = self.paged_attention[:, 1]
         self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
         self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
-        self.temp_QA = torch.empty(
-            (2, bsz, 1, attention_size), dtype = dtype, device = device
-        )
-        self.temp_KV = torch.empty(
-            (2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device
-        )
+        self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = device)
+        self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device)
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
         self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         self.attention = torch.empty(
@@ -341,9 +330,7 @@ def GraniteAttention_fast_forward_inference(
         )
         self.paged_attention_K = self.paged_attention[:, 0]
         self.paged_attention_V = self.paged_attention[:, 1]
-        self.attention.resize_(
-            (bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT)
-        )
+        self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT))
 
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
     Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
@@ -388,21 +375,15 @@ def GraniteAttention_fast_forward_inference(
     # Grouped query attention
     _, _, cached_len, _ = Kn.shape
     if bsz == 1 or ((not SDPA_HAS_GQA) and n_groups != 1):
-        Kn = Kn[:, :, None, :, :].expand(
-            bsz, n_kv_heads, n_groups, cached_len, head_dim
-        )
-        Vn = Vn[:, :, None, :, :].expand(
-            bsz, n_kv_heads, n_groups, cached_len, head_dim
-        )
+        Kn = Kn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
+        Vn = Vn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Kn = Kn.reshape(bsz, n_heads, cached_len, head_dim)
         Vn = Vn.reshape(bsz, n_heads, cached_len, head_dim)
 
     # Attention
     if bsz == 1:
         Qn *= self.scaling
-        A = torch_matmul(
-            Qn, Kn.transpose(2, 3), out = self.attention[:, :, :, :cached_len]
-        )
+        A = torch_matmul(Qn, Kn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
         A = torch_matmul(A, Vn, out = Qn)
     else:
@@ -476,14 +457,10 @@ def GraniteModel_fast_forward_inference(
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
         device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
-        hidden_states, position_ids = move_to_device(
-            device_index, hidden_states, position_ids
-        )
+        hidden_states, position_ids = move_to_device(device_index, hidden_states, position_ids)
 
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference(
-            decoder_layer.input_layernorm, hidden_states
-        )
+        hidden_states = fast_rms_layernorm_inference(decoder_layer.input_layernorm, hidden_states)
         hidden_states, present_key_value = GraniteAttention_fast_forward_inference(
             decoder_layer.self_attn,
             hidden_states = hidden_states,
@@ -521,10 +498,9 @@ class GraniteRotaryEmbedding(LlamaRotaryEmbedding):
 
 def patched_init(original_init):
     def new_init(self, *args, **kwargs):
-        # we can use self.residual_multiplier arg in GraniteDecoderLayer_fast_forward as mentioned here
+        # GraniteModel_fast_forward_inference can't reach residual_multiplier/config,
+        # so stash the whole config here to pass it around. See:
         # https://github.com/huggingface/transformers/blob/e5fd865ebae062b7cf03a81b8c6affeb39f30bec/src/transformers/models/granite/modeling_granite.py#L243
-        # The problem is, we don't have access to either the value or config in GraniteModel_fast_forward_inference
-        # So we need a way to pass this value around. It is probably better to pass on entire config just in case we need it later
         config = kwargs.get("config", args[0] if args else None)
         if config is not None:
             self.config = config
@@ -550,23 +526,23 @@ class FastGraniteModel(FastLlamaModel):
         GraniteFlashAttention2.forward = GraniteAttention_fast_forward
         GraniteDecoderLayer.forward = GraniteDecoderLayer_fast_forward
         GraniteModel.forward = LlamaModel_fast_forward
-        GraniteForCausalLM.forward = CausalLM_fast_forward(
-            GraniteModel_fast_forward_inference
-        )
+        GraniteForCausalLM.forward = CausalLM_fast_forward(GraniteModel_fast_forward_inference)
         GraniteForCausalLM.__init__ = patched_init(GraniteForCausalLM.__init__)
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(GraniteForCausalLM)
 
         import transformers.models.granite.modeling_granite
 
-        transformers.models.granite.modeling_granite.GraniteRotaryEmbedding = (
-            GraniteRotaryEmbedding
-        )
+        transformers.models.granite.modeling_granite.GraniteRotaryEmbedding = GraniteRotaryEmbedding
 
         return
 
     @staticmethod
-    def post_patch(model, tokenizer, correct_dtype = None):
+    def post_patch(
+        model,
+        tokenizer,
+        correct_dtype = None,
+    ):
         # Torch.compile fails on embedding matrix??
         # Workaround randomnly fixes it for torch versions < 2.2
         model.model.embed_tokens = torch.nn.Embedding.from_pretrained(
@@ -583,10 +559,7 @@ class FastGraniteModel(FastLlamaModel):
         model.lm_head = lm_head
 
         # Granite has tied weights! This means lm_head == embed_tokens
-        if (
-            model.model.embed_tokens.weight.data_ptr()
-            != model.lm_head.weight.data_ptr()
-        ):
+        if model.model.embed_tokens.weight.data_ptr() != model.lm_head.weight.data_ptr():
             lm_head = torch.nn.Linear(1, 1, bias = None)
             del lm_head.weight
             lm_head.weight = model.model.embed_tokens.weight
@@ -605,17 +578,13 @@ class FastGraniteModel(FastLlamaModel):
 
                 if type(quant_state) is list:
                     # BnB seems to have float16 as default!
-                    module.weight.quant_state[2] = (
-                        correct_dtype  # Cast to correct dtype
-                    )
+                    module.weight.quant_state[2] = correct_dtype  # Cast to correct dtype
                 else:
                     # https://github.com/TimDettmers/bitsandbytes/pull/763/files
                     quant_state.dtype = correct_dtype
             # Downcast RoPE embedding to correct data type
             if name.endswith("rotary_emb") or hasattr(module, "cos_cached"):
-                if hasattr(module, "cos_cached") and (
-                    module.cos_cached.dtype != correct_dtype
-                ):
+                if hasattr(module, "cos_cached") and (module.cos_cached.dtype != correct_dtype):
                     module.cos_cached = module.cos_cached.to(correct_dtype)
                     module.sin_cached = module.sin_cached.to(correct_dtype)
 

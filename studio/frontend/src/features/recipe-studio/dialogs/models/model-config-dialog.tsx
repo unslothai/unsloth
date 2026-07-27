@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Combobox,
   ComboboxContent,
@@ -22,6 +22,7 @@ import type { ModelConfig } from "../../types";
 import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
+import { LocalRecipeModelSelector } from "./local-recipe-model-selector";
 
 type ModelConfigDialogProps = {
   config: ModelConfig;
@@ -45,12 +46,11 @@ export function ModelConfigDialog({
   const maxTokensId = `${config.id}-max-tokens`;
   const timeoutId = `${config.id}-timeout`;
   const extraBodyId = `${config.id}-inference-extra-body`;
+  const skipHealthCheckId = `${config.id}-skip-health-check`;
   const providerAnchorRef = useRef<HTMLDivElement>(null);
   const providerInputRef = useRef(config.provider);
-  // Sync providerInputRef with the current provider value. Updating a ref in
-  // an effect (vs reading/writing it during render) satisfies the
-  // react-hooks/refs rule and keeps the combobox blur path stable across
-  // re-renders.
+  // Sync providerInputRef in an effect (not during render) to satisfy the
+  // react-hooks/refs rule and keep the combobox blur path stable.
   useEffect(() => {
     providerInputRef.current = config.provider;
   }, [config.provider]);
@@ -61,16 +61,25 @@ export function ModelConfigDialog({
     onUpdate({ [key]: value } as Partial<ModelConfig>);
   };
 
-  // Apply provider selection while keeping the local-provider model autofill
-  // consistent across both dropdown selection and free-typed + blur input.
+  // Apply provider selection while clearing model identifiers that only make
+  // sense for the previous provider locality.
   const applyProviderChange = (selectedProvider: string) => {
-    const isLocal = localProviderNames.has(selectedProvider);
-    if (isLocal && !config.model.trim()) {
-      onUpdate({ provider: selectedProvider, model: "local" });
+    const nextIsLocal = localProviderNames.has(selectedProvider);
+    if (isLinkedToLocal !== nextIsLocal) {
+      onUpdate({
+        provider: selectedProvider,
+        model: "",
+        // biome-ignore lint/style/useNamingConvention: api schema
+        gguf_variant: undefined,
+      });
       return;
     }
-    if (!isLocal && config.model === "local") {
-      onUpdate({ provider: selectedProvider, model: "" });
+    if (!nextIsLocal) {
+      onUpdate({
+        provider: selectedProvider,
+        // biome-ignore lint/style/useNamingConvention: api schema
+        gguf_variant: undefined,
+      });
       return;
     }
     updateField("provider", selectedProvider);
@@ -88,8 +97,8 @@ export function ModelConfigDialog({
           Set up one reusable model choice for your AI steps
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
-          Choose the provider connection, enter the exact model ID, then save any
-          generation defaults you want to reuse.
+          Choose the provider connection, enter the exact model ID, then save
+          any generation defaults you want to reuse.
         </p>
       </div>
       <div className="grid gap-1.5">
@@ -144,15 +153,48 @@ export function ModelConfigDialog({
         <FieldLabel
           label="Model ID"
           htmlFor={modelId}
-          hint={isLinkedToLocal ? "Uses the model loaded in Chat. Any value works here." : "The exact model name sent to the connection."}
+          hint={
+            isLinkedToLocal
+              ? "Choose the local model Recipes should load before Run or Validate."
+              : "The exact model name sent to the connection."
+          }
         />
-        <Input
-          id={modelId}
-          className="nodrag"
-          placeholder={isLinkedToLocal ? "local" : "gpt-4o-mini"}
-          value={config.model}
-          onChange={(event) => updateField("model", event.target.value)}
-        />
+        {isLinkedToLocal ? (
+          <LocalRecipeModelSelector
+            inputId={modelId}
+            value={
+              config.model.trim().toLowerCase() === "local" ? "" : config.model
+            }
+            ggufVariant={config.gguf_variant}
+            onChange={(model, variant) =>
+              onUpdate({
+                model,
+                // biome-ignore lint/style/useNamingConvention: api schema
+                gguf_variant: variant ?? undefined,
+              })
+            }
+          />
+        ) : (
+          <Input
+            id={modelId}
+            className="nodrag"
+            placeholder="gpt-4o-mini"
+            value={config.model}
+            onChange={(event) =>
+              onUpdate({
+                model: event.target.value,
+                // biome-ignore lint/style/useNamingConvention: api schema
+                gguf_variant: undefined,
+              })
+            }
+          />
+        )}
+        {isLinkedToLocal ? (
+          <p className="text-xs text-muted-foreground">
+            Recipes will load this model automatically. GGUF quantization is
+            saved with the preset.
+          </p>
+        ) : null}
       </div>
       <div className="grid gap-3">
         <div className="space-y-1">
@@ -250,8 +292,12 @@ export function ModelConfigDialog({
               }
             />
           </div>
-          <label className="flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground">
+          <label
+            htmlFor={skipHealthCheckId}
+            className="flex items-center gap-2 text-xs font-semibold uppercase text-muted-foreground"
+          >
             <Checkbox
+              id={skipHealthCheckId}
               checked={config.skip_health_check ?? false}
               onCheckedChange={(value) =>
                 updateField("skip_health_check", Boolean(value))

@@ -22,6 +22,10 @@ const initialState: TrainingRuntimeState = {
   hasHydrated: false,
   isStarting: false,
   startError: null,
+  startModelName: null,
+  startDatasetName: null,
+  startProjectName: null,
+  startFromResume: false,
   sseConnected: false,
   firstStepReceived: false,
   lastEventId: null,
@@ -35,12 +39,15 @@ const initialState: TrainingRuntimeState = {
   etaSeconds: null,
   currentGradNorm: null,
   currentNumTokens: null,
+  outputDir: null,
   lossHistory: [],
   lrHistory: [],
   gradNormHistory: [],
   evalLossHistory: [],
   resetGeneration: 0,
   stopRequested: false,
+  selectedHistoryRunId: null,
+  currentRunViewActive: false,
 };
 
 function sortSeries(points: TrainingSeriesPoint[]): TrainingSeriesPoint[] {
@@ -119,12 +126,19 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
   setHasHydrated: (value) => set({ hasHydrated: value }),
   setStarting: (value) => set({ isStarting: value }),
   setStartError: (value) => set({ startError: value }),
+  setStartResources: (
+    startModelName,
+    startDatasetName,
+    startFromResume = false,
+    startProjectName = null,
+  ) => set({ startModelName, startDatasetName, startProjectName, startFromResume }),
   setSseConnected: (value) => set({ sseConnected: value }),
   setLastEventId: (value) => set({ lastEventId: value }),
 
   resetRuntime: () =>
     set((state) => ({
       ...initialState,
+      hasHydrated: state.hasHydrated,
       lossHistory: [],
       lrHistory: [],
       gradNormHistory: [],
@@ -154,6 +168,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
       etaSeconds: null,
       currentGradNorm: null,
       currentNumTokens: null,
+      outputDir: null,
       lossHistory: [],
       lrHistory: [],
       gradNormHistory: [],
@@ -169,6 +184,12 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
       startError: null,
       sseConnected: false,
     }),
+
+  setSelectedHistoryRunId: (selectedHistoryRunId) =>
+    set({ selectedHistoryRunId }),
+
+  setCurrentRunViewActive: (currentRunViewActive) =>
+    set({ currentRunViewActive }),
 
   applyStatus: (payload) =>
     set((state) => {
@@ -193,8 +214,8 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
         currentStep:
           typeof detailStep === "number" ? Math.max(detailStep, 0) : state.currentStep,
         totalSteps:
-          typeof detailTotal === "number"
-            ? Math.max(detailTotal, 0)
+          typeof detailTotal === "number" && detailTotal > 0
+            ? detailTotal
             : state.totalSteps,
         currentLoss:
           typeof detailLoss === "number" ? detailLoss : state.currentLoss,
@@ -202,6 +223,10 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
           typeof detailLr === "number" ? detailLr : state.currentLearningRate,
         currentEpoch:
           typeof detailEpoch === "number" ? detailEpoch : state.currentEpoch,
+        outputDir:
+          payload.details?.output_dir !== undefined
+            ? payload.details.output_dir
+            : state.outputDir,
         lossHistory: metricHistory.lossHistory ?? state.lossHistory,
         lrHistory: metricHistory.lrHistory ?? state.lrHistory,
         gradNormHistory: metricHistory.gradNormHistory ?? state.gradNormHistory,
@@ -256,8 +281,14 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
         ...state,
         jobId: payload.job_id || state.jobId,
         currentStep: step,
-        totalSteps: Math.max(payload.total_steps, state.totalSteps),
-        currentLoss: currentLoss ?? state.currentLoss,
+        totalSteps:
+          typeof payload.total_steps === "number" && payload.total_steps > 0
+            ? payload.total_steps
+            : state.totalSteps,
+        // A null loss at a new step means the backend reported a non-finite
+        // loss; clear the display instead of keeping the stale value.
+        currentLoss:
+          currentLoss ?? (step > state.currentStep ? null : state.currentLoss),
         currentLearningRate: currentLearningRate ?? state.currentLearningRate,
         progressPercent: payload.progress_percent,
         currentEpoch: payload.epoch ?? state.currentEpoch,

@@ -15,8 +15,14 @@ import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { useTrainingActions, useTrainingConfigStore } from "@/features/training";
 import { checkDatasetFormat } from "@/features/training/api/datasets-api";
+import { isRawTextDatasetFormat } from "@/features/training/lib/training-methods";
 import type { CheckFormatResponse } from "@/features/training/types/datasets";
-import { Database02Icon, AlertCircleIcon } from "@hugeicons/core-free-icons";
+import type { DatasetSource } from "@/types/training";
+import {
+  AlertCircleIcon,
+  CheckmarkCircle02Icon,
+  Database02Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useShallow } from "zustand/react/shallow";
 import { collectPreviewImages, formatCell } from "./dataset-preview-dialog-utils";
@@ -40,7 +46,7 @@ type DatasetPreviewDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   datasetName: string | null;
-  datasetSource?: "huggingface" | "upload";
+  datasetSource?: DatasetSource;
   hfToken: string | null;
   datasetSubset?: string | null;
   datasetSplit?: string | null;
@@ -85,17 +91,27 @@ export function DatasetPreviewDialog({
   );
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
 
-  // If the backend reports image data, treat as VLM even if the prop
-  // hasn't caught up yet (isDatasetImage may still be null in the store).
+  // Treat backend-reported image data as VLM even if the prop hasn't caught up.
   const effectiveIsAudio = !!data?.is_audio;
   const effectiveIsVlm = isVlm || !!data?.is_image;
 
+  const isRawFormat = isRawTextDatasetFormat(datasetFormat);
   const hasHeuristicMapping = !data?.requires_manual_mapping && !!data?.suggested_mapping;
-  const mappingEnabled = !!data?.requires_manual_mapping || hasHeuristicMapping;
+  const mappingEnabled = !isRawFormat && (!!data?.requires_manual_mapping || hasHeuristicMapping);
   const showMappingFooter = mode === "mapping" && mappingEnabled;
-  const mappingOk = isMappingComplete(manualMapping, effectiveIsVlm, datasetFormat, effectiveIsAudio);
+  const mappingOk = isRawFormat || isMappingComplete(manualMapping, effectiveIsVlm, datasetFormat, effectiveIsAudio);
   const availableRoles = getAvailableRoles(effectiveIsVlm, datasetFormat, effectiveIsAudio);
   const isHfDataset = datasetSource === "huggingface";
+  const readyForTraining =
+    !(isRawFormat || mappingEnabled) &&
+    !data?.requires_manual_mapping &&
+    !!data?.detected_format &&
+    data.detected_format !== "unknown";
+  const readyDetail = data?.chat_column && data.detected_format === "chatml"
+    ? `Detected ChatML conversation column: ${data.chat_column}`
+    : data?.detected_format
+      ? `Detected ${data.detected_format} format. No manual column mapping needed.`
+      : null;
 
   // ── AI Assist ──────────────────────────────────────────────────────
   const [isAiLoading, setIsAiLoading] = useState(false);
@@ -117,7 +133,7 @@ export function DatasetPreviewDialog({
       });
 
       if (result.success && result.suggested_mapping) {
-        // Remap from chatml roles (user/assistant/system) to format-specific roles
+        // Remap chatml roles to format-specific roles
         const table = ROLE_REMAP[datasetFormat];
         const mapped: Record<string, string> = {};
         for (const [col, role] of Object.entries(result.suggested_mapping)) {
@@ -153,14 +169,12 @@ export function DatasetPreviewDialog({
     setManualMapping(remapRolesForFormat(manualMapping, datasetFormat));
   }, [datasetFormat]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Handle role change for a column
   const handleRoleChange = useCallback(
     (colName: string, role: string | undefined) => {
       const next = { ...manualMapping };
-      // Remove this column's previous role
       delete next[colName];
       if (role) {
-        // Remove any other column that had this role (each role can only be assigned once)
+        // Each role maps to one column, so drop any other column holding it
         for (const [col, r] of Object.entries(next)) {
           if (r === role) delete next[col];
         }
@@ -228,7 +242,6 @@ export function DatasetPreviewDialog({
   const rows = data?.preview_samples ?? [];
   const columns = data?.columns ?? [];
 
-  // Determine source label
   const sourceLabel = useMemo(() => {
     if (!datasetName) return "";
     if (datasetSource === "huggingface") {
@@ -241,7 +254,6 @@ export function DatasetPreviewDialog({
     return `Local Files (${datasetName})`;
   }, [datasetName, datasetSource, datasetSubset, datasetSplit]);
 
-  // Build TanStack Table columns from the column names
   const tableColumns = useMemo<ColumnDef<Record<string, unknown>>[]>(() => {
     if (!columns.length) return [];
 
@@ -249,7 +261,7 @@ export function DatasetPreviewDialog({
       accessorKey: colName,
       header: () => (
         <div className="flex flex-col gap-2">
-          <span className="font-heading text-[13px] font-semibold tracking-tight text-foreground">
+          <span className="font-heading text-ui-13 font-semibold tracking-tight text-foreground">
             {colName}
           </span>
           {mappingEnabled && (
@@ -296,7 +308,7 @@ export function DatasetPreviewDialog({
         const text = formatCell(value);
         if (!text) {
           return (
-            <span className="text-muted-foreground/40 italic text-[13px]">
+            <span className="text-muted-foreground/40 italic text-ui-13">
               --
             </span>
           );
@@ -304,7 +316,7 @@ export function DatasetPreviewDialog({
         const full = typeof value === "string" ? value : JSON.stringify(value);
         return (
           <p
-            className="text-[13px] leading-relaxed line-clamp-6"
+            className="text-ui-13 leading-relaxed line-clamp-6"
             title={full}
           >
             {text}
@@ -319,11 +331,11 @@ export function DatasetPreviewDialog({
         id: "__system_generated",
         header: () => (
           <div className="flex flex-col gap-2">
-            <span className="font-heading text-[13px] font-semibold tracking-tight text-foreground">
+            <span className="font-heading text-ui-13 font-semibold tracking-tight text-foreground">
               System <span className="text-muted-foreground font-normal">(generated)</span>
             </span>
             {mappingEnabled && (
-              <Badge variant="outline" className="h-6 w-fit text-[10px] px-2 py-0 border-dashed text-muted-foreground">
+              <Badge variant="outline" className="h-6 w-fit text-ui-10 px-2 py-0 border-dashed text-muted-foreground">
                 System
               </Badge>
             )}
@@ -331,7 +343,7 @@ export function DatasetPreviewDialog({
         ),
         cell: () => (
           <p
-            className="text-[13px] leading-relaxed line-clamp-6 text-muted-foreground italic"
+            className="text-ui-13 leading-relaxed line-clamp-6 text-muted-foreground italic"
             title={datasetSystemPrompt}
           >
             {datasetSystemPrompt}
@@ -413,7 +425,7 @@ export function DatasetPreviewDialog({
                 <MetaRow label="Source" value={sourceLabel} />
                 <MetaRow
                   label="Format"
-                  value={data.detected_format || "--"}
+                  value={isRawFormat ? "Raw Text" : (data.detected_format || "--")}
                 />
                 <MetaRow
                   label="Total Rows"
@@ -431,7 +443,7 @@ export function DatasetPreviewDialog({
                         <Badge
                           key={col}
                           variant="outline"
-                          className="text-[11px] font-mono h-5"
+                          className="text-ui-11 font-mono h-5"
                         >
                           {col}
                         </Badge>
@@ -441,7 +453,17 @@ export function DatasetPreviewDialog({
                 />
               </div>
 
-              {data.warning && (
+              {readyForTraining && (
+                <div className="mb-4 flex items-start gap-2.5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300">
+                  <HugeiconsIcon icon={CheckmarkCircle02Icon} className="mt-0.5 size-4 shrink-0" />
+                  <div className="space-y-0.5">
+                    <p className="font-medium">Ready for training</p>
+                    {readyDetail && <p>{readyDetail}</p>}
+                  </div>
+                </div>
+              )}
+
+              {data.warning && !isRawFormat && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400 mb-4 flex items-start gap-2.5">
                   <HugeiconsIcon icon={AlertCircleIcon} className="size-4 shrink-0 mt-0.5" />
                   <span>{data.warning}</span>
@@ -471,7 +493,7 @@ export function DatasetPreviewDialog({
 
               {/* Footer */}
               <div className="mt-3">
-                <p className="text-[11px] text-muted-foreground/60 text-center tabular-nums">
+                <p className="text-ui-11 text-muted-foreground/60 text-center tabular-nums">
                   Showing {rows.length}
                   {data.total_rows != null &&
                     ` of ${data.total_rows.toLocaleString()}`}{" "}
@@ -479,7 +501,7 @@ export function DatasetPreviewDialog({
                 </p>
 
                 {mode === "preview" && mappingEnabled && (
-                  <p className="mt-2 text-[11px] text-muted-foreground/70 text-center">
+                  <p className="mt-2 text-ui-11 text-muted-foreground/70 text-center">
                     Mapping is saved automatically. You can start training anytime.
                   </p>
                 )}
@@ -505,10 +527,7 @@ export function DatasetPreviewDialog({
   );
 }
 
-// ---------------------------------------------------------------------------
 // Metadata row
-// ---------------------------------------------------------------------------
-
 function MetaRow({
   label,
   value,
@@ -521,7 +540,7 @@ function MetaRow({
       <span className="text-muted-foreground font-medium text-xs w-24 shrink-0">
         {label}:
       </span>
-      <span className="text-foreground text-[13px] min-w-0">{value}</span>
+      <span className="text-foreground text-ui-13 min-w-0">{value}</span>
     </div>
   );
 }

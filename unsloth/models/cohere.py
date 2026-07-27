@@ -22,6 +22,7 @@ from ..utils.attention_dispatch import (
     AttentionContext,
     run_attention,
     select_attention_backend,
+    resolve_prefix_seg_info,
 )
 
 try:
@@ -59,7 +60,11 @@ except:
     CohereFlashAttention2 = CohereAttention
 
 
-def fast_layernorm_inference(self, X, out_weight = None):
+def fast_layernorm_inference(
+    self,
+    X,
+    out_weight = None,
+):
     XX = X.to(torch.float32, copy = True)
     XX -= X.mean(-1, keepdim = True)
     variance = XX.square().mean(-1, keepdim = True)
@@ -124,9 +129,7 @@ def CohereAttention_fast_forward(
     else:
         cos, sin = self.rotary_emb.get_cached(kv_seq_len, Q.device.index)
 
-    rope_position_ids = (
-        position_ids if position_ids is not None else kwargs.get("position_ids")
-    )
+    rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
     # Useful for LongRoPE
     Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
@@ -149,6 +152,9 @@ def CohereAttention_fast_forward(
             "softmax_scale": getattr(self, "softmax_scale", None),
         },
     )
+    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse
+    # (KV cache / padding mask) raises. None => byte-identical default.
+    _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
         q_len = q_len,
@@ -159,6 +165,7 @@ def CohereAttention_fast_forward(
         seq_info = seq_info,
         attention_mask = attention_mask,
         causal_mask = causal_mask,
+        prefix_seg_info = _pg_seg,
     )
 
     A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
@@ -184,9 +191,7 @@ def CohereDecoderLayer_fast_forward(
     *args,
     **kwargs,
 ):
-    if use_cache and hasattr(
-        self, "_flag_for_generation"
-    ):  # past_key_value is not None:
+    if use_cache and hasattr(self, "_flag_for_generation"):  # past_key_value is not None:
         out_weight = torch.empty(
             self.input_layernorm.weight.shape,
             dtype = torch.float32,
@@ -195,9 +200,7 @@ def CohereDecoderLayer_fast_forward(
 
         # Self Attention
         residual = hidden_states
-        hidden_states = fast_layernorm_inference(
-            self.input_layernorm, hidden_states, out_weight
-        )
+        hidden_states = fast_layernorm_inference(self.input_layernorm, hidden_states, out_weight)
         hidden_states_attention, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
@@ -340,9 +343,7 @@ def CohereAttention_fast_forward_inference(
         )
         self.paged_attention_K = self.paged_attention[:, 0]
         self.paged_attention_V = self.paged_attention[:, 1]
-        self.attention.resize_(
-            (bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT)
-        )
+        self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT))
 
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
     Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
@@ -402,30 +403,22 @@ def CohereAttention_fast_forward_inference(
     # Grouped query attention
     _, _, cached_len, _ = Knn.shape
     if n_groups != 1:
-        Knn = Knn[:, :, None, :, :].expand(
-            bsz, n_kv_heads, n_groups, cached_len, head_dim
-        )
-        Vnn = Vnn[:, :, None, :, :].expand(
-            bsz, n_kv_heads, n_groups, cached_len, head_dim
-        )
+        Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
+        Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
 
     # Attention
     if bsz == 1:
-        Qn *= self.scalar  # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
+        Qn *= (
+            self.scalar
+        )  # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
         # It seems like doing (Q * scalar) @ K is better than (Q @ K) * scalar to stop overflows
-        A = torch_matmul(
-            Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len]
-        )
-        A[:] = torch_nn_functional_softmax(
-            A, dim = -1, dtype = torch.float32
-        )  # .to(A.dtype)
+        A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
+        A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)  # .to(A.dtype)
         A = torch_matmul(A, Vnn, out = Qn)
     else:
-        A = scaled_dot_product_attention(
-            Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False
-        )
+        A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
     A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
@@ -471,22 +464,18 @@ def CohereModel_fast_forward_inference(
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
         device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
-        hidden_states, position_ids = move_to_device(
-            device_index, hidden_states, position_ids
-        )
+        hidden_states, position_ids = move_to_device(device_index, hidden_states, position_ids)
         residual = hidden_states
         hidden_states = fast_layernorm_inference(
             decoder_layer.input_layernorm, hidden_states, out_weights[device_index]
         )
-        hidden_states_attention, present_key_value = (
-            CohereAttention_fast_forward_inference(
-                decoder_layer.self_attn,
-                hidden_states = hidden_states,
-                past_key_value = past_key_values[idx],
-                position_ids = position_ids,
-                attention_mask = attention_mask,
-                do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
-            )
+        hidden_states_attention, present_key_value = CohereAttention_fast_forward_inference(
+            decoder_layer.self_attn,
+            hidden_states = hidden_states,
+            past_key_value = past_key_values[idx],
+            position_ids = position_ids,
+            attention_mask = attention_mask,
+            do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
         )
 
         hidden_states_mlp = fast_swiglu_inference(decoder_layer.mlp, hidden_states)
@@ -524,15 +513,11 @@ class FastCohereModel(FastLlamaModel):
         CohereFlashAttention2.forward = CohereAttention_fast_forward
         CohereDecoderLayer.forward = CohereDecoderLayer_fast_forward
         CohereModel.forward = LlamaModel_fast_forward
-        CohereForCausalLM.forward = CausalLM_fast_forward(
-            CohereModel_fast_forward_inference
-        )
+        CohereForCausalLM.forward = CausalLM_fast_forward(CohereModel_fast_forward_inference)
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(CohereForCausalLM)
 
         import transformers.models.cohere.modeling_cohere
 
-        transformers.models.cohere.modeling_cohere.CohereRotaryEmbedding = (
-            LlamaRotaryEmbedding
-        )
+        transformers.models.cohere.modeling_cohere.CohereRotaryEmbedding = LlamaRotaryEmbedding
         return

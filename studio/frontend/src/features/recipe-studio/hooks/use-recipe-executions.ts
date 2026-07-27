@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getInferenceStatus, loadModel } from "@/features/chat";
+import { toast } from "@/lib/toast";
+import { toastError } from "@/shared/toast";
 import { useCallback, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { toastError } from "@/shared/toast";
 import {
   cancelRecipeJob,
   createRecipeJob,
@@ -18,8 +20,8 @@ import type {
 import {
   DATASET_PAGE_SIZE,
   executionLabel,
-  normalizeRunName,
   normalizeDatasetRows,
+  normalizeRunName,
   toErrorMessage,
   withExecutionDefaults,
 } from "../executions/execution-helpers";
@@ -27,22 +29,398 @@ import {
   findResumableExecution,
   loadSortedRecipeExecutions,
 } from "../executions/hydration";
-import { createBaseExecutionRecord } from "../executions/runtime";
 import {
   buildExecutionPayload,
   sanitizeExecutionRows,
 } from "../executions/run-settings";
+import { createBaseExecutionRecord } from "../executions/runtime";
 import { trackRecipeExecution } from "../executions/tracker";
 import {
   type RecipeRunSettings,
   useRecipeExecutionsStore,
 } from "../stores/recipe-executions";
-import type { RecipePayload, RecipePayloadResult } from "../utils/payload/types";
+import type {
+  RecipePayload,
+  RecipePayloadResult,
+} from "../utils/payload/types";
+
+const GGUF_MODEL_PATTERN = /gguf/i;
+
+function collectUsedLlmModelAliases(payload: RecipePayload): Set<string> {
+  const columns = Array.isArray(payload.recipe.columns)
+    ? payload.recipe.columns
+    : [];
+  const aliases = new Set<string>();
+  for (const column of columns) {
+    const columnType = column.column_type;
+    if (typeof columnType !== "string" || !columnType.startsWith("llm-")) {
+      continue;
+    }
+    const alias = column.model_alias;
+    if (typeof alias === "string" && alias.trim()) {
+      aliases.add(alias.trim());
+    }
+  }
+  return aliases;
+}
+
+type LocalModelSelection = {
+  target: string;
+  ggufVariant: string;
+  aliases: string[];
+};
+
+type LocalModelLoadPlan =
+  | { selection: LocalModelSelection; error: null; legacyAliases?: never }
+  | { selection: null; error: string; legacyAliases?: never }
+  | { selection: null; error: null; legacyAliases: string[] };
+
+type RestorableLocalModelSnapshot = {
+  selection: LocalModelSelection | null;
+  unrestorableLabel: string | null;
+};
+
+function getLocalProviderNames(payload: RecipePayload): Set<string> {
+  const providers = Array.isArray(payload.recipe.model_providers)
+    ? (payload.recipe.model_providers as Record<string, unknown>[])
+    : [];
+  const localProviderNames = new Set<string>();
+  for (const provider of providers) {
+    if (provider.is_local === true && typeof provider.name === "string") {
+      localProviderNames.add(provider.name);
+    }
+  }
+  return localProviderNames;
+}
+
+function findUsedLocalModelConfigs(
+  payload: RecipePayload,
+  localProviderNames: Set<string>,
+): Record<string, unknown>[] {
+  const usedAliases = collectUsedLlmModelAliases(payload);
+  if (usedAliases.size === 0) {
+    return [];
+  }
+  const modelConfigs = Array.isArray(payload.recipe.model_configs)
+    ? payload.recipe.model_configs
+    : [];
+  return modelConfigs.filter((config) => {
+    const provider = config.provider;
+    const alias = config.alias;
+    return (
+      typeof provider === "string" &&
+      localProviderNames.has(provider) &&
+      typeof alias === "string" &&
+      usedAliases.has(alias)
+    );
+  });
+}
+
+function readLocalModelSelection(
+  boundConfig: Record<string, unknown>,
+): LocalModelLoadPlan {
+  const alias =
+    typeof boundConfig.alias === "string" ? boundConfig.alias : "local model";
+  const target =
+    typeof boundConfig.model === "string" ? boundConfig.model.trim() : "";
+  const ggufVariant =
+    typeof boundConfig.gguf_variant === "string"
+      ? boundConfig.gguf_variant.trim()
+      : "";
+  if (!target) {
+    return {
+      selection: null,
+      error: `Model config ${alias}: choose a local model before validating or running this recipe.`,
+    };
+  }
+  if (target.toLowerCase() === "local") {
+    return { selection: null, error: null, legacyAliases: [alias] };
+  }
+  return { selection: { target, ggufVariant, aliases: [alias] }, error: null };
+}
+
+function getLocalModelLoadPlan(
+  boundConfigs: Record<string, unknown>[],
+): LocalModelLoadPlan | null {
+  const selections = new Map<string, LocalModelSelection>();
+  const legacyAliases: string[] = [];
+  for (const boundConfig of boundConfigs) {
+    const next = readLocalModelSelection(boundConfig);
+    if (next.error) {
+      return next;
+    }
+    if (next.legacyAliases) {
+      legacyAliases.push(...next.legacyAliases);
+      continue;
+    }
+    const selection = next.selection;
+    if (!selection) {
+      continue;
+    }
+    const key = `${selection.target.toLowerCase()}\u0000${selection.ggufVariant}`;
+    const existing = selections.get(key);
+    if (existing) {
+      existing.aliases.push(...selection.aliases);
+      continue;
+    }
+    selections.set(key, selection);
+  }
+
+  if (legacyAliases.length > 0 && selections.size > 0) {
+    const aliases = [
+      ...legacyAliases,
+      ...[...selections.values()].flatMap((selection) => selection.aliases),
+    ].join(", ");
+    return {
+      selection: null,
+      error: `Recipes found mixed legacy and selected local models. Reselect the same concrete local model for: ${aliases}.`,
+    };
+  }
+
+  if (legacyAliases.length > 0) {
+    return { selection: null, error: null, legacyAliases };
+  }
+
+  if (selections.size > 1) {
+    const aliases = [...selections.values()]
+      .flatMap((selection) => selection.aliases)
+      .join(", ");
+    return {
+      selection: null,
+      error: `Recipes supports one active local model per run. Select the same local model and GGUF variant for: ${aliases}.`,
+    };
+  }
+
+  const selection = [...selections.values()][0];
+  return selection ? { selection, error: null } : null;
+}
+
+function isDirectGgufTarget(target: string): boolean {
+  return target.toLowerCase().endsWith(".gguf");
+}
+
+function localSelectionMatchesActive(input: {
+  target: string;
+  ggufVariant: string;
+  activeModel: string | null | undefined;
+  activeVariant: string;
+}): boolean {
+  const { target, ggufVariant, activeModel, activeVariant } = input;
+  if (!activeModel || activeModel.toLowerCase() !== target.toLowerCase()) {
+    return false;
+  }
+  return (
+    activeVariant === ggufVariant ||
+    (isDirectGgufTarget(target) && !ggufVariant)
+  );
+}
+
+async function isLocalModelAlreadyLoaded(
+  selection: LocalModelSelection,
+): Promise<boolean> {
+  const { target, ggufVariant } = selection;
+  try {
+    const status = await getInferenceStatus();
+    return localSelectionMatchesActive({
+      target,
+      ggufVariant,
+      activeModel: status.model_identifier ?? status.active_model,
+      activeVariant: status.gguf_variant?.trim() ?? "",
+    });
+  } catch {
+    // Fall through to load attempt; the backend will re-error if needed.
+    return false;
+  }
+}
+
+async function loadLocalModelSelection(
+  selection: LocalModelSelection,
+): Promise<string | null> {
+  const { target, ggufVariant } = selection;
+  const modelLabel = ggufVariant ? `${target} (${ggufVariant})` : target;
+  const toastId = toast.loading(`Loading ${modelLabel}...`, {
+    description: "Starting the local inference server for this recipe.",
+  });
+  try {
+    const isGguf = GGUF_MODEL_PATTERN.test(target) || Boolean(ggufVariant);
+    await loadModel({
+      // biome-ignore lint/style/useNamingConvention: api schema
+      model_path: target,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      hf_token: null,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      max_seq_length: isGguf ? 0 : 4096,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      load_in_4bit: true,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      is_lora: false,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      gguf_variant: ggufVariant || null,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      trust_remote_code: false,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      chat_template_override: null,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      cache_type_kv: null,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      speculative_type: null,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      tensor_parallel: false,
+    });
+    toast.success(`Loaded ${modelLabel}`, { id: toastId, duration: 2000 });
+    return null;
+  } catch (error) {
+    toast.dismiss(toastId);
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+function getLocalModelLoadPlanForPayload(
+  payload: RecipePayload,
+): LocalModelLoadPlan | null {
+  const localProviderNames = getLocalProviderNames(payload);
+  if (localProviderNames.size === 0) {
+    return null;
+  }
+
+  const boundConfigs = findUsedLocalModelConfigs(payload, localProviderNames);
+  return getLocalModelLoadPlan(boundConfigs);
+}
+
+async function getActiveLocalModelSelection(): Promise<LocalModelSelection | null> {
+  try {
+    const status = await getInferenceStatus();
+    const target = status.active_model?.trim();
+    if (!target) {
+      return null;
+    }
+    return {
+      target,
+      ggufVariant: status.gguf_variant?.trim() ?? "",
+      aliases: ["previous Chat model"],
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function getRestorableActiveLocalModelSelection(): Promise<RestorableLocalModelSnapshot> {
+  try {
+    const status = await getInferenceStatus();
+    const activeLabel = status.active_model?.trim() ?? null;
+    const target = (
+      status.model_identifier ?? (status.is_gguf ? null : status.active_model)
+    )?.trim();
+    if (!target) {
+      return {
+        selection: null,
+        unrestorableLabel: activeLabel,
+      };
+    }
+    return {
+      selection: {
+        target,
+        ggufVariant: status.gguf_variant?.trim() ?? "",
+        aliases: ["previous Chat model"],
+      },
+      unrestorableLabel: null,
+    };
+  } catch {
+    return { selection: null, unrestorableLabel: null };
+  }
+}
+
+function isSameLocalModelSelection(
+  left: LocalModelSelection | null,
+  right: LocalModelSelection,
+): boolean {
+  return Boolean(
+    left &&
+      left.target.toLowerCase() === right.target.toLowerCase() &&
+      left.ggufVariant === right.ggufVariant,
+  );
+}
+
+async function ensureLocalModelLoaded(
+  payload: RecipePayload,
+): Promise<string | null> {
+  const loadPlan = getLocalModelLoadPlanForPayload(payload);
+  if (!loadPlan) {
+    return null;
+  }
+  if (loadPlan.legacyAliases) {
+    const activeSelection = await getActiveLocalModelSelection();
+    return activeSelection
+      ? null
+      : `Existing recipe uses legacy local model for ${loadPlan.legacyAliases.join(", ")}. Select a concrete local model or load one in Chat.`;
+  }
+  if (!loadPlan.selection) {
+    return loadPlan.error;
+  }
+  if (await isLocalModelAlreadyLoaded(loadPlan.selection)) {
+    return null;
+  }
+  return loadLocalModelSelection(loadPlan.selection);
+}
+
+async function prepareLocalModelForRun(payload: RecipePayload): Promise<{
+  error: string | null;
+  restorePrevious: (() => Promise<void>) | null;
+}> {
+  const loadPlan = getLocalModelLoadPlanForPayload(payload);
+  if (!loadPlan) {
+    return { error: null, restorePrevious: null };
+  }
+  if (loadPlan.legacyAliases) {
+    const activeSelection = await getActiveLocalModelSelection();
+    return activeSelection
+      ? { error: null, restorePrevious: null }
+      : {
+          error: `Existing recipe uses legacy local model for ${loadPlan.legacyAliases.join(", ")}. Select a concrete local model or load one in Chat.`,
+          restorePrevious: null,
+        };
+  }
+  if (!loadPlan.selection) {
+    return { error: loadPlan.error, restorePrevious: null };
+  }
+  if (await isLocalModelAlreadyLoaded(loadPlan.selection)) {
+    return { error: null, restorePrevious: null };
+  }
+
+  const previousSnapshot = await getRestorableActiveLocalModelSelection();
+  const previousSelection = previousSnapshot.selection;
+  const error = await loadLocalModelSelection(loadPlan.selection);
+  if (error) {
+    return { error, restorePrevious: null };
+  }
+  if (isSameLocalModelSelection(previousSelection, loadPlan.selection)) {
+    return { error: null, restorePrevious: null };
+  }
+  return {
+    error: null,
+    restorePrevious: previousSelection
+      ? async () => {
+          const restoreError = await loadLocalModelSelection(previousSelection);
+          if (restoreError) {
+            toastError("Could not restore previous local model", restoreError);
+          }
+        }
+      : previousSnapshot.unrestorableLabel
+        ? () => {
+            toast.warning("Previous local model was not restored", {
+              description: `${previousSnapshot.unrestorableLabel} was selected from a native file path. Reopen it in Chat to continue with that model.`,
+            });
+            return Promise.resolve();
+          }
+        : null,
+  };
+}
 
 type UseRecipeExecutionsParams = {
   recipeId: string;
   currentSignature: string;
   payloadResult: RecipePayloadResult;
+  initialRunRows?: number | null;
   onExecutionStart?: () => void;
   onPreviewSuccess?: () => void;
 };
@@ -82,7 +460,11 @@ type UseRecipeExecutionsResult = {
 };
 
 function formatValidationMessages(input: {
-  errors: Array<{ message: string; path?: string | null; code?: string | null }>;
+  errors: Array<{
+    message: string;
+    path?: string | null;
+    code?: string | null;
+  }>;
 }): string[] {
   return input.errors.map((item) => {
     const path = item.path?.trim();
@@ -101,6 +483,7 @@ export function useRecipeExecutions({
   recipeId,
   currentSignature,
   payloadResult,
+  initialRunRows,
   onExecutionStart,
   onPreviewSuccess,
 }: UseRecipeExecutionsParams): UseRecipeExecutionsResult {
@@ -169,7 +552,8 @@ export function useRecipeExecutions({
     (record: RecipeExecutionRecord): void => {
       const normalizedRecord = withExecutionDefaults(record);
       upsertExecution(normalizedRecord);
-      void saveRecipeExecution(normalizedRecord).catch((error) => {
+      saveRecipeExecution(normalizedRecord).catch((error) => {
+        // biome-ignore lint/suspicious/noConsole: background persistence failures should not interrupt the UI
         console.error("Save recipe execution failed:", error);
       });
     },
@@ -180,6 +564,18 @@ export function useRecipeExecutions({
     let cancelled = false;
 
     resetForRecipe();
+
+    // Seed previewRows from the recipe's original run.rows (the loaded JSON, not
+    // the rebuilt payload, which hardcodes 5). Templates ship a suggested preview
+    // size (e.g. GitHub Support Bot: 10); honor it so users don't see a surprise 5.
+    if (
+      typeof initialRunRows === "number" &&
+      Number.isFinite(initialRunRows) &&
+      initialRunRows > 0 &&
+      initialRunRows !== 5
+    ) {
+      setPreviewRows(Math.floor(initialRunRows));
+    }
 
     async function hydrate(): Promise<void> {
       try {
@@ -194,7 +590,7 @@ export function useRecipeExecutions({
           return;
         }
 
-        void trackRecipeExecution({
+        trackRecipeExecution({
           label: executionLabel(resumable.kind),
           kind: resumable.kind,
           rows: resumable.rows,
@@ -206,20 +602,23 @@ export function useRecipeExecutions({
           onPreviewSuccess,
         });
       } catch (error) {
+        // biome-ignore lint/suspicious/noConsole: hydration failures are non-blocking diagnostics
         console.error("Load recipe executions failed:", error);
       }
     }
 
-    void hydrate();
+    hydrate();
 
     return () => {
       cancelled = true;
     };
   }, [
+    initialRunRows,
     onPreviewSuccess,
     recipeId,
     resetForRecipe,
     setExecutions,
+    setPreviewRows,
     setRunErrors,
     upsertAndPersist,
   ]);
@@ -249,9 +648,11 @@ export function useRecipeExecutions({
       rows: number;
       settings: RecipeRunSettings;
       runName: string | null;
+      restorePrevious?: (() => Promise<void>) | null;
     }): Promise<boolean> => {
-      const { kind, payload, rows, settings, runName } = input;
-      const setLoading = kind === "preview" ? setPreviewLoading : setFullLoading;
+      const { kind, payload, rows, settings, runName, restorePrevious } = input;
+      const setLoading =
+        kind === "preview" ? setPreviewLoading : setFullLoading;
       const label = executionLabel(kind);
 
       setLoading(true);
@@ -267,6 +668,8 @@ export function useRecipeExecutions({
       onExecutionStart?.();
       setRunDialogOpen(false);
 
+      let jobCreated = false;
+      let shouldRestorePrevious = false;
       try {
         const jobPayload = buildExecutionPayload({
           payload,
@@ -276,13 +679,14 @@ export function useRecipeExecutions({
           runName,
         });
         const createdJob = await createRecipeJob(jobPayload);
+        jobCreated = true;
         const executionWithJob = {
           ...baseExecution,
           jobId: createdJob.job_id,
         };
         upsertAndPersist(executionWithJob);
 
-        return await trackRecipeExecution({
+        const tracked = await trackRecipeExecution({
           label,
           kind,
           rows,
@@ -293,6 +697,8 @@ export function useRecipeExecutions({
           onSetPreviewErrors: setRunErrors,
           onPreviewSuccess,
         });
+        shouldRestorePrevious = tracked.terminal;
+        return tracked.success;
       } catch (error) {
         const message = toErrorMessage(error, `${label} request failed.`);
         upsertAndPersist({
@@ -303,8 +709,14 @@ export function useRecipeExecutions({
         });
         setRunErrors([message]);
         toastError(`${label} failed`, message);
+        if (!jobCreated) {
+          shouldRestorePrevious = true;
+        }
         return false;
       } finally {
+        if (shouldRestorePrevious && restorePrevious) {
+          await restorePrevious();
+        }
         setLoading(false);
       }
     },
@@ -319,6 +731,48 @@ export function useRecipeExecutions({
       setRunErrors,
       upsertAndPersist,
     ],
+  );
+
+  const prepareLocalModelForExecution = useCallback(
+    async (
+      payload: RecipePayload,
+    ): Promise<(() => Promise<void>) | null | false> => {
+      const { error, restorePrevious } = await prepareLocalModelForRun(payload);
+      if (!error) {
+        return restorePrevious;
+      }
+      setRunErrors([error]);
+      toastError("Local model failed to load", error);
+      return false;
+    },
+    [setRunErrors],
+  );
+
+  const validateExecutionPayload = useCallback(
+    async (
+      executionPayload: Parameters<typeof validateRecipe>[0],
+    ): Promise<boolean> => {
+      try {
+        const validation = await validateRecipe(executionPayload);
+        if (validation.valid) {
+          return true;
+        }
+        const errors = formatValidationMessages({
+          errors: validation.errors,
+        });
+        const fallback = validation.raw_detail ?? "Validation failed.";
+        const nextErrors = errors.length > 0 ? errors : [fallback];
+        setRunErrors(nextErrors);
+        toastError("Validation failed", nextErrors[0]);
+        return false;
+      } catch (error) {
+        const message = toErrorMessage(error, "Validation failed.");
+        setRunErrors([message]);
+        toastError("Validation failed", message);
+        return false;
+      }
+    },
+    [setRunErrors],
   );
 
   const runWithValidation = useCallback(
@@ -340,6 +794,11 @@ export function useRecipeExecutions({
         return false;
       }
 
+      // Flip to the Runs pane before validation starts. Validation can re-crawl
+      // the seed (seconds for the github_repo reader); runExecution() later no-ops
+      // this callback if the view has already been flipped.
+      onExecutionStart?.();
+
       const normalizedRows = sanitizeExecutionRows(rows, kind);
       const executionPayload = buildExecutionPayload({
         payload,
@@ -349,20 +808,17 @@ export function useRecipeExecutions({
         runName,
       });
 
-      try {
-        const validation = await validateRecipe(executionPayload);
-        if (!validation.valid) {
-          const errors = formatValidationMessages({ errors: validation.errors });
-          const fallback = validation.raw_detail ?? "Validation failed.";
-          const nextErrors = errors.length > 0 ? errors : [fallback];
-          setRunErrors(nextErrors);
-          toastError("Validation failed", nextErrors[0]);
-          return false;
-        }
-      } catch (error) {
-        const message = toErrorMessage(error, "Validation failed.");
-        setRunErrors([message]);
-        toastError("Validation failed", message);
+      if (!(await validateExecutionPayload(executionPayload))) {
+        return false;
+      }
+
+      // Recipe and Chat share one singleton local inference backend. This direct
+      // load is a point-in-time handoff to job creation, not a lease: if Chat
+      // swaps models after this succeeds, the backend runs against current state.
+      // A future generation token should be validated across this load and the
+      // `/jobs` loaded-model gate.
+      const restorePrevious = await prepareLocalModelForExecution(payload);
+      if (restorePrevious === false) {
         return false;
       }
 
@@ -372,20 +828,29 @@ export function useRecipeExecutions({
         rows: normalizedRows,
         settings: runSettings,
         runName,
+        restorePrevious,
       });
     },
-    [readExecutablePayload, runExecution, runSettings, setRunErrors],
+    [
+      onExecutionStart,
+      prepareLocalModelForExecution,
+      readExecutablePayload,
+      runExecution,
+      runSettings,
+      setRunErrors,
+      validateExecutionPayload,
+    ],
   );
 
-  const runPreview = useCallback(async (): Promise<boolean> => {
+  const runPreview = useCallback((): Promise<boolean> => {
     return runWithValidation("preview", previewRows, null);
   }, [previewRows, runWithValidation]);
 
-  const runFull = useCallback(async (): Promise<boolean> => {
+  const runFull = useCallback((): Promise<boolean> => {
     return runWithValidation("full", fullRows, fullRunName);
   }, [fullRows, fullRunName, runWithValidation]);
 
-  const runFromDialog = useCallback(async (): Promise<boolean> => {
+  const runFromDialog = useCallback((): Promise<boolean> => {
     setValidateResult(null);
     if (runDialogKind === "preview") {
       return runPreview();
@@ -397,9 +862,10 @@ export function useRecipeExecutions({
     setRunErrors([]);
     const payload = readPayload();
     if (!payload) {
-      const nextErrors = payloadResult.errors.length > 0
-        ? payloadResult.errors
-        : [payloadErrorMessage];
+      const nextErrors =
+        payloadResult.errors.length > 0
+          ? payloadResult.errors
+          : [payloadErrorMessage];
       setValidateResult({
         valid: false,
         errors: nextErrors,
@@ -410,24 +876,46 @@ export function useRecipeExecutions({
 
     const rows = runDialogKind === "preview" ? previewRows : fullRows;
     const normalizedRows = sanitizeExecutionRows(rows, runDialogKind);
-    const executionPayload = buildExecutionPayload({
-      payload,
-      kind: runDialogKind,
-      rows: normalizedRows,
-      settings: runSettings,
-      runName: runDialogKind === "full" ? normalizeRunName(fullRunName) : null,
-    });
 
     setValidateLoading(true);
     try {
+      const executionPayload = buildExecutionPayload({
+        payload,
+        kind: runDialogKind,
+        rows: normalizedRows,
+        settings: runSettings,
+        runName:
+          runDialogKind === "full" ? normalizeRunName(fullRunName) : null,
+      });
       const validation = await validateRecipe(executionPayload);
       const errors = formatValidationMessages({ errors: validation.errors });
+      if (!validation.valid) {
+        setValidateResult({
+          valid: false,
+          errors,
+          rawDetail: validation.raw_detail ?? null,
+        });
+        return false;
+      }
+
+      const localLoadError = await ensureLocalModelLoaded(payload);
+      if (localLoadError) {
+        setRunErrors([localLoadError]);
+        setValidateResult({
+          valid: false,
+          errors: [localLoadError],
+          rawDetail: null,
+        });
+        toastError("Local model failed to load", localLoadError);
+        return false;
+      }
+
       setValidateResult({
-        valid: validation.valid,
+        valid: true,
         errors,
         rawDetail: validation.raw_detail ?? null,
       });
-      return validation.valid;
+      return true;
     } catch (error) {
       const message = toErrorMessage(error, "Validation failed.");
       setValidateResult({
@@ -497,7 +985,12 @@ export function useRecipeExecutions({
   const loadExecutionDatasetPage = useCallback(
     async (id: string, page: number): Promise<void> => {
       const execution = executions.find((entry) => entry.id === id);
-      if (!execution || execution.kind !== "full" || !execution.jobId || page < 1) {
+      if (
+        !execution ||
+        execution.kind !== "full" ||
+        !execution.jobId ||
+        page < 1
+      ) {
         return;
       }
 
@@ -510,7 +1003,9 @@ export function useRecipeExecutions({
         });
         const dataset = normalizeDatasetRows(response.dataset);
         const total =
-          typeof response.total === "number" ? response.total : execution.datasetTotal;
+          typeof response.total === "number"
+            ? response.total
+            : execution.datasetTotal;
         upsertAndPersist({
           ...execution,
           dataset,

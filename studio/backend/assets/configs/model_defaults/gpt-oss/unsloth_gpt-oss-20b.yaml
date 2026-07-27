@@ -4,7 +4,6 @@
 # added inference parameters from unsloth guides
 
 training:
-  trust_remote_code: false
   max_seq_length: 1024
   # num_epochs: 4
   num_epochs: 0
@@ -36,6 +35,7 @@ lora:
     - "down_proj"
   use_rslora: false
   use_loftq: false
+  use_dora: false
 
 logging:
   enable_wandb: false
@@ -45,7 +45,6 @@ logging:
   log_frequency: 10
 
 inference:
-  trust_remote_code: false
   temperature: 1.0
   top_p: 1.0
   top_k: 0

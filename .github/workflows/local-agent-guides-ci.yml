@@ -1,0 +1,787 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Local Agent Guides CI
+# =====================
+# Detects when our local-agent setup recipes drift out of sync with
+# `unsloth run`. Boots a real `unsloth run --disable-tools` server and
+# drives the coding agents end to end through the *exact* recipes defined
+# in unsloth_cli/commands/start.py (the in-repo source of truth -- there
+# is no docs/ tree). Wherever start.py has a recipe we drive the agent
+# via `unsloth start <agent> --no-launch` and execute what it prints, so
+# the test self-updates against start.py and catches silent recipe drift.
+#
+# Source-of-truth files this workflow guards:
+#   unsloth_cli/commands/start.py   the `unsloth start <agent>` recipes
+#   unsloth_cli/commands/studio.py    the `unsloth run` banner (API Key line)
+#
+# Failure taxonomy (each surfaced with a distinct ::error:: + the agent name
+# + the start.py location, so a red X is immediately triageable):
+#   (a) Unsloth server/API regression -- the dialect HTTP preflight fails
+#       BEFORE the agent runs (or the server never becomes healthy).
+#   (b) Agent package install failed   -- npm/curl install of the CLI failed.
+#   (c) Guide drift                    -- preflight passed + install ok, but
+#       the documented `unsloth start` flow produced no/garbled output.
+#
+# Agents covered (6): claude, codex, hermes, openclaw, opencode, pi.
+#   - All six have a `unsloth start <agent>` recipe, so each cell obtains its
+#     env + command from `unsloth start <agent> --no-launch` and runs THAT
+#     (self-updating: a recipe change is exercised automatically).
+
+name: Local Agent Guides CI
+
+on:
+  # Off-peak weekly, deliberately a NON-:00 minute to dodge the top-of-hour
+  # GitHub-hosted-runner stampede.
+  schedule:
+    - cron: '37 7 * * 1'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'unsloth_cli/**'
+      - 'studio/backend/routes/**'
+      # Contracts this workflow asserts that live outside routes/**: the
+      # /api/health endpoint, the llama-server KV-cache log behavior, and the
+      # request/response schemas the agent dialects depend on.
+      - 'studio/backend/main.py'
+      - 'studio/backend/core/inference/llama_cpp.py'
+      - 'studio/backend/models/**'
+      - 'install.sh'
+      - '.github/workflows/local-agent-guides-ci.yml'
+      - '.github/scripts/serve-unsloth-run.sh'
+      - '.github/scripts/assert-prompt-cache.sh'
+      - '.github/scripts/agent-guides-install.sh'
+      - '.github/scripts/agent-guides-drive.sh'
+      - '.github/scripts/ci-connect-prompt.txt'
+      - '.github/scripts/ci-min-system-prompt.txt'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# Secret handling on pull_request: these jobs check out and run PR-controlled code
+# (install.sh, .github/scripts/**), so HF_TOKEN (an external HF credential) is gated
+# off pull_request at each step below -- public GGUF repos still download anonymously.
+# GH_TOKEN (GITHUB_TOKEN) is kept: it is the job-scoped contents:read token and
+# install_llama_prebuilt.py needs it for the GitHub releases API (else 403s).
+
+env:
+  # Determinism precedent (studio-inference-smoke.yml): temp 0 + fixed seed.
+  UNSLOTH_SEED: '3407'
+  # A single invoke must never hang the runner on a headless TTY prompt. With
+  # prefill-shrinking flags (minimal system prompt + restricted tools) a turn on
+  # a 4B model finishes in a couple of minutes on CPU; this also caps how long a
+  # still-large-prompt agent burns before failing. Well under the 6h job cap.
+  AGENT_INVOKE_TIMEOUT: '600'
+
+jobs:
+  # ═════════════════════════════════════════════════════════════════════
+  # Job 1: connection
+  #   Per-agent: serve gemma-3-270m, HTTP-preflight the agent's dialect,
+  #   install the agent, run `unsloth start <agent> --no-launch`, execute
+  #   the emitted recipe with a trivial prompt, assert a non-empty reply.
+  #   Runs on PR + weekly + dispatch. Each matrix cell is its own runner so
+  #   it serves exactly one model on its own port.
+  # ═════════════════════════════════════════════════════════════════════
+  connection:
+    name: connection (${{ matrix.agent }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: [claude, codex, hermes, openclaw, opencode, pi]
+        include:
+          # OpenClaw needs Node 24; everything else is happy on 22.
+          - agent: openclaw
+            node: '24'
+    env:
+      # gemma-4-E4B (128K context, capable enough to drive every agent for a
+      # trivial reply; the 270m model produced empty/failed responses for
+      # codex/openclaw). Hermes' 64K context floor no longer constrains the model
+      # choice: write_hermes_config claims the floor for smaller windows and
+      # scales compaction back to the real window. Served as a flat
+      # GGUF file (the -MTP- repo ships no separate draft, so this is plain 4B).
+      GGUF_REPO: unsloth/gemma-4-E4B-it-GGUF
+      GGUF_FILE: gemma-4-E4B-it-UD-Q4_K_XL.gguf
+      STUDIO_PORT: '18901'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Linux deps for llama.cpp prebuilt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev libssl-dev jq
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: ${{ matrix.node || '22' }}
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Restore GGUF model file
+        id: cache-gguf
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        continue-on-error: true
+        with:
+          path: gguf-cache
+          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
+
+      - name: Download GGUF if cache miss
+        id: download-gguf
+        if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success'
+        env:
+          # Gated off PR (see note above); public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p gguf-cache
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache
+
+      - name: Save GGUF model file
+        if: always() && steps.download-gguf.outcome == 'success'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: gguf-cache
+          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
+
+      - name: Install Unsloth (--local, --no-torch)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Gated off PR (see note above); public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          mkdir -p logs
+          set -o pipefail
+          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+
+      # ── boot the server under test (factored helper) ──────────────────
+      - name: Serve unsloth run --disable-tools (gemma-4-E4B)
+        run: |
+          unsloth studio reset-password
+          bash .github/scripts/serve-unsloth-run.sh \
+            --gguf-file "$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}" \
+            --port "$STUDIO_PORT" --log-dir logs \
+            --extra "--seed $UNSLOTH_SEED --temp 0" \
+            --health-timeout 900
+
+      # ── (a) server/API preflight: prove the dialect works BEFORE the agent ─
+      # Distinct error class. If this step fails it is a SERVER regression,
+      # not the agent's or the guide's fault, and the agent steps never run.
+      - name: Preflight the agent's API dialect (class-a isolation)
+        env:
+          AGENT: ${{ matrix.agent }}
+        run: |
+          set -uo pipefail
+          B="$UNSLOTH_BASE_URL"; K="$UNSLOTH_API_KEY"
+          preflight_fail() {
+            echo "::error::[server/API regression] agent=$AGENT: $* (preflight failed BEFORE install/connect; this is class (a), not guide drift). Endpoint contract lives in studio/backend/routes/**.";
+            exit 1
+          }
+          code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/models" \
+            -H "Authorization: Bearer $K") || true
+          [ "$code" = "200" ] || preflight_fail "/v1/models returned HTTP $code"
+          case "$AGENT" in
+            claude)
+              # Anthropic Messages dialect.
+              code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/messages" \
+                -H "Authorization: Bearer $K" -H 'content-type: application/json' \
+                --max-time 120 \
+                -d "{\"model\":\"$UNSLOTH_MODEL_ID\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}") || true
+              [ "$code" = "200" ] || preflight_fail "/v1/messages returned HTTP $code"
+              ;;
+            codex)
+              # Codex always streams /v1/responses.
+              code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/responses" \
+                -H "Authorization: Bearer $K" -H 'content-type: application/json' \
+                --max-time 120 \
+                -d "{\"model\":\"$UNSLOTH_MODEL_ID\",\"input\":\"Hi\",\"max_output_tokens\":16,\"stream\":true}") || true
+              [ "$code" = "200" ] || preflight_fail "/v1/responses returned HTTP $code"
+              ;;
+            *)
+              # OpenAI Chat Completions dialect (hermes/opencode/pi/openclaw).
+              # OpenClaw's start.py recipe writes an "openai-completions"
+              # provider (write_openclaw_config), so it uses this path, not
+              # /v1/messages.
+              code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/chat/completions" \
+                -H "Authorization: Bearer $K" -H 'content-type: application/json' \
+                --max-time 120 \
+                -d "{\"model\":\"$UNSLOTH_MODEL_ID\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}") || true
+              [ "$code" = "200" ] || preflight_fail "/v1/chat/completions returned HTTP $code"
+              ;;
+          esac
+          echo "preflight OK for $AGENT"
+
+      # ── (b) install the agent CLI (hardened npm/curl, retried) ─────────
+      - name: Install agent CLI (class-b isolation)
+        env:
+          AGENT: ${{ matrix.agent }}
+        run: bash .github/scripts/agent-guides-install.sh "$AGENT"
+
+      # ── (c) drive the agent via start.py and assert a reply ──────────
+      # For the 5 agents with a start.py recipe we run
+      # `unsloth start <agent> --no-launch`, eval its env/unset exports,
+      # then run the printed command with a hard timeout (no headless-TTY
+      # hang). Pi has no connect recipe, so it is driven by hand and the
+      # cell asserts that absence is the (known) reason.
+      - name: Drive ${{ matrix.agent }} via unsloth start (class-c isolation)
+        env:
+          AGENT: ${{ matrix.agent }}
+        run: bash .github/scripts/agent-guides-drive.sh connection "$AGENT"
+
+      - name: Collect server logs (debug)
+        if: always()
+        run: |
+          mkdir -p logs/studio-logs
+          cp -r "$HOME/.unsloth/studio/logs/." logs/studio-logs/ 2>/dev/null || true
+          # Redact the key across the WHOLE logs/ tree, not just studio-logs:
+          # serve-unsloth-run.sh records the `unsloth run` banner (which prints
+          # `API Key: <key>`) into logs/unsloth-run-<port>.log, and the upload
+          # step publishes all of logs/, so scrubbing only studio-logs would leak
+          # the bearer token in the retained artifact.
+          # Sweep EVERY uploaded path, not just logs/ -- redacted-configs/ and
+          # agent-workdir/ are published by the same upload step.
+          if [ -n "${UNSLOTH_API_KEY:-}" ]; then
+            grep -rlF "$UNSLOTH_API_KEY" logs redacted-configs agent-workdir 2>/dev/null | while IFS= read -r f; do
+              sed -i "s#${UNSLOTH_API_KEY}#<REDACTED>#g" "$f" 2>/dev/null || true
+            done
+          fi
+
+      - name: Stop Unsloth
+        if: always()
+        run: |
+          # Guard the PID: an unset/zero UNSLOTH_SERVER_PID would make
+          # `kill 0` signal this step's whole process group and abort cleanup.
+          if [ -n "${UNSLOTH_SERVER_PID:-}" ] && [ "${UNSLOTH_SERVER_PID}" != "0" ]; then
+            kill "${UNSLOTH_SERVER_PID}" 2>/dev/null || true
+          fi
+          sleep 2
+          ss -tln 2>/dev/null | grep ":${STUDIO_PORT}" || true
+
+      - name: Upload logs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: connection-${{ matrix.agent }}-log
+          path: |
+            logs/
+            redacted-configs/
+          retention-days: 7
+
+  # ═════════════════════════════════════════════════════════════════════
+  # Job 2: file-edit
+  #   The deterministic 2-turn hello.py test on Qwen3.5-4B (smaller models
+  #   can't reliably drive the heavyweight agents' edit flows). Weekly +
+  #   dispatch only -- it is the slow, model-heavy job and must not gate PRs.
+  # ═════════════════════════════════════════════════════════════════════
+  file-edit:
+    name: file-edit (${{ matrix.agent }})
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # hermes and openclaw drive a multi-turn tool loop that a CPU-only runner
+    # cannot finish in time (e.g. openclaw holds its 300s session-write-lock past
+    # expiry; each turn re-prefills the tool prompt at ~16 tok/s). Their endpoint
+    # wiring + generation are already hard-gated by the connection job, so the
+    # file-edit cell is best-effort here -- it still runs and uploads logs, but a
+    # timeout does not fail the workflow. Drop best_effort (or move e2e to a GPU
+    # runner) to make it blocking again.
+    continue-on-error: ${{ matrix.best_effort || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: [claude, codex, hermes, openclaw, opencode, pi]
+        include:
+          - agent: openclaw
+            node: '24'
+            best_effort: true
+          - agent: hermes
+            best_effort: true
+    env:
+      # gemma-4-E4B served as a flat GGUF file (cache size tracks the .gguf 1:1,
+      # no xet-chunk inflation; the -MTP- repo ships no separate draft file).
+      GGUF_REPO: unsloth/gemma-4-E4B-it-GGUF
+      GGUF_FILE: gemma-4-E4B-it-UD-Q4_K_XL.gguf
+      STUDIO_PORT: '18902'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Linux deps for llama.cpp prebuilt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev libssl-dev jq
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: ${{ matrix.node || '22' }}
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Restore GGUF model file
+        id: cache-gguf
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        continue-on-error: true
+        with:
+          path: gguf-cache
+          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
+
+      - name: Download GGUF if cache miss
+        id: download-gguf
+        if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success'
+        env:
+          # Gated off PR (see note above); public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p gguf-cache
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache
+
+      - name: Save GGUF model file
+        if: always() && steps.download-gguf.outcome == 'success'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: gguf-cache
+          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
+
+      - name: Install Unsloth (--local, --no-torch)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Gated off PR (see note above); public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          mkdir -p logs
+          set -o pipefail
+          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+
+      - name: Serve unsloth run --disable-tools (gemma-4-E4B)
+        run: |
+          unsloth studio reset-password
+          bash .github/scripts/serve-unsloth-run.sh \
+            --gguf-file "$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}" \
+            --port "$STUDIO_PORT" --log-dir logs \
+            --extra "--seed $UNSLOTH_SEED --temp 0" \
+            --health-timeout 900
+
+      - name: Preflight the agent's API dialect (class-a isolation)
+        env:
+          AGENT: ${{ matrix.agent }}
+        run: |
+          set -uo pipefail
+          B="$UNSLOTH_BASE_URL"; K="$UNSLOTH_API_KEY"
+          preflight_fail() {
+            echo "::error::[server/API regression] agent=$AGENT: $* (preflight failed BEFORE install/connect; this is class (a), not guide drift). Endpoint contract lives in studio/backend/routes/**.";
+            exit 1
+          }
+          code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/models" \
+            -H "Authorization: Bearer $K") || true
+          [ "$code" = "200" ] || preflight_fail "/v1/models returned HTTP $code"
+          # Probe the same dialect the agent will use, so a streaming/messages
+          # regression in the weekly run is reported as class (a) here instead of
+          # surfacing later as guide drift (mirrors the connection job).
+          case "$AGENT" in
+            claude)
+              code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/messages" \
+                -H "Authorization: Bearer $K" -H 'content-type: application/json' \
+                --max-time 120 \
+                -d "{\"model\":\"$UNSLOTH_MODEL_ID\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}") || true
+              [ "$code" = "200" ] || preflight_fail "/v1/messages returned HTTP $code"
+              ;;
+            codex)
+              code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/responses" \
+                -H "Authorization: Bearer $K" -H 'content-type: application/json' \
+                --max-time 120 \
+                -d "{\"model\":\"$UNSLOTH_MODEL_ID\",\"input\":\"Hi\",\"max_output_tokens\":16,\"stream\":true}") || true
+              [ "$code" = "200" ] || preflight_fail "/v1/responses returned HTTP $code"
+              ;;
+            *)
+              # OpenAI Chat Completions dialect (hermes/opencode/pi/openclaw).
+              code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/chat/completions" \
+                -H "Authorization: Bearer $K" -H 'content-type: application/json' \
+                --max-time 120 \
+                -d "{\"model\":\"$UNSLOTH_MODEL_ID\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}") || true
+              [ "$code" = "200" ] || preflight_fail "/v1/chat/completions returned HTTP $code"
+              ;;
+          esac
+          echo "preflight OK for $AGENT"
+
+      - name: Install agent CLI (class-b isolation)
+        env:
+          AGENT: ${{ matrix.agent }}
+        run: bash .github/scripts/agent-guides-install.sh "$AGENT"
+
+      - name: 2-turn hello.py test (class-c isolation)
+        env:
+          AGENT: ${{ matrix.agent }}
+        run: bash .github/scripts/agent-guides-drive.sh file-edit "$AGENT"
+
+      - name: Collect server logs (debug)
+        if: always()
+        run: |
+          mkdir -p logs/studio-logs
+          cp -r "$HOME/.unsloth/studio/logs/." logs/studio-logs/ 2>/dev/null || true
+          # Redact the key across the WHOLE logs/ tree, not just studio-logs:
+          # serve-unsloth-run.sh records the `unsloth run` banner (which prints
+          # `API Key: <key>`) into logs/unsloth-run-<port>.log, and the upload
+          # step publishes all of logs/, so scrubbing only studio-logs would leak
+          # the bearer token in the retained artifact.
+          # Sweep EVERY uploaded path, not just logs/ -- redacted-configs/ and
+          # agent-workdir/ are published by the same upload step.
+          if [ -n "${UNSLOTH_API_KEY:-}" ]; then
+            grep -rlF "$UNSLOTH_API_KEY" logs redacted-configs agent-workdir 2>/dev/null | while IFS= read -r f; do
+              sed -i "s#${UNSLOTH_API_KEY}#<REDACTED>#g" "$f" 2>/dev/null || true
+            done
+          fi
+
+      - name: Stop Unsloth
+        if: always()
+        run: |
+          # Guard the PID: an unset/zero UNSLOTH_SERVER_PID would make
+          # `kill 0` signal this step's whole process group and abort cleanup.
+          if [ -n "${UNSLOTH_SERVER_PID:-}" ] && [ "${UNSLOTH_SERVER_PID}" != "0" ]; then
+            kill "${UNSLOTH_SERVER_PID}" 2>/dev/null || true
+          fi
+          sleep 2
+          ss -tln 2>/dev/null | grep ":${STUDIO_PORT}" || true
+
+      - name: Upload logs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: file-edit-${{ matrix.agent }}-log
+          path: |
+            logs/
+            agent-workdir/
+            redacted-configs/
+          retention-days: 7
+
+  # ═════════════════════════════════════════════════════════════════════
+  # Job: resume
+  #   Does a conversation started with `unsloth start <agent>` survive exit
+  #   and resume? This drives the REAL launch path (not the --no-launch
+  #   recipe the other jobs use). A plain launch relocates the agent home to
+  #   a temp dir wiped on exit, so codex/pi cannot resume; --persist routes the
+  #   session to the stable Unsloth agents dir so it persists. opencode/claude
+  #   keep their session data in a fixed user dir, so they persist either way.
+  #   Dispatch-only: it is an end-to-end experiment, not a PR gate.
+  # ═════════════════════════════════════════════════════════════════════
+  resume:
+    name: resume (${{ matrix.agent }})
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # codex/pi relocate their whole home (resume broken without --persist);
+        # opencode/claude keep session data in a fixed dir (resume already works).
+        # One agent from each class proves the split end to end; openclaw/hermes
+        # share codex's relocation mechanism and are covered by the unit tests.
+        agent: [codex, opencode, claude, pi]
+    env:
+      GGUF_REPO: unsloth/gemma-4-E4B-it-GGUF
+      GGUF_FILE: gemma-4-E4B-it-UD-Q4_K_XL.gguf
+      STUDIO_PORT: '18904'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Linux deps for llama.cpp prebuilt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev libssl-dev jq
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Restore GGUF model file
+        id: cache-gguf
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        continue-on-error: true
+        with:
+          path: gguf-cache
+          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
+
+      - name: Download GGUF if cache miss
+        id: download-gguf
+        if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p gguf-cache
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache
+
+      - name: Save GGUF model file
+        if: always() && steps.download-gguf.outcome == 'success'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: gguf-cache
+          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
+
+      - name: Install Unsloth (--local, --no-torch)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          mkdir -p logs
+          set -o pipefail
+          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+
+      - name: Serve unsloth run --disable-tools (gemma-4-E4B)
+        run: |
+          unsloth studio reset-password
+          bash .github/scripts/serve-unsloth-run.sh \
+            --gguf-file "$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}" \
+            --port "$STUDIO_PORT" --log-dir logs \
+            --extra "--seed $UNSLOTH_SEED --temp 0" \
+            --health-timeout 900
+
+      - name: Preflight the agent's API dialect (class-a isolation)
+        env:
+          AGENT: ${{ matrix.agent }}
+        run: |
+          set -uo pipefail
+          B="$UNSLOTH_BASE_URL"; K="$UNSLOTH_API_KEY"
+          preflight_fail() {
+            echo "::error::[server/API regression] agent=$AGENT: $* (preflight failed BEFORE install/connect). Endpoint contract lives in studio/backend/routes/**.";
+            exit 1
+          }
+          code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/models" \
+            -H "Authorization: Bearer $K") || true
+          [ "$code" = "200" ] || preflight_fail "/v1/models returned HTTP $code"
+          case "$AGENT" in
+            claude)
+              code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/messages" \
+                -H "Authorization: Bearer $K" -H 'content-type: application/json' \
+                --max-time 120 \
+                -d "{\"model\":\"$UNSLOTH_MODEL_ID\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}") || true
+              [ "$code" = "200" ] || preflight_fail "/v1/messages returned HTTP $code"
+              ;;
+            codex)
+              code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/responses" \
+                -H "Authorization: Bearer $K" -H 'content-type: application/json' \
+                --max-time 120 \
+                -d "{\"model\":\"$UNSLOTH_MODEL_ID\",\"input\":\"Hi\",\"max_output_tokens\":16,\"stream\":true}") || true
+              [ "$code" = "200" ] || preflight_fail "/v1/responses returned HTTP $code"
+              ;;
+            *)
+              code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/chat/completions" \
+                -H "Authorization: Bearer $K" -H 'content-type: application/json' \
+                --max-time 120 \
+                -d "{\"model\":\"$UNSLOTH_MODEL_ID\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}") || true
+              [ "$code" = "200" ] || preflight_fail "/v1/chat/completions returned HTTP $code"
+              ;;
+          esac
+          echo "preflight OK for $AGENT"
+
+      - name: Install agent CLI (class-b isolation)
+        env:
+          AGENT: ${{ matrix.agent }}
+        run: bash .github/scripts/agent-guides-install.sh "$AGENT"
+
+      - name: Resume experiment (launch path)
+        env:
+          AGENT: ${{ matrix.agent }}
+        run: bash .github/scripts/agent-guides-drive.sh resume "$AGENT"
+
+      - name: Collect server logs (debug)
+        if: always()
+        run: |
+          mkdir -p logs/studio-logs
+          cp -r "$HOME/.unsloth/studio/logs/." logs/studio-logs/ 2>/dev/null || true
+          if [ -n "${UNSLOTH_API_KEY:-}" ]; then
+            grep -rlF "$UNSLOTH_API_KEY" logs redacted-configs agent-workdir 2>/dev/null | while IFS= read -r f; do
+              sed -i "s#${UNSLOTH_API_KEY}#<REDACTED>#g" "$f" 2>/dev/null || true
+            done
+          fi
+
+      - name: Stop Unsloth
+        if: always()
+        run: |
+          if [ -n "${UNSLOTH_SERVER_PID:-}" ] && [ "${UNSLOTH_SERVER_PID}" != "0" ]; then
+            kill "${UNSLOTH_SERVER_PID}" 2>/dev/null || true
+          fi
+          sleep 2
+          ss -tln 2>/dev/null | grep ":${STUDIO_PORT}" || true
+
+      - name: Upload logs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: resume-${{ matrix.agent }}-log
+          path: |
+            logs/
+            agent-workdir/
+            redacted-configs/
+          retention-days: 7
+
+  # ═════════════════════════════════════════════════════════════════════
+  # Job 3: prompt-cache
+  #   (a) curl 2-turn /v1/chat/completions: assert turn-2 cached_tokens > 0
+  #       (server prompt-cache sanity).
+  #   (b) Claude Code attribution A/B: with CLAUDE_CODE_ATTRIBUTION_HEADER=0
+  #       expect a llama-server KV-cache HIT on turn 2; without it expect a
+  #       MISS. If it inverts, the guide flag is stale.
+  #   PR + weekly + dispatch (cheap, gemma-3-270m).
+  # ═════════════════════════════════════════════════════════════════════
+  prompt-cache:
+    name: prompt-cache (gemma-3-270m)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
+      GGUF_VARIANT: UD-Q4_K_XL
+      GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
+      STUDIO_PORT: '18903'
+      HF_HOME: ${{ github.workspace }}/hf-cache
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Linux deps for llama.cpp prebuilt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev libssl-dev jq
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
+        id: cache-hf
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        continue-on-error: true
+        with:
+          path: hf-cache
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+
+      - name: Prime HF_HOME with the GGUF
+        id: prime-hf
+        if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
+        env:
+          # Gated off PR (see note above); public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p hf-cache
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
+
+      - name: Save HF_HOME for ${{ env.GGUF_REPO }}
+        if: always() && steps.prime-hf.outcome == 'success'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: hf-cache
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+
+      - name: Install Unsloth (--local, --no-torch)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Gated off PR (see note above); public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          mkdir -p logs
+          set -o pipefail
+          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+
+      - name: Serve unsloth run --disable-tools (gemma-3-270m)
+        run: |
+          unsloth studio reset-password
+          bash .github/scripts/serve-unsloth-run.sh \
+            --model "$GGUF_REPO" --gguf-variant "$GGUF_VARIANT" \
+            --port "$STUDIO_PORT" --log-dir logs \
+            --extra "--seed $UNSLOTH_SEED --temp 0"
+
+      # (a) server prompt-cache sanity on the OpenAI chat path. The helper runs
+      # the 2-turn probe internally (turn 2 reuses turn 1's prefix) and asserts
+      # turn-2 usage.prompt_tokens_details.cached_tokens > 0. This is the hard
+      # gate -- it proves llama.cpp KV reuse is surfaced on /v1/chat/completions.
+      - name: Server prompt-cache sanity (cached_tokens > 0)
+        run: bash .github/scripts/assert-prompt-cache.sh api "$UNSLOTH_BASE_URL" "$UNSLOTH_API_KEY"
+
+      - name: Install Claude Code (class-b isolation)
+        env:
+          AGENT: claude
+        run: bash .github/scripts/agent-guides-install.sh claude
+
+      # (b) Claude attribution A/B against the llama-server log. This is the most
+      # environment-sensitive check (it depends on the bundled llama.cpp's
+      # slot-reuse log wording and on claude --continue reusing the prefix), so
+      # it is non-blocking until calibrated on the first scheduled run; the
+      # server cache sanity above is the hard gate. The step still prints the
+      # observed HIT/MISS so drift is visible in the log + artifacts.
+      - name: Claude attribution A/B (HIT with header=0, MISS without)
+        continue-on-error: true
+        run: bash .github/scripts/agent-guides-drive.sh attribution-ab claude
+
+      - name: Collect server logs (debug)
+        if: always()
+        run: |
+          mkdir -p logs/studio-logs
+          cp -r "$HOME/.unsloth/studio/logs/." logs/studio-logs/ 2>/dev/null || true
+          # Redact the key across the WHOLE logs/ tree, not just studio-logs:
+          # serve-unsloth-run.sh records the `unsloth run` banner (which prints
+          # `API Key: <key>`) into logs/unsloth-run-<port>.log, and the upload
+          # step publishes all of logs/, so scrubbing only studio-logs would leak
+          # the bearer token in the retained artifact.
+          # Sweep EVERY uploaded path, not just logs/ -- redacted-configs/ and
+          # agent-workdir/ are published by the same upload step.
+          if [ -n "${UNSLOTH_API_KEY:-}" ]; then
+            grep -rlF "$UNSLOTH_API_KEY" logs redacted-configs agent-workdir 2>/dev/null | while IFS= read -r f; do
+              sed -i "s#${UNSLOTH_API_KEY}#<REDACTED>#g" "$f" 2>/dev/null || true
+            done
+          fi
+
+      - name: Stop Unsloth
+        if: always()
+        run: |
+          # Guard the PID: an unset/zero UNSLOTH_SERVER_PID would make
+          # `kill 0` signal this step's whole process group and abort cleanup.
+          if [ -n "${UNSLOTH_SERVER_PID:-}" ] && [ "${UNSLOTH_SERVER_PID}" != "0" ]; then
+            kill "${UNSLOTH_SERVER_PID}" 2>/dev/null || true
+          fi
+          sleep 2
+          ss -tln 2>/dev/null | grep ":${STUDIO_PORT}" || true
+
+      - name: Upload logs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: prompt-cache-log
+          path: |
+            logs/
+            redacted-configs/
+          retention-days: 7

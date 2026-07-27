@@ -57,7 +57,7 @@ export type RecipePayload = {
     // ui-only: graph orientation
     layout_direction?: "LR" | "TB";
     // ui-only, used to preserve seed block mode across imports/refresh
-    seed_source_type?: "hf" | "local" | "unstructured";
+    seed_source_type?: "hf" | "local" | "unstructured" | "github_repo";
     // ui-only, persisted aux node positions by llm name + aux key
     aux_nodes?: Array<{
       llm: string;
@@ -70,6 +70,8 @@ export type RecipePayload = {
     seed_drop_columns?: string[];
     seed_preview_rows?: Record<string, unknown>[];
     local_file_name?: string;
+    // biome-ignore lint/style/useNamingConvention: api schema
+    unstructured_upload_uid?: string;
     // biome-ignore lint/style/useNamingConvention: api schema
     unstructured_file_ids?: string[];
     // biome-ignore lint/style/useNamingConvention: api schema

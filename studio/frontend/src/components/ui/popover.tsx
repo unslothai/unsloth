@@ -6,6 +6,7 @@
 import { Popover as PopoverPrimitive } from "radix-ui";
 import type * as React from "react";
 
+import { useDialogPortalContainer } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
 function Popover({
@@ -23,17 +24,25 @@ function PopoverTrigger({
 function PopoverContent({
   className,
   align = "center",
-  sideOffset = 4,
+  sideOffset = 0,
+  container,
   ...props
-}: React.ComponentProps<typeof PopoverPrimitive.Content>) {
+}: React.ComponentProps<typeof PopoverPrimitive.Content> & {
+  container?: HTMLElement | null;
+}) {
+  // Inside a modal dialog the body scroll lock swallows wheel events on
+  // body-portaled content; portal into the dialog instead (like Select).
+  const dialogContainer = useDialogPortalContainer();
   return (
-    <PopoverPrimitive.Portal>
+    <PopoverPrimitive.Portal
+      container={container ?? dialogContainer ?? undefined}
+    >
       <PopoverPrimitive.Content
         data-slot="popover-content"
         align={align}
         sideOffset={sideOffset}
         className={cn(
-          "bg-popover text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 shadow-border ring-1 ring-border flex flex-col gap-4 rounded-lg p-4 text-sm duration-100 z-50 w-72 origin-(--radix-popover-content-transform-origin) outline-hidden",
+          "bg-popover text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 flex flex-col gap-4 rounded-lg p-4 text-sm duration-100 z-50 w-72 origin-(--radix-popover-content-transform-origin) outline-hidden",
           className,
         )}
         {...props}

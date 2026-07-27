@@ -49,7 +49,12 @@ from unsloth_zoo.utils import Version, _get_dtype
 torch_nn_functional_softmax = torch.nn.functional.softmax
 
 
-def Qwen3MoeSparseMoeBlock_fast_forward(self, X, temp_gate = None, temp_up = None):
+def Qwen3MoeSparseMoeBlock_fast_forward(
+    self,
+    X,
+    temp_gate = None,
+    temp_up = None,
+):
     # adapted from https://github.com/huggingface/transformers/pull/36878/files#diff-0855b77fc27ad9449158a1c74953f909b011c00de7125f7c8e68d0ff209c092aR356-R370
 
     bsz, seq_len, hd = X.shape
@@ -59,36 +64,29 @@ def Qwen3MoeSparseMoeBlock_fast_forward(self, X, temp_gate = None, temp_up = Non
         self.gate_proj, X, out = temp_gate
     )  # pretty much the only change from transformers implementation.
 
-    routing_weights = torch_nn_functional_softmax(
-        router_logits, dim = -1, dtype = torch.float32
-    )
+    routing_weights = torch_nn_functional_softmax(router_logits, dim = -1, dtype = torch.float32)
     routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim = -1)
     routing_weights /= routing_weights.sum(dim = -1, keepdim = True)
-    # we cast back to the input dtype
+    # cast back to the input dtype
     routing_weights = routing_weights.to(X.dtype)
     final_X = torch.zeros((bsz * seq_len, hd), dtype = torch.float32, device = X.device)
 
-    # One hot encode the selected experts to create an expert mask
-    # this will be used to easily index which expert is going to be sollicitated
+    # One-hot the selected experts into a mask to index which expert is used
     expert_mask = torch.nn.functional.one_hot(
         selected_experts, num_classes = self.num_experts
     ).permute(2, 1, 0)
 
-    # Loop over all available experts in the model and perform the computation on each expert
     for expert_idx in range(self.num_experts):
         expert_layer = self.experts[expert_idx]
         idx, top_x = torch.where(expert_mask[expert_idx])
 
-        # Index the correct hidden states and compute the expert hidden state for
-        # the current expert. We need to make sure to multiply the output hidden
-        # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
+        # Index hidden states for this expert and scale by routing_weights
         current_state = X[None, top_x].reshape(-1, hd)
         current_X = (
             expert_layer(current_state) * routing_weights[top_x, idx, None]
-        )  # Qwen3MoeMLP.forward = fast_swiglu_inference takes care of making this faster. Analogous to Dense models' MLP
+        )  # Qwen3MoeMLP.forward = fast_swiglu_inference speeds this up
 
-        # However `index_add_` only support torch tensors for indexing so we'll use
-        # the `top_x` tensor here.
+        # index_add_ needs a tensor index, so use top_x
         final_X.index_add_(0, top_x, current_X.to(X.dtype))
     final_X = final_X.reshape(bsz, seq_len, hd)
     return final_X, router_logits
@@ -111,13 +109,9 @@ def Qwen3MoeDecoderLayer_fast_forward(
 ):
     residual = hidden_states
 
-    if use_cache and hasattr(
-        self, "_flag_for_generation"
-    ):  # past_key_value is not None:
+    if use_cache and hasattr(self, "_flag_for_generation"):  # past_key_value is not None:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference(
-            self.input_layernorm, hidden_states
-        )
+        hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
@@ -134,12 +128,8 @@ def Qwen3MoeDecoderLayer_fast_forward(
 
         # MoE Router MLP
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference(
-            self.post_attention_layernorm, hidden_states
-        )
-        hidden_states, router_logits = Qwen3MoeSparseMoeBlock_fast_forward(
-            self.mlp, hidden_states
-        )
+        hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
+        hidden_states, router_logits = Qwen3MoeSparseMoeBlock_fast_forward(self.mlp, hidden_states)
         hidden_states += residual
     else:
         residual = hidden_states
@@ -189,14 +179,10 @@ class FastQwen3MoeModel(FastQwen3Model):
         # Qwen3SdpaAttention   .forward = Qwen3Attention_fast_forward
         # Qwen3FlashAttention2 .forward = Qwen3Attention_fast_forward
         Qwen3MoeSparseMoeBlock.forward = Qwen3MoeSparseMoeBlock_fast_forward
-        Qwen3MoeMLP.forward = (
-            fast_swiglu_inference  # This is analogous to Dense models' MLP
-        )
+        Qwen3MoeMLP.forward = fast_swiglu_inference  # This is analogous to Dense models' MLP
         Qwen3MoeDecoderLayer.forward = Qwen3MoeDecoderLayer_fast_forward
         Qwen3MoeModel.forward = LlamaModel_fast_forward
-        Qwen3MoeForCausalLM.forward = CausalLM_fast_forward(
-            LlamaModel_fast_forward_inference
-        )
+        Qwen3MoeForCausalLM.forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(Qwen3MoeForCausalLM)
 

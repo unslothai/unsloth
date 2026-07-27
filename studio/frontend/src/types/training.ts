@@ -2,15 +2,25 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export type ModelType = "vision" | "audio" | "embeddings" | "text";
-export type TrainingMethod = "qlora" | "lora" | "full";
+export type TrainingMethod = "qlora" | "lora" | "full" | "cpt";
 
 export function isAdapterMethod(method: TrainingMethod): boolean {
-  return method === "lora" || method === "qlora";
+  return method === "lora" || method === "qlora" || method === "cpt";
 }
 export type StepNumber = 1 | 2 | 3 | 4 | 5;
-export type DatasetSource = "huggingface" | "upload";
-export type DatasetFormat = "auto" | "alpaca" | "chatml" | "sharegpt";
-export type GradientCheckpointing = "none" | "true" | "unsloth";
+export type DatasetSource = "huggingface" | "upload" | "s3";
+
+/** S3 bucket configuration for loading datasets */
+export interface S3Config {
+  bucket: string;
+  region: string;
+  prefix?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  useIamRole?: boolean;
+}
+export type DatasetFormat = "auto" | "alpaca" | "chatml" | "sharegpt" | "raw";
+export type GradientCheckpointing = "none" | "true" | "unsloth" | "mlx";
 
 export interface WizardState {
   currentStep: StepNumber;
@@ -30,7 +40,7 @@ export interface WizardState {
   loraRank: number;
   loraAlpha: number;
   loraDropout: number;
-  loraVariant: "lora" | "rslora" | "loftq";
+  loraVariant: "lora" | "rslora" | "loftq" | "dora";
   batchSize: number;
   gradientAccumulation: number;
   weightDecay: number;
@@ -74,7 +84,7 @@ export interface WizardActions {
   setLoraRank: (rank: number) => void;
   setLoraAlpha: (alpha: number) => void;
   setLoraDropout: (dropout: number) => void;
-  setLoraVariant: (v: "lora" | "rslora" | "loftq") => void;
+  setLoraVariant: (v: "lora" | "rslora" | "loftq" | "dora") => void;
   setBatchSize: (v: number) => void;
   setGradientAccumulation: (v: number) => void;
   setWeightDecay: (v: number) => void;

@@ -24,7 +24,7 @@ from .sentence_transformer import FastSentenceTransformer
 try:
     from .falcon_h1 import FastFalconH1Model
 except:
-    # transformers_version < 4.53.0 does not have falcon_h1 so silently skip it for now
+    # falcon_h1 absent before transformers 4.53.0; skip
     pass
 from .dpo import PatchDPOTrainer, PatchKTOTrainer
 from ._utils import is_bfloat16_supported, is_vLLM_available, __version__

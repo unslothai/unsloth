@@ -10,6 +10,7 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart";
 import type { ChartConfig } from "@/components/ui/chart";
+import { useT } from "@/i18n";
 import type { ReactElement } from "react";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 import type { ScaleMode } from "./types";
@@ -23,10 +24,6 @@ import {
   formatStepTick,
   fromLog1p,
 } from "./utils";
-
-const gradNormConfig = {
-  displayGradNorm: { label: "Grad Norm", color: "#f97316" },
-} satisfies ChartConfig;
 
 interface GradNormPoint {
   step: number;
@@ -47,12 +44,18 @@ export function GradNormChartCard({
   xAxisTicks: number[];
   scale: ScaleMode;
 }): ReactElement {
+  const t = useT();
+  const gradNormConfig = {
+    displayGradNorm: { label: t("studio.charts.gradNorm"), color: "#f97316" },
+  } satisfies ChartConfig;
   const showPoint = data.length <= 1 ? { r: 3, strokeWidth: 0 } : false;
 
   return (
     <Card size="sm">
       <CardHeader>
-        <CardTitle className="text-sm">Gradient Norm</CardTitle>
+        <CardTitle className="text-sm">
+          {t("studio.charts.gradientNorm")}
+        </CardTitle>
       </CardHeader>
       <CardContent>
         <ChartContainer config={gradNormConfig} className={CHART_CONTAINER_CLASS}>
@@ -101,11 +104,13 @@ export function GradNormChartCard({
               content={
                 <ChartTooltipContent
                   labelFormatter={(_value, payload) =>
-                    `Step ${payload?.[0]?.payload?.step ?? ""}`
+                    t("studio.charts.step", {
+                      step: payload?.[0]?.payload?.step ?? "",
+                    })
                   }
                   formatter={(_value, _name, item) => {
                     const raw = Number(item?.payload?.gradNorm);
-                    return [formatMetric(raw), "Grad Norm"];
+                    return [formatMetric(raw), t("studio.charts.gradNorm")];
                   }}
                 />
               }

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from loggers import get_logger
+from utils.node_runtime import resolve_node_executable
 from utils.paths import ensure_dir, oxc_validator_tmp_root
 
 logger = get_logger(__name__)
@@ -31,6 +32,12 @@ _OXC_CODE_SHAPES = {"auto", "module", "snippet"}
 
 _OXC_TOOL_DIR = Path(__file__).resolve().parent / "oxc-validator"
 _OXC_RUNNER_PATH = _OXC_TOOL_DIR / "validate.mjs"
+
+
+from utils.native_path_leases import child_env_without_native_path_secret
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
+)
 
 
 @dataclass(frozen = True)
@@ -75,9 +82,7 @@ def split_oxc_local_callable_validators(
 
 
 def register_oxc_local_callable_validators(
-    *,
-    builder,
-    specs: list[OxcLocalCallableValidatorSpec],
+    *, builder, specs: list[OxcLocalCallableValidatorSpec]
 ) -> None:
     if not specs:
         return
@@ -108,10 +113,7 @@ def register_oxc_local_callable_validators(
         )
 
 
-def _parse_oxc_spec(
-    *,
-    column: dict[str, Any],
-) -> OxcLocalCallableValidatorSpec | None:
+def _parse_oxc_spec(*, column: dict[str, Any]) -> OxcLocalCallableValidatorSpec | None:
     if str(column.get("column_type") or "").strip() != "validation":
         return None
     if str(column.get("validator_type") or "").strip() != "local_callable":
@@ -132,11 +134,7 @@ def _parse_oxc_spec(
 
     target_columns_raw = column.get("target_columns")
     target_columns = (
-        [
-            value.strip()
-            for value in target_columns_raw
-            if isinstance(value, str) and value.strip()
-        ]
+        [value.strip() for value in target_columns_raw if isinstance(value, str) and value.strip()]
         if isinstance(target_columns_raw, list)
         else []
     )
@@ -176,9 +174,7 @@ def _parse_oxc_validation_marker(fn_name: str) -> tuple[str, str, str]:
         return "javascript", "syntax", "auto"
     code_lang = parts[0] if parts[0] in _OXC_LANG_TO_NODE_LANG else "javascript"
     mode = parts[1] if parts[1] in _OXC_VALIDATION_MODES else "syntax"
-    code_shape = (
-        parts[2] if len(parts) >= 3 and parts[2] in _OXC_CODE_SHAPES else "auto"
-    )
+    code_shape = parts[2] if len(parts) >= 3 and parts[2] in _OXC_CODE_SHAPES else "auto"
     return code_lang, mode, code_shape
 
 
@@ -189,7 +185,7 @@ def _build_oxc_validation_function(lang: str, validation_mode: str, code_shape: 
     normalized_code_shape = code_shape if code_shape in _OXC_CODE_SHAPES else "auto"
 
     def _validator(df):
-        import pandas as pd  # imported lazily for local callable runtime
+        import pandas as pd  # lazy import for local callable runtime
 
         row_count = int(len(df.index))
         if row_count == 0:
@@ -199,10 +195,7 @@ def _build_oxc_validation_function(lang: str, validation_mode: str, code_shape: 
         code_values = (
             ["" for _ in range(row_count)]
             if not code_column
-            else [
-                "" if value is None else str(value)
-                for value in df[code_column].tolist()
-            ]
+            else ["" if value is None else str(value) for value in df[code_column].tolist()]
         )
 
         results = _run_oxc_batch(
@@ -218,16 +211,14 @@ def _build_oxc_validation_function(lang: str, validation_mode: str, code_shape: 
             )
         return pd.DataFrame(results)
 
-    _validator.__name__ = f"{OXC_VALIDATION_FN_MARKER}_{node_lang}_{mode.replace('+', '_')}_{normalized_code_shape}"
+    _validator.__name__ = (
+        f"{OXC_VALIDATION_FN_MARKER}_{node_lang}_{mode.replace('+', '_')}_{normalized_code_shape}"
+    )
     return _validator
 
 
 def _run_oxc_batch(
-    *,
-    node_lang: str,
-    validation_mode: str,
-    code_shape: str,
-    code_values: list[str],
+    *, node_lang: str, validation_mode: str, code_shape: str, code_values: list[str]
 ) -> list[dict[str, Any]]:
     if not _OXC_RUNNER_PATH.exists():
         return _fallback_results(
@@ -241,21 +232,35 @@ def _run_oxc_batch(
         "code_shape": code_shape,
         "codes": code_values,
     }
+    # Resolve a usable Node (system or the isolated install, which is not on the
+    # user's PATH); a bare "node" would fail for isolated-Node users.
+    node_executable = resolve_node_executable()
+    if not node_executable:
+        return _fallback_results(
+            len(code_values),
+            "Node.js not found (install Node >= 20.19, or re-run Unsloth setup to provision it).",
+        )
     try:
         tmp_dir = ensure_dir(oxc_validator_tmp_root())
-        env = dict(os.environ)
+        env = child_env_without_native_path_secret()
         tmp_dir_str = str(tmp_dir)
         env["TMPDIR"] = tmp_dir_str
         env["TMP"] = tmp_dir_str
         env["TEMP"] = tmp_dir_str
+        # Resolved node's dir first on the child PATH so it finds its own npm/npx.
+        node_bin_dir = os.path.dirname(node_executable)
+        if node_bin_dir:
+            env["PATH"] = node_bin_dir + os.pathsep + env.get("PATH", "")
+        env.pop("NODE_PATH", None)
         proc = subprocess.run(
-            ["node", str(_OXC_RUNNER_PATH)],
+            [node_executable, str(_OXC_RUNNER_PATH)],
             cwd = str(_OXC_TOOL_DIR),
             input = json.dumps(payload),
             text = True,
             capture_output = True,
             check = False,
             env = env,
+            **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, ValueError) as exc:
         logger.warning("OXC subprocess launch failed: %s", exc)
@@ -301,21 +306,13 @@ def _run_oxc_batch(
         warning_count_raw = item.get("warning_count")
         out.append(
             {
-                "is_valid": bool(is_valid_raw)
-                if isinstance(is_valid_raw, bool)
-                else False,
-                "error_count": int(error_count_raw)
-                if isinstance(error_count_raw, int)
-                else 0,
+                "is_valid": bool(is_valid_raw) if isinstance(is_valid_raw, bool) else False,
+                "error_count": int(error_count_raw) if isinstance(error_count_raw, int) else 0,
                 "error_message": str(message_raw or ""),
-                "severity": str(severity_raw)
-                if isinstance(severity_raw, str)
-                else None,
+                "severity": str(severity_raw) if isinstance(severity_raw, str) else None,
                 "code": str(code_raw) if isinstance(code_raw, str) else None,
                 "labels": labels_raw if isinstance(labels_raw, list) else [],
-                "codeframe": str(codeframe_raw)
-                if isinstance(codeframe_raw, str)
-                else None,
+                "codeframe": str(codeframe_raw) if isinstance(codeframe_raw, str) else None,
                 "warning_count": int(warning_count_raw)
                 if isinstance(warning_count_raw, int)
                 else 0,

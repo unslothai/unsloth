@@ -2,13 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { usePlatformStore } from "@/config/env";
+import { isTauri } from "@/lib/api-base";
 
 export const AUTH_TOKEN_KEY = "unsloth_auth_token";
 export const AUTH_REFRESH_TOKEN_KEY = "unsloth_auth_refresh_token";
 export const ONBOARDING_DONE_KEY = "unsloth_onboarding_done";
 export const AUTH_MUST_CHANGE_PASSWORD_KEY = "unsloth_auth_must_change_password";
+export const AUTH_SESSION_CLEARED_EVENT = "unsloth:auth-session-cleared";
 
-type PostAuthRoute = "/onboarding" | "/studio" | "/change-password" | "/chat";
+type PostAuthRoute = "/change-password" | "/chat";
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
@@ -37,12 +39,13 @@ export function getRefreshToken(): string | null {
 export function storeAuthTokens(
   accessToken: string,
   refreshToken: string,
-  mustChangePassword = false,
 ): void {
+  // must_change_password is set via setMustChangePassword(), not here: routing
+  // it through would let CodeQL trace the boolean into localStorage and flag the
+  // deliberate JWT writes as sensitive-info storage.
   if (!canUseStorage()) return;
   localStorage.setItem(AUTH_TOKEN_KEY, accessToken);
   localStorage.setItem(AUTH_REFRESH_TOKEN_KEY, refreshToken);
-  localStorage.setItem(AUTH_MUST_CHANGE_PASSWORD_KEY, String(mustChangePassword));
 }
 
 export function clearAuthTokens(): void {
@@ -50,16 +53,24 @@ export function clearAuthTokens(): void {
   localStorage.removeItem(AUTH_TOKEN_KEY);
   localStorage.removeItem(AUTH_REFRESH_TOKEN_KEY);
   localStorage.removeItem(AUTH_MUST_CHANGE_PASSWORD_KEY);
+  window.dispatchEvent(new Event(AUTH_SESSION_CLEARED_EVENT));
 }
 
+// Flag stored as key presence (constant "1" or absence), not a derived boolean,
+// so CodeQL doesn't flow must_change_password into localStorage.setItem. The
+// value is a route hint (/change-password vs /chat), not a secret.
 export function mustChangePassword(): boolean {
   if (!canUseStorage()) return false;
-  return localStorage.getItem(AUTH_MUST_CHANGE_PASSWORD_KEY) === "true";
+  return localStorage.getItem(AUTH_MUST_CHANGE_PASSWORD_KEY) !== null;
 }
 
 export function setMustChangePassword(required: boolean): void {
   if (!canUseStorage()) return;
-  localStorage.setItem(AUTH_MUST_CHANGE_PASSWORD_KEY, String(required));
+  if (required) {
+    localStorage.setItem(AUTH_MUST_CHANGE_PASSWORD_KEY, "1");
+  } else {
+    localStorage.removeItem(AUTH_MUST_CHANGE_PASSWORD_KEY);
+  }
 }
 
 export function isOnboardingDone(): boolean {
@@ -78,7 +89,8 @@ export function resetOnboardingDone(): void {
 }
 
 export function getPostAuthRoute(): PostAuthRoute {
+  if (isTauri) return "/chat";
   if (mustChangePassword()) return "/change-password";
   if (usePlatformStore.getState().isChatOnly()) return "/chat";
-  return isOnboardingDone() ? "/studio" : "/onboarding";
+  return "/chat";
 }

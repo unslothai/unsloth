@@ -4,7 +4,9 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { DownloadIcon, PauseIcon, PlayIcon } from "lucide-react";
+import { PauseIcon, PlayIcon } from "lucide-react";
+import { Download01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { type FC, useRef, useState } from "react";
 
 interface AudioPlayerProps {
@@ -98,7 +100,7 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({ src }) => {
           onChange={handleSeek}
           className="h-1.5 w-full cursor-pointer accent-primary"
         />
-        <div className="flex justify-between text-[10px] text-muted-foreground">
+        <div className="flex justify-between text-ui-10 text-muted-foreground">
           <span>{formatTime(progress)}</span>
           <span>{formatTime(duration)}</span>
         </div>
@@ -110,7 +112,7 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({ src }) => {
         onClick={handleDownload}
         title="Download audio"
       >
-        <DownloadIcon className="size-3.5" />
+        <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
       </Button>
     </div>
   );
