@@ -4508,9 +4508,17 @@ async def _load_model_impl(
 
         if request.local_files_only and not config.is_gguf and not is_local_path(config.path):
             from hub.utils.local_snapshot import resolve_local_snapshot_path
+            from utils.hf_cache_settings import get_hf_cache_paths
 
+            # Resolve against the LIVE Studio-managed hub cache: Studio can
+            # move the cache at runtime without rewriting Hugging Face's
+            # import-time env constants, so the helper's default would search
+            # the stale location and 409 models the inventory just found.
             local_snapshot = await asyncio.to_thread(
-                resolve_local_snapshot_path, config.path, request.hf_token
+                resolve_local_snapshot_path,
+                config.path,
+                request.hf_token,
+                str(get_hf_cache_paths().hub_cache),
             )
             if local_snapshot is None:
                 raise HTTPException(
@@ -4664,6 +4672,10 @@ async def _load_model_impl(
                     hf_repo = config.gguf_hf_repo,
                     hf_variant = config.gguf_variant,
                     hf_token = request.hf_token,
+                    # Background auto-loads never download: main quant resolves
+                    # cache-only and the optional mmproj/MTP companions are
+                    # cached-or-skipped instead of fetched.
+                    local_files_only = request.local_files_only,
                 )
             else:
                 # Local mode: llama-server loads via -m <path>

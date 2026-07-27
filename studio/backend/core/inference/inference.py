@@ -562,7 +562,11 @@ class InferenceBackend:
                     isinstance(processor, ProcessorMixin) or hasattr(processor, "image_processor")
                 ):
                     # LoRA adapters: use base model. Local merged exports: read base from export_metadata.json.
-                    processor_source = config.base_model if config.is_lora else config.identifier
+                    # Non-LoRA: config.path, not config.identifier. They are the
+                    # same for ordinary loads, but a local-only load rewrites
+                    # path to the cached snapshot and this fallback must stay
+                    # on those local files instead of refetching by repo id.
+                    processor_source = config.base_model if config.is_lora else config.path
                     if not config.is_lora and config.is_local:
                         _meta_path = Path(config.path) / "export_metadata.json"
                         try:

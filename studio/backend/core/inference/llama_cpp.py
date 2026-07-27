@@ -5221,6 +5221,7 @@ class LlamaCppBackend:
         force: bool = False,
         allow_smaller_fallback: bool = True,
         cancel_event: Optional[threading.Event] = None,
+        local_files_only: bool = False,
     ) -> str:
         """Download GGUF file(s) from HuggingFace. Returns local path.
 
@@ -5258,16 +5259,19 @@ class LlamaCppBackend:
         gguf_filename = None
         gguf_extra_shards: list[str] = []
         if hf_variant:
-            try:
-                from huggingface_hub import list_repo_files
+            # Local-only loads resolve from the cache alone: the live listing
+            # is both network and unnecessary for files already on disk.
+            if not local_files_only:
+                try:
+                    from huggingface_hub import list_repo_files
 
-                files = list_repo_files(hf_repo, token = hf_token)
-                gguf_files = _gguf_files_for_variant(files, hf_variant)
-                if gguf_files:
-                    gguf_filename = gguf_files[0]
-                    gguf_extra_shards = _gguf_extra_shards(gguf_files, gguf_filename)
-            except Exception as e:
-                logger.warning(f"Could not list repo files: {e}")
+                    files = list_repo_files(hf_repo, token = hf_token)
+                    gguf_files = _gguf_files_for_variant(files, hf_variant)
+                    if gguf_files:
+                        gguf_filename = gguf_files[0]
+                        gguf_extra_shards = _gguf_extra_shards(gguf_files, gguf_filename)
+                except Exception as e:
+                    logger.warning(f"Could not list repo files: {e}")
 
             # Fall back to the local cache when the repo listing is unavailable.
             if not gguf_filename:
@@ -5308,6 +5312,14 @@ class LlamaCppBackend:
             if cached_main is not None:
                 logger.info(f"Reusing cached GGUF: {cached_main}")
                 return cached_main
+
+        # A local-only load reaching this point has no complete cached copy;
+        # fail closed instead of downloading (background loads never fetch).
+        if local_files_only:
+            raise RuntimeError(
+                f"GGUF '{hf_repo}' ({hf_variant or 'default'}) is not fully "
+                "available in the local cache; select it explicitly to download it."
+            )
 
         # Check disk space; fall back to a smaller variant if needed
         all_gguf_files = [gguf_filename] + gguf_extra_shards
@@ -5471,6 +5483,7 @@ class LlamaCppBackend:
         label: str,
         cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
+        local_files_only: bool = False,
     ) -> Optional[str]:
         """Resolve and fetch a companion GGUF (mmproj / MTP drafter) by name.
 
@@ -5491,6 +5504,12 @@ class LlamaCppBackend:
             if cached:
                 logger.info("Reusing cached %s: %s", label, cached)
                 return cached
+
+        # Background loads never download: without a cached copy the model
+        # runs without the optional companion instead of fetching it.
+        if local_files_only:
+            logger.info("Skipping %s fetch (local-only load)", label)
+            return None
 
         from utils.hf_cache_settings import get_hf_cache_paths
 
@@ -5580,6 +5599,7 @@ class LlamaCppBackend:
         hf_token: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
+        local_files_only: bool = False,
     ) -> Optional[str]:
         """Download the mmproj (vision projection) file from a GGUF repo.
 
@@ -5596,6 +5616,7 @@ class LlamaCppBackend:
             label = "mmproj",
             cancel_event = cancel_event,
             near_path = near_path,
+            local_files_only = local_files_only,
         )
 
     def _cached_repo_mtp_drafter(
@@ -5637,6 +5658,7 @@ class LlamaCppBackend:
         hf_repo: str,
         hf_token: Optional[str] = None,
         near_path: Optional[str] = None,
+        local_files_only: bool = False,
     ) -> Optional[str]:
         """Download the separate MTP drafter (speculative head) from a GGUF repo.
 
@@ -5670,7 +5692,7 @@ class LlamaCppBackend:
         # fetched). Online, _download_companion_gguf/hf_hub_download reuse the
         # current cached file and refetch a changed one, so skip the probe here
         # rather than pair new weights with a stale draft.
-        if _hf_env_offline():
+        if local_files_only or _hf_env_offline():
             cached = self._cached_repo_mtp_drafter(
                 hf_repo,
                 cache_dir = _hub_cache_dir_for_snapshot_path(near_path),
@@ -5685,6 +5707,7 @@ class LlamaCppBackend:
             pick = _pick_mtp,
             label = "MTP drafter",
             near_path = near_path,
+            local_files_only = local_files_only,
         )
 
     def _resolve_launch_mmproj_path(
@@ -6381,6 +6404,9 @@ class LlamaCppBackend:
         hf_repo: Optional[str] = None,
         hf_variant: Optional[str] = None,
         hf_token: Optional[str] = None,
+        # Background auto-loads: resolve every file (main quant, mmproj, MTP
+        # drafter) from the local cache only and never download.
+        local_files_only: bool = False,
         # Common
         model_identifier: str,
         is_vision: bool = False,
@@ -6418,6 +6444,7 @@ class LlamaCppBackend:
             "gguf_path": gguf_path,
             "mmproj_path": mmproj_path,
             "mtp_draft_path": mtp_draft_path,
+            "local_files_only": local_files_only,
             "hf_repo": hf_repo,
             "hf_variant": hf_variant,
             "hf_token": hf_token,
@@ -6575,6 +6602,7 @@ class LlamaCppBackend:
                         hf_repo = hf_repo,
                         hf_variant = hf_variant,
                         hf_token = hf_token,
+                        local_files_only = local_files_only,
                     )
                     # Auto-download mmproj for vision models unless opted out.
                     if is_vision and not mmproj_path and not extra_args_disable_mmproj(extra_args):
@@ -6582,6 +6610,7 @@ class LlamaCppBackend:
                             hf_repo = hf_repo,
                             hf_token = hf_token,
                             near_path = model_path,
+                            local_files_only = local_files_only,
                         )
                     # Auto-download the separate MTP drafter (e.g. Gemma) when
                     # the requested spec mode can use it. Repos with the head
@@ -6600,6 +6629,7 @@ class LlamaCppBackend:
                             hf_repo = hf_repo,
                             hf_token = hf_token,
                             near_path = model_path,
+                            local_files_only = local_files_only,
                         )
             elif gguf_path:
                 if not Path(gguf_path).is_file():

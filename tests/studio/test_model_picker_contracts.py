@@ -1072,3 +1072,40 @@ def test_background_loads_resolve_local_files_only():
 
     helper = _read_backend("hub/utils/local_snapshot.py")
     assert "local_files_only = True" in helper
+    # The rewrite resolves against the LIVE Studio-managed cache location,
+    # not huggingface_hub's import-time default.
+    assert "str(get_hf_cache_paths().hub_cache)," in route
+
+
+def test_gguf_background_loads_never_download_companions():
+    """A cached GGUF load can still fetch from the Hub through its optional
+    companions (mmproj, MTP drafter) or a cache-miss main quant. Background
+    loads pass local_files_only into the llama.cpp path: companions resolve
+    cached-or-skipped, and a main-quant cache miss raises instead of
+    downloading."""
+    route = _read_backend("routes/inference.py")
+    gguf_source = route.split("if config.gguf_hf_repo:", 1)[1]
+    gguf_source = gguf_source.split("else:", 1)[0]
+    assert "local_files_only = request.local_files_only," in gguf_source
+
+    llama = _read_backend("core/inference/llama_cpp.py")
+    # The flag flows to the main quant and both companion helpers, and the
+    # crash-replay kwargs keep it so a reload stays local-only.
+    assert llama.count("local_files_only = local_files_only,") >= 3
+    assert '"local_files_only": local_files_only,' in llama
+    # Companions: cached-or-skipped, never fetched.
+    assert 'logger.info("Skipping %s fetch (local-only load)", label)' in llama
+    assert "if local_files_only or _hf_env_offline():" in llama
+    # Main quant: a cache miss fails closed.
+    download = llama.split("def _download_gguf", 1)[1]
+    download = download.split("def _download_companion_gguf", 1)[0]
+    assert "if local_files_only:" in download
+    assert "select it explicitly to download it." in download
+
+    inference = _read_backend("core/inference/inference.py")
+    # The vision processor fallback stays on the (possibly rewritten local)
+    # load path instead of refetching by repo id.
+    assert (
+        "config.base_model if config.is_lora else config.path" in inference
+    )
+    assert "config.base_model if config.is_lora else config.identifier" not in inference
