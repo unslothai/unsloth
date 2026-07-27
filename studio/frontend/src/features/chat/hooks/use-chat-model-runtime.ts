@@ -316,16 +316,12 @@ async function syncInferenceStatusToStore(options?: {
         // capability. Re-apply live status so attach gates survive a refresh.
         syncModelCapabilities(checkpointId, statusRes);
 
-        // Studio starting against an already-resident GGUF: the thread history
-        // can load before this first status refresh has a checkpoint or a
-        // window, and that load's recount condition needs both, so it takes the
-        // saved-usage branch and finds nothing to restore. Nothing reloads
-        // history afterwards, so the bar stays blank until the thread is
-        // reopened. Recount here the first time a status refresh discovers a
-        // loaded local model, and only into a blank bar for a thread that is
-        // already mounted -- a populated bar is either a completion's exact
-        // usage or a recount that already ran, and a null thread would count an
-        // empty conversation and publish it as this thread's usage.
+        // Studio starting against an already-resident GGUF: history can load before
+        // this first status refresh has a checkpoint or a window, so its recount
+        // condition fails and nothing reloads history afterwards, leaving the bar
+        // blank. Recount here instead, but only into a blank bar on a mounted thread:
+        // a populated bar already holds exact or recounted usage, and a null thread
+        // would publish an empty conversation's count as this thread's usage.
         const hydrated = useChatRuntimeStore.getState();
         if (
           !selectedCheckpoint &&

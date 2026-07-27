@@ -1333,10 +1333,7 @@ function addSystemInstruction(
   targetMessages.unshift({ role: "system", content: text });
 }
 
-/**
- * The Canvas system instruction, shared by the generation request and the token
- * recount so the bar counts the prompt the next completion will actually get.
- */
+/** Canvas system instruction, shared by the request and the recount so both match. */
 function canvasInstruction(
   artifactsEnabled: boolean,
   renderHtmlToolEnabledForThisTurn: boolean,
@@ -1395,10 +1392,8 @@ export async function buildOutboundMessagesForTokenCount(
     });
   }
 
-  // Canvas adds a system instruction to the real request, so count it too;
-  // buildLocalTokenCountExtras already declares the matching render_html tool.
-  // The recount is local-only (external checkpoints never reach it), which is
-  // the isExternalRequest half of the generation-side gate.
+  // Canvas adds a system instruction to the real request, so count it too. The recount
+  // is local-only, which covers the isExternalRequest half of the generation-side gate.
   const { artifactsEnabled, supportsTools } = useChatRuntimeStore.getState();
   addSystemInstruction(
     outboundMessages,
@@ -1483,8 +1478,7 @@ export async function buildLocalTokenCountExtras(
 
   return {
     enable_tools: true,
-    // Auto-Heal off leaves leaked tool markup in the real prompt, so the count
-    // has to be told not to strip it either.
+    // Auto-Heal off leaves leaked tool markup in the real prompt, so the count keeps it.
     auto_heal_tool_calls: autoHealToolCalls,
     enabled_tools: [
       ...(ragEnabled || projectRagEnabled ? ["search_knowledge_base"] : []),

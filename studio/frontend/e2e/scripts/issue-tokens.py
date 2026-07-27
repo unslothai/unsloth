@@ -18,10 +18,8 @@ from auth.authentication import create_access_token, create_refresh_token  # noq
 
 storage.ensure_default_admin()
 subject = storage.DEFAULT_ADMIN_USERNAME
-# ensure_default_admin seeds the account with must_change_password, and
-# get_current_subject answers 403 "Password change required" for any token
-# without the desktop claim, so a plain token cannot reach a single protected
-# route on a fresh E2E install. Mint with the desktop exemption instead.
+# The seeded account carries must_change_password, so get_current_subject 403s any
+# token without the desktop claim. Mint with the desktop exemption instead.
 print(
     json.dumps(
         {

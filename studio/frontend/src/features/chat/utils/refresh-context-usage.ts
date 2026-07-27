@@ -13,12 +13,9 @@ import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { MessageRecord } from "../types";
 import { listStoredChatMessages } from "./chat-history-storage";
 
-// Cancellation is per thread, not per module. Every mounted provider recounts
-// its own thread when its history loads, so in compare mode a hidden pane's
-// load would otherwise invalidate the visible thread's in-flight count, and
-// the pane's own result is then dropped by the activeThreadId guard -- leaving
-// the bar blank. Two calls for the SAME thread still supersede each other,
-// which is what this counter is for.
+// Cancellation is per thread, not per module: in compare mode a hidden pane's history
+// load would otherwise invalidate the visible thread's in-flight count and then have
+// its own result dropped, blanking the bar. Same-thread calls still supersede.
 const refreshGenerations = new Map<string | null, number>();
 
 function nextGeneration(threadKey: string | null): number {
@@ -33,11 +30,9 @@ function superseded(threadKey: string | null, generation: number): boolean {
 
 type RuntimeMessagesGetter = () => readonly ThreadMessage[];
 
-// Compare mode mounts several providers at once, so this is a stack rather than
-// a slot: unmounting the newest uncovers the provider underneath instead of
-// leaving nothing registered. Callers that know which records they want search
-// it (runtimeSelectedBranch); only the ones that cannot tell fall back to the
-// newest mount.
+// Compare mode mounts several providers at once, so this is a stack, not a slot:
+// unmounting the newest uncovers the one underneath. Callers that know which records
+// they want search it; the rest fall back to the newest mount.
 const runtimeMessagesGetters: RuntimeMessagesGetter[] = [];
 
 function currentRuntimeMessagesGetter(): RuntimeMessagesGetter | null {
@@ -133,12 +128,10 @@ const ROLE_ORDER: Record<string, number> = { system: 0, user: 1, assistant: 2 };
 /**
  * Reproduce the branch the runtime actually displays for a stored thread.
  *
- * Mirrors the history adapter: sort by (createdAt, role, id), give legacy
- * records without a parentId the previous record as parent, then take the
- * ancestor chain of the last record -- assistant-ui imports without a headId,
- * so it resets the head to the last message and shows that chain. A greedy
- * newest-child descent picks a different branch (and drops pre-parentId
- * history), which counts a conversation the user is not looking at.
+ * Mirrors the history adapter: sort by (createdAt, role, id), parent legacy records
+ * to the previous one, then take the ancestor chain of the last record, since an
+ * import without a headId resets the head there. A greedy newest-child descent picks
+ * a different branch and drops pre-parentId history.
  */
 function orderBySelectedBranch<T extends MessageRecord>(messages: T[]): T[] {
   const sorted = messages.slice().sort((a, b) => {
@@ -172,26 +165,21 @@ function orderBySelectedBranch<T extends MessageRecord>(messages: T[]): T[] {
 }
 
 /**
- * The runtime's message list is the branch actually on screen, so a post-load
- * recount follows it instead of re-deriving one from storage: after the user
- * steps back to an earlier retry sibling, the newest stored record belongs to a
- * branch nobody is looking at. Only used after a model load -- the history
- * adapter's own recount runs while assistant-ui is still importing, when the
- * getter can still hold the outgoing thread. Message ids are unique, so the
- * displayed tail also identifies which mounted provider is showing these
- * records; getters parked on another thread (compare pane, mid switch) are
- * skipped, and only a stack with no match at all falls back to storage.
+ * The branch on screen, which a post-load recount follows instead of re-deriving one
+ * from storage: after stepping back to an earlier retry sibling, the newest stored
+ * record is on a branch nobody is looking at. Post-load only, since the history
+ * adapter's own recount runs mid-import when the getter still holds the old thread.
+ * Ids are unique, so the displayed tail identifies the provider showing these records;
+ * getters parked on another thread are skipped, and no match at all falls back.
  */
 function runtimeSelectedBranch(
   records: MessageRecord[],
 ): readonly ThreadMessage[] | null {
   const recordIds = new Set(records.map((record) => record.id));
-  // Walk the whole stack, not just its top: with two panes mounted the newest
-  // mount is often the other thread, and reading only that one fails the id
-  // check and drops back to the storage branch -- the wrong retry sibling for
-  // the pane that actually asked. Newest-first keeps the single-provider
-  // order, and a provider that throws mid-teardown is skipped rather than
-  // aborting the recount.
+  // Walk the whole stack, not just its top: with two panes mounted the newest is
+  // often the other thread, and reading only that one falls back to the storage
+  // branch, the wrong retry sibling. Newest-first keeps the single-provider order,
+  // and a provider throwing mid-teardown is skipped rather than aborting.
   for (let index = runtimeMessagesGetters.length - 1; index >= 0; index--) {
     let runtimeMessages: readonly ThreadMessage[] | undefined;
     try {
@@ -228,10 +216,7 @@ function zeroContextUsage(): SavedContextUsage {
   };
 }
 
-/**
- * Re-count prompt tokens for the active local GGUF chat and populate the
- * context-usage bar without waiting for the next completion.
- */
+/** Re-count prompt tokens for the active local GGUF chat and fill the usage bar. */
 export async function refreshContextUsage(options?: {
   threadId?: string;
   /** When true, skip the modelLoading guard (post-load recount). */
@@ -258,10 +243,8 @@ export async function refreshContextUsage(options?: {
   const generation = nextGeneration(capturedThreadId);
 
   if (!threadId) {
-    // Show something immediately for a chat with no persisted thread, then let
-    // the count below refine it: a configured system prompt, project
-    // instructions or enabled tools are already part of the next request, so
-    // zero is only right when that payload turns out to be empty.
+    // Show something immediately for a chat with no persisted thread; the count below
+    // refines it, since a system prompt or enabled tools are already in the request.
     useChatRuntimeStore.getState().setContextUsage(zeroContextUsage());
   }
 
@@ -277,10 +260,9 @@ export async function refreshContextUsage(options?: {
       const runtimeBranch = options?.afterModelLoad
         ? runtimeSelectedBranch(records)
         : null;
-      // Scope the fallback to the branch being counted. A reverse scan over
-      // every record picks the newest assistant globally, which can sit on a
-      // sibling branch, and that stale value is what stays on the bar whenever
-      // the recount does not land (an image thread, a failed count).
+      // Scope the fallback to the branch being counted: a global reverse scan picks
+      // the newest assistant, possibly on a sibling branch, and that stale value is
+      // what stays on the bar whenever the recount does not land.
       const branchRecords = runtimeBranch
         ? recordsForRuntimeBranch(records, runtimeBranch)
         : orderBySelectedBranch(records);
@@ -302,10 +284,9 @@ export async function refreshContextUsage(options?: {
         useChatRuntimeStore.getState().setContextUsage(savedUsage);
       }
     } else {
-      // The runtime getter is for a persisted-but-empty read (an incognito
-      // thread), where the messages live only in the mounted runtime. It is a
-      // single slot shared by every provider, so only trust it for the active
-      // thread; a compare pane reading it would get the other pane's branch.
+      // A persisted-but-empty read (incognito thread) keeps its messages only in the
+      // mounted runtime. The getter is shared, so trust it only for the active thread;
+      // a compare pane would otherwise read the other pane's branch.
       runMessages =
         threadId &&
         threadId === useChatRuntimeStore.getState().activeThreadId
@@ -318,17 +299,15 @@ export async function refreshContextUsage(options?: {
       return;
     }
 
-    // The newest user turn's audio is replayed as audio_base64 by the real
-    // request, but toOpenAIMessages has no audio branch, so counting here would
-    // price a text-only prompt. Decline instead, exactly as the endpoint does
-    // for images, and leave the usage already on the bar.
+    // The real request replays the newest user audio as audio_base64, but
+    // toOpenAIMessages has no audio branch, so counting would price a text-only
+    // prompt. Decline as the endpoint does for images and keep the usage on the bar.
     if (findLatestUserAudioBase64(runMessages)) return;
 
-    // A completion finishing mid-count writes the exact usage for a turn this
-    // count predates, so drop the recount rather than roll the bar backwards.
-    // Sampled the moment runMessages is fixed (and after the saved-usage
-    // restore above, which is our own write): the payload build awaits storage
-    // and the project/RAG lookups, and a completion landing in that window
+    // A completion finishing mid-count writes exact usage for a turn this count
+    // predates, so drop the recount rather than roll the bar backwards. Sampled as
+    // soon as runMessages is fixed (after our own saved-usage write): the payload
+    // build awaits storage and lookups, and a completion landing in that window
     // would otherwise be captured here and compare equal.
     const usageBeforeCount = useChatRuntimeStore.getState().contextUsage;
 
@@ -346,9 +325,8 @@ export async function refreshContextUsage(options?: {
 
     const toolExtras = await buildLocalTokenCountExtras(payloadThreadId, outbound);
 
-    // Always ask the server, even with nothing to send: the template itself has
-    // tokens, and a process-level policy (unsloth run --enable-tools) injects
-    // tool schemas and their nudge that the client cannot see.
+    // Always ask the server, even with nothing to send: the template itself has tokens,
+    // and `unsloth run --enable-tools` injects schemas the client cannot see.
     const result = await countChatInputTokens({
       model: capturedCheckpoint,
       messages: outbound,
@@ -356,11 +334,9 @@ export async function refreshContextUsage(options?: {
     });
     const inputTokens = result.input_tokens;
 
-    // The endpoint counts against whatever is loaded at the moment it runs, so a
-    // model switch by another API client after our last status refresh is
-    // invisible to the checkpoint guards below -- they only see that our own
-    // store is unchanged. When the backend names the tokenizer it used, require
-    // it to be ours. Older backends omit the field; keep counting for them.
+    // The endpoint counts whatever is loaded now, so a switch by another API client is
+    // invisible to the checkpoint guards below, which only see our own store. When the
+    // backend names the tokenizer, require it to be ours; older ones omit the field.
     if (result.model != null && result.model !== capturedCheckpoint) return;
 
     if (superseded(capturedThreadId, generation)) return;

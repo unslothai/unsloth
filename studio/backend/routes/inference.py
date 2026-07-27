@@ -5894,8 +5894,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
             _model_id = llama_backend.model_identifier
-            # Shared with the count endpoint, which hands the same identity back
-            # so a client can tell whose tokenizer produced a count.
+            # Shared with the count endpoint, so a client can tell whose tokenizer counted.
             _display_model_id, _reported_model_identifier = _llama_status_model_ids(llama_backend)
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
             _audio_type = getattr(llama_backend, "_audio_type", None)
@@ -12951,11 +12950,9 @@ async def chat_count_tokens(
     and drag the backend back -- a server-side reload the frontend's own
     checkpoint guards cannot undo. Count against whatever is loaded now.
     """
-    # count_chat_tokens renders /apply-template and tokenizes the text it returns,
-    # but llama-server swaps every image for a short media marker there and drops
-    # the decoded bytes, so an image thread would come back short by the whole
-    # embedding. Refuse rather than hand back a confident undercount; the caller
-    # keeps the usage it already has.
+    # /apply-template swaps every image for a short media marker, so an image thread
+    # would count short by the whole embedding. Refuse rather than undercount; the
+    # caller keeps the usage it already has.
     if _request_has_image(payload):
         raise HTTPException(
             status_code = 503,
@@ -12976,9 +12973,8 @@ async def chat_count_tokens(
             )
         )
     )
-    # Same system-turn normalization the completion path applies: collapse every
-    # system/developer turn into one leading system message, so a runtime system
-    # turn plus the configured prompt renders exactly as the next request will.
+    # Same system-turn normalization the completion path applies, so the prompt here
+    # renders exactly as the next request will.
     _system_prompt, _, _ = _extract_content_parts(payload.messages)
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
     openai_tools = payload.tools or None
@@ -12997,18 +12993,13 @@ async def chat_count_tokens(
         )
         if tools_to_use:
             openai_tools = tools_to_use
-            # A thread with a pending turn -- an unanswered user message, or a
-            # tool result an interrupted loop never answered -- is the one state
-            # where the next generation runs on exactly these messages, and the
-            # tool loop starts it by splicing in whatever build_rag_autoinject
-            # retrieves (top-K passages, or a whole document under the context
-            # budget). That can be thousands of tokens the count below never
-            # sees, which would say the pending turn fits when it does not.
-            # Retrieval is not this endpoint's job (it embeds, searches and reads
-            # documents), so decline like the image case and leave the usage
-            # already on the bar. Every other shape ends in an assistant turn,
-            # where the next generation retrieves against a user message that
-            # does not exist yet and no count could predict it.
+            # A pending turn (unanswered user message or tool result) is the one shape
+            # whose next generation runs on exactly these messages, with whatever
+            # build_rag_autoinject splices in -- possibly thousands of tokens this count
+            # never sees, so it would report a turn as fitting when it does not.
+            # Retrieval is not this endpoint's job, so decline like the image case. Any
+            # other shape ends in an assistant turn, whose retrieval query does not
+            # exist yet.
             if (
                 "search_knowledge_base"
                 in {(t.get("function") or {}).get("name") for t in tools_to_use}
@@ -13035,11 +13026,10 @@ async def chat_count_tokens(
             if _nudge:
                 openai_messages = _append_to_system_message(openai_messages, _nudge)
 
-            # Same stale tool-call XML strip the GGUF and Anthropic tool paths run
-            # over replayed history, gated on the enabled tool names so documented
-            # inactive examples survive. Without it the count prices markup the
-            # next completion would have removed.
-            # Auto-Heal off means the real prompt keeps that markup, so the count must too.
+            # Same stale tool-call XML strip the GGUF and Anthropic tool paths run over
+            # replayed history, gated on enabled tool names so documented inactive
+            # examples survive. Auto-Heal off keeps the markup in the real prompt, so
+            # the count keeps it too.
             _count_auto_heal = (
                 payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
             )
@@ -13053,12 +13043,9 @@ async def chat_count_tokens(
                         enabled_tool_names = _count_history_gate,
                     ).strip()
 
-    # Whose tokenizer this is. The endpoint counts against whatever is loaded now
-    # (see the docstring), so another API client's auto-switch landing after the
-    # caller's last status refresh silently moves the tokenizer while the
-    # caller's own guard only sees that its captured checkpoint has not changed.
-    # Reported in the same shape the status endpoint publishes, so the caller can
-    # drop a result that is not its model.
+    # Whose tokenizer this is, in the shape the status endpoint publishes, so the caller
+    # can drop a result that is not its model: another client's auto-switch can move the
+    # tokenizer without the caller's captured checkpoint ever changing.
     _tokenizer_model = _llama_status_checkpoint_id(llama_backend)
     try:
         count = await asyncio.to_thread(
@@ -13073,8 +13060,7 @@ async def chat_count_tokens(
             status_code = 503,
             detail = "Unable to count tokens with the loaded model tokenizer.",
         )
-    # A switch landing mid-count leaves the total attributable to neither model,
-    # and reporting either identity would have the caller trust it.
+    # A switch landing mid-count leaves the total attributable to neither model.
     if _llama_status_checkpoint_id(llama_backend) != _tokenizer_model:
         raise HTTPException(
             status_code = 503,
