@@ -63,6 +63,7 @@ EXIT_SUCCESS = 0
 EXIT_FALLBACK = 2
 EXIT_ERROR = 1
 EXIT_BUSY = 3
+EXIT_NO_SPACE = 4
 
 # DiskPart-prompt suppression. RunAsInvoker does NOT stop amd-smi's runtime
 # elevation (its manifest is asInvoker), so this is just harmless belt-and-
@@ -186,8 +187,24 @@ VALIDATION_MODEL_CACHE_FILENAME = "stories260K.gguf"
 # in validate_prebuilt_choice. Disabled for now: the llama-server GPU forward pass
 # JIT-compiles CUDA kernels on first load and stalls every install and update by
 # minutes on Blackwell (sm_100). The check and the source-build fallback it triggers
-# are kept intact -- set this to True to re-enable them.
+# are kept intact -- set this to True, or set UNSLOTH_LLAMA_STAGED_VALIDATION=1, to
+# re-enable them (#5854 gap 2).
 _RUN_STAGED_PREBUILT_VALIDATION = False
+
+
+def staged_validation_enabled() -> bool:
+    """True when the expensive llama-server GPU smoke test should run.
+
+    Default off (Blackwell CUDA JIT stalls installs). Opt in via the module
+    constant or ``UNSLOTH_LLAMA_STAGED_VALIDATION`` (1/true/yes/on). Used by both
+    the prebuilt path and setup.sh's source-build post-check (#5854).
+    """
+    if _RUN_STAGED_PREBUILT_VALIDATION:
+        return True
+    raw = os.environ.get("UNSLOTH_LLAMA_STAGED_VALIDATION", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 INSTALL_LOCK_TIMEOUT_SECONDS = 300
 INSTALL_STAGING_ROOT_NAME = ".staging"
 GITHUB_AUTH_HOSTS = {"api.github.com", "github.com"}
@@ -2487,11 +2504,11 @@ def detect_host() -> HostInfo:
         if is_linux:
             for _vendor_file in glob.glob("/sys/class/drm/card*/device/vendor"):
                 try:
-                    with open(_vendor_file) as _vf:
+                    with open(_vendor_file, encoding = "utf-8") as _vf:
                         if _vf.read().strip().lower() == "0x8086":
                             has_intel_gpu = True
                             break
-                except OSError:
+                except (OSError, UnicodeDecodeError):
                     continue
         elif is_windows:
             # Registry first (in-process; see windows_intel_gpu_in_registry).
@@ -3033,7 +3050,7 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         os.path.join(rocm_root, "lib", "rocm_version"),
     ):
         try:
-            with open(path) as fh:
+            with open(path, encoding = "utf-8") as fh:
                 parts = fh.read().strip().split("-")[0].split(".")
             # Explicit length guard avoids relying on the broad except
             # below to swallow IndexError when the version file contains
@@ -3658,7 +3675,8 @@ def hydrate_source_tree(
                 break
             except Exception as exc:
                 last_exc = exc
-                if index == len(source_urls) - 1:
+                # A full disk fails every mirror; stop so a later 404 cannot mask it.
+                if _environment_fatal_reason(exc) or index == len(source_urls) - 1:
                     raise
                 log(f"source tree download failed from {source_url}: {exc}")
         if not downloaded:
@@ -4246,7 +4264,7 @@ def free_local_port() -> int:
 def read_log_excerpt(log_path: Path, *, max_lines: int = 60) -> str:
     try:
         content = log_path.read_text(encoding = "utf-8", errors = "replace")
-    except FileNotFoundError:
+    except (FileNotFoundError, UnicodeDecodeError):
         return ""
     return "\n".join(content.splitlines()[-max_lines:])
 
@@ -4662,7 +4680,7 @@ def _wsl_system_rocm_lib_dirs() -> list[str]:
         with open("/proc/version", encoding = "utf-8", errors = "replace") as fh:
             if "microsoft" not in fh.read().lower():
                 return []
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return []
     out: list[str] = []
     for d in ("/opt/rocm/lib", "/opt/rocm/lib64"):
@@ -5508,7 +5526,9 @@ def write_prebuilt_metadata(
         "prebuilt_fallback_used": prebuilt_fallback_used,
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(metadata, indent = 2) + "\n")
+    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        json.dumps(metadata, indent = 2) + "\n", encoding = "utf-8"
+    )
 
 
 def sync_marker_force_cpu(install_dir: Path, persist_force_cpu: bool) -> None:
@@ -5519,13 +5539,13 @@ def sync_marker_force_cpu(install_dir: Path, persist_force_cpu: bool) -> None:
     GPU/Vulkan bundle that revives the crash (#7213)."""
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
     try:
-        marker = json.loads(marker_path.read_text())
+        marker = json.loads(marker_path.read_text(encoding = "utf-8"))
     except (OSError, ValueError):
         return
     if not isinstance(marker, dict) or bool(marker.get("force_cpu")) == persist_force_cpu:
         return
     marker["force_cpu"] = persist_force_cpu
-    marker_path.write_text(json.dumps(marker, indent = 2) + "\n")
+    marker_path.write_text(json.dumps(marker, indent = 2) + "\n", encoding = "utf-8")
     log(f"existing install reused; recorded force_cpu={persist_force_cpu} from this run")
 
 
@@ -5868,9 +5888,10 @@ def validate_prebuilt_choice(
     # so they are always validated. For an approved bundle the sha256 manifest
     # already proves integrity, so its runtime smoke test -- a cold CUDA-JIT pass
     # costing minutes on Blackwell sm_100 -- is gated behind
-    # _RUN_STAGED_PREBUILT_VALIDATION, disabled for now. The check and the
-    # source-build fallback it triggers are kept intact; flip the flag to restore it.
-    if choice.expected_sha256 is None or _RUN_STAGED_PREBUILT_VALIDATION:
+    # staged_validation_enabled() (constant or UNSLOTH_LLAMA_STAGED_VALIDATION),
+    # disabled for now. The check and the source-build fallback it triggers are
+    # kept intact; flip the flag / env to restore it (#5854).
+    if choice.expected_sha256 is None or staged_validation_enabled():
         validate_quantize(
             quantize_path,
             probe_path,
@@ -5889,6 +5910,49 @@ def validate_prebuilt_choice(
         )
         log(f"staged prebuilt validation succeeded for {choice.name}")
     return server_path, quantize_path
+
+
+def validate_existing_install(
+    install_dir: Path,
+    *,
+    install_kind: str | None = None,
+    host: HostInfo | None = None,
+) -> None:
+    """Run the staged smoke test against an already-built llama.cpp tree (#5854).
+
+    Used by setup.sh after a GPU source build when ``UNSLOTH_LLAMA_STAGED_VALIDATION``
+    is set. Raises ``PrebuiltFallback`` on failure so the caller can retry CPU.
+    """
+    host = host or detect_host()
+    bin_dir = install_dir / "build" / "bin"
+    server_name = "llama-server.exe" if host.is_windows else "llama-server"
+    quantize_name = "llama-quantize.exe" if host.is_windows else "llama-quantize"
+    server_path = bin_dir / server_name
+    quantize_path = bin_dir / quantize_name
+    if not server_path.is_file():
+        raise PrebuiltFallback(f"llama-server not found at {server_path}")
+
+    with tempfile.TemporaryDirectory(prefix = "unsloth-llama-source-validate-") as tmp:
+        work_dir = Path(tmp)
+        probe_path = work_dir / "stories260K.gguf"
+        quantized_path = work_dir / "stories260K-q4.gguf"
+        download_validation_model(probe_path, validation_model_cache_path(install_dir))
+        if quantize_path.is_file():
+            validate_quantize(
+                quantize_path,
+                probe_path,
+                quantized_path,
+                install_dir,
+                host,
+            )
+        validate_server(
+            server_path,
+            probe_path,
+            host,
+            install_dir,
+            install_kind = install_kind,
+        )
+    log(f"staged source-build validation succeeded for {install_dir}")
 
 
 def validate_prebuilt_attempts(
@@ -5940,6 +6004,14 @@ def validate_prebuilt_attempts(
             )
             raise ExistingInstallSatisfied(attempt, tried_fallback)
 
+        # Advisory: a few GB free usually fits, and rejecting here would also skip
+        # the source-build fallback.
+        if index == 0:
+            low_disk = _low_disk_warning(install_dir)
+            if low_disk is not None:
+                log(low_disk)
+                _log_disk_space_help()
+
         staging_dir = create_install_staging_dir(install_dir)
         quantized_path = work_dir / f"stories260K-q4-{index}.gguf"
         if quantized_path.exists():
@@ -5968,7 +6040,9 @@ def validate_prebuilt_attempts(
                 attempt_error = PrebuiltFallback(
                     f"candidate attempt failed before activation for {attempt.name}: {exc}"
                 )
-            if index == len(attempt_list) - 1:
+            if _environment_fatal_reason(exc) or index == len(attempt_list) - 1:
+                if attempt_error is exc:
+                    raise
                 raise attempt_error from exc
             log(
                 "selected CUDA bundle failed before activation; trying next prebuilt fallback "
@@ -6089,6 +6163,132 @@ def diffusion_visual_server_backfill_needed(
     return True
 
 
+def _causal_chain(exc: BaseException) -> Iterable[BaseException]:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        # `raise X from None` sets __suppress_context__: the earlier exception is
+        # unrelated, so following __context__ anyway would misreport the cause.
+        if current.__cause__ is not None:
+            current = current.__cause__
+        elif current.__suppress_context__:
+            current = None
+        else:
+            current = current.__context__
+
+
+# ERROR_HANDLE_DISK_FULL / ERROR_DISK_FULL. CPython's PC/errmap.h maps 112 to
+# ENOSPC but has no case for 39, which arrives as EINVAL, so check winerror too.
+_WINDOWS_DISK_FULL = (39, 112)
+# A quota (NFS/XFS/container) leaves blocks this user cannot have, so the bigger
+# source build is just as doomed; named apart from ENOSPC so df does not mislead.
+# Guarded: the MSVC CRT has no EDQUOT, so on Windows CPython aliases it to the
+# Winsock WSAEDQUOT (10069), which no file write raises.
+_DISK_FULL_ERRNOS = {errno.ENOSPC: "no space left on device"}
+if hasattr(errno, "EDQUOT"):
+    _DISK_FULL_ERRNOS[errno.EDQUOT] = "disk quota exceeded"
+
+
+def _winerror_of(exc: OSError) -> Any:
+    """exc.winerror, defensively. Not getattr(exc, ..., None): urllib's HTTPError
+    is an OSError that proxies unknown attributes to a wrapped file object and
+    raises KeyError (not AttributeError) on 3.9, which getattr will not swallow.
+    A 404 from a mirror must not crash the classifier."""
+    try:
+        return exc.winerror
+    except Exception:
+        return None
+
+
+def _out_of_space_reason(exc: BaseException) -> str | None:
+    """Why `exc` means the install cannot fit, or None if it means something else."""
+    if isinstance(exc, OSError):
+        reason = _DISK_FULL_ERRNOS.get(exc.errno)
+        if reason is not None:
+            return reason
+        if _winerror_of(exc) in _WINDOWS_DISK_FULL:
+            return "no space left on device"
+    # shutil.copytree stringifies each per-file OSError and raises Error(errors)
+    # outside the except block, so errno and the chain are gone and only text
+    # survives. OSError.__str__ returns early on winerror, so Windows reads
+    # "[WinError 112]" and never "[Errno 28]": match both, brackets included so
+    # WinError 112 does not match WinError 1120.
+    if isinstance(exc, shutil.Error):
+        text = str(exc)
+        for code, reason in _DISK_FULL_ERRNOS.items():
+            if f"[Errno {code}]" in text:
+                return reason
+        if any(f"[WinError {code}]" in text for code in _WINDOWS_DISK_FULL):
+            return "no space left on device"
+    return None
+
+
+def _environment_fatal_reason(exc: BaseException) -> str | None:
+    for cause in _causal_chain(exc):
+        reason = _out_of_space_reason(cause)
+        if reason is not None:
+            return reason
+    return None
+
+
+def _log_disk_space_help() -> None:
+    log(
+        "free up space or point TMPDIR and UNSLOTH_STUDIO_HOME at a larger "
+        "volume (e.g. /workspace), then re-run"
+    )
+
+
+@contextmanager
+def scratch_dir(prefix: str) -> Iterator[Path]:
+    """Temp dir whose cleanup never raises: an rmtree failure on the way out would
+    replace the in-flight exception and lose EXIT_NO_SPACE. Not
+    TemporaryDirectory(ignore_cleanup_errors = True), which is 3.10+ (setup.sh
+    still runs this helper under the host python, and we support 3.9)."""
+    path = Path(tempfile.mkdtemp(prefix = prefix))
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors = True)
+
+
+def _first_existing_ancestor(path: Path) -> Path:
+    current = path
+    while current != current.parent and not current.exists():
+        current = current.parent
+    return current
+
+
+def _low_disk_warning(install_dir: Path, *, advised_gb: float = 5.0) -> str | None:
+    """Advisory only, never fatal. A prebuilt install peaks well under 1 GB (the
+    largest published bundle is 0.77 GB, macOS is 0.01 GB), so a fixed threshold
+    cannot decide whether this host has room -- a real ENOSPC decides that. The
+    number here is the headroom a source-build fallback would want."""
+    advised = int(advised_gb * (1024**3))
+    targets = {
+        "build/download scratch (TMPDIR)": Path(tempfile.gettempdir()),
+        "llama.cpp install dir": _first_existing_ancestor(install_dir),
+    }
+    for label, path in targets.items():
+        try:
+            free = shutil.disk_usage(path).free
+        except OSError:
+            continue
+        if free < advised:
+            return (
+                f"low disk space for llama.cpp: {label} at {path} has "
+                f"{free / (1024**3):.1f} GB free (~{advised_gb:.0f} GB recommended)"
+            )
+    return None
+
+
+def _fail_no_space(reason: str) -> None:
+    log(reason)
+    _log_disk_space_help()
+    raise SystemExit(EXIT_NO_SPACE)
+
+
 def install_prebuilt(
     install_dir: Path,
     llama_tag: str,
@@ -6157,8 +6357,7 @@ def install_prebuilt(
                     # recorded so the updater re-asserts it (#7213).
                     sync_marker_force_cpu(install_dir, persist_force_cpu)
                     return
-            with tempfile.TemporaryDirectory(prefix = "unsloth-llama-prebuilt-") as tmp:
-                work_dir = Path(tmp)
+            with scratch_dir("unsloth-llama-prebuilt-") as work_dir:
                 probe_path = work_dir / "stories260K.gguf"
                 download_validation_model(probe_path, validation_model_cache_path(install_dir))
                 release_count = len(release_plans)
@@ -6203,6 +6402,8 @@ def install_prebuilt(
                     except ExistingInstallSatisfied:
                         return
                     except PrebuiltFallback as exc:
+                        if _environment_fatal_reason(exc):
+                            raise
                         if release_index == release_count - 1:
                             raise
                         log(
@@ -6236,6 +6437,11 @@ def install_prebuilt(
         log(f"prebuilt busy reason: {exc}")
         raise SystemExit(EXIT_BUSY) from exc
     except PrebuiltFallback as exc:
+        fatal = _environment_fatal_reason(exc)
+        if fatal:
+            log(f"prebuilt install failed: {fatal}")
+            _log_disk_space_help()
+            raise SystemExit(EXIT_NO_SPACE) from exc
         log("prebuilt install path failed; falling back to source build")
         log(f"prebuilt fallback reason: {exc}")
         report = collect_system_report(host, choice, install_dir)
@@ -6345,6 +6551,24 @@ def parse_args() -> argparse.Namespace:
             "fork). Use --output-format json."
         ),
     )
+    resolve_group.add_argument(
+        "--validate-install",
+        metavar = "DIR",
+        help = (
+            "Run the staged llama-server smoke test against an existing build "
+            "tree (setup.sh source-build post-check, #5854). Exit 2 on failure. "
+            "Normally gated by UNSLOTH_LLAMA_STAGED_VALIDATION; this flag always "
+            "runs the check."
+        ),
+    )
+    parser.add_argument(
+        "--install-kind",
+        default = None,
+        help = (
+            "Install kind for --validate-install GPU offload (e.g. linux-cuda, "
+            "linux-rocm, macos-arm64). When omitted, host detection decides."
+        ),
+    )
     parser.add_argument(
         "--output-format",
         choices = ("plain", "json"),
@@ -6381,6 +6605,21 @@ def emit_resolver_output(payload: dict[str, Any], *, output_format: str) -> None
 
 def main() -> int:
     args = parse_args()
+    if args.validate_install is not None:
+        try:
+            validate_existing_install(
+                Path(args.validate_install),
+                install_kind = args.install_kind,
+            )
+        except PrebuiltFallback as exc:
+            # A full disk is not a bad build: the CPU source rebuild needs more space.
+            fatal = _environment_fatal_reason(exc)
+            if fatal:
+                _fail_no_space(f"install validation failed: {fatal}")
+            print(str(exc), file = sys.stderr)
+            raise SystemExit(EXIT_FALLBACK) from exc
+        return EXIT_SUCCESS
+
     if args.resolve_llama_tag is not None:
         resolved = resolve_requested_llama_tag(
             args.resolve_llama_tag,
@@ -6506,9 +6745,15 @@ if __name__ == "__main__":
         # Expected when the published repo (e.g. ggml-org/llama.cpp) has no
         # prebuilt manifest.  Exit quietly with EXIT_FALLBACK so the caller
         # falls back to source build without a noisy "fatal helper error".
+        fatal = _environment_fatal_reason(exc)
+        if fatal:
+            _fail_no_space(f"prebuilt install failed: {fatal}")
         log(textwrap.shorten(str(exc), width = 400, placeholder = "..."))
         raise SystemExit(EXIT_FALLBACK)
     except Exception as exc:
+        fatal = _environment_fatal_reason(exc)
+        if fatal:
+            _fail_no_space(f"prebuilt install failed: {fatal}")
         message = textwrap.shorten(str(exc), width = 400, placeholder = "...")
         log(f"fatal helper error: {message}")
         raise SystemExit(EXIT_ERROR)

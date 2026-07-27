@@ -23,6 +23,8 @@ export interface ProviderConfig {
   display_name: string;
   base_url: string;
   is_enabled: boolean;
+  models?: string[];
+  available_models?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -123,6 +125,8 @@ export async function createProviderConfig(payload: {
   providerType: string;
   displayName: string;
   baseUrl?: string | null;
+  models?: string[];
+  availableModels?: string[];
 }): Promise<ProviderConfig> {
   const response = await authFetch("/api/providers/", {
     method: "POST",
@@ -131,6 +135,8 @@ export async function createProviderConfig(payload: {
       provider_type: payload.providerType,
       display_name: payload.displayName,
       base_url: payload.baseUrl ?? null,
+      models: payload.models ?? [],
+      available_models: payload.availableModels ?? [],
     }),
   });
   return parseJsonOrThrow<ProviderConfig>(response);
@@ -158,6 +164,8 @@ export async function updateProviderConfig(
     displayName?: string;
     baseUrl?: string | null;
     isEnabled?: boolean;
+    models?: string[];
+    availableModels?: string[];
   },
 ): Promise<ProviderConfig> {
   const response = await authFetch(`/api/providers/${providerId}`, {
@@ -167,6 +175,10 @@ export async function updateProviderConfig(
       ...(payload.displayName === undefined ? {} : { display_name: payload.displayName }),
       ...(payload.baseUrl === undefined ? {} : { base_url: payload.baseUrl }),
       ...(payload.isEnabled === undefined ? {} : { is_enabled: payload.isEnabled }),
+      ...(payload.models === undefined ? {} : { models: payload.models }),
+      ...(payload.availableModels === undefined
+        ? {}
+        : { available_models: payload.availableModels }),
     }),
   });
   return parseJsonOrThrow<ProviderConfig>(response);

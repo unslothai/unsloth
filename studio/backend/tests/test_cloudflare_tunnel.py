@@ -915,17 +915,17 @@ def _argparse_default(source, option):
 
 
 def test_run_server_cloudflare_default_off():
-    defaults = _func_param_defaults(_RUN_PY.read_text(), "run_server")
+    defaults = _func_param_defaults(_RUN_PY.read_text(encoding = "utf-8"), "run_server")
     assert "cloudflare" in defaults
     assert defaults["cloudflare"] is None
 
 
 def test_argparse_cloudflare_default_off():
-    assert _argparse_default(_RUN_PY.read_text(), "--cloudflare") is None
+    assert _argparse_default(_RUN_PY.read_text(encoding = "utf-8"), "--cloudflare") is None
 
 
 def test_verify_global_reachability_marks_private_address_unreachable():
-    src = _RUN_PY.read_text()
+    src = _RUN_PY.read_text(encoding = "utf-8")
     tree = ast.parse(src)
     func_src = next(
         ast.get_source_segment(src, n)
@@ -949,7 +949,7 @@ def test_verify_global_reachability_marks_private_address_unreachable():
 def test_run_server_registers_tunnel_atexit_backstop():
     # An abnormal exit (exception after startup -> sys.exit) bypasses
     # _graceful_shutdown; an atexit backstop must still stop the tunnel.
-    src = _RUN_PY.read_text()
+    src = _RUN_PY.read_text(encoding = "utf-8")
     assert "atexit.register(stop_studio_tunnel)" in src
 
 
@@ -965,7 +965,7 @@ def _run_print_cloudflare_line(
     color = False,
 ):
     """Exec _print_cloudflare_line without importing run.py's heavy deps."""
-    src = _RUN_PY.read_text()
+    src = _RUN_PY.read_text(encoding = "utf-8")
     tree = ast.parse(src)
     func_src = next(
         ast.get_source_segment(src, n)

@@ -401,13 +401,13 @@ def test_hip_uv_source_build_uses_no_cache(monkeypatch):
 
 
 def test_inference_worker_calls_ensure_ssm_runtime():
-    src = (_BACKEND / "core" / "inference" / "worker.py").read_text()
+    src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
     assert "from utils.ssm_runtime import ensure_ssm_runtime" in src
     assert "ensure_ssm_runtime(" in src
 
 
 def test_inference_worker_skips_ssm_on_mlx_and_checks_lora_base():
-    src = (_BACKEND / "core" / "inference" / "worker.py").read_text()
+    src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
     # MLX (Apple Silicon) must not try to build CUDA/ROCm SSM kernels.
     assert 'getattr(backend, "device", None) != "mlx"' in src
     # A LoRA load must also check its base model, not just the adapter id.
@@ -417,12 +417,12 @@ def test_inference_worker_skips_ssm_on_mlx_and_checks_lora_base():
 def test_inference_worker_resolves_remote_lora_base_pre_import():
     # A remote LoRA's base (from the Hub adapter_config.json) must be resolved before the
     # transformers import so its SSM kernels are pre-installed, not too late in _handle_load.
-    src = (_BACKEND / "core" / "inference" / "worker.py").read_text()
+    src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
     assert "_remote_lora_base" in src
 
 
 def test_inference_worker_tiers_on_base_and_gates_lora_base_only():
-    src = (_BACKEND / "core" / "inference" / "worker.py").read_text()
+    src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
     # Tier activation runs on the resolved base, not the raw adapter id (remote-LoRA fix).
     assert "_activate_transformers_version(_base" in src
     # The gate only adds a genuine LoRA base, never a full fine-tune's recorded (unloaded) base.
@@ -432,7 +432,7 @@ def test_inference_worker_tiers_on_base_and_gates_lora_base_only():
 def test_inference_worker_probes_base_for_ssm_kernels():
     # Both the pre-import path and _handle_load must derive SSM targets from a real model id
     # via ssm_probe_identifier, not the raw adapter id / local checkpoint path.
-    src = (_BACKEND / "core" / "inference" / "worker.py").read_text()
+    src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
     assert src.count("ssm_probe_identifier(") >= 2
 
 
@@ -484,7 +484,7 @@ def test_pre_import_gate_is_transformers_free():
 def test_pre_import_gate_skips_subdir_computation():
     # The worker's pre-import preflight must call the gate with compute_subdirs=False so it
     # never imports model_config/transformers before the SSM kernels are installed.
-    src = (_BACKEND / "core" / "inference" / "worker.py").read_text()
+    src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
     assert "compute_subdirs = False" in src
 
 
@@ -506,7 +506,7 @@ def test_security_gates_run_before_ssm_install():
     # The SSM install is name-based and can source-build native packages, so a malware /
     # blocked-code model must be refused first -- in both the pre-import path and _handle_load.
     import ast
-    tree = ast.parse((_BACKEND / "core" / "inference" / "worker.py").read_text())
+    tree = ast.parse((_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8"))
     for fn in ("run_inference_process", "_handle_load"):
         gates = _call_linenos(tree, fn, "_run_security_gates")
         ssm = _call_linenos(tree, fn, "_ensure_ssm_kernels")

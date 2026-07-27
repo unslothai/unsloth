@@ -47,7 +47,14 @@ _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 def _sanitize_filename(name: str) -> str:
     base = os.path.basename(name or "").strip() or "document"
     base = _SAFE.sub("_", base)
-    return base[:200]
+    if len(base) <= 200:
+        return base
+    # Trim the stem, not the extension: _save_upload gates on the extension, so
+    # a plain truncation would reject a long-named .txt as "unsupported".
+    stem, ext = os.path.splitext(base)
+    if not ext or len(ext) > 32:
+        return base[:200]
+    return stem[: 200 - len(ext)] + ext
 
 
 def _save_upload(file: UploadFile) -> tuple[str, str]:
