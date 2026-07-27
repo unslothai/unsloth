@@ -1815,3 +1815,56 @@ def test_only_the_latest_responder_executes():
     # Idempotent: more of B's own tokens must not disturb it.
     o._mark_worker_started(b_cancel)
     assert o._owns_worker(b_cancel)
+
+
+def test_a_stale_mailbox_read_does_not_cancel_the_running_generation():
+    # A dispatched consumer can still be draining tokens after the dispatcher retired its
+    # request and started the next one. Stopping it then must tear down only its own
+    # stream: signalling the shared worker event from here would end its successor.
+    import queue as _queue
+
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    a_cancel, b_cancel = threading.Event(), threading.Event()
+    o._mailboxes = {"a": _queue.Queue(), "b": _queue.Queue()}
+    o._request_cancel_events = {"a": a_cancel, "b": b_cancel}
+    o._claim_worker(a_cancel)
+    o._claim_worker(b_cancel)
+    # Worker finished A and moved on to B.
+    _dispatch(o, [
+        {"type": "gen_done", "request_id": "a"},
+        {"type": "token", "request_id": "b", "token": "yo"},
+    ])
+    assert o._owns_worker(b_cancel) and not o._owns_worker(a_cancel)
+
+    # A's consumer now reads a token buffered before that, with A stopped.
+    a_cancel.set()
+    stale = [{"type": "token", "request_id": "a", "text": "late"}]
+    drained = []
+    list(
+        o._consume_token_stream(
+            lambda timeout: stale.pop(0) if stale else None,
+            lambda: drained.append(True),
+            crash_context = "generation",
+            cancel_event = a_cancel,
+            mark_started = False,
+        )
+    )
+    assert drained, "the stopped stream still tears itself down"
+    assert not o._cancel_event.is_set(), (
+        "a retired request must not signal the shared worker event"
+    )
+
+    # The generation that does own the worker still can.
+    b_cancel.set()
+    stale_b = [{"type": "token", "request_id": "b", "text": "live"}]
+    list(
+        o._consume_token_stream(
+            lambda timeout: stale_b.pop(0) if stale_b else None,
+            lambda: None,
+            crash_context = "generation",
+            cancel_event = b_cancel,
+            mark_started = False,
+        )
+    )
+    assert o._cancel_event.is_set(), "the running generation's own Stop must reach the worker"

@@ -606,7 +606,14 @@ class InferenceOrchestrator:
             if rtype == "token":
                 # Cancel from route (e.g. SSE connection closed).
                 if cancel_event is not None and cancel_event.is_set():
-                    self._cancel_generation()
+                    # Same rule as reset_generation_state: the shared worker event may
+                    # only be set by the generation the worker is running. A dispatched
+                    # request can still be draining stale mailbox tokens after the
+                    # dispatcher retired it and started the next one, and signalling from
+                    # here would end that one instead. Tearing this stream down is always
+                    # safe, so the local drain happens either way.
+                    if self._owns_worker(cancel_event):
+                        self._cancel_generation()
                     drain_on_cancel()
                     return
                 yield resp.get("text", "")
