@@ -247,7 +247,11 @@ def test_navigation_drops_the_batch_whatever_triggered_it():
     # The route is the one signal every way of leaving a chat shares.
     hook = _hook()
     assert "routeKey?: string;" in hook
-    block = _between(hook, "const previousRouteKeyRef = useRef(routeKey);", "useEffect(() => {\n    if (selectedIds.size === 0) return;\n    const valid")
+    block = _between(
+        hook,
+        "const previousRouteKeyRef = useRef(routeKey);",
+        "useEffect(() => {\n    if (selectedIds.size === 0) return;\n    const valid",
+    )
     assert "if (previousRouteKeyRef.current === routeKey) return;" in block
     assert "previousRouteKeyRef.current = routeKey;" in block
     # A batch that deletes the open chat redirects by itself; that is the
