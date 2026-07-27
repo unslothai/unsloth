@@ -25,8 +25,13 @@ export class BlobUrlCache {
   // Insertion order IS the LRU order: touch() re-inserts, so the oldest use is always first.
   private readonly entries = new Map<string, CachedBlobUrl>();
   private totalBytes = 0;
+  // Declared as a field, not a constructor parameter property: tsconfig sets
+  // erasableSyntaxOnly, so `constructor(private readonly x: number)` is a build error.
+  private readonly budgetBytes: number;
 
-  constructor(private readonly budgetBytes: number) {}
+  constructor(budgetBytes: number) {
+    this.budgetBytes = budgetBytes;
+  }
 
   has(id: string): boolean {
     return this.entries.has(id);

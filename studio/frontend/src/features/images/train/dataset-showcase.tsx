@@ -26,7 +26,9 @@ function ShowcaseTile({ dataset, filename }: { dataset: string; filename: string
     let obj: string | null = null;
     let cancelled = false;
     fetchGalleryObjectUrl(diffusionDatasetImageUrl(dataset, filename, 256))
-      .then((u) => {
+      // The fetch returns the blob's size alongside the URL for the gallery's byte budget; a
+      // single thumbnail tile revokes on unmount, so it only needs the URL.
+      .then(({ url: u }) => {
         if (cancelled) {
           URL.revokeObjectURL(u);
           return;
