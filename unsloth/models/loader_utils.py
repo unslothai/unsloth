@@ -191,19 +191,43 @@ def _get_new_mapper():
             .replace("MAP_TO_UNSLOTH_16bit", "NEW_MAP_TO_UNSLOTH_16bit")
         )
 
-        exec(new_mapper, globals())
+        # Exec into a throwaway namespace, never globals(). The slice also carries
+        # FLOAT_TO_FP8_BLOCK_MAPPER / FLOAT_TO_FP8_ROW_MAPPER, the _add_* helpers
+        # and the builder's loop variables, so exec'ing into globals() would swap
+        # the FP8 tables this module imported from the installed mapper for the
+        # ones on GitHub main. This is only a probe for "would a newer Unsloth
+        # support this name?", so it must not change what the installed version
+        # resolves; the fetched FP8 tables are returned for the probe to use
+        # instead of being written over the installed ones.
+        namespace = {}
+        exec(new_mapper, namespace)
         return (
-            NEW_INT_TO_FLOAT_MAPPER,
-            NEW_FLOAT_TO_INT_MAPPER,
-            NEW_MAP_TO_UNSLOTH_16bit,
+            namespace["NEW_INT_TO_FLOAT_MAPPER"],
+            namespace["NEW_FLOAT_TO_INT_MAPPER"],
+            namespace["NEW_MAP_TO_UNSLOTH_16bit"],
+            # .get, not []: these two come from the fetched file under its own names (unlike
+            # the NEW_ names above, renamed here), so an older or renamed mapper.py would
+            # KeyError into the bare except and take the 4bit half of the probe down too.
+            # {} is safe: the probe runs only after the installed tables already missed.
+            namespace.get("FLOAT_TO_FP8_BLOCK_MAPPER", {}),
+            namespace.get("FLOAT_TO_FP8_ROW_MAPPER", {}),
         )
     except:
-        return {}, {}, {}
+        return {}, {}, {}, {}, {}
 
 
 def _resolve_with_mappers(
-    model_name, load_in_4bit, load_in_fp8, int_to_float, float_to_int, map_to_unsloth_16bit
+    model_name,
+    load_in_4bit,
+    load_in_fp8,
+    int_to_float,
+    float_to_int,
+    map_to_unsloth_16bit,
+    fp8_block = None,
+    fp8_row = None,
 ):
+    # fp8_block/fp8_row default to the installed tables; the newer-mapper probe passes the
+    # fetched ones so it can answer for new FP8 repos without rebinding the installed ones.
     return __get_model_name(
         model_name = model_name,
         load_in_4bit = load_in_4bit,
@@ -211,8 +235,8 @@ def _resolve_with_mappers(
         FLOAT_TO_INT_MAPPER = float_to_int,
         MAP_TO_UNSLOTH_16bit = map_to_unsloth_16bit,
         load_in_fp8 = load_in_fp8,
-        FLOAT_TO_FP8_BLOCK_MAPPER = FLOAT_TO_FP8_BLOCK_MAPPER,
-        FLOAT_TO_FP8_ROW_MAPPER = FLOAT_TO_FP8_ROW_MAPPER,
+        FLOAT_TO_FP8_BLOCK_MAPPER = FLOAT_TO_FP8_BLOCK_MAPPER if fp8_block is None else fp8_block,
+        FLOAT_TO_FP8_ROW_MAPPER = FLOAT_TO_FP8_ROW_MAPPER if fp8_row is None else fp8_row,
     )
 
 
@@ -252,9 +276,13 @@ def get_model_name(
         and not _env_says_offline()  # offline: skip the remote (raw GitHub) mapper refresh
     ):
         # Try checking if a new Unsloth version allows it!
-        NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER, NEW_MAP_TO_UNSLOTH_16bit = (
-            _get_new_mapper()
-        )
+        (
+            NEW_INT_TO_FLOAT_MAPPER,
+            NEW_FLOAT_TO_INT_MAPPER,
+            NEW_MAP_TO_UNSLOTH_16bit,
+            NEW_FP8_BLOCK_MAPPER,
+            NEW_FP8_ROW_MAPPER,
+        ) = _get_new_mapper()
         upgraded_model_name = _resolve_with_mappers(
             model_name = model_name,
             load_in_4bit = load_in_4bit,
@@ -262,6 +290,10 @@ def get_model_name(
             int_to_float = NEW_INT_TO_FLOAT_MAPPER,
             float_to_int = NEW_FLOAT_TO_INT_MAPPER,
             map_to_unsloth_16bit = NEW_MAP_TO_UNSLOTH_16bit,
+            # the fp8 probe has to look at the FETCHED tables too, or a new fp8 repo would
+            # miss both here and in the installed tables and skip the upgrade message
+            fp8_block = NEW_FP8_BLOCK_MAPPER,
+            fp8_row = NEW_FP8_ROW_MAPPER,
         )
         if upgraded_model_name is not None:
             raise NotImplementedError(

@@ -209,7 +209,27 @@ def _force_missing_fla_imports(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
 
+def _pin_fla_model_types(monkeypatch):
+    """Pin the auto-discovered FLA allowlist to the Qwen GDN families.
+
+    `_discover_fla_model_types` scans the *installed* transformers for modeling
+    files importing `from fla.`, and `models/qwen3_5/` only exists from
+    transformers 5.x. The backend supports `transformers>=4.51`, so on a 4.x
+    install the gate returns False and every Qwen3.5 assertion below silently
+    passes through a no-op instead of exercising the install path. Pinning keeps
+    these tests hermetic across the whole supported transformers range, the same
+    way test_hook_does_not_install_tilelang_for_model_outside_allowlist pins it
+    against newly added FLA model_types.
+    """
+    monkeypatch.setattr(
+        worker,
+        "_discover_fla_model_types",
+        lambda: frozenset({"qwen3_5", "qwen3_5_moe", "qwen3_6", "qwen3_next"}),
+    )
+
+
 def test_flash_linear_attention_installs_pinned_pair_for_qwen3_5(monkeypatch):
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
     monkeypatch.setattr(worker._sp, "run", run_mock)
@@ -315,6 +335,7 @@ def test_flash_linear_attention_skipped_via_env(monkeypatch):
 
 
 def test_flash_linear_attention_skipped_below_torch_2_7(monkeypatch):
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._FLA_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker, "_installed_torch_version_tuple", lambda: (2, 5))
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
@@ -332,6 +353,7 @@ def test_flash_linear_attention_skipped_below_torch_2_7(monkeypatch):
 
 
 def test_flash_linear_attention_install_includes_einops(monkeypatch):
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._FLA_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_torch_version_tuple", lambda: (2, 9))
@@ -358,6 +380,7 @@ def test_flash_linear_attention_install_includes_einops(monkeypatch):
 
 def test_flash_linear_attention_logs_post_install_import_failure(monkeypatch):
     """pip exits 0 but `import fla.modules` still fails (missing transitive)."""
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._FLA_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_torch_version_tuple", lambda: (2, 9))
@@ -402,6 +425,7 @@ def test_tilelang_backend_skipped_on_unsupported_linux_arch(monkeypatch):
 
 
 def test_tilelang_backend_pins_only_binary(monkeypatch):
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: None)
@@ -442,6 +466,7 @@ def _force_missing_tilelang_imports(monkeypatch):
 
 
 def test_tilelang_backend_installs_pinned_pair_for_qwen3_5(monkeypatch):
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: None)
@@ -472,6 +497,7 @@ def test_tilelang_backend_reinstalls_when_tvm_ffi_is_broken(monkeypatch):
     2 (install): plain apache-tvm-ffi + tilelang -- resolves missing transitive
       deps without --force-reinstall, so it never replaces correct packages.
     """
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: "0.1.11")
@@ -533,6 +559,7 @@ def test_tilelang_backend_skipped_on_windows(monkeypatch):
 
 
 def test_tilelang_backend_swallows_install_timeout(monkeypatch):
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: None)
@@ -586,6 +613,7 @@ def test_tilelang_backend_skipped_via_env(monkeypatch):
 
 
 def test_tilelang_backend_swallows_install_failure(monkeypatch):
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: None)
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: None)
@@ -649,6 +677,7 @@ def _patch_iu_gates(monkeypatch, fla_gate, conv_gate):
 
 
 def test_hook_installs_when_gate_returns_false(monkeypatch):
+    _pin_fla_model_types(monkeypatch)
     fla_gate = _make_fake_gate(initial_return = False)
     conv_gate = _make_fake_gate(initial_return = False)
     _patch_iu_gates(monkeypatch, fla_gate, conv_gate)
@@ -716,6 +745,7 @@ def test_hook_skips_install_when_gate_already_true(monkeypatch):
 
 
 def test_hook_idempotent_on_repeat_call(monkeypatch):
+    _pin_fla_model_types(monkeypatch)
     fla_gate = _make_fake_gate(initial_return = False)
     conv_gate = _make_fake_gate(initial_return = False)
     _patch_iu_gates(monkeypatch, fla_gate, conv_gate)
@@ -924,6 +954,7 @@ def test_hook_does_not_install_tilelang_for_model_outside_allowlist(monkeypatch)
 
 def test_hook_does_install_tilelang_for_qwen35(monkeypatch):
     """Positive control for finding #1: Qwen3.5 still gets tilelang."""
+    _pin_fla_model_types(monkeypatch)
     fla_gate = _make_fake_gate(initial_return = False)
     conv_gate = _make_fake_gate(initial_return = True)
     _patch_iu_gates(monkeypatch, fla_gate, conv_gate)
@@ -953,6 +984,7 @@ def test_tilelang_repair_does_not_touch_torch_cuda_stack(monkeypatch):
     forced step so --force-reinstall doesn't cascade through
     apache-tvm-ffi's dep graph and pull a different torch wheel.
     """
+    _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: "0.1.10")
@@ -1065,6 +1097,7 @@ def test_hook_runs_tilelang_repair_when_fla_already_true(monkeypatch):
     probe) but tilelang is missing or apache-tvm-ffi is on the broken
     list, the post-available action must still run tilelang.
     """
+    _pin_fla_model_types(monkeypatch)
     fla_gate = _make_fake_gate(initial_return = True)
     conv_gate = _make_fake_gate(initial_return = True)
     _patch_iu_gates(monkeypatch, fla_gate, conv_gate)

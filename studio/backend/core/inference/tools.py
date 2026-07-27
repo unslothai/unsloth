@@ -6346,7 +6346,8 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
 
     try:
         infos = socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM)
-    except OSError as e:
+    except (OSError, UnicodeError) as e:
+        # IDNA encoding rejects a hostname with UnicodeError, not OSError.
         return False, f"Failed to resolve host: {e}", ""
 
     if not infos:
@@ -6576,6 +6577,56 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
     return None, b"".join(chunks)
 
 
+_DOTTED_HOST_RE = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
+# ASCII-only because str.isdigit() is True for digits int() refuses ("²"), and
+# capped at 5 digits so the range check never converts an unbounded integer.
+_PORT_RE = re.compile(r"[0-9]{1,5}")
+
+
+def _normalize_url_scheme(url: str) -> str:
+    """Prepend ``https://`` to bare hosts (``google.com``, ``example.com:8443``).
+
+    ``urlparse`` reads the host of a ``host:port`` input as the scheme, so those
+    are recognised by a dotted host-like scheme with an empty netloc. Rewrites a
+    dotted host with an optional in-range port, and the ``//host`` form. Real
+    schemes (``file:``, ``javascript:``, including ``file:80``), root-relative
+    paths (``/login``) and bad ports are returned untouched so the caller
+    rejects them. A dotted scheme is indistinguishable from ``host:port``, so
+    ``com.acme.app:443/cb`` is rewritten too; an empty port (``example.com:``)
+    is kept as-is, matching ``https://example.com:``.
+
+    The host is matched against the raw authority, never against what
+    ``urlparse`` returned, because urlsplit strips tabs/newlines (3.10) and
+    leading C0/space (3.12). Anything it would strip fails the match, so the
+    decision and the rewritten string cannot disagree across versions."""
+    from urllib.parse import urlparse
+
+    url = url.strip()
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        # Unmatched IPv6 brackets, or an NFKC-decomposing netloc: not a bare host.
+        return url
+    if parsed.scheme:
+        if parsed.netloc or not _DOTTED_HOST_RE.fullmatch(parsed.scheme):
+            return url
+        rest = url
+    elif url.startswith("//"):
+        rest = url[2:]
+    elif url.startswith("/"):
+        return url
+    else:
+        rest = url
+
+    authority = re.split(r"[/?#]", rest, maxsplit = 1)[0]
+    host, _, port = authority.partition(":")
+    if not _DOTTED_HOST_RE.fullmatch(host):
+        return url
+    if port and not (_PORT_RE.fullmatch(port) and 1 <= int(port) <= 65535):
+        return url
+    return "https://" + rest
+
+
 def _fetch_url_raw(
     url: str,
     timeout: int = 30,
@@ -6589,6 +6640,8 @@ def _fetch_url_raw(
     ``error`` is a user-facing message string when the fetch failed (the
     existing "Blocked:" / "Failed to fetch URL:" wording), else ``None``.
     Blocks private/loopback/link-local targets and caps the download size.
+    No input reaches the caller as an exception: the URL is model-supplied, so
+    every malformed form resolves to one of these strings.
 
     ``deadline`` is an optional ``time.monotonic`` cutoff for the whole fetch
     (redirect hops and body read included) and ``cancel_event`` aborts it when
@@ -6597,11 +6650,15 @@ def _fetch_url_raw(
     from urllib.parse import urlparse
     from .web_access_policy import check_url_access
 
-    parsed = urlparse(url)
+    # Before the policy gate: it requires an http(s) scheme, so a bare host
+    # would be refused there and never reach the fetch.
+    url = _normalize_url_scheme(url)
     allowed, reason, canonical_host = check_url_access(url, website_policy)
     if not allowed:
         return reason, "", ""
 
+    # check_url_access already parsed this and read .port, so this cannot raise.
+    parsed = urlparse(url)
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     ok, reason, pinned_ip = _resolve_with_budget(
         canonical_host,
@@ -6662,13 +6719,15 @@ def _fetch_url_raw(
                 if not location:
                     return "Failed to fetch URL: redirect missing Location header.", "", ""
                 current_url = urljoin(current_url, location)
-                rp = urlparse(current_url)
+                # Server-controlled, so never scheme-upgraded; the gate below
+                # reads .port first, so the parse after it cannot raise.
                 allowed, policy_reason, redirect_host = check_url_access(
                     current_url,
                     website_policy,
                 )
                 if not allowed:
                     return policy_reason, "", ""
+                rp = urlparse(current_url)
                 rp_port = rp.port or (443 if rp.scheme == "https" else 80)
                 ok2, reason2, pinned_ip = _resolve_with_budget(
                     redirect_host,
@@ -6886,6 +6945,8 @@ def _fetch_page_text(
     deadline = None if timeout is None else time.monotonic() + timeout
     from .web_access_policy import check_url_access
 
+    # Before the policy gate (needs a scheme) and the README routing (reads host/path).
+    url = _normalize_url_scheme(url)
     allowed, reason, _hostname = check_url_access(url, website_policy)
     if not allowed:
         return reason

@@ -37,6 +37,23 @@ def test_directory_path_uses_basename():
     assert public_model_id("a/b/c") == "c"
 
 
+def test_hf_cache_snapshot_recovers_the_repo_id():
+    from core.inference.model_ids import hf_cache_repo_id
+
+    # The snapshot basename is a commit sha, so recover org/name instead.
+    snapshot = (
+        "/home/u/.cache/huggingface/hub/models--unsloth--gemma-4-31B-it-GGUF"
+        "/snapshots/c1ac76e99d5513b141e8adde7288b85c3f9c32ec"
+    )
+    assert public_model_id(snapshot) == "unsloth/gemma-4-31B-it-GGUF"
+    # A file inside the snapshot resolves the same way, not to the file stem.
+    assert public_model_id(snapshot + "/gemma-4-31B-it-UD-Q5_K_XL.gguf") == (
+        "unsloth/gemma-4-31B-it-GGUF"
+    )
+    assert hf_cache_repo_id("/opt/models/plain.gguf") is None
+    assert hf_cache_repo_id(None) is None
+
+
 def test_relative_and_home_paths_are_sanitized():
     # ./ ../ ~ prefixed paths are local and must not be echoed raw.
     assert public_model_id("./model.gguf") == "model"
