@@ -4,19 +4,17 @@
 import os as _os
 import sys as _sys
 
-# Typer renders help through rich, which draws box characters cp1252 and cp437
-# cannot encode, so `unsloth --help` dies once stdout is a pipe or a file. The
-# same guard runs in unsloth/__init__.py, but the CLI does not import that just
-# to print help. Must happen before typer, which binds the stream encoding.
+# Typer renders help via rich, whose box characters cp1252 and cp437 cannot encode,
+# so `unsloth --help` dies once stdout is a pipe or a file. unsloth/__init__ guards
+# this too, but the CLI skips it; must run before typer binds the stream encoding.
 for _name in ("stdout", "stderr"):
     _stream = getattr(_sys, _name, None)
     try:
-        _encoding = (getattr(_stream, "encoding", None) or "").lower()
-        if _stream is not None and hasattr(_stream, "reconfigure") and "utf" not in _encoding:
+        if "utf" not in (_stream.encoding or "").lower():
             _stream.reconfigure(encoding = "utf-8", errors = "replace")
     except Exception:
         pass
-del _name, _stream, _encoding
+del _name, _stream
 
 import typer
 from importlib.metadata import version as package_version, PackageNotFoundError
