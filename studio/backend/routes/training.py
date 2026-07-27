@@ -1373,6 +1373,7 @@ async def start_diffusion_training(
     config = body.model_dump()
     try:
         from utils.paths import resolve_output_dir
+
         config["data_dir"] = str(_resolve_diffusion_data_dir(config["data_dir"]))
         config["output_dir"] = str(resolve_output_dir(config["output_dir"]))
         # The persistent conditioning cache is another directory the TRAINER writes to, so it gets
