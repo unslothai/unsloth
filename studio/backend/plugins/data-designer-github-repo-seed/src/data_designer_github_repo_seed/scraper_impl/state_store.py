@@ -27,6 +27,11 @@ def _locale_encoding() -> str:
     return preferred
 
 
+# Legacy Windows codepages whose trail bytes can land on JSON punctuation, so a
+# single-byte fallback cannot read them. Tried only to recover dedup keys.
+_DOUBLE_BYTE_ENCODINGS = ("cp932", "cp936", "cp949", "cp950")
+
+
 def _parse(raw: bytes, encoding: str) -> Any:
     """Parse one JSON document under *encoding*, or None if it does not."""
     try:
@@ -54,14 +59,20 @@ def _read_line(raw: bytes, codepage: str) -> _Reading:
     machine turns ``Привет`` into ``Ïðèâåò`` and every byte of it decodes
     cleanly, so a successful decode proves nothing about who wrote it. It is
     used only to recover the dedup keys, which are ASCII ids and come back the
-    same either way.
+    same under any of these, so the first reading that parses will do.
+
+    That is also why several are tried. latin-1 alone mangles the double-byte
+    codepages: cp932 ``表`` is ``95 5C``, and latin-1 turns the trail byte into
+    a JSON backslash, so the record fails to parse and its id is forgotten.
     """
     as_utf8 = _parse(raw, "utf-8")
-    if codepage:
-        as_legacy = _parse(raw, codepage)
+    for encoding in (codepage, "latin-1", *_DOUBLE_BYTE_ENCODINGS):
+        if not encoding:
+            continue
+        as_legacy = _parse(raw, encoding)
         if as_legacy is not None:
             return _Reading(as_utf8, as_legacy)
-    return _Reading(as_utf8, _parse(raw, "latin-1"))
+    return _Reading(as_utf8, None)
 
 
 class _Scan(NamedTuple):

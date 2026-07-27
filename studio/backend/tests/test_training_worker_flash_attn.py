@@ -1548,15 +1548,10 @@ def test_install_respects_user_gcc_install_dir(monkeypatch):
     )
     _make_hip_install_env(monkeypatch, gcc_dir = "/usr/lib/gcc/x86_64-linux-gnu/13")
 
-    captured: dict[str, str] | None = {"_called": "no"}
+    captured: dict[str, str] = {}
 
     def fake_run(cmd, **kwargs):
-        env = kwargs.get("env")
-        if env is not None:
-            captured.clear()
-            captured.update(env)
-        else:
-            captured["_called"] = "yes_no_env"
+        captured.update(kwargs.get("env") or {})
         return subprocess.CompletedProcess(cmd, 0, "")
 
     monkeypatch.setattr(worker._sp, "run", fake_run)
@@ -1572,14 +1567,13 @@ def test_install_respects_user_gcc_install_dir(monkeypatch):
         release_base_url = "https://example.com",
     )
 
-    # subprocess.run invoked without env override (user already set
-    # HIPCC_COMPILE_FLAGS_APPEND with --gcc-install-dir, so we left the
-    # env alone — the existing value is inherited).
-    assert captured == {"_called": "yes_no_env"}
+    # The user already set HIPCC_COMPILE_FLAGS_APPEND with --gcc-install-dir,
+    # so their value is inherited untouched: no second --gcc-install-dir.
+    assert captured["HIPCC_COMPILE_FLAGS_APPEND"] == "--gcc-install-dir=/opt/custom/gcc-13"
 
 
 def test_install_does_not_inject_env_on_cuda(monkeypatch):
-    """CUDA path (no hip_version in env) → no env override at all."""
+    """CUDA path (no hip_version in env) → no HIP flag injected."""
     monkeypatch.delenv("HIPCC_COMPILE_FLAGS_APPEND", raising = False)
     monkeypatch.setattr(builtins, "__import__", _missing_module_import("causal_conv1d"))
     monkeypatch.setattr(
@@ -1606,7 +1600,7 @@ def test_install_does_not_inject_env_on_cuda(monkeypatch):
     captured: dict[str, Any] = {}
 
     def fake_run(cmd, **kwargs):
-        captured["env_in_kwargs"] = "env" in kwargs
+        captured.update(kwargs.get("env") or {})
         return subprocess.CompletedProcess(cmd, 0, "")
 
     monkeypatch.setattr(worker._sp, "run", fake_run)
@@ -1622,5 +1616,6 @@ def test_install_does_not_inject_env_on_cuda(monkeypatch):
         release_base_url = "https://example.com",
     )
 
-    # CUDA branch never sets the env, never invokes the gcc helper.
-    assert captured.get("env_in_kwargs") is False
+    # CUDA branch never injects the HIP flag, never invokes the gcc helper.
+    # The env itself is always passed now, to force the pip child to UTF-8.
+    assert "HIPCC_COMPILE_FLAGS_APPEND" not in captured
