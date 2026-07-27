@@ -8488,6 +8488,16 @@ class LlamaCppBackend:
                         recovered,
                     )
                     extra_args = recovered
+                    # The replay snapshot was filled from the request, above the
+                    # spawn, so it still holds the pre-rewrite flags. _respawn_if_dead
+                    # and the MTP-crash watchdog relaunch it verbatim, which would
+                    # re-run the argv that just hard-crashed and buy a second
+                    # recovery cycle for a config already known to fail. Keep it in
+                    # step with what the commit below reports as effective. Reached
+                    # only once a rewrite was actually adopted, and the snapshot is
+                    # per-load (unload clears _last_load_kwargs), so a value the user
+                    # never asked for never outlives the server it belongs to.
+                    _pending_load_kwargs["extra_args"] = list(recovered)
 
                 healthy = _spawn_and_wait(cmd)
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:

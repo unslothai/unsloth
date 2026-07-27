@@ -15,6 +15,7 @@ import os
 import re
 import struct
 import sys
+import threading
 import types as _types
 from pathlib import Path
 
@@ -2378,3 +2379,132 @@ def test_load_model_adopts_the_recovered_extras_at_both_flash_attn_rungs():
 
     # The commit itself still stores exactly that list.
     assert "self._extra_args = list(extra_args)" in src
+
+
+# ── The replay snapshot must carry the recovered flags too ──
+#
+# Reporting and replay are two different consumers of the same load. The commit
+# stores the adopted extras in _extra_args (what /load and /status echo) but the
+# replay snapshot, _pending_load_kwargs, was filled from the request far above
+# the spawn. Left alone it becomes a _last_load_kwargs that both respawn paths
+# relaunch verbatim, which re-runs the argv that just hard-crashed.
+
+
+class _DeadProc:
+    """A llama-server that has already taken a signal."""
+
+    returncode = -11
+
+    def poll(self):
+        return -11
+
+
+def _recovered_backend(snapshot_extras, reported_extras):
+    """A backend parked in the state a healthy crash-recovered load leaves."""
+    b = LlamaCppBackend.__new__(LlamaCppBackend)
+    b._lock = threading.RLock()
+    b._serial_load_lock = threading.RLock()
+    b._respawn_lock = threading.RLock()
+    b._mtp_runtime_fallback_lock = threading.Lock()
+    b._cancel_event = threading.Event()
+    b._mtp_runtime_fallback_in_progress = False
+    b._mtp_runtime_fallback_active = True
+    b._unload_epoch = 0
+    b._healthy = True
+    b._model_identifier = "owner/model"
+    b._process = _DeadProc()
+    b._extra_args = list(reported_extras)
+    b._last_load_kwargs = {
+        "gguf_path": "/m.gguf",
+        "model_identifier": "owner/model",
+        "speculative_type": "mtp",
+        "extra_args": list(snapshot_extras),
+    }
+    return b
+
+
+def test_respawn_replays_the_snapshot_not_the_reported_extras():
+    """_respawn_if_dead relaunches _last_load_kwargs["extra_args"], nothing else.
+
+    The snapshot alone decides the respawn argv: committing the recovered flags
+    to _extra_args (what /status echoes) does not reach this path. So a snapshot
+    left on the pre-rewrite request re-runs the argv that just hard-crashed and
+    buys a second recovery cycle for a config already known to fail.
+    """
+    typed = ["--flash-attn", "on", "--cache-type-v", "q8_0"]
+    launched = ["--flash-attn", "off", "--cache-type-v", "f16"]
+    # The recovery rewrite really does turn one into the other.
+    cmd, start = _launch_argv(typed)
+    assert LlamaCppBackend._extras_after_startup_recovery(
+        LlamaCppBackend._with_flash_attn_off(cmd), typed, start
+    ) == launched
+
+    # Reported and replayed deliberately disagree, so the assertion below can
+    # only be satisfied by the snapshot.
+    b = _recovered_backend(snapshot_extras = launched, reported_extras = typed)
+    seen = {}
+
+    def _fake_load_model(**kwargs):
+        seen["extra_args"] = kwargs.get("extra_args")
+        return True
+
+    b.load_model = _fake_load_model
+    b._server_socket_is_open = lambda: False
+    assert b._respawn_if_dead() is True
+    assert seen["extra_args"] == launched
+    assert seen["extra_args"] != b._extra_args
+
+
+def test_mtp_watchdog_replays_the_snapshot_extras_too():
+    """The MTP-crash watchdog replays the same snapshot on its own path.
+
+    It reloads with speculative decoding off, but every other argument comes
+    straight from _last_load_kwargs, so it inherits the same staleness and needs
+    the same snapshot to be correct.
+    """
+    typed = ["--flash-attn", "on", "--cache-type-v", "q8_0"]
+    launched = ["--flash-attn", "off", "--cache-type-v", "f16"]
+    b = _recovered_backend(snapshot_extras = launched, reported_extras = typed)
+    seen = {}
+    done = threading.Event()
+
+    def _fake_load_model(**kwargs):
+        seen["extra_args"] = kwargs.get("extra_args")
+        done.set()
+        return True
+
+    b.load_model = _fake_load_model
+    assert b._maybe_recover_from_mtp_crash(RuntimeError("server exited")) is True
+    assert done.wait(10), "the watchdog never reloaded"
+    assert seen["extra_args"] == launched
+    assert seen["extra_args"] != b._extra_args
+
+
+def test_adopted_extras_reach_the_replay_snapshot():
+    """The adopt helper rewrites the pending snapshot, not just the local.
+
+    _pending_load_kwargs is built from the caller's kwargs long before the
+    spawn, and is committed unchanged as the supposedly known-good
+    _last_load_kwargs. Without this the two replay paths above disagree with
+    what /status reports as effective.
+    """
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    capture = src.index("_pending_load_kwargs = {")
+    adopt = src.index("def _adopt_recovered_extras")
+    commit = src.index("self._last_load_kwargs = _pending_load_kwargs")
+    # Captured before any rewrite can happen, committed after: the adopt helper
+    # sits in between and is the only place that can keep it honest.
+    assert capture < adopt < commit
+
+    body = src[adopt:commit]
+    assert '_pending_load_kwargs["extra_args"] = list(recovered)' in body, (
+        "the adopt helper must update the replay snapshot, or _respawn_if_dead "
+        "and the MTP watchdog relaunch the pre-recovery flags"
+    )
+    # Kept inside the helper, after the guarded early return, so a load that
+    # recovered nothing still replays exactly what the caller asked for.
+    update = body.index('_pending_load_kwargs["extra_args"] = list(recovered)')
+    guard = body.index("if recovered is None or recovered ==")
+    assert guard < update
+    # And derived from the one slicer, never a second derivation.
+    assert body.count("_extras_after_startup_recovery") == 1
