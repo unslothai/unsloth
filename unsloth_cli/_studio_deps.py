@@ -151,20 +151,22 @@ def _supports_foreign_root(module) -> bool:
 
 
 def install_state(extra_roots: Sequence[Path] = ()) -> dict:
-    """verify_install() result, or a permissive answer when the helper is absent.
+    """verify_install() result, or incomplete when the helper cannot be loaded.
 
-    A tree predating install_manifest.py must not be called broken by a newer
-    CLI; the preflight already treats a CLI that cannot answer as stale via
-    desktop_manageability_version.
+    studio/install_manifest.py ships in the same wheel as this file, so a tree
+    that has one without the other is a torn install, not an old one: a CLI
+    predating both never reaches this code, and the desktop already calls it
+    stale on desktop_manageability_version. Answering yes here would launch a
+    backend whose own files may be just as absent.
     """
     module = load_install_manifest_module(extra_roots)
     if module is None:
         return {
-            "ok": True,
-            "manifest_ok": True,
-            "deps_ok": True,
+            "ok": False,
+            "manifest_ok": False,
+            "deps_ok": False,
             "missing": [],
-            "reason": None,
+            "reason": "studio_install_manifest_missing",
         }
     # An explicitly requested managed venv is the subject even though the helper
     # above was loaded from this CLI's own tree.

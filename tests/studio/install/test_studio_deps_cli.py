@@ -227,3 +227,21 @@ def test_the_import_map_only_names_studio_distributions():
             f"_IMPORT_TO_DISTRIBUTION maps {import_name} to {distribution}, "
             "which studio.txt no longer requires"
         )
+
+
+def test_a_torn_tree_without_the_manifest_helper_is_incomplete(tmp_path, monkeypatch):
+    """studio/install_manifest.py ships in the same wheel as _studio_deps.py, so
+    only a torn install has one without the other. Answering yes here launches a
+    backend whose own files may be just as absent."""
+    caller = tmp_path / "caller_venv"
+    site_packages = caller / "lib" / "python3.11" / "site-packages"
+    (site_packages / "unsloth_cli").mkdir(parents = True)
+    shutil.copy(DEPS_PATH, site_packages / "unsloth_cli" / "_studio_deps.py")
+    (caller / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding = "utf-8")
+    monkeypatch.setattr(sys, "prefix", str(caller))
+
+    deps = _load(site_packages / "unsloth_cli" / "_studio_deps.py", "studio_deps_torn_tree")
+    state = deps.install_state()
+
+    assert state["ok"] is False, state
+    assert state["reason"] == "studio_install_manifest_missing"
