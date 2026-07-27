@@ -175,12 +175,14 @@ class SdCppServer:
         threads: Optional[int] = None,
         env: Optional[dict[str, str]] = None,
         startup_timeout: float = 600.0,
+        extra_args: Optional[list[str]] = None,
     ) -> None:
         """Spawn the server (which loads the model) and block until it is ready.
 
         Raises ``RuntimeError`` (with the captured log tail) if the process exits during
         startup or never answers within ``startup_timeout``. Holds the lifecycle lock so
-        a concurrent start/stop can't interleave.
+        a concurrent start/stop can't interleave. ``extra_args`` is appended last (last
+        wins), which is how the CPU-backend restart pins the graph off the GPU.
         """
         with self._lifecycle_lock:
             # A stop()/unload that raced in before start() took the lock already set _abort and closed the
@@ -202,6 +204,7 @@ class SdCppServer:
                 threads = threads,
                 scratch_dir = self._scratch_dir,
                 verbose = True,  # sd-server prints the per-step sampling lines we parse
+                extra_args = list(extra_args or []),
             )
             run_env = runtime_env(self.binary, child_env_without_native_path_secret())
             if env:

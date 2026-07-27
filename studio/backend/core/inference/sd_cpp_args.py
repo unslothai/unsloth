@@ -148,6 +148,29 @@ def metal_text_encoder_flags() -> list[str]:
     return ["--clip-on-cpu"]
 
 
+# Everything on the CPU backend. sd.cpp's default preference is GPU -> integrated GPU -> CPU, and
+# only `--backend` changes which backend EXECUTES the graph (`--offload-to-cpu` moves parameters,
+# not compute), so this is the one flag that takes ggml-metal out of the picture entirely.
+CPU_BACKEND_FLAGS: tuple[str, ...] = ("--backend", "cpu")
+
+# The ggml signature that means "this graph cannot run on this backend at all": ggml-metal checks
+# ggml_metal_device_supports_op() per node in ggml_metal_op_encode_impl() and calls GGML_ABORT when
+# it returns false, because a single-backend graph has nowhere to put the node. SIGABRT (-6 on
+# POSIX, 134 through a shell) takes the whole sd-server down mid-generation.
+_GGML_UNSUPPORTED_OP_MARKERS = ("unsupported op", "ggml_abort")
+
+
+def is_ggml_unsupported_op_abort(message: str) -> bool:
+    """True if ``message`` is a captured sd.cpp log tail carrying a ggml unsupported-op abort.
+
+    Used to decide whether a dead sd-server is worth restarting on the CPU backend: an abort with
+    this signature is deterministic for the graph in question, so a plain retry on the same backend
+    would fail identically, while a CPU restart runs it. Any other death (OOM kill, a real bug,
+    a corrupt checkpoint) must NOT be silently retried."""
+    text = (message or "").lower()
+    return all(marker in text for marker in _GGML_UNSUPPORTED_OP_MARKERS)
+
+
 def offload_flags(
     policy: str,
     *,

@@ -133,6 +133,8 @@ class _FakeServer:
         self.timeouts = []
         self.alive = True
         self.lora_dir = None  # set by a test to the server's --lora-model-dir scratch dir
+        # Raised by the next img_gen (one shot) so a test can stage a mid-generation server death.
+        self.img_gen_error = None
 
     def is_alive(self):
         return self.alive and not self.stopped
@@ -145,6 +147,7 @@ class _FakeServer:
         offload = None,
         native_speed = None,
         threads = None,
+        extra_args = None,
     ):
         self.started = dict(
             files = files,
@@ -152,6 +155,7 @@ class _FakeServer:
             offload = offload,
             native_speed = native_speed,
             threads = threads,
+            extra_args = list(extra_args or []),
         )
 
     def img_gen(
@@ -166,6 +170,10 @@ class _FakeServer:
 
         self.payloads.append(payload)
         self.timeouts.append(total_timeout)
+        if self.img_gen_error is not None:
+            err, self.img_gen_error = self.img_gen_error, None
+            self.alive = False  # a ggml abort takes the process down
+            raise err
         if on_step is not None:
             steps = payload.get("sample_params", {}).get("sample_steps", 0)
             on_step(f"  {steps}/{steps}")
@@ -509,6 +517,7 @@ def _run_server_load(
     b,
     servers,
     fam_name = "z-image",
+    device = "cpu",
 ):
     fam = detect_family(fam_name)
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
@@ -529,7 +538,7 @@ def _run_server_load(
         lambda *a, **k: {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"},
     )
     monkeypatch.setattr(
-        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cpu")
+        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = device)
     )
     b._load_token = 1
     b._run_load(
@@ -565,6 +574,79 @@ def test_server_generate_uses_one_request_for_whole_batch(monkeypatch):
     assert out["seed"] == 7 and out["seeds"] == [7, 8, 9]
     # step progress was driven from the server's stdout line.
     assert b._gen is None  # cleared after generate
+
+
+_GGML_ABORT = (
+    "sd-server connection lost during img_gen poll (process exited, code -6)\n"
+    "Last output:\n"
+    "[ERROR] ggml_extend.hpp:70   - ggml_metal_op_encode_impl: error: unsupported op 'MUL_MAT'\n"
+    "1   sd-server   0x00000001044f8df4 ggml_abort + 156\n"
+    "10  sd-server   0x00000001043f6ce8 StableDiffusionGGML::sample"
+)
+
+
+def test_server_generation_restarts_on_the_cpu_backend_after_a_ggml_abort(monkeypatch):
+    # ggml checks every node against the device's supports_op and calls GGML_ABORT when one is not
+    # implemented, killing sd-server mid-generation with no per-op CPU fallback. Retrying on the
+    # same backend would abort identically, so the load is restarted with --backend cpu and the
+    # generation completes (slower) instead of failing.
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "mps")
+    servers[0].img_gen_error = RuntimeError(_GGML_ABORT)
+
+    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 3)
+
+    assert len(out["images"]) == 1  # the retry produced the image
+    assert len(servers) == 2 and servers[0].stopped is True
+    assert servers[1].started["extra_args"] == ["--backend", "cpu"]
+    # The same checkpoint and run settings are reused; only the backend placement changed.
+    assert servers[1].started["files"] is servers[0].started["files"]
+    assert servers[1].started["native_speed"] == servers[0].started["native_speed"]
+    # The live state points at the replacement, so the next generation does not touch the dead one.
+    assert b._state is not None and b._state.server is servers[1]
+
+
+def test_cpu_backend_restart_happens_once_per_load(monkeypatch):
+    # The restart is a one-shot rescue: if the CPU backend aborts too, the error surfaces rather
+    # than spawning servers forever.
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "mps")
+    servers[0].img_gen_error = RuntimeError(_GGML_ABORT)
+    b.generate(prompt = "x", steps = 4, seed = 1)
+    assert len(servers) == 2
+
+    servers[1].img_gen_error = RuntimeError(_GGML_ABORT)
+    with pytest.raises(RuntimeError, match = "unsupported op"):
+        b.generate(prompt = "x", steps = 4, seed = 1)
+    assert len(servers) == 2  # no third spawn
+
+
+def test_server_death_without_the_abort_signature_is_not_retried(monkeypatch):
+    # An OOM kill, a corrupt checkpoint or a genuine bug must not be silently retried on another
+    # backend: only the deterministic unsupported-op abort earns the CPU restart.
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "mps")
+    servers[0].img_gen_error = RuntimeError(
+        "sd-server connection lost during img_gen poll (process exited, code -9)"
+    )
+    with pytest.raises(RuntimeError, match = "code -9"):
+        b.generate(prompt = "x", steps = 4, seed = 1)
+    assert len(servers) == 1
+
+
+def test_cpu_device_does_not_restart_on_an_abort(monkeypatch):
+    # Already on CPU: the abort is not a backend-placement problem, so restarting would just repeat
+    # it. Surface the error instead.
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "cpu")
+    servers[0].img_gen_error = RuntimeError(_GGML_ABORT)
+    with pytest.raises(RuntimeError, match = "unsupported op"):
+        b.generate(prompt = "x", steps = 4, seed = 1)
+    assert len(servers) == 1
 
 
 def test_server_generate_splits_batches_above_server_limit(monkeypatch):

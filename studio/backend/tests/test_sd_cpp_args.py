@@ -18,6 +18,7 @@ from core.inference.diffusion_memory import (
     OFFLOAD_SEQUENTIAL,
 )
 from core.inference.sd_cpp_args import (
+    CPU_BACKEND_FLAGS,
     SdCppGenParams,
     SdCppModelFiles,
     SdCppUpscaleParams,
@@ -25,6 +26,7 @@ from core.inference.sd_cpp_args import (
     build_sd_cpp_command,
     build_sd_cpp_server_command,
     build_sd_cpp_upscale_command,
+    is_ggml_unsupported_op_abort,
     metal_text_encoder_flags,
     native_speed_flags,
     offload_flags,
@@ -526,3 +528,39 @@ def test_img_gen_request_flux_uses_distilled_guidance():
 def test_img_gen_request_requires_prompt():
     with pytest.raises(ValueError):
         build_img_gen_request(prompt = "   ", steps = 4)
+
+
+def test_ggml_unsupported_op_abort_is_recognised_only_with_both_markers():
+    # The CPU-backend rescue must fire for the deterministic "this backend cannot run this graph"
+    # abort and for nothing else: an OOM kill or a plain crash has to surface as itself.
+    abort = (
+        "sd-server connection lost during img_gen poll (process exited, code -6)\n"
+        "Last output:\n"
+        "[ERROR] ggml_extend.hpp:70   - ggml_metal_op_encode_impl: error: unsupported op 'MUL_MAT'\n"
+        "1   sd-server   0x00000001044f8df4 ggml_abort + 156"
+    )
+    assert is_ggml_unsupported_op_abort(abort) is True
+    # The RMS_NORM shape of the same abort (text encoder) counts too.
+    assert is_ggml_unsupported_op_abort(
+        "error: unsupported op 'RMS_NORM'\nggml_abort + 156"
+    ) is True
+    # Neither marker alone is enough, and an unrelated death is never a match.
+    assert is_ggml_unsupported_op_abort("unsupported op 'MUL_MAT'") is False
+    assert is_ggml_unsupported_op_abort("ggml_abort + 156") is False
+    assert is_ggml_unsupported_op_abort("process exited, code -9") is False
+    assert is_ggml_unsupported_op_abort("") is False
+
+
+def test_server_command_appends_extra_args_last():
+    # --backend cpu is passed as extra_args by the abort rescue, and sd.cpp is last-wins, so it has
+    # to land after every flag the normal build emits.
+    cmd = build_sd_cpp_server_command(
+        "/x/sd-server",
+        SdCppModelFiles(diffusion_model = "/m/z.gguf", vae = "/m/vae.sft"),
+        host = "127.0.0.1",
+        port = 1234,
+        native_speed = "default",
+        extra_args = list(CPU_BACKEND_FLAGS),
+    )
+    assert cmd[-2:] == ["--backend", "cpu"]
+    assert cmd[0] == "/x/sd-server"

@@ -29,7 +29,7 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -52,9 +52,11 @@ from core.inference.diffusion_memory import (
     OFFLOAD_SEQUENTIAL,
 )
 from core.inference.sd_cpp_args import (
+    CPU_BACKEND_FLAGS,
     SdCppGenParams,
     SdCppModelFiles,
     build_img_gen_request,
+    is_ggml_unsupported_op_abort,
     offload_flags,
 )
 from core.inference.sd_cpp_engine import (
@@ -307,6 +309,10 @@ class SdCppDiffusionBackend:
         # superseding load can stop it mid-startup instead of waiting out the timeout.
         self._pending_server: Optional[SdCppServer] = None
         self._gen: Optional[_SdGen] = None
+        # Set once this load's graph proved unrunnable on the GPU backend (a ggml unsupported-op
+        # abort), so the CPU restart happens once per load and every later generation goes straight
+        # to the backend that works. Cleared by each load.
+        self._cpu_backend_forced = False
 
     @property
     def is_loaded(self) -> bool:
@@ -516,6 +522,9 @@ class SdCppDiffusionBackend:
                     self._state = None  # the old model is being torn down
                 if old_state is not None and old_state.server is not None:
                     old_state.server.stop()
+                # A new checkpoint earns a fresh attempt on the GPU backend: the previous one's
+                # abort says nothing about this graph.
+                self._cpu_backend_forced = False
                 server: Optional[SdCppServer] = None
                 if mode == "server":
                     assert server_binary is not None
@@ -951,12 +960,31 @@ class SdCppDiffusionBackend:
                     distilled_guidance = flux_guidance,
                     lora = lora_payload,
                 )
-                blobs = state.server.img_gen(
-                    payload,
-                    on_step = self._on_log,
-                    cancel_event = cancel,
-                    total_timeout = max(deadline - time.monotonic(), 1.0),
-                )
+                try:
+                    blobs = state.server.img_gen(
+                        payload,
+                        on_step = self._on_log,
+                        cancel_event = cancel,
+                        total_timeout = max(deadline - time.monotonic(), 1.0),
+                    )
+                except RuntimeError as exc:
+                    # A ggml unsupported-op abort killed the server: this graph cannot run on the
+                    # GPU backend at all, so re-running it there would abort identically. Restart
+                    # the model on the CPU backend once and retry this chunk. Any other death
+                    # propagates unchanged.
+                    server = self._restart_server_on_cpu_backend(state, str(exc), cancel)
+                    if server is None:
+                        raise
+                    state = replace(state, server = server)
+                    with self._lock:
+                        if self._state is not None and self._state.server is not None:
+                            self._state = state
+                    blobs = server.img_gen(
+                        payload,
+                        on_step = self._on_log,
+                        cancel_event = cancel,
+                        total_timeout = max(deadline - time.monotonic(), 1.0),
+                    )
                 # All-or-nothing per chunk: fail rather than silently drop images from the batch.
                 if not cancel.is_set() and len(blobs) != count:
                     raise RuntimeError(
@@ -969,6 +997,67 @@ class SdCppDiffusionBackend:
             if lora_stage is not None:
                 shutil.rmtree(lora_stage, ignore_errors = True)
         return images, seeds
+
+    def _restart_server_on_cpu_backend(
+        self,
+        state: _SdState,
+        error_text: str,
+        cancel: threading.Event,
+    ) -> Optional[SdCppServer]:
+        """Relaunch this checkpoint's sd-server with ``--backend cpu``; None if that does not apply.
+
+        ggml's Metal backend checks every node against ``ggml_metal_device_supports_op`` and calls
+        ``GGML_ABORT`` when one is not implemented for that device, because a single-backend graph
+        has nowhere else to put the node -- there is no per-op CPU fallback. The whole sd-server
+        dies with SIGABRT mid-generation, so the user sees "the native image renderer stopped
+        unexpectedly" with no way forward. Observed on macos-14 arm64 with FLUX.2-klein-4B Q2_K:
+        the encoder is already pinned to CPU (see metal_text_encoder_flags), and the abort then
+        moves into the denoise loop:
+
+            ggml_metal_op_encode_impl: error: unsupported op 'MUL_MAT' -> ggml_abort
+            StableDiffusionGGML::sample -> sample_k_diffusion
+
+        ``--backend cpu`` is the only flag that changes which backend EXECUTES the graph
+        (``--offload-to-cpu`` moves parameters, not compute), so the restart runs the same
+        checkpoint slower rather than not at all. Done once per load: the second abort, or any
+        other cause of death, is surfaced to the caller."""
+        if not is_ggml_unsupported_op_abort(error_text):
+            return None
+        if self._cpu_backend_forced or state.device == "cpu":
+            return None  # already on CPU: the abort is not a backend-placement problem
+        if state.server is None or cancel.is_set():
+            return None
+        server_binary = find_sd_server_binary()
+        if not server_binary:
+            return None
+        logger.warning(
+            "sd-server aborted on an op the '%s' backend cannot run; restarting on the CPU "
+            "backend (slower, but it completes). Details: %s",
+            state.device,
+            error_text[:300],
+        )
+        self._cpu_backend_forced = True
+        state.server.stop()
+        server = SdCppServer(server_binary)
+        with self._lock:
+            self._pending_server = server
+        try:
+            server.start(
+                state.files,
+                vae_format = state.vae_format,
+                offload = list(state.offload_flags),
+                native_speed = state.native_speed,
+                threads = state.threads,
+                extra_args = list(CPU_BACKEND_FLAGS),
+            )
+        except Exception:  # noqa: BLE001 -- the original abort is the more useful error
+            server.stop()
+            return None
+        finally:
+            with self._lock:
+                if self._pending_server is server:
+                    self._pending_server = None
+        return server
 
     def _generate_oneshot(
         self,
