@@ -3089,11 +3089,22 @@ def install_python_stack() -> int:
     )
 
     # 15. Record success. Written last on purpose: an earlier kill leaves none.
-    install_manifest.write_manifest(
-        req_root = REQ_ROOT,
-        steps_total = _TOTAL,
-        package_name = package_name,
-    )
+    # Exiting 0 without it would report a finished install that every later
+    # check reads as unfinished, which is a repair loop.
+    if (
+        install_manifest.write_manifest(
+            req_root = REQ_ROOT,
+            steps_total = _TOTAL,
+            package_name = package_name,
+        )
+        is None
+    ):
+        print(
+            f"error: could not write {install_manifest.MANIFEST_NAME} to "
+            f"{install_manifest.venv_root()}",
+            file = sys.stderr,
+        )
+        return 1
 
     _step(_LABEL, "installed")
     return 0

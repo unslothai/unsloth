@@ -132,6 +132,18 @@ def test_package_upgrade_invalidates_the_manifest(install_root, req_root):
     assert state["reason"] == "studio_install_version_changed"
 
 
+def test_verify_follows_the_package_the_manifest_names(install_root, req_root):
+    # `studio update --package X` records X. Checking unsloth's version instead
+    # would report a version change on every probe and repair for ever.
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    state = im.verify_install(
+        root = install_root,
+        req_root = req_root,
+        package_name = "unsloth-definitely-not-a-real-package",
+    )
+    assert state["manifest_ok"] is True
+
+
 def test_edited_requirements_invalidate_the_manifest(install_root, req_root):
     # The --local dev path: editing studio.txt must re-run the dependency pass
     # rather than sit behind setup.sh's "up to date" fast path.

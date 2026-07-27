@@ -232,7 +232,9 @@ def verify_install(
     elif manifest.get("schema") != MANIFEST_SCHEMA:
         reason = "studio_install_manifest_schema"
     else:
-        installed = _installed_version(package_name)
+        # The manifest names what was installed: `update --package X` records X,
+        # so comparing against unsloth would report a permanent version change.
+        installed = _installed_version(manifest.get("package") or package_name)
         recorded = manifest.get("package_version")
         if installed and recorded and installed != recorded:
             reason = "studio_install_version_changed"
