@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import csv
 import importlib.util
 import hashlib
 import hmac
@@ -301,18 +302,25 @@ def _recorded_files_missing(installed) -> bool:
     """Whether RECORD lists files the venv no longer has.
 
     An interrupted replace can recreate a package directory and stop part-way
-    through filling it, so the directory existing proves nothing. 6656 files
-    across studio.txt's closure cost 158ms, against a probe that imports the
-    backend, and __pycache__ is skipped because deleting it is not damage.
+    through filling it, so the directory existing proves nothing. RECORD is read
+    directly because Distribution.files drops entries that no longer exist,
+    which is exactly the set this looks for. 6656 files across studio.txt's
+    closure cost 158ms, and __pycache__ is skipped: deleting it is not damage.
     """
-    for recorded in installed.files or ():
-        parts = PurePosixPath(str(recorded)).parts
+    # egg-info has no RECORD, and its file lists say nothing about completeness.
+    record = installed.read_text("RECORD")
+    if record is None:
+        return False
+    for row in csv.reader(record.splitlines()):
+        if not row or not row[0]:
+            continue
+        parts = PurePosixPath(row[0]).parts
         # .dist-info is the metadata itself; .data and ../ land outside the tree.
         if parts[0] == ".." or parts[0].endswith((".dist-info", ".data")):
             continue
         if "__pycache__" in parts or parts[-1].endswith(".pyc"):
             continue
-        if not installed.locate_file(recorded).exists():
+        if not installed.locate_file(row[0]).exists():
             return True
     return False
 

@@ -93,7 +93,9 @@ def test_desktop_runtime_check_accepts_a_prerelease_over_a_floor(monkeypatch, ca
     monkeypatch.setattr(
         importlib.import_module("importlib.metadata"),
         "distribution",
-        lambda _name: SimpleNamespace(version = "2.0.0b1", files = [], requires = None),
+        lambda _name: SimpleNamespace(
+            version = "2.0.0b1", files = [], requires = None, read_text = lambda _n: None,
+        ),
     )
 
     studio.desktop_runtime_check(_json_output = True)
@@ -112,7 +114,9 @@ def test_desktop_runtime_check_rejects_version_mismatch(monkeypatch, capsys, tmp
     monkeypatch.setattr(
         importlib.import_module("importlib.metadata"),
         "distribution",
-        lambda _name: SimpleNamespace(version = "1.0", files = [], requires = None),
+        lambda _name: SimpleNamespace(
+            version = "1.0", files = [], requires = None, read_text = lambda _n: None,
+        ),
     )
 
     with pytest.raises(typer.Exit):
@@ -137,7 +141,9 @@ def test_desktop_runtime_check_rejects_metadata_without_an_unpacked_package(
     monkeypatch.setattr(
         importlib.import_module("importlib.metadata"),
         "distribution",
-        lambda _name: SimpleNamespace(version = "0.140.5", files = None, requires = None),
+        lambda _name: SimpleNamespace(
+            version = "0.140.5", files = None, requires = None, read_text = lambda _n: None,
+        ),
     )
 
     with pytest.raises(typer.Exit):
@@ -156,7 +162,9 @@ def _fake_distributions(monkeypatch, installed):
             version, requires = installed[name]
         except KeyError:
             raise metadata.PackageNotFoundError(name) from None
-        return SimpleNamespace(version = version, files = [], requires = requires)
+        return SimpleNamespace(
+            version = version, files = [], requires = requires, read_text = lambda _n: None,
+        )
 
     monkeypatch.setattr(metadata, "distribution", _distribution)
 
@@ -256,8 +264,12 @@ def test_a_root_pin_is_checked_even_when_a_dependency_names_it_first(monkeypatch
 
 def test_a_record_without_its_files_is_reported_missing(monkeypatch, capsys, tmp_path):
     """An interrupted replace can recreate the package directory and stop
-    part-way through filling it, so the directory existing proves nothing."""
+    part-way through filling it, so the directory existing proves nothing.
+
+    Built as a real dist-info rather than a stub: Distribution.files drops
+    entries that no longer exist, which is the whole set this looks for."""
     studio = importlib.import_module("unsloth_cli.commands.studio")
+    metadata = importlib.import_module("importlib.metadata")
     backend = tmp_path / "backend"
     requirements = backend / "requirements"
     requirements.mkdir(parents = True)
@@ -266,23 +278,20 @@ def test_a_record_without_its_files_is_reported_missing(monkeypatch, capsys, tmp
     monkeypatch.setattr(studio, "_load_run_module", lambda: run_mod)
 
     site_packages = tmp_path / "site-packages"
-    (site_packages / "structlog-25.1.0.dist-info").mkdir(parents = True)
-    installed = SimpleNamespace(
-        version = "25.1.0",
-        requires = None,
-        files = [
-            "structlog/__init__.py",
-            "structlog/processors.py",
-            "structlog/__pycache__/__init__.cpython-311.pyc",
-            "structlog-25.1.0.dist-info/RECORD",
-        ],
-        locate_file = lambda name: site_packages / name,
+    dist_info = site_packages / "structlog-25.1.0.dist-info"
+    dist_info.mkdir(parents = True)
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: structlog\nVersion: 25.1.0\n", encoding = "utf-8",
     )
-    monkeypatch.setattr(
-        importlib.import_module("importlib.metadata"),
-        "distribution",
-        lambda _name: installed,
+    (dist_info / "RECORD").write_text(
+        "structlog/__init__.py,,\n"
+        "structlog/processors.py,,\n"
+        "structlog/__pycache__/__init__.cpython-313.pyc,,\n"
+        "structlog-25.1.0.dist-info/RECORD,,\n",
+        encoding = "utf-8",
     )
+    installed = next(iter(metadata.distributions(path = [str(site_packages)])))
+    monkeypatch.setattr(metadata, "distribution", lambda _name: installed)
 
     with pytest.raises(typer.Exit):
         studio.desktop_runtime_check(_json_output = True)
@@ -295,6 +304,7 @@ def test_a_record_without_its_files_is_reported_missing(monkeypatch, capsys, tmp
         studio.desktop_runtime_check(_json_output = True)
     assert json.loads(capsys.readouterr().out)["module"] == "structlog"
 
+    # Complete, and the never-written .pyc must not count as damage.
     (site_packages / "structlog" / "processors.py").touch()
     studio.desktop_runtime_check(_json_output = True)
     assert json.loads(capsys.readouterr().out) == {"runtime_ready": True}

@@ -54,12 +54,29 @@ pub(crate) fn managed_install_in_progress() -> bool {
         .unwrap_or(false)
 }
 
+/// Whether this process created the marker rather than finding one an earlier
+/// interrupted install left. Clearing someone else's drops the only signal that
+/// its venv is half-written. Process-wide because the marker is one file.
+static MARKER_CREATED_HERE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 fn create_install_in_progress_marker() -> Result<(), String> {
     let path = install_in_progress_marker_path()?;
-    create_install_in_progress_marker_at(&path)
+    let created = create_install_in_progress_marker_at(&path)?;
+    MARKER_CREATED_HERE.store(created, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
 }
 
-fn create_install_in_progress_marker_at(path: &Path) -> Result<(), String> {
+/// Clear only a marker this attempt created. Used where the venv was never
+/// touched: a failed spawn, and the elevation exits.
+fn clear_own_install_marker() {
+    if MARKER_CREATED_HERE.load(std::sync::atomic::Ordering::Relaxed) {
+        clear_install_marker_best_effort();
+    }
+}
+
+/// Ok(true) when this call created the file, Ok(false) when one was there.
+fn create_install_in_progress_marker_at(path: &Path) -> Result<bool, String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("Invalid install marker path: {}", path.display()))?;
@@ -71,8 +88,8 @@ fn create_install_in_progress_marker_at(path: &Path) -> Result<(), String> {
         .create_new(true)
         .open(path)
     {
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
         Err(error) => Err(format!("Failed to create {}: {}", path.display(), error)),
     }
 }
@@ -90,6 +107,7 @@ fn clear_install_marker_best_effort() {
     if let Err(msg) = clear_install_in_progress_marker() {
         warn!("[install] {}", msg);
     }
+    MARKER_CREATED_HERE.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
 fn clear_install_in_progress_marker_at(path: &Path) -> Result<(), String> {
@@ -516,10 +534,11 @@ fn run_install_with_event_mode(
     let (stdout, stderr) = match spawn_script(&script, &args, &state) {
         Ok(handles) => handles,
         Err(msg) => {
-            // Nothing ran, so nothing is half-installed. Unless another installer
-            // owns the marker, where clearing it drops its recovery signal.
+            // Nothing ran, so nothing is half-installed. Unless the marker is
+            // not ours: another installer owns it, or an earlier interrupted
+            // one left it, and either way its signal is not ours to drop.
             if msg != INSTALL_ALREADY_RUNNING {
-                clear_install_marker_best_effort();
+                clear_own_install_marker();
             }
             diagnostics::finish_attempt(
                 &diagnostics,
@@ -648,7 +667,7 @@ pub fn record_pending_elevation_canceled(
         return false;
     };
     // The resumed run the elevation exit left the marker for is not happening.
-    clear_install_marker_best_effort();
+    clear_own_install_marker();
     diagnostics::finish_attempt(
         diagnostics,
         &attempt,
@@ -922,7 +941,7 @@ fn finish_elevation_failure(
     message: String,
 ) {
     // Terminal, like a cancelled prompt: the resumed run is not happening.
-    clear_install_marker_best_effort();
+    clear_own_install_marker();
     if let Some(attempt) = attempt {
         diagnostics::finish_attempt(
             diagnostics,
@@ -971,10 +990,11 @@ mod tests {
         ));
         let marker = directory.join(INSTALL_IN_PROGRESS_MARKER);
 
-        create_install_in_progress_marker_at(&marker).unwrap();
+        assert!(create_install_in_progress_marker_at(&marker).unwrap());
         assert!(marker.is_file());
 
-        create_install_in_progress_marker_at(&marker).unwrap();
+        // A second attempt finds the first one's marker and does not own it.
+        assert!(!create_install_in_progress_marker_at(&marker).unwrap());
         assert!(marker.is_file());
 
         clear_install_in_progress_marker_at(&marker).unwrap();
