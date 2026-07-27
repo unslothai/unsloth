@@ -312,7 +312,26 @@ def test_install_runs_wheel_only_for_missing_kernel(monkeypatch):
     att._ensure_attention_backend_installed("sage")
     assert len(run.calls) == 1
     cmd = run.calls[0]
-    assert "--only-binary" in cmd and ":all:" in cmd and "sageattention" in cmd
+    assert "--only-binary" in cmd and ":all:" in cmd
+    assert any(a.startswith("sageattention") for a in cmd)
+
+
+def test_sage_install_carries_the_dispatcher_version_floor(monkeypatch):
+    # PyPI's newest sageattention wheel is 1.0.6, but diffusers refuses anything below 2.1.1. An
+    # unpinned install "succeeds", writes an unusable 1.0.6 into the user's venv, and is then
+    # rejected with "the version is too old" — so the requirement must carry the floor and let pip
+    # resolve nothing instead.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("sage")
+    req = next(a for a in run.calls[0] if a.startswith("sageattention"))
+    assert req == "sageattention>=2.1.1", req
+    # Unversioned kernels are unaffected.
+    assert att._pip_requirement("xformers", "xformers") == "xformers"
 
 
 def test_install_uses_no_deps_to_protect_core_deps(monkeypatch):

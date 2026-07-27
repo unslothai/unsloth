@@ -3262,9 +3262,15 @@ _UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
         "hidream",
         "cosmos",
         "hyvid",
-        "lumina2",
     }
 )
+
+# Diffusion archs shared by a family the backend CAN assemble and one it cannot, so the arch alone
+# cannot decide. Z-Image's DiT is a Lumina2 derivative, so every converter tags
+# unsloth/Z-Image-GGUF and unsloth/Z-Image-Turbo-GGUF as "lumina2" -- the same architecture a
+# Lumina-Image-2.0 GGUF declares. Reading the arch alone hid the whole Z-Image GGUF line from the
+# Images picker, so these resolve from the repo/file name like bare "wan" does below.
+_AMBIGUOUS_DIFFUSION_GGUF_ARCHS = frozenset({"lumina2"})
 
 # Video GGUF archs the video backend CAN load (LTX-2.x ships as "ltxv"; the Wan community GGUFs
 # as "wan"). Tagged text-to-video so they surface in the Video picker and stay out of chat.
@@ -3307,6 +3313,18 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
                         break
         if fam is not None and not getattr(fam, "is_moe", False):
             return _VIDEO_GEN_TASK
+        return _UNSUPPORTED_DIFFUSION_TASK
+    if a in _AMBIGUOUS_DIFFUSION_GGUF_ARCHS:
+        # Same shape as the video branch: the arch is shared, so let the family detection the
+        # loader itself uses decide, trying each hint separately (a repo id, then a filename).
+        from core.inference.diffusion_families import detect_family_for_pick, family_gguf_loadable
+
+        for hint in name_hints:
+            if not hint:
+                continue
+            fam = detect_family_for_pick(hint)
+            if fam is not None:
+                return "text-to-image" if family_gguf_loadable(fam) else _UNSUPPORTED_DIFFUSION_TASK
         return _UNSUPPORTED_DIFFUSION_TASK
     # A diffusion arch the backend can't assemble: hide from chat (dies in llama.cpp) without
     # surfacing in Images (would 400 in validate_load).

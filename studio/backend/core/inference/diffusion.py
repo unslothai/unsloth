@@ -165,6 +165,30 @@ def resolve_model_kind(gguf_filename: Optional[str], model_kind: Optional[str] =
     return "single_file"
 
 
+def _active_lora_pairs(pipe: Any) -> list:
+    """``[(name, weight)]`` for the adapters actually attached to ``pipe``, zero-weight ones
+    dropped.
+
+    Reads the ``_unsloth_loras`` marker, which the LoRA paths write as ``(name, path, weight)``.
+    Shape is tolerated rather than assumed: this runs inside the generate result and an unpacking
+    error here would sink a finished generation whose images are already in hand."""
+    pairs = []
+    for entry in getattr(pipe, "_unsloth_loras", ()) or ():
+        try:
+            if len(entry) == 3:
+                name, _path, weight = entry
+            elif len(entry) == 2:
+                name, weight = entry
+            else:
+                continue
+            weight = float(weight)
+        except Exception:  # noqa: BLE001 — an unrecognised marker records no adapter
+            continue
+        if weight:
+            pairs.append((name, weight))
+    return pairs
+
+
 def resolve_local_single_file(model_path: str) -> Optional[str]:
     """The sole single-file checkpoint basename in a local ``model_path`` directory that is NOT a
     diffusers pipeline (no ``model_index.json``) and holds exactly one ``.safetensors`` file, else
@@ -925,8 +949,14 @@ class DiffusionBackend:
         # Downloads done, still finalizing. The cache scan can exceed the estimate, so clamp to 100%.
         if expected > 0 and downloaded >= expected * 0.999:
             return _progress("finalizing", min(downloaded, expected), expected, 1.0)
-        fraction = min(downloaded / expected, 1.0) if expected > 0 else 0.0
-        return _progress("downloading", downloaded, expected, fraction)
+        if expected <= 0:
+            # No size estimate: the metadata lookup failed, or nothing needed sizing because the
+            # model is already fully cached. ``downloaded`` is a scan of what is PRESENT in the
+            # cache, not what this load fetched, so pairing it with an unknown total rendered as
+            # "40.07 GB downloaded" for a load that downloads nothing. Report the phase with no
+            # byte claim instead.
+            return _progress("downloading")
+        return _progress("downloading", downloaded, expected, min(downloaded / expected, 1.0))
 
     def loading_repo_ids(self) -> tuple[str, ...]:
         """Repo ids an in-flight background load is downloading (empty when idle).
@@ -2469,10 +2499,16 @@ class DiffusionBackend:
             transformer_quant = state.transformer_quant,
             compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()),
         ):
+            # Name only routes the user can actually reach from here. The native engine is one of
+            # them, but a GPU host never selects it on its own (see diffusion_engine_router), so
+            # saying "use the native engine" without the override sends a CUDA user to a dead end.
             raise ValueError(
                 "LoRA is not supported for this model/quantisation on the diffusers engine "
-                "(GGUF-via-diffusers, or a torch.compile'd Speed=default/max load). Use a bf16 "
-                "or bnb-4bit load at Speed=off/eager, or the native engine for GGUF models."
+                "(GGUF-via-diffusers, or a torch.compile'd Speed=default/max load). Reload with "
+                "transformer_quant int8 or fp8, which rebuilds the GGUF into a LoRA-capable dense "
+                "transformer, or use a bf16 / bnb-4bit load at Speed=off/eager. To keep the GGUF "
+                "weights themselves, run the native engine, which a GPU host selects only when "
+                "UNSLOTH_DIFFUSION_ENGINE=sd_cpp is set."
             )
 
         desired = self._resolve_lora_set(
@@ -3120,6 +3156,11 @@ class DiffusionBackend:
                     "seed": int(seed),
                     "seeds": [int(s) for s in per_image_seeds],
                     "repo_id": state.repo_id,
+                    # The adapters ACTUALLY attached for this generation, so the recipe records a
+                    # load-time bake too. A quantized load bakes its adapters before quantize +
+                    # compile and the generate request then carries none, so a recipe built from
+                    # the request alone claimed no LoRA for an image that plainly used one.
+                    "active_loras": _active_lora_pairs(state.pipe),
                 }
             finally:
                 # Deregister so a later unload/load can't poke a finished generation (if still ours).

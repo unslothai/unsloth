@@ -16370,8 +16370,14 @@ async def generate_diffusion_image(
                         # persist it so restore can replay. A list-driven image restores on its own seed instead.
                         "batch_size": 1 if list_driven else request.batch_size,
                         "model": result.get("repo_id"),
+                        # What was actually attached, not what this request asked for: a quantized
+                        # load bakes its adapters before quantize + compile, so the generate request
+                        # carries none and a request-only recipe claimed no LoRA for an image that
+                        # used one, leaving the recipe unable to reproduce it.
                         "loras": (
-                            [f"{l.id}:{l.weight:g}" for l in request.loras] if request.loras else []
+                            [f"{l.id}:{l.weight:g}" for l in request.loras]
+                            if request.loras
+                            else [f"{name}:{weight:g}" for name, weight in result.get("active_loras") or []]
                         ),
                         "controlnet": (
                             f"{request.controlnet.id}:{request.controlnet.control_type}:"

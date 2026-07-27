@@ -465,13 +465,15 @@ def test_exclude_tokens_for_scheme_family():
 
 
 def test_resolve_fast_accum(monkeypatch):
-    # None auto-detects by GPU class; an explicit bool forces it.
-    monkeypatch.setattr(tq, "_is_consumer_gpu", lambda *a: True)
-    assert tq._resolve_fast_accum(None) is True
-    monkeypatch.setattr(tq, "_is_consumer_gpu", lambda *a: False)
-    assert tq._resolve_fast_accum(None) is False
-    assert tq._resolve_fast_accum(True) is True  # forced on (e.g. on a data-center card)
-    assert tq._resolve_fast_accum(False) is False  # forced off (e.g. on a consumer card)
+    # None is fast accumulate on every GPU class; an explicit bool forces it. Deriving this from
+    # the GPU class made fp8 2.05x slower than int8 on RTX 6000 Ada (the precise-accumulate cuBLAS
+    # path costs there even though the card's published FP8 rates are equal for both modes), while
+    # on B200 the flag is a measured no-op, so there is nothing to trade away by defaulting it on.
+    for consumer in (True, False):
+        monkeypatch.setattr(tq, "_is_consumer_gpu", lambda *a, _c = consumer: _c)
+        assert tq._resolve_fast_accum(None) is True
+    assert tq._resolve_fast_accum(True) is True
+    assert tq._resolve_fast_accum(False) is False  # precise accumulate stays available explicitly
 
 
 def test_fp8_config_uses_per_row_granularity():

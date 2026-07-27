@@ -1061,7 +1061,13 @@ class VideoBackend:
             downloaded += self._cache_bytes(loading.base_repo)
         expected = loading.expected_bytes
         phase = "downloading"
-        if expected and downloaded >= expected:
+        if not expected:
+            # No size estimate (metadata failure, or a fully cached load that sized nothing).
+            # ``downloaded`` counts what is PRESENT in the cache, not what this load fetched, so
+            # reporting it against an unknown total renders a multi-GB "downloaded" figure for a
+            # load that downloads nothing. Report the phase alone.
+            return _progress(phase)
+        if downloaded >= expected:
             phase = "finalizing"
             # The cache scan counts every blob (incl. files this load never reads), so the raw counter can
             # exceed the scoped estimate; clamp to what the bar reports.

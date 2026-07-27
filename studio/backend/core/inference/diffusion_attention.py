@@ -149,7 +149,7 @@ def _cudnn_attention_supported() -> bool:
 # Wheels only (--only-binary=:all:): a source build needs a CUDA toolchain a Studio host may
 # lack. cuDNN/native ship with torch.
 _INSTALLABLE_BACKENDS: dict[str, tuple[str, str]] = {
-    "sage": ("sageattention", "sageattention"),
+    "sage": ("sageattention", "sageattention>=2.1.1"),
     "flash": ("flash_attn", "flash-attn"),
     "_flash_3_hub": ("kernels", "kernels"),  # FA3/FA4 from the HF kernels hub
     "flash_4_hub": ("kernels", "kernels"),
@@ -167,6 +167,26 @@ _ATTENTION_INSTALL_ENV = "UNSLOTH_DIFFUSION_ATTENTION_INSTALL"
 _INSTALL_ATTEMPTED: set[str] = set()
 
 
+def _pip_requirement(backend: str, package: str) -> str:
+    """Requirement to hand pip, carrying any floor the dispatcher enforces at set time.
+
+    PyPI's newest ``sageattention`` wheel is 1.0.6 while diffusers refuses anything below
+    ``_REQUIRED_SAGE_VERSION`` (2.1.1) — an unpinned install therefore always "succeeds", writes
+    an unusable 1.0.6 into the running venv, and is then rejected with "the version is too old".
+    Pinning makes pip resolve nothing instead of installing something we will not use. Re-read the
+    floor from diffusers so a future bump tracks automatically."""
+    if backend != "sage":
+        return package
+    try:
+        from diffusers.models.attention_dispatch import _REQUIRED_SAGE_VERSION as floor
+
+        if isinstance(floor, str) and floor.strip():
+            return f"sageattention>={floor.strip()}"
+    except Exception:  # noqa: BLE001 — older/newer diffusers may not expose it; keep the static pin
+        pass
+    return package
+
+
 def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> None:
     """Best-effort wheel-only install of the package ``backend`` needs, when allowed.
 
@@ -179,6 +199,7 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Non
     if spec is None:
         return
     module, package = spec
+    package = _pip_requirement(backend, package)
     gate = os.environ.get(_ATTENTION_INSTALL_ENV, "auto").strip().lower()
     if gate in ("0", "false", "no", "off"):
         return

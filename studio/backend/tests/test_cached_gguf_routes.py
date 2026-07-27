@@ -1353,10 +1353,53 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     classified = (
         models_route._DIFFUSION_GGUF_ARCHS
         | models_route._UNSUPPORTED_DIFFUSION_GGUF_ARCHS
+        | models_route._AMBIGUOUS_DIFFUSION_GGUF_ARCHS
         | models_route._VIDEO_GGUF_ARCHS
     )
     missing = {a for a in LlamaCppBackend._DIFFUSION_ARCHES if a.lower() not in classified}
     assert not missing, f"diffusion archs would still show in chat: {missing}"
+
+
+def test_arch_to_task_resolves_z_image_gguf_tagged_lumina2():
+    # Z-Image's DiT is a Lumina2 derivative, so unsloth/Z-Image-GGUF and unsloth/Z-Image-Turbo-GGUF
+    # both declare general.architecture = "lumina2". Reading the arch alone tagged the whole
+    # Z-Image GGUF line unsupported and hid it from the Images "On Device" list, even though
+    # validate_load_request loads it happily.
+    for repo, fname in (
+        ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf"),
+        ("unsloth/Z-Image-GGUF", "z-image-Q8_0.gguf"),
+    ):
+        assert models_route._arch_to_task("lumina2", (repo, fname)) == "text-to-image"
+        # The filename alone carries the family for a bare local .gguf pick.
+        assert models_route._arch_to_task("lumina2", (None, fname)) == "text-to-image"
+    # An unrecognised repo on the shared arch stays hidden rather than being guessed loadable.
+    assert (
+        models_route._arch_to_task("lumina2", ("someone/mystery-gguf", "model-Q4_K.gguf"))
+        == models_route._UNSUPPORTED_DIFFUSION_TASK
+    )
+
+
+def test_arch_to_task_agrees_with_the_loader_on_ambiguous_archs():
+    # The picker and the loader must not disagree: whatever _arch_to_task advertises as a loadable
+    # image model on a shared arch, validate_load_request must accept, and whatever it hides,
+    # validate_load_request must reject. Otherwise the Images list either hides a working model
+    # (the Z-Image bug) or offers one that 400s on click.
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.diffusion_families import _FAMILIES
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)  # validation touches no state
+    for fam in _FAMILIES:
+        repo = f"unsloth/{fam.name}-GGUF"
+        fname = f"{fam.name}-Q4_K_M.gguf"
+        task = models_route._arch_to_task("lumina2", (repo, fname))
+        try:
+            backend.validate_load_request(repo, gguf_filename = fname, model_kind = "gguf")
+            loader_accepts = True
+        except (ValueError, FileNotFoundError):
+            loader_accepts = False
+        assert (task == "text-to-image") == loader_accepts, (
+            f"{fam.name}: picker task={task} but loader accepts={loader_accepts}"
+        )
 
 
 def _clear_chat_delete_guards(monkeypatch):

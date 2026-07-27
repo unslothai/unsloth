@@ -319,9 +319,25 @@ def _smoke_probe(scheme: str, device: str) -> bool:
 
 
 def _resolve_fast_accum(fast_accum: Optional[bool]) -> bool:
-    """The fp8 ``use_fast_accum`` to apply. ``None`` auto-detects by GPU class
-    (consumer / workstation -> fast; data-center -> precise); an explicit bool forces it."""
-    return _is_consumer_gpu() if fast_accum is None else bool(fast_accum)
+    """The fp8 ``use_fast_accum`` to apply. ``None`` (auto) is fast accumulate; an explicit bool
+    forces it.
+
+    This used to derive from the GPU class, on the theory that only consumer parts pay for FP32
+    accumulate. The hardware side of that is right -- NVIDIA's professional whitepapers publish
+    equal FP8 rates for both accumulate modes on RTX 6000 Ada (728.5 TFLOPS either way) and RTX PRO
+    6000 Blackwell, against an exact halving on RTX 4090/5090 -- but the resulting default was
+    still wrong on the cards it was written for, because the cost is in the cuBLAS path, not the
+    published rate. Measured:
+
+      * RTX 6000 Ada (sm_89), Z-Image-Turbo 1024x1024 x9: 6.387 s precise vs ~3.1 s fast --
+        precise costs 2.05x and is slower than running the GGUF unquantised. (reported in review)
+      * B200 (sm_100): the flag is a no-op -- 4096^3 ``_scaled_mm`` at 3023.8 vs 3041.8 TFLOP/s
+        (0.994x) with BITWISE-identical output, and 1.213 s vs 1.230 s end to end.
+      * consumer parts already resolved to fast here.
+
+    So fast accumulate is a large win where the flag bites and free where it does not. Precise
+    accumulate stays one explicit ``transformer_quant_fast_accum: false`` away."""
+    return True if fast_accum is None else bool(fast_accum)
 
 
 def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:

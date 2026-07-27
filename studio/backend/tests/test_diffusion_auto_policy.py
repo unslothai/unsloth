@@ -162,6 +162,57 @@ def test_candidate_disk_gate_unprobeable_disk_passes(monkeypatch):
     assert isinstance(est, DenseQuantEstimate)
 
 
+def test_disk_gate_sizes_fp32_families_by_their_real_download(monkeypatch):
+    # The size table is bf16-RESIDENT, but the disk gate is about bytes landing in the HF cache.
+    # Z-Image publishes fp32 shards (measured 23,479 MiB against 11,730 MiB resident), so gating on
+    # the resident figure left a window where the check passed and the download then filled the
+    # disk. The gate must ask for the download size; the memory estimate must NOT change.
+    import core.inference.diffusion_auto_policy as ap
+
+    _patch_selector(monkeypatch, scheme = "int8")
+    est = ap.estimate_dense_quant(_fam("z-image"), "int8")
+    assert est.transient_transformer_mib == 11_730  # resident: unchanged
+    assert est.download_transformer_mib == 23_460  # download: measured 23,479 MiB
+    # Free space that clears the old (resident-based) bar but not the real download is refused.
+    monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 11_730 + 10 * 1024 + 512)
+    assert (
+        resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "auto")
+        is None
+    )
+    monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 23_460 + 10 * 1024 + 512)
+    assert isinstance(
+        resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "auto"),
+        DenseQuantEstimate,
+    )
+
+
+def test_disk_gate_does_not_overcharge_a_family_published_below_bf16(monkeypatch):
+    # The correction runs both ways: Ideogram 4 ships fp8 (transformer + unconditional_transformer
+    # measured at 17,718 MiB) and doubles on the way to bf16, so charging the resident 35,477 MiB
+    # of disk would refuse the candidate on a disk that easily holds it.
+    import core.inference.diffusion_auto_policy as ap
+
+    _patch_selector(monkeypatch, scheme = "int8")
+    est = ap.estimate_dense_quant(_fam("ideogram-4"), "int8")
+    assert est.transient_transformer_mib == 35_476
+    assert est.download_transformer_mib == 17_738
+    monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 17_738 + 10 * 1024 + 512)
+    assert isinstance(
+        resolve_dense_quant_candidate(fam = _fam("ideogram-4"), target = object(), requested = "auto"),
+        DenseQuantEstimate,
+    )
+
+
+def test_disk_gate_matches_download_for_bf16_published_families(monkeypatch):
+    # Families that publish bf16 download what they occupy (measured 0.99-1.07x), so the two
+    # numbers stay equal and no factor entry is needed.
+    import core.inference.diffusion_auto_policy as ap
+
+    for name in ("flux.1", "flux.2-dev", "qwen-image", "krea-2", "hidream-i1"):
+        est = ap.estimate_dense_quant(_fam(name), "int8")
+        assert est.download_transformer_mib == est.transient_transformer_mib, name
+
+
 def test_candidate_none_for_an_unlisted_family(monkeypatch):
     # No size entry means no basis to re-plan; the loader keeps today's resident-only gate.
     _patch_selector(monkeypatch)

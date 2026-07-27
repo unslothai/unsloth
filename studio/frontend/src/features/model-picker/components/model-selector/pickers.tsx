@@ -128,13 +128,7 @@ import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./types";
-import {
-  type CatalogGroup,
-  artifactForRepoId,
-  catalogGroupFitsDevice,
-  groupForRepoId,
-  groupMatchesQuery,
-} from "./model-catalog";
+import { type CatalogGroup, artifactForRepoId } from "./model-catalog";
 
 function dedupe(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
@@ -1937,11 +1931,13 @@ export function HubModelPicker({
           ? isKnownGgufRepo(id) || Boolean(catalog && artifactForRepoId(id, catalog))
           : !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
       )
-      // Member repos of a catalog group would collapse into the canonical group row --
-      // but nothing renders those rows yet (catalogGroupFitsDevice / groupMatchesQuery are
-      // imported and unused), and a task-scoped picker's `models` is catalogToModelOptions(),
-      // i.e. group members exclusively. Suppressing them here emptied Recommended on the
-      // Images and Video pages, so keep the artifacts listed until the grouped UI lands.
+      // Member repos of a catalog group would collapse into the canonical group row -- but
+      // nothing renders those rows yet (model-catalog exports groupForRepoId /
+      // catalogGroupFitsDevice / groupMatchesQuery ready for it, covered by
+      // model-catalog.check.ts, with no caller here), and a task-scoped picker's `models` is
+      // catalogToModelOptions(), i.e. group members exclusively. Suppressing them here emptied
+      // Recommended on the Images and Video pages, so keep the artifacts listed until the
+      // grouped UI lands.
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
     // Sort: GGUFs first, then hub models
     const gguf: string[] = [];

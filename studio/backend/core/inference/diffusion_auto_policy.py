@@ -61,6 +61,21 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "ideogram-4": (37.2, 16.3, 0.2),
 }
 
+# Hub DOWNLOAD bytes relative to the bf16-resident sizes above, for the families whose published
+# checkpoints are not stored at bf16. The table above is what a component occupies after the dtype
+# cast; the free-disk gate needs what actually lands in the HF cache, and for these families the
+# two differ by 2x in either direction. Measured from HF sibling metadata:
+#   z-image     transformer/ 23,479 MiB fp32                     -> 11,730 MiB resident  (2.00x)
+#   lumina-2    transformer/  9,956 MiB fp32                     ->  4,959 MiB resident  (2.01x)
+#   ideogram-4  transformer/ + unconditional_transformer/ 17,718 MiB fp8
+#                                                          -> 35,477 MiB resident  (0.50x)
+# Anything absent ships bf16 and downloads what it occupies (measured 0.99-1.07x across the rest).
+_FAMILY_HUB_DOWNLOAD_FACTOR: dict[str, float] = {
+    "z-image": 2.0,
+    "lumina-2": 2.0,
+    "ideogram-4": 0.5,
+}
+
 # Base-repo overrides for families offering multiple sizes under one entry (the table carries
 # the family default).
 _BASE_REPO_BF16_GB: dict[str, tuple[float, float, float]] = {
@@ -87,13 +102,16 @@ class DenseQuantEstimate:
 
     ``transient_transformer_mib`` is the build peak (dense bf16 when quantising on the fly, or the
     quantised size when a prequant checkpoint loads via meta). ``steady_transformer_mib`` is what
-    stays resident for generation."""
+    stays resident for generation. ``download_transformer_mib`` is what the base-repo transformer
+    costs on DISK, which is not the same number whenever the family publishes something other than
+    bf16 (see ``_FAMILY_HUB_DOWNLOAD_FACTOR``)."""
 
     scheme: str
     steady_transformer_mib: int
     transient_transformer_mib: int
     companions_mib: int
     prequant: bool
+    download_transformer_mib: int = 0
 
     @property
     def transient_total_mib(self) -> int:
@@ -121,12 +139,14 @@ def estimate_dense_quant(
     steady = int(transformer_gb * factor * _MIB_PER_GB)
     transient = steady if prequant_available else int(transformer_gb * _MIB_PER_GB)
     companions = int((text_encoders_gb + vae_gb) * _MIB_PER_GB)
+    hub_factor = _FAMILY_HUB_DOWNLOAD_FACTOR.get(getattr(fam, "name", None), 1.0)
     return DenseQuantEstimate(
         scheme = scheme,
         steady_transformer_mib = steady,
         transient_transformer_mib = transient,
         companions_mib = companions,
         prequant = prequant_available,
+        download_transformer_mib = int(transformer_gb * hub_factor * _MIB_PER_GB),
     )
 
 
@@ -208,11 +228,13 @@ def resolve_dense_quant_candidate(
     if estimate is not None:
         # The dense path may DOWNLOAD the artifact into the HF cache, which must never wedge a nearly
         # full disk. A cached re-download is a no-op, so this only trips on an already-critical disk,
-        # where the GGUF fallback is right anyway.
+        # where the GGUF fallback is right anyway. Size it by what lands on DISK: a prequant load
+        # fetches the quantised checkpoint, otherwise it is the base repo's published transformer,
+        # which is twice the bf16-resident figure on the fp32 families.
         needed_mib = (
             estimate.steady_transformer_mib
             if estimate.prequant
-            else estimate.transient_transformer_mib
+            else estimate.download_transformer_mib
         )
         free_mib = _hf_cache_free_mib()
         if free_mib is not None and free_mib < needed_mib + 10 * 1024:

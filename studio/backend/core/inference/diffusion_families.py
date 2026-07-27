@@ -620,6 +620,17 @@ def family_prequant_repo(
     return None
 
 
+def family_gguf_loadable(fam: DiffusionFamily) -> bool:
+    """True when a GGUF transformer can be assembled for this family.
+
+    The two exclusions mirror the ones ``DiffusionBackend.validate_load_request`` raises on (which
+    keep their own specific messages): a family whose single file IS the whole pipeline has no
+    transformer-only GGUF, and a multi-denoiser family has no single transformer to swap. Exposed
+    so the model-listing routes can classify a GGUF the same way the loader would, instead of
+    keeping a second hand-maintained list that drifts."""
+    return not fam.single_file_is_pipeline and not fam.pipeline_only
+
+
 def family_sd_cpp_supported(fam: DiffusionFamily) -> bool:
     """True when the family has the single-file VAE + text-encoder mapping sd.cpp needs; without it
     the no-GPU route falls back to diffusers."""
