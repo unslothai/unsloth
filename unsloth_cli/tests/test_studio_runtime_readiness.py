@@ -94,7 +94,10 @@ def test_desktop_runtime_check_accepts_a_prerelease_over_a_floor(monkeypatch, ca
         importlib.import_module("importlib.metadata"),
         "distribution",
         lambda _name: SimpleNamespace(
-            version = "2.0.0b1", files = [], requires = None, read_text = lambda _n: None,
+            version = "2.0.0b1",
+            files = [],
+            requires = None,
+            read_text = lambda _n: None,
         ),
     )
 
@@ -115,7 +118,10 @@ def test_desktop_runtime_check_rejects_version_mismatch(monkeypatch, capsys, tmp
         importlib.import_module("importlib.metadata"),
         "distribution",
         lambda _name: SimpleNamespace(
-            version = "1.0", files = [], requires = None, read_text = lambda _n: None,
+            version = "1.0",
+            files = [],
+            requires = None,
+            read_text = lambda _n: None,
         ),
     )
 
@@ -142,7 +148,10 @@ def test_desktop_runtime_check_rejects_metadata_without_an_unpacked_package(
         importlib.import_module("importlib.metadata"),
         "distribution",
         lambda _name: SimpleNamespace(
-            version = "0.140.5", files = None, requires = None, read_text = lambda _n: None,
+            version = "0.140.5",
+            files = None,
+            requires = None,
+            read_text = lambda _n: None,
         ),
     )
 
@@ -163,7 +172,10 @@ def _fake_distributions(monkeypatch, installed):
         except KeyError:
             raise metadata.PackageNotFoundError(name) from None
         return SimpleNamespace(
-            version = version, files = [], requires = requires, read_text = lambda _n: None,
+            version = version,
+            files = [],
+            requires = requires,
+            read_text = lambda _n: None,
         )
 
     monkeypatch.setattr(metadata, "distribution", _distribution)
@@ -281,7 +293,8 @@ def test_a_record_without_its_files_is_reported_missing(monkeypatch, capsys, tmp
     dist_info = site_packages / "structlog-25.1.0.dist-info"
     dist_info.mkdir(parents = True)
     (dist_info / "METADATA").write_text(
-        "Metadata-Version: 2.1\nName: structlog\nVersion: 25.1.0\n", encoding = "utf-8",
+        "Metadata-Version: 2.1\nName: structlog\nVersion: 25.1.0\n",
+        encoding = "utf-8",
     )
     (dist_info / "RECORD").write_text(
         "structlog/__init__.py,,\n"
