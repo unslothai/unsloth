@@ -544,8 +544,7 @@ def _gguf_variant_target_plan(
     key = variant.lower()
     if key in plans:
         return plans[key]
-    # A download interrupted before #7460 stored the base key, so ``q6_k`` must
-    # still resume ``...-Q6_K-MTP.gguf``. Only when one flavor carries that base.
+    # Pre-#7460 keys stored the base quant, so resume a lone flavored sibling.
     from hub.utils.gguf import _base_quant_for_preference
 
     by_base = [k for k in plans if k != key and _base_quant_for_preference(k).lower() == key]

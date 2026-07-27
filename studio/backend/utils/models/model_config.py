@@ -1649,8 +1649,7 @@ def _extract_quant_label(filename: str) -> str:
     """
     import re
 
-    # Callers also pass OS-native paths (llama_cpp's launched -m path): without this a
-    # Windows path has no "/", so a parent folder's quant outranks the file's own name.
+    # Callers also pass OS-native paths, where no "/" lets a parent quant win.
     normalized = filename.replace("\\", "/")
     basename = normalized.rsplit("/", 1)[-1]
     # Strip .gguf and any shard suffix (-00001-of-00010)
@@ -1668,8 +1667,7 @@ def _extract_quant_label(filename: str) -> str:
 
     def label_for(text: str, m: re.Match) -> str:
         prefix = m.group(1) or ""
-        # Keep a trailing bpw / MTP-flavor suffix so files sharing a base quant
-        # (IQ4_XS at 3.53/3.97 bpw, Qwen MTP grafts) stay distinct variants (#7460).
+        # Keep a trailing bpw / MTP flavor so same-base-quant files stay distinct (#7460).
         suffix_match = _POST_QUANT_VARIANT_SUFFIX_RE.match(text[m.end() :])
         return f"{prefix}{m.group(2)}{suffix_match.group(0) if suffix_match else ''}"
 
@@ -1679,23 +1677,20 @@ def _extract_quant_label(filename: str) -> str:
     match = _select_quant_label_match(stem, quant_re)
     if match:
         label = label_for(stem, match)
-        # ``Q6_K-MTP/model-Q6_K.gguf``: the basename settles the quant, so take
-        # the flavor from the nearest quant-named parent when it agrees.
+        # ``Q6_K-MTP/model-Q6_K.gguf``: basename settles the quant; take the parent's flavor.
         if not _POST_QUANT_VARIANT_SUFFIX_RE.search(label):
             for segment in parent_segments:
                 m = _select_quant_label_match(segment, quant_re)
                 if m is None:
                     continue
-                # The ``UD-`` prefix is part of the quant identity, so compare it too.
+                # ``UD-`` is part of the quant identity, so compare it too.
                 if _full_base_label(m) == _full_base_label(match):
                     suffix_match = _POST_QUANT_VARIANT_SUFFIX_RE.match(segment[m.end() :])
                     if suffix_match:
                         label += suffix_match.group(0)
                 break
         return label
-    # Subdir layouts like ``BF16/foo.gguf`` keep the quant in the directory,
-    # not the basename. Check parent dirs too so the label matches the
-    # snapshot-relative path produced elsewhere.
+    # Subdir layouts keep the quant in the dir, matching snapshot-relative paths.
     for segment in parent_segments:
         m = _select_quant_label_match(segment, quant_re)
         if m:
@@ -2036,9 +2031,7 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     matches.sort()
     if matches:
         return str(_local_gguf_load_path(matches[0]))
-    # Recipes saved before #7460 persisted the base quant, so ``Q6_K`` must
-    # still find a lone ``...-Q6_K-MTP.gguf``. Only when one flavor is present:
-    # with several, the old key cannot say which was meant.
+    # Pre-#7460 recipes stored the base quant, so resolve a lone flavored sibling.
     if len(by_base) == 1:
         only = sorted(next(iter(by_base.values())))
         return str(_local_gguf_load_path(only[0]))

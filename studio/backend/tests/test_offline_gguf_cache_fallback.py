@@ -1014,7 +1014,7 @@ class TestExtractQuantLabelSubdir:
         assert _extract_quant_label("Foo-F16-Q8_0.gguf") == "Q8_0"
 
     def test_variant_suffix_must_close_the_stem(self):
-        # Only a suffix that directly follows the quant and closes the stem is a flavor.
+        # Only a suffix directly following the quant and closing the stem counts.
         assert _extract_quant_label("m-Q6_K-MTP-v2.gguf") == "Q6_K"
         assert _extract_quant_label("m-Q6_K-graft-MTP.gguf") == "Q6_K"
         assert _extract_quant_label("m-Q6_K-MTPX.gguf") == "Q6_K"
@@ -1022,8 +1022,7 @@ class TestExtractQuantLabelSubdir:
         assert _extract_quant_label("m-IQ4_XS-3.53bpw-v2.gguf") == "IQ4_XS"
 
     def test_native_windows_path_matches_relative_path(self):
-        # llama_cpp derives hf_variant from the OS-native path it launched, so a
-        # parent folder's quant must not win over the one in the file's own name.
+        # llama_cpp passes the OS-native launch path, so a parent quant must not win.
         win = (
             "N:\\AI Models\\Qwen\\Qwen3.6-40B-NEO-CODE-HERE-2T-OT-Q6_K"
             "\\Qwen3.6-40B-NEO-CODE-Q6_K-MTP.gguf"
@@ -1119,8 +1118,7 @@ class TestInheritedFlavorDoesNotBreakOtherReaders:
     @pytest.mark.parametrize(
         "path,expected",
         [
-            # The UD- prefix is part of the quant identity, so a parent naming a
-            # different base must not lend its flavor.
+            # UD- is part of the quant identity, so a differing parent lends no flavor.
             ("UD-Q4_K_XL-MTP/model-Q4_K_XL.gguf", "Q4_K_XL"),
             ("Q4_K_XL-MTP/model-UD-Q4_K_XL.gguf", "UD-Q4_K_XL"),
             ("UD-Q4_K_XL-MTP/model-UD-Q4_K_XL.gguf", "UD-Q4_K_XL-MTP"),

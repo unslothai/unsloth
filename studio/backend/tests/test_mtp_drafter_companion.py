@@ -494,7 +494,7 @@ def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):
         # A download interrupted before the relabel stored the base key.
         (["m-Q6_K-MTP.gguf"], "Q6_K", "m-Q6_K-MTP.gguf"),
         (["m-Q6_K-MTP.gguf"], "Q6_K-MTP", "m-Q6_K-MTP.gguf"),
-        # An exact match still wins over the compatibility fallback.
+        # An exact match wins over the fallback.
         (["m-Q6_K.gguf", "m-Q6_K-MTP.gguf"], "Q6_K", "m-Q6_K.gguf"),
         (["m-Q6_K.gguf"], "Q6_K", "m-Q6_K.gguf"),
     ],

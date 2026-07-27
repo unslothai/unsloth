@@ -981,8 +981,7 @@ def _is_big_endian_gguf_path(path: str, variant_key: str = "") -> bool:
     normalized = path.replace("\\", "/")
     name = normalized.rsplit("/", 1)[-1]
     stem = name.rsplit(".", 1)[0].lower()
-    # A flavor suffix can come from the parent dir, so match on the base quant
-    # or ``Q6_K-MTP/model-Q6_K-be.gguf`` reads as quant-in-parent-only.
+    # Match on the base quant: the flavor may come from the parent dir.
     variant_key = _POST_QUANT_VARIANT_SUFFIX_RE.sub("", variant_key).strip().lower()
     variant_index = stem.find(variant_key) if variant_key else -1
     parent = normalized.rsplit("/", 1)[0].lower() if "/" in normalized else ""

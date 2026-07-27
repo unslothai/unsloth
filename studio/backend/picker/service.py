@@ -250,8 +250,7 @@ def _variant_matches(relative_path: str, needle: str) -> bool:
         return True
     if extract_quant_label(relative_path).lower() == needle:
         return True
-    # Recipes saved before #7460 store the base quant, so accept any post-quant
-    # flavor the extractors now keep (bpw sizes and MTP grafts alike).
+    # Recipes saved before #7460 store the base quant, so accept any flavor suffix.
     prefix = f"{needle}-"
     if not quant.startswith(prefix):
         return False

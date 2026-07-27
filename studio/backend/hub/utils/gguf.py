@@ -121,8 +121,7 @@ def is_big_endian_gguf_path(path: str, quant: str = "") -> bool:
     normalized = path.replace("\\", "/")
     name = normalized.rsplit("/", 1)[-1]
     stem = name.rsplit(".", 1)[0].lower()
-    # A flavor suffix can come from the parent dir, so match on the base quant
-    # or ``Q6_K-MTP/model-Q6_K-be.gguf`` reads as quant-in-parent-only.
+    # Match on the base quant: the flavor may come from the parent dir.
     quant_key = _POST_QUANT_VARIANT_SUFFIX_RE.sub("", quant).strip().lower()
     quant_index = stem.find(quant_key) if quant_key else -1
     parent = normalized.rsplit("/", 1)[0].lower() if "/" in normalized else ""
@@ -487,8 +486,7 @@ def resolve_local_gguf_path(repo_id: str, gguf_variant: Optional[str]) -> Option
                     return str(candidate)
             elif _base_quant_for_preference(variant.quant) == gguf_variant.upper():
                 by_base.setdefault(variant.quant.upper(), variant)
-        # Recipes saved before #7460 stored the base quant, so ``Q6_K`` must still
-        # find a lone cached ``...-Q6_K-MTP.gguf``. Ambiguous with several flavors.
+        # Pre-#7460 recipes stored the base quant, so resolve a lone cached flavor.
         if len(by_base) == 1:
             candidate = snapshot / next(iter(by_base.values())).filename
             if candidate.is_file():
