@@ -32,8 +32,20 @@ except ImportError:
     import sys
     IS_WINDOWS = sys.platform == "win32"
     LLAMA_CPP_DEFAULT_DIR = "llama.cpp"
-from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
-from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+# Without bnb, peft stops exporting its 4bit LoRA layer too. Both names only feed
+# isinstance checks, so placeholders nothing can match are exact stand-ins.
+try:
+    from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+    from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+except Exception:
+
+    class Bnb_Linear4bit:
+        pass
+
+    class Peft_Linear4bit:
+        pass
+
+
 from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
 import sys
