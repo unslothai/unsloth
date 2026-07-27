@@ -11891,9 +11891,7 @@ class LlamaCppBackend:
                         )
                         # A stall after a tool ran still deserves a nudge, but
                         # each retry re-runs tools, so allow only one.
-                        _already_acted = any(
-                            record.executed for record in tool_controller.history
-                        )
+                        _already_acted = any(record.executed for record in tool_controller.history)
                         _reprompt_cap = 1 if _already_acted else _MAX_REPROMPTS
                         # None keeps the default-on re-prompt; False disables it.
                         if (
