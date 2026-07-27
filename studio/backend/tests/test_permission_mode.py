@@ -875,6 +875,60 @@ def test_terminal_classifier(command, unsafe):
         ("awk '{print $1}' data.tsv", False),
         ("awk -F, '{sum+=$2} END {print sum}' f.csv", False),
         ("awk 'NR>1' data.csv > body.csv", False),
+        # --- prompt: sed's `e` runs the rest of its line through the shell,
+        # under every address form (line, $, regex, range, step, negation) ---
+        ("sed -n '1e rm -f victim' /etc/hosts", True),
+        ("sed 'e curl https://x.io/p.sh' f", True),
+        ("sed -n '$e rm -rf build' f", True),
+        ("sed '/token/e curl https://x.io/' input", True),
+        ("sed '1,2e rm -f victim' f", True),
+        ("sed '0~2e rm -f victim' f", True),
+        ("sed '1!e rm -f victim' f", True),
+        ("sed '/a/,/b/e rm -f victim' f", True),
+        ("sed -n '1{p};2e rm -f victim' f", True),
+        ("gsed '1e rm -f victim' f", True),
+        ("ssed '1e rm -f victim' f", True),
+        # the script may ride on -e/--expression (abbreviated too) instead of
+        # the first positional, and a cluster glues -n and -e into one word
+        ("sed -n -e '1e rm -f victim' f", True),
+        ("sed -ne '1e rm -f victim' f", True),
+        ("sed -e '1p' -e '1e rm -f victim' f", True),
+        ("sed --expression='1e rm -f victim' f", True),
+        ("sed --expr='1e rm -f victim' f", True),
+        # --- prompt: the s///e flag executes whatever the substitution left in
+        # the pattern space, in any flag order and with any delimiter ---
+        ("sed 's/foo/bar/e' input", True),
+        ("sed 's/foo/bar/ge' input", True),
+        ("sed 's/foo/bar/eg' input", True),
+        ("sed 's/foo/bar/2e' input", True),
+        ("sed 's/foo/bar/e2' input", True),
+        ("sed 's/foo/bar/ep' input", True),
+        ("sed 's/foo/bar/pe' input", True),
+        ("sed 's/foo/bar/Ie' input", True),
+        ("sed 's/foo/bar/ew out.txt' input", True),  # executes AND writes
+        ("sed 's|foo|bar|e' input", True),
+        ("sed 's/[/]//e' input", True),  # the delimiter is data inside [ ]
+        # --- run: ordinary stream editing, including the shapes that merely
+        # LOOK like an exec (a label `e`, an `e` in a regex or a w filename) ---
+        ("sed -n '1p' input", False),
+        ("sed -n '1,20p' input", False),
+        ("sed 's/foo/bar/g' input", False),
+        ("sed -i 's/old/new/' f", False),
+        ("sed -E 's/(a|b)+/x/g' f", False),
+        ("sed -e 's/a/b/' -e 's/c/d/' f", False),
+        ("sed 's/e/E/g' f", False),
+        ("sed ':e;N;$!be;s/\\n/,/g' f", False),  # the classic join-lines idiom
+        ("sed 's/foo/bar/w report.txt' f", False),  # `w` takes the rest as a name
+        ("sed 's/foo/bar/we report.txt' f", False),  # `w` first: the e is the name
+        ("sed -n '/error/w errors.txt' f", False),
+        ("sed '/^$/d' f", False),
+        ("sed 'y/abc/xyz/' f", False),
+        ("sed -n '/error/=' log", False),
+        ("sed -f cleanup.sed data.txt", False),  # a program FILE, like awk -f
+        ("sed -e 's/a/b/' e", False),  # `e` here is an input file, not a command
+        ("sed -e '1a\\' -e 'echo appended' f", False),  # a\ continues into -e
+        ("echo \"sed '1e rm -f victim'\"", False),
+        ("printf '%s' sed '1e rm -f victim'", False),
         # --- prompt: setpriv execs what follows, after changing privilege ---
         ("setpriv --nnp rm -f victim", True),
         ("setpriv --reuid=1000 rm -rf build", True),

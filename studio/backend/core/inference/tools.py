@@ -265,6 +265,15 @@ _AWK_SHELL_ESCAPE_RE = re.compile(
     r"\bsystem\s*\(|\|\s*&?\s*[\"']\s*(?:/\S*/)?(?:sh|bash|zsh|ksh|dash|cmd)\b|"
     r"\bENVIRON\s*\[|\bprintf\s*\|"
 )
+# sed shells out like awk: GNU's `e` runs the rest of its line through popen,
+# and the `s///e` flag runs the pattern space. Either hides a command (even a
+# hard-blocked one) inside a text-editing argument, so the program is screened
+# while ordinary editing (sed 's/a/b/g', sed -n '1,20p') stays unprompted. Both
+# are GNU extensions; busybox/toybox/BSD sed reject `e` outright.
+_SED_COMMANDS = frozenset({"sed", "gsed", "ssed"})
+# `s///` flags that may precede `e`. `w` is absent: it takes the rest of the
+# line as a filename, so the e in `s/a/b/w report.txt` is part of that name.
+_SED_SUBST_FLAGS = frozenset("0123456789gpiImMe")
 _WIN_CONDITIONAL_KEYWORDS = frozenset({"exist", "defined", "errorlevel", "not"})
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 
@@ -286,6 +295,183 @@ def _blocked_matching_glob(base: str) -> "set[str]":
     if not _is_unresolved_command_glob(base):
         return set()
     return {name for name in _BLOCKED_COMMANDS if fnmatch.fnmatchcase(name, base)}
+
+
+def _sed_program(tokens: "list[str]", start: int) -> str:
+    """The sed script of the invocation whose command word sits at ``start``.
+
+    sed joins every -e/--expression value with NEWLINES into one program, so
+    `sed -e '1a\\' -e 'e rm -rf x'` appends a literal line instead of executing
+    it and the pieces must be judged together. With no -e (and no -f program
+    FILE, unreadable here) the FIRST positional is the script and the rest are
+    inputs, so `sed -e 's/a/b/' e` treats its input file `e` as data.
+    """
+    programs: "list[str]" = []
+    first_positional = ""
+    has_program_flag = False
+    value_pending = ""  # "e" or "f": the next token is that flag's value
+    for token in tokens[start + 1 :]:
+        if token in _SHELL_SEPARATORS:
+            break
+        if value_pending:
+            if value_pending == "e":
+                programs.append(token)
+            value_pending = ""
+            continue
+        if token.startswith("--"):
+            name, sep, value = token.partition("=")
+            # getopt allows unambiguous abbreviations: --e/--ex/--expr are all
+            # --expression, and --fi upwards is --file (--f alone is ambiguous
+            # with --follow-symlinks, which sed rejects).
+            is_expression = len(name) > 2 and "--expression".startswith(name)
+            is_file = len(name) > 3 and "--file".startswith(name)
+            if is_expression or is_file:
+                has_program_flag = True
+                if not sep:
+                    value_pending = "e" if is_expression else "f"
+                elif is_expression:
+                    programs.append(value)
+            continue
+        if token.startswith("-"):
+            # A cluster glues the value on (-ne'1p') or takes the next (-ne '1p').
+            attached = _short_flag_arg(token, "ef")
+            if attached is None:
+                continue
+            has_program_flag = True
+            letter = next(ch for ch in token[1:] if ch in "ef")
+            if not attached:
+                value_pending = letter
+            elif letter == "e":
+                programs.append(attached)
+            continue
+        if not first_positional:
+            first_positional = token
+    if not has_program_flag and first_positional:
+        programs.append(first_positional)
+    return "\n".join(programs)
+
+
+def _sed_exec_payloads(program: str) -> "list[str]":
+    """Shell payloads a sed program executes, in order.
+
+    `e COMMAND` runs COMMAND. A bare `e` and the `s///e` flag run the pattern
+    space, which only exists at run time, so they yield an EMPTY payload:
+    executes, but nothing to screen. An empty list means it only edits text.
+
+    The walk skips every region where an `e` is data (regexes, replacements,
+    a/i/c text, r/w filenames, b/t labels, comments), keeping `:e;N;$!be;...`,
+    `sed 's/e/E/g'` and `sed 's/a/b/w report.txt'` out of the results.
+    """
+    payloads: "list[str]" = []
+    n = len(program)
+
+    def _end_of_line(pos: int) -> int:
+        end = program.find("\n", pos)
+        return n if end < 0 else end
+
+    def _skip_bracket(pos: int) -> int:
+        # A bracket expression, where the delimiter is data (`s/[/]/x/` really
+        # substitutes a slash). A leading `]` is literal; [:class:] nests.
+        pos += 1
+        if pos < n and program[pos] == "^":
+            pos += 1
+        if pos < n and program[pos] == "]":
+            pos += 1
+        while pos < n and program[pos] != "]":
+            if program[pos] == "[" and pos + 1 < n and program[pos + 1] in ":.=":
+                end = program.find(program[pos + 1] + "]", pos + 2)
+                pos = n if end < 0 else end + 2
+                continue
+            pos += 1
+        return pos + 1
+
+    def _skip_section(pos: int, delim: str, brackets: bool) -> int:
+        # One delimited section of a regex / s/// / y///, through its closing
+        # delimiter. Brackets apply to regex halves only; elsewhere `[` is data.
+        while pos < n and program[pos] != delim:
+            if program[pos] == "\\":
+                pos += 2
+            elif brackets and program[pos] == "[":
+                pos = _skip_bracket(pos)
+            else:
+                pos += 1
+        return pos + 1
+
+    def _skip_address(pos: int) -> int:
+        # A line number (GNU's first~step included), `$`, /regex/ or \%regex%,
+        # each allowing I/M modifiers.
+        if pos < n and program[pos] == "$":
+            return pos + 1
+        if pos < n and program[pos].isdigit():
+            while pos < n and (program[pos].isdigit() or program[pos] == "~"):
+                pos += 1
+            return pos
+        if pos < n and program[pos] == "/":
+            pos = _skip_section(pos + 1, "/", brackets = True)
+        elif pos < n and program[pos] == "\\" and pos + 1 < n:
+            pos = _skip_section(pos + 2, program[pos + 1], brackets = True)
+        else:
+            return pos
+        while pos < n and program[pos] in "IM":
+            pos += 1
+        return pos
+
+    i = 0
+    while i < n:
+        if program[i] in " \t\n;{}":
+            # Separators and block braces carry no command.
+            i += 1
+            continue
+        if program[i] == "#":
+            i = _end_of_line(i)
+            continue
+        i = _skip_address(i)
+        if i < n and program[i] == ",":
+            i += 1
+            while i < n and program[i] in " \t":
+                i += 1
+            if i < n and program[i] in "+~":
+                # `addr,+N` / `addr,~N` end the range relative to the first match.
+                i += 1
+                while i < n and program[i].isdigit():
+                    i += 1
+            else:
+                i = _skip_address(i)
+        while i < n and program[i] in " \t!":
+            # `1!e cmd`: negation, the command word is still ahead.
+            i += 1
+        if i >= n:
+            break
+        cmd, i = program[i], i + 1
+        if cmd == "e":
+            # The payload ends at the NEWLINE, so a `;` inside it is shell text.
+            end = _end_of_line(i)
+            payloads.append(program[i:end].strip())
+            i = end
+        elif cmd in "sy" and i < n:
+            delim, i = program[i], i + 1
+            i = _skip_section(i, delim, brackets = cmd == "s")
+            i = _skip_section(i, delim, brackets = False)
+            if cmd == "s":
+                executes = False
+                while i < n and program[i] in _SED_SUBST_FLAGS:
+                    executes = executes or program[i] == "e"
+                    i += 1
+                if executes:
+                    payloads.append("")
+                if i < n and program[i] == "w":
+                    i = _end_of_line(i)
+        elif cmd in "aic":
+            # Literal text; the `a\` + newline form continues on a trailing "\".
+            while i < n and program[i] != "\n":
+                i += 2 if program[i] == "\\" else 1
+        elif cmd in "rRwW":
+            i = _end_of_line(i)  # the filename runs to the end of the line
+        elif cmd in "btT:v":
+            # A label (or `v` version) ends at the next separator.
+            while i < n and program[i] not in ";\n}":
+                i += 1
+    return payloads
 
 
 def _find_blocked_commands(command: str) -> set[str]:
@@ -328,7 +514,8 @@ def _find_blocked_commands(command: str) -> set[str]:
     expect_command = True  # start of string is a command position
     prefix_pending = False  # last cmd-position token was a wrapper (env/time/xargs/...)
     skip_operand = False  # consume a wrapper/conditional operand, not the command
-    for token in tokens:
+    sed_indexes: "list[int]" = []  # command-position sed words, for the `e` scan below
+    for token_index, token in enumerate(tokens):
         if skip_operand:
             # `exec -a NAME cmd` and `if exist FILE cmd` both put an operand
             # where the command word would otherwise be.
@@ -363,6 +550,8 @@ def _find_blocked_commands(command: str) -> set[str]:
         if prefix_pending and token.lstrip("-").isdigit():
             continue
         base = _token_basename(token)
+        if base in _SED_COMMANDS:
+            sed_indexes.append(token_index)
         if base in _BLOCKED_COMMANDS:
             blocked.add(base)
         else:
@@ -448,6 +637,14 @@ def _find_blocked_commands(command: str) -> set[str]:
             elif is_win_c and prev_base in _SHELLS_WIN:
                 blocked |= _find_blocked_commands(tokens[i + 1])
             break  # stop at first non-flag token
+
+    # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
+    # scan above sees only as a text argument, so screen it like `bash -c`. The
+    # pattern-space forms yield an empty payload; the auto gate prompts on those.
+    for i in sed_indexes:
+        for payload in _sed_exec_payloads(_sed_program(tokens, i)):
+            if payload:
+                blocked |= _find_blocked_commands(payload)
 
     return blocked
 
@@ -4324,6 +4521,10 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     chdir_pending = True
                 if base in _AWK_COMMANDS:
                     awk_program_pending = True
+                if base in _SED_COMMANDS and _sed_exec_payloads(_sed_program(tokens, _tok_idx)):
+                    # `e` / `s///e` shell out from inside the script, which may
+                    # ride on -e/--expression rather than the next positional.
+                    return True
             elif current_command == "git" and not git_subcommand:
                 # The first positional after `git` is its subcommand.
                 git_subcommand = base

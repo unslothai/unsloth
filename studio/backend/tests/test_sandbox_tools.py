@@ -637,6 +637,22 @@ class TestBashBlocklistPosition:
         # Recursion into the nested command string catches command-position curl.
         assert "curl" in self._find()("bash -c 'curl https://x'")
 
+    def test_sed_exec_payload_blocked(self):
+        # sed's `e COMMAND` hands COMMAND to the shell, so the payload is a real
+        # command position hiding inside the script argument.
+        assert "rm" in self._find()("sed -n '1e rm -rf victim' input")
+        assert "curl" in self._find()("sed -e '/x/e curl https://x' input")
+        assert "rm" in self._find()("sed -ne '$e rm -rf build' input")
+        assert "wget" in self._find()("sed '1,2e wget https://bad' input")
+
+    def test_ordinary_sed_program_allowed(self):
+        # Plain stream editing runs nothing, and a mention of sed in argument
+        # position is text: only a command-position sed has its script read.
+        assert self._find()("sed 's/old/new/g' input") == set()
+        assert self._find()("sed -n '1,20p' input") == set()
+        assert self._find()("sed 's/rm/RM/g' input") == set()
+        assert self._find()("printf '%s' sed '1e rm -rf victim'") == set()
+
     def test_subshell_command_blocked(self):
         assert "rm" in self._find()("echo $(rm -rf /tmp)")
 
