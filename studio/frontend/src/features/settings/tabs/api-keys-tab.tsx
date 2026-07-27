@@ -168,11 +168,11 @@ export function ApiKeysTab() {
         )}
       </section>
 
+      <ModelAutoSwitchSection />
+
       <ApiMonitorConsole />
 
       <UsageExamples apiKey={revealed} />
-
-      <ModelAutoSwitchSection />
 
       <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
         <DialogContent className="max-w-md">
