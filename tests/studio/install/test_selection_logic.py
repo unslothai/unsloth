@@ -3016,12 +3016,8 @@ class TestPublishedRocmBundleCoverage:
 
         # Read the table from source rather than importing the installer module,
         # which pulls in a heavy dependency chain this suite does not need.
-        stack = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(
-            encoding = "utf-8"
-        )
-        body = re.search(
-            r"_GFX_TO_AMD_INDEX_ARCH.*?=\s*\{(.*?)\n\}", stack, re.S
-        )
+        stack = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+        body = re.search(r"_GFX_TO_AMD_INDEX_ARCH.*?=\s*\{(.*?)\n\}", stack, re.S)
         assert body, "_GFX_TO_AMD_INDEX_ARCH not found in install_python_stack.py"
         routed = set(re.findall(r'"(gfx[0-9a-z]+)":', body.group(1)))
         assert routed, "parsed no arches out of _GFX_TO_AMD_INDEX_ARCH"
