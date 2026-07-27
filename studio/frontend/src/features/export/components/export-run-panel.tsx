@@ -101,9 +101,9 @@ function waitingMessage(phase: string, stage: string | null): string {
   return "Starting...";
 }
 
-// Preset shard sizes offered in the dropdown. unsloth only accepts an integer
-// followed by "GB"/"MB" (unsloth/save.py:_resolve_gguf_shard_size), so every
-// preset is a pre-validated string. "__custom__" reveals a free-text field.
+// Preset shard sizes offered in the dropdown. unsloth only accepts a whole
+// number followed by KB/MB/GB (unsloth/save.py:_resolve_gguf_shard_size), so
+// every preset is a pre-validated string. "__custom__" reveals a free-text field.
 const SHARD_SIZE_PRESETS = [
   "128MB",
   "256MB",
@@ -122,7 +122,7 @@ const SHARD_SIZE_RE = /^\d+\s*[KMG]B?$/i;
 
 /** True when the resolved shard size is safe to send. "0" (single file) and the
  * presets always are; only free-text custom input can be wrong. */
-export function isValidShardSize(value: string): boolean {
+function isValidShardSize(value: string): boolean {
   const size = value.trim();
   if (!size || size === "0" || size.toLowerCase() === "none") return true;
   return SHARD_SIZE_RE.test(size);

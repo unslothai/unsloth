@@ -511,7 +511,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     # silently or fanning its shards out into a row per file below. Loose
     # standalone GGUFs at the root stay one model each, so only a *split*
     # collapses here.
-    if _is_model_directory(lm_dir) or _dir_gguf_shard_count(lm_dir):
+    if _is_model_directory(lm_dir) or _dir_gguf_shard_count(lm_dir) > 0:
         return [_lmstudio_dir_row(lm_dir)]
 
     found: List[LocalModelInfo] = []
@@ -540,7 +540,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
             # -NNN-of-NNN.gguf parts, no config.json) is one model too, so it
             # collapses to a single row instead of a row per shard. A publisher
             # holding ordinary whole GGUFs is not a split, and still descends.
-            if _is_model_directory(child) or _dir_gguf_shard_count(child):
+            if _is_model_directory(child) or _dir_gguf_shard_count(child) > 0:
                 found.append(_lmstudio_dir_row(child))
                 continue
 

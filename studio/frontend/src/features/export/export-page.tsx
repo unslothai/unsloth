@@ -126,7 +126,10 @@ function safePathSegment(
 function shardDirSuffix(ggufShardSize: string): string {
   const size = ggufShardSize.trim();
   if (!size || size === "0" || size.toLowerCase() === "none") return "";
-  return `-split-${safePathSegment(size, "custom", 16)}`;
+  // Match the backend's normalization ("512 mb" -> "512MB") so the folder name
+  // reads like the size the export actually used.
+  const normalized = size.replace(/\s+/g, "").toUpperCase();
+  return `-split-${safePathSegment(normalized, "custom", 16)}`;
 }
 
 function buildRelativeSaveDirectory(

@@ -1885,6 +1885,10 @@ def save_to_gguf(
     Handles installation, conversion, and quantization.
     `imatrix` is a local importance-matrix path (already resolved); it is forwarded to
     llama-quantize and is required for the IQ low-bit quant types.
+    `gguf_shard_size` caps the size of each file the converter writes ("512MB", "4GB");
+    None keeps the historical 50GB, "0"/"none" forces a single file. It applies to
+    whatever the converter emits directly, so a k-quant splits its full-precision base
+    but is itself written by the later llama-quantize pass as one file.
     """
     # print_output True only if UNSLOTH_ENABLE_LOGGING=1
     if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
@@ -3039,6 +3043,12 @@ def unsloth_save_pretrained_gguf(
     # front, so a bad path or an unavailable upstream imatrix fails before the expensive 16-bit
     # merge, and a failed auto-resolution never reaches the IQ-quant gate.
     imatrix_path = _resolve_imatrix_file(self, imatrix_file, token, save_directory)
+
+    # Resolve the shard size here for the same reason: save_to_gguf only resolves it
+    # once the conversion starts, which is after the merge below, so a typo would
+    # cost a full 16-bit merge before failing. Resolution is idempotent, so
+    # save_to_gguf re-resolving the normalized value is free.
+    gguf_shard_size = _resolve_gguf_shard_size(gguf_shard_size)
 
     # Step 4: Save/merge model to 16-bit format
     is_peft_model = isinstance(self, PeftModelForCausalLM) or isinstance(self, PeftModel)

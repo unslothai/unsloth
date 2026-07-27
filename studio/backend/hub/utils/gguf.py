@@ -80,11 +80,6 @@ _GGUF_QUANT_RE = re.compile(
 )
 
 
-def is_split_gguf_filename(filename: str) -> bool:
-    """True for one part of a llama.cpp split, e.g. ``model-00001-of-00013.gguf``."""
-    return _GGUF_SPLIT_SUFFIX_RE.search(filename) is not None
-
-
 def gguf_split_part_count(filename: str) -> int:
     """Total parts a split filename declares (the 13 in ``-00001-of-00013.gguf``),
     or 0 when the name is not part of a split. Read from the name rather than by
