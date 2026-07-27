@@ -20,7 +20,11 @@ def test_frontend_exports_neutralize_think_markup():
     src = PARSE_TS.read_text(encoding = "utf-8")
     assert "export function neutralizeThinkMarkup" in src
     assert "export function drainThinkMarkupBuffer" in src
-    assert "\\u200b" in src or "\u200b" in src
+    # U+2060 WORD JOINER, matching the backend's _THINK_NEUTRAL_ZW. U+200B is
+    # Line_Break class ZW, so it would let a neutralized tag wrap mid-tag; the
+    # frontend and backend sentinels must also stay the same codepoint (#7334).
+    assert "\\u2060" in src or "\u2060" in src
+    assert "\\u200b" not in src and "\u200b" not in src
     assert "#7066" in src
 
 
@@ -250,7 +254,12 @@ function span(nLit) {
   if (nLit === 0) return words(8000);
   const chunk = Math.floor(8000 / nLit);
   let s = "";
-  for (let i = 0; i < nLit; i++) s += words(Math.max(0, chunk - 10)) + '"</think>"';
+  // The space after the closing quote is what makes each of these a prose
+  // MENTION, which is what this span is built to hold. A closing quote running
+  // straight into the next word is instead the answer's own opening quote, so
+  // without the separator the first one is the structural close and the span
+  // collapses to nothing (#7334).
+  for (let i = 0; i < nLit; i++) s += words(Math.max(0, chunk - 11)) + '"</think>" ';
   return s;
 }
 function timeUs(fn) {

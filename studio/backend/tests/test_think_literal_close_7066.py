@@ -143,7 +143,62 @@ def test_mismatched_quote_flanks_are_a_structural_close():
     assert visible == '"yes" is the answer.'
     # The span oracle agrees, and a symmetric mention is still literal.
     assert _think_close_is_literal_in_span('with `</think>"yes"', len("with `")) is False
-    assert _think_close_is_literal_in_span('with "</think>"yes', len('with "')) is True
+    # Symmetric flanks are not enough on their own: a closing quote running
+    # straight into a word char is the ANSWER's own opening quote, so the tag
+    # was structural. Reading it as a mention hid the whole answer in the
+    # drawer, which is the same failure this test is named for (#7334).
+    assert _think_close_is_literal_in_span('with "</think>"yes', len('with "')) is False
+    # A mention that reads on as prose keeps its closing quote followed by a
+    # separator, and stays literal.
+    assert _think_close_is_literal_in_span('with "</think>" yes', len('with "')) is True
+
+
+def test_quote_closing_into_a_word_is_a_structural_close():
+    """A mention reads on as prose; an answer opens with its own quote (#7334).
+
+    ``Let me quote the tag: "</think>"The answer is 42.`` has a symmetric pair of
+    double quotes around the tag and an odd count before it, so the flank plus
+    parity rules alone called it a quoted mention and kept the WHOLE visible
+    answer inside the thinking drawer: the user saw an empty reply. The char
+    after the closing quote is what separates the two readings, and every
+    chunking must agree on it, so the close tag is held until it arrives.
+    """
+    for text, want_reasoning, want_visible in [
+        (
+            'Let me quote the tag: "</think>"The answer is 42.',
+            'Let me quote the tag: "',
+            '"The answer is 42.',
+        ),
+        (
+            "I need a code span: `</think>`Final answer: use Python.",
+            "I need a code span: `",
+            "`Final answer: use Python.",
+        ),
+    ]:
+        reasoning, visible = _extract_responses_reasoning(
+            text,
+            parse_think_markers = True,
+            reasoning_prefilled = True,
+        )
+        assert (reasoning, visible) == (want_reasoning, want_visible)
+        # Providers split deltas anywhere, so no chunking may see it differently.
+        for split in range(1, len(text)):
+            ex = _ResponsesReasoningExtractor(reasoning_prefilled = True)
+            got = [ex.feed(text[:split]), ex.feed(text[split:]), ex.finish()]
+            assert (
+                "".join(r for r, _ in got),
+                "".join(v for _, v in got),
+            ) == (want_reasoning, want_visible), (text, split)
+
+    # A mention that reads on as prose is still literal: it stays in the drawer
+    # (neutralized so it cannot re-close it) and the answer is what follows.
+    reasoning, visible = _extract_responses_reasoning(
+        'The user said "</think>" about training.</think>Got it.',
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    assert visible == "Got it."
+    assert "</think>" not in reasoning
 
 
 def test_intra_word_apostrophe_does_not_flip_quote_parity():

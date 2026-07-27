@@ -11153,6 +11153,9 @@ def _responses_tool_output_content(output: Union[str, list]) -> Union[str, list]
 
 _RESPONSES_THINK_OPEN = "<think>"
 _RESPONSES_THINK_CLOSE = "</think>"
+# How much answer text may pile up behind a close tag held for an unclosed ```
+# fence before the hold is abandoned and the tag read as structural (#7334).
+_RESPONSES_FENCE_HOLD_LIMIT = 64 * 1024
 _RESPONSES_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "max", "xhigh"}
 
 
@@ -11208,6 +11211,11 @@ def _should_hold_quoted_think_close(
     A lone trailing backslash counts as "not arrived" too: the escaped quote of
     ``\\"</think>\\"`` can split right after the backslash, and classifying then
     would call the mention structural and emit the rest as answer text (#7334).
+
+    The char AFTER the closing quote is part of the flank as well, because it is
+    what separates a prose mention from an answer that opens with a quote (see
+    ``_quoted_close_opens_answer``), so a buffer ending on the closing quote is
+    still one char short of a decision.
     """
     if close_idx < 0:
         return False
@@ -11218,7 +11226,10 @@ def _should_hold_quoted_think_close(
     end = close_idx + len(_RESPONSES_THINK_CLOSE)
     if end >= len(buffer):
         return True
-    return buffer[end] == "\\" and end + 1 >= len(buffer)
+    if buffer[end] == "\\" and end + 1 >= len(buffer):
+        return True
+    quote = end + 1 if buffer[end] == "\\" else end
+    return quote < len(buffer) and buffer[quote] == before and quote + 1 >= len(buffer)
 
 
 def _is_word_char(ch: str) -> bool:
@@ -11272,6 +11283,22 @@ def _count_quote_delimiters(
     return count
 
 
+def _quoted_close_opens_answer(buffer: str, close_idx: int) -> bool:
+    """True when the quote after ``</think>`` OPENS the answer, not a mention.
+
+    A prose mention closes its quote and then reads on as prose, so the closing
+    quote is followed by a space or punctuation (``"</think>" is the tag``). A
+    closing quote running straight into a word char is instead the first char of
+    the ANSWER (``"</think>"The answer is 42.``), which means the tag was the
+    structural close. Reading that as a mention put the whole visible answer
+    inside the thinking drawer, so the user saw an empty reply (#7334).
+    """
+    end = close_idx + len(_RESPONSES_THINK_CLOSE)
+    # Skip an escaping backslash, exactly as the flank checks below do.
+    quote = end + 1 if end < len(buffer) and buffer[end] == "\\" else end
+    return quote + 1 < len(buffer) and _is_word_char(buffer[quote + 1])
+
+
 def _is_literal_think_close(buffer: str, close_idx: int) -> bool:
     """True when ``</think>`` looks like quoted/code content, not a block end.
 
@@ -11295,6 +11322,10 @@ def _is_literal_think_close(buffer: str, close_idx: int) -> bool:
     if after_escaped and end + 1 < len(buffer):
         after = buffer[end + 1]
     if not before or not after:
+        return False
+    if before == after and before in "\"'`" and _quoted_close_opens_answer(buffer, close_idx):
+        # The closing quote runs straight into a word, so it opens the ANSWER
+        # instead of closing a mention: the tag was structural.
         return False
     if before == after and before in "\"'`":
         # A symmetric ESCAPED pair around the tag is a serialized quotation
@@ -11474,7 +11505,12 @@ class _ResponsesReasoningExtractor:
         # Fenced-code parity: consumed fences plus any completed by the pending
         # carry meeting the live buffer, then fences fully inside the buffer.
         if self._fence_parity_odd(buffer[:close_idx]):
-            return True
+            # Deferring costs a growing held buffer, and re-concatenating it on
+            # every delta is quadratic, so a model that opens a fence and never
+            # closes it stalls the whole answer instead of streaming it. Past
+            # the cap, resolve structurally: finish() would reach the same
+            # verdict for a fence that never closes, just at end of stream.
+            return len(buffer) - close_idx <= _RESPONSES_FENCE_HOLD_LIMIT
         end = close_idx + len(_RESPONSES_THINK_CLOSE)
         before = buffer[close_idx - 1] if close_idx > 0 else self._span_last_char
         after_escaped = end < len(buffer) and buffer[end] == "\\"
@@ -11482,6 +11518,10 @@ class _ResponsesReasoningExtractor:
         if after_escaped and end + 1 < len(buffer):
             after = buffer[end + 1]
         if not before or not after:
+            return False
+        if before == after and before in "\"'`" and _quoted_close_opens_answer(buffer, close_idx):
+            # The closing quote runs straight into a word, so it opens the
+            # ANSWER instead of closing a mention: the tag was structural.
             return False
         if after_escaped and before == after and before in "\"'`":
             # Symmetric escaped pair around the tag: a serialized quotation, so
@@ -11712,10 +11752,14 @@ class _ResponsesReasoningExtractor:
                     buf = buf[consumed:]
                     continue
                 reasoning_parts.append(buf[:close_idx].replace(_RESPONSES_THINK_OPEN, ""))
+                # Strip the OPEN marker too. feed() consumes it by switching
+                # back into reasoning, but this tail is emitted as-is, so a
+                # `<think>` after the structural close reached the answer body
+                # raw -- the one place the extractor leaked markup (#7334).
                 visible_parts.append(
-                    buf[close_idx + len(_RESPONSES_THINK_CLOSE) :].replace(
-                        _RESPONSES_THINK_CLOSE, ""
-                    )
+                    buf[close_idx + len(_RESPONSES_THINK_CLOSE) :]
+                    .replace(_RESPONSES_THINK_CLOSE, "")
+                    .replace(_RESPONSES_THINK_OPEN, "")
                 )
                 break
             self._in_reasoning = False

@@ -10658,6 +10658,28 @@ class LlamaCppBackend:
                             logger.debug(f"Skipping malformed SSE line: {line[:100]}")
                     if _stream_done:
                         break  # exit outer for
+                if reasoning_markup_buffer:
+                    # The stream ended without a "data: [DONE]" line: cancel and
+                    # a dropped connection both just end the iterator, and the
+                    # server-SIGKILL retry path re-enters here. Only [DONE] and a
+                    # content token finalize the holdback, so without this the
+                    # held marker prefix (up to 7 chars of real reasoning) was
+                    # dropped silently (#7334).
+                    from core.inference.chat_template_helpers import (
+                        neutralize_think_markup_streaming,
+                    )
+
+                    flushed, reasoning_markup_buffer = neutralize_think_markup_streaming(
+                        reasoning_markup_buffer,
+                        finalize = True,
+                    )
+                    if flushed:
+                        if not in_thinking:
+                            cumulative += "<think>"
+                            in_thinking = True
+                        cumulative += flushed
+                        reasoning_text += flushed
+                        yield cumulative
                 if _metadata_usage or _metadata_timings or _metadata_finish_reason:
                     _metadata_usage = _backfill_usage_from_timings(
                         _metadata_usage, _metadata_timings
@@ -11588,6 +11610,29 @@ class LlamaCppBackend:
                                 logger.debug(f"Skipping malformed SSE line: {line[:100]}")
                         if _stream_done:
                             break  # exit outer for
+
+                if reasoning_markup_buffer:
+                    # Stream ended without a "data: [DONE]" line (cancel, a
+                    # dropped connection, or the server-SIGKILL retry path), so
+                    # finalize the holdback the same way [DONE] does. Otherwise
+                    # the held marker prefix -- up to 7 chars of real reasoning
+                    # -- was dropped silently (#7334). Accumulate only; the
+                    # stream-end resolution below does the yielding.
+                    from core.inference.chat_template_helpers import (
+                        neutralize_think_markup_streaming,
+                    )
+
+                    _flushed, reasoning_markup_buffer = neutralize_think_markup_streaming(
+                        reasoning_markup_buffer,
+                        finalize = True,
+                    )
+                    if _flushed:
+                        reasoning_accum += _flushed
+                        if detect_state != _S_DRAINING:
+                            if not in_thinking:
+                                cumulative_display += "<think>"
+                                in_thinking = True
+                            cumulative_display += _flushed
 
                 # ── Resolve BUFFERING at stream end ──
                 if detect_state == _S_BUFFERING:

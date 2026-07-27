@@ -7,8 +7,15 @@ type ContentPart = NonNullable<ChatModelRunResult["content"]>[number];
 
 const THINK_OPEN_TAG = "<think>";
 const THINK_CLOSE_TAG = "</think>";
-/** Invisible joiner so literal think tags in reasoning text do not close the panel (#7066). */
-const THINK_NEUTRAL_ZW = "\u200b";
+/**
+ * Invisible separator so literal think tags in reasoning text do not close the
+ * panel (#7066). U+2060 WORD JOINER, not U+200B ZERO WIDTH SPACE: both render
+ * as nothing, but U+200B has Line_Break class ZW, so it introduces a break
+ * opportunity and a neutralized tag could wrap in the middle. WORD JOINER is
+ * class WJ and forbids that break, which is what keeping the tag looking like
+ * the original actually requires (#7334).
+ */
+const THINK_NEUTRAL_ZW = "\u2060";
 
 // ContentPart from @assistant-ui/react has readonly fields, so coalescing via
 // `last.text += text` fails (TS2540). Instead replace the last element with a
@@ -83,10 +90,34 @@ export function drainThinkMarkupBuffer(
 /** Letters and digits, so "l'annee" and "It's" read as one word. */
 const WORD_CHAR = /[\p{L}\p{N}]/u;
 
+// Indexing a JS string yields UTF-16 code units, so a non-BMP letter reads as a
+// lone surrogate, which `\p{L}` does not match. The backend indexes by CODE
+// POINT, so "𝑥'𝑥" was intra-word there and a delimiter here; that flipped the
+// quote parity and made a genuinely quoted mention read as the structural
+// close, leaking the rest of the thought into the answer (#7334).
+
+/** The whole code point ending just before `end`, or "" at the start. */
+const codePointBefore = (text: string, end: number): string => {
+  if (end <= 0) return "";
+  const low = text.charCodeAt(end - 1);
+  if (low >= 0xdc00 && low <= 0xdfff && end >= 2) {
+    const high = text.charCodeAt(end - 2);
+    if (high >= 0xd800 && high <= 0xdbff) return text.slice(end - 2, end);
+  }
+  return text[end - 1] ?? "";
+};
+
+/** The whole code point starting at `at`, or "" past the end. */
+const codePointAt = (text: string, at: number): string => {
+  const point = at >= 0 ? text.codePointAt(at) : undefined;
+  return point === undefined ? "" : String.fromCodePoint(point);
+};
+
 const isIntraWordApostrophe = (text: string, at: number): boolean =>
   at > 0 &&
-  WORD_CHAR.test(text[at - 1] ?? "") &&
-  WORD_CHAR.test(text[at + 1] ?? "");
+  WORD_CHAR.test(codePointBefore(text, at)) &&
+  // An apostrophe is a single code unit, so the next code point starts at at+1.
+  WORD_CHAR.test(codePointAt(text, at + 1));
 
 /** A quote behind an odd backslash run sits inside a string literal. */
 const isEscaped = (text: string, at: number): boolean => {
@@ -434,9 +465,18 @@ function findStructuralThinkClose(
       if (!before || before !== after || !`"'\``.includes(before)) {
         literal = false;
       } else {
+        // A prose mention closes its quote and reads on as prose, so the
+        // closing quote is followed by a space or punctuation. One running
+        // straight into a word char is the ANSWER's own opening quote, i.e.
+        // the tag WAS the structural close; reading it as a mention hid the
+        // whole visible answer in the drawer for '"</think>"The answer is 42.'
+        // (#7334). Mirrors the backend's _quoted_close_opens_answer.
+        const quoteAt = raw[closeEnd] === "\\" ? closeEnd + 1 : closeEnd;
         // The leading quote is literal only when it OPENS a span, i.e. an odd
         // count of that char since the reasoning start.
-        literal = quoteCount(before, closeIndex) % 2 === 1;
+        literal =
+          !WORD_CHAR.test(codePointAt(raw, quoteAt + 1)) &&
+          quoteCount(before, closeIndex) % 2 === 1;
       }
     }
 
@@ -446,8 +486,11 @@ function findStructuralThinkClose(
     }
     searchFrom = closeIndex + THINK_CLOSE_TAG.length;
     // Settled only once the trailing flank -- the char after the tag, or after
-    // its escaping backslash -- is inside the inspected text.
-    if (resumable && searchFrom + 1 < raw.length) {
+    // its escaping backslash -- AND the char after that flank are inside the
+    // inspected text: the latter is what separates a mention from an answer
+    // opening with a quote, so a verdict without it can still change (#7334).
+    const flankEnd = raw[searchFrom] === "\\" ? searchFrom + 2 : searchFrom + 1;
+    if (resumable && flankEnd < raw.length) {
       slot.resumeFrom = searchFrom;
       slot.fences = fences;
       // A -1 lookup only proves there is no marker before the last 2 chars,

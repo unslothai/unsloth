@@ -15,11 +15,15 @@ from typing import Optional
 
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
-# Invisible joiner so neutralized markup still *looks* like the original tag in
-# the UI / model quote, but no longer matches structural parsers or special-token
-# exact strings (issue #7066: a literal </think> in user text / mid-thought
-# quotes prematurely closes the thinking block).
-_THINK_NEUTRAL_ZW = "\u200b"
+# Invisible separator so neutralized markup still *looks* like the original tag
+# in the UI / model quote, but no longer matches structural parsers or
+# special-token exact strings (issue #7066: a literal </think> in user text /
+# mid-thought quotes prematurely closes the thinking block).
+# U+2060 WORD JOINER, not U+200B ZERO WIDTH SPACE: both render as nothing, but
+# U+200B has Line_Break class ZW, so it introduces a break opportunity and a
+# neutralized tag could wrap in the middle. WORD JOINER is class WJ and forbids
+# that break, which is what "still looks like the tag" actually needs (#7334).
+_THINK_NEUTRAL_ZW = "\u2060"
 _GEMMA_CHANNEL_START = "<|channel>"
 _GEMMA_THOUGHT_OPEN = "<|channel>thought"
 _GEMMA_THOUGHT_CLOSE = "<channel|>"
@@ -170,6 +174,13 @@ def neutralize_turn_boundary_markup(text: str) -> str:
 # rewriting these would leave ``required`` naming a property the schema no
 # longer declares (OpenAI strict mode rejects that outright, and Gemini
 # requires every ``propertyOrdering`` entry to be a valid key) (#7066).
+#
+# Deliberately NOT extended to ``enum`` / ``const`` / ``default`` / ``pattern``:
+# those carry VALUES the model is asked to emit, not names of declared
+# properties, so a control marker inside them is exactly the injection this pass
+# exists to neutralize. Rewriting them cannot desynchronize the schema the way
+# rewriting ``required`` would, so the asymmetry is intended - please do not
+# "fix" it by moving those keywords in here (#7334).
 _SCHEMA_NAME_LIST_KEYS = frozenset({"required", "propertyOrdering"})
 # Same, one level deeper: {"dependentRequired": {"a": ["b"]}} maps a property
 # name to the names it pulls in. The object-valued (sub-schema) form of
