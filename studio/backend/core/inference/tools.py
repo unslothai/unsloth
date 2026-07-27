@@ -49,6 +49,9 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
+_RAG_SEARCH_SLOT = threading.BoundedSemaphore(1)
+# Candidate multiplier when a website policy will filter the results after the search.
+_POLICY_OVERFETCH = 4
 _DISABLE_DNS_PINNING_ENV = "UNSLOTH_STUDIO_DISABLE_DNS_PINNING"
 
 # Splits the UI source-map from the result; loops strip it (like __IMAGES__).
@@ -5651,6 +5654,7 @@ def execute_tool(
     rag_scope: dict | None = None,
     disable_sandbox: bool = False,
     output_callback = None,
+    website_policy: dict | None = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -5667,11 +5671,17 @@ def execute_tool(
     stdout/stderr chunks while python/terminal executions run (UI live
     output). Purely observational: the returned result string is identical
     with or without it. Tools without incremental output ignore it.
+    ``website_policy``: hidden server-validated domain limits for web_search.
     """
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
-        return _search_knowledge_base(arguments, rag_scope)
+        return _search_knowledge_base_with_budget(
+            arguments,
+            rag_scope,
+            effective_timeout,
+            cancel_event,
+        )
     if name == "render_html":
         return _render_html_result(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
@@ -5728,6 +5738,7 @@ def execute_tool(
             url = arguments.get("url"),
             timeout = effective_timeout,
             cancel_event = cancel_event,
+            website_policy = website_policy,
         )
     if name == "python":
         return _python_exec(
@@ -5794,6 +5805,83 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
         import json as _json
         return text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
     return text
+
+
+def _search_knowledge_base_with_budget(
+    arguments: dict,
+    rag_scope: dict | None,
+    timeout: int | None,
+    cancel_event = None,
+) -> str:
+    if cancel_event is not None and cancel_event.is_set():
+        return "Error: knowledge base search cancelled."
+    deadline = time.monotonic() + timeout if timeout is not None else None
+    while not _RAG_SEARCH_SLOT.acquire(timeout = 0.05):
+        if cancel_event is not None and cancel_event.is_set():
+            return "Error: knowledge base search cancelled."
+        if deadline is not None and time.monotonic() >= deadline:
+            return "Error: knowledge base search timed out."
+
+    # The running search owns the admission slot until it actually stops; release it exactly once,
+    # from whichever path terminates the work. Releasing on caller timeout/cancel would let a
+    # second search in while the first worker is still doing embedding/index/GPU work, defeating
+    # the capacity-of-one bound, so the worker frees the slot in its finally instead.
+    _slot_lock = threading.Lock()
+    _slot_released = False
+
+    def release_slot() -> None:
+        nonlocal _slot_released
+        with _slot_lock:
+            if _slot_released:
+                return
+            _slot_released = True
+        _RAG_SEARCH_SLOT.release()
+
+    if cancel_event is not None and cancel_event.is_set():
+        release_slot()
+        return "Error: knowledge base search cancelled."
+    if deadline is not None and time.monotonic() >= deadline:
+        release_slot()
+        return "Error: knowledge base search timed out."
+
+    if timeout is None and cancel_event is None:
+        try:
+            return _search_knowledge_base(arguments, rag_scope)
+        finally:
+            release_slot()
+
+    result: queue.Queue = queue.Queue(maxsize = 1)
+
+    def search() -> None:
+        try:
+            result.put((True, _search_knowledge_base(arguments, rag_scope)))
+        except BaseException as exc:
+            result.put((False, exc))
+        finally:
+            release_slot()
+
+    try:
+        threading.Thread(target = search, name = "rag-tool-search", daemon = True).start()
+    except Exception:
+        release_slot()
+        raise
+    while True:
+        # Caller gives up, but the worker thread still holds the slot and releases it in its
+        # finally when it truly finishes -- so concurrency stays bounded to one.
+        if cancel_event is not None and cancel_event.is_set():
+            return "Error: knowledge base search cancelled."
+        if deadline is not None and time.monotonic() >= deadline:
+            return "Error: knowledge base search timed out."
+        wait = 0.05
+        if deadline is not None:
+            wait = min(wait, max(0.001, deadline - time.monotonic()))
+        try:
+            ok, value = result.get(timeout = wait)
+        except queue.Empty:
+            continue
+        if ok:
+            return value
+        raise value
 
 
 # Forced first-pass RAG retrieval: a high cosine floor keeps it precise (fires on
@@ -6244,7 +6332,8 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
 
     try:
         infos = socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM)
-    except OSError as e:
+    except (OSError, UnicodeError) as e:
+        # IDNA encoding rejects a hostname with UnicodeError, not OSError.
         return False, f"Failed to resolve host: {e}", ""
 
     if not infos:
@@ -6474,34 +6563,91 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
     return None, b"".join(chunks)
 
 
+_DOTTED_HOST_RE = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
+# ASCII-only because str.isdigit() is True for digits int() refuses ("²"), and
+# capped at 5 digits so the range check never converts an unbounded integer.
+_PORT_RE = re.compile(r"[0-9]{1,5}")
+
+
+def _normalize_url_scheme(url: str) -> str:
+    """Prepend ``https://`` to bare hosts (``google.com``, ``example.com:8443``).
+
+    ``urlparse`` reads the host of a ``host:port`` input as the scheme, so those
+    are recognised by a dotted host-like scheme with an empty netloc. Rewrites a
+    dotted host with an optional in-range port, and the ``//host`` form. Real
+    schemes (``file:``, ``javascript:``, including ``file:80``), root-relative
+    paths (``/login``) and bad ports are returned untouched so the caller
+    rejects them. A dotted scheme is indistinguishable from ``host:port``, so
+    ``com.acme.app:443/cb`` is rewritten too; an empty port (``example.com:``)
+    is kept as-is, matching ``https://example.com:``.
+
+    The host is matched against the raw authority, never against what
+    ``urlparse`` returned, because urlsplit strips tabs/newlines (3.10) and
+    leading C0/space (3.12). Anything it would strip fails the match, so the
+    decision and the rewritten string cannot disagree across versions."""
+    from urllib.parse import urlparse
+
+    url = url.strip()
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        # Unmatched IPv6 brackets, or an NFKC-decomposing netloc: not a bare host.
+        return url
+    if parsed.scheme:
+        if parsed.netloc or not _DOTTED_HOST_RE.fullmatch(parsed.scheme):
+            return url
+        rest = url
+    elif url.startswith("//"):
+        rest = url[2:]
+    elif url.startswith("/"):
+        return url
+    else:
+        rest = url
+
+    authority = re.split(r"[/?#]", rest, maxsplit = 1)[0]
+    host, _, port = authority.partition(":")
+    if not _DOTTED_HOST_RE.fullmatch(host):
+        return url
+    if port and not (_PORT_RE.fullmatch(port) and 1 <= int(port) <= 65535):
+        return url
+    return "https://" + rest
+
+
 def _fetch_url_raw(
     url: str,
     timeout: int = 30,
     extra_headers: dict | None = None,
     deadline: float | None = None,
     cancel_event = None,
+    website_policy: dict | None = None,
 ) -> tuple[str | None, str, str]:
     """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
 
     ``error`` is a user-facing message string when the fetch failed (the
     existing "Blocked:" / "Failed to fetch URL:" wording), else ``None``.
     Blocks private/loopback/link-local targets and caps the download size.
+    No input reaches the caller as an exception: the URL is model-supplied, so
+    every malformed form resolves to one of these strings.
 
     ``deadline`` is an optional ``time.monotonic`` cutoff for the whole fetch
     (redirect hops and body read included) and ``cancel_event`` aborts it when
     the caller goes away; both default off so callers keep the old behavior.
     """
     from urllib.parse import urlparse
+    from .web_access_policy import check_url_access
 
+    # Before the policy gate: it requires an http(s) scheme, so a bare host
+    # would be refused there and never reach the fetch.
+    url = _normalize_url_scheme(url)
+    allowed, reason, canonical_host = check_url_access(url, website_policy)
+    if not allowed:
+        return reason, "", ""
+
+    # check_url_access already parsed this and read .port, so this cannot raise.
     parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return f"Blocked: only http/https URLs are allowed (got {parsed.scheme!r}).", "", ""
-    if not parsed.hostname:
-        return "Blocked: URL is missing a hostname.", "", ""
-
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     ok, reason, pinned_ip = _resolve_with_budget(
-        parsed.hostname,
+        canonical_host,
         port,
         deadline,
         cancel_event,
@@ -6515,7 +6661,7 @@ def _fetch_url_raw(
 
         max_bytes = _MAX_FETCH_BYTES
         current_url = url
-        current_host = parsed.hostname
+        current_host = canonical_host
         ua = random.choice(_USER_AGENTS)
 
         for _hop in range(5):
@@ -6523,6 +6669,7 @@ def _fetch_url_raw(
             if budget_error is not None:
                 return budget_error, "", ""
             cp = urlparse(current_url)
+            # Bracket IPv6 so the netloc stays a valid URL.
             validated_netloc = f"[{current_host}]" if ":" in current_host else current_host
             if cp.port:
                 validated_netloc = f"{validated_netloc}:{cp.port}"
@@ -6558,19 +6705,25 @@ def _fetch_url_raw(
                 if not location:
                     return "Failed to fetch URL: redirect missing Location header.", "", ""
                 current_url = urljoin(current_url, location)
+                # Server-controlled, so never scheme-upgraded; the gate below
+                # reads .port first, so the parse after it cannot raise.
+                allowed, policy_reason, redirect_host = check_url_access(
+                    current_url,
+                    website_policy,
+                )
+                if not allowed:
+                    return policy_reason, "", ""
                 rp = urlparse(current_url)
-                if rp.scheme not in ("http", "https") or not rp.hostname:
-                    return "Blocked: redirect target is not a valid http/https URL.", "", ""
                 rp_port = rp.port or (443 if rp.scheme == "https" else 80)
                 ok2, reason2, pinned_ip = _resolve_with_budget(
-                    rp.hostname,
+                    redirect_host,
                     rp_port,
                     deadline,
                     cancel_event,
                 )
                 if not ok2:
                     return reason2, "", ""
-                current_host = rp.hostname
+                current_host = redirect_host
                 continue
 
             # get_content_type() defaults to "text/plain" when the header is
@@ -6761,6 +6914,7 @@ def _fetch_page_text(
     max_chars: int = _MAX_PAGE_CHARS,
     timeout: int = 30,
     cancel_event = None,
+    website_policy: dict | None = None,
 ) -> str:
     """Fetch a URL and return readable text content.
 
@@ -6775,6 +6929,14 @@ def _fetch_page_text(
     # HTML fallback both draw from it, so a slow/failed API call cannot hand the
     # fallback a fresh full timeout and double the worst case.
     deadline = None if timeout is None else time.monotonic() + timeout
+    from .web_access_policy import check_url_access
+
+    # Before the policy gate (needs a scheme) and the README routing (reads host/path).
+    url = _normalize_url_scheme(url)
+    allowed, reason, _hostname = check_url_access(url, website_policy)
+    if not allowed:
+        return reason
+    policy_kwargs = {"website_policy": website_policy} if website_policy is not None else {}
     readme_api_url = _github_repo_readme_api_url(url)
     if readme_api_url:
         err, body, _ctype = _fetch_url_raw(
@@ -6786,6 +6948,7 @@ def _fetch_page_text(
             },
             deadline = deadline,
             cancel_event = cancel_event,
+            **policy_kwargs,
         )
         # The README API is unauthenticated and rate-limited; on any failure fall
         # back to the HTML page fetch. A 200 body is authoritative even when it is
@@ -6811,6 +6974,7 @@ def _fetch_page_text(
         timeout = timeout,
         deadline = deadline,
         cancel_event = cancel_event,
+        **policy_kwargs,
     )
     if err is not None:
         return err
@@ -6836,6 +7000,7 @@ def _web_search(
     timeout: int = _EXEC_TIMEOUT,
     url: str | None = None,
     cancel_event = None,
+    website_policy: dict | None = None,
 ) -> str:
     """Search the web using DuckDuckGo and return formatted results.
 
@@ -6848,6 +7013,7 @@ def _web_search(
             url.strip(),
             timeout = fetch_timeout,
             cancel_event = cancel_event,
+            website_policy = website_policy,
         )
 
     if not query or not query.strip():
@@ -6860,18 +7026,35 @@ def _web_search(
     try:
         from ddgs import DDGS
 
-        results = DDGS(timeout = timeout).text(query, max_results = max_results)
+        from .web_access_policy import check_url_access, scope_search_query
+
+        effective_query = scope_search_query(query, website_policy)
+        # The policy filters below, so ask for a deeper pool when one actually restricts: a page
+        # whose top hits are all disallowed otherwise yields nothing even when valid results rank
+        # just under them. Test the domain lists, not the dict: a run always stores a normalized
+        # policy, which is truthy even when unrestricted.
+        restricted = any(
+            (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
+        )
+        wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
+        results = DDGS(timeout = timeout).text(effective_query, max_results = wanted)
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
             return "No results found."
         parts = []
         for r in results:
-            parts.append(
-                f"Title: {r.get('title', '')}\n"
-                f"URL: {r.get('href', '')}\n"
-                f"Snippet: {r.get('body', '')}"
-            )
+            if len(parts) >= max_results:
+                break
+            href = str(r.get("href") or "").strip()
+            allowed, _reason, _hostname = check_url_access(href, website_policy)
+            if not allowed:
+                continue
+            title = " ".join(str(r.get("title") or "").split())
+            snippet = " ".join(str(r.get("body") or "").split())
+            parts.append(f"Title: {title}\nURL: {href}\nSnippet: {snippet}")
+        if not parts:
+            return "No results found within the website access limits."
         text = "\n\n---\n\n".join(parts)
         text += (
             "\n\n---\n\nIMPORTANT: These are only short snippets. "

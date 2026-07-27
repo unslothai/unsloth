@@ -23,7 +23,7 @@ FRONTEND = WORKDIR / "studio" / "frontend" / "src"
 def _read(rel: str) -> str:
     path = FRONTEND / rel
     assert path.exists(), f"missing source file: {path}"
-    return path.read_text()
+    return path.read_text(encoding = "utf-8")
 
 
 def test_models_api_sends_token_via_header_not_query():
@@ -1379,3 +1379,24 @@ def test_gguf_background_loads_never_download_companions():
     # load path instead of refetching by repo id.
     assert "config.base_model if config.is_lora else config.path" in inference
     assert "config.base_model if config.is_lora else config.identifier" not in inference
+
+
+def test_vulkan_inference_devices_are_the_pickable_set():
+    """GGUF loads run through llama-server, so on a Vulkan build the picker must
+    offer the inference inventory (ggml ordinals, the space `--device Vulkan<i>`
+    pins) rather than the torch view, which can miss cards llama-server drives.
+    The XPU ban must not apply there: it is about torch-xpu ordinals no
+    applicator speaks, and a Vulkan pick does not use them.
+    """
+    src = " ".join(_read("hooks/use-gpu-info.ts").split())
+    # The Vulkan inventory is consulted first, and only when it has devices.
+    assert (
+        "const inference = data?.inference_gpu; "
+        'if (inference?.backend === "vulkan" && (inference.devices ?? []).length) {' in src
+    )
+    # Pinnable on the ggml ordinal space, gated on the backend's own support flag.
+    assert "const picksAccepted = inference.gguf_gpu_ids_supported !== false;" in src
+    assert 'physicalIndex: picksAccepted && d.index_kind === "vulkan",' in src
+    # The torch fallback keeps its physical-only gate and the XPU ban.
+    assert 'data?.device_backend !== "xpu" &&' in src
+    assert 'physicalIndex: pinnableBackend && d.index_kind === "physical",' in src
