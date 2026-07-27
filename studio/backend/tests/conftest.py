@@ -68,7 +68,6 @@ def _no_background_model_scan(monkeypatch):
     timing-sensitive streaming tests. Tests that exercise the warm patch it back.
     """
     from core.inference import local_model_resolver
-
     monkeypatch.setattr(local_model_resolver, "warm_index_soon", lambda: None)
 
 
