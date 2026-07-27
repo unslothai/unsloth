@@ -651,6 +651,10 @@ def test_llama_extra_args_parser_keeps_non_escape_backslashes():
     """
     src = _read("features/model-picker/model-config/llama-extra-args.ts")
     assert 'ch === "\\\\" && (next === quote || next === "\\\\")' in src
+    # Double quotes only. A shell keeps a single-quoted value verbatim, so the
+    # escape branch must not fire there (see the behavioural test in
+    # test_llama_extra_args_roundtrip.py).
+    assert 'quote === \'"\' && ch === "\\\\"' in src
 
 
 def test_same_click_commit_covers_the_custom_llama_args_field():
@@ -698,3 +702,43 @@ def test_load_paths_baseline_on_the_servers_effective_args():
         "export interface"
     )[0]
     assert "llama_extra_args?: string[] | null;" in load_response
+
+
+def test_applying_a_config_without_args_clears_them_explicitly():
+    """A config with no args must reach /load as [], not as an omitted field.
+
+    Reset stages DEFAULT_PER_MODEL_CONFIG, whose llamaExtraArgs is absent. Mapped
+    to null it collapses through llamaExtraArgsForLoad into an omitted field,
+    which /load reads as "inherit the previous same-model args" -- so Reset would
+    blank the input and relaunch the same flags. Every sibling field in this same
+    setState is already sent explicitly on the load that follows.
+    """
+    src = _read("features/model-picker/model-config/apply-per-model-config.ts")
+    assert "llamaExtraArgs: config.llamaExtraArgs ?? []," in src
+    assert "llamaExtraArgs: config.llamaExtraArgs ?? null," not in src
+    # The load path still distinguishes cleared ([]) from absent (undefined).
+    args_src = _read("features/model-picker/model-config/llama-extra-args.ts")
+    assert "if (args == null) {\n    return undefined;\n  }" in args_src
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "onClick={() => setConfig({ ...DEFAULT_PER_MODEL_CONFIG })}" in page
+
+
+def test_default_gguf_autoload_baselines_the_args_fields():
+    """The "download a small default GGUF" branch must reset both args fields.
+
+    loadedGpuMemoryFields only clears them on a non-GGUF response, and this
+    branch sends no llama_extra_args of its own, so args staged for a model that
+    never finished loading would stay in the store: the panel shows them for
+    Qwen and the next Reload sends them to it. Its siblings (KV dtype, TP, GPU
+    pick, chat template) are all re-baselined here already.
+    """
+    src = _read("features/chat/api/chat-adapter.ts")
+    branch = src.split('model_path: "unsloth/Qwen3.5-4B-MTP-GGUF"', 1)[1]
+    branch = branch.split("recordLastLocalModelLoad", 1)[0]
+    assert "llamaExtraArgs: loadResp.llama_extra_args ?? null," in branch
+    assert "loadedLlamaExtraArgs: loadResp.llama_extra_args ?? null," in branch
+    # The helper itself still only speaks for the non-GGUF case.
+    store = _read("features/chat/stores/chat-runtime-store.ts")
+    helper = store.split("export function loadedGpuMemoryFields", 1)[1]
+    helper = helper.split("export function hasGgufSource", 1)[0]
+    assert helper.count("llamaExtraArgs: null,") == 1

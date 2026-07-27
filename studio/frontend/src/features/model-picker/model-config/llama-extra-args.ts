@@ -19,8 +19,11 @@ export function parseLlamaExtraArgsInput(input: string): string[] {
     if (quote) {
       // Only a quote or another backslash escapes, as in a shell: a quoted
       // "C:\Program Files\t.jinja" survives as itself, not "C:Program Filest.jinja".
+      // Double quotes only: a shell keeps every character of a single-quoted
+      // value verbatim, so '{"path":"C:\\x"}' must reach llama-server with both
+      // backslashes -- collapsing them changes the JSON/grammar the user typed.
       const next = i + 1 < trimmed.length ? trimmed[i + 1] : "";
-      if (ch === "\\" && (next === quote || next === "\\")) {
+      if (quote === '"' && ch === "\\" && (next === quote || next === "\\")) {
         current += next;
         i += 1;
         continue;

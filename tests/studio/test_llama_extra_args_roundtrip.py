@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import textwrap
@@ -119,6 +120,49 @@ def test_quoted_windows_path_keeps_its_backslashes():
     # Unquoted backslashes are literal too, so a Windows path with no spaces
     # survives without the user having to quote it.
     assert out["bare"] == ["--chat-template-file", "C:\\Users\\Me\\t.jinja"]
+
+
+def test_single_quotes_keep_every_backslash():
+    """A shell keeps a single-quoted value verbatim; only double quotes escape.
+
+    Collapsing `\\\\` inside single quotes rewrites the value the user typed:
+    `'{"path":"C:\\\\foo"}'` reaches llama-server as `{"path":"C:\\foo"}`, whose
+    `\\f` is a JSON formfeed escape, and a single-quoted GBNF loses the literal
+    backslash its grammar needs. Cross-checked against shlex.split(posix=True) --
+    the same tokenizer the MCP address parser uses.
+    """
+    typed = [
+        r"""--chat-template-kwargs '{"path":"C:\\foo"}'""",
+        r"""--grammar 'root ::= "\\n"'""",
+        r"--x 'a\\b'",
+        r"--x 'a\b'",
+        # Controls: double-quoted and unquoted forms must not move.
+        r'--x "a\\b"',
+        r'--chat-template-file "C:\\Users\\Me\\a b.jinja"',
+        r"--chat-template-file C:\Users\Me\t.jinja",
+    ]
+    out = _run(
+        "const typed = "
+        + json.dumps(typed)
+        + ";\nconsole.log(JSON.stringify({ rows: typed.map((t) => ({\n"
+        "  parsed: parseLlamaExtraArgsInput(t),\n"
+        "  reparsed: parseLlamaExtraArgsInput(formatLlamaExtraArgs(parseLlamaExtraArgsInput(t))),\n"
+        "})) }));\n"
+    )
+    rows = out["rows"]
+    # Single quotes: verbatim, exactly as a POSIX shell would tokenize them.
+    for text, row in zip(typed[:4], rows[:4]):
+        assert row["parsed"] == shlex.split(text, posix = True), (text, row)
+    # Double quotes: a quote or another backslash still escapes.
+    assert rows[4]["parsed"] == ["--x", "a\\b"]
+    assert rows[5]["parsed"] == ["--chat-template-file", "C:\\Users\\Me\\a b.jinja"]
+    # Unquoted backslashes stay literal (deliberately not POSIX; see
+    # test_quoted_windows_path_keeps_its_backslashes).
+    assert rows[6]["parsed"] == ["--chat-template-file", "C:\\Users\\Me\\t.jinja"]
+    # The formatter only ever emits double quotes, so re-parsing is still a
+    # fixed point for every one of these.
+    for text, row in zip(typed, rows):
+        assert row["reparsed"] == row["parsed"], (text, row)
 
 
 def test_save_persists_the_same_argv_the_load_sent():

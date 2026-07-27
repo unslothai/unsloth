@@ -2013,6 +2013,12 @@ async function autoLoadSmallestModel(): Promise<{
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         ...loadedGpuMemoryFields(loadResp),
+        // This load sends no extra args, and the GPU helper only clears them for
+        // a non-GGUF response, so baseline both fields on the echo here. Else
+        // args staged for a model that never loaded stay on screen for Qwen and
+        // the next Reload sends them to it.
+        llamaExtraArgs: loadResp.llama_extra_args ?? null,
+        loadedLlamaExtraArgs: loadResp.llama_extra_args ?? null,
         // Drives the GPU Memory controls' diffusion gate; set alongside the
         // GPU fields on every load path so the gate can't read stale.
         loadedIsDiffusion: loadResp.is_diffusion ?? false,
