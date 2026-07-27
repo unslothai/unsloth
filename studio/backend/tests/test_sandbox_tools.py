@@ -645,6 +645,43 @@ class TestBashBlocklistPosition:
         assert "rm" in self._find()("sed -ne '$e rm -rf build' input")
         assert "wget" in self._find()("sed '1,2e wget https://bad' input")
 
+    def test_sed_exec_payload_continues_past_backslash(self):
+        # An `e` payload whose line ends in a backslash carries onto the NEXT
+        # line, which reaches the same shell, so the scan must not stop at the
+        # newline. Quote splitting (r''m) hides the name from the raw-text
+        # fallback, leaving the parsed payload as the only place rm shows up.
+        assert "rm" in self._find()("sed -n '1e\\\nrm -f victim' f")
+        assert "rm" in self._find()("sed -n '1e\\\nr''m -f victim' f")
+        assert "rm" in self._find()("sed -n '1e touch a\\\nrm -f victim' f")
+        # A backslash before an ordinary character drops away: r\m runs rm.
+        assert "rm" in self._find()("sed 'e r\\m -f victim' f")
+
+    def test_sed_comment_ends_at_newline(self):
+        # A sed comment runs to a real newline, so an `e` on the line after one
+        # is a command; with a literal `;` it is still all comment.
+        assert "rm" in self._find()("sed '# harmless\ne rm -f victim' input")
+        assert "curl" in self._find()("sed 's/a/b/w out.txt\ne curl https://x' input")
+        assert self._find()("sed '# harmless;e rm -f victim' input") == set()
+
+    def test_sed_attached_i_suffix_does_not_hide_the_script(self):
+        # Everything glued to -i is the backup suffix, so `-ifoo` is not an
+        # attached -f and the script is still the positional ahead. -l and
+        # --line-length take an operand that is likewise not the script.
+        assert "rm" in self._find()("sed -ifoo '1e rm -f victim' input")
+        assert "rm" in self._find()("sed -itemp '1e rm -f victim' input")
+        assert "curl" in self._find()("sed -ni.bak '1e curl https://x' input")
+        assert "rm" in self._find()("sed -l 5 '1e rm -f victim' input")
+        assert "rm" in self._find()("sed --line-length 5 '1e rm -f victim' input")
+        assert self._find()("sed -ifoo 's/old/new/g' input") == set()
+        assert self._find()("sed -l 80 -n '1,20p' input") == set()
+
+    def test_sed_under_find_exec_blocked(self):
+        # find runs its -exec child directly, but the command-position walk only
+        # reaches `find`, so the nested sed needs its script read explicitly.
+        assert "rm" in self._find()("find . -exec sed '1e rm -f victim' {} +")
+        assert "curl" in self._find()("find . -execdir sed '1e curl https://x' {} \\;")
+        assert self._find()("find . -exec sed -n '1,3p' {} +") == set()
+
     def test_ordinary_sed_program_allowed(self):
         # Plain stream editing runs nothing, and a mention of sed in argument
         # position is text: only a command-position sed has its script read.
@@ -652,6 +689,8 @@ class TestBashBlocklistPosition:
         assert self._find()("sed -n '1,20p' input") == set()
         assert self._find()("sed 's/rm/RM/g' input") == set()
         assert self._find()("printf '%s' sed '1e rm -rf victim'") == set()
+        assert self._find()("sed 's/a/b/we out.txt' input") == set()
+        assert self._find()("sed -e '1a\\' -e 'e rm -rf x' input") == set()
 
     def test_subshell_command_blocked(self):
         assert "rm" in self._find()("echo $(rm -rf /tmp)")
