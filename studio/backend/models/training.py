@@ -7,7 +7,7 @@ Pydantic schemas for Training API
 
 import re
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from typing import Any, Optional, List, Dict, Literal
+from typing import Any, Optional, List, Dict, Literal, Union
 
 from utils.training_runs import normalize_project_name
 
@@ -828,7 +828,7 @@ class DiffusionTrainingStartRequest(BaseModel):
             "(Gaussian bell centered mid-schedule). Timesteps are always logit-normal sampled."
         ),
     )
-    flow_shift: Optional[float | Literal["auto"]] = Field(
+    flow_shift: Optional[Union[float, Literal["auto"]]] = Field(
         None,
         description = (
             "Flow-matching timestep shift. null uses the family default "
