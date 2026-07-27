@@ -1307,7 +1307,9 @@ def test_local_only_gguf_reuse_and_platform_gates_are_authoritative():
     scans are memoized per run so a stalled repo times out once."""
     llama = _read_backend("core/inference/llama_cpp.py")
     assert "verify_sizes = not local_files_only," in llama
-    reuse = llama.split("_cached_complete_candidate(hf_repo, gguf_filename, gguf_extra_shards)", 1)[1]
+    reuse = llama.split("_cached_complete_candidate(hf_repo, gguf_filename, gguf_extra_shards)", 1)[
+        1
+    ]
     reuse = reuse.split("cached_main is not None", 1)[0]
     assert "local_files_only" in reuse and "_cached_candidate_matches_revision_size" in reuse
 
