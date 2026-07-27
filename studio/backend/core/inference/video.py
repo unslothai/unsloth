@@ -682,7 +682,6 @@ class VideoBackend:
         """``{component: source}`` for the text encoders this load will take PRE-CAST from a
         hosted checkpoint instead of the base repo's dense weights (``{}`` when none)."""
         from .diffusion_te_prequant import te_prequant_sources
-
         return te_prequant_sources(
             fam,
             te_quant_mode = text_encoder_quant,

@@ -1112,7 +1112,13 @@ def _ltx23_assembly_stubs(monkeypatch, tmp_path):
             self.what = what
 
         @classmethod
-        def from_pretrained(cls, base, subfolder = None, token = None, **extra):
+        def from_pretrained(
+            cls,
+            base,
+            subfolder = None,
+            token = None,
+            **extra,
+        ):
             _Loaded.calls.append(subfolder)
             return cls(subfolder or "?")
 
@@ -2008,7 +2014,6 @@ def test_download_plan_narrows_an_ltx23_pick_and_stages_its_extras(monkeypatch):
 def _cuda_bf16_target(monkeypatch):
     """Pretend the box can run layerwise fp8, so the pre-cast encoder resolves off-GPU."""
     import torch
-
     monkeypatch.setattr(
         "core.inference.video.resolve_diffusion_device_target",
         lambda: types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16),
@@ -2126,7 +2131,12 @@ def test_fetch_te_prequant_only_reports_what_it_downloaded(monkeypatch):
         kind = "repo", location = "unsloth/LTX-2-FP8", filename = "LTX-2-text_encoder-FP8.pt"
     )
 
-    def _boom(repo, filename, token, cancel_event = None):
+    def _boom(
+        repo,
+        filename,
+        token,
+        cancel_event = None,
+    ):
         raise OSError("404")
 
     monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _boom)
@@ -2162,9 +2172,7 @@ def test_load_pipeline_tops_up_the_dense_encoder_when_injection_fails(fake_runti
 
     # Nothing was skipped -> no second pull.
     calls.clear()
-    backend.load_pipeline(
-        "Lightricks/LTX-2", model_kind = "pipeline", _base_local_dir = str(tmp_path)
-    )
+    backend.load_pipeline("Lightricks/LTX-2", model_kind = "pipeline", _base_local_dir = str(tmp_path))
     assert calls == []
     backend.unload()
 

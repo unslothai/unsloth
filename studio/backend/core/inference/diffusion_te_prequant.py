@@ -146,10 +146,7 @@ def resolve_te_prequant_source(
 
 
 def te_prequant_sources(
-    fam: Any,
-    *,
-    te_quant_mode: Optional[str],
-    target: Any,
+    fam: Any, *, te_quant_mode: Optional[str], target: Any
 ) -> dict[str, TePrequantSource]:
     """``{component: source}`` for every text encoder this pick would load PRE-CAST rather
     than dense; ``{}`` when none apply.
