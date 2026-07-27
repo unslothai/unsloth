@@ -4209,6 +4209,8 @@ def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
             label = "org/model",
             log_prefix = "[test]",
             logger = logging.getLogger(__name__),
+            repo_type = "model",
+            repo_id = "org/model",
         )
         == "complete"
     )
@@ -4296,6 +4298,7 @@ def test_a_just_downloaded_model_is_evidence_before_the_scan_indexes_it(monkeypa
         label = "org/fresh",
         log_prefix = "[test]",
         logger = logging.getLogger(__name__),
+        repo_type = "model",
         repo_id = "org/fresh",
     )
     assert resolver.recently_downloaded("org/fresh"), "no evidence for the new model"
@@ -4306,3 +4309,49 @@ def test_a_just_downloaded_model_is_evidence_before_the_scan_indexes_it(monkeypa
     monkeypatch.setattr(resolver, "_build_index", dict)
     resolver._index()
     assert not resolver.recently_downloaded("org/fresh")
+
+
+def test_a_finished_dataset_is_not_recorded_as_a_local_model(monkeypatch):
+    # finalize_worker_exit is shared with dataset downloads. Noting one as a local
+    # model would refuse a bare /v1 request naming that id while another model is
+    # resident, instead of letting a foreign id fall through, and would kick off a
+    # multi-directory model scan for nothing.
+    import logging
+    import time
+
+    from hub.services import download_lifecycle
+
+    class _Proc:
+        stderr = None
+
+        def wait(self):
+            return 0
+
+    class _Registry:
+        def cancel_requested(self, key):
+            return False
+
+        def drop_process(self, key, proc):
+            return True
+
+        def get_job_metadata(self, key):
+            return None
+
+        def set_job(self, key, state):
+            pass
+
+    stamp = time.monotonic()
+    monkeypatch.setattr(resolver, "_scan", (stamp, {"kept": "entry"}))
+    download_lifecycle.finalize_worker_exit(
+        _Registry(),
+        "org/corpus",
+        _Proc(),
+        hf_token = None,
+        label = "org/corpus",
+        log_prefix = "[test]",
+        logger = logging.getLogger(__name__),
+        repo_type = "dataset",
+        repo_id = "org/corpus",
+    )
+    assert not resolver.recently_downloaded("org/corpus")
+    assert resolver._scan == (stamp, {"kept": "entry"}), "a dataset invalidated the index"

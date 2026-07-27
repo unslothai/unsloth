@@ -546,7 +546,10 @@ async def _admit_and_start(
     # trust_remote_code gate: _config_has_auto_map is tri-state, so refuse on True and on None.
     from utils.security.consent import _config_has_auto_map
 
-    has_auto_map = await asyncio.to_thread(_config_has_auto_map, repo_id, hf_token)
+    # _hub_token, not the raw token: None lets huggingface_hub fall back to a cached
+    # server login, so a caller-named repo would be probed with this server's identity.
+    # Same rule as the metadata probe and the worker.
+    has_auto_map = await asyncio.to_thread(_config_has_auto_map, repo_id, _hub_token(hf_token))
     if has_auto_map is not False:
         _release(active)
         unknown = has_auto_map is None

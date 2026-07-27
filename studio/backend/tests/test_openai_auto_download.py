@@ -1511,3 +1511,55 @@ def test_a_bare_request_for_a_just_downloaded_model_is_refused(monkeypatch):
         asyncio.run(inference_route._reject_unservable_model("org/fresh", _Req()))
     assert excinfo.value.status_code == 404
     assert asyncio.run(inference_route._reject_unservable_model("org/never", _Req())) is None
+
+
+def test_a_non_quant_tag_does_not_tear_down_a_serving_quant(monkeypatch):
+    # _already_serving split on ":" rather than on whether the suffix names a quant,
+    # so org/model:latest against a serving Q8_0 counted as a quant mismatch and
+    # swapped in the preferred Q4_K_M, for a request either one satisfies.
+    from core.inference import local_model_resolver as resolver
+
+    entry = resolver._LocalGgufEntry("org/model", "/hf/org--model/snap", ("Q4_K_M", "Q8_0"))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/model": entry}))
+    loaded = _Loaded("org/model", "Q8_0")
+    loaded.gguf_path = "/hf/org--model/snap/model-Q8_0.gguf"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    loads: list = []
+
+    async def _record_load(request, *a, **k):
+        loads.append(getattr(request, "gguf_variant", None))
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _record_load)
+    monkeypatch.setattr(
+        "utils.openai_auto_switch_settings.get_openai_auto_switch_enabled", lambda: True
+    )
+    for tag in ("org/model:latest", "org/model:8b", "org/model"):
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(tag, _Req(), "tester")
+        )
+    assert loads == [], "a tag naming no quant swapped the serving model out"
+
+
+def test_the_trust_probe_never_falls_back_to_the_server_identity(hub, monkeypatch):
+    # huggingface_hub treats None as "use the cached login", so only an explicit
+    # False is anonymous. The metadata probe and the worker already pass one; this
+    # probe did not, so a caller-named repo was read with the server's identity.
+    seen: list = []
+
+    def _probe(model_name, hf_token = None):
+        seen.append(hf_token)
+        return False
+
+    monkeypatch.setattr("utils.security.consent._config_has_auto_map", _probe)
+    _run("unsloth/x-GGUF:UD-Q5_K_XL")
+    assert seen == [False], f"trust probe ran with {seen!r}, not an explicit anonymous token"
+
+    seen.clear()
+    auto_dl.reset_for_tests()
+    _run("unsloth/x-GGUF:UD-Q5_K_XL", hf_token = "hf_caller")
+    assert seen == ["hf_caller"], "the caller's own token must still be used"

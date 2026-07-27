@@ -4054,7 +4054,13 @@ async def _maybe_auto_switch_model(
         backend = get_llama_cpp_backend()
         # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
         # repo, so it never reloads a different local quant that already serves it.
-        bare = ":" not in requested_model
+        from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+
+        # A tag that names no quant (":latest", ":8b") means the repo, exactly as
+        # _loaded_satisfies and the resolver read it. Treating it as a quant tears
+        # down a serving Q8 to load the preferred Q4 for a request either satisfies.
+        _, _requested_variant = split_model_ref(requested_model)
+        bare = not looks_like_quant(_requested_variant)
 
         def _already_serving() -> bool:
             # Match against both the concrete load path and the advertised repo id,

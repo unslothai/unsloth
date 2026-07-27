@@ -463,8 +463,12 @@ def describe_local_miss(requested: str) -> tuple[str, tuple[str, ...]]:
     """
     if not isinstance(requested, str) or not requested.strip():
         return MISS_MODEL_NOT_FOUND, ()
-    base, sep, _variant = requested.strip().rpartition(":")
-    if not sep:
+    base, sep, variant = requested.strip().rpartition(":")
+    from core.inference.openai_auto_download import looks_like_quant
+
+    # Split like the resolver or the two disagree: a tag naming no quant means the
+    # repo there, so reporting a missing quant for it would name one nobody asked for.
+    if not sep or not looks_like_quant(variant):
         return MISS_MODEL_NOT_FOUND, ()
     try:
         entry = _index().get(base.strip().lower())

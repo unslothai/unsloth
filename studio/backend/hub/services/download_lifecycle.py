@@ -241,24 +241,26 @@ def finalize_worker_exit(
     state = classify_exit(rc, cancel_requested = cancel_requested)
     if state == "complete":
         registry.set_job(key, "complete")
-        # Every download lands here, so this is where /v1 learns a new model exists.
-        # Its resolver answers the request path from a cached scan with no watcher,
-        # and would otherwise keep reporting the model absent and let the request be
-        # served by whatever is resident.
-        try:
-            from core.inference.local_model_resolver import (
-                invalidate_index,
-                note_downloaded,
-                warm_index_soon,
-            )
+        # Where /v1 learns a new model exists: its resolver answers the request path
+        # from a cached scan with no watcher, and would otherwise report the model
+        # absent and let the request be served by whatever is resident. Models only,
+        # since datasets share this path and noting one as a local model would refuse
+        # a bare request naming that id instead of letting a foreign id fall through.
+        if repo_type == "model":
+            try:
+                from core.inference.local_model_resolver import (
+                    invalidate_index,
+                    note_downloaded,
+                    warm_index_soon,
+                )
 
-            note_downloaded(repo_id)
-            invalidate_index()
-            # Rebuild from here rather than from the first request that needs it,
-            # so the new model becomes resolvable without a scan on the request path.
-            warm_index_soon()
-        except Exception:
-            pass
+                note_downloaded(repo_id)
+                invalidate_index()
+                # Rebuild here rather than on the first request that needs it, so the
+                # new model resolves without a scan on the request path.
+                warm_index_soon()
+            except Exception:
+                pass
         if transport == download_registry.TRANSPORT_HTTP:
             registry.update_job_transport(key, download_registry.TRANSPORT_HTTP)
         if stderr_text:
