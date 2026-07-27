@@ -33,6 +33,10 @@ def download():
 
 def run_tests():
     os.environ.setdefault("HF_HOME", str(CACHE_ROOT))
+    # Real-cache suite is gated on this; without it every integration test skips
+    # and the runner reports success after only the fake-cache unit file ran.
+    env = os.environ.copy()
+    env["UNSLOTH_INTEGRATION_IMPORT"] = "1"
     cmd = [
         sys.executable,
         "-m",
@@ -41,7 +45,9 @@ def run_tests():
         "tests/saving/test_offline_gguf_real_cache_integration.py",
         "-q",
     ]
-    raise SystemExit(subprocess.call(cmd, cwd = str(Path(__file__).resolve().parents[2])))
+    raise SystemExit(
+        subprocess.call(cmd, cwd = str(Path(__file__).resolve().parents[2]), env = env)
+    )
 
 
 def main():
