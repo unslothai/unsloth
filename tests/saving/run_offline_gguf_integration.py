@@ -4,6 +4,10 @@
 
 """Download real Gemma weights and run offline integration tests for #7481.
 
+Sets ``UNSLOTH_INTEGRATION_IMPORT=1`` for the pytest subprocess so the
+real-cache suite is not silently skipped. Requires a host that can import
+unsloth (typically GPU).
+
 Example:
   python tests/saving/run_offline_gguf_integration.py
   python tests/saving/run_offline_gguf_integration.py --download-only
