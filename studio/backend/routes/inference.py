@@ -3848,7 +3848,11 @@ async def _reject_unservable_model(
         return
     base, variant = split_model_ref(requested_model)
     quantified = looks_like_quant(variant)
-    from core.inference.local_model_resolver import resolve_local_gguf
+    from core.inference.local_model_resolver import (
+        index_is_built,
+        resolve_local_gguf,
+        warm_index_soon,
+    )
     from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
 
     try:
@@ -3859,7 +3863,14 @@ async def _reject_unservable_model(
             or getattr(get_inference_backend(), "active_model_name", None)
         ):
             return
-        resolved = await asyncio.to_thread(resolve_local_gguf, requested_model)
+        if not index_is_built():
+            # Nothing to answer from yet, and building it here would stall the
+            # request for as long as the scan takes. Warm it for the next one.
+            warm_index_soon()
+            return
+        # Never rebuild from here (see resolve_local_gguf's allow_scan note), which
+        # also makes this a dict read, so it costs less than handing it to a thread.
+        resolved = resolve_local_gguf(requested_model, allow_scan = False)
         # A manual load stores the on-disk path that the resolver advertises under a
         # publisher/model alias (LM Studio, custom folders); match on the path too.
         if resolved is not None and _resolves_to_resident(resolved[0]):
@@ -3867,7 +3878,7 @@ async def _reject_unservable_model(
         downloaded = resolved is not None
         # The exact ref may miss on the quant alone, so ask about the repo too.
         here = downloaded or (
-            variant is not None and await asyncio.to_thread(resolve_local_gguf, base) is not None
+            variant is not None and resolve_local_gguf(base, allow_scan = False) is not None
         )
         switchable = downloaded and get_openai_auto_switch_enabled()
     except Exception as exc:
