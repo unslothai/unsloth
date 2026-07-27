@@ -109,7 +109,8 @@ def _extract_resolvers(monkeypatch, fetched_source):
         "FLOAT_TO_FP8_ROW_MAPPER": installed["FLOAT_TO_FP8_ROW_MAPPER"],
     }
     nodes = [
-        node for node in ast.parse(_loader_utils_source()).body
+        node
+        for node in ast.parse(_loader_utils_source()).body
         if isinstance(node, ast.FunctionDef) and node.name in _RESOLVERS
     ]
     assert len(nodes) == len(_RESOLVERS), (
@@ -188,7 +189,7 @@ def test_fetched_mapper_without_fp8_tables_keeps_the_4bit_probe_alive(monkeypatc
 
     int_to_float, float_to_int, map_to_16bit, fp8_block, fp8_row = namespace["_get_new_mapper"]()
 
-    assert int_to_float and float_to_int and map_to_16bit, (
-        "a fetched mapper.py without FP8 tables killed the 4bit half of the probe"
-    )
+    assert (
+        int_to_float and float_to_int and map_to_16bit
+    ), "a fetched mapper.py without FP8 tables killed the 4bit half of the probe"
     assert fp8_block == {} and fp8_row == {}
