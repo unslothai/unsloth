@@ -399,8 +399,7 @@ class LlamaAdmissionQueue:
         # every later arrival and starves under sustained traffic.
         while (
             self._waiters
-            and (self._active - self._parked + len(self._unpark_tickets))
-            < self._capacity
+            and (self._active - self._parked + len(self._unpark_tickets)) < self._capacity
         ):
             waiter = self._waiters.popleft()
             if waiter.cancelled or waiter.future.done():
