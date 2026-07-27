@@ -188,6 +188,7 @@ def test_every_research_prompt_path_is_budgeted():
     assert "_MIN_QUESTION_CHARS," in src
     # The catalog is unbounded as well, and is fitted by whole entries so URLs stay citable.
     assert "decision_catalog = _fit_source_catalog(" in src
+    assert "decision_question, decision_plan_json = _fit_decision_inputs(" in src
 
 
 def test_prompt_budget_never_empties_the_question_or_evidence(monkeypatch):
@@ -212,6 +213,48 @@ def test_source_catalog_is_fitted_by_whole_entries():
     for line in trimmed.splitlines():
         if "URL:" in line:
             assert line.strip().startswith("URL: https://example.com/")
+
+
+def test_decision_inputs_fit_question_and_complete_plan_steps():
+    question = "Q" * 20_000
+    plan = {
+        "title": "Research plan",
+        "steps": [
+            {"title": f"Step {index}", "query": "evidence " + "x" * 300}
+            for index in range(12)
+        ],
+    }
+    total = 3_072
+    system_chars = 1_000
+
+    fitted_question, fitted_plan = research_runs._fit_decision_inputs(
+        question,
+        plan,
+        system_chars,
+        total,
+    )
+
+    parsed_plan = json.loads(fitted_plan)
+    assert 0 < len(parsed_plan["steps"]) < len(plan["steps"])
+    assert len(fitted_question) >= research_runs._MIN_QUESTION_CHARS
+    assert len(fitted_question) < len(question)
+    assert system_chars + len(fitted_question) + len(fitted_plan) <= total
+
+
+def test_decision_inputs_preserve_an_ordinary_plan_before_extra_question_text():
+    question = "Q" * 20_000
+    plan = {"title": "Research plan", "steps": [{"title": "Verify", "query": "primary source"}]}
+    full_plan = json.dumps(plan, ensure_ascii = False)
+
+    fitted_question, fitted_plan = research_runs._fit_decision_inputs(
+        question,
+        plan,
+        1_000,
+        6_144,
+    )
+
+    assert fitted_plan == full_plan
+    assert len(fitted_question) == 6_144 - 1_000 - len(full_plan)
 
 
 def _make_payload(**overrides) -> CreateResearchRun:

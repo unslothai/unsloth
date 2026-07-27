@@ -553,6 +553,44 @@ def _fit_source_catalog(catalog: str, max_chars: int) -> str:
     return ("".join(kept) if not kept or kept[0].endswith("\n") else "\n\n".join(kept)).rstrip()
 
 
+def _fit_decision_inputs(
+    question: str,
+    plan: dict,
+    system_chars: int,
+    total_budget: int | None,
+) -> tuple[str, str]:
+    """Fit the decision question and plan while keeping the plan valid JSON."""
+    full_plan = json.dumps(plan, ensure_ascii = False)
+    minimum_question_chars = min(len(question), _MIN_QUESTION_CHARS)
+    plan_budget = _trimmable_budget(
+        total_budget,
+        system_chars + minimum_question_chars,
+        len(full_plan),
+    )
+    if len(full_plan) <= plan_budget:
+        fitted_plan = full_plan
+    else:
+        fitted_plan = ""
+        steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
+        for count in range(len(steps) + 1):
+            candidate = json.dumps(
+                {"title": plan.get("title") or "Research plan", "steps": steps[:count]},
+                ensure_ascii = False,
+            )
+            if len(candidate) > plan_budget:
+                break
+            fitted_plan = candidate
+    question_budget = max(
+        minimum_question_chars,
+        _trimmable_budget(
+            total_budget,
+            system_chars + len(fitted_plan),
+            _MAX_SYNTHESIS_EVIDENCE_CHARS,
+        ),
+    )
+    return question[:question_budget], fitted_plan
+
+
 def _prompt_char_budget(reserve_tokens: int) -> int | None:
     """Chars the whole prompt may occupy on the loaded context, or None when it is unknown.
 
@@ -1872,21 +1910,26 @@ class ResearchSupervisor:
             # Same whole-prompt budget as synthesis: a fixed 60k evidence tail is many times a
             # small context, and this runs every step, so an overflow here kills the run long
             # before it can synthesize what it already gathered.
-            decision_plan_json = json.dumps(run["plan"], ensure_ascii = False)
             decision_total = _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS)
+            decision_question, decision_plan_json = _fit_decision_inputs(
+                question,
+                run["plan"],
+                len(decision_system),
+                decision_total,
+            )
             # The catalog is unbounded too (maxSources entries, snippets up to 4000 chars), so it
             # is fitted before the sections that depend on what it leaves.
             decision_catalog = _fit_source_catalog(
                 source_catalog,
                 _trimmable_budget(
                     decision_total,
-                    len(decision_system) + len(question) + len(decision_plan_json),
+                    len(decision_system) + len(decision_question) + len(decision_plan_json),
                     len(source_catalog),
                 ),
             )
             decision_scaffold = (
                 len(decision_system)
-                + len(question)
+                + len(decision_question)
                 + len(decision_plan_json)
                 + len(decision_catalog)
             )
@@ -1909,7 +1952,7 @@ class ResearchSupervisor:
                         "role": "user",
                         "content": (
                             f"Conversation context JSON:\n{_shield_untrusted(decision_context)}\n\n"
-                            f"Question:\n{_shield_untrusted(question)}\n\n"
+                            f"Question:\n{_shield_untrusted(decision_question)}\n\n"
                             f"Approved plan (guidance only):\n"
                             f"{_shield_untrusted(decision_plan_json)}\n\n"
                             f"Actions remaining after this one: {max_steps - position - 1}\n"
