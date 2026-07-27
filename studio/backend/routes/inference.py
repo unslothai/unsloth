@@ -1794,7 +1794,16 @@ router = APIRouter()
 studio_router = APIRouter()
 
 
-_ARTIFACT_PREVIEW_FRAME_ANCESTORS = "'self' tauri://localhost http://tauri.localhost"
+# Packaged desktop runs at tauri://localhost (macOS/Linux) or http://tauri.localhost
+# (Windows WebView2); the web build is same-origin ('self'). The `tauri dev` shell,
+# however, serves the frontend from the Vite dev origin (http://localhost:5173),
+# so the packaged allowlist alone leaves the preview blocked in dev with an
+# "ancestor violates frame-ancestors" error. This shell exposes no server resource
+# (it only renders postMessage'd HTML in a no-same-origin sandbox), so also allowing
+# any localhost/127.0.0.1 dev origin to frame it is safe and unblocks the dev shell.
+_ARTIFACT_PREVIEW_FRAME_ANCESTORS = (
+    "'self' tauri://localhost http://tauri.localhost http://localhost:* http://127.0.0.1:*"
+)
 _ARTIFACT_PREVIEW_FRAME_STRICT_CSP = (
     "default-src 'none'; "
     "script-src 'unsafe-inline'; "
@@ -2128,14 +2137,13 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
 def _permission_mode_confirm(payload) -> bool:
     """Effective confirm-gate intent for Unsloth's own local tool loop.
 
-    Honors the documented default that an unset permission_mode behaves as
-    "ask". An explicit confirm_tool_calls (True or False) wins; explicit
-    ask/auto always engage the gate (a non-streaming one is then rejected, since
-    it cannot prompt); off/full never prompt. An unset mode defaults to ask, but
-    that is only realizable on a streaming request, so a non-streaming unset
-    request keeps the legacy run-without-gate behavior instead of 400ing. Used
-    at the pre-switch guard and the per-backend tool paths so a forced tool loop
-    (CLI --enable-tools) with the default mode still gates streaming requests.
+    An explicit confirm_tool_calls (True or False) wins; explicit ask/auto always
+    engage the gate (a non-streaming one is then rejected, since it cannot prompt);
+    off/full never prompt. An unset mode stays lenient here even though the loop
+    defaults it to "auto": a non-streaming request keeps the legacy
+    run-without-gate behavior instead of 400ing, so non-streaming clients and
+    health checks keep working. Used at the pre-switch guard and the per-backend
+    tool paths so a forced tool loop (CLI --enable-tools) still gates streaming.
     """
     if payload.confirm_tool_calls is not None:
         return bool(payload.confirm_tool_calls)
@@ -3770,7 +3778,7 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
     if not adapter_cfg_path.exists():
         return load_in_4bit
     try:
-        with open(adapter_cfg_path) as f:
+        with open(adapter_cfg_path, encoding = "utf-8") as f:
             adapter_cfg = json.load(f)
         if not isinstance(adapter_cfg, dict):  # malformed -> keep requested
             return load_in_4bit
@@ -5835,10 +5843,15 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         try:
             _bin = type(llama_backend)._find_llama_server_binary()
             _caps = type(llama_backend).probe_server_capabilities(_bin)
-            _supports_mtp = bool(_caps.get("supports_mtp", False))
+            # Fail open on inconclusive probes: False means a definitive
+            # "binary lacks MTP" to API consumers.
+            _supports_mtp = bool(
+                _caps.get("supports_mtp", False)
+                or (_caps.get("found", False) and _caps.get("mtp_probe_inconclusive", False))
+            )
         except Exception:
             _bin = None
-            _supports_mtp = True  # fail open
+            _supports_mtp = False  # no usable binary: MTP genuinely unavailable
         try:
             from utils.llama_cpp_freshness import check_prebuilt_freshness
             _freshness = check_prebuilt_freshness(_bin)
@@ -13350,6 +13363,7 @@ async def anthropic_messages(
                 disable_parallel_tool_use = _disable_parallel,
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = getattr(payload, "permission_mode", None),
+                promote_reasoning_only = False,
             )
 
         if payload.stream:
@@ -13389,6 +13403,7 @@ async def anthropic_messages(
             max_tokens = payload.max_tokens,
             stop = stop,
             cancel_event = cancel_event,
+            promote_reasoning_only = False,
         )
 
     if payload.stream:

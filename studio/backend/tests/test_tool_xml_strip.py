@@ -21,7 +21,7 @@ if _BACKEND_DIR not in sys.path:
 # Extract the regex from source (routes module needs heavy stubbing to import).
 import re as _re
 
-_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text()
+_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
 _m = _re.search(r"_TOOL_XML_RE = _re\.compile\((.*?)\n\)", _src, _re.DOTALL)
 assert _m, "could not extract _TOOL_XML_RE source"
 # The lazy ``(.*?)\n\)`` could grab a shorter expression if an arm is ever wrapped;

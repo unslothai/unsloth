@@ -98,7 +98,7 @@ def expected_default_model():
         / "defaults.py"
     )
     try:
-        tree = ast.parse(defaults_path.read_text())
+        tree = ast.parse(defaults_path.read_text(encoding = "utf-8"))
     except Exception as exc:
         fail(f"could not read {defaults_path}: {exc}")
     models = None

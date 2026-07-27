@@ -891,6 +891,7 @@ class UnslothTrainer:
         use_gradient_checkpointing: str = "unsloth",
         use_rslora: bool = False,
         use_loftq: bool = False,
+        use_dora: bool = False,
         modules_to_save: list = None,
     ) -> bool:
         """
@@ -993,6 +994,7 @@ class UnslothTrainer:
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     random_state = 3407,
                     use_rslora = use_rslora,
+                    use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                 )
                 # Audio VLM models support VLM-style layer selection
@@ -1023,6 +1025,7 @@ class UnslothTrainer:
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     random_state = 3407,
                     use_rslora = use_rslora,
+                    use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                     task_type = None,
                 )
@@ -1042,6 +1045,7 @@ class UnslothTrainer:
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     random_state = 3407,
                     use_rslora = use_rslora,
+                    use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                 )
 
@@ -1067,6 +1071,7 @@ class UnslothTrainer:
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     random_state = 3407,
                     use_rslora = use_rslora,
+                    use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                     modules_to_save = modules_to_save,
                 )
@@ -1087,6 +1092,7 @@ class UnslothTrainer:
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     random_state = 3407,
                     use_rslora = use_rslora,
+                    use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                     modules_to_save = modules_to_save,
                 )
