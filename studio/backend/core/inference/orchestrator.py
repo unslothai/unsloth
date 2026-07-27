@@ -1603,18 +1603,20 @@ class InferenceOrchestrator:
                 preserve_thinking = preserve_thinking,
             )
 
-            try:
-                self._send_cmd(cmd)
-            except RuntimeError as exc:
-                yield GenStreamError(f"Error: {exc}")
-                return
-
-            # Claim the worker for this request, so a Stop on some OTHER chat --
+            # Claim the worker BEFORE sending, so a Stop on some OTHER chat --
             # one still queued on the lock above, which has generated nothing --
-            # cannot reset the generation running here. Released in the finally
-            # so the next lock holder can claim it.
+            # cannot reset the generation this is starting. Claiming after the
+            # send left a window where the command was already running unclaimed,
+            # which is exactly the case this guard exists for. Released in the
+            # finally, including on a failed send, so the next holder can claim.
             self._active_cancel_event = cancel_event
             try:
+                try:
+                    self._send_cmd(cmd)
+                except RuntimeError as exc:
+                    yield GenStreamError(f"Error: {exc}")
+                    return
+
                 yield from self._consume_token_stream(
                     self._read_resp,
                     lambda: self._drain_until_gen_done(timeout = 5.0),

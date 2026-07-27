@@ -743,6 +743,12 @@ type ThreadRunOwner = {
   local: boolean;
 };
 
+type ToolStatusEntry = {
+  status: string;
+  startedAt: number;
+  owner?: () => void;
+};
+
 type ChatRuntimeStore = {
   settingsHydrated: boolean;
   params: InferenceParams;
@@ -905,10 +911,12 @@ type ChatRuntimeStore = {
    * it started. Keyed by thread, or one chat's tool call shows above every
    * other composer; the timestamp keeps the counter across a thread switch.
    */
-  toolStatusByThreadId: Record<
-    string,
-    { status: string; startedAt: number; owner?: () => void }
-  >;
+  /**
+   * Per-run entries, newest last. Unresolved threads share "__default", so one
+   * scalar per key meant a finishing run's clear removed a sibling's status
+   * while its tool was still running.
+   */
+  toolStatusByThreadId: Record<string, ToolStatusEntry[]>;
   /** Live stdout/stderr from running tools, keyed by toolCallId. Transient:
    *  appended by tool_output, cleared on tool_end or run end. */
   toolLiveOutput: Record<string, string>;
@@ -2002,19 +2010,26 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setToolStatus: (threadId, status, owner) =>
     set((state) => {
       const next = { ...state.toolStatusByThreadId };
-      const current = next[threadId];
+      const entries = state.toolStatusByThreadId[threadId] ?? [];
+      const mine = entries.find((e) => e.owner === owner);
       if (!status) {
-        // Only the run that put this status up may take it down, so a finishing
-        // run cannot blank the status a concurrent one behind the same key is
-        // still showing. Same rule as setThreadRunning. Undefined matches
-        // undefined, so an ownerless clear still removes an ownerless entry.
-        if (current === undefined || current.owner !== owner) return state;
-        delete next[threadId];
+        // Drop only this run's entry: a sibling behind the same key may still be
+        // running a tool, and its status has to survive this clear.
+        if (mine === undefined) return state;
+        const rest = entries.filter((e) => e !== mine);
+        if (rest.length > 0) {
+          next[threadId] = rest;
+        } else {
+          delete next[threadId];
+        }
       } else {
         // Same text from the same run means the same tool call, so keep
         // startedAt: only a new tool restarts the counter.
-        if (current?.status === status && current.owner === owner) return state;
-        next[threadId] = { status, startedAt: Date.now(), owner };
+        if (mine?.status === status) return state;
+        const entry = { status, startedAt: Date.now(), owner };
+        next[threadId] = mine
+          ? entries.map((e) => (e === mine ? entry : e))
+          : [...entries, entry];
       }
       return { toolStatusByThreadId: next };
     }),

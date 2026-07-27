@@ -2701,10 +2701,15 @@ const ToolStatusDisplay: FC = () => {
   const threadListItemId = useAuiState(({ threadListItem }) => threadListItem.id);
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
   const entry = useChatRuntimeStore((s) => {
-    const own = s.toolStatusByThreadId[threadListItemId ?? ""];
     // A first turn starts before its id is persisted, so the adapter files it
     // under "__default"; only this thread's own run may claim it.
-    return own ?? (isThreadRunning ? s.toolStatusByThreadId.__default : undefined);
+    const own =
+      s.toolStatusByThreadId[threadListItemId ?? ""] ??
+      (isThreadRunning ? s.toolStatusByThreadId.__default : undefined);
+    // Newest of the runs behind this key. They are separate entries so one
+    // finishing cannot blank a sibling still running a tool; which of several
+    // concurrent unresolved runs is shown is the "__default" collapse itself.
+    return own?.[own.length - 1];
   });
   const toolStatus = entry?.status ?? null;
   const startedAt = entry?.startedAt ?? null;

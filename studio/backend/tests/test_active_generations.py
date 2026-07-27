@@ -664,10 +664,11 @@ def test_forced_unload_lets_the_cancelled_chats_unwind_before_teardown(monkeypat
     assert response.status == "unloaded"
 
 
-def test_unload_does_not_drain_when_it_cancelled_nothing(monkeypatch):
-    # The drain is gated on the cancel having cancelled something. An idle unload
-    # must not poll the in-flight count at all, or every Eject on a quiet server
-    # pays for a wait that protects nothing.
+def test_unload_drains_on_the_middleware_count_not_just_the_registry(monkeypatch):
+    # A request that passed the middleware but has not reached its _TrackedCancel
+    # yet is counted and unregistered, so gating the drain on "did we cancel
+    # anything" let a teardown land on it. The drain now runs regardless and reads
+    # the middleware count. On a quiet server that is one poll, not a wait.
     _route_gate()  # skips when the inference stack is unavailable
     import core.inference.llama_keepwarm as keepwarm
     import routes.inference as inf_mod
@@ -690,7 +691,8 @@ def test_unload_does_not_drain_when_it_cancelled_nothing(monkeypatch):
         torn_down = torn_down,
     )
     assert torn_down == ["gguf"]
-    assert polls["n"] == 0
+    # Polled, but returned on the first read rather than waiting anything out.
+    assert polls["n"] == 1
     assert response.status == "unloaded"
 
 
@@ -2559,3 +2561,45 @@ def test_a_reset_with_no_generation_running_is_not_dropped():
     orch = _orchestrator_for_ownership()
     orch.reset_generation_state(threading.Event())
     assert orch._cancel_event.is_set()
+
+
+def test_unload_waits_for_a_request_that_is_admitted_but_not_yet_registered(monkeypatch):
+    # The window between passing the keep-warm middleware and entering
+    # _TrackedCancel: counted in-flight, absent from the registry. Cancelling on
+    # the registry alone saw nothing to stop and tore the backend down under an
+    # already-admitted request. The drain reads the middleware count, so it waits.
+    _route_gate()  # skips when the inference stack is unavailable
+    import core.inference.llama_keepwarm as keepwarm
+    import routes.inference as inf_mod
+
+    # Counted for two polls, then the request registers/finishes and clears.
+    remaining = [1, 1, 0]
+    seen = {}
+
+    def _count(current_request_counted = True, *, include_pending = True):
+        return remaining.pop(0) if len(remaining) > 1 else remaining[0]
+
+    monkeypatch.setattr(keepwarm, "other_inference_request_count", _count)
+    monkeypatch.setattr(inf_mod, "_switch_waiter_count", lambda: 0)
+
+    torn_down: list[str] = []
+
+    def _record_teardown():
+        seen["counted_at_teardown"] = remaining[0]
+        torn_down.append("gguf")
+
+    # Registry deliberately empty: this is the unregistered case.
+    response = _run_unload(
+        inf_mod,
+        monkeypatch,
+        loaded_gguf = "org/A-GGUF",
+        requested = "org/A-GGUF",
+        force = True,
+        torn_down = torn_down,
+        unload_model = _record_teardown,
+    )
+
+    assert active_generations.count() == 0
+    assert torn_down == ["gguf"]
+    assert seen["counted_at_teardown"] == 0
+    assert response.status == "unloaded"

@@ -4408,6 +4408,26 @@ async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) 
     await _drain(time.monotonic() + budget / 2, discount_registered = False)
 
 
+async def _drain_and_recancel_before_teardown(*, force: bool, action: str) -> None:
+    """Wait out inference the registry cannot see, then stop anything new.
+
+    A request that passed the keep-warm middleware but has not reached its
+    ``_TrackedCancel`` yet is counted in-flight and absent from the registry, so
+    cancelling on the registry alone lets a teardown land on an already-admitted
+    request. Drain on the middleware count instead, which covers both the runs
+    just cancelled and the ones still in that window, then cancel again for
+    anything that registered while waiting.
+
+    Bounded and non-raising: an unload is a deliberate user action, so the worst
+    case stays what it is today rather than becoming a refusal.
+    """
+    await _wait_for_model_switch_idle(
+        current_request_counted = False, timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
+    )
+    if force:
+        _raise_or_cancel_active_generations(force = True, action = action)
+
+
 _UNRESOLVED_BACKEND_STATE = object()
 
 
@@ -5989,7 +6009,7 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             ):
                 # Point of no return: this really does replace the running server,
                 # so stop the chats it interrupts.
-                _cancelled = _raise_or_cancel_active_generations(
+                _raise_or_cancel_active_generations(
                     force = request.force_cancel_active, action = "Unloading the model"
                 )
                 # Let what we just cancelled unwind first, like /load. Skipping this
@@ -5997,11 +6017,9 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
                 # had not finished, turning a clean end into a dropped connection.
                 # A manual unload is still deliberate, so the wait is bounded and
                 # then proceeds; only the automatic idle loop defers indefinitely.
-                if _cancelled:
-                    await _wait_for_model_switch_idle(
-                        current_request_counted = False,
-                        timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
-                    )
+                await _drain_and_recancel_before_teardown(
+                    force = request.force_cancel_active, action = "Unloading the model"
+                )
                 llama_backend.unload_model()
                 note_model_unloaded()
                 logger.info(f"Unloaded GGUF model: {request.model_path}")
@@ -6013,13 +6031,12 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             backend = get_inference_backend()
             if _unload_evicts_standard_backend(backend, request.model_path):
                 # Point of no return for the standard path, same rule as above.
-                if _raise_or_cancel_active_generations(
+                _raise_or_cancel_active_generations(
                     force = request.force_cancel_active, action = "Unloading the model"
-                ):
-                    await _wait_for_model_switch_idle(
-                        current_request_counted = False,
-                        timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
-                    )
+                )
+                await _drain_and_recancel_before_teardown(
+                    force = request.force_cancel_active, action = "Unloading the model"
+                )
             await asyncio.to_thread(backend.unload_model, request.model_path)
             note_model_unloaded()
             logger.info(f"Unloaded model: {request.model_path}")
