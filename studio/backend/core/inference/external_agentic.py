@@ -48,6 +48,21 @@ from state.tool_approvals import (
 logger = logging.getLogger(__name__)
 
 # OAI-compat Connections that can drive Unsloth's local tool runtime.
+def _delta_text(content: Any) -> str:
+    """Text from a streamed delta. Some OAI-compat servers (Magistral-style)
+    send structured parts, and str() on that list leaks a Python repr into the
+    answer and into the next round's transcript."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part.get("text") or ""
+            for part in content
+            if isinstance(part, dict) and part.get("type", "text") == "text"
+        )
+    return "" if content is None else str(content)
+
+
 LOCAL_TOOL_RUNTIME_PROVIDER_TYPES = frozenset({"ollama", "llama_cpp", "vllm", "custom"})
 
 # Cap the tool calls taken from a single round, mirroring `_MAX_TOOL_CALLS_PER_TURN` in
@@ -321,15 +336,15 @@ async def stream_external_local_tool_loop(
                 if not isinstance(delta, dict):
                     delta = {}
 
-                content = delta.get("content")
+                content = _delta_text(delta.get("content"))
                 if content:
                     saw_content = True
-                    assistant_content += str(content)
+                    assistant_content += content
                     yield _openai_content_chunk_line(
                         completion_id = completion_id,
                         created = created,
                         model = model,
-                        content = str(content),
+                        content = content,
                     )
 
                 # Reasoning-style fields some OAI-compat servers emit.
@@ -678,13 +693,13 @@ async def stream_external_local_tool_loop(
                 if not isinstance(delta, dict):
                     delta = {}
 
-                content = delta.get("content")
+                content = _delta_text(delta.get("content"))
                 if content:
                     yield _openai_content_chunk_line(
                         completion_id = completion_id,
                         created = created,
                         model = model,
-                        content = str(content),
+                        content = content,
                     )
 
                 for key in ("reasoning_content", "reasoning"):
