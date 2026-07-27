@@ -1079,6 +1079,11 @@ export function SharedComposer({
         }
         const targetIsGguf =
           sel.id.toLowerCase().endsWith(".gguf") || sel.ggufVariant != null;
+        // Only this pane's own model has a known header classification; for any
+        // other target the host-memory gate falls back to the name check.
+        const loadedDiffusionClassification = isAlreadyActive
+          ? currentStore.loadedIsDiffusion
+          : null;
         // Size validation exactly as the load below, so the training-guard
         // preflight checks the footprint that actually loads (under Manual + Auto
         // layers the load sends 0 / the pinned context, not raw maxSeqLength).
@@ -1110,6 +1115,7 @@ export function SharedComposer({
                 gguf_memory_mode: effectiveMemoryMode,
               }
             : {}),
+          loadedIsDiffusion: loadedDiffusionClassification,
         });
         // Upgrade dialog first (mirrors the primary load path).
         if (validation.requires_transformers_upgrade) {
@@ -1179,6 +1185,7 @@ export function SharedComposer({
                 gguf_memory_mode: effectiveMemoryMode,
               }
             : {}),
+          loadedIsDiffusion: loadedDiffusionClassification,
         });
         // Keep a compare pane's per-model speculative choice load-local: persist
         // the global preference only when it came from global settings.

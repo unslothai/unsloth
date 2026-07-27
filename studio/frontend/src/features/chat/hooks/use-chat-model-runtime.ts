@@ -736,6 +736,14 @@ export function useChatModelRuntime() {
             const validateMemoryMode = resetsPerModelSettings
               ? null
               : loadMemoryMode;
+            // Reloading the SAME model: its header classification is already known,
+            // so pass it and let a DiffusionGemma-named GGUF the backend classified
+            // as ordinary keep the host-memory mode /load accepts for it. Switching,
+            // the loaded answer belongs to the previous model, so send nothing and
+            // let the boundary fall back to the name check.
+            const loadedDiffusionClassification = switchingModelOrVariant
+              ? null
+              : stateBeforeUnload.loadedIsDiffusion;
             // The reset below re-baselines gpuLayers to Auto; mirror it here.
             const validateGpuLayers = resetsPerModelSettings
               ? GPU_LAYERS_AUTO
@@ -768,6 +776,7 @@ export function useChatModelRuntime() {
               gpu_ids: validateGpuIds ?? undefined,
               ...(isGguf ? { gpu_memory_mode: loadGpuMemoryMode } : {}),
               gguf_memory_mode: validateMemoryMode,
+              loadedIsDiffusion: loadedDiffusionClassification,
             });
             // Upgrade consent runs before the security dialogs; Accept installs and the load continues.
             if (validation.requires_transformers_upgrade) {
@@ -932,6 +941,7 @@ export function useChatModelRuntime() {
               tensor_split: loadSplitRatio ?? undefined,
               gpu_ids: loadSelectedGpuIds ?? undefined,
               gguf_memory_mode: loadMemoryMode ?? null,
+              loadedIsDiffusion: loadedDiffusionClassification,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -1162,6 +1172,8 @@ export function useChatModelRuntime() {
                   tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
                   gguf_memory_mode: stateBeforeUnload.activeMemoryMode ?? null,
+                  // Rolling back to the model this classification belongs to.
+                  loadedIsDiffusion: stateBeforeUnload.loadedIsDiffusion,
                 });
                 const rollbackSpeculativeType = normalizeSpeculativeType(
                   rollbackResponse.speculative_type,

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
+import type { DiffusionClassification } from "@/lib/diffusion-model";
 
 export type GgufMemoryMode = "auto" | "pinned" | "resident";
 
@@ -81,6 +82,14 @@ export interface LoadModelRequest {
   gpu_ids?: number[];
   /** GGUF host-only loading policy. It does not control GPU VRAM residency. */
   gguf_memory_mode?: GgufMemoryMode | null;
+  /**
+   * Client-only (stripped before the request, like nativePathLease): the header
+   * classification the backend already returned for THIS exact target, or null
+   * when no header has been read. loadModel/validateModel feed it to
+   * diffusionSafeMemoryMode, so leaving it out only makes the host-memory gate
+   * fall back to the name check -- it can never let a rejected mode through.
+   */
+  loadedIsDiffusion?: DiffusionClassification;
 }
 
 export interface ValidateModelResponse {

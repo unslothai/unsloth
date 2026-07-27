@@ -13,34 +13,13 @@ export {
 
 const MODEL_STORAGE_KEY_PREFIX = "v2:";
 
-// Mirror the backend's _classify_diffusion_gguf (routes/inference.py): with no header,
-// strip non-alphanumerics and look for the DiffusionGemma name so staged Load agrees.
-export function looksLikeDiffusionGemma(
-  ...parts: (string | null | undefined)[]
-): boolean {
-  return parts.some((part) =>
-    (part ?? "")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "")
-      .includes("diffusiongemma"),
-  );
-}
-
-// Tri-state, mirroring the backend's _preflight_is_diffusion (core/inference/llama_cpp.py):
-// null means no GGUF header has been read yet, so nothing is classified.
-export type DiffusionClassification = boolean | null;
-
-// Resolve one diffusion answer from the backend's header classification plus the name.
-// The header wins whenever it exists: it is what /validate and /load themselves decide
-// on, so an ordinary GGUF that merely carries DiffusionGemma in its id keeps the controls
-// those endpoints accept for it. The name check is only the stand-in for a staged pick,
-// whose header the backend has not read yet either.
-export function resolveIsDiffusion(
-  loaded: DiffusionClassification,
-  ...parts: (string | null | undefined)[]
-): boolean {
-  return loaded ?? looksLikeDiffusionGemma(...parts);
-}
+// The diffusion classification lives in @/lib so the chat API layer can gate what it
+// sends on the same answer these controls gate on, without importing this feature.
+export {
+  type DiffusionClassification,
+  looksLikeDiffusionGemma,
+  resolveIsDiffusion,
+} from "@/lib/diffusion-model";
 
 type ParsedModelStorageKey = {
   modelId: string;

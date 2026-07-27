@@ -4,7 +4,7 @@
 import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
 import { useMemo } from "react";
 import type { PerModelConfig } from "../model-config/per-model-config";
-import { cachedPinnableGpuIndexKind } from "@/hooks/use-gpu-info";
+import { usePinnableGpuIndexKind } from "@/hooks/use-gpu-info";
 
 export interface ActiveModelConfigState {
   checkpoint: string | null;
@@ -30,6 +30,10 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
   const selectedGpuIds = useChatRuntimeStore((s) => s.selectedGpuIds);
   const ggufMemoryMode = useChatRuntimeStore((s) => s.ggufMemoryMode);
+  // Hook, not a one-shot cache read: selectedGpuIds is seeded from /api/inference/status
+  // and nothing here mounts a GPU hook, so the snapshot below can be built long before
+  // /api/system answers and none of its other dependencies ever change afterwards.
+  const pinnableGpuIndexKind = usePinnableGpuIndexKind();
 
   const isGguf =
     activeGgufVariant != null ||
@@ -61,7 +65,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       // Stay untagged while the device cache is cold: persisting a guessed
       // namespace would make a later reconcile drop the saved pick.
       selectedGpuIndexKind:
-        selectedGpuIds == null ? null : cachedPinnableGpuIndexKind(),
+        selectedGpuIds == null ? null : pinnableGpuIndexKind,
       ggufMemoryMode: ggufMemoryMode ?? undefined,
     };
   }, [
@@ -79,6 +83,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     nCpuMoe,
     selectedGpuIds,
     ggufMemoryMode,
+    pinnableGpuIndexKind,
   ]);
 
   return { checkpoint, isGguf, config };

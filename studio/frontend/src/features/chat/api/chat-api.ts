@@ -9,6 +9,7 @@ import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
+import { diffusionSafeMemoryMode } from "@/lib/diffusion-model";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type {
   MessageRecord,
@@ -20,6 +21,7 @@ import type {
   ApiMonitorEntry,
   ApiMonitorResponse,
   AudioGenerationResponse,
+  GgufMemoryMode,
   GgufVariantsResponse,
   InferenceStatusResponse,
   ListLorasResponse,
@@ -129,6 +131,27 @@ export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
   return parseJsonOrThrow<ApiMonitorEntry>(response);
 }
 
+/**
+ * The single host-memory gate for every load path.
+ *
+ * Settings-page Load, a picker row click on a remembered model, startup
+ * auto-load, Hub Run, a compare pane's Send and the failed-load rollback all
+ * funnel into loadModel/validateModel, and each one can carry a remembered
+ * gguf_memory_mode. Gating here rather than in any one of them is what keeps a
+ * mode the diffusion runner rejects off the wire: a caller that forgets the
+ * loadedIsDiffusion hint only falls back to the stricter name check.
+ */
+function loadPayloadMemoryMode(
+  payload: LoadModelRequest,
+): GgufMemoryMode | null {
+  return diffusionSafeMemoryMode(
+    payload.gguf_memory_mode,
+    payload.loadedIsDiffusion ?? null,
+    payload.model_path,
+    payload.gguf_variant,
+  );
+}
+
 export async function loadModel(
   payload: LoadModelRequest,
 ): Promise<LoadModelResponse> {
@@ -142,6 +165,12 @@ export async function loadModel(
       hf_token: preparedToken.token,
       native_path_lease: payload.nativePathLease ?? null,
       nativePathLease: undefined,
+      // Client-only fields: JSON.stringify drops undefined, so neither is sent.
+      loadedIsDiffusion: undefined,
+      gguf_memory_mode:
+        payload.gguf_memory_mode === undefined
+          ? undefined
+          : loadPayloadMemoryMode(payload),
     }),
   });
   return parseJsonOrThrow<LoadModelResponse>(response);
@@ -169,8 +198,8 @@ export async function validateModel(
       // --fit, while a pinned layer count is owned by the user. Tell validate
       // so it applies the same training-guard policy as /load.
       gpu_memory_mode: payload.gpu_memory_mode,
-      // Keep validate and load on the same host-memory policy.
-      gguf_memory_mode: payload.gguf_memory_mode ?? null,
+      // Keep validate and load on the same host-memory policy, diffusion gate included.
+      gguf_memory_mode: loadPayloadMemoryMode(payload),
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);

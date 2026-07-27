@@ -170,3 +170,29 @@ export function cachedPinnableGpuIndexKind():
     ? ([...kinds][0] as GpuIndexKind)
     : null;
 }
+
+/**
+ * The same namespace as a hook, so a consumer that reads it during render is
+ * re-rendered once /api/system resolves instead of keeping the cold `undefined`.
+ * A memoised config snapshot has no other dependency that changes when the cache
+ * warms, and an untagged saved pick is later read as a legacy physical one, so on
+ * a Vulkan host the reconcile would drop ids that were always valid. Warms the
+ * shared fetch itself, and stays `undefined` (never a guess) if it never resolves.
+ */
+export function usePinnableGpuIndexKind(): GpuIndexKind | null | undefined {
+  const [indexKind, setIndexKind] = useState<GpuIndexKind | null | undefined>(
+    cachedPinnableGpuIndexKind,
+  );
+  useEffect(() => {
+    // No early return on cachedSystem: a consumer mounting as the cache fills
+    // (between render and effect) would otherwise stay stuck at undefined.
+    let cancelled = false;
+    fetchSystemOnce().then(() => {
+      if (!cancelled) setIndexKind(cachedPinnableGpuIndexKind());
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return indexKind;
+}

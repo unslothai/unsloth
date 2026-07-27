@@ -30,6 +30,8 @@ _HUB_IDENTITY = _FRONTEND_SRC / "features/hub/lib/model-identity.ts"
 _MODEL_IDENTITY = _FRONTEND_SRC / "features/model-picker/model-config/model-identity.ts"
 _APPLY_CONFIG = _FRONTEND_SRC / "features/model-picker/model-config/apply-per-model-config.ts"
 _GPU_INFO = _FRONTEND_SRC / "hooks/use-gpu-info.ts"
+_CHAT_API = _FRONTEND_SRC / "features/chat/api/chat-api.ts"
+_ACTIVE_MODEL_CONFIG = _FRONTEND_SRC / "features/model-picker/hooks/use-active-model-config.ts"
 
 
 def _require_node():
@@ -71,29 +73,54 @@ def _extract_module_function(source: str, name: str) -> str:
     )
 
 
-def _write_harness(workdir: Path, script: str) -> None:
-    """Write the node harness into a pytest tmp dir (never the repo tree)."""
+def _write_harness(
+    workdir: Path,
+    script: str,
+    modules: dict[str, str] | None = None,
+    stubs: dict[str, str] | None = None,
+) -> None:
+    """Write the node harness into a pytest tmp dir (never the repo tree).
+
+    ``modules`` maps a bare/aliased specifier onto the file the loader should serve for
+    it, so a module under test can be imported for real while its heavy neighbours (the
+    feature barrels, React) are served from ``stubs`` written alongside the script.
+    """
     workdir.mkdir(parents = True, exist_ok = True)
     (workdir / "register.mjs").write_text(
         "import { register } from 'node:module';\nregister('./loader.mjs', import.meta.url);\n"
     )
+    for name, source in (stubs or {}).items():
+        (workdir / name).write_text(source)
+    mapping = {"@/features/hub": _HUB_IDENTITY.as_uri()}
+    for specifier, target in (modules or {}).items():
+        mapping[specifier] = target if "://" in target else (workdir / target).as_uri()
     # Resolve the app's "@/" alias and Vite's extensionless relative imports.
     (workdir / "loader.mjs").write_text(
-        "const HUB = %s;\n"
+        "const MAP = %s;\n"
+        "const SRC = %s;\n"
         "export function resolve(specifier, context, next) {\n"
-        "  if (specifier === '@/features/hub') return next(HUB, context);\n"
+        "  if (Object.hasOwn(MAP, specifier)) return next(MAP[specifier], context);\n"
+        "  if (specifier.startsWith('@/')) {\n"
+        "    const rest = specifier.slice(2);\n"
+        "    return next(SRC + rest + (rest.includes('.') ? '' : '.ts'), context);\n"
+        "  }\n"
         "  if (specifier.startsWith('.') && !specifier.endsWith('.ts')) {\n"
         "    return next(specifier + '.ts', context);\n"
         "  }\n"
         "  return next(specifier, context);\n"
-        "}\n" % json.dumps(_HUB_IDENTITY.as_uri())
+        "}\n" % (json.dumps(mapping), json.dumps(_FRONTEND_SRC.as_uri() + "/"))
     )
     (workdir / "run.mts").write_text(script)
 
 
-def _run(workdir: Path, script: str) -> dict:
+def _run(
+    workdir: Path,
+    script: str,
+    modules: dict[str, str] | None = None,
+    stubs: dict[str, str] | None = None,
+) -> dict:
     _require_node()
-    _write_harness(workdir, script)
+    _write_harness(workdir, script, modules, stubs)
     result = subprocess.run(
         [
             "node",
@@ -627,3 +654,324 @@ console.log("RESULT " + JSON.stringify({
     # Vulkan probe unreachable: the picker is hidden, the devices still list.
     assert result["probe_failed_pinnable"] == [False, False]
     assert result["probe_failed_names"] == ["GPU0", "GPU1"]
+
+
+_AUTH_CAPTURE_STUB = """
+export const calls: { url: string; body: any }[] = [];
+export async function authFetch(url: string, init?: any) {
+  calls.push({ url, body: init?.body ? JSON.parse(init.body) : null });
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      status: "ok", model: "m", display_name: "m",
+      is_vision: false, is_lora: false, valid: true, message: "",
+    }),
+  } as any;
+}
+"""
+
+_HF_AUTH_STUB = """
+export async function prepareHfTokenForUse(token: string | null | undefined) {
+  return { proceed: true, token: token ?? null };
+}
+"""
+
+_NATIVE_INTENTS_STUB = """
+export async function consumeNativePathToken() {
+  return { nativePathLease: null };
+}
+"""
+
+
+def test_host_memory_gate_covers_every_load_path(tmp_path):
+    """A remembered diffusion host-memory mode must not reach /validate or /load, ever.
+
+    ``_reject_diffusion_memory_mode`` 400s an explicit ``gguf_memory_mode`` on both endpoints,
+    and the control that would clear it is hidden. Gating only the settings page left the picker
+    row click on a remembered model, the startup auto-load, Hub Run and a compare pane's Send
+    sending it anyway, so the gate lives in the two request builders every one of them calls.
+    This drives the REAL ``chat-api.ts`` and inspects the bodies it posts.
+    """
+    # id, variant, mode, loaded classification (undefined = hint not supplied).
+    cases = [
+        # A staged pick: no header has been read, so the name stands in and the mode goes.
+        ["unsloth/DiffusionGemma-2B-GGUF", "Q4_K_M", "pinned", None],
+        # The name can also arrive on the variant alone.
+        ["/models/model.gguf", "DiffusionGemma-Q4_K_M", "resident", None],
+        # Loaded, and the header says ordinary: the id must not cost it the mode.
+        ["unsloth/DiffusionGemma-derivative-GGUF", "Q4_K_M", "pinned", False],
+        # Loaded, and the header says diffusion: gate it whatever the id looks like.
+        ["unsloth/gemma-3-4b-it-GGUF", "Q4_K_M", "resident", True],
+        # An ordinary model keeps its mode with no hint at all.
+        ["unsloth/gemma-3-4b-it-GGUF", "Q4_K_M", "pinned", None],
+    ]
+    script = """
+const api = await import("./chat-api-under-test.ts");
+const auth = await import("./auth-stub.ts");
+
+const out: any = { validate: [], load: [], leaked: [] };
+for (const [id, variant, mode, loaded] of %(cases)s as any[]) {
+  for (const kind of ["validate", "load"]) {
+    auth.calls.length = 0;
+    const payload: any = {
+      model_path: id,
+      gguf_variant: variant,
+      hf_token: null,
+      max_seq_length: 0,
+      load_in_4bit: true,
+      is_lora: false,
+      gguf_memory_mode: mode,
+    };
+    // null is a real hint ("a header was read and it said ordinary"); the absent
+    // case has to stay absent, which is what every un-updated caller sends.
+    if (loaded !== null) payload.loadedIsDiffusion = loaded;
+    if (kind === "validate") await api.validateModel(payload);
+    else await api.loadModel(payload);
+    const body = auth.calls[0].body;
+    out[kind].push(body.gguf_memory_mode ?? null);
+    if (Object.hasOwn(body, "loadedIsDiffusion")) out.leaked.push(id);
+  }
+}
+
+// A payload with no mode at all must not gain one, on either endpoint.
+auth.calls.length = 0;
+await api.loadModel({
+  model_path: "unsloth/DiffusionGemma-2B-GGUF", gguf_variant: "Q4_K_M",
+  hf_token: null, max_seq_length: 0, load_in_4bit: true, is_lora: false,
+} as any);
+out.loadOmitsAbsentMode = !Object.hasOwn(auth.calls[0].body, "gguf_memory_mode");
+
+console.log("RESULT " + JSON.stringify(out));
+""" % {"cases": json.dumps([[c[0], c[1], c[2], c[3]] for c in cases])}
+    result = _run(
+        tmp_path,
+        script,
+        modules = {
+            "@/features/auth": "auth-stub.ts",
+            "@/features/hf-auth": "hf-auth-stub.ts",
+            "@/features/native-intents/api": "native-intents-stub.ts",
+        },
+        stubs = {
+            "chat-api-under-test.ts": f'export * from {json.dumps(_CHAT_API.as_uri())};\n',
+            "auth-stub.ts": _AUTH_CAPTURE_STUB,
+            "hf-auth-stub.ts": _HF_AUTH_STUB,
+            "native-intents-stub.ts": _NATIVE_INTENTS_STUB,
+        },
+    )
+    expected = [None, None, "pinned", None, "pinned"]
+    # Both endpoints reject it, so both have to strip it, identically.
+    assert result["validate"] == expected
+    assert result["load"] == expected
+    # The classification is a client-side hint; the backend never sees the field.
+    assert result["leaked"] == []
+    assert result["loadOmitsAbsentMode"] is True
+
+
+# Enough of React to drive a real hook: state cells keyed by call order, effects
+# flushed after the render that scheduled them, memo recompute on dep identity.
+_REACT_STUB = """
+type Cell = { seeded?: boolean; value?: any; deps?: any[] };
+const cells: Cell[] = [];
+let cursor = 0;
+let queued: (() => void)[] = [];
+
+function cell(): Cell {
+  const existing = cells[cursor] ?? (cells[cursor] = {});
+  cursor += 1;
+  return existing;
+}
+
+function depsChanged(slot: Cell, deps: any[] | undefined): boolean {
+  if (!slot.seeded || deps === undefined || slot.deps === undefined) return true;
+  return (
+    slot.deps.length !== deps.length ||
+    deps.some((d, i) => !Object.is(d, slot.deps![i]))
+  );
+}
+
+export function useState<T>(init: T | (() => T)): [T, (next: any) => void] {
+  const slot = cell();
+  if (!slot.seeded) {
+    slot.seeded = true;
+    slot.value = typeof init === "function" ? (init as () => T)() : init;
+  }
+  const set = (next: any) => {
+    slot.value = typeof next === "function" ? next(slot.value) : next;
+  };
+  return [slot.value as T, set];
+}
+
+export function useEffect(fn: () => void, deps?: any[]): void {
+  const slot = cell();
+  const changed = depsChanged(slot, deps);
+  slot.seeded = true;
+  slot.deps = deps;
+  if (changed) queued.push(fn);
+}
+
+export function useMemo<T>(fn: () => T, deps: any[]): T {
+  const slot = cell();
+  if (depsChanged(slot, deps)) slot.value = fn();
+  slot.seeded = true;
+  slot.deps = deps;
+  return slot.value as T;
+}
+
+/** One render pass, then the effects it committed. */
+export function render<T>(component: () => T): T {
+  cursor = 0;
+  const out = component();
+  const effects = queued;
+  queued = [];
+  for (const effect of effects) effect();
+  return out;
+}
+"""
+
+# Only the two exports use-active-model-config.ts pulls from the chat barrel.
+_CHAT_BARREL_STUB = """
+export const state: any = {
+  params: { checkpoint: null, maxSeqLength: 4096 },
+  activeGgufVariant: null,
+  ggufContextLength: null,
+  customContextLength: null,
+  kvCacheDtype: null,
+  speculativeType: null,
+  specDraftNMax: null,
+  tensorParallel: false,
+  chatTemplateOverride: null,
+  gpuMemoryMode: "manual",
+  gpuLayers: 20,
+  nCpuMoe: 0,
+  selectedGpuIds: null,
+  ggufMemoryMode: null,
+};
+export function isExternalModelId(id: string | null | undefined): boolean {
+  return typeof id === "string" && id.startsWith("external:");
+}
+export function useChatRuntimeStore(selector: (s: any) => any) {
+  return selector(state);
+}
+"""
+
+# /api/system answers only once the script releases it, so the first render really
+# does run against a cold cache.
+_SYSTEM_GATE_STUB = """
+const DEVICE = (index: number, kind: string, name: string) => ({
+  index, index_kind: kind, name, memory_total_gb: 8, vram_free_gb: 8,
+});
+const SYSTEM = {
+  gpu: {
+    available: true,
+    backend: "vulkan",
+    gguf_gpu_ids_supported: true,
+    devices: [DEVICE(0, "physical", "GPU0"), DEVICE(1, "physical", "GPU1")],
+    gguf_gpu_devices: [DEVICE(0, "vulkan", "iGPU"), DEVICE(1, "vulkan", "dGPU")],
+  },
+};
+let release: (value: any) => void = () => {};
+const gate = new Promise((resolve) => { release = resolve; });
+export function releaseSystem() { release(SYSTEM); }
+export async function authFetch(_url: string) {
+  const data = await gate;
+  return { ok: true, status: 200, json: async () => data } as any;
+}
+"""
+
+
+def test_first_gpu_save_waits_for_the_vulkan_namespace(tmp_path):
+    """A first save must not untag a Vulkan pick just because /api/system was still in flight.
+
+    ``selectedGpuIds`` is seeded from /api/inference/status, which never warms the device cache,
+    and the memoised snapshot has no other dependency that changes when /api/system lands. Frozen
+    untagged, and with no earlier entry for ``keepStoredGpuIndexKind`` to recover a namespace
+    from, the first saved entry reads back as a legacy physical pick and the reconcile drops ids
+    that were always valid on this host. Drives the REAL hook and the REAL per-model store.
+    """
+    reconcile = _extract_function(_RUNTIME_STORE.read_text(), "reconcilePersistedGpuIds")
+    script = (
+        _STORAGE_SHIM
+        + """
+const react = await import("./react-stub.ts");
+const chat = await import("./chat-barrel-stub.ts");
+const system = await import("./system-stub.ts");
+const gpu = await import(%(gpu)s);
+const hook = await import(%(hook)s);
+const configs = await import(%(config)s);
+const identity = await import(%(identity)s);
+
+const { cachedPinnableGpuIndexKind, cachedPinnableGpuIndices } = gpu;
+%(reconcile)s
+
+const MODEL = "unsloth/model-GGUF";
+const VARIANT = "Q4_K_M";
+const KEY = identity.modelStorageKey(MODEL, VARIANT);
+const readEntry = () =>
+  JSON.parse(localStorage.getItem("unsloth_model_configs") ?? "{}")[KEY] ?? null;
+
+// A model is already loaded with a GPU pick when the page mounts: /status seeds
+// the store, /api/system has not answered, and nothing here warms it.
+chat.state.params.checkpoint = MODEL;
+chat.state.activeGgufVariant = VARIANT;
+chat.state.ggufContextLength = 8192;
+chat.state.customContextLength = 8192;
+chat.state.selectedGpuIds = [0, 1];
+
+const cold = react.render(() => hook.useActiveModelConfig());
+const coldKind = String(cold.config.selectedGpuIndexKind);
+const coldCache = String(cachedPinnableGpuIndexKind());
+
+// /api/system lands. No store field the memo watches has changed since.
+system.releaseSystem();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const warm = react.render(() => hook.useActiveModelConfig());
+const warmKind = String(warm.config.selectedGpuIndexKind);
+
+// The user hits Remember for the first time: what the snapshot carries is what
+// this model's only stored entry gets.
+configs.savePerModelConfig(MODEL, VARIANT, warm.config);
+const stored = readEntry();
+const reread = configs.resolveInitialConfig(MODEL, VARIANT).config;
+
+console.log("RESULT " + JSON.stringify({
+  coldKind,
+  coldCache,
+  warmKind,
+  storedKind: stored?.selectedGpuIndexKind ?? null,
+  storedIds: stored?.selectedGpuIds ?? null,
+  restored: reconcilePersistedGpuIds(reread.selectedGpuIds, reread.selectedGpuIndexKind),
+}));
+"""
+        % {
+            "gpu": json.dumps(_GPU_INFO.as_uri()),
+            "hook": json.dumps(_ACTIVE_MODEL_CONFIG.as_uri()),
+            "config": json.dumps(_PER_MODEL_CONFIG.as_uri()),
+            "identity": json.dumps(_MODEL_IDENTITY.as_uri()),
+            "reconcile": reconcile,
+        }
+    )
+    result = _run(
+        tmp_path,
+        script,
+        modules = {
+            "react": "react-stub.ts",
+            "@/features/chat": "chat-barrel-stub.ts",
+            "@/features/auth": "system-stub.ts",
+        },
+        stubs = {
+            "react-stub.ts": _REACT_STUB,
+            "chat-barrel-stub.ts": _CHAT_BARREL_STUB,
+            "system-stub.ts": _SYSTEM_GATE_STUB,
+        },
+    )
+    # Cold, the namespace is genuinely unknown, and the snapshot says so rather than guessing.
+    assert result["coldCache"] == "undefined"
+    assert result["coldKind"] == "undefined"
+    # Once the cache answers, the snapshot must follow it instead of freezing.
+    assert result["warmKind"] == "vulkan"
+    # So this model's first stored entry carries the namespace...
+    assert result["storedKind"] == "vulkan"
+    assert result["storedIds"] == [0, 1]
+    # ...and the pick still applies on the host it was made on.
+    assert result["restored"] == [0, 1]

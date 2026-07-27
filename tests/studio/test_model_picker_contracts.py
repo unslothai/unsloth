@@ -621,11 +621,16 @@ def test_diffusion_gates_cover_the_staged_load_flow():
     assert "isDiffusion={isDiffusionModel}" in page
     assert "isDiffusion={isActiveModel && loadedIsDiffusion}" not in page
 
-    identity = _read("features/model-picker/model-config/model-identity.ts")
-    assert "export function looksLikeDiffusionGemma(" in identity
+    classification = _read("lib/diffusion-model.ts")
+    assert "export function looksLikeDiffusionGemma(" in classification
     # Same normalization as _classify_diffusion_gguf in routes/inference.py.
-    assert 'replace(/[^a-z0-9]+/g, "")' in identity
-    assert '"diffusiongemma"' in identity
+    assert 'replace(/[^a-z0-9]+/g, "")' in classification
+    assert '"diffusiongemma"' in classification
+    # One classification for the whole app: the picker re-exports it, never restates it.
+    identity = _read("features/model-picker/model-config/model-identity.ts")
+    assert '} from "@/lib/diffusion-model";' in identity
+    assert "looksLikeDiffusionGemma," in identity
+    assert "function looksLikeDiffusionGemma(" not in identity
 
 
 def test_loaded_diffusion_classification_outranks_the_name_hint():
@@ -643,10 +648,13 @@ def test_loaded_diffusion_classification_outranks_the_name_hint():
     # The name must never be OR'd back on top of a loaded classification.
     assert "loadedIsDiffusion) || looksLikeDiffusionGemma" not in page
 
+    classification = _read("lib/diffusion-model.ts")
+    assert "export type DiffusionClassification = boolean | null;" in classification
+    assert "export function resolveIsDiffusion(" in classification
+    assert "return loaded ?? looksLikeDiffusionGemma(...parts);" in classification
     identity = _read("features/model-picker/model-config/model-identity.ts")
-    assert "export type DiffusionClassification = boolean | null;" in identity
-    assert "export function resolveIsDiffusion(" in identity
-    assert "return loaded ?? looksLikeDiffusionGemma(...parts);" in identity
+    assert "resolveIsDiffusion," in identity
+    assert "function resolveIsDiffusion(" not in identity
 
 
 def test_load_never_carries_a_hidden_host_memory_mode():
@@ -673,6 +681,27 @@ def test_load_never_carries_a_hidden_host_memory_mode():
     assert "if (!isDiffusion || config.ggufMemoryMode == null) {" in apply_config
 
 
+def test_host_memory_gate_sits_on_the_shared_request_boundary():
+    """Gating handleRun alone leaves every other load path sending the rejected mode.
+
+    A picker row click on a remembered model, the startup auto-load, Hub Run and a compare
+    pane's Send all build their own payload, and each one can carry a remembered
+    gguf_memory_mode. They funnel into exactly two functions, so the gate belongs there:
+    /validate and /load both 400 on it, so both request builders must strip it.
+    """
+    api = _read("features/chat/api/chat-api.ts")
+    assert "function loadPayloadMemoryMode(" in api
+    assert "diffusionSafeMemoryMode(" in api
+    assert api.count("loadPayloadMemoryMode(payload)") == 2
+    # The classification hint is client-side only and never reaches the backend.
+    assert "loadedIsDiffusion: undefined," in api
+
+    classification = _read("lib/diffusion-model.ts")
+    assert "export function diffusionSafeMemoryMode<" in classification
+    # Built on the one tri-state resolver, not a second name check.
+    assert "return resolveIsDiffusion(loaded, ...parts) ? null : memoryMode;" in classification
+
+
 def test_gpu_picker_hidden_when_its_ordinals_mean_other_devices():
     """A diffusion GGUF resolves gpu_ids as CUDA physical ids even on a Vulkan build, while
     /api/system advertises ggml ordinals, so the picker must not offer another card's index."""
@@ -689,3 +718,27 @@ def test_cold_device_cache_never_untags_a_saved_gpu_pick():
     assert "keepStoredGpuIndexKind(" in config.split("export function savePerModelConfig")[1]
     assert "if (config.selectedGpuIndexKind !== undefined) {" in config
     assert "selectedGpuIndexKind: stored.selectedGpuIndexKind" in config
+
+
+def test_active_model_snapshot_retags_when_the_device_cache_warms():
+    """The first save has no earlier entry to recover a namespace from, so the snapshot itself
+    has to follow /api/system rather than freeze on the cold read.
+
+    selectedGpuIds is seeded from /api/inference/status, which never warms the device cache, and
+    no other dependency of this memo changes when /api/system finally answers. Left untagged, the
+    first stored entry re-reads as a legacy physical pick and the reconcile drops valid Vulkan
+    ids. A hook re-renders the consumer instead; it still refuses to guess while cold.
+    """
+    src = _read("features/model-picker/hooks/use-active-model-config.ts")
+    assert "const pinnableGpuIndexKind = usePinnableGpuIndexKind();" in src
+    assert "selectedGpuIds == null ? null : pinnableGpuIndexKind," in src
+    # A one-shot read here is the bug: it cannot re-run when the cache fills.
+    assert "cachedPinnableGpuIndexKind" not in src
+    memo_deps = src.split("  }, [", 1)[1]
+    assert "pinnableGpuIndexKind," in memo_deps
+
+    gpu_info = _read("hooks/use-gpu-info.ts")
+    assert "export function usePinnableGpuIndexKind()" in gpu_info
+    assert "setIndexKind(cachedPinnableGpuIndexKind());" in gpu_info
+    # Warms the shared fetch itself, and never blocks on it.
+    assert "fetchSystemOnce().then(" in gpu_info
