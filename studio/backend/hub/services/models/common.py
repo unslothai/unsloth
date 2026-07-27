@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from pathlib import Path
 from typing import List, Literal, Optional
 from urllib.parse import quote
@@ -23,6 +22,7 @@ from hub.utils.gguf import (
     is_gguf_filename as _is_gguf_filename,
     is_mmproj_filename as _is_mmproj_filename,
     is_mtp_drafter_path as _is_mtp_drafter_path,
+    is_split_gguf_filename as _is_split_gguf_filename,
 )
 from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
 
@@ -369,14 +369,10 @@ def _main_gguf_files(path: Path, *, include_symlinks: bool = False) -> list[Path
     ]
 
 
-# llama.cpp split naming: ``model-00001-of-00013.gguf``.
-_GGUF_SPLIT_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
-
-
 def _gguf_files_are_sharded(gguf_files: list[Path]) -> bool:
     """True when the main GGUF files form a multi-part split (any shard carries
     the ``-NNN-of-NNN`` suffix)."""
-    return any(_GGUF_SPLIT_RE.search(entry.name) for entry in gguf_files)
+    return any(_is_split_gguf_filename(entry.name) for entry in gguf_files)
 
 
 def _format_label(model_format: ModelFormat) -> str:

@@ -79,6 +79,11 @@ _GGUF_QUANT_RE = re.compile(
 )
 
 
+def is_split_gguf_filename(filename: str) -> bool:
+    """True for one part of a llama.cpp split, e.g. ``model-00001-of-00013.gguf``."""
+    return _GGUF_SPLIT_SUFFIX_RE.search(filename) is not None
+
+
 def is_mmproj_filename(filename: str) -> bool:
     return "mmproj" in filename.lower()
 

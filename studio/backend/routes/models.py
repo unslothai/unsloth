@@ -112,6 +112,7 @@ if str(backend_path) not in sys.path:
 
 from auth.authentication import get_current_subject
 from hub.dependencies import get_hf_token
+from hub.utils.gguf import is_split_gguf_filename
 
 try:
     from utils.models import (
@@ -460,17 +461,36 @@ def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
         return None
 
 
-# llama.cpp split naming: ``model-00001-of-00013.gguf``.
-_GGUF_SPLIT_RE = _re.compile(r"-\d{3,}-of-\d{3,}", _re.IGNORECASE)
-
-
 def _dir_is_sharded_gguf(path: Path) -> bool:
-    """True when a folder holds a multi-part GGUF split (any ``-NNN-of-NNN``
-    shard). Used to badge sharded exports in the UI."""
+    """True when a folder's main GGUF weights are a multi-part split (any
+    ``-NNN-of-NNN`` shard). Badges the row, and marks the folder as one model
+    rather than a publisher of many. mmproj/drafter companions don't count, the
+    same way ``_dir_model_format`` ignores them."""
     try:
-        return any(_GGUF_SPLIT_RE.search(p.name) for p in path.glob("*.gguf"))
+        return any(
+            is_split_gguf_filename(p.name)
+            for p in path.glob("*.gguf")
+            if _is_main_gguf_filename(p.name)
+        )
     except OSError:
         return False
+
+
+def _lmstudio_dir_row(path: Path) -> LocalModelInfo:
+    """One inventory row for a model folder found under an LM Studio scan root."""
+    try:
+        updated_at = path.stat().st_mtime
+    except OSError:
+        updated_at = None
+    return LocalModelInfo(
+        id = str(path),
+        display_name = path.name,
+        path = str(path),
+        source = "lmstudio",
+        model_format = _dir_model_format(path),
+        is_sharded = _dir_is_sharded_gguf(path),
+        updated_at = updated_at,
+    )
 
 
 def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
@@ -482,24 +502,14 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
-    # If lm_dir is itself a model directory (not a publisher structure),
-    # return it as a single entry rather than skipping it silently.
-    if _is_model_directory(lm_dir):
-        try:
-            updated_at = lm_dir.stat().st_mtime
-        except OSError:
-            updated_at = None
-        return [
-            LocalModelInfo(
-                id = str(lm_dir),
-                display_name = lm_dir.name,
-                path = str(lm_dir),
-                source = "lmstudio",
-                model_format = _dir_model_format(lm_dir),
-                is_sharded = _dir_is_sharded_gguf(lm_dir),
-                updated_at = updated_at,
-            ),
-        ]
+    # lm_dir may itself be the model rather than a publisher root: either a
+    # normal model directory, or a config-less split export the user registered
+    # directly as a scan folder. Return it as one row rather than skipping it
+    # silently or fanning its shards out into a row per file below. Loose
+    # standalone GGUFs at the root stay one model each, so only a *split*
+    # collapses here.
+    if _is_model_directory(lm_dir) or _dir_is_sharded_gguf(lm_dir):
+        return [_lmstudio_dir_row(lm_dir)]
 
     found: List[LocalModelInfo] = []
     for child in lm_dir.iterdir():
@@ -522,50 +532,13 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                     )
                 continue
 
-            # Surface a model-directory child directly instead of
-            # descending into it as a publisher.
-            if _is_model_directory(child):
-                try:
-                    updated_at = child.stat().st_mtime
-                except OSError:
-                    updated_at = None
-                found.append(
-                    LocalModelInfo(
-                        id = str(child),
-                        display_name = child.name,
-                        path = str(child),
-                        source = "lmstudio",
-                        model_format = _dir_model_format(child),
-                        is_sharded = _dir_is_sharded_gguf(child),
-                        updated_at = updated_at,
-                    ),
-                )
-                continue
-
-            # A config-less GGUF folder (e.g. a split/sharded export: many
-            # -NNN-of-NNN.gguf shards with no config.json) is a single model,
-            # not a publisher. Surface it as one row so the split doesn't fan
-            # out into an entry per shard.
-            try:
-                child_has_gguf = any(child.glob("*.gguf"))
-            except OSError:
-                child_has_gguf = False
-            if child_has_gguf:
-                try:
-                    updated_at = child.stat().st_mtime
-                except OSError:
-                    updated_at = None
-                found.append(
-                    LocalModelInfo(
-                        id = str(child),
-                        display_name = child.name,
-                        path = str(child),
-                        source = "lmstudio",
-                        model_format = _dir_model_format(child),
-                        is_sharded = _dir_is_sharded_gguf(child),
-                        updated_at = updated_at,
-                    ),
-                )
+            # Surface a model-directory child directly instead of descending
+            # into it as a publisher. A config-less split export (many
+            # -NNN-of-NNN.gguf parts, no config.json) is one model too, so it
+            # collapses to a single row instead of a row per shard. A publisher
+            # holding ordinary whole GGUFs is not a split, and still descends.
+            if _is_model_directory(child) or _dir_is_sharded_gguf(child):
+                found.append(_lmstudio_dir_row(child))
                 continue
 
             # child is a publisher directory; scan its subdirectories.

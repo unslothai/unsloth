@@ -1319,6 +1319,13 @@ function localModelIsGguf(m: LocalModelInfo): boolean {
   );
 }
 
+/** Meta string for a local model row: format pill, plus a "Sharded" pill when
+ * the GGUF is a multi-part split. */
+function localModelRowMeta(m: LocalModelInfo, isGguf: boolean): string {
+  if (!isGguf) return "Local";
+  return m.is_sharded ? "GGUF · Sharded" : "GGUF";
+}
+
 function localPathTooltip(name: string, path: string): ReactNode {
   return (
     <>
@@ -3626,7 +3633,7 @@ export function HubModelPicker({
                               <div className="min-w-0 flex-1">
                                 <ModelRow
                                   label={m.model_id ?? m.display_name}
-                                  meta={isGguf ? "GGUF" : "Local"}
+                                  meta={localModelRowMeta(m, isGguf)}
                                   tooltipText={localPathTooltip(
                                     m.model_id ?? m.display_name,
                                     m.path,
@@ -3754,7 +3761,7 @@ export function HubModelPicker({
                               <div className="min-w-0 flex-1">
                                 <ModelRow
                                   label={m.model_id ?? m.display_name}
-                                  meta={isGguf ? "GGUF" : "Local"}
+                                  meta={localModelRowMeta(m, isGguf)}
                                   tooltipText={localPathTooltip(
                                     m.model_id ?? m.display_name,
                                     m.path,
@@ -3874,7 +3881,7 @@ export function HubModelPicker({
                               <div className="min-w-0 flex-1">
                                 <ModelRow
                                   label={m.model_id ?? m.display_name}
-                                  meta={isGguf ? "GGUF" : "Local"}
+                                  meta={localModelRowMeta(m, isGguf)}
                                   tooltipText={localPathTooltip(
                                     m.model_id ?? m.display_name,
                                     m.path,
