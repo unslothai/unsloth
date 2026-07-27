@@ -368,6 +368,12 @@ function looksLikePath(id: string): boolean {
   );
 }
 
+// Same model, ignoring any ":quant" a caller pinned.
+function sameBaseModelId(a: string, b: string): boolean {
+  const base = (id: string) => id.trim().toLowerCase().split(":")[0];
+  return a.trim().toLowerCase() === b.trim().toLowerCase() || base(a) === base(b);
+}
+
 // The model the examples name: always an id /v1 resolves against, null when there is none.
 function useExampleModelName(): string | null {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
@@ -378,12 +384,10 @@ function useExampleModelName(): string | null {
   const [autoSwitch, setAutoSwitch] = useState(false);
   const usableCheckpoint =
     !!checkpoint && !checkpoint.startsWith("external::") && !looksLikePath(checkpoint);
-  const needsCatalog = !usableCheckpoint;
 
-  // Only when the checkpoint can't answer it; polls for as long as it is mounted.
+  // Always: a stored checkpoint can stop being servable without the store changing.
   // biome-ignore lint/correctness/useExhaustiveDependencies: a load or unload must refetch the servable ids
   useEffect(() => {
-    if (!needsCatalog) return;
     let cancelled = false;
     let timeoutId: number | null = null;
 
@@ -415,24 +419,34 @@ function useExampleModelName(): string | null {
       cancelled = true;
       if (timeoutId !== null) window.clearTimeout(timeoutId);
     };
-  }, [needsCatalog, checkpoint, ggufVariant]);
+  }, [checkpoint, ggufVariant]);
 
   return useMemo(() => {
-    if (usableCheckpoint && checkpoint) {
+    // Name something held here, with its quant to pin the file on disk.
+    const fromCatalog = (): string | null => {
+      const pick =
+        catalog?.find((m) => m.loaded) ?? (autoSwitch ? catalog?.[0] : undefined);
+      if (!pick) {
+        return null;
+      }
+      return pick.quant && !pick.id.includes(":")
+        ? `${pick.id}:${pick.quant}`
+        : pick.id;
+    };
+    // The store keeps a checkpoint across an idle unload, so it only names a
+    // runnable model while the catalog still backs it, or switching can reload it.
+    // null catalog means /v1/models has not answered, so don't call it unrunnable.
+    const backed =
+      catalog === null ||
+      autoSwitch ||
+      catalog.some((m) => m.loaded && sameBaseModelId(m.id, checkpoint ?? ""));
+    if (usableCheckpoint && checkpoint && backed) {
       if (ggufVariant && !checkpoint.includes(":")) {
         return `${checkpoint}:${ggufVariant}`;
       }
       return checkpoint;
     }
-    // No usable checkpoint: name something held here, with its quant to pin the file on disk.
-    const pick =
-      catalog?.find((m) => m.loaded) ?? (autoSwitch ? catalog?.[0] : undefined);
-    if (!pick) {
-      return null;
-    }
-    return pick.quant && !pick.id.includes(":")
-      ? `${pick.id}:${pick.quant}`
-      : pick.id;
+    return fromCatalog();
   }, [autoSwitch, catalog, checkpoint, ggufVariant, usableCheckpoint]);
 }
 

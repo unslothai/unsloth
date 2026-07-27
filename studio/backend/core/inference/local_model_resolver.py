@@ -109,7 +109,18 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         load_dir = _resolve_load_dir(p)
         variants, _ = list_local_gguf_variants(str(load_dir))
         quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
-        return _LocalGgufEntry(loader_id, str(load_dir), quants) if quants else None
+        if not quants:
+            return None
+        # That call orders by descending size, so the head is the biggest quant,
+        # often F16. A bare id means whichever quant a plain load would take, so put
+        # that first: everything downstream reads [0], and answering with the
+        # largest can evict a working model and then OOM starting it.
+        from core.inference.openai_auto_download import preferred_quant
+
+        best = preferred_quant(quants)
+        if best and quants[0] != best:
+            quants = (best, *(q for q in quants if q != best))
+        return _LocalGgufEntry(loader_id, str(load_dir), quants)
     except Exception:
         return None
 

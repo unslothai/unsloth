@@ -606,6 +606,23 @@ async def _admit_and_start(
     return await _dispatch(repo_id, variant, expected_bytes, requested_model, hf_token, active)
 
 
+def preferred_quant(labels) -> Optional[str]:
+    """The quant a plain load would pick from *labels*, or None.
+
+    The one ranking for "which quant did they mean": local resolution, remote
+    admission and what /v1/models advertises all have to agree, or a bare id
+    means a different quant depending on which of them answered it.
+    """
+    from utils.models.model_config import _pick_best_gguf
+
+    # _pick_best_gguf ranks filenames and matches upper-case tokens, so feed "<LABEL>.gguf".
+    synthetic: dict[str, str] = {}
+    for name in labels:
+        synthetic.setdefault(f"{name.upper()}.gguf", name)
+    best = _pick_best_gguf(list(synthetic))
+    return synthetic.get(best) if best else None
+
+
 def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[str]:
     """Resolve the requested quant against what the repo actually has.
 
@@ -618,14 +635,7 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
     if wanted and looks_like_quant(wanted):
         lowered = {name.lower(): name for name in variants}
         return lowered.get(wanted.strip().lower())
-    from utils.models.model_config import _pick_best_gguf
-
-    # _pick_best_gguf ranks filenames and matches upper-case tokens, so feed "<LABEL>.gguf".
-    synthetic: dict[str, str] = {}
-    for name in variants:
-        synthetic.setdefault(f"{name.upper()}.gguf", name)
-    best = _pick_best_gguf(list(synthetic))
-    return synthetic.get(best) if best else None
+    return preferred_quant(variants)
 
 
 async def _dispatch(

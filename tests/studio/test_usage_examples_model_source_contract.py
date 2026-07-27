@@ -50,14 +50,19 @@ def test_examples_never_print_a_hardcoded_model_id():
 
 
 def test_catalog_refresh_follows_the_loaded_model():
-    # `[needsCatalog]` alone never re-ran, so a finished load left the first fetch's name.
+    # A dep list that misses these never re-ran, so a finished load left the first
+    # fetch's name. It must not be gated on having no checkpoint either: the store
+    # keeps one across an idle unload, which changes nothing React can see.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
-    assert "}, [needsCatalog, checkpoint, ggufVariant]);" in hook
-    # A finishing download moves no store state, so the fetch retries on a timer too.
-    assert "window.setTimeout(update, CATALOG_RETRY_MS)" in hook
+    assert "}, [checkpoint, ggufVariant]);" in hook
+    assert "needsCatalog" not in hook
+    # A finishing download moves no store state, so the fetch retries on a timer too,
+    # and residency only slows that timer rather than stopping it.
+    assert "CATALOG_RETRY_MS" in hook and "CATALOG_IDLE_MS" in hook
     assert "window.clearTimeout(timeoutId)" in hook
     assert "const CATALOG_RETRY_MS = 15000;" in src
+    assert "const CATALOG_IDLE_MS = 60000;" in src
 
 
 def test_usage_examples_has_no_duplicate_auto_switch_control():

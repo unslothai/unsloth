@@ -4234,3 +4234,27 @@ def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
         "Q4_K_M",
         "org/old",
     )
+
+
+def test_a_bare_local_id_takes_the_quant_a_plain_load_would(monkeypatch, tmp_path):
+    # list_local_gguf_variants orders by descending size, so the head is the biggest
+    # quant. Resolving a bare id to that could evict a working model and then OOM
+    # starting an F16 on a box sized for the Q4 sitting right next to it, and
+    # /v1/models advertised the same head for pinning.
+    from core.inference.local_model_resolver import _local_gguf_entry
+
+    for name, size in (("model-F16.gguf", 900), ("model-Q4_K_M.gguf", 100)):
+        (tmp_path / name).write_bytes(b"\0" * size)
+    entry = _local_gguf_entry("org/model", type("I", (), {"path": str(tmp_path)})())
+    assert entry is not None
+    assert set(entry.variants) == {"F16", "Q4_K_M"}
+    assert entry.variants[0] == "Q4_K_M", "a bare id would have resolved to F16"
+
+
+def test_local_and_remote_agree_on_the_preferred_quant():
+    # A bare id must mean the same quant whichever side answered it.
+    from core.inference.openai_auto_download import _match_variant, preferred_quant
+
+    labels = ("F16", "Q8_0", "UD-Q4_K_XL", "Q4_K_M")
+    assert preferred_quant(labels) == _match_variant(None, dict.fromkeys(labels, 1))
+    assert preferred_quant(labels) not in ("F16",)
