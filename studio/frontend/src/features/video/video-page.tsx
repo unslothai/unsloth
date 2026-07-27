@@ -135,6 +135,12 @@ const galleryCache: {
   // Ids with a fetch in flight, so concurrent ensureSrc calls don't double-fetch
   // (and leak the duplicate object URL).
   inflight: Set<string>;
+  // Ids deleted while their MP4 was still downloading. A clip is tens to hundreds of MB, and a
+  // fetch that lands after the delete has nothing left to revoke it: the card is gone, so the
+  // blob would stay pinned for the rest of the session. Clear-all bumps the epoch instead of
+  // listing every id.
+  deleted: Set<string>;
+  epoch: number;
 } = {
   videos: [],
   hasMore: false,
@@ -142,6 +148,8 @@ const galleryCache: {
   quant: null,
   srcById: new Map(),
   inflight: new Set(),
+  deleted: new Set(),
+  epoch: 0,
 };
 
 // Videos loaded per infinite-scroll page.
@@ -686,8 +694,16 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   const ensureSrc = useCallback(async (video: GalleryVideo) => {
     if (galleryCache.srcById.has(video.id) || galleryCache.inflight.has(video.id)) return;
     galleryCache.inflight.add(video.id);
+    const epochAtStart = galleryCache.epoch;
     try {
       const url = await fetchGalleryVideoObjectUrl(video.url);
+      // The record can be deleted (or the gallery cleared) while its MP4 is downloading. The
+      // delete handler revoked whatever URL existed then, so caching this one would pin a blob
+      // no card can ever release.
+      if (galleryCache.deleted.has(video.id) || galleryCache.epoch !== epochAtStart) {
+        URL.revokeObjectURL(url);
+        return;
+      }
       galleryCache.srcById.set(video.id, url);
       // The URL is cached above either way; skip the state update after unmount
       // (matches the other async callbacks in this file).
@@ -820,6 +836,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     const url = galleryCache.srcById.get(id);
     if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
     galleryCache.srcById.delete(id);
+    // A fetch still in flight for this id must throw its blob away rather than cache it.
+    galleryCache.deleted.add(id);
     setSrcById((prev) => {
       const next = { ...prev };
       delete next[id];
@@ -840,6 +858,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       if (url.startsWith("blob:")) URL.revokeObjectURL(url);
     }
     galleryCache.srcById.clear();
+    // Every fetch in flight now belongs to a cleared gallery, so their blobs are discarded on
+    // arrival. The epoch covers ids this page never listed too.
+    galleryCache.epoch += 1;
     galleryCache.videos = [];
     galleryCache.hasMore = false;
     galleryCache.selectedId = null;
@@ -1063,8 +1084,13 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           // backend until the next job, and the mount gallery fetch usually already has the clip;
           // merging here (deduped) covers the race where the job completed after that fetch.
           const clip = g.video;
-          setVideos((prev) => (prev.some((v) => v.id === clip.id) ? prev : [clip, ...prev]));
-          void ensureSrc(clip);
+          // Deleted this session: the backend clears its terminal record on delete, but a client
+          // that deleted the clip before that shipped (or one racing the delete) must not merge a
+          // record whose file is gone and show a card that 404s.
+          if (!galleryCache.deleted.has(clip.id)) {
+            setVideos((prev) => (prev.some((v) => v.id === clip.id) ? prev : [clip, ...prev]));
+            void ensureSrc(clip);
+          }
         } else if (g.phase === "failed") {
           // The other terminal phase, and the backend keeps it only until the next job: without
           // this a reload after a minutes-long generation failed shows an idle page and the

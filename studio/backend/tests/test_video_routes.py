@@ -608,6 +608,55 @@ def test_delete_and_clear(client):
     assert client.get("/api/inference/video/gallery").json()["videos"] == []
 
 
+def test_deleting_a_clip_clears_the_terminal_generation_record(client):
+    """The completed record outlives its job so a page mounting late still sees the clip. Once the
+    clip is deleted that record points at a file that is gone, and the Video page merged it back on
+    every reload as a card whose fetch 404s."""
+    client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
+    )
+    clip = _generate_and_wait(client, {"prompt": "a"})
+    progress = client.get("/api/inference/video/generate-progress").json()
+    assert progress["phase"] == "completed" and progress["video"]["id"] == clip["id"]
+
+    assert client.delete(f"/api/inference/video/gallery/{clip['id']}").status_code == 200
+
+    after = client.get("/api/inference/video/generate-progress").json()
+    assert after.get("video") is None
+    assert after.get("phase") != "completed"
+    assert after["active"] is False
+
+
+def test_clearing_the_gallery_clears_the_terminal_generation_record(client):
+    client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
+    )
+    _generate_and_wait(client, {"prompt": "a"})
+    assert client.delete("/api/inference/video/gallery").status_code == 200
+
+    after = client.get("/api/inference/video/generate-progress").json()
+    assert after.get("video") is None
+    assert after["active"] is False
+
+
+def test_deleting_a_different_clip_leaves_the_terminal_record_alone(client):
+    """Only the terminal clip's own deletion clears it: deleting an older clip must not drop the
+    record the page needs to show the run that just finished."""
+    client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
+    )
+    older = _generate_and_wait(client, {"prompt": "a"})
+    newest = _generate_and_wait(client, {"prompt": "b"})
+
+    assert client.delete(f"/api/inference/video/gallery/{older['id']}").status_code == 200
+
+    after = client.get("/api/inference/video/generate-progress").json()
+    assert after["phase"] == "completed" and after["video"]["id"] == newest["id"]
+
+
 def test_gallery_pagination(client):
     client.post(
         "/api/inference/video/load",

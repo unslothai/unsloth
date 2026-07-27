@@ -781,6 +781,10 @@ def active_download_refs(
         else:
             ref_repo_id = metadata.repo_id if metadata is not None else ref.key
             variant = None
+        # Scoped jobs share one slot per repo, so publish the file list an adopting client needs
+        # to recognise its own transfer. Absent metadata (a job hydrated before the registry knew
+        # it) reports null, which the client treats as "cannot prove it is mine".
+        scoped_files = list(metadata.scoped_files) if metadata is not None else []
         downloads.append(
             ActiveDownload(
                 repo_id = ref_repo_id,
@@ -788,6 +792,7 @@ def active_download_refs(
                 transport = metadata.transport if metadata is not None else None,
                 state = ref.state,
                 generation = ref.generation,
+                files = scoped_files or None,
             )
         )
     return downloads

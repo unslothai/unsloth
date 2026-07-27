@@ -30,7 +30,8 @@ export interface ManagedDownload {
    * scope slot (see `scopedVariant`), so this is what separates "my transfer is already
    * running" from "a different quant of this repo is running": adopting the latter would
    * report ready for files nobody fetched. Absent means unknown (an unscoped job, or one
-   * hydrated by an older build), and unknown stays adoptable as before.
+   * hydrated by an older build). Unknown stays adoptable for an UNSCOPED job; for a scoped one
+   * it cannot be adopted, since the slot alone says nothing about which files are in flight.
    */
   scopedFiles?: string[];
 }

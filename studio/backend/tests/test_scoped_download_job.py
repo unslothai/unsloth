@@ -275,3 +275,50 @@ def test_an_unavailable_backend_never_blocks_a_download(monkeypatch):
     monkeypatch.setattr(video_backend, "get_video_backend", _boom)
 
     assert dl._load_in_flight("Org/Anything") is False
+
+
+def test_active_downloads_publish_the_scoped_file_list(monkeypatch):
+    """An adopting client (a second browser profile, or a tab opened before the throttled state
+    write) has no local record of what a live job is fetching. Every file set of one repo shares
+    the "@scope" slot, so without this list it cannot tell its own transfer from a sibling
+    checkpoint's and would report a never-fetched file as already downloading."""
+    monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
+    monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
+    monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
+    monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
+
+    key = dl._download_job_key("black-forest-labs/FLUX.1-dev", dl._scope_variant("diffusion"))
+    try:
+        asyncio.run(dl.download_model_response(_request()))
+        rows = download_lifecycle.active_download_refs(
+            dl._registry, "black-forest-labs/FLUX.1-dev", with_variant = True
+        )
+        scoped = [r for r in rows if r.variant == "@diffusion"]
+        assert scoped, f"no scoped row in {rows}"
+        assert list(scoped[0].files or []) == FILES
+    finally:
+        dl._registry.set_job(key, "complete")
+
+
+def test_a_full_snapshot_download_reports_no_file_list(monkeypatch):
+    # Only a scoped job has a deliberate subset; a full snapshot must not claim one, or the
+    # client would match its whole-repo job against a scoped request.
+    monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
+    monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
+    monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
+
+    key = dl._download_job_key("black-forest-labs/FLUX.1-dev", None)
+    try:
+        asyncio.run(
+            dl.download_model_response(
+                DownloadModelRequest(repo_id = "black-forest-labs/FLUX.1-dev", use_xet = False)
+            )
+        )
+        rows = download_lifecycle.active_download_refs(
+            dl._registry, "black-forest-labs/FLUX.1-dev", with_variant = True
+        )
+        full = [r for r in rows if r.variant is None]
+        assert full, f"no full-snapshot row in {rows}"
+        assert full[0].files is None
+    finally:
+        dl._registry.set_job(key, "complete")

@@ -1887,6 +1887,27 @@ class VideoBackend:
         gen["fraction"] = min(1.0, step / total) if total > 0 else 0.0
         return gen
 
+    def forget_terminal_video(self, video_id: Optional[str] = None) -> bool:
+        """Drop the completed terminal record when its clip leaves the gallery.
+
+        ``generate_progress()`` keeps the last completed job until the next one starts, and the
+        Video page merges that record on mount to cover a job that finished after the gallery
+        fetch. Once the clip is deleted the record points at a file that is gone, so every refresh
+        resurrected a ghost card whose file request 404s until the backend restarts. ``video_id``
+        None forgets whatever completed record is held (the clear-all case). A live job is left
+        alone: its own terminal swap comes later."""
+        with self._lock:
+            gen = self._gen
+            if self._generate_job_active or not isinstance(gen, dict):
+                return False
+            if gen.get("phase") != "completed":
+                return False
+            held = str((gen.get("video") or {}).get("id") or "")
+            if video_id is not None and held != str(video_id):
+                return False
+            self._gen = {"active": False}
+            return True
+
     def cancel_generate(self) -> bool:
         """Signal the in-flight generation to stop at its next step callback."""
         with self._lock:

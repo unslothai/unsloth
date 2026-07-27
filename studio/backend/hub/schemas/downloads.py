@@ -85,6 +85,15 @@ class ActiveDownload(BaseModel):
     variant: Optional[str] = None
     transport: Optional[str] = None
     state: str
+    files: Optional[List[str]] = Field(
+        None,
+        description = (
+            "For a SCOPED job (variant '@name'), the exact file list it is fetching; null for a "
+            "full-snapshot or variant download. Every file set of one repo shares the scope slot, "
+            "so an adopting client needs this to tell whether a live job is its own transfer or a "
+            "sibling checkpoint's."
+        ),
+    )
     generation: int = Field(
         0,
         description = "Current run generation; an adopting client stores it so a later cancel is scoped to this exact run.",

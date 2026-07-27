@@ -289,6 +289,10 @@ const galleryCache: {
   // Ids with a fetch in flight, so concurrent ensureSrc calls don't double-fetch
   // (and leak the duplicate object URL).
   inflight: Set<string>;
+  // Ids deleted while their PNG was still downloading: the delete revoked whatever URL existed
+  // then, so a fetch landing afterwards must throw its blob away instead of caching one that no
+  // card can release.
+  deleted: Set<string>;
 } = {
   images: [],
   hasMore: false,
@@ -296,6 +300,7 @@ const galleryCache: {
   quant: null,
   srcById: new Map(),
   inflight: new Set(),
+  deleted: new Set(),
 };
 
 // Images loaded per infinite-scroll page.
@@ -1365,6 +1370,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     galleryCache.inflight.add(image.id);
     try {
       const url = await fetchGalleryObjectUrl(image.url);
+      if (galleryCache.deleted.has(image.id)) {
+        URL.revokeObjectURL(url);
+        return;
+      }
       galleryCache.srcById.set(image.id, url);
       setSrcById((prev) => ({ ...prev, [image.id]: url }));
     } catch {
@@ -1425,6 +1434,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     const url = galleryCache.srcById.get(id);
     if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
     galleryCache.srcById.delete(id);
+    // A fetch still in flight for this id must discard its blob rather than cache it.
+    galleryCache.deleted.add(id);
     setSrcById((prev) => {
       const next = { ...prev };
       delete next[id];

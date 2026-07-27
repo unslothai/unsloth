@@ -18,6 +18,7 @@ here.
 from __future__ import annotations
 
 import asyncio
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import ValidationError
@@ -358,6 +359,18 @@ async def export_gallery_video(
     )
 
 
+def _forget_terminal_video(video_id: Optional[str]) -> None:
+    """Clear the backend's completed-job record for a clip that just left the gallery, so a page
+    reload does not merge it back as a card whose file is gone. Best-effort: an unavailable backend
+    only means the stale record survives, which is what happened before this call existed."""
+    try:
+        from core.inference.video import get_video_backend
+
+        get_video_backend().forget_terminal_video(video_id)
+    except Exception as e:  # noqa: BLE001 -- never fail a delete over progress bookkeeping
+        logger.debug(f"Could not clear the terminal video record for {video_id!r}: {e}")
+
+
 @router.delete("/video/gallery/{video_id}")
 async def delete_gallery_video(video_id: str, current_subject: str = Depends(get_current_subject)):
     from core.inference import video_gallery
@@ -365,6 +378,7 @@ async def delete_gallery_video(video_id: str, current_subject: str = Depends(get
     deleted = await asyncio.to_thread(video_gallery.delete, video_id)
     if not deleted:
         raise HTTPException(status_code = 404, detail = "Video not found.")
+    _forget_terminal_video(video_id)
     return {"deleted": True}
 
 
@@ -372,4 +386,6 @@ async def delete_gallery_video(video_id: str, current_subject: str = Depends(get
 async def clear_gallery_videos(current_subject: str = Depends(get_current_subject)):
     from core.inference import video_gallery
     removed = await asyncio.to_thread(video_gallery.clear)
+    # Clear-all takes the terminal record's clip with it whatever its id.
+    _forget_terminal_video(None)
     return {"removed": removed}
