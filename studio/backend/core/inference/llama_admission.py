@@ -310,7 +310,12 @@ class LlamaAdmissionQueue:
             if self._parked > 0:
                 self._parked -= 1
 
-    async def unpark_async(self, *, cancel_event = None, poll_s: float = 0.02) -> None:
+    async def unpark_async(
+        self,
+        *,
+        cancel_event = None,
+        poll_s: float = 0.02,
+    ) -> None:
         """Take the slot back, waiting until capacity allows it.
 
         park() hands the freed slot to a waiter, so by the time the user answers

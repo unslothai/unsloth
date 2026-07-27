@@ -6552,9 +6552,7 @@ async def generate_audio(
         # cancel id to address, so without watching the disconnect llama-server
         # kept generating for the rest of the request timeout after the chat had
         # already reported it stopped.
-        _audio_watcher = asyncio.create_task(
-            _await_disconnect_then_cancel(request, _audio_cancel)
-        )
+        _audio_watcher = asyncio.create_task(_await_disconnect_then_cancel(request, _audio_cancel))
         try:
             wav_bytes, sample_rate = await asyncio.to_thread(gen)
         except Exception as e:

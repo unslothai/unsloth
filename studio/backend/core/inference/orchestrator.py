@@ -1665,10 +1665,7 @@ class InferenceOrchestrator:
         Pass the request's own event and the reset is dropped unless that request
         is the one running. Omit it for genuinely global resets (unload, switch).
         """
-        if (
-            caller_cancel_event is not None
-            and not self._owns_worker(caller_cancel_event)
-        ):
+        if caller_cancel_event is not None and not self._owns_worker(caller_cancel_event):
             return
         self._cancel_generation()
         if not self._ensure_subprocess_alive():

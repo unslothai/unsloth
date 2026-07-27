@@ -411,9 +411,7 @@ def test_unpark_gives_up_when_the_caller_is_cancelled():
         assert await asyncio.wait_for(b.wait(timeout_s = 1), timeout = 2) is not None
 
         ev = threading.Event()
-        waiting = asyncio.ensure_future(
-            queue.unpark_async(cancel_event = ev, poll_s = 0.01)
-        )
+        waiting = asyncio.ensure_future(queue.unpark_async(cancel_event = ev, poll_s = 0.01))
         await asyncio.sleep(0.03)
         assert not waiting.done()
         ev.set()
