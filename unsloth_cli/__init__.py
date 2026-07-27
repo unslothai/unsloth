@@ -4,6 +4,28 @@
 import os as _os
 import sys as _sys
 
+# Are we the `unsloth` console script, rather than a library import? Both the
+# stream guard below and the `-np<N>` rewrite further down are entry-point
+# behaviour and must not reach into a host application that imports us.
+_entry_base = _os.path.basename(_sys.argv[0]).lower() if _sys.argv else ""
+_is_entry_point = _entry_base in {"unsloth", "unsloth.exe"}
+
+# Typer renders help via rich, whose box characters cp1252 and cp437 cannot encode,
+# so `unsloth --help` dies once stdout is a pipe or a file. Windows gets UTF-8, as
+# unsloth/__init__ already does; elsewhere the caller's encoding is kept and only
+# the error handler is relaxed, so an explicit PYTHONIOENCODING still picks the
+# bytes and only loses unencodable glyphs. Before typer, which binds the stream.
+if _is_entry_point:
+    _to_utf8 = _sys.platform == "win32"
+    for _name in ("stdout", "stderr"):
+        _stream = getattr(_sys, _name, None)
+        try:
+            if "utf" not in (_stream.encoding or "").lower():
+                _stream.reconfigure(encoding = "utf-8" if _to_utf8 else None, errors = "replace")
+        except Exception:
+            pass
+    del _name, _stream, _to_utf8
+
 import typer
 from importlib.metadata import version as package_version, PackageNotFoundError
 
@@ -22,10 +44,9 @@ from unsloth_cli.commands.studio import (
 
 # Canonicalise `-np<N>` only under the `unsloth` console-script;
 # third-party scripts that import unsloth_cli keep their argv intact.
-_entry_base = _os.path.basename(_sys.argv[0]).lower() if _sys.argv else ""
-if _entry_base in {"unsloth", "unsloth.exe"}:
+if _is_entry_point:
     _expand_attached_np_short()
-del _entry_base
+del _entry_base, _is_entry_point
 
 
 def show_version(value: bool):

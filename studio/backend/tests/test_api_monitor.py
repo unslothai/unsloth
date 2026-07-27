@@ -258,3 +258,100 @@ def test_api_monitor_append_reply_exact_cap_then_more_marks_truncated():
     monitor.append_reply(entry_id, "y")
     reply = monitor.snapshot()[0]["reply"]
     assert len(reply) == m._MAX_REPLY_CHARS and reply.endswith("...")
+
+
+# ── model lifecycle rows (load / unload) ────────────────────────────
+
+
+def test_lifecycle_load_row_opens_running_then_closes():
+    monitor = ApiMonitor(max_entries = 5)
+    event_id = monitor.record_lifecycle(event = "load", model = "org/A-GGUF", running = True)
+    row = monitor.snapshot()[0]
+    assert row["kind"] == "lifecycle" and row["event"] == "load"
+    assert row["status"] == "running" and row["duration_ms"] is None
+    # A load in progress is not an in-flight API request.
+    assert monitor.active_count() == 0
+
+    monitor.relabel(event_id, "org/A-GGUF:Q4_K_M")
+    monitor.finish(event_id)
+    row = monitor.snapshot()[0]
+    assert row["status"] == "completed"
+    assert row["model"] == "org/A-GGUF:Q4_K_M"
+    assert row["duration_ms"] is not None
+
+
+def test_lifecycle_unload_row_is_terminal_on_arrival():
+    monitor = ApiMonitor(max_entries = 5)
+    monitor.record_lifecycle(event = "unload", model = "org/A-GGUF", reason = "idle")
+    row = monitor.snapshot()[0]
+    assert row["status"] == "completed"
+    assert (row["event"], row["reason"]) == ("unload", "idle")
+    assert monitor.active_count() == 0
+
+
+def test_lifecycle_rows_are_visible_to_every_subject():
+    # A load is server-wide, so it must not vanish for other API keys like a request does.
+    monitor = ApiMonitor(max_entries = 5)
+    monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+        subject = "alice",
+    )
+    event_id = monitor.record_lifecycle(event = "unload", model = "org/A-GGUF")
+
+    bob = monitor.snapshot(subject = "bob")
+    assert [r["kind"] for r in bob] == ["lifecycle"]
+    assert monitor.get(event_id, subject = "bob") is not None
+    assert len(monitor.snapshot(subject = "alice")) == 2
+
+
+def test_request_rows_stay_private_to_their_subject():
+    monitor = ApiMonitor(max_entries = 5)
+    rid = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+        subject = "alice",
+    )
+    assert monitor.snapshot(subject = "bob") == []
+    assert monitor.get(rid, subject = "bob") is None
+
+
+def test_discard_drops_a_row_that_never_happened():
+    # A load that found the model already resident must leave no trace.
+    monitor = ApiMonitor(max_entries = 5)
+    event_id = monitor.record_lifecycle(event = "load", model = "org/A-GGUF", running = True)
+    monitor.discard(event_id)
+    assert monitor.snapshot() == []
+    monitor.discard(event_id)  # idempotent
+
+
+def test_fail_open_never_touches_a_finished_row():
+    # Called from a finally, so it must not stamp an error onto a load that succeeded.
+    monitor = ApiMonitor(max_entries = 5)
+    event_id = monitor.record_lifecycle(event = "load", model = "org/A-GGUF", running = True)
+    monitor.finish(event_id)
+    monitor.fail_open(event_id, "Load did not complete")
+    row = monitor.snapshot()[0]
+    assert row["status"] == "completed" and row["error"] is None
+
+    still_open = monitor.record_lifecycle(event = "load", model = "org/B-GGUF", running = True)
+    monitor.fail_open(still_open, "Load did not complete")
+    assert monitor.snapshot()[0]["status"] == "error"
+
+
+def test_lifecycle_rows_share_the_retention_budget():
+    monitor = ApiMonitor(max_entries = 2)
+    for i in range(4):
+        monitor.record_lifecycle(event = "unload", model = f"org/M{i}")
+    models = [r["model"] for r in monitor.snapshot()]
+    assert models == ["org/M3", "org/M2"]
+
+
+def test_request_rows_report_kind_request():
+    monitor = ApiMonitor(max_entries = 2)
+    monitor.start(endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = "hi")
+    assert monitor.snapshot()[0]["kind"] == "request"
