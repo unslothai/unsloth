@@ -503,7 +503,7 @@ def _detect_rocm_version() -> tuple[int, int] | None:
         os.path.join(rocm_root, "lib", "rocm_version"),
     ):
         try:
-            with open(path) as fh:
+            with open(path, encoding = "utf-8") as fh:
                 parts = fh.read().strip().split("-")[0].split(".")
             # Explicit length guard: don't rely on the broad except below to
             # swallow IndexError on a single-component version (e.g. "6\n").
@@ -852,9 +852,9 @@ def _linux_amd_display_device_present() -> bool:
     try:
         for dev in Path("/sys/bus/pci/devices").iterdir():
             try:
-                if (dev / "vendor").read_text().strip() != "0x1002":
+                if (dev / "vendor").read_text(encoding = "utf-8").strip() != "0x1002":
                     continue
-                if (dev / "class").read_text().strip().startswith("0x03"):
+                if (dev / "class").read_text(encoding = "utf-8").strip().startswith("0x03"):
                     return True
             except OSError:
                 continue
@@ -1067,7 +1067,7 @@ def _has_rocm_gpu() -> bool:
                 for entry in os.listdir(kfd_nodes):
                     gpu_id_path = os.path.join(kfd_nodes, entry, "gpu_id")
                     try:
-                        with open(gpu_id_path) as fh:
+                        with open(gpu_id_path, encoding = "utf-8") as fh:
                             gpu_id = fh.read().strip()
                     except OSError:
                         continue
@@ -1079,7 +1079,7 @@ def _has_rocm_gpu() -> bool:
                     # false positive (e.g. NVIDIA open-driver KFD nodes lacking it).
                     props_path = os.path.join(kfd_nodes, entry, "properties")
                     try:
-                        with open(props_path) as fh:
+                        with open(props_path, encoding = "utf-8") as fh:
                             props = fh.read()
                     except OSError:
                         continue  # can't confirm vendor -- skip

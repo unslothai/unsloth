@@ -2329,7 +2329,7 @@ def _patch_st_trainer_load_from_checkpoint():
         if not os.path.isfile(modules_json):
             raise RuntimeError("Unsloth: PEFT checkpoint is missing modules.json.")
         try:
-            with open(modules_json, "r") as f:
+            with open(modules_json, "r", encoding = "utf-8") as f:
                 module_configs = json.load(f)
         except Exception as e:
             raise RuntimeError("Unsloth: Cannot parse checkpoint modules.json.") from e
