@@ -115,6 +115,8 @@ export interface GgufVariantDetail {
   download_size_bytes?: number;
   downloaded?: boolean;
   update_available?: boolean;
+  /** An interrupted download: some shards are missing, so it cannot load yet. */
+  partial?: boolean;
 }
 
 export interface GgufVariantsResponse {

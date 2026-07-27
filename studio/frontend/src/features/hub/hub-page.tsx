@@ -22,7 +22,7 @@ import {
   useActiveModelConfig,
 } from "@/features/model-picker";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
-import { useGpuInfo } from "@/hooks/use-gpu-info";
+import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -338,6 +338,7 @@ function selectedRepoMatchesRuntime(
 export function ModelsPage() {
   const navigate = useNavigate();
   const gpu = useGpuInfo();
+  const inferenceGpu = useInferenceGpuInfo();
   const online = useOnlineStatus();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const hubSearch = useSearch({ from: "/hub" });
@@ -763,7 +764,10 @@ export function ModelsPage() {
         // matching the chat model selector.
         (!fitOnDeviceOnly ||
           row.isAvailableOnDevice ||
-          hfModelFitsDevice(row.result, gpu)),
+          hfModelFitsDevice(
+            row.result,
+            row.result.isGguf ? inferenceGpu : gpu,
+          )),
     );
   }, [
     discoverRows,
@@ -775,6 +779,7 @@ export function ModelsPage() {
     activeChannel,
     fitOnDeviceOnly,
     gpu,
+    inferenceGpu,
   ]);
 
   const listRows = filteredDiscoverRows;
@@ -805,7 +810,7 @@ export function ModelsPage() {
           (row) =>
             !fitOnDeviceOnly ||
             row.isAvailableOnDevice ||
-            hfModelFitsDevice(row.result, gpu),
+            hfModelFitsDevice(row.result, inferenceGpu),
         ),
     [
       hubFeed.trending.results,
@@ -813,6 +818,7 @@ export function ModelsPage() {
       modelDiscoveryInventorySignature,
       fitOnDeviceOnly,
       gpu,
+      inferenceGpu,
     ],
   );
   const feedRows = useMemo(() => {
@@ -1415,9 +1421,11 @@ export function ModelsPage() {
       loadingPhase: loadProgress?.phase,
       minMemory,
       vramInfo,
-      gpuGb: gpu.available ? gpu.memoryTotalGb : undefined,
+      gpuGb: inferenceGpu.available ? inferenceGpu.memoryTotalGb : undefined,
       systemRamGb:
-        gpu.systemRamAvailableGb > 0 ? gpu.systemRamAvailableGb : undefined,
+        inferenceGpu.systemRamAvailableGb > 0
+          ? inferenceGpu.systemRamAvailableGb
+          : undefined,
     }),
     [
       isActive,
@@ -1426,9 +1434,9 @@ export function ModelsPage() {
       loadProgress?.phase,
       minMemory,
       vramInfo,
-      gpu.available,
-      gpu.memoryTotalGb,
-      gpu.systemRamAvailableGb,
+      inferenceGpu.available,
+      inferenceGpu.memoryTotalGb,
+      inferenceGpu.systemRamAvailableGb,
     ],
   );
 

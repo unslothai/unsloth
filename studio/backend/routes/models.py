@@ -314,7 +314,11 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
         try:
             if not child.is_dir():
                 continue
-            has_gguf = any(child.glob("*.gguf"))
+            gguf_names = [p.name for p in child.glob("*.gguf")]
+            has_gguf = bool(gguf_names)
+            # mmproj alone is a vision adapter, not servable weights, so it decides
+            # presence but never format (same rule as _dir_model_format).
+            has_main_gguf = any(_is_main_gguf_filename(n) for n in gguf_names)
             has_non_gguf_weights = _has_non_gguf_weights(child)
             has_config = (child / "config.json").exists() or (
                 child / "adapter_config.json"
@@ -332,7 +336,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
         # A folder whose only weights are .gguf is GGUF-format even when it also
         # ships a config.json (common for HF GGUF repos); such folders often lack
         # a -GGUF suffix, so surface the format for the UI's GGUF classification.
-        model_format = "gguf" if has_gguf and not has_non_gguf_weights else None
+        model_format = "gguf" if has_main_gguf and not has_non_gguf_weights else None
         found.append(
             LocalModelInfo(
                 id = str(child),
@@ -348,7 +352,8 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
         for gguf_file in models_dir.glob("*.gguf"):
             if limit is not None and len(found) >= limit:
                 break
-            if gguf_file.is_file():
+            # A standalone mmproj is a vision adapter, not servable weights.
+            if gguf_file.is_file() and _is_main_gguf_filename(gguf_file.name):
                 try:
                     updated_at = gguf_file.stat().st_mtime
                 except OSError:
@@ -367,7 +372,12 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
     return found
 
 
-def _scan_hf_cache(cache_dir: Path, *, active_cache: bool = True) -> List[LocalModelInfo]:
+def _scan_hf_cache(
+    cache_dir: Path,
+    *,
+    active_cache: bool = True,
+    classify_format: bool = True,
+) -> List[LocalModelInfo]:
     if not cache_dir.exists() or not cache_dir.is_dir():
         return []
 
@@ -392,13 +402,23 @@ def _scan_hf_cache(cache_dir: Path, *, active_cache: bool = True) -> List[LocalM
         partial = partial or hf_cache_scan.is_gguf_repo_partial(model_id, repo_dir)
 
         load_id = model_id
+        snapshot = _resolve_hf_cache_realpath(repo_dir)
         if not active_cache:
-            load_id = _resolve_hf_cache_realpath(repo_dir) or str(repo_dir.resolve())
+            load_id = snapshot or str(repo_dir.resolve())
+        # Classify from the snapshot's own weights. A GGUF repo without a -GGUF
+        # suffix is common, and leaving this unset makes every consumer guess from
+        # the name; the snapshot is already resolved just above.
+        model_format = (
+            _dir_model_format(Path(snapshot), recursive = True)
+            if snapshot and classify_format
+            else None
+        )
         found.append(
             LocalModelInfo(
                 id = load_id,
                 model_id = model_id,
                 display_name = model_id.split("/")[-1],
+                model_format = model_format,
                 path = load_id if not active_cache else str(repo_dir),
                 source = "hf_cache",
                 active_cache = active_cache,
@@ -409,16 +429,30 @@ def _scan_hf_cache(cache_dir: Path, *, active_cache: bool = True) -> List[LocalM
     return found
 
 
-def _dir_model_format(path: Path) -> Optional[str]:
+def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
     """Return ``"gguf"`` for a directory whose only weights are ``.gguf`` files.
 
     LM Studio and custom GGUF folders frequently lack a ``-GGUF`` name suffix,
     so the UI relies on this hint to route them through the GGUF load path
-    rather than treating them as plain local checkpoints.
+    rather than treating them as plain local checkpoints. A directory whose only
+    ``.gguf`` is an mmproj vision adapter is not one: the variant selector drops
+    mmproj, so that path would find nothing to serve.
+
+    ``recursive`` is for HF cache snapshots, which keep split quants in per-quant
+    subdirectories: a flat glob sees no ``.gguf`` there and would report the
+    snapshot as non-GGUF, hiding every sharded repo from the GGUF pickers. It looks
+    one level down rather than walking the tree, because that is where split quants
+    live and ``/api/models/local`` is async: an unbounded ``rglob`` per repo would
+    have to exhaust every non-GGUF snapshot before concluding there is no GGUF,
+    blocking the event loop on a large cache.
     """
     try:
-        if not any(path.glob("*.gguf")):
-            return None
+        found = path.glob("*.gguf")
+        if not any(_is_main_gguf_filename(p.name) for p in found):
+            if not recursive:
+                return None
+            if not any(_is_main_gguf_filename(p.name) for p in path.glob("*/*.gguf")):
+                return None
         return None if _has_non_gguf_weights(path) else "gguf"
     except OSError:
         return None
@@ -455,7 +489,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     for child in lm_dir.iterdir():
         try:
             if not child.is_dir():
-                if child.suffix == ".gguf" and child.is_file():
+                if _is_main_gguf_filename(child.name) and child.is_file():
                     try:
                         updated_at = child.stat().st_mtime
                     except OSError:
@@ -518,7 +552,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                                 updated_at = updated_at,
                             ),
                         )
-                    elif model_dir.suffix == ".gguf" and model_dir.is_file():
+                    elif _is_main_gguf_filename(model_dir.name) and model_dir.is_file():
                         try:
                             updated_at = model_dir.stat().st_mtime
                         except OSError:
@@ -2792,6 +2826,7 @@ async def get_gguf_variants(
                     ),
                     downloaded = bool(v.downloaded),
                     update_available = bool(getattr(v, "update_available", False)),
+                    partial = bool(getattr(v, "partial", False)),
                 )
                 for v in response.variants
             ],
@@ -3016,11 +3051,80 @@ def _repo_gguf_last_modified(repo_info) -> float:
     return latest
 
 
+def snapshot_variants_all_complete(snapshot: str) -> bool:
+    """True when every quant the variant lister would advertise from *snapshot* is
+    fully on disk.
+
+    One complete quant is not enough: the picker enumerates the whole directory, so a
+    half-downloaded split quant sitting beside a good one still gets offered and the
+    generated command asks llama-server for shards that are absent. Both sides derive
+    their labels from ``extract_quant_label`` over paths relative to the snapshot, so
+    the sets are directly comparable.
+    """
+    from hub.utils import inventory_scan
+    from hub.utils.gguf import list_local_gguf_variants
+
+    try:
+        variants, _ = list_local_gguf_variants(snapshot)
+        offered = {v.quant for v in variants if getattr(v, "quant", None)}
+        if not offered:
+            return False
+        return offered <= inventory_scan._completed_gguf_variants(Path(snapshot))
+    except Exception:
+        return False
+
+
+def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
+    """Snapshot dir holding the newest primary GGUF, for a repo outside the active
+    hub cache that does not resolve by id. ``None`` when the id works or no
+    snapshot is recorded, since the repo dir itself is not loadable.
+    """
+    repo_path = getattr(repo_info, "repo_path", None)
+    if repo_path is None or active_root is None:
+        return None
+    try:
+        if repo_path.parent.resolve(strict = False) == active_root:
+            return None
+    except (OSError, RuntimeError, ValueError):
+        pass
+    # Order by snapshot directory mtime, matching hub.utils.gguf.iter_hf_cache_snapshots,
+    # which is what variant discovery reads. Blob mtimes would disagree with it whenever
+    # Hugging Face reuses an older blob in a newer snapshot, and the command would then
+    # name a snapshot that does not hold the quant the picker offered.
+    candidates: List[tuple[float, str]] = []
+    for revision in repo_info.revisions:
+        snapshot = getattr(revision, "snapshot_path", None)
+        if snapshot is None:
+            continue
+        if not any(_is_main_gguf_filename(f.file_name) for f in revision.files):
+            continue
+        try:
+            mtime = Path(snapshot).stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        candidates.append((mtime, str(snapshot)))
+    candidates.sort(key = lambda c: c[0], reverse = True)
+    # Newest first, but skip one holding only part of a split quant: an interrupted
+    # download would otherwise beat an older snapshot that can still load. Scanning
+    # stops at the first usable snapshot, so the usual case walks one directory.
+    for _, snapshot in candidates:
+        if snapshot_variants_all_complete(snapshot):
+            return snapshot
+    # Nothing complete anywhere: publishing a half-downloaded snapshot would put that
+    # path in the copied command and fail on load. Drop the id so the repo id is used,
+    # which fetches the missing shards instead.
+    return None
+
+
 @router.get("/cached-gguf")
 async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
         cache_scans = _all_hf_cache_scans()
+        try:
+            active_root = _resolve_hf_cache_dir().resolve(strict = False)
+        except Exception:
+            active_root = None
 
         seen_lower: dict[str, dict] = {}
         for hf_cache in cache_scans:
@@ -3046,6 +3150,9 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                             "cache_path": str(repo_info.repo_path),
                             "has_vision": _repo_has_mmproj(repo_info),
                         }
+                        load_id = _repo_gguf_load_id(repo_info, active_root)
+                        if load_id:
+                            row["load_id"] = load_id
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.
                         lm = max(last_modified, (existing or {}).get("last_modified", 0.0))

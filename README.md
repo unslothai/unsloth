@@ -103,7 +103,7 @@ Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 * **NVIDIA:** Training works on RTX 30/40/50, Blackwell, DGX Spark, Station and more
 * **macOS:** Training, MLX and GGUF inference are ALL supported.
 * **AMD:** Training, RL, chat and deployment work on Windows, WSL and Linux. [Read the AMD guide](https://unsloth.ai/docs/basics/amd).
-* **Vulkan:** GGUF inference is supported on [compatible GPUs, including Intel GPUs](https://github.com/unslothai/unsloth/pull/5819).
+* **Vulkan:** GGUF inference is supported on [compatible GPUs, including Intel GPUs](https://github.com/unslothai/unsloth/pull/5819). Vulkan accelerates GGUF inference only; training still requires a supported PyTorch or MLX backend.
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
 #### macOS, Linux, WSL:
@@ -112,11 +112,27 @@ curl -fsSL https://unsloth.ai/install.sh | sh
 ```
 Use the same command to update.
 
+To force the Vulkan llama.cpp backend, set `UNSLOTH_FORCE_VULKAN=1` **before installing or updating**. The setting selects the llama.cpp binary bundle, so setting it only when launching Studio cannot replace an existing CPU bundle:
+
+```bash
+export UNSLOTH_FORCE_VULKAN=1
+curl -fsSL https://unsloth.ai/install.sh | sh
+```
+
 #### Windows:
 ```powershell
 irm https://unsloth.ai/install.ps1 | iex
 ```
 Use the same command to update.
+
+To force the Vulkan llama.cpp backend, set the environment variable before running the installer or updater:
+
+```powershell
+$env:UNSLOTH_FORCE_VULKAN=1
+irm https://unsloth.ai/install.ps1 | iex
+```
+
+Re-running the current installer replaces a previously selected CPU bundle when the backend differs. A separate Vulkan SDK is not required; the GPU driver must provide a working Vulkan runtime.
 
 #### Launch
 ```bash
