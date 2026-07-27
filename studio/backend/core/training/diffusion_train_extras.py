@@ -186,7 +186,6 @@ def _hub_cache_roots() -> list[str]:
     roots: list[str] = []
     try:
         from utils.hf_cache_settings import active_hf_hub_cache  # noqa: PLC0415
-
         active = str(active_hf_hub_cache() or "").strip()
         if active:
             roots.append(active)
@@ -197,7 +196,6 @@ def _hub_cache_roots() -> list[str]:
             roots.append(candidate.strip())
     try:
         from huggingface_hub import constants  # noqa: PLC0415
-
         if constants.HF_HUB_CACHE and str(constants.HF_HUB_CACHE) not in roots:
             roots.append(str(constants.HF_HUB_CACHE))
     except Exception:  # noqa: BLE001 -- no hub package: whatever we collected above stands
