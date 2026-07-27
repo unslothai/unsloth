@@ -1118,9 +1118,7 @@ def _offline_aware_load(fn):
             with _force_hf_offline():
                 # Stamp inside the window: the env vars are restored on exit, so the
                 # request has to travel on the objects themselves to reach saving.
-                return _mark_loaded_local_files_only(
-                    fn(*args, **kwargs), kwargs.get("cache_dir")
-                )
+                return _mark_loaded_local_files_only(fn(*args, **kwargs), kwargs.get("cache_dir"))
         _pb_were_disabled = _progress_bars_were_disabled()  # restore before any retry
         try:
             return fn(*args, **kwargs)
