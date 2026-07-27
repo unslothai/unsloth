@@ -3802,6 +3802,13 @@ if ($LocalLlamaCppLinked) {
                 if (Test-Path -LiteralPath $_cand) { $PreservedLlamaServerFound = $true; break }
             }
             if (-not $PreservedLlamaServerFound) { $script:LlamaCppDegraded = $true }
+            # A preserved CUDA/ROCm/CPU server does not satisfy an explicit Vulkan
+            # request, and it leaves LlamaCppDegraded false, so without this the
+            # run reports success on the backend the user asked to replace.
+            if ($explicitVulkanBackend) {
+                step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "Red"
+                exit 1
+            }
         } else {
             step "llama.cpp" "prebuilt install failed" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput

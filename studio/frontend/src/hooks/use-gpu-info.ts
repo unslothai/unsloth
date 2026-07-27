@@ -48,6 +48,10 @@ const DEFAULT_GPU: GpuInfo = {
 // One module-level cache so every GPU hook shares a single /api/system fetch.
 let cachedSystem: SystemInfoResponse | null = null;
 let systemPromise: Promise<SystemInfoResponse | null> | null = null;
+// An unavailable Vulkan probe answers gguf_devices as an empty list, so the
+// picker starts hidden and only useInferenceGpuInfo retries. Without this,
+// hooks that fetch once never see the recovery and stay hidden until remount.
+const systemSubscribers = new Set<(data: SystemInfoResponse | null) => void>();
 
 async function fetchSystemOnce(force = false): Promise<SystemInfoResponse | null> {
   if (!force && cachedSystem) return cachedSystem;
@@ -57,6 +61,7 @@ async function fetchSystemOnce(force = false): Promise<SystemInfoResponse | null
       const res = await authFetch("/api/system");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       cachedSystem = (await res.json()) as SystemInfoResponse;
+      systemSubscribers.forEach((notify) => notify(cachedSystem));
       return cachedSystem;
     } catch {
       return null;
@@ -185,11 +190,22 @@ export function useGpuDevices(): SystemGpuDevice[] {
     // No early return on cachedSystem: a consumer mounting as the cache fills
     // (between render and effect) would otherwise stay stuck at the default.
     let cancelled = false;
-    fetchSystemOnce().then((d) => {
-      if (!cancelled) setDevices(toGpuDevices(d));
-    });
+    let lastSerialized: string | null = null;
+    const sync = (data: SystemInfoResponse | null) => {
+      if (cancelled) return;
+      const next = toGpuDevices(data);
+      // Every refresh builds a fresh array, so compare by value or a 3s Vulkan
+      // retry loop would re-render this hook forever.
+      const serialized = JSON.stringify(next);
+      if (serialized === lastSerialized) return;
+      lastSerialized = serialized;
+      setDevices(next);
+    };
+    systemSubscribers.add(sync);
+    fetchSystemOnce().then(sync);
     return () => {
       cancelled = true;
+      systemSubscribers.delete(sync);
     };
   }, []);
   return devices;

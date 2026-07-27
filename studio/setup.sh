@@ -1496,6 +1496,13 @@ else
         substep "free up disk or move UNSLOTH_STUDIO_HOME/TMPDIR to a larger volume, then re-run"
         _LLAMA_CPP_NO_SPACE=true
         _has_local_llama_server "$LLAMA_CPP_DIR" || _LLAMA_CPP_DEGRADED=true
+        # A preserved CUDA/ROCm/CPU server does not satisfy an explicit Vulkan
+        # request, and it leaves _LLAMA_CPP_DEGRADED false, so without this the
+        # run reports success on the backend the user asked to replace.
+        if [ "$_explicit_vulkan_backend" = true ]; then
+            step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "$C_ERR"
+            exit 1
+        fi
     else
         step "llama.cpp" "prebuilt install failed" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
