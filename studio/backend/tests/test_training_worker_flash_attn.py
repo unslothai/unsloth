@@ -113,12 +113,7 @@ def test_runtime_flash_attn_falls_back_to_pypi(monkeypatch):
     )
     monkeypatch.setattr(worker, "install_wheel", mock.Mock())
 
-    def fake_run(
-        cmd,
-        stdout = None,
-        stderr = None,
-        text = None,
-    ):
+    def fake_run(cmd, **kwargs):
         calls.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, "")
 
