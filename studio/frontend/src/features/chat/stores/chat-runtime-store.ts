@@ -23,6 +23,7 @@ import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
+import type { ResearchWebsitePolicy } from "../types/research";
 import { useExternalProvidersStore } from "./external-providers-store";
 import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
 
@@ -30,6 +31,10 @@ export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
 export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
+export const CHAT_DEEP_RESEARCH_ENABLED_KEY =
+  "unsloth_chat_deep_research_enabled";
+export const CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY =
+  "unsloth_chat_deep_research_website_policy";
 export const CHAT_ARTIFACTS_ENABLED_KEY = "unsloth_chat_artifacts_enabled";
 export const CHAT_SHOW_CANVAS_MENU_ITEM_KEY =
   "unsloth_chat_show_canvas_menu_item";
@@ -51,8 +56,8 @@ export const CHAT_PERMISSION_MODE_KEY = "unsloth_chat_permission_mode";
 /**
  * Permission level for local tool calls:
  * - "ask": always ask before every tool call runs.
- * - "auto" ("Approve for me"): only ask for calls the backend detects as
- *   potentially unsafe; read-only calls run immediately. Sandbox stays on.
+ * - "auto" ("Approve for me", the default): only ask for calls the backend
+ *   detects as high risk; ordinary dev commands run immediately. Sandbox stays on.
  * - "off": never ask; tool calls run automatically inside the sandbox
  *   (the original default before permission levels existed).
  * - "full" ("Full access"): no confirmations and the python/terminal sandbox
@@ -94,6 +99,45 @@ export const DEFAULT_RAG_OCR = true;
 // Describe figures/charts in PDFs at ingest time so they become searchable. On by
 // default (no-op without a vision model); off skips the per-figure vision calls.
 export const DEFAULT_RAG_CAPTION = true;
+export const DEFAULT_RESEARCH_WEBSITE_POLICY: ResearchWebsitePolicy = {
+  allowedDomains: [],
+  blockedDomains: [],
+};
+
+function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
+  if (typeof window === "undefined") return DEFAULT_RESEARCH_WEBSITE_POLICY;
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY) || "{}",
+    ) as Partial<ResearchWebsitePolicy>;
+    return {
+      allowedDomains: Array.isArray(parsed.allowedDomains)
+        ? parsed.allowedDomains.filter(
+            (value): value is string => typeof value === "string",
+          )
+        : [],
+      blockedDomains: Array.isArray(parsed.blockedDomains)
+        ? parsed.blockedDomains.filter(
+            (value): value is string => typeof value === "string",
+          )
+        : [],
+    };
+  } catch {
+    return DEFAULT_RESEARCH_WEBSITE_POLICY;
+  }
+}
+
+function saveResearchWebsitePolicy(policy: ResearchWebsitePolicy): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY,
+      JSON.stringify(policy),
+    );
+  } catch {
+    // Keep the in-memory setting when storage is unavailable.
+  }
+}
 
 function loadRagSource(): RagSource {
   if (typeof window === "undefined") return DEFAULT_RAG_SOURCE;
@@ -828,6 +872,8 @@ type ChatRuntimeStore = {
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
   imageToolsEnabled: boolean;
+  deepResearchEnabled: boolean;
+  researchWebsitePolicy: ResearchWebsitePolicy;
   artifactsEnabled: boolean;
   // Whether the Canvas toggle is offered in the composer + menu (hidden by default).
   showCanvasMenuItem: boolean;
@@ -1072,6 +1118,8 @@ type ChatRuntimeStore = {
   setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setImageToolsEnabled: (enabled: boolean) => void;
+  setDeepResearchEnabled: (enabled: boolean) => void;
+  setResearchWebsitePolicy: (policy: ResearchWebsitePolicy) => void;
   setArtifactsEnabled: (
     enabled: boolean,
     options?: { persist?: boolean },
@@ -1395,6 +1443,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
+  deepResearchEnabled: loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
+  researchWebsitePolicy: loadResearchWebsitePolicy(),
   artifactsEnabled: loadBool(CHAT_ARTIFACTS_ENABLED_KEY, false),
   showCanvasMenuItem: loadShowCanvasMenuItem(),
   collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
@@ -1716,6 +1766,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // stale persisted local id would race the freshly-loaded model. See
       // LAST_EXTERNAL_CHECKPOINT_KEY notes.
       saveLastExternalCheckpoint(isExternalModelId(modelId) ? modelId : null);
+      if (isExternalModelId(modelId)) {
+        saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
+      }
       // Clear stale per-turn usage on model change; the relaxed external-provider
       // render gate would otherwise show old counters until the next completion.
       const checkpointChanged = state.params.checkpoint !== modelId;
@@ -1748,6 +1801,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ...(checkpointChanged
           ? { contextUsage: null, contextUsageByThreadId: {} }
           : {}),
+        // Switching to an external provider disables Deep Research, which only
+        // applies to the local base model.
+        ...(isExternalModelId(modelId) ? { deepResearchEnabled: false } : {}),
       };
     }),
   // Re-apply the incoming thread's own usage rather than blanking the bar: a run that
@@ -1761,7 +1817,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         : null,
     })),
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
-  setIncognito: (incognito) => set({ incognito }),
+  setIncognito: (incognito) => {
+    if (incognito) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
+    set(
+      incognito
+        ? { incognito, deepResearchEnabled: false }
+        : { incognito },
+    );
+  },
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   setEditingMessageId: (id) => set({ editingMessageId: id }),
   clearCheckpoint: () => {
@@ -1769,6 +1832,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     // clear any stored external selection so the next refresh doesn't snap
     // back to a model the user intentionally cleared.
     saveLastExternalCheckpoint(null);
+    saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
     return set((state) => ({
       params: {
         ...state.params,
@@ -1798,6 +1862,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       toolsEnabled: false,
       codeToolsEnabled: false,
       imageToolsEnabled: false,
+      deepResearchEnabled: false,
       artifactsEnabled: false,
       mcpEnabledForChat: false,
       webFetchToolsEnabled: false,
@@ -1872,24 +1937,67 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (options?.persist !== false) {
         saveBool(CHAT_TOOLS_ENABLED_KEY, toolsEnabled);
       }
-      return { toolsEnabled };
+      if (toolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
+      return toolsEnabled ? { toolsEnabled, deepResearchEnabled: false } : { toolsEnabled };
     }),
   setCodeToolsEnabled: (codeToolsEnabled) =>
     set(() => {
       saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);
-      return { codeToolsEnabled };
+      if (codeToolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
+      return codeToolsEnabled
+        ? { codeToolsEnabled, deepResearchEnabled: false }
+        : { codeToolsEnabled };
     }),
   setImageToolsEnabled: (imageToolsEnabled) =>
     set(() => {
       saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, imageToolsEnabled);
-      return { imageToolsEnabled };
+      if (imageToolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
+      return imageToolsEnabled
+        ? { imageToolsEnabled, deepResearchEnabled: false }
+        : { imageToolsEnabled };
+    }),
+  setDeepResearchEnabled: (deepResearchEnabled) =>
+    set(() => {
+      saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, deepResearchEnabled);
+      const permissionMode = loadPermissionMode();
+      if (deepResearchEnabled) {
+        saveBool(CHAT_TOOLS_ENABLED_KEY, false);
+        saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false);
+        saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, false);
+        saveBool(CHAT_ARTIFACTS_ENABLED_KEY, false);
+        saveBool(CHAT_MCP_ENABLED_KEY, false);
+        saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false);
+      }
+      return deepResearchEnabled
+        ? {
+            deepResearchEnabled,
+            toolsEnabled: false,
+            codeToolsEnabled: false,
+            imageToolsEnabled: false,
+            artifactsEnabled: false,
+            mcpEnabledForChat: false,
+            webFetchToolsEnabled: false,
+            bypassPermissions: false,
+            permissionMode,
+            confirmToolCalls:
+              permissionMode === "ask" || permissionMode === "auto",
+          }
+        : { deepResearchEnabled };
+    }),
+  setResearchWebsitePolicy: (researchWebsitePolicy) =>
+    set(() => {
+      saveResearchWebsitePolicy(researchWebsitePolicy);
+      return { researchWebsitePolicy };
     }),
   setArtifactsEnabled: (artifactsEnabled, options) =>
     set(() => {
       if (options?.persist !== false) {
         saveBool(CHAT_ARTIFACTS_ENABLED_KEY, artifactsEnabled);
       }
-      return { artifactsEnabled };
+      if (artifactsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
+      return artifactsEnabled
+        ? { artifactsEnabled, deepResearchEnabled: false }
+        : { artifactsEnabled };
     }),
   setShowCanvasMenuItem: (showCanvasMenuItem) =>
     set(() => {
@@ -1922,7 +2030,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setMcpEnabledForChat: (mcpEnabledForChat) =>
     set(() => {
       saveBool(CHAT_MCP_ENABLED_KEY, mcpEnabledForChat);
-      return { mcpEnabledForChat };
+      if (mcpEnabledForChat) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
+      return mcpEnabledForChat
+        ? { mcpEnabledForChat, deepResearchEnabled: false }
+        : { mcpEnabledForChat };
     }),
   setConfirmToolCalls: (confirmToolCalls) =>
     set((state) => {
@@ -1944,7 +2055,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (permissionMode === "full") {
         // Full access sends confirm_tool_calls=false; keep the store flag in
         // sync so response metadata does not report confirmations as enabled.
-        return { permissionMode, bypassPermissions: true, confirmToolCalls: false };
+        saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
+        return {
+          permissionMode,
+          bypassPermissions: true,
+          confirmToolCalls: false,
+          deepResearchEnabled: false,
+        };
       }
       const confirmToolCalls =
         permissionMode === "ask" || permissionMode === "auto";
@@ -1959,10 +2076,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (bypassPermissions) {
         // Full access never prompts; mirror confirm_tool_calls=false in the
         // store so metadata does not report confirmations as enabled.
+        saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
         return {
           bypassPermissions,
           permissionMode: "full" as PermissionMode,
           confirmToolCalls: false,
+          deepResearchEnabled: false,
         };
       }
       const permissionMode = loadPermissionMode();
