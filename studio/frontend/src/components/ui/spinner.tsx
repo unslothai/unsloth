@@ -6,11 +6,8 @@
 import { Loader2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-/**
- * App-wide spinner: an animated circular arc inheriting the current text color.
- * `label` overrides the announcement where "loading" is not what it means (a
- * sidebar chat is generating); `data-testid` targets one of several on screen.
- */
+/** App-wide spinner inheriting the current text color. `label` overrides the announcement
+ * where "loading" is not what it means (a sidebar chat is generating). */
 function Spinner({
   className,
   label = "Loading",

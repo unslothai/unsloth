@@ -1190,8 +1190,7 @@ class MLXInferenceBackend:
         )
 
     def reset_generation_state(self, caller_cancel_event = None):
-        # caller_cancel_event: signature parity with the orchestrator; nothing
-        # here cancels a live generation, so it is unused.
+        # caller_cancel_event: signature parity with the orchestrator; unused here.
         import mlx.core as mx
         import gc
 

@@ -1,11 +1,8 @@
 export const PROMPT_QUEUE_STOP_EVENT = "unsloth:prompt-queue-stop";
 
 export interface PromptQueueStopOptions {
-  /**
-   * Whether to also cancel the prompt the queue already dispatched. Navigation
-   * leaves the in-flight one generating and passes `false`; an explicit stop
-   * passes `true` (the default).
-   */
+  /** Also cancel the prompt the queue already dispatched. Navigation passes `false` to
+   * leave it generating; an explicit stop passes `true` (the default). */
   cancelActiveRun?: boolean;
 }
 

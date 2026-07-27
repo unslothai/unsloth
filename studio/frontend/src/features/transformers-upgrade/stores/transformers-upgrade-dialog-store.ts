@@ -18,9 +18,8 @@ interface TransformersUpgradeDialogStore {
   errorMessage: string | null;
   /** Model ships custom code; without a PyPI install the load may fall back to trust_remote_code. */
   trustRemoteCodeFallback: boolean;
-  /** The caller already confirmed the model swap's "stop N chats" prompt, so the
-   *  install may stop them too. Without it the install 409s while they run and
-   *  Retry can never succeed, since nothing between the two dialogs stops them. */
+  /** The caller already confirmed the model swap's "stop N chats" prompt, so the install
+   *  may stop them too; without it the install 409s and Retry can never succeed. */
   forceCancelActive: boolean;
   /** True once this consent's install completed. The install unloads the previous
    *  model before swapping, so the caller must treat it as already unloaded; the

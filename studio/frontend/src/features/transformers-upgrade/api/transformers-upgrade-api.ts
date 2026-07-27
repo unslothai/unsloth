@@ -18,10 +18,9 @@ interface InstallLatestTransformersResponse {
 
 /** Consented install of the latest transformers into the sidecar; synchronous, can take minutes.
  *
- * `forceCancelActive` carries the answer the user already gave the model swap's
- * "stop N chats" prompt: without it the install refuses with 409 while those
- * chats run, and nothing between the two dialogs stops them. Only ever true
- * after that confirmation, so the guard still holds for every other caller. */
+ * `forceCancelActive` carries the answer the user already gave the model swap's "stop N
+ * chats" prompt: without it the install 409s while those chats run, and nothing between the
+ * two dialogs stops them. Only ever true after that confirmation. */
 export async function installLatestTransformers(
   version: string,
   forceCancelActive = false,

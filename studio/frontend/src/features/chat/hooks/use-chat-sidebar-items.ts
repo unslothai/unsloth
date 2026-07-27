@@ -26,10 +26,7 @@ import {
 export interface SidebarItem {
   type: "single" | "compare";
   id: string;
-  /**
-   * Compare rows only: the pane threads behind this pair id. `runningByThreadId`
-   * is keyed per pane thread, so row-level activity aggregates these.
-   */
+  /** The pane threads behind this row id; `runningByThreadId` is keyed per pane thread. */
   threadIds?: string[];
   title: string;
   createdAt: number;
@@ -168,8 +165,8 @@ export function useChatSidebarItems(options?: {
 }
 
 function cancelIfRunning(threadId: string): void {
-  // Reaches a background thread, which cancelByThreadId cannot: a deleted chat
-  // must stop, or the run keeps writing to a conversation that is gone.
+  // Reaches a background thread, which cancelByThreadId cannot: a deleted chat must stop,
+  // or the run keeps writing to a conversation that is gone.
   stopChatThread(threadId);
 }
 

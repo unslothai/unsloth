@@ -14,9 +14,9 @@ import {
 import { useStopRunningChatsDialogStore } from "../stores/stop-running-chats-dialog-store";
 
 /**
- * Confirmation for applying a model or reload-required setting while chats are
- * generating. They share one llama-server, so the swap ends all of them: name
- * them and make the user opt in rather than truncating silently.
+ * Confirmation for applying a model or reload-required setting while chats are generating.
+ * They share one llama-server, so the swap ends all of them: name them and make the user
+ * opt in rather than truncating silently.
  */
 export function StopRunningChatsDialog() {
   const open = useStopRunningChatsDialogStore((s) => s.open);

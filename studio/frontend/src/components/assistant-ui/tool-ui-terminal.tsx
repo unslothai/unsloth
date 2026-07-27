@@ -49,8 +49,8 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
     (s) => s.toolFullOutput[toolOutputKey(paneScope, toolCallId)] ?? "",
   );
   const displayOutput = preferFullToolOutput(fullOutput, output);
-  // The gate only opens once the call parsed, so a pending approval means the
-  // command is written even while the args status still reads as streaming.
+  // The gate only opens once the call parsed, so a pending approval means the command is
+  // written even while the args status still reads as streaming.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const isWriting = isWritingCommand && !awaitingApproval;
 

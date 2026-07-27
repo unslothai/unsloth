@@ -524,8 +524,8 @@ export function AppSidebar() {
   const runningThreadIds = useChatRuntimeStore((s) => s.runningByThreadId);
   const runningChatCount = Object.values(runningThreadIds).filter(Boolean).length;
   const anyChatRunning = runningChatCount > 0;
-  // Where "Return to Chat" lands: the newest running chat, not the empty draft
-  // New Chat left active (map insertion order is start order).
+  // Where "Return to Chat" lands: the newest running chat, not the empty draft New Chat
+  // left active (map insertion order is start order).
   const runningThreadId = (() => {
     const ids = Object.entries(runningThreadIds)
       .filter(([, on]) => on)
@@ -898,8 +898,8 @@ export function AppSidebar() {
     variant: "project" | "recent",
   ) {
     const isPinned = pinnedIdSet.has(item.id);
-    // A compare row's id is the pair id, while runningByThreadId is keyed per
-    // pane thread, so aggregate its member threads instead of the row id.
+    // A compare row's id is the pair id while runningByThreadId is keyed per pane thread,
+    // so aggregate its member threads instead.
     const isGenerating =
       item.type === "compare"
         ? (item.threadIds ?? []).some((id) => Boolean(runningThreadIds[id]))

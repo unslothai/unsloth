@@ -730,8 +730,7 @@ function stopPromptQueueRun(cancelActiveRun = true) {
 
 if (typeof window !== "undefined") {
   window.addEventListener(PROMPT_QUEUE_STOP_EVENT, (event) => {
-    // Navigation leaves the dispatched prompt streaming; an explicit stop
-    // (the default) cancels it too.
+    // Navigation leaves the dispatched prompt streaming; an explicit stop cancels it too.
     const detail = (event as CustomEvent<{ cancelActiveRun?: boolean }>).detail;
     stopPromptQueueRun(detail?.cancelActiveRun ?? true);
   });
@@ -2706,9 +2705,8 @@ const ToolStatusDisplay: FC = () => {
     const own =
       s.toolStatusByThreadId[threadListItemId ?? ""] ??
       (isThreadRunning ? s.toolStatusByThreadId.__default : undefined);
-    // Newest of the runs behind this key. They are separate entries so one
-    // finishing cannot blank a sibling still running a tool; which of several
-    // concurrent unresolved runs is shown is the "__default" collapse itself.
+    // Newest of the runs behind this key: separate entries, so one finishing cannot blank
+    // a sibling still running a tool.
     return own?.[own.length - 1];
   });
   const toolStatus = entry?.status ?? null;
@@ -2751,8 +2749,8 @@ const ToolStatusDisplay: FC = () => {
   if (!(toolStatus && startedAt && visible)) {
     return null;
   }
-  // From the store's start time, not a local tick, so returning to the
-  // conversation resumes instead of restarting at 0.
+  // From the store's start time, so returning to the conversation resumes rather than
+  // restarting at 0.
   const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000));
   const isRunning = toolStatus.startsWith("Running");
   const StatusIcon = isRunning ? TerminalIcon : GlobeIcon;

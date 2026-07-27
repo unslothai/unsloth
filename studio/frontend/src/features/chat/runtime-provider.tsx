@@ -1115,12 +1115,10 @@ function useStudioRuntimeAdapters(
           : typeof store.ggufContextLength === "number" &&
             store.ggufContextLength > 0;
         if (savedUsage && withinLocalLimit && modelMatches) {
-          // Key by the thread this loader read, not by whichever is active when
-          // listStoredChatMessages() resolves: that await is two backend round
-          // trips, so a switch inside it would file this thread's usage under
-          // the incoming one, repaint its bar, and (since setActiveThreadId
-          // re-applies the map) keep showing the wrong value on every later
-          // switch back. Same rule the adapter's end-of-run write follows.
+          // Key by the thread this loader read, not whichever is active when the await
+          // resolves: a switch inside it would file this thread's usage under the incoming
+          // one and keep showing the wrong value on every later switch back. Same rule the
+          // adapter's end-of-run write follows.
           store.setThreadContextUsage(remoteId, savedUsage);
           if (store.activeThreadId === remoteId) {
             store.setContextUsage(savedUsage);
@@ -1271,9 +1269,8 @@ function ThreadAutoSwitch({
   useEffect(() => {
     if (!isLoading && mainThreadId !== threadId) {
       if (syncActiveThreadId) {
-        // Stop queueing prompts to the outgoing thread but leave its run alone:
-        // its runtime stays mounted and keeps streaming. Only an explicit Stop
-        // (or deleting the conversation) cancels one.
+        // Stop queueing prompts to the outgoing thread but leave its run alone: its runtime
+        // stays mounted and keeps streaming. Only an explicit Stop cancels one.
         requestPromptQueueStop({ cancelActiveRun: false });
       }
       const switchResult = aui.threads().switchToThread(threadId) as unknown;
@@ -1310,9 +1307,8 @@ function ThreadNewChatSwitch({
     if (isLoading) {
       return;
     }
-    // New Chat leaves the previous conversation generating: its runtime stays
-    // mounted, the adapter keeps appending and the sidebar spins. Stopping it
-    // is its own Stop button's job.
+    // New Chat leaves the previous conversation generating: its runtime stays mounted and
+    // the sidebar spins. Stopping it is its own Stop button's job.
     requestPromptQueueStop({ cancelActiveRun: false });
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.

@@ -386,10 +386,8 @@ const safeImageUrl: UrlTransform = (url, _key, node) => {
 
 const MarkdownTextImpl = () => {
   const { text, status } = useMessagePartText();
-  // Parts are keyed by index, so switching conversations hands this instance a
-  // different message. Streamdown only extends its parsed blocks while
-  // streaming, so a reused one keeps rendering the previous answer: key it
-  // per message instead.
+  // Parts are keyed by index, so switching conversations hands this instance a different
+  // message, and Streamdown only extends its parsed blocks: key it per message instead.
   const messageId = useAuiState(({ message }) => message.id);
   const displayText = useRafCoalescedText(text, status.type === "running");
   const processedText = useMemo(

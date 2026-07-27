@@ -4,15 +4,13 @@
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 
 /**
- * Stop one conversation's generation, visible or not. Returns true if a stop
- * was dispatched.
+ * Stop one conversation's generation, visible or not. Returns true if a stop was dispatched.
  *
- * `cancelByThreadId` is assistant-ui's `cancelRun()`, registered only for the
- * thread on screen. `serverCancelByThreadId` is registered for every run and
- * POSTs that run's own `cancel_id`, so it is the only handle a background
- * conversation has. Both are per-run: neither can touch a conversation behind
- * another key. Runs whose thread id is unresolved share the "__default" key, so
- * stop every handle filed under it: the sidebar row there stands for all.
+ * `cancelByThreadId` is assistant-ui's `cancelRun()`, registered only for the thread on
+ * screen; `serverCancelByThreadId` is registered for every run and POSTs that run's own
+ * `cancel_id`, so it is the only handle a background conversation has. Both are per-run.
+ * Runs with an unresolved thread id share the "__default" key, so stop every handle filed
+ * under it: the sidebar row there stands for all.
  */
 export function stopChatThread(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
@@ -29,8 +27,8 @@ export function stopChatThread(threadId: string | null | undefined): boolean {
   } catch {
     // The run may have ended between the read above and this call.
   }
-  // Also after cancelRun(): a proxy that swallows the fetch abort would
-  // leave the backend decoding.
+  // Also after cancelRun(): a proxy that swallows the fetch abort leaves the backend
+  // decoding.
   for (const serverCancel of serverCancelByThreadId[threadId] ?? []) {
     try {
       serverCancel();

@@ -104,9 +104,8 @@ class InferenceOrchestrator:
         # so a generate queued behind the cancelled one is skipped, not run.
         self._drain_event: Any = None
         self._gen_lock = threading.Lock()  # Serializes generation
-        # Cancel event of the request currently holding _gen_lock. Lets a Stop
-        # identify whether it owns the running generation or is merely queued
-        # behind it, since the worker's own cancel event is shared by all.
+        # Cancel event of the request holding _gen_lock: lets a Stop tell whether it owns
+        # the running generation or is queued behind it (the worker's event is shared).
         self._active_cancel_event: Any = None
         # Set during a switch so a generation winning the _gen_lock handoff bails
         # instead of starting on the outgoing model.
@@ -1603,12 +1602,10 @@ class InferenceOrchestrator:
                 preserve_thinking = preserve_thinking,
             )
 
-            # Claim the worker BEFORE sending, so a Stop on some OTHER chat --
-            # one still queued on the lock above, which has generated nothing --
-            # cannot reset the generation this is starting. Claiming after the
-            # send left a window where the command was already running unclaimed,
-            # which is exactly the case this guard exists for. Released in the
-            # finally, including on a failed send, so the next holder can claim.
+            # Claim the worker BEFORE sending, so a Stop on some OTHER chat -- still
+            # queued on the lock above, having generated nothing -- cannot reset the
+            # generation this is starting. Claiming after the send left a window where the
+            # command ran unclaimed. Released in the finally, a failed send included.
             self._active_cancel_event = cancel_event
             try:
                 try:

@@ -105,10 +105,9 @@ function fenceFor(source: string): string {
   return "`".repeat(Math.max(3, longest + 1));
 }
 
-/** Syntax-highlighted code via Streamdown + shiki. The code is always in the
- * DOM as plain monospace, but shiki only tokenizes once the block scrolls near
- * the viewport, so a long transcript does not highlight every script up front.
- * Highlights immediately where IntersectionObserver is missing (SSR / tests). */
+/** Syntax-highlighted code via Streamdown + shiki. Always in the DOM as plain monospace,
+ * but shiki only tokenizes once the block nears the viewport, so a long transcript does
+ * not highlight every script up front. Immediate where IntersectionObserver is missing. */
 function HighlightedCode({
   code: source,
   language,
@@ -126,8 +125,7 @@ function HighlightedCode({
   const [nearViewport, setNearViewport] = useState(
     () => typeof IntersectionObserver === "undefined",
   );
-  // Pinned to the bottom until the reader scrolls up, so a streaming payload
-  // visibly grows.
+  // Pinned to the bottom until the reader scrolls up, so a streaming payload visibly grows.
   const pinnedToBottom = useRef(true);
   useEffect(() => {
     if (nearViewport) return;
@@ -140,8 +138,7 @@ function HighlightedCode({
           io.disconnect();
         }
       },
-      // Highlight just before the block enters view, so it is ready by the
-      // time the user reaches it.
+      // Highlight just before the block enters view, so it is ready on arrival.
       { rootMargin: "200px" },
     );
     io.observe(el);
@@ -163,8 +160,8 @@ function HighlightedCode({
     }
   };
 
-  // Skip shiki while the model is writing (it re-tokenizes on every fragment)
-  // and on payloads too big to tokenize cheaply.
+  // Skip shiki while the model is writing (it re-tokenizes every fragment) and on payloads
+  // too big to tokenize cheaply.
   const highlight =
     nearViewport && !plain && source.length <= MAX_HIGHLIGHT_CHARS;
 
@@ -184,9 +181,8 @@ function HighlightedCode({
           {markdown}
         </Streamdown>
       ) : (
-        // A div, not a <pre>: the container's [&_pre]:!p-0 would strip the
-        // padding and shift the content when shiki swaps in. Same p-3, and
-        // whitespace-pre (not pre-wrap) so long lines scroll rather than wrap.
+        // A div, not a <pre>: the container's [&_pre]:!p-0 would strip the padding and
+        // shift the content when shiki swaps in. whitespace-pre so long lines scroll.
         <div className="whitespace-pre p-3 font-mono text-xs text-muted-foreground">
           {source}
         </div>
@@ -195,10 +191,8 @@ function HighlightedCode({
   );
 }
 
-/**
- * The code a tool is about to run, shown in full with Copy / Download. Lives in
- * the card's collapsible content, so the chevron hides code and output together.
- */
+/** The code a tool is about to run, in the card's collapsible content so the chevron
+ * hides code and output together. */
 export function ToolCodeCell({
   label,
   code,

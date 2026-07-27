@@ -22,9 +22,8 @@ export function toolPaneScope(modelType?: ModelType, pairId?: string): string {
 }
 
 /**
- * Narrow a pane scope to one conversation. Two threads in a pane can each be
- * mid tool call and both call it "call_0", so without the thread in the key
- * they share a store entry and the cards show each other's output.
+ * Narrow a pane scope to one conversation: two threads in a pane can both be mid "call_0",
+ * so without the thread in the key they share a store entry and swap outputs.
  */
 export function toolThreadScope(paneScope: string, threadId?: string): string {
   return `${paneScope}\u0000${threadId ?? ""}`;
@@ -33,15 +32,13 @@ export function toolThreadScope(paneScope: string, threadId?: string): string {
 export const ToolPaneScopeContext = createContext<string>(toolPaneScope());
 
 /**
- * Store-key scope for the conversation this component renders in. Takes the
- * thread id from the surrounding runtime, the same id the adapter writes
- * under, so reader and writer agree without threading a prop through.
+ * Store-key scope for the conversation this component renders in, taken from the
+ * surrounding runtime so reader and writer agree without a prop.
  *
- * `remoteId`, not `id`: the adapter gets `unstable_threadId`, which assistant-ui
- * sources from `remoteId`, and a not-yet-initialized thread has `id` but no
- * `remoteId`. Reading `id` here split the two keys apart for the first turn of
- * every New Chat, so live tool output never reached the card. Uninitialized,
- * both sides fall back to the pane-wide scope this key used to be.
+ * `remoteId`, not `id`: the adapter gets `unstable_threadId`, which assistant-ui sources
+ * from `remoteId`, and an uninitialized thread has `id` but no `remoteId`. Reading `id`
+ * split the keys apart for the first turn of every New Chat, so live tool output never
+ * reached the card. Uninitialized, both sides fall back to the pane-wide scope.
  */
 export function useToolPaneScope(): string {
   const paneScope = useContext(ToolPaneScopeContext);

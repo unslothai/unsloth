@@ -6493,11 +6493,10 @@ class LlamaCppBackend:
             binary = self._find_llama_server_binary()
             is_vulkan_backend = self._is_vulkan_backend(binary)
 
-            # Without --kv-unified an explicit --parallel N splits -c into windows of
-            # -c/N, so on a build lacking the flag the new default of 4 would quarter
-            # every context window for a feature it cannot serve. Fall back to the one
-            # slot such a build already behaved as. Ahead of the KV estimates so the
-            # fit matches what launches; capabilities are cached per binary+mtime.
+            # Without --kv-unified an explicit --parallel N splits -c into windows of -c/N,
+            # so on a build lacking the flag the default of 4 would quarter every context
+            # window for a feature it cannot serve: fall back to the one slot it already
+            # behaved as. Ahead of the KV estimates so the fit matches what launches.
             if (
                 n_parallel > 1
                 and binary
@@ -11376,8 +11375,7 @@ class LlamaCppBackend:
                                                 and is_always_safe_tool(current_name)
                                             )
                                             # A text-preview card still streams while
-                                            # gated; hiding it leaves the chat blank
-                                            # while the model writes the payload.
+                                            # gated; hiding it blanks the chat.
                                             and not has_text_only_provisional_card(current_name)
                                         )
                                         # Keep small-argument tools on the normal path.
@@ -12729,7 +12727,7 @@ class LlamaCppBackend:
                     while not finished.wait(0.05):
                         if cancel_event.is_set():
                             # Closing mid-request makes the blocking post raise
-                            # httpx.RequestError, which is the only way out of it.
+                            # httpx.RequestError, the only way out of it.
                             with contextlib.suppress(Exception):
                                 client.close()
                             return
@@ -12749,8 +12747,8 @@ class LlamaCppBackend:
             if resp.status_code != 200:
                 raise RuntimeError(f"llama-server returned {resp.status_code}: {resp.text}")
 
-        # The codec decode below is GPU work with no interruption point, so check
-        # here: cancelling after this only wastes the decode it cannot stop.
+        # The codec decode below is GPU work with no interruption point, so check here:
+        # cancelling after this only wastes the decode it cannot stop.
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Audio generation cancelled")
 
