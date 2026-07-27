@@ -86,7 +86,9 @@ def test_mlx_studio_rejects_unknown_scheduler():
 
 
 def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():
-    source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text()
+    source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
+        encoding = "utf-8"
+    )
 
     assert "tokenizer = tokenizer" in source
     assert "processor = tokenizer if is_vlm else None" not in source
@@ -96,7 +98,9 @@ def test_mlx_wandb_run_config_excludes_subject_and_secrets():
     # The MLX W&B run config uploads the whole config minus a sensitive set. The owner's
     # subject (authenticated username / API-key id) must be filtered alongside the secrets,
     # otherwise it lands in W&B run config even though DB history already strips it.
-    source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text()
+    source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
+        encoding = "utf-8"
+    )
 
     assert (
         '_wandb_sensitive = {"hf_token", "wandb_token", "s3_config", "subject"}' in source

@@ -113,10 +113,16 @@ _count=$(grep -c '"\$TORCH_CONSTRAINT"' "$INSTALL_SH" || true)
 _has_var=$([ "$_count" -ge 1 ] && echo "yes" || echo "no")
 assert_eq "\$TORCH_CONSTRAINT used in pip install" "yes" "$_has_var"
 
-# No stray hardcoded default ranges outside the ceiling-composed assignments
-# (the curated ROCm >=2.11 floors are deliberately literal).
-_hardcoded=$(grep -E -c '"torch>=2.4,<2.11.0"|"torch>=2.4,<2.12.0"' "$INSTALL_SH" || true)
-assert_eq "no hardcoded default torch range remains" "0" "$_hardcoded"
+# No stray hardcoded default ranges outside the ceiling-composed assignments (the
+# curated ROCm >=2.11 floors are deliberately literal). A curated per-index override
+# may still cap literally -- the gfx906 / MI50 reroute drops back below 2.11 because
+# the rocm6.3 index tops out at torch 2.9.x -- but only on a TORCH_CONSTRAINT=
+# assignment, never on a pip/uv install line (those must pass "$TORCH_CONSTRAINT").
+_hardcoded=$(grep -E '"torch>=2\.4,<2\.11\.0"|"torch>=2\.4,<2\.12\.0"' "$INSTALL_SH" \
+    | grep -c -v '^[[:space:]]*TORCH_CONSTRAINT=' || true)
+assert_eq "no hardcoded default torch range off a TORCH_CONSTRAINT= assignment" "0" "$_hardcoded"
+_count=$(grep -c 'TORCH_CONSTRAINT="torch>=2.4,<2.11.0"' "$INSTALL_SH" || true)
+assert_eq "gfx906 reroute caps torch below 2.11 for the rocm6.3 index" "1" "$_count"
 
 # Companions must be bounded to torch's window everywhere, never bare: torchaudio
 # 2.11 dropped its exact torch pin, so a bare companion can drift from a capped torch.
