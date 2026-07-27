@@ -201,12 +201,15 @@ def _load_state_store(codepage: str):
 @pytest.mark.parametrize(
     ("codepage", "name"), [("cp1252", "Jürgen"), ("cp1251", "Юрий"), ("cp932", "田中")]
 )
-def test_resuming_a_legacy_jsonl_migrates_it(tmp_path: Path, codepage: str, name: str) -> None:
+def test_resuming_a_legacy_jsonl_keeps_one_encoding(
+    tmp_path: Path, codepage: str, name: str
+) -> None:
     """A scrape written before UTF-8 was explicit must resume, not duplicate."""
     path = tmp_path / "out.jsonl"
     records = [{"id": 1, "author": name}, {"id": 2, "author": name}]
     body = "".join(json.dumps(r, ensure_ascii = False) + "\n" for r in records)
     path.write_bytes(body.encode(codepage))
+    before = path.read_bytes()
 
     writer = _load_state_store(codepage).JsonlWriter(path)
     try:
@@ -217,18 +220,21 @@ def test_resuming_a_legacy_jsonl_migrates_it(tmp_path: Path, codepage: str, name
     finally:
         writer.close()
 
-    # One consistent encoding, and the legacy text came through intact.
-    lines = [json.loads(x) for x in path.read_text(encoding = "utf-8").splitlines() if x.strip()]
+    # The shard is never converted, so it still reads in its own codepage, and
+    # the appended record is ASCII, which that codepage stores identically.
+    blob = path.read_bytes()
+    assert blob.startswith(before)
+    assert blob[len(before) :].isascii()
+    lines = [json.loads(x) for x in blob.decode(codepage).splitlines() if x.strip()]
     assert len(lines) == 3
     assert [line["author"] for line in lines] == [name] * 3
 
 
-def test_a_coincidentally_utf8_legacy_line_follows_the_file(tmp_path: Path) -> None:
-    """cp1251 `Р°` is D0 B0, which is also UTF-8 `а`, so the shard has to decide."""
+def test_a_coincidentally_utf8_legacy_line_is_left_alone(tmp_path: Path) -> None:
+    """cp1251 `Р°` is D0 B0, which is also UTF-8 `а`, and nothing can tell them apart."""
     path = tmp_path / "out.jsonl"
     ambiguous = "Р°"
     assert ambiguous.encode("cp1251").decode("utf-8") == "а"  # the trap
-    # Ordinary Cyrillic on the other lines is what settles the verdict.
     authors = ["Привет", "Здравствуйте", "Москва", ambiguous]
     path.write_bytes(
         b"".join(
@@ -236,10 +242,13 @@ def test_a_coincidentally_utf8_legacy_line_follows_the_file(tmp_path: Path) -> N
             for i, a in enumerate(authors)
         )
     )
+    before = path.read_bytes()
 
     _load_state_store("cp1251").JsonlWriter(path).close()
 
-    rows = [json.loads(x) for x in path.read_text(encoding = "utf-8").splitlines() if x.strip()]
+    # Untouched, so the ambiguity never had to be resolved.
+    assert path.read_bytes() == before
+    rows = [json.loads(x) for x in path.read_text(encoding = "cp1251").splitlines() if x.strip()]
     assert [row["author"] for row in rows] == authors
 
 
