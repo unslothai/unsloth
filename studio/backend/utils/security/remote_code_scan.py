@@ -395,11 +395,9 @@ def scan_remote_code_files(files: dict[str, str]) -> ScanResult:
 
 
 def _read_python_source(path) -> str:
-    """Decode a .py the way Python will execute it.
-
-    A PEP 263 cookie (`# coding: cp1252`) decides the encoding, so forcing utf-8
-    would make the scanner read something other than what runs.
-    """
+    """Decode a .py the way Python will execute it: a PEP 263 cookie
+    (`# coding: cp1252`) wins, so forcing utf-8 would scan something other than
+    what runs."""
     data = path.read_bytes()
     try:
         encoding = tokenize.detect_encoding(io.BytesIO(data).readline)[0]

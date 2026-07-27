@@ -68,8 +68,8 @@ class JsonlWriter:
         # Preload seen keys for dedup across resumes
         if self.path.exists() and self.path.stat().st_size > 0:
             try:
-                # A file an older build wrote in the operator's locale is left as
-                # is; no guess is safe, so just read past what will not decode.
+                # No guess is safe for a file an older build wrote in the
+                # operator's locale, so read past whatever will not decode.
                 with self.path.open(encoding = "utf-8", errors = "replace") as f:
                     for line in f:
                         try:

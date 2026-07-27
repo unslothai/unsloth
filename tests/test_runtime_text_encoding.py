@@ -3,42 +3,34 @@
 
 """Guard: shipping code must name an encoding on every text read and write.
 
-`Path.read_text()`, `Path.write_text()`, `Path.open()` and builtin `open()` fall
-back to `locale.getencoding()` when no encoding is given: UTF-8 on the Linux and
-macOS runners, cp1252 on a stock Windows install. Every file this repo reads at
-runtime is UTF-8 -- HF `config.json` / `tokenizer_config.json` / `adapter_config.json`
-(RFC 8259 mandates UTF-8 for JSON), Ollama manifests, GGUF export metadata -- so on
-Windows those reads either crash or, worse, succeed with mojibake:
+`Path.read_text()`, `Path.write_text()`, `Path.open()` and builtin `open()` fall back
+to `locale.getencoding()`: UTF-8 on the Linux and macOS runners, cp1252 on a stock
+Windows install. Every file this repo reads at runtime is UTF-8 (HF `config.json` /
+`tokenizer_config.json` / `adapter_config.json`, Ollama manifests, GGUF export
+metadata), so on Windows those reads crash or, worse, succeed with mojibake: a
+DeepSeek or Qwen tokenizer_config.json carries U+FF5C and U+2581 in its chat
+template, and at utils/models/model_config.py that read sits inside a broad
+`except Exception: logger.debug(...)`, so the token-pattern check silently
+returned the wrong answer.
 
-    A DeepSeek or Qwen tokenizer_config.json carries U+FF5C and U+2581 in its
-    chat template. Under cp1252 that read raises UnicodeDecodeError, and at
-    utils/models/model_config.py the call sits inside a broad `except Exception:
-    logger.debug(...)`, so the token-pattern check silently returned the wrong
-    answer with no visible error.
+Unlike the import-time rule in test_source_read_encoding.py this is scope agnostic:
+runtime reads live inside functions, and shipping code has no legitimate reason to
+let the operator's locale decide. No reachability analysis to get wrong, so no
+allowlist and no false positives.
 
-Unlike the import-time rule in test_source_read_encoding.py this is scope
-agnostic, which makes it both simpler and stricter: runtime reads live inside
-functions, and shipping code has no legitimate reason to want the operator's
-locale to decide how a file is decoded. That leaves no reachability analysis to
-get wrong, so there is no allowlist and no false positives.
+Binary handles are skipped (no encoding to name, and passing one is a ValueError),
+and a non-constant mode counts as unknown rather than text: demanding `encoding =`
+on a call that may resolve to "rb" would leave no compliant way to write it.
 
-Binary handles are skipped: they have no encoding to name, and passing one is a
-ValueError. A non-constant mode is treated as unknown rather than assumed text,
-for the same reason -- demanding `encoding =` on a call that may resolve to "rb"
-would leave no compliant way to write it.
-
-Known limitation, deliberately not closed: `configparser.ConfigParser.read()`
-also takes an `encoding` and also defaults to the locale one, but it cannot be
-matched by name without resolving the receiver. `f.read(n)` on a binary handle,
-`resp.read(limit)` on an HTTP response and `handle.read(chunk)` are all spelled
-identically, and flagging those would be a false positive with no compliant fix
--- the exact failure mode this guard is built to avoid. The one live
-`ConfigParser.read` in the tree (/etc/wsl.conf, hub/utils/paths.py) is pinned by
-hand; a future one has to be caught in review.
+Known limitation, deliberately not closed: `configparser.ConfigParser.read()` also
+defaults to the locale encoding, but cannot be matched by name without resolving the
+receiver, since `f.read(n)`, `resp.read(limit)` and `handle.read(chunk)` are spelled
+identically. Flagging it would be a false positive with no compliant fix, the exact
+failure mode this guard avoids. The one live `ConfigParser.read` (/etc/wsl.conf,
+hub/utils/paths.py) is pinned by hand; a future one has to be caught in review.
 """
 
-# `str | None` below is evaluated at import on Python 3.9 without this, and
-# pyproject declares requires-python = ">=3.9,<3.15".
+# `str | None` below is evaluated at import on Python 3.9 (requires-python >= 3.9).
 from __future__ import annotations
 
 import ast
@@ -47,11 +39,9 @@ from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parent.parent
-# Everything that ships to users. `studio/` covers the installer scripts as
-# well as the backend: install_python_stack.py reads /sys/class/kfd to decide
-# whether to pull ROCm wheels, which is the same detection path as
-# utils/hardware/hardware.py and deserves the same rule. Test trees are covered
-# by test_source_read_encoding.py under a narrower import-time rule.
+# Everything that ships. `studio/` covers the installers too: install_python_stack.py
+# reads /sys/class/kfd, the same detection path as utils/hardware/hardware.py. Test
+# trees fall under the narrower import-time rule in test_source_read_encoding.py.
 ROOTS = (REPO / "unsloth", REPO / "studio", REPO / "unsloth_cli")
 # The frontend tree is TypeScript; node_modules is vendored third-party code.
 SKIP_DIRS = {"build", "dist", "frontend", "node_modules", "src-tauri", ".venv", "site-packages"}
@@ -64,8 +54,7 @@ PLATFORM_DEFAULT_ENCODINGS = (None, "locale")
 PLATFORM_DEFAULT_CALLS = {"getdefaultencoding", "getencoding", "getpreferredencoding"}
 # Modules whose `open` IS the builtin: same signature, same platform default.
 BUILTIN_OPEN_MODULES = {"builtins", "io"}
-# These wrap the stream in a TextIOWrapper for a "t" mode, so they take an
-# encoding, but default to "rb". Value is where that encoding sits positionally.
+# Take an encoding in "t" mode but default to "rb". Value is its positional slot.
 COMPRESSED_OPENERS = {"bz2": 3, "gzip": 3, "lzma": None}
 # Distinct from None so that "no mode argument at all" still means text.
 UNKNOWN_MODE = object()
@@ -73,9 +62,8 @@ UNKNOWN_MODE = object()
 
 def _mode(call: ast.Call, positional_index: int):
     """The call's mode, or UNKNOWN_MODE when it is not a literal."""
-    # open(*args) / open(path, **kw) hide the mode, so it is unknown rather
-    # than absent. Falling through to the "r" default would flag a call that
-    # may resolve to binary, leaving no compliant way to write it.
+    # A splat hides the mode, so it is unknown rather than absent: falling through to
+    # "r" would flag a call that may resolve to binary, with no compliant way to fix it.
     if any(isinstance(a, ast.Starred) for a in call.args):
         return UNKNOWN_MODE
     if any(kw.arg is None for kw in call.keywords):
@@ -92,10 +80,9 @@ def _mode(call: ast.Call, positional_index: int):
 def _names_encoding(call: ast.Call) -> bool:
     """True only for an encoding that actually pins one.
 
-    `encoding = None` and `encoding = "locale"` both re-select the platform
-    default, so the keyword being present is not enough. A `**kwargs` splat may
-    carry an encoding we cannot see, so it counts as named rather than risking
-    a demand the contributor has no way to satisfy.
+    `encoding = None` and `encoding = "locale"` re-select the platform default, so the
+    keyword being present is not enough. A `**kwargs` splat may carry an encoding we
+    cannot see, so it counts as named rather than as an unsatisfiable demand.
     """
     for kw in call.keywords:
         if kw.arg is None:
@@ -118,9 +105,8 @@ def _is_text(call: ast.Call, positional_index: int) -> bool:
 def _imports_at_each_call(tree: ast.Module) -> dict:
     """The imports visible at every call, keyed by node id.
 
-    A function's own imports belong to that function. Treating them as the
-    module's would let one local `from PIL.Image import open` turn off the
-    builtin check for every other function in the file.
+    A function's own imports stay in that function: hoisting them would let one local
+    `from PIL.Image import open` turn off the builtin check for the whole file.
     """
     visible_at = {}
 
@@ -140,8 +126,8 @@ def _imports_at_each_call(tree: ast.Module) -> dict:
 def _foreign_names(tree: ast.Module) -> set:
     """Names bound to an object another library built.
 
-    `z = zipfile.ZipFile(p)` then `z.open(name)` is a binary member stream that
-    takes no encoding, so demanding one leaves no correct edit.
+    `z = zipfile.ZipFile(p)` then `z.open(name)` is a binary member stream taking no
+    encoding, so demanding one leaves no correct edit.
     """
     modules = _imported_names(tree)
     names = set()
@@ -156,11 +142,9 @@ def _foreign_names(tree: ast.Module) -> set:
 def _imported_names(tree) -> dict:
     """Names this module's imports bind, mapped to where they came from.
 
-    The name alone settles nothing in either direction: `import tarfile as tf`
-    hides an opener that takes no encoding behind an unfamiliar name, and
-    `from PIL.Image import open` puts one behind the most familiar name there
-    is. Resolving the origin covers both without a list of module names to keep
-    up to date.
+    The name alone settles nothing: `import tarfile as tf` hides an opener that takes
+    no encoding, and `from PIL.Image import open` puts another behind the most familiar
+    name there is. Resolving the origin covers both, with no module list to maintain.
     """
     bound = {}
     stack = list(ast.iter_child_nodes(tree))
@@ -225,8 +209,8 @@ def _is_path_attr(node) -> bool:
 def _foreign_receiver(node, modules) -> bool:
     """True when the thing before `.open` is an object another library built.
 
-    `zipfile.ZipFile(p).open(name)` returns a binary member stream and takes no
-    encoding, so it needs the same exemption as the bare `zipfile.open` spelling.
+    `zipfile.ZipFile(p).open(name)` returns a binary member stream taking no encoding,
+    so it needs the same exemption as the bare `zipfile.open` spelling.
     """
     if not isinstance(node, ast.Call):
         return False
@@ -250,16 +234,15 @@ def _offender(
     func = call.func
     if isinstance(func, ast.Attribute):
         receiver = func.value.id if isinstance(func.value, ast.Name) else None
-        # `Path.read_text(p)` is the unbound spelling of `p.read_text()`: the
-        # instance takes slot 0, so every argument shifts one place right.
+        # `Path.read_text(p)` is `p.read_text()` unbound: the instance takes slot 0,
+        # so every argument shifts one place right.
         shift = 1 if _is_path_class(receiver, modules) or _is_path_attr(func.value) else 0
         if func.attr in GUARDED_METHODS:
             if func.attr == "read_text" and not shift and call.args:
                 first = call.args[0]
-                # Bound read_text takes encoding first, so None or "locale"
-                # there is a platform-default read. Any other positional means
-                # the receiver is importlib.metadata's Distribution, whose
-                # argument is a filename and which takes no encoding at all.
+                # Bound read_text takes encoding first, so None or "locale" there is a
+                # platform-default read. Any other positional means the receiver is
+                # importlib.metadata's Distribution: a filename, and no encoding at all.
                 if isinstance(first, ast.Constant) and first.value in PLATFORM_DEFAULT_ENCODINGS:
                     return "read_text()"
                 return None
@@ -276,9 +259,8 @@ def _offender(
                 if mode is UNKNOWN_MODE or "t" not in str(mode):
                     return None
                 return None if _names_encoding(call) else f"{compressed}.open()"
-            # Any other imported receiver is somebody else's opener: tarfile
-            # takes a compression mode, Image takes a binary file. Neither has
-            # an encoding to name, so demanding one leaves no correct edit.
+            # Any other imported receiver is somebody else's opener: tarfile takes a
+            # compression mode, Image a binary file. Neither has an encoding to name.
             if receiver is not None and receiver in modules and receiver not in PATH_CLASSES:
                 return None
             if _foreign_receiver(func.value, modules) or receiver in foreign:
@@ -326,10 +308,9 @@ def _offenders_in(src: str, label: str = "<snippet>"):
 def _tracked_sources():
     """Shipping *.py that git is actually tracking.
 
-    A walk also picks up whatever is lying in the checkout: a previously built
-    `build/lib` copy of a plugin, a nested worktree, a vendored dependency.
-    None of those are ours to police, and a stale artifact would fail this for
-    everybody who has one.
+    A walk also picks up whatever is lying in the checkout (a built `build/lib` copy,
+    a nested worktree, a vendored dep). None of those are ours to police, and a stale
+    artifact would fail this for everybody who has one.
     """
     listed = subprocess.run(
         ["git", "-C", str(REPO), "ls-files", "-z", "--", "*.py"],
@@ -374,9 +355,8 @@ def test_shipping_code_names_an_encoding():
     )
 
 
-# The repo-wide assertion above passes vacuously once the trees are clean, so it
-# cannot tell a working detector from one that always returns None. These pin the
-# detector itself.
+# The assertion above passes vacuously once the trees are clean, so it cannot tell a
+# working detector from one that always returns None. These pin the detector itself.
 
 
 def test_detects_the_plain_cases():
@@ -409,8 +389,7 @@ def test_skips_binary_handles():
 
 
 def test_skips_unknown_modes():
-    # Demanding encoding = on a call that may resolve to "rb" would leave no
-    # compliant way to write it, so an unresolvable mode is not an offence.
+    # A call that may resolve to "rb" has no compliant way to name an encoding.
     assert not _offenders_in("mode = 'rb' if binary else 'r'\nf = open(path, mode)\n")
     assert not _offenders_in("f = open(path, mode = chosen)\n")
 
