@@ -105,7 +105,17 @@ jobs:
           if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
               SHA="$REF"
           else
-              SHA="$(git ls-remote https://github.com/unslothai/unsloth "$REF" | awk 'NR==1{print $1}')"
+              # ls-remote exits 0 whether or not a ref matched, so a non-zero exit
+              # means we never reached the remote. The pipe into awk would hide it
+              # (no pipefail under the default `bash -e` shell) and the fallback
+              # below would then hand a MUTABLE name to the amd64, arm64 and Studio
+              # builds, which each resolve it again -- the exact split this job
+              # exists to prevent. Fail the run instead.
+              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/unsloth "$REF")"; then
+                  echo "::error::unslothai/unsloth unreachable; cannot freeze ref '${REF}' to a sha"
+                  exit 1
+              fi
+              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{print $1}')"
               [ -n "$SHA" ] || SHA="$REF"
           fi
           echo "ref=${SHA}" >> "$GITHUB_OUTPUT"
@@ -129,7 +139,14 @@ jobs:
           if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
               SHA="$REF"
           else
-              SHA="$(git ls-remote https://github.com/unslothai/unsloth-zoo "$REF" | awk 'NR==1{print $1}')"
+              # Same rule as the unsloth ref above: a non-zero ls-remote is a
+              # transport failure, not "no such ref", and forwarding the branch
+              # name would let the three builds each pick a different commit.
+              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/unsloth-zoo "$REF")"; then
+                  echo "::error::unslothai/unsloth-zoo unreachable; cannot freeze ref '${REF}' to a sha"
+                  exit 1
+              fi
+              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{print $1}')"
               [ -n "$SHA" ] || SHA="$REF"
           fi
           echo "ref=${SHA}" >> "$GITHUB_OUTPUT"
@@ -146,7 +163,13 @@ jobs:
           if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
               SHA="$REF"
           else
-              SHA="$(git ls-remote https://github.com/unslothai/notebooks "$REF" | awk 'NR==1{print $1}')"
+              # Same rule as the two refs above: only a reachable remote with no
+              # matching ref may fall through to the literal "$REF".
+              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/notebooks "$REF")"; then
+                  echo "::error::unslothai/notebooks unreachable; cannot freeze ref '${REF}' to a sha"
+                  exit 1
+              fi
+              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{print $1}')"
               [ -n "$SHA" ] || SHA="$REF"
           fi
           echo "commit=${SHA}" >> "$GITHUB_OUTPUT"

@@ -135,3 +135,59 @@ def test_the_lock_lives_beside_the_state_it_protects(sync: str):
         "keeping the lock in $DEST also serialises two containers sharing the "
         "notebooks volume, which /tmp would not"
     )
+
+
+# --- concurrent-publish safety ------------------------------------------------
+# The detach above is deliberate, but entrypoint.sh runs `sync_notebooks` and then
+# `exec "$@"`, so the child is still copying while JupyterLab serves the same tree.
+# `cp -a` writes THROUGH the destination inode, so it both exposes half-written
+# JSON to a reader and destroys a save made after the recorded-hash check. The
+# publish therefore has to go via a same-dir temp plus an atomic rename.
+
+
+def test_the_refresh_publishes_each_notebook_atomically(sync: str):
+    block = sync[sync.index("while IFS= read -r -d '' f; do") :]
+    block = block[: block.index("done < <(find")]
+    assert re.search(r'cp -a "\$f" "\$new"', block), (
+        "the refresh must copy into a staging file, not onto the live notebook"
+    )
+    assert re.search(r'mv -f "\$new" "\$dst"', block), (
+        "the staged copy must be published with an atomic rename"
+    )
+
+
+def test_the_staging_file_is_hidden_and_beside_the_destination(sync: str):
+    assert re.search(r'new="\$\(dirname "\$dst"\)/\.unsloth_nb_new\.\$\$"', sync), (
+        "the staging file must be dot-prefixed (invisible in the file browser), "
+        "per-PID (two containers on one volume) and in the destination directory "
+        "(a rename cannot cross filesystems)"
+    )
+
+
+def test_the_recorded_hash_is_rechecked_immediately_before_publishing(sync: str):
+    block = sync[sync.index("while IFS= read -r -d '' f; do") :]
+    block = block[: block.index("done < <(find")]
+    recheck = block.index('cp -a "$f" "$new"')
+    assert re.search(
+        r'if \[ -e "\$dst" \] && \[ "\$\(hash_of "\$dst"\)" != "\$\{LAST\[\$rel\]:-\}" \]',
+        block[recheck:],
+    ), (
+        "the earlier check sits before middle_unchanged (a python subprocess), so "
+        "the hash has to be re-read once the staging copy is complete or a save "
+        "made in between is silently overwritten"
+    )
+
+
+def test_a_pristine_pre_existing_file_is_not_rewritten_on_first_boot(sync: str):
+    block = sync[sync.index('if [ ! -f "$STATE" ]; then') :]
+    block = block[: block.index('mv "$STATE.tmp" "$STATE"')]
+    assert "kept existing user file" in block
+    # A bind-mounted file whose bytes already match the template used to fall
+    # through to `cp -a`, i.e. --preserve=all stamping root:root, the baked mode
+    # and the build mtime onto the host user's own file. Record, don't copy.
+    same = block.index("kept existing user file")
+    tail = block[same:]
+    assert tail.index("$STATE.tmp") < tail.index('cp -a "$TEMPLATE/$rel"'), (
+        "an existing file with the template's exact bytes must be recorded as "
+        "managed without being copied over"
+    )

@@ -184,9 +184,17 @@ if [ ! -f "$STATE" ]; then
         # A pre-existing file (bind-mounted or hand-created) is user data: keep it
         # and do NOT record it, else the refresh below would treat it as pristine
         # and overwrite it. Only files we lay down are recorded as managed.
-        if [ -e "$DEST/$rel" ] \
-           && [ "$(hash_of "$DEST/$rel")" != "$(hash_of "$TEMPLATE/$rel")" ]; then
-            echo "[unsloth-nb] kept existing user file: $DEST/$rel"
+        if [ -e "$DEST/$rel" ]; then
+            if [ "$(hash_of "$DEST/$rel")" != "$(hash_of "$TEMPLATE/$rel")" ]; then
+                echo "[unsloth-nb] kept existing user file: $DEST/$rel"
+                continue
+            fi
+            # Same bytes already on disk (a bind-mounted checkout of the same
+            # notebooks). cp -a is --preserve=all, so copying would only stamp the
+            # baked root:root ownership, mode and build mtime onto the host user's
+            # own file and lock them out of editing it. Record it as managed -- the
+            # hash is identical, so the state is byte-for-byte what cp would write.
+            printf '%s  %s\n' "$(hash_of "$DEST/$rel")" "$rel" >> "$STATE.tmp"
             continue
         fi
         if cp -a "$TEMPLATE/$rel" "$DEST/$rel" 2>/dev/null; then
@@ -300,9 +308,31 @@ while IFS= read -r -d '' f; do
         continue
     fi
     mkdir -p "$(dirname "$dst")" 2>/dev/null || true
-    if cp -a "$f" "$dst" 2>/dev/null; then
-        printf '%s  %s\n' "$(hash_of "$dst")" "$rel" >> "$TMPSTATE"
-        updated=$((updated + 1))
+    # Publish through a same-dir temp + rename. This child is forked before the
+    # entrypoint execs the container command, so JupyterLab is already serving
+    # $DEST while this loop runs: cp -a writes in place (the inode is reused), so
+    # a reader can catch half-written JSON, and a save made between the recorded-
+    # hash check above and this write is destroyed and then recorded as pristine.
+    # rename(2) is atomic, and re-reading the hash once the temp is complete
+    # shrinks the check-to-write window to the rename itself. The staging name is
+    # dot-prefixed and per-PID so a killed refresh leaves nothing visible in the
+    # file browser; unsloth_nb_strip_colab.py already publishes these same files
+    # this way.
+    new="$(dirname "$dst")/.unsloth_nb_new.$$"
+    if cp -a "$f" "$new" 2>/dev/null; then
+        if [ -e "$dst" ] && [ "$(hash_of "$dst")" != "${LAST[$rel]:-}" ]; then
+            # Saved while we were copying -> their edit wins, keep the marker.
+            rm -f "$new"
+            printf '%s  %s\n' "${LAST[$rel]:-}" "$rel" >> "$TMPSTATE"
+            kept=$((kept + 1))
+            continue
+        fi
+        # A single-FILE bind mount cannot be renamed over (EBUSY); fall back to the
+        # previous in-place copy there so that setup keeps working as it does today.
+        if mv -f "$new" "$dst" 2>/dev/null || { rm -f "$new"; cp -a "$f" "$dst" 2>/dev/null; }; then
+            printf '%s  %s\n' "$(hash_of "$dst")" "$rel" >> "$TMPSTATE"
+            updated=$((updated + 1))
+        fi
     fi
 done < <(find "$TMP" -type f -print0)
 

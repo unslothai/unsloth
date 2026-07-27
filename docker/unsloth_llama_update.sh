@@ -87,7 +87,16 @@ echo "[llama-update] installed:   $CUR"
 if [ "$CHECK_ONLY" = "1" ]; then
     LATEST="$(resolve_latest)"
     echo "[llama-update] latest:      ${LATEST:-unknown}"
-    if [ -n "$LATEST" ] && [ "$LATEST" != "$CUR" ]; then
+    # resolve_latest swallows every failure into "" (line 75), so an empty value
+    # means the lookup did not happen -- no network, proxy, GitHub down. Printing
+    # "up to date" there is the one answer --check must never give: it reports a
+    # state it could not observe. Say unknown and exit non-zero instead.
+    if [ -z "$LATEST" ]; then
+        echo "[llama-update] could not reach the release feed; update status UNKNOWN" >&2
+        echo "[llama-update] (retry once the container has network access)" >&2
+        exit 1
+    fi
+    if [ "$LATEST" != "$CUR" ]; then
         echo "[llama-update] an update is available (run without --check to apply)"
     else
         echo "[llama-update] up to date"
@@ -121,6 +130,7 @@ else
     backup="${INSTALL_DIR}.old.$$"
 fi
 swap_done=0
+drained=0
 # The exit handler must never delete $backup while it's the ONLY copy: restore the
 # old tree first, remove it only after the new tree is active. Signal traps run
 # the EXIT trap on HUP/INT/TERM too.
@@ -132,6 +142,18 @@ cleanup() {
             # half-moved NEW one: drop it, then move the old one back.
             if [ -d "$backup" ]; then
                 _restore_fail=0
+                # The per-name loop below only sees entries the OLD tree had, so a
+                # file the new release introduced survives it and the "restored"
+                # dir ends up mixed-version -- ggml dlopens every libggml-*.so it
+                # finds next to the binaries. Once the drain finished, every
+                # remaining entry is a half-moved NEW one, so clear them all.
+                # Gated on "drained": before the drain completes an entry here can
+                # still be the ONLY copy of an old one, and deleting it loses data.
+                if [ "$drained" = "1" ]; then
+                    find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 \
+                         ! -path "$work" ! -path "$backup" \
+                         -exec rm -rf {} + 2>/dev/null || true
+                fi
                 for _e in "$backup"/* "$backup"/.[!.]* "$backup"/..?*; do
                     { [ -e "$_e" ] || [ -L "$_e" ]; } || continue
                     _b="$(basename "$_e")"
@@ -176,6 +198,9 @@ if [ "$IN_PLACE" = "1" ]; then
     mkdir "$backup"
     find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 \
          ! -path "$work" ! -path "$backup" -exec mv -t "$backup" {} +
+    # Every old entry now lives in $backup, so from here the trap may clear the
+    # install dir before restoring. set -e means a failed drain never gets here.
+    drained=1
     if find "$new" -mindepth 1 -maxdepth 1 -exec mv -t "$INSTALL_DIR" {} +; then
         swap_done=1
     else

@@ -226,6 +226,15 @@ def test_labext_and_branding() -> None:
     # uiChrome hides the right activity bar; CTRL+A output-select selects nodes.
     check("right activity bar hidden", "jp-mod-right" in all_src and "display: none" in all_src)
     check("ctrl+A output select", "selectNodeContents" in all_src)
+    # The remembered pointer-down is only replaced by another pointer-down, but
+    # J/K/arrow cell navigation fires none, so it has to be revalidated (still in
+    # the document, still in the ACTIVE cell) before it is used as the fallback --
+    # otherwise Ctrl+A on a later cell selects the old output and swallows
+    # JupyterLab's notebook:select-all.
+    check(
+        "ctrl+A fallback revalidated",
+        "isConnected" in all_src and "jp-mod-active" in all_src,
+    )
     # branding assets
     login = os.path.join(JUPYTER, "login.html")
     login_src = open(login, encoding = "utf-8").read() if os.path.isfile(login) else ""

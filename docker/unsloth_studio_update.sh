@@ -91,11 +91,17 @@ fi
 echo "[studio-update] after:  unsloth $(version_of)"
 
 # Sanity: the backend must still import after the swap (a missing --no-deps
-# transitive dep shows up here). Non-fatal: just warn with the remedy.
+# transitive dep shows up here). Restarting into code that cannot import kills a
+# process that is serving fine and leaves supervisord's studio program in FATAL
+# after startretries, which it never leaves on its own. Keep the running service
+# and fail instead, so the operator can add the dep or roll back with Studio up.
 if ! "$PY" -c "import studio.backend.main" >/dev/null 2>&1; then
-    echo "[studio-update] WARNING: 'import studio.backend.main' failed after update." >&2
+    echo "[studio-update] ERROR: 'import studio.backend.main' failed after update." >&2
     echo "[studio-update] A new dependency may be missing. Re-run with --with-deps:" >&2
     echo "[studio-update]   unsloth-studio-update --with-deps" >&2
+    echo "[studio-update] NOT restarting Studio: the running process keeps serving." >&2
+    echo "[studio-update] Once fixed:  supervisorctl restart studio" >&2
+    exit 1
 fi
 
 if [ "$RESTART" = "1" ]; then

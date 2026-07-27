@@ -64,6 +64,20 @@ const outputSelectPlugin: JupyterFrontEndPlugin<void> = {
     // Remember the last pointer-down: a click on an image/widget output leaves no
     // text selection, so the anchor alone can't tell which output is meant.
     let lastPointerOutput: HTMLElement | null = null;
+    // ...but only trust it while that output is still in the document AND still
+    // inside the ACTIVE cell. Keyboard cell navigation (J/K, arrows) fires no
+    // pointer event, so an unvalidated value would make the chord on a later cell
+    // select the previously clicked output and swallow `notebook:select-all`; and
+    // a re-executed cell replaces the node, leaving a detached range that selects
+    // nothing at all while still suppressing the shortcut.
+    const rememberedOutput = (): HTMLElement | null => {
+      const output = lastPointerOutput;
+      if (!output || !output.isConnected) {
+        return null;
+      }
+      const cell = output.closest('.jp-Cell');
+      return cell && cell.classList.contains('jp-mod-active') ? output : null;
+    };
     document.addEventListener(
       'pointerdown',
       (event: PointerEvent): void => {
@@ -85,7 +99,7 @@ const outputSelectPlugin: JupyterFrontEndPlugin<void> = {
       // Own the chord only when in an output: the target, else the last click
       // (not the stale selection anchor; see the header).
       const output =
-        closestOutput(event.target as Node | null) ?? lastPointerOutput;
+        closestOutput(event.target as Node | null) ?? rememberedOutput();
       if (!output) {
         return;
       }
