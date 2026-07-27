@@ -513,6 +513,8 @@ fn run_install_with_event_mode(
     let (stdout, stderr) = match spawn_script(&script, &args, &state) {
         Ok(handles) => handles,
         Err(msg) => {
+            // Nothing ran, so nothing is half-installed.
+            clear_install_marker_best_effort();
             diagnostics::finish_attempt(
                 &diagnostics,
                 &attempt,

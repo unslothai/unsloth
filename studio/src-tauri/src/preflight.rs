@@ -24,8 +24,18 @@ use managed::probe_managed_bin;
 #[cfg(test)]
 use version::{backend_version_compatible, MIN_DESKTOP_BACKEND_VERSION};
 
+/// The managed backend refused to start on a value it inherited from the
+/// environment rather than from the install.
+pub(crate) const STUDIO_RUNTIME_STARTUP_FAILED: &str = "studio_runtime_startup_failed";
+
 fn release_auto_repair() -> bool {
     !cfg!(debug_assertions)
+}
+
+/// Reinstalling cannot change a rejected environment value, so repairing over
+/// one only replaces a healthy install and fails the same way afterwards.
+fn stale_reason_is_repairable(reason: &str) -> bool {
+    reason != STUDIO_RUNTIME_STARTUP_FAILED
 }
 
 fn managed_bin_for_result(managed: &ManagedProbe) -> Option<PathBuf> {
@@ -61,9 +71,9 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
             },
             ManagedProbe::Stale { bin, reason } => DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::ManagedStale,
+                can_auto_repair: release_auto_repair() && stale_reason_is_repairable(&reason),
                 reason: Some(reason),
                 port: None,
-                can_auto_repair: release_auto_repair(),
                 managed_bin: Some(bin),
             },
             ManagedProbe::Missing => DesktopPreflightResult {
@@ -393,6 +403,40 @@ mod tests {
     }
 
     #[test]
+    fn rejected_backend_settings_do_not_auto_repair() {
+        // No reinstall can change an inherited environment value, so repairing
+        // would replace a healthy install and fail again the same way.
+        assert!(!stale_reason_is_repairable(STUDIO_RUNTIME_STARTUP_FAILED));
+        for reason in [
+            "studio_runtime_missing_dependency",
+            "studio_runtime_import_failed",
+            "install_incomplete",
+            "desktop_backend_version_too_old",
+        ] {
+            assert!(stale_reason_is_repairable(reason), "{reason}");
+        }
+
+        let result = choose_preflight(
+            ManagedProbe::Stale {
+                bin: PathBuf::from("/managed/unsloth"),
+                reason: STUDIO_RUNTIME_STARTUP_FAILED.to_string(),
+            },
+            BackendProbe::Missing,
+        );
+
+        assert_eq!(
+            result.disposition,
+            DesktopPreflightDisposition::ManagedStale
+        );
+        assert_eq!(
+            result.reason.as_deref(),
+            Some(STUDIO_RUNTIME_STARTUP_FAILED)
+        );
+        // False in every build profile, unlike the other stale reasons.
+        assert!(!result.can_auto_repair);
+    }
+
+    #[test]
     fn external_conflict_blocks_managed_flow() {
         let result = choose_preflight(
             ManagedProbe::Ready {
@@ -671,6 +715,55 @@ exit 1
         assert!(
             started.elapsed() < std::time::Duration::from_secs(9),
             "probe hit the 10s timeout instead of draining stdout"
+        );
+        remove_managed_capability_cache();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_cli_predating_the_runtime_check_is_not_forced_into_repair() {
+        // Every published CLI satisfies MIN_DESKTOP_BACKEND_VERSION but has no
+        // `desktop-runtime-check`, so click exits 2 with an empty stdout. That
+        // must not repair an install that still launches Studio.
+        let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
+        let _cache_home = ManagedCapabilityCacheHome::new("runtime-check-absent");
+        remove_managed_capability_cache();
+
+        let old = fake_cli(
+            "runtime-check-absent",
+            r#"#!/bin/sh
+if [ "$1" = "studio" ] && [ "$2" = "desktop-runtime-check" ]; then
+  echo "Error: No such command 'desktop-runtime-check'." >&2
+  exit 2
+fi
+if [ "$1" = "-h" ]; then exit 0; fi
+if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":1,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"version":"2026.7.5"}'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let probe = probe_managed_bin(old.bin.clone()).await;
+        assert!(
+            matches!(probe, ManagedProbe::Ready { .. }),
+            "CLI without the runtime-check subcommand must stay Ready, got {probe:?}"
+        );
+
+        // The fallback must not rescue a CLI that cannot launch at all.
+        remove_managed_capability_cache();
+        let broken = fake_cli(
+            "runtime-check-unlaunchable",
+            r#"#!/bin/sh
+exit 2
+"#,
+        );
+        assert!(
+            matches!(
+                probe_managed_bin(broken.bin.clone()).await,
+                ManagedProbe::Stale { reason, .. } if reason == "studio_runtime_probe_failed"
+            ),
+            "an unlaunchable CLI must stay Stale"
         );
         remove_managed_capability_cache();
     }

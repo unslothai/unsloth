@@ -292,6 +292,12 @@ def _missing_studio_requirement(run_mod):
             installed = distribution(requirement.name)
         except PackageNotFoundError:
             return requirement.name
+        # Metadata outlives the package it describes: hatchling wheels (fastapi,
+        # typer) store .dist-info/METADATA as the first archive entry, so an
+        # unpack killed midway leaves a readable version for modules that never
+        # landed. RECORD is written last, so its absence marks that unpack.
+        if installed.files is None:
+            return requirement.name
         # prereleases=True: a prerelease satisfying a floor is not a broken install.
         if requirement.specifier and not requirement.specifier.contains(
             installed.version, prereleases = True
@@ -2860,6 +2866,16 @@ def desktop_runtime_check(
             "runtime_ready": False,
             "reason": "missing_dependency",
             "module": exc.name,
+        }
+    # SystemExit is not an Exception. run.py raises it for rejected settings such
+    # as UNSLOTH_CPU_THREADS, and letting it escape would emit no payload at all,
+    # so the desktop app would reinstall over an environment value instead.
+    except SystemExit as exc:
+        payload = {
+            "runtime_ready": False,
+            "reason": "backend_startup_failed",
+            "error_type": "SystemExit",
+            "error": str(exc),
         }
     except Exception as exc:
         payload = {

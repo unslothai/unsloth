@@ -236,6 +236,10 @@ export function useTauriBackend() {
           stopExternalServerPoll();
           if (preflight.can_auto_repair) {
             await startRepair();
+          } else if (preflight.reason === "studio_runtime_startup_failed") {
+            setBackendError(
+              "The Unsloth backend refused to start with the current environment settings (for example UNSLOTH_CPU_THREADS). Fix or unset them, then restart Unsloth.",
+            );
           } else {
             setBackendError(
               preflight.disposition === "owned_stale"

@@ -270,6 +270,48 @@ fn write_cached_capability(fingerprint: &ManagedBinFingerprint, capability: &Des
     }
 }
 
+async fn run_cli_probe(bin: &Path, args: &[&str]) -> bool {
+    let mut cmd = Command::new(bin);
+    cmd.args(args).stdout(Stdio::null()).stderr(Stdio::null());
+
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("APPIMAGE").is_some() {
+        cmd.env_remove("LD_LIBRARY_PATH");
+        cmd.env_remove("PYTHONHOME");
+        cmd.env_remove("PYTHONPATH");
+    }
+
+    cmd.env_remove("UNSLOTH_STUDIO_HOME");
+    cmd.env_remove("STUDIO_HOME");
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
+    }
+
+    let Ok(mut child) = cmd.spawn() else {
+        return false;
+    };
+    match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
+        Ok(Ok(status)) => status.success(),
+        _ => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            false
+        }
+    }
+}
+
+/// True when the CLI is older than `desktop-runtime-check` yet still launches.
+/// Such a CLI exits with a usage error and no JSON, which is indistinguishable
+/// from a crashed probe; `--help` resolves the command without running it, and
+/// the legacy launch probe keeps a genuinely unusable binary out of this path.
+async fn predates_runtime_check(bin: &Path) -> bool {
+    !run_cli_probe(bin, &["studio", "desktop-runtime-check", "--help"]).await
+        && run_cli_probe(bin, &["-h"]).await
+}
+
 async fn probe_cli_runtime(bin: &Path) -> Result<(), String> {
     let started = Instant::now();
     let mut cmd = Command::new(bin);
@@ -348,6 +390,7 @@ async fn probe_cli_runtime(bin: &Path) -> Result<(), String> {
                     "studio_runtime_missing_dependency"
                 }
                 Some("backend_import_failed") => "studio_runtime_import_failed",
+                Some("backend_startup_failed") => super::STUDIO_RUNTIME_STARTUP_FAILED,
                 _ => "studio_runtime_probe_failed",
             };
             Err(reason.to_string())
@@ -472,13 +515,21 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     // fingerprint only proves protocol compatibility, not that Studio's backend
     // imports are complete after an interrupted dependency transaction.
     if let Err(reason) = probe_cli_runtime(&bin).await {
+        // Every released CLI predates this subcommand, so a missing-command exit
+        // must not strand an install the launch probe still accepts.
+        if reason != "studio_runtime_probe_failed" || !predates_runtime_check(&bin).await {
+            info!(
+                "Managed preflight: runtime unusable for {:?} reason={} in {}ms",
+                bin,
+                reason,
+                started.elapsed().as_millis()
+            );
+            return ManagedProbe::Stale { bin, reason };
+        }
         info!(
-            "Managed preflight: runtime unusable for {:?} reason={} in {}ms",
-            bin,
-            reason,
-            started.elapsed().as_millis()
+            "Managed preflight: cli predates the runtime probe for {:?}; using the launch probe",
+            bin
         );
-        return ManagedProbe::Stale { bin, reason };
     }
 
     if let Some(fingerprint) = managed_bin_fingerprint(&bin) {
