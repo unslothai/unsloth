@@ -366,6 +366,10 @@ def test_img_gen_abandons_when_cancel_not_honored(patched):
     s = _server_with(popen, client)
     with pytest.raises(SdCppCancelled):
         s.img_gen({"prompt": "x"}, cancel_event = cancel, poll_interval = 0.01)
+    # And the process is stopped, not left running the abandoned job: sd-server does not interrupt
+    # an in-flight job, so a server that ignored the cancel would otherwise burn a core (or the GPU)
+    # to completion and hold its job slot against the next request.
+    assert not s.is_alive()
 
 
 def test_img_gen_non_dict_submit_json_raises(patched):

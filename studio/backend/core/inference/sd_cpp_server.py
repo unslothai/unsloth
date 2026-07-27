@@ -428,8 +428,16 @@ class SdCppServer:
                         self.cancel(job_id)
                         cancel_sent_at = time.monotonic()
                     elif time.monotonic() - cancel_sent_at > _CANCEL_GRACE_S:
-                        # Cancel not reflected within the grace window; abandon the poll so the caller can stop the
-                        # server instead of holding the generate lock.
+                        # Cancel not reflected within the grace window, so the job is still running and
+                        # sd-server will not interrupt it (cancel_generating=false). Stop the process
+                        # before reporting the cancellation, exactly as the deadline branch below does:
+                        # abandoning the poll alone frees the generate lock while the native job keeps a
+                        # core (or the GPU) busy to completion and holds the server's job slot, so the
+                        # next request queues behind work nobody is waiting for. The caller does stop the
+                        # server on unload, but a SUPERSEDING LOAD only does so after its multi-gigabyte
+                        # download, and a load that then fails never reaches that point at all. Stopping
+                        # here is safe: the backend reloads on the next generate.
+                        self.stop()
                         raise SdCppCancelled("sd-server generation was cancelled.")
                 if not self.is_alive():
                     # Unwinding a cancel (e.g. unload killed the server): clean cancellation.

@@ -142,6 +142,30 @@ def _first_file(paths: list[Path]) -> Optional[str]:
     return None
 
 
+def managed_install_root() -> Path:
+    """The directory the prebuilt installer owns, so callers can tell a Studio-managed binary
+    from a user-supplied one (SD_CLI_PATH / UNSLOTH_SD_CPP_PATH / PATH / an in-tree build).
+
+    Only a copy under this root may be reinstalled over: replacing anything else would delete
+    a build the user chose. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer, so
+    side-by-side Studios stay isolated."""
+    studio_home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
+    if studio_home:
+        return Path(studio_home).parent / "stable-diffusion.cpp"
+    return Path.home() / ".unsloth" / "stable-diffusion.cpp"
+
+
+def is_managed_binary(binary: Optional[str]) -> bool:
+    """True when ``binary`` lives under the installer-owned root (see managed_install_root)."""
+    if not binary:
+        return False
+    try:
+        Path(binary).resolve().relative_to(managed_install_root().resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def _find_binary(
     *, direct_env: str, path_stems: tuple[str, ...], layout_stem: str
 ) -> Optional[str]:
@@ -165,12 +189,7 @@ def _find_binary(
 
     # 3. Default install root. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer, so
     #    side-by-side Studios stay isolated; else ~/.unsloth/....
-    studio_home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
-    default_root = (
-        Path(studio_home).parent / "stable-diffusion.cpp"
-        if studio_home
-        else Path.home() / ".unsloth" / "stable-diffusion.cpp"
-    )
+    default_root = managed_install_root()
     hit = _first_file(_layout_candidates(default_root, layout_stem))
     if hit:
         return hit

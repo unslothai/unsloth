@@ -177,3 +177,29 @@ def test_an_unreadable_engine_state_fails_closed(client, monkeypatch):
     resp = _delete(c, target)
     assert resp.status_code == 503
     assert target.exists()
+
+
+def test_refuses_the_delete_while_a_diffusion_training_run_is_active(client, monkeypatch):
+    # source="training" checked only the LLM trainer, so a delete could rmtree the output
+    # directory a live diffusion LoRA run is about to write its adapter into.
+    import sys
+    import types
+
+    c, outputs = client
+    target = _model_dir(outputs)
+    monkeypatch.setattr(models_module, "_active_diffusion_backend", lambda: None)
+    monkeypatch.setattr(models_module, "_active_video_backend", lambda: None)
+
+    stub = types.ModuleType("core.training.diffusion_training_service")
+    stub.get_diffusion_training_service = lambda: types.SimpleNamespace(is_active = lambda: True)
+    monkeypatch.setitem(sys.modules, "core.training.diffusion_training_service", stub)
+
+    resp = _delete(c, target)
+    assert resp.status_code == 409
+    assert "diffusion" in resp.json()["detail"].lower()
+    assert target.exists()
+
+    # Idle again: the same delete goes through.
+    stub.get_diffusion_training_service = lambda: types.SimpleNamespace(is_active = lambda: False)
+    assert _delete(c, target).status_code == 200
+    assert not target.exists()

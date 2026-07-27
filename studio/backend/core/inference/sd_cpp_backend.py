@@ -65,6 +65,7 @@ from core.inference.sd_cpp_engine import (
     SdCppEngine,
     find_sd_cpp_binary,
     find_sd_server_binary,
+    is_managed_binary,
     runtime_env,
 )
 from core.inference.sd_cpp_server import SdCppServer
@@ -123,6 +124,31 @@ def _server_binary_runnable(binary: str) -> bool:
     return proc.returncode >= 0 and proc.returncode not in (126, 127)
 
 
+def _usable_or_discard_managed(binary: str) -> bool:
+    """True if ``binary`` can be kept; False if it is an unusable copy WE own (now removed).
+
+    ``find_sd_*_binary`` only checks that the path is a file, so an interrupted extraction (or a
+    prebuilt for the wrong CPU) left a present-but-unrunnable binary that the installer then never
+    retried: every load probed it, rejected it, and fell back to diffusers, so native inference
+    stayed off until the user deleted the directory by hand. Probing here closes that loop.
+
+    Only a copy under the installer-owned root is removed. SD_CLI_PATH, UNSLOTH_SD_CPP_PATH, an
+    in-tree build and anything on PATH are the user's, so an unrunnable one of those is reported
+    as-is (the router still rejects it) rather than deleted or reinstalled over."""
+    if _server_binary_runnable(binary):
+        return True
+    if not is_managed_binary(binary):
+        logger.warning("sd.cpp binary %s is not runnable; leaving the user-supplied copy alone", binary)
+        return True  # not ours to replace; the router's own probe still refuses it
+    logger.warning("managed sd.cpp binary %s is not runnable; removing it so it reinstalls", binary)
+    try:
+        Path(binary).unlink()
+    except OSError as exc:
+        logger.warning("could not remove the unusable managed binary %s: %s", binary, exc)
+        return True  # cannot repair it; don't spin on a reinstall that will find it again
+    return False
+
+
 def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
     """Path to a usable ``sd-cli`` binary, installing the prebuilt once if needed.
 
@@ -131,14 +157,14 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
     return is the router's signal to fall back to diffusers.
     """
     found = find_sd_cpp_binary()
-    if found:
+    if found and _usable_or_discard_managed(found):
         return found
     if not allow_install:
-        return None
+        return found
     with _install_lock:
         # Re-check inside the lock: a concurrent first-load may have installed it.
         found = find_sd_cpp_binary()
-        if found:
+        if found and _usable_or_discard_managed(found):
             return found
         try:
             import sys
@@ -171,13 +197,13 @@ def ensure_sd_server_binary(
     uses the one-shot fallback. Never raises.
     """
     found = find_sd_server_binary()
-    if found:
+    if found and _usable_or_discard_managed(found):
         return found
     if not allow_install:
-        return None
+        return found
     with _install_lock:
         found = find_sd_server_binary()
-        if found:
+        if found and _usable_or_discard_managed(found):
             return found
         try:
             import sys

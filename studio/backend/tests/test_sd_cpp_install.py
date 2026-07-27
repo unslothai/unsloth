@@ -653,3 +653,54 @@ def test_print_asset_uses_upstream_fallback(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "vulkan" in out and "no matching prebuilt" not in out
+
+
+def test_unrunnable_managed_binary_is_removed_so_it_reinstalls(monkeypatch, tmp_path):
+    # An interrupted extraction leaves an sd-cli that exists but cannot run. The finder only checks
+    # is_file(), so without a probe the installer never retried and native inference stayed off for
+    # the life of the install.
+    import core.inference.sd_cpp_backend as bk
+    import core.inference.sd_cpp_engine as eng
+
+    root = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    root.mkdir(parents = True)
+    managed = root / "sd-cli"
+    managed.write_bytes(b"truncated")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+    assert eng.is_managed_binary(str(managed)) is True
+
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: str(managed) if managed.exists() else None)
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: False)
+    installs: list = []
+
+    def _install(**kwargs):
+        installs.append(kwargs)
+        managed.write_bytes(b"good")
+        return managed
+
+    import sys
+    import types
+
+    stub = types.ModuleType("install_sd_cpp_prebuilt")
+    stub.install = _install
+    monkeypatch.setitem(sys.modules, "install_sd_cpp_prebuilt", stub)
+
+    out = bk.ensure_sd_cpp_binary(accelerator = "cpu")
+    assert installs, "the unusable managed copy must trigger a reinstall"
+    assert out == str(managed)
+
+
+def test_an_unrunnable_user_supplied_binary_is_never_deleted(monkeypatch, tmp_path):
+    # SD_CLI_PATH / PATH / an in-tree build belong to the user: report them and let the router's own
+    # probe refuse, but never remove or reinstall over them.
+    import core.inference.sd_cpp_backend as bk
+
+    outside = tmp_path / "mine" / "sd-cli"
+    outside.parent.mkdir(parents = True)
+    outside.write_bytes(b"truncated")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "elsewhere" / "studio"))
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: str(outside))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: False)
+
+    assert bk.ensure_sd_cpp_binary(accelerator = "cpu") == str(outside)
+    assert outside.exists(), "a user-supplied binary must survive"

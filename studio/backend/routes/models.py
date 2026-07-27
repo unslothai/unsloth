@@ -2526,6 +2526,20 @@ async def delete_finetuned_model(
                     status_code = 409,
                     detail = "Cannot delete trained models while training is running",
                 )
+            # The diffusion (Images) trainer is a second, independent run on the same storage root,
+            # so checking only the LLM backend let a delete rmtree the output directory a live
+            # diffusion run is about to write its adapter into: the run then dies at export, or
+            # silently recreates part of the tree, and an expensive experiment is lost. The dataset
+            # mutation and model-load routes already consult this service.
+            from core.training.diffusion_training_service import get_diffusion_training_service
+            if get_diffusion_training_service().is_active():
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        "Cannot delete trained models while diffusion (Images) training is "
+                        "running"
+                    ),
+                )
         except HTTPException:
             raise
         except Exception as e:
