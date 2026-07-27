@@ -1748,9 +1748,7 @@ class TestAnthropicMessagesToolRouting:
         assert "Mixing Anthropic server tools" in exc.value.detail
 
     @pytest.mark.parametrize("permission_mode", [None, "ask"])
-    def test_process_tool_policy_does_not_steal_client_tools(
-        self, monkeypatch, permission_mode
-    ):
+    def test_process_tool_policy_does_not_steal_client_tools(self, monkeypatch, permission_mode):
         """A server-wide tool default must not replace Claude Code's own tools."""
         import routes.inference as inf_mod
         from fastapi.responses import JSONResponse
