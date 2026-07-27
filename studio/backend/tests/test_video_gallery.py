@@ -446,7 +446,12 @@ def test_webm_export_still_works_without_an_audio_encoder(monkeypatch):
         def __init__(self, inner):
             self._inner = inner
 
-        def add_stream(self, codec_name = None, *args, **kwargs):
+        def add_stream(
+            self,
+            codec_name = None,
+            *args,
+            **kwargs,
+        ):
             if codec_name == "libopus":
                 raise ValueError("unknown encoder 'libopus'")
             return self._inner.add_stream(codec_name, *args, **kwargs)
@@ -461,7 +466,12 @@ def test_webm_export_still_works_without_an_audio_encoder(monkeypatch):
         def __exit__(self, *exc):
             return self._inner.__exit__(*exc)
 
-    def _open(file, mode = "r", *args, **kwargs):
+    def _open(
+        file,
+        mode = "r",
+        *args,
+        **kwargs,
+    ):
         inner = real_open(file, mode, *args, **kwargs)
         return _NoOpusContainer(inner) if mode == "w" else inner
 
