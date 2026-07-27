@@ -10,6 +10,7 @@ orchestrates the subprocess lifecycle, pumps events from the worker's mp.Queue, 
 exposes the same API to routes/training.py. Pattern follows data_recipe/jobs/manager.py.
 """
 
+import bisect
 import json as _json
 import math
 import multiprocessing as mp
@@ -213,6 +214,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "enable_tensorboard": values.get("enable_tensorboard", False),
         "tensorboard_dir": values.get("tensorboard_dir", "runs"),
         "resume_from_checkpoint": values.get("resume_from_checkpoint"),
+        "resume_checkpoint_path": values.get("resume_checkpoint_path"),
         "trust_remote_code": values.get("trust_remote_code", False),
         "approved_remote_code_fingerprint": values.get("approved_remote_code_fingerprint"),
         "subject": values.get("subject"),
@@ -865,6 +867,84 @@ class TrainingBackend:
     # Public API (called by routes/training.py)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _checkpoint_metric_history(checkpoint: Any) -> tuple[int, list[dict]]:
+        """Read the portable metric history stored by Transformers.
+
+        Checkpoint state predates Studio's run database and is also the only history
+        available for imported checkpoints.  It is deliberately best-effort: trainer
+        restoration remains responsible for deciding whether a checkpoint is valid.
+        """
+        try:
+            state = _json.loads((Path(checkpoint) / "trainer_state.json").read_text("utf-8"))
+            raw_global_step = state.get("global_step", 0)
+            if isinstance(raw_global_step, bool):
+                return 0, []
+            global_step = int(raw_global_step)
+            if global_step < 0 or not isinstance(state.get("log_history"), list):
+                return max(global_step, 0), []
+        except (OSError, ValueError, TypeError, _json.JSONDecodeError, AttributeError):
+            return 0, []
+
+        # One row per step makes duplicate resolution deterministic (the last valid
+        # value for each individual metric wins), matching the DB upsert semantics.
+        rows: dict[int, dict] = {}
+        for entry in state["log_history"]:
+            if not isinstance(entry, dict):
+                continue
+            raw_step = entry.get("step")
+            if isinstance(raw_step, bool):
+                continue
+            try:
+                step = int(raw_step)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if step <= 0 or step > global_step or step != raw_step:
+                continue
+            row = rows.setdefault(step, {"step": step})
+            for key in ("loss", "learning_rate", "grad_norm", "eval_loss"):
+                raw_value = entry.get(key)
+                if raw_value is None or isinstance(raw_value, bool):
+                    continue
+                try:
+                    value = float(raw_value)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if math.isfinite(value):
+                    row[key] = value
+        return global_step, [rows[step] for step in sorted(rows) if len(rows[step]) > 1]
+
+    def _hydrate_checkpoint_history(self, checkpoint: Any) -> None:
+        global_step, rows = self._checkpoint_metric_history(checkpoint)
+        self._progress.step = global_step
+        for row in rows:
+            step = row["step"]
+            # The public runtime schema has one shared step axis for loss and LR.
+            # Preserve partial legacy rows using the same zero placeholder already
+            # used for live events whose learning rate is absent.
+            if "loss" in row or "learning_rate" in row:
+                self.step_history.append(step)
+                self.loss_history.append(row.get("loss", 0.0))
+                self.lr_history.append(row.get("learning_rate", 0.0))
+            if "grad_norm" in row:
+                self.grad_norm_step_history.append(step)
+                self.grad_norm_history.append(row["grad_norm"])
+            if "eval_loss" in row:
+                self.eval_step_history.append(step)
+                self.eval_loss_history.append(row["eval_loss"])
+                self.eval_enabled = True
+            self._metric_buffer.append(dict(row))
+
+    @staticmethod
+    def _upsert_series(steps: list, values: list, step: int, value: float) -> None:
+        """Replace a restored point or insert a live point in monotonic order."""
+        index = bisect.bisect_left(steps, step)
+        if index < len(steps) and steps[index] == step:
+            values[index] = value
+        else:
+            steps.insert(index, step)
+            values.insert(index, value)
+
     def start_training(
         self,
         job_id: str,
@@ -1054,10 +1134,18 @@ class TrainingBackend:
             self._xet_fallback_used = False
             self._needs_xet_respawn = False
 
+            checkpoint = config.get("resume_checkpoint_path") or config.get(
+                "resume_from_checkpoint"
+            )
+            if checkpoint:
+                self._hydrate_checkpoint_history(checkpoint)
+
             # Create the DB run row before the pump can consume events, so it appears
             # in history during model loading and a fast terminal worker can't race the
             # pump into a duplicate create/finalize. From here the pump only finalizes.
             self._ensure_db_run_created()
+            if self._db_run_created and self._metric_buffer:
+                self._flush_metrics_to_db()
             if (resume_source_run_id or imported_checkpoint) and not self._db_run_created:
                 if proc.is_alive():
                     proc.terminate()
@@ -1903,9 +1991,15 @@ class TrainingBackend:
                 loss = _safe_loss
                 lr = _safe_lr
                 if step > 0 and loss is not None:
-                    self.loss_history.append(loss)
-                    self.lr_history.append(lr if lr is not None else 0.0)
-                    self.step_history.append(step)
+                    index = bisect.bisect_left(self.step_history, step)
+                    if index < len(self.step_history) and self.step_history[index] == step:
+                        self.loss_history[index] = loss
+                        if lr is not None:
+                            self.lr_history[index] = lr
+                    else:
+                        self.step_history.insert(index, step)
+                        self.loss_history.insert(index, loss)
+                        self.lr_history.insert(index, lr if lr is not None else 0.0)
 
                 grad_norm = event.get("grad_norm")
                 gn = None
@@ -1915,8 +2009,9 @@ class TrainingBackend:
                     except (TypeError, ValueError):
                         gn = None
                     if step > 0 and gn is not None and math.isfinite(gn):
-                        self.grad_norm_history.append(gn)
-                        self.grad_norm_step_history.append(step)
+                        self._upsert_series(
+                            self.grad_norm_step_history, self.grad_norm_history, step, gn
+                        )
                     else:
                         gn = None
 
@@ -1928,8 +2023,9 @@ class TrainingBackend:
                         logger.debug("Could not convert eval_loss to float: %s", eval_loss)
                         eval_loss = None
                     if step > 0 and eval_loss is not None and math.isfinite(eval_loss):
-                        self.eval_loss_history.append(eval_loss)
-                        self.eval_step_history.append(step)
+                        self._upsert_series(
+                            self.eval_step_history, self.eval_loss_history, step, eval_loss
+                        )
                         self.eval_enabled = True
                     else:
                         eval_loss = None

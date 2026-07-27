@@ -115,6 +115,95 @@ def _write_checkpoint(out: Path, step: int) -> Path:
     return checkpoint
 
 
+def _write_trainer_history(tmp_path: Path, global_step: int, history=None) -> Path:
+    checkpoint = tmp_path / f"checkpoint-{global_step}"
+    checkpoint.mkdir()
+    state = {"global_step": global_step}
+    if history is not None:
+        state["log_history"] = history
+    (checkpoint / "trainer_state.json").write_text(json.dumps(state), encoding = "utf-8")
+    return checkpoint
+
+
+def test_checkpoint_history_hydrates_all_runtime_series(tmp_path):
+    from core.training.training import TrainingBackend
+
+    checkpoint = _write_trainer_history(
+        tmp_path,
+        4,
+        [
+            {"step": 1, "loss": 2.0, "learning_rate": 0.1, "unknown": "ok"},
+            {"step": 2, "grad_norm": 1.5},
+            {"step": 3, "eval_loss": 1.25},
+            {"step": 4, "loss": 1.0, "learning_rate": 0.05},
+        ],
+    )
+    backend = TrainingBackend()
+    backend._hydrate_checkpoint_history(checkpoint)
+
+    assert backend.step_history == [1, 4]
+    assert backend.loss_history == [2.0, 1.0]
+    assert backend.lr_history == [0.1, 0.05]
+    assert backend.grad_norm_step_history == [2]
+    assert backend.grad_norm_history == [1.5]
+    assert backend.eval_step_history == [3]
+    assert backend.eval_loss_history == [1.25]
+    assert backend._progress.step == 4
+
+
+def test_live_metrics_replace_boundary_and_extend_restored_history(tmp_path):
+    from core.training.training import TrainingBackend
+
+    checkpoint = _write_trainer_history(tmp_path, 2, [
+        {"step": 2, "loss": 2.0, "learning_rate": 0.2, "grad_norm": 3.0},
+    ])
+    backend = TrainingBackend()
+    backend._hydrate_checkpoint_history(checkpoint)
+    backend._handle_event({"type": "progress", "step": 2, "loss": 1.8,
+                           "learning_rate": 0.18, "grad_norm": 2.8})
+    backend._handle_event({"type": "progress", "step": 3, "loss": 1.5,
+                           "learning_rate": 0.15, "grad_norm": 2.5})
+
+    assert backend.step_history == [2, 3]
+    assert backend.loss_history == [1.8, 1.5]
+    assert backend.lr_history == [0.18, 0.15]
+    assert backend.grad_norm_step_history == [2, 3]
+
+
+def test_checkpoint_history_merges_duplicates_and_ignores_bad_partial_rows(tmp_path):
+    from core.training.training import TrainingBackend
+
+    checkpoint = _write_trainer_history(tmp_path, 3, [
+        {"step": 1, "loss": 4.0},
+        {"step": 1, "learning_rate": 0.3, "loss": 3.0},
+        {"step": 2, "loss": float("nan"), "grad_norm": "bad", "eval_loss": 2.0},
+        {"step": True, "loss": 1.0},
+        {"step": 3, "learning_rate": float("inf"), "loss": False},
+        {"step": 4, "loss": 0.5},
+        "malformed",
+    ])
+    backend = TrainingBackend()
+    backend._hydrate_checkpoint_history(checkpoint)
+
+    assert backend.step_history == [1]
+    assert backend.loss_history == [3.0]
+    assert backend.lr_history == [0.3]
+    assert backend.eval_step_history == [2]
+    assert backend.eval_loss_history == [2.0]
+
+
+def test_legacy_checkpoint_without_log_history_has_empty_runtime_charts(tmp_path):
+    from core.training.training import TrainingBackend
+
+    backend = TrainingBackend()
+    backend._hydrate_checkpoint_history(_write_trainer_history(tmp_path, 7))
+
+    assert backend._progress.step == 7
+    assert backend.step_history == []
+    assert backend.grad_norm_step_history == []
+    assert backend.eval_step_history == []
+
+
 def _stopped_run(**overrides):
     run = {
         "status": "stopped",
