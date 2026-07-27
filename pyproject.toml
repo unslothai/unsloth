@@ -171,8 +171,10 @@ huggingfacenotorch = [
 ]
 amd = [
     "unsloth[huggingfacenotorch]",
-    "bitsandbytes>=0.49.1 ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64' or platform_machine == 'aarch64')",
-    "bitsandbytes>=0.49.1 ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    # bnb <= 0.49.2 NaNs at decode shape on every AMD GPU; the ROCm 4-bit GEMV
+    # fix (bnb PR #1887) first ships in 0.50.0, which is now on PyPI.
+    "bitsandbytes>=0.50.0 ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64' or platform_machine == 'aarch64')",
+    "bitsandbytes>=0.50.0 ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 windows = [
     "unsloth[huggingface]",
