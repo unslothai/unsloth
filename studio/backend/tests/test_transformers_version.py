@@ -5187,7 +5187,9 @@ class TestQualifiedAccessToPublicExports:
         assert self._matches(src) is False
 
     def test_qualified_access_reaches_the_tier(self, tmp_path: Path):
-        _auto_map_checkpoint(tmp_path, "import transformers\nb = transformers.TokenizersBackend()\n")
+        _auto_map_checkpoint(
+            tmp_path, "import transformers\nb = transformers.TokenizersBackend()\n"
+        )
         assert _remote_auto_map_tier(str(tmp_path))[0] == "530"
 
 
@@ -5206,10 +5208,13 @@ class TestAliasedDynamicImportFunction:
         return tv._remote_auto_map_py_matches(self.MARKERS, [src])
 
     def test_aliased_import_module_promotes(self):
-        assert self._matches(
-            "from importlib import import_module as load_module\n"
-            'load_module("transformers.tokenization_utils_tokenizers")\n'
-        ) is True
+        assert (
+            self._matches(
+                "from importlib import import_module as load_module\n"
+                'load_module("transformers.tokenization_utils_tokenizers")\n'
+            )
+            is True
+        )
 
     @pytest.mark.parametrize(
         "src",
@@ -5218,10 +5223,8 @@ class TestAliasedDynamicImportFunction:
             "from mypkg import loader as load_module\n"
             'load_module("transformers.tokenization_utils_tokenizers")\n',
             'load_module("transformers.tokenization_utils_tokenizers")\n',
-            "from importlib import import_module as lm\n"
-            'lm(".tokenization_utils_tokenizers")\n',
-            "from importlib import import_module as lm\n"
-            'lm(f"transformers.{mod}")\n',
+            "from importlib import import_module as lm\n" 'lm(".tokenization_utils_tokenizers")\n',
+            "from importlib import import_module as lm\n" 'lm(f"transformers.{mod}")\n',
         ],
     )
     def test_unrelated_or_computed_callee_does_not_promote(self, src):
