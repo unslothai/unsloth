@@ -254,7 +254,11 @@ def _read_studio_install_id() -> str:
     /api/health emits "" and the launcher accepts any healthy backend.
     Carries no install-path info (matters when Unsloth runs -H 0.0.0.0)."""
     try:
-        token = (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id").read_text().strip()
+        token = (
+            (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id")
+            .read_text(encoding = "utf-8")
+            .strip()
+        )
     except (OSError, ValueError):
         return ""
     return token if _STUDIO_INSTALL_ID_RE.fullmatch(token) else ""
@@ -358,7 +362,7 @@ def get_unsloth_version() -> str:
         for line in version_file.read_text(encoding = "utf-8").splitlines():
             if line.startswith("__version__ = "):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
     return "dev"
 
