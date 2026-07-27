@@ -1600,7 +1600,9 @@ def _dataset_import_lock(folder: Path) -> "threading.Lock":
         return lock
 
 
-def _import_response(entry: dict, folder: Path, *, imported: int) -> "DiffusionDatasetImportResponse":
+def _import_response(
+    entry: dict, folder: Path, *, imported: int
+) -> "DiffusionDatasetImportResponse":
     summary = _diffusion_dataset_summary(folder)
     return DiffusionDatasetImportResponse(
         name = folder.name,

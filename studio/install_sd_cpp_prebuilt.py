@@ -123,11 +123,7 @@ def resolve_release_asset(
         # arm64 host matched the x64 assets, installed one, and only failed later when the
         # extracted x64 sd-cli could not run. No compatible build is a real miss: return None so
         # the caller falls back rather than installing something that cannot execute.
-        pool = [
-            a
-            for a in zips
-            if "bin-win" in a.lower() and any(t in a.lower() for t in arch)
-        ]
+        pool = [a for a in zips if "bin-win" in a.lower() and any(t in a.lower() for t in arch)]
         token = _WINDOWS_ACCEL_TOKEN.get(accel, accel)
         sel = [a for a in pool if token in a.lower()]
         if sel:
