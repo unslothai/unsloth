@@ -321,7 +321,12 @@ def test_no_light_gpu_init_retry_on_an_accelerator_host(monkeypatch):
     attempts = []
 
     class _Blocker:
-        def find_spec(self, name, path = None, target = None):
+        def find_spec(
+            self,
+            name,
+            path = None,
+            target = None,
+        ):
             if name == "unsloth_zoo":
                 attempts.append(os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT"))
                 raise RuntimeError("CUDA Setup failed despite GPU being available")
