@@ -77,7 +77,7 @@ def test_bulk_actions_are_single_flight_and_release_on_failure():
 def test_bulk_delete_loops_run_under_the_single_flight_guard():
     sidebar = _sidebar()
     chats = _between(sidebar, 'if (target.kind === "chats-bulk")', 'if (target.kind === "chat")')
-    runs = _between(sidebar, 'if (target.kind === "runs-bulk")', 'if (target.run.status ===')
+    runs = _between(sidebar, 'if (target.kind === "runs-bulk")', "if (target.run.status ===")
     assert "await chatRecentsSelection.runBulkAction(async () => {" in chats
     assert "await runRecentsSelection.runBulkAction(async () => {" in runs
     # The dialog closes before the loop finishes, so the bar has to say so.
