@@ -827,8 +827,15 @@ class TestLoadHubDownloadExclusion:
         asyncio.run(scenario())
 
     def test_load_marker_precedes_hub_guard_which_precedes_the_gpu_handoff(self):
-        source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
-        impl = source[source.index("async def _load_model_impl") :]
+        source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+            encoding = "utf-8"
+        )
+        # _load_model_impl has more than one `if config.is_gguf:`, so anchor on
+        # the branch that actually owns the load marker rather than the first
+        # one in the file, which belongs to an earlier check.
+        marker = source.index("enter_context(gguf_load_in_flight")
+        gguf_branch_start = source.rindex("if config.is_gguf:", 0, marker)
+        gguf_branch = source[gguf_branch_start:]
 
         # One chain, in this order:
         # - _resolve_inherited_extra_args first: the inherited value (e.g. a carried --no-mmproj) shapes
@@ -840,15 +847,15 @@ class TestLoadHubDownloadExclusion:
         # - the resident unload last.
         # Anchored on call forms so each assertion pins a call site, not a definition.
         assert (
-            impl.index("= _resolve_inherited_extra_args(")
-            < impl.index("enter_context(gguf_load_in_flight")
-            < impl.index("_hub_download_blocks_gguf_load")
-            < impl.index("enter_context(chat_load_in_flight")
-            < impl.index("unsloth_backend.unload_model")
+            gguf_branch.index("= _resolve_inherited_extra_args(")
+            < gguf_branch.index("enter_context(gguf_load_in_flight")
+            < gguf_branch.index("_hub_download_blocks_gguf_load")
+            < gguf_branch.index("enter_context(chat_load_in_flight")
+            < gguf_branch.index("unsloth_backend.unload_model")
         )
         llama_source = (
             Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-        ).read_text()
+        ).read_text(encoding = "utf-8")
         assert "@_with_gguf_load_marker\n    def load_model(" in llama_source
 
     def _capture_hub_guard_require_mmproj(

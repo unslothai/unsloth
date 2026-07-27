@@ -587,7 +587,9 @@ def test_write_codex_config_profile(tmp_path, monkeypatch):
     assert catalog["models"][0]["supports_reasoning_summary_parameter"] is False
     assert catalog["models"][0]["supports_parallel_tool_calls"] is False
 
-    assert catalog["models"][0]["base_instructions"] == start._CODEX_FALLBACK_PROMPT.read_text()
+    assert catalog["models"][0]["base_instructions"] == start._CODEX_FALLBACK_PROMPT.read_text(
+        encoding = "utf-8"
+    )
     config = _parse_toml((tmp_path / "config.toml").read_text())
     assert config["model_providers"]["unsloth_api"]["env_key"] == "UNSLOTH_STUDIO_AUTH_TOKEN"
 
@@ -631,7 +633,7 @@ def test_write_codex_subagent_bridge_keeps_parent_credentials_out(tmp_path, monk
         tmp_path,
         yolo = False,
     )
-    assert json.loads(path.read_text()) == {
+    assert json.loads(path.read_text(encoding = "utf-8")) == {
         "api_key": "private-token",
         "codex_home": str(tmp_path / "child"),
         "bypass_permissions": False,

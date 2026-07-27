@@ -3,10 +3,14 @@
 
 import { authFetch } from "@/features/auth";
 import { useEffect, useState } from "react";
-import type { SystemInfoResponse } from "./use-system";
+import {
+  aggregateGpuMemoryTotalGb,
+  type SystemInfoResponse,
+} from "./use-system";
 
 export interface GpuInfo {
   available: boolean;
+  budgetKnown: boolean;
   name: string;
   memoryTotalGb: number;
   /** Largest single device's VRAM. Image/video loads live on ONE device (no
@@ -39,6 +43,7 @@ export interface SystemGpuDevice {
 
 const DEFAULT_GPU: GpuInfo = {
   available: false,
+  budgetKnown: false,
   name: "Unknown",
   memoryTotalGb: 0,
   maxDeviceMemoryGb: 0,
@@ -53,8 +58,8 @@ const DEFAULT_GPU: GpuInfo = {
 let cachedSystem: SystemInfoResponse | null = null;
 let systemPromise: Promise<SystemInfoResponse | null> | null = null;
 
-async function fetchSystemOnce(): Promise<SystemInfoResponse | null> {
-  if (cachedSystem) return cachedSystem;
+async function fetchSystemOnce(force = false): Promise<SystemInfoResponse | null> {
+  if (!force && cachedSystem) return cachedSystem;
   if (systemPromise) return systemPromise;
   systemPromise = (async () => {
     try {
@@ -63,14 +68,18 @@ async function fetchSystemOnce(): Promise<SystemInfoResponse | null> {
       cachedSystem = (await res.json()) as SystemInfoResponse;
       return cachedSystem;
     } catch {
-      systemPromise = null; // reset so a later call retries (backend not ready)
       return null;
+    } finally {
+      systemPromise = null;
     }
   })();
   return systemPromise;
 }
 
-function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
+function toGpuInfo(
+  data: SystemInfoResponse | null,
+  source: "gpu" | "inference_gpu" = "gpu",
+): GpuInfo {
   // CPU/RAM exist even on GPU-less hosts (e.g. Mac), so populate them on every
   // path: unified-memory math still needs a RAM budget to work with.
   const base = {
@@ -79,16 +88,27 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
     systemRamAvailableGb: data?.memory?.available_gb ?? 0,
     systemRamTotalGb: data?.memory?.total_gb ?? 0,
   };
-  const gpuData = data?.gpu;
+  const gpuData =
+    source === "inference_gpu"
+      ? (data?.inference_gpu ?? data?.gpu)
+      : data?.gpu;
   const devices = gpuData?.devices ?? [];
   if (!gpuData?.available || !devices.length) {
-    return { ...DEFAULT_GPU, ...base };
+    return { ...DEFAULT_GPU, ...base, budgetKnown: data !== null };
   }
   return {
     ...base,
+    // A Vulkan iGPU's reported budget is capped shared system RAM, not an
+    // independent VRAM pool. Do not offer the same RAM again for CPU offload.
+    systemRamAvailableGb: devices.some((device) => device.shared_memory)
+      ? 0
+      : base.systemRamAvailableGb,
     available: true,
+    budgetKnown: true,
     name: devices[0]?.name ?? "Unknown",
-    memoryTotalGb: devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0),
+    // Shared-memory (Vulkan iGPU) devices report the same system RAM pool, so they are counted
+    // once rather than summed per device.
+    memoryTotalGb: aggregateGpuMemoryTotalGb(devices),
     maxDeviceMemoryGb: devices.reduce((max, d) => Math.max(max, d.memory_total_gb ?? 0), 0),
     // Lowest visible ordinal = torch's current device = where the pipeline lands. The list is
     // already filtered by any CUDA_VISIBLE_DEVICES mask, so the minimum index is right whether
@@ -124,22 +144,54 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
 }
 
 /** Aggregate GPU info from /api/system; shares one module-level fetch across all GPU hooks. */
-export function useGpuInfo(): GpuInfo {
+function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
   const [gpu, setGpu] = useState<GpuInfo>(
-    cachedSystem ? toGpuInfo(cachedSystem) : DEFAULT_GPU,
+    cachedSystem ? toGpuInfo(cachedSystem, source) : DEFAULT_GPU,
   );
   useEffect(() => {
     // No early return on cachedSystem: a consumer mounting as the cache fills
     // (between render and effect) would otherwise stay stuck at the default.
     let cancelled = false;
-    fetchSystemOnce().then((d) => {
-      if (!cancelled) setGpu(toGpuInfo(d));
-    });
+    let retryId: number | undefined;
+    const update = (force = false, retryVulkan = false) => {
+      fetchSystemOnce(force).then((d) => {
+        if (cancelled) return;
+        if (!d) {
+          // Once an unavailable Vulkan backend starts polling, a transient API
+          // failure must preserve the current state and continue the same loop.
+          if (retryVulkan) {
+            retryId = window.setTimeout(() => update(true, true), 3000);
+          }
+          return;
+        }
+        setGpu(toGpuInfo(d, source));
+        const inferenceGpu = d.inference_gpu;
+        if (
+          source === "inference_gpu" &&
+          inferenceGpu?.backend === "vulkan" &&
+          !inferenceGpu.available
+        ) {
+          retryId = window.setTimeout(() => update(true, true), 3000);
+        }
+      });
+    };
+    update();
     return () => {
       cancelled = true;
+      if (retryId !== undefined) window.clearTimeout(retryId);
     };
-  }, []);
+  }, [source]);
   return gpu;
+}
+
+/** Training-capable GPU info from the PyTorch/MLX hardware detector. */
+export function useGpuInfo(): GpuInfo {
+  return useGpuInfoSource("gpu");
+}
+
+/** GGUF inference GPU info, including a separately installed Vulkan backend. */
+export function useInferenceGpuInfo(): GpuInfo {
+  return useGpuInfoSource("inference_gpu");
 }
 
 /** All backend-visible GPUs (index, name, total VRAM); shares the same fetch. */
