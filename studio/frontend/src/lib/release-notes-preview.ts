@@ -52,7 +52,9 @@ const RAW_BLOCKS: [RegExp, RegExp][] = [
   [RAW_HTML_OPEN, RAW_HTML_CLOSE],
   [/^ {0,3}<\?/, /\?>/],
   [/^ {0,3}<!\[CDATA\[/, /\]\]>/],
-  [/^ {0,3}<![A-Za-z]/, />/],
+  // A declaration needs an uppercase letter, so `<!note` stays ordinary text
+  // rather than emptying the preview of every bullet below it.
+  [/^ {0,3}<![A-Z]/, />/],
 ];
 // Type 6 and 7 blocks run to the next blank line, so `<details>` holds Markdown
 // only once a blank line has closed the block. Type 7 (any other complete tag

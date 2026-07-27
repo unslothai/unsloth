@@ -1158,6 +1158,9 @@ def test_a_lowercase_declaration_is_not_a_raw_block(changelog_module):
     assert [
         e.version for e in changelog_module.parse_changelog("<!DOCTYPE\n## 9.9.9\n>\n\n## 1.0\n")
     ] == ["1.0"]
+    # The collapsed preview reads the same notes, so it needs the same rule or
+    # it drops bullets the expanded view shows.
+    assert "<![A-Z]" in PREVIEW.read_text(encoding = "utf-8")
 
 
 def test_an_escaped_mark_makes_an_image_a_link():
