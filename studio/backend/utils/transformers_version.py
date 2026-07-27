@@ -1258,6 +1258,12 @@ def _parsed_dotted_imports(src: str) -> set[str] | None:
     nothing would route the model to a sidecar where that call raises. Only a literal string
     argument is read, so a marker sitting in a docstring, a comment or any other inert
     literal still cannot promote the tier; a computed or f-string name is left alone.
+
+    Qualified access counts too: ``import transformers`` then ``transformers.X`` is the
+    ordinary spelling of a public-export marker, and recording only the module would route
+    that code to a sidecar where the attribute does not exist. Module aliases and an aliased
+    ``import_module`` resolve through the file's own bindings, so a name that was never
+    imported still contributes nothing.
     """
     import ast
 
@@ -1266,8 +1272,8 @@ def _parsed_dotted_imports(src: str) -> set[str] | None:
             isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
         )
 
-    def _dynamic_import_name(node) -> str | None:
-        """Module a constant-string ``import_module`` / ``__import__`` call loads."""
+    def _dynamic_import_call(node) -> tuple[str, str] | None:
+        """``(callee, module)`` for a constant-string import call, else ``None``."""
         func = node.func
         if isinstance(func, ast.Attribute):
             called = func.attr
@@ -1275,39 +1281,73 @@ def _parsed_dotted_imports(src: str) -> set[str] | None:
             called = func.id
         else:
             return None
-        if called not in ("import_module", "__import__") or not node.args:
+        if not node.args:
             return None
         arg = node.args[0]
         if not isinstance(arg, ast.Constant) or not isinstance(arg.value, str):
             return None
         # A leading dot is a relative import, skipped for the same reason as ImportFrom.
-        return None if arg.value.startswith(".") else arg.value
+        return None if arg.value.startswith(".") else (called, arg.value)
+
+    def _attribute_chain(node) -> tuple[str, str] | None:
+        """``(root name, dotted attribute path)`` for ``a.b.c``, else ``None``."""
+        parts: list[str] = []
+        while isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+            node = node.value
+        if not isinstance(node, ast.Name):
+            return None
+        return node.id, ".".join(reversed(parts))
 
     try:
         tree = ast.parse(src)
     except Exception:
         return None
     names: set[str] = set()
+    bound: dict[str, str] = {}
+    chains: set[tuple[str, str]] = set()
+    deferred: list[tuple[str, str]] = []
     stack: list = [tree]
     while stack:
         node = stack.pop()
         if isinstance(node, ast.Import):
-            names.update(alias.name for alias in node.names)
+            for alias in node.names:
+                names.add(alias.name)
+                root = alias.name.split(".", 1)[0]
+                bound[alias.asname or root] = alias.name if alias.asname else root
             continue
         if isinstance(node, ast.ImportFrom):
             if not node.level and node.module:
                 names.add(node.module)
-                names.update(f"{node.module}.{alias.name}" for alias in node.names)
+                for alias in node.names:
+                    names.add(f"{node.module}.{alias.name}")
+                    bound[alias.asname or alias.name] = f"{node.module}.{alias.name}"
             continue
         if isinstance(node, ast.If) and _is_type_checking(node.test):
             stack.extend(node.orelse)
             continue
-        if isinstance(node, ast.Call):
-            dynamic = _dynamic_import_name(node)
-            if dynamic:
-                names.add(dynamic)
+        if isinstance(node, ast.Attribute):
+            chain = _attribute_chain(node)
+            if chain is not None:
+                chains.add(chain)
+        elif isinstance(node, ast.Call):
+            call = _dynamic_import_call(node)
+            if call is not None:
+                called, module = call
+                if called in ("import_module", "__import__"):
+                    names.add(module)
+                elif isinstance(node.func, ast.Name):
+                    deferred.append((called, module))
             # Not a terminal node: keep walking so a nested call or import still counts.
         stack.extend(ast.iter_child_nodes(node))
+    # Resolved after the walk: a binding can sit below the use that needs it.
+    for root, attr in chains:
+        module = bound.get(root)
+        if module:
+            names.add(f"{module}.{attr}")
+    for called, module in deferred:
+        if bound.get(called) == "importlib.import_module":
+            names.add(module)
     return names
 
 

@@ -5137,6 +5137,98 @@ class TestDynamicImportsOfVersionedModules:
         assert tv._parsed_dotted_imports('log("transformers.anything")\n') == set()
 
 
+class TestQualifiedAccessToPublicExports:
+    """``import transformers`` then ``transformers.TokenizersBackend`` is the ordinary
+    spelling of a public-export marker; recording only ``transformers`` left the checkpoint
+    on 4.57.x, where the attribute does not exist (round 9 Codex)."""
+
+    MARKERS = ("transformers.TokenizersBackend", "transformers.utils.output_capturing")
+
+    def setup_method(self):
+        _clear_scan_caches()
+
+    def _matches(self, src: str) -> bool:
+        import utils.transformers_version as tv
+        return tv._remote_auto_map_py_matches(self.MARKERS, [src])
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            "import transformers\nb = transformers.TokenizersBackend()\n",
+            "import transformers as tf\nb = tf.TokenizersBackend()\n",
+            # The binding may sit below the use; resolution happens after the walk.
+            "def f():\n    return tf.TokenizersBackend()\nimport transformers as tf\n",
+            "from transformers import utils\nutils.output_capturing.capture_outputs()\n",
+            "import transformers\n\n\nclass M:\n    def f(self):\n"
+            "        return transformers.TokenizersBackend()\n",
+        ],
+    )
+    def test_qualified_access_promotes(self, src):
+        assert self._matches(src) is True
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            # Never imported here, so the attribute root resolves to nothing.
+            "b = transformers.TokenizersBackend()\n",
+            "import transformers\nm = transformers.AutoModel\n",
+            "import transformers\nif hasattr(transformers, 'TokenizersBackend'):\n    pass\n",
+            "'''transformers.TokenizersBackend'''\n",
+            "x = 'transformers.TokenizersBackend'\n",
+            "from typing import TYPE_CHECKING\nimport transformers\n"
+            "if TYPE_CHECKING:\n    b: transformers.TokenizersBackend\n",
+            # An alias bound only under the guard is not bound at runtime.
+            "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n"
+            "    import transformers as tf\nb = tf.TokenizersBackend()\n",
+        ],
+    )
+    def test_unbound_inert_or_type_only_access_does_not_promote(self, src):
+        """Negative control: attribute handling must not promote what never runs."""
+        assert self._matches(src) is False
+
+    def test_qualified_access_reaches_the_tier(self, tmp_path: Path):
+        _auto_map_checkpoint(tmp_path, "import transformers\nb = transformers.TokenizersBackend()\n")
+        assert _remote_auto_map_tier(str(tmp_path))[0] == "530"
+
+
+class TestAliasedDynamicImportFunction:
+    """``from importlib import import_module as load_module`` then ``load_module(...)``
+    imports the module for real, so the literal-name check alone missed it (round 9 Codex).
+    Only a callee the file itself bound to ``importlib.import_module`` counts."""
+
+    MARKERS = ("transformers.tokenization_utils_tokenizers",)
+
+    def setup_method(self):
+        _clear_scan_caches()
+
+    def _matches(self, src: str) -> bool:
+        import utils.transformers_version as tv
+        return tv._remote_auto_map_py_matches(self.MARKERS, [src])
+
+    def test_aliased_import_module_promotes(self):
+        assert self._matches(
+            "from importlib import import_module as load_module\n"
+            'load_module("transformers.tokenization_utils_tokenizers")\n'
+        ) is True
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            # Same alias name, different origin: not an import at all.
+            "from mypkg import loader as load_module\n"
+            'load_module("transformers.tokenization_utils_tokenizers")\n',
+            'load_module("transformers.tokenization_utils_tokenizers")\n',
+            "from importlib import import_module as lm\n"
+            'lm(".tokenization_utils_tokenizers")\n',
+            "from importlib import import_module as lm\n"
+            'lm(f"transformers.{mod}")\n',
+        ],
+    )
+    def test_unrelated_or_computed_callee_does_not_promote(self, src):
+        """Negative control: the alias must resolve to ``importlib.import_module``."""
+        assert self._matches(src) is False
+
+
 class TestImpossible510ScanIsSkipped:
     """The name fast path must not pay Hub I/O for an answer it cannot use.
 
