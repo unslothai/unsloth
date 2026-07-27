@@ -6548,11 +6548,22 @@ async def generate_audio(
         thread_id = getattr(payload, "thread_id", None),
         model = model_name,
     ):
+        # Stop in the UI aborts the fetch and nothing more, and this route has no
+        # cancel id to address, so without watching the disconnect llama-server
+        # kept generating for the rest of the request timeout after the chat had
+        # already reported it stopped.
+        _audio_watcher = asyncio.create_task(
+            _await_disconnect_then_cancel(request, _audio_cancel)
+        )
         try:
             wav_bytes, sample_rate = await asyncio.to_thread(gen)
         except Exception as e:
+            if _audio_cancel.is_set():
+                raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
             logger.error(f"Audio generation error: {e}", exc_info = True)
             raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+        finally:
+            await _stop_local_disconnect_cancel_watcher(_audio_watcher)
 
     audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
     return JSONResponse(
@@ -8737,7 +8748,7 @@ async def openai_chat_completions(
                 # back until the user answers; otherwise unanswered prompts hold every slot.
                 _parked = False
 
-                def _park_admission(on: bool):
+                async def _park_admission(on: bool, *, wait: bool = True):
                     nonlocal _parked
                     if on == _parked:
                         return
@@ -8747,7 +8758,15 @@ async def openai_chat_completions(
                     queue = reservation.queue
                     if queue is None:
                         return
-                    queue.park() if on else queue.unpark()
+                    if on:
+                        queue.park()
+                    elif wait:
+                        # Resuming: park() may have handed our slot to a waiter, so wait
+                        # for room instead of putting two holders on one slot.
+                        await queue.unpark_async(cancel_event = cancel_event)
+                    else:
+                        # Tearing down; the lease is released separately.
+                        queue.unpark()
                     _parked = on
 
                 disconnect_watcher = asyncio.create_task(
@@ -8813,7 +8832,7 @@ async def openai_chat_completions(
                         if not (
                             event["type"] == "tool_start" and event.get("awaiting_confirmation")
                         ):
-                            _park_admission(False)
+                            await _park_admission(False)
 
                         if event["type"] == "heartbeat":
                             # Tool-wrapper heartbeat while a server-side tool blocks; keeps SSE alive.
@@ -8854,7 +8873,7 @@ async def openai_chat_completions(
                                 prev_text = ""
                                 reasoning_extractor = _new_chat_reasoning_extractor()
                                 # Yielded just before the loop blocks on the user.
-                                _park_admission(bool(event.get("awaiting_confirmation")))
+                                await _park_admission(bool(event.get("awaiting_confirmation")))
                             yield f"data: {json.dumps(event)}\n\n"
                             continue
 
@@ -8939,7 +8958,7 @@ async def openai_chat_completions(
                     yield _openai_stream_error_sse(error_chunk)
                 finally:
                     # A disconnect mid-approval must not leave a slot parked.
-                    _park_admission(False)
+                    await _park_admission(False, wait = False)
                     try:
                         if not stream_completed:
                             cancel_event.set()

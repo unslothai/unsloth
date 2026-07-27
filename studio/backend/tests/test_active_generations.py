@@ -2486,7 +2486,8 @@ def _orchestrator_for_ownership():
     )
     orch = orch_mod.InferenceOrchestrator.__new__(orch_mod.InferenceOrchestrator)
     orch._gen_lock = threading.Lock()
-    orch._active_cancel_event = None
+    orch._active_cancel_events = []
+    orch._active_cancel_lock = threading.Lock()
     orch._cancel_event = threading.Event()
     orch._ensure_subprocess_alive = lambda: False  # stop before _send_cmd
     return orch
@@ -2500,7 +2501,7 @@ def test_a_queued_chat_cannot_reset_the_chat_that_is_generating():
     a_event = threading.Event()
     b_event = threading.Event()
 
-    orch._active_cancel_event = a_event  # A holds the lock and is generating
+    orch._claim_worker(a_event)  # A holds the lock and is generating
     orch.reset_generation_state(b_event)  # B is queued and gets stopped
     assert not orch._cancel_event.is_set()
 
@@ -2512,7 +2513,7 @@ def test_a_global_reset_still_cancels_whatever_is_running():
     # Unload and model switch pass nothing: they mean "stop everything", and
     # scoping them would leave a generation alive across a teardown.
     orch = _orchestrator_for_ownership()
-    orch._active_cancel_event = threading.Event()
+    orch._claim_worker(threading.Event())
     orch.reset_generation_state()
     assert orch._cancel_event.is_set()
 
@@ -2564,3 +2565,38 @@ def test_unload_waits_for_a_request_that_is_admitted_but_not_yet_registered(monk
     assert torn_down == ["gguf"]
     assert seen["counted_at_teardown"] == 0
     assert response.status == "unloaded"
+
+
+def test_a_dispatched_chat_cannot_reset_its_concurrently_dispatched_sibling():
+    # Compare-mode / dispatched runs bypass _gen_lock and run concurrently, so
+    # "the one holding the lock" is not the whole story: with several claimed at
+    # once, a Stop on one must still leave the others alone.
+    orch = _orchestrator_for_ownership()
+    a_event = threading.Event()
+    b_event = threading.Event()
+    c_event = threading.Event()
+
+    orch._claim_worker(a_event)
+    orch._claim_worker(b_event)
+
+    orch.reset_generation_state(c_event)  # a third, unrelated request
+    assert not orch._cancel_event.is_set()
+
+    orch.reset_generation_state(b_event)  # one of the running pair
+    assert orch._cancel_event.is_set()
+
+
+def test_releasing_one_generation_leaves_the_other_claimed():
+    orch = _orchestrator_for_ownership()
+    a_event = threading.Event()
+    b_event = threading.Event()
+    orch._claim_worker(a_event)
+    orch._claim_worker(b_event)
+    orch._release_worker(a_event)
+
+    orch.reset_generation_state(a_event)  # now a stranger
+    assert not orch._cancel_event.is_set()
+
+    orch._release_worker(b_event)
+    orch.reset_generation_state(a_event)  # nothing running: no one to protect
+    assert orch._cancel_event.is_set()

@@ -300,10 +300,40 @@ class LlamaAdmissionQueue:
             self._grant_waiters_locked()
 
     def unpark(self) -> None:
-        """Take the slot back. Pairs with park(); safe to call unmatched."""
+        """Give up the parked state without reclaiming a slot.
+
+        For a holder that is tearing down: it will not decode again, and its
+        lease is released separately. Resuming holders must use unpark_async,
+        which waits for room instead of pushing the count over capacity.
+        """
         with self._lock:
             if self._parked > 0:
                 self._parked -= 1
+
+    async def unpark_async(self, *, cancel_event = None, poll_s: float = 0.02) -> None:
+        """Take the slot back, waiting until capacity allows it.
+
+        park() hands the freed slot to a waiter, so by the time the user answers
+        an approval prompt someone else may be decoding in it. Decrementing the
+        counter regardless put two holders on a one-slot server and the resumed
+        tool loop went straight back to llama-server, past the admission limit.
+
+        Gives up waiting if the caller is cancelled, since the holder is then
+        leaving anyway and must not be stuck in this loop.
+        """
+        while True:
+            with self._lock:
+                if self._parked <= 0:
+                    return
+                # Effective count is (_active - _parked); un-parking adds one to
+                # it, so there has to be room for that one before we take it.
+                if (self._active - self._parked) < self._capacity:
+                    self._parked -= 1
+                    return
+                if cancel_event is not None and cancel_event.is_set():
+                    self._parked -= 1
+                    return
+            await asyncio.sleep(poll_s)
 
     def cancel(self, waiter: _Waiter) -> None:
         lease_to_release = None

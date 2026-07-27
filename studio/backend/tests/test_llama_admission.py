@@ -363,3 +363,60 @@ def test_new_key_retains_in_flight_prior_load_queue():
         assert set(llama_admission._QUEUES) == {"http://127.0.0.1:2003"}
 
     asyncio.run(_run())
+
+
+def test_unpark_waits_instead_of_putting_two_holders_on_one_slot():
+    # park() hands the freed slot to a waiter, so by the time the user answers an
+    # approval prompt someone else may be decoding in it. Decrementing _parked
+    # regardless left two holders against capacity 1, and the resumed tool loop
+    # went straight back to llama-server past the admission limit.
+    async def scenario():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+
+        a = queue.reserve(capacity = 1, config = config)
+        assert a.lease_nowait() is not None, "A takes the only slot"
+        b = queue.reserve(capacity = 1, config = config)
+        assert b.lease_nowait() is None, "B waits behind A"
+
+        queue.park()  # A parks on an approval prompt; its slot goes to B
+        b_lease = await asyncio.wait_for(b.wait(timeout_s = 1), timeout = 2)
+        assert b_lease is not None, "B was granted the parked slot"
+
+        # A answers the prompt while B is still decoding: it must WAIT.
+        resumed = asyncio.ensure_future(queue.unpark_async(poll_s = 0.01))
+        await asyncio.sleep(0.05)
+        assert not resumed.done(), "A must not resume while B holds the slot"
+        # The invariant is the EFFECTIVE count, active minus parked; snapshot()
+        # reports raw active, which is legitimately 2 here (A parked, B granted).
+        effective = lambda: queue._active - queue._parked
+        assert effective() <= 1, "never over capacity while waiting"
+
+        b_lease.release()
+        await asyncio.wait_for(resumed, timeout = 2)
+        assert effective() <= 1, "still within capacity after resuming"
+
+    asyncio.run(scenario())
+
+
+def test_unpark_gives_up_when_the_caller_is_cancelled():
+    # A holder being torn down must not sit in the wait loop.
+    async def scenario():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+        a = queue.reserve(capacity = 1, config = config)
+        assert a.lease_nowait() is not None
+        b = queue.reserve(capacity = 1, config = config)
+        queue.park()
+        assert await asyncio.wait_for(b.wait(timeout_s = 1), timeout = 2) is not None
+
+        ev = threading.Event()
+        waiting = asyncio.ensure_future(
+            queue.unpark_async(cancel_event = ev, poll_s = 0.01)
+        )
+        await asyncio.sleep(0.03)
+        assert not waiting.done()
+        ev.set()
+        await asyncio.wait_for(waiting, timeout = 2)
+
+    asyncio.run(scenario())

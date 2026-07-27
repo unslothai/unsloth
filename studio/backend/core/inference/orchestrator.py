@@ -106,7 +106,8 @@ class InferenceOrchestrator:
         self._gen_lock = threading.Lock()  # Serializes generation
         # Cancel event of the request holding _gen_lock: lets a Stop tell whether it owns
         # the running generation or is queued behind it (the worker's event is shared).
-        self._active_cancel_event: Any = None
+        self._active_cancel_events: list = []
+        self._active_cancel_lock = threading.Lock()
         # Set during a switch so a generation winning the _gen_lock handoff bails
         # instead of starting on the outgoing model.
         self._unload_pending = False
@@ -816,9 +817,14 @@ class InferenceOrchestrator:
             yield GenStreamError("Error: model is being unloaded", public = True)
             return
 
+        # Claim before sending, like the locked path: dispatched runs are concurrent
+        # by design, so without this a Stop on one of them saw no owner at all and
+        # reset the worker, ending its siblings.
+        self._claim_worker(cancel_event)
         try:
             self._send_cmd(cmd)
         except RuntimeError as exc:
+            self._release_worker(cancel_event)
             with self._mailbox_lock:
                 self._mailboxes.pop(request_id, None)
             yield GenStreamError(f"Error: {exc}")
@@ -841,6 +847,7 @@ class InferenceOrchestrator:
                 read_timeout = _DISPATCH_READ_TIMEOUT,
             )
         finally:
+            self._release_worker(cancel_event)
             with self._mailbox_lock:
                 self._mailboxes.pop(request_id, None)
 
@@ -1606,7 +1613,7 @@ class InferenceOrchestrator:
             # queued on the lock above, having generated nothing -- cannot reset the
             # generation this is starting. Claiming after the send left a window where the
             # command ran unclaimed. Released in the finally, a failed send included.
-            self._active_cancel_event = cancel_event
+            self._claim_worker(cancel_event)
             try:
                 try:
                     self._send_cmd(cmd)
@@ -1622,8 +1629,31 @@ class InferenceOrchestrator:
                     stats_holder = stats_holder,
                 )
             finally:
-                if self._active_cancel_event is cancel_event:
-                    self._active_cancel_event = None
+                self._release_worker(cancel_event)
+
+    def _claim_worker(self, cancel_event) -> None:
+        """Record this request as one of the generations the worker is running."""
+        with self._active_cancel_lock:
+            self._active_cancel_events.append(cancel_event)
+
+    def _release_worker(self, cancel_event) -> None:
+        with self._active_cancel_lock:
+            try:
+                self._active_cancel_events.remove(cancel_event)
+            except ValueError:
+                pass
+
+    def _owns_worker(self, cancel_event) -> bool:
+        """Whether a reset from this request may signal the shared cancel event.
+
+        True when it is one of the running generations, and also when nothing is
+        running at all: an error path that resets before any generation started
+        has no one else to interrupt, so it must not become a silent no-op.
+        """
+        with self._active_cancel_lock:
+            if not self._active_cancel_events:
+                return True
+            return any(ev is cancel_event for ev in self._active_cancel_events)
 
     def reset_generation_state(self, caller_cancel_event = None):
         """Cancel any ongoing generation and reset state.
@@ -1637,8 +1667,7 @@ class InferenceOrchestrator:
         """
         if (
             caller_cancel_event is not None
-            and self._active_cancel_event is not None
-            and self._active_cancel_event is not caller_cancel_event
+            and not self._owns_worker(caller_cancel_event)
         ):
             return
         self._cancel_generation()

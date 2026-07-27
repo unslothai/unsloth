@@ -2697,7 +2697,12 @@ const ArtifactsToggle: FC = () => {
 const ToolStatusDisplay: FC = () => {
   // This conversation's tool call only: a global status would put one chat's
   // "Running Python..." above every composer.
-  const threadListItemId = useAuiState(({ threadListItem }) => threadListItem.id);
+  // remoteId, not id: the adapter keys this map by unstable_threadId, which is
+  // remoteId, so reading id lost the status of every restored chat. Same rule as
+  // the tool-output scope.
+  const threadListItemId = useAuiState(
+    ({ threadListItem }) => threadListItem.remoteId,
+  );
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
   const entry = useChatRuntimeStore((s) => {
     // A first turn starts before its id is persisted, so the adapter files it

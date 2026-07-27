@@ -2064,6 +2064,11 @@ export function createOpenAIStreamAdapter(
         toolOutputKey(toolOutputPaneScope, id);
       const runToolLiveOutputKeys = new Set<string>();
       const resolvedThreadKey = resolvedThreadId ?? null;
+      // Which conversation was on screen when this run started. A first turn has
+      // no id yet, so this is the only way to tell later whether the user has
+      // since switched away from it.
+      const activeThreadIdAtRunStart =
+        useChatRuntimeStore.getState().activeThreadId ?? null;
       const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
       const selectedImageEditReference =
         (pendingImageEditReferenceForRun?.threadId ?? null) ===
@@ -4071,11 +4076,13 @@ export function createOpenAIStreamAdapter(
 
         // Gate on the captured checkpoint so a late completion from provider A cannot
         // populate the bar after a mid-stream switch to B, and on the captured thread so a
-        // background run finishing after New Chat cannot repaint another chat's usage. A
-        // null resolvedThreadKey (id not yet known) is left alone, not dropped.
+        // background run finishing after New Chat cannot repaint another chat's usage.
+        // An unresolved run has no id to compare, so compare what was on screen when it
+        // started instead: treating it as always visible wrote its counts into whatever
+        // conversation the user had moved to.
         const usageThreadIsVisible =
-          resolvedThreadKey === null ||
-          useChatRuntimeStore.getState().activeThreadId === resolvedThreadKey;
+          useChatRuntimeStore.getState().activeThreadId ===
+          (resolvedThreadKey ?? activeThreadIdAtRunStart);
         if (
           meta?.usage &&
           typeof meta.usage.prompt_tokens === "number" &&
