@@ -11719,6 +11719,22 @@ class _ResponsesReasoningExtractor:
         )
         return tail
 
+    def flush_pending(self) -> tuple[str, str]:
+        """Finalize the raw marker holdback as ``(reasoning, visible)``.
+
+        A marker cannot continue contiguously across a structured item boundary,
+        so whatever the holdback kept is ordinary text. Left in the buffer it is
+        emitted by :meth:`finish` instead, landing after the item that opened in
+        the meantime and reversing the model's own output order (#7334).
+        """
+        held, self._buffer = self._buffer, ""
+        if not held:
+            return "", ""
+        if self._in_reasoning:
+            self._add_to_span(held)
+            return held.replace(_RESPONSES_THINK_OPEN, ""), ""
+        return "", held
+
     def finish(self) -> tuple[str, str]:
         structured_tail = ""
         if self._structured_buffer:
@@ -12789,6 +12805,13 @@ async def _responses_stream(
                     # Tool-call delta: flush held reasoning first so the
                     # reasoning item keeps its output_index before the call.
                     _held_tail = extractor.flush_structured()
+                    # The raw holdback too: a marker cannot continue across the
+                    # item boundary, so a quoted prefix such as `echo "</thi`
+                    # is plain text and belongs before the call, not after it.
+                    _held_reasoning, _held_visible = extractor.flush_pending()
+                    _held_tail += _held_reasoning
+                    if _held_visible:
+                        visible_delta = _held_visible + visible_delta
                     if _held_tail:
                         for event in _ensure_reasoning_open():
                             yield event

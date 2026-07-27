@@ -374,6 +374,32 @@ def neutralize_tool_call_arguments(tool_calls):
     return out if changed else tool_calls
 
 
+def _split_marker_boundary(text: str, ahead: str, markers) -> bool:
+    """True when ``text`` and what follows only form a marker once joined.
+
+    Templates concatenate adjacent text parts with no separator and trim each
+    (``gemma-4.jinja:333-340``), so a marker cut across two parts survives the
+    per-part pass and is rebuilt in the rendered prompt (#7066).
+    """
+    tail, head = text.rstrip(), ahead.lstrip()
+    if not tail or not head:
+        return False
+    longest = max(len(src) for src, _ in markers) - 1
+    if longest <= 0:
+        return False
+    tail, head = tail[-longest:], head[:longest]
+    joined = tail + head
+    for src, _ in markers:
+        at = joined.find(src)
+        while at != -1:
+            # Counts only when the marker straddles the join, since a marker
+            # inside either side alone was already neutralized by that part.
+            if at < len(tail) < at + len(src):
+                return True
+            at = joined.find(src, at + 1)
+    return False
+
+
 def neutralize_message_content_for_role(role: Optional[str], content):
     """Apply control-markup neutralization to message content.
 
@@ -391,15 +417,38 @@ def neutralize_message_content_for_role(role: Optional[str], content):
     if isinstance(content, str):
         return rewrite(content)
     if isinstance(content, list):
+        markers = (
+            _TURN_BOUNDARY_MARKERS
+            if (role or "").strip().lower() == "assistant"
+            else _NON_ASSISTANT_CONTROL_MARKERS
+        )
+        # Text of each part as the template will render it, so a marker cut
+        # across two parts can be spotted before the parts are rewritten.
+        texts = [
+            part
+            if isinstance(part, str)
+            else part.get("text") if isinstance(part, dict) else None
+            for part in content
+        ]
         changed = False
         out = []
-        for part in content:
+        for index, part in enumerate(content):
+            # A marker only completed by the next part is broken by a neutral
+            # char at the seam, which leaves both parts' own text intact.
+            seam = ""
+            if isinstance(texts[index], str):
+                ahead = next(
+                    (t for t in texts[index + 1:] if isinstance(t, str) and t.strip()),
+                    "",
+                )
+                if _split_marker_boundary(texts[index], ahead, markers):
+                    seam = _THINK_NEUTRAL_ZW
             if isinstance(part, str):
-                new_part = rewrite(part)
-                changed = changed or new_part is not part and new_part != part
+                new_part = rewrite(part) + seam
+                changed = changed or new_part != part
                 out.append(new_part)
             elif isinstance(part, dict) and isinstance(part.get("text"), str):
-                new_text = rewrite(part["text"])
+                new_text = rewrite(part["text"]) + seam
                 if new_text != part["text"]:
                     out.append({**part, "text": new_text})
                     changed = True

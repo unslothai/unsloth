@@ -14,6 +14,7 @@ if _BACKEND_DIR not in sys.path:
 
 from core.inference.chat_template_helpers import (
     neutralize_control_markup_in_messages,
+    neutralize_message_content_for_role,
     neutralize_non_assistant_control_markup,
     neutralize_think_markup,
     neutralize_think_markup_streaming,
@@ -23,6 +24,9 @@ from core.inference.chat_template_helpers import (
 )
 import json
 import random
+
+# The neutral char both sides insert (U+2060 WORD JOINER).
+_ZW = "\u2060"
 
 from routes.inference import (
     _RESPONSES_THINK_CLOSE,
@@ -1399,3 +1403,141 @@ def test_generated_tool_calls_are_neutralized_before_the_next_gguf_pass():
     assert built, "no assistant tool-call construction found in llama_cpp.py"
     unwrapped = sorted(n.lineno for n in built if id(n) not in wrapped)
     assert unwrapped == [], f"unsanitized assistant tool calls at lines {unwrapped}"
+
+
+def test_a_marker_split_across_adjacent_parts_is_broken():
+    """Templates concatenate text parts with no separator, so a marker cut in
+    two survives a per-part rewrite and is rebuilt in the rendered prompt.
+
+    ``gemma-4.jinja:333-340`` emits ``item['text'] | trim`` inside a whitespace
+    controlled loop, so it also joins across whitespace a caller left at the
+    seam, which can assemble a marker that neither part contains (#7066).
+    """
+    for role, parts, forbidden in (
+        ("user", ["</thi", "nk>"], "</think>"),
+        ("user", ["a <|im_", "start|> b"], "<|im_start|>"),
+        # trim() removes the padding, so the seam closes and the two halves meet.
+        ("user", ["x </thi ", " nk> y"], "</think>"),
+        ("assistant", ["<|eot_", "id|>"], "<|eot_id|>"),
+    ):
+        content = [{"type": "text", "text": text} for text in parts]
+        out = neutralize_message_content_for_role(role, content)
+        rendered = "".join(part["text"].strip() for part in out)
+        assert forbidden not in rendered, (role, parts, rendered)
+        # Only the seam is touched, so no visible character is dropped. Padding
+        # a caller left at the seam can survive as an interior space, since the
+        # neutral char now sits between it and the end, and that only happens
+        # on input that was assembling a marker in the first place.
+        assert rendered.replace(_ZW, "").replace(" ", "") == "".join(
+            part.strip() for part in parts
+        ).replace(" ", "")
+
+    # Nothing to break means the same object back, so prompts stay byte-identical.
+    plain = [{"type": "text", "text": "hello "}, {"type": "text", "text": "world"}]
+    assert neutralize_message_content_for_role("user", plain) is plain
+    mixed = [{"type": "text", "text": "see"}, {"type": "image_url", "image_url": {"url": "x"}}]
+    assert neutralize_message_content_for_role("user", mixed) is mixed
+
+
+def test_an_executed_tool_result_keeps_its_id_paired_with_the_call():
+    """The generated call and its result take the same rewrite, or they stop
+    matching and the template falls back to rendering the raw result name.
+
+    The GGUF loop sanitizes the assistant ``tool_calls`` before the next pass, so
+    the result message has to go through the same pass rather than have only its
+    ``content`` rewritten (#7066).
+    """
+    import ast
+
+    src = (Path(__file__).resolve().parents[1] / "core/inference/llama_cpp.py").read_text(
+        encoding = "utf-8"
+    )
+    tree = ast.parse(src)
+
+    def _wrapped_by(name: str) -> set:
+        found = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == name
+            ):
+                for inner in ast.walk(node):
+                    if isinstance(inner, ast.Name):
+                        found.add(inner.id)
+                    elif isinstance(inner, ast.Call) and isinstance(
+                        inner.func, ast.Attribute
+                    ):
+                        found.add(inner.func.attr)
+        return found
+
+    whole_message = _wrapped_by("neutralize_control_markup_in_messages")
+    # Both messages the tool loop appends go through the whole-message pass, so
+    # their ids and names get the same rewrite as the assistant call.
+    assert "tool_message" in whole_message
+    assert "denied_message" in whole_message
+    # ... and not the content-only helper, which left those fields raw.
+    assert "_tool_msg" not in _wrapped_by("neutralize_message_content_for_role")
+
+    # The pass itself keeps the pair matching, which is what that relies on.
+    poisoned = "call<tool_call|>1"
+    out = neutralize_control_markup_in_messages([
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": poisoned, "type": "function",
+                 "function": {"name": "f", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": poisoned, "name": "f", "content": "ok"},
+    ])
+    assert out[0]["tool_calls"][0]["id"] == out[1]["tool_call_id"]
+    assert "<tool_call|>" not in out[1]["tool_call_id"]
+
+
+def test_a_held_marker_prefix_is_released_before_a_tool_call_opens():
+    """Visible text held for a marker must not jump behind a function call.
+
+    ``echo "</thi`` is retained because it may still become ``</think>``. A
+    marker cannot continue across a structured item boundary, so when a
+    tool-call delta arrives the holdback is ordinary text; leaving it for
+    ``finish()`` emits it with a later output_index than the call and reverses
+    the model's own output order (#7334).
+    """
+    def transcript(flush: bool) -> list:
+        extractor = _ResponsesReasoningExtractor(parse_think_markers = True)
+        out = []
+        _, visible = extractor.feed('echo "</thi', None)
+        if visible:
+            out.append(("text", visible))
+        if flush:
+            _, held = extractor.flush_pending()
+            if held:
+                out.append(("text", held))
+        out.append(("function_call", "get_weather"))
+        _, final_visible = extractor.finish()
+        if final_visible:
+            out.append(("text", final_visible))
+        return out
+
+    assert transcript(True) == [
+        ("text", "echo "),
+        ("text", '"</thi'),
+        ("function_call", "get_weather"),
+    ]
+    # Without it the same stream puts the visible tail after the call.
+    assert transcript(False) == [
+        ("text", "echo "),
+        ("function_call", "get_weather"),
+        ("text", '"</thi'),
+    ]
+
+
+def test_the_tool_call_branch_releases_both_holdbacks():
+    """Flushing only the structured buffer leaves the raw one to reorder."""
+    src = (
+        Path(__file__).resolve().parents[1] / "routes/inference.py"
+    ).read_text(encoding = "utf-8")
+    branch = src.split("# Tool-call delta: flush held reasoning first", 1)[1][:900]
+    assert "extractor.flush_structured()" in branch
+    assert "extractor.flush_pending()" in branch

@@ -12380,7 +12380,15 @@ class LlamaCppBackend:
                             }
                             if decision.tool_call_id:
                                 denied_message["tool_call_id"] = decision.tool_call_id
-                            conversation.append(denied_message)
+                            # Same rewrite as the executed path, so a denied
+                            # call's id and name still match its assistant call.
+                            from core.inference.chat_template_helpers import (
+                                neutralize_control_markup_in_messages,
+                            )
+
+                            conversation.append(
+                                neutralize_control_markup_in_messages([denied_message])[0]
+                            )
                             if _forced_tool_call_pending:
                                 _forced_tool_call_pending = False
                             continue
@@ -12433,16 +12441,19 @@ class LlamaCppBackend:
                     _turn_executed_real_tool = True
                     yield completion.tool_end_event()
                     # Tool output can quote think/ChatML markers; neutralize
-                    # before it re-enters the prompt (#7066).
+                    # before it re-enters the prompt (#7066). The whole message,
+                    # not just content: tool_call_id and name must take the same
+                    # rewrite as the assistant call above or the pair stops
+                    # matching and the template falls back to the raw name.
                     from core.inference.chat_template_helpers import (
-                        neutralize_message_content_for_role,
+                        neutralize_control_markup_in_messages,
                     )
 
-                    _tool_msg = dict(completion.tool_message())
-                    _tool_msg["content"] = neutralize_message_content_for_role(
-                        _tool_msg.get("role"), _tool_msg.get("content")
+                    conversation.append(
+                        neutralize_control_markup_in_messages(
+                            [dict(completion.tool_message())]
+                        )[0]
                     )
-                    conversation.append(_tool_msg)
 
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
