@@ -55,11 +55,9 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
       config.selectedGpuIds !== undefined
         ? reconcilePersistedGpuIds(config.selectedGpuIds)
         : null,
-    // [] not null: every other field here is sent explicitly on the load that
-    // follows, but an absent args field is omitted from /load, which reads as
-    // "inherit the previous same-model args". A config with no args (Reset, or
-    // a model with nothing remembered) would then relaunch the flags the panel
-    // just cleared, with nothing on screen to show it.
+    // [] not null: an absent args field is omitted from /load, which reads as
+    // "inherit the previous same-model args", so a config with no args (Reset, or
+    // nothing remembered) would silently relaunch the flags the panel cleared.
     llamaExtraArgs: config.llamaExtraArgs ?? [],
   });
 }

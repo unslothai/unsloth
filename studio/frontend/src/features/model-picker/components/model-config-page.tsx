@@ -437,9 +437,9 @@ const LlamaExtraArgsSetting = forwardRef<
   );
   const draftRef = useRef(draft);
   const dirtyRef = useRef(false);
-  // Same-click Load: blur commits via update() before the button's onClick, but
-  // handleRun's closure still holds the pre-blur config. Keep the blur result
-  // for one commit(), dropped on any settled render, like NumericValueInput.
+  // Same-click Load: blur commits before the button's onClick, but handleRun's
+  // closure still holds the pre-blur config. Keep the blur result for one
+  // commit(), dropped on any settled render, like NumericValueInput.
   const lastBlurCommittedRef = useRef<string[] | null>(null);
   useEffect(() => {
     lastBlurCommittedRef.current = null;

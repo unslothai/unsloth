@@ -1501,8 +1501,8 @@ async function autoLoadSmallestModel(): Promise<{
     // The safetensors fallback omits both fields and uses HF auto-placement.
     gpu_ids?: number[];
     gpu_memory_mode?: "auto" | "manual";
-    // The preflight must validate and size the KV budget against the same
-    // extras the load sends; omitting them makes it inherit the previous load's.
+    // The preflight sizes the KV budget off these; omitting them inherits the
+    // previous load's extras.
     llama_extra_args?: string[];
   }): Promise<boolean> {
     const validation = await validateModel({
@@ -1702,8 +1702,8 @@ async function autoLoadSmallestModel(): Promise<{
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         ...loadedGpuMemoryFields(loadResp),
-        // What the server launched with, not what was asked for: manual GPU
-        // mode strips the offload group it owns. undefined = older backend.
+        // What the server launched with, not what was asked for: manual GPU mode
+        // strips the offload group it owns. undefined = older backend.
         llamaExtraArgs: loadResp.llama_extra_args ?? config.llamaExtraArgs ?? null,
         loadedLlamaExtraArgs:
           loadResp.llama_extra_args ?? config.llamaExtraArgs ?? null,
@@ -2013,10 +2013,10 @@ async function autoLoadSmallestModel(): Promise<{
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         ...loadedGpuMemoryFields(loadResp),
-        // This load sends no extra args, and the GPU helper only clears them for
-        // a non-GGUF response, so baseline both fields on the echo here. Else
-        // args staged for a model that never loaded stay on screen for Qwen and
-        // the next Reload sends them to it.
+        // This load sends no extra args and the GPU helper only clears them for a
+        // non-GGUF response, so baseline both fields on the echo; else args staged
+        // for a model that never loaded stay on screen and the next Reload sends
+        // them to this one.
         llamaExtraArgs: loadResp.llama_extra_args ?? null,
         loadedLlamaExtraArgs: loadResp.llama_extra_args ?? null,
         // Drives the GPU Memory controls' diffusion gate; set alongside the

@@ -971,8 +971,8 @@ export function useChatModelRuntime() {
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
             );
-            // undefined = older backend; fall back to the request rather than
-            // blanking a field that is running.
+            // undefined = older backend; keep the request rather than blanking a
+            // field that is running.
             const loadedExtraArgs =
               loadResponse.llama_extra_args !== undefined
                 ? loadResponse.llama_extra_args
@@ -1049,8 +1049,8 @@ export function useChatModelRuntime() {
               loadedTensorParallel: loadedTp,
               ...loadedGpuMemoryFields(loadResponse),
               // What the server launched with, like the KV / TP / spec fields
-              // above: manual GPU mode strips the offload group it owns, so the
-              // request would advertise a dropped --cpu-moe.
+              // above: the request would advertise a --cpu-moe that manual GPU
+              // mode stripped.
               llamaExtraArgs: loadedExtraArgs,
               loadedLlamaExtraArgs: loadedExtraArgs,
               speculativeType: loadedSpec,

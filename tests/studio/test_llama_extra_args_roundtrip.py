@@ -3,11 +3,11 @@
 
 """Behavioural round-trip tests for the Custom llama-server Args field.
 
-Typed text is parsed to argv, rendered back on every re-render, re-parsed on the
-next blur and normalised again on save. Any asymmetry between those four steps
-silently launches llama-server with different arguments than the user entered,
-which source greps cannot catch, so run the real module under node (same harness
-as test_chat_preset_builtin_invariants.py) and assert the round trips.
+Typed text is parsed to argv, rendered back on re-render, re-parsed on the next
+blur and normalised on save; any asymmetry between those four steps silently
+launches llama-server with different arguments than the user entered. Greps
+cannot catch that, so run the real module under node (same harness as
+test_chat_preset_builtin_invariants.py) and assert the round trips.
 """
 
 from __future__ import annotations
@@ -106,7 +106,7 @@ def test_quoted_windows_path_keeps_its_backslashes():
     """Only a quote or another backslash escapes, as in a shell.
 
     Consuming every backslash turns "C:\\Program Files\\t.jinja" into
-    "C:Program Filest.jinja", a path the user never typed.
+    "C:Program Filest.jinja".
     """
     out = _run(
         """
@@ -117,19 +117,17 @@ def test_quoted_windows_path_keeps_its_backslashes():
         """
     )
     assert out["quoted"] == ["--chat-template-file", "C:\\Users\\Me\\a b.jinja"]
-    # Unquoted backslashes are literal too, so a Windows path with no spaces
-    # survives without the user having to quote it.
+    # Literal when unquoted too, so a space-free Windows path needs no quoting.
     assert out["bare"] == ["--chat-template-file", "C:\\Users\\Me\\t.jinja"]
 
 
 def test_single_quotes_keep_every_backslash():
     """A shell keeps a single-quoted value verbatim; only double quotes escape.
 
-    Collapsing `\\\\` inside single quotes rewrites the value the user typed:
-    `'{"path":"C:\\\\foo"}'` reaches llama-server as `{"path":"C:\\foo"}`, whose
-    `\\f` is a JSON formfeed escape, and a single-quoted GBNF loses the literal
-    backslash its grammar needs. Cross-checked against shlex.split(posix=True) --
-    the same tokenizer the MCP address parser uses.
+    Collapsing `\\\\` inside single quotes rewrites the typed value:
+    `'{"path":"C:\\\\foo"}'` arrives as `{"path":"C:\\foo"}`, whose `\\f` is a JSON
+    formfeed escape, and a single-quoted GBNF loses the backslash its grammar
+    needs. Cross-checked against shlex.split(posix=True).
     """
     typed = [
         r"""--chat-template-kwargs '{"path":"C:\\foo"}'""",
@@ -159,8 +157,7 @@ def test_single_quotes_keep_every_backslash():
     # Unquoted backslashes stay literal (deliberately not POSIX; see
     # test_quoted_windows_path_keeps_its_backslashes).
     assert rows[6]["parsed"] == ["--chat-template-file", "C:\\Users\\Me\\t.jinja"]
-    # The formatter only ever emits double quotes, so re-parsing is still a
-    # fixed point for every one of these.
+    # The formatter emits only double quotes, so re-parsing stays a fixed point.
     for text, row in zip(typed, rows):
         assert row["reparsed"] == row["parsed"], (text, row)
 
@@ -168,9 +165,9 @@ def test_single_quotes_keep_every_backslash():
 def test_save_persists_the_same_argv_the_load_sent():
     """normalize is a validator, not a rewriter.
 
-    The load path sends the parsed tokens verbatim while the save path stores
-    normalizeLlamaExtraArgs(tokens), so a token it edits makes the same saved
-    config launch differently after a restart.
+    The load path sends parsed tokens verbatim while the save path stores
+    normalizeLlamaExtraArgs(tokens), so any token it edits makes the same config
+    launch differently after a restart.
     """
     out = _run(
         """
@@ -214,9 +211,8 @@ def test_empty_quoted_argument_survives_the_field():
     """Dropping an empty argument shifts every token after it.
 
     Verified on llama-server b10107: `--chat-template "" --ctx-size BOGUS` fails
-    with `error while handling argument "--ctx-size"`, while the argv without the
-    empty token fails with `invalid argument: BOGUS` -- llama-server took
-    `--ctx-size` as the template string and never applied it.
+    on `--ctx-size`, but without the empty token it fails with `invalid argument:
+    BOGUS`, having eaten `--ctx-size` as the template string.
     """
     out = _run(
         """
@@ -237,8 +233,8 @@ def test_empty_quoted_argument_survives_the_field():
     assert out["rendered"] == '--chat-template "" --no-mmap'
     assert out["reparsed"] == ["--chat-template", "", "--no-mmap"]
     assert out["persisted"] == ["--chat-template", "", "--no-mmap"]
-    # Whitespace-only yields no tokens; quotes adjacent to bare text join into
-    # one token, as a shell would.
+    # Whitespace-only yields no tokens; quotes adjacent to bare text join, as in a
+    # shell.
     assert out["blankField"] == []
     assert out["adjacent"] == ["ab"]
 
@@ -246,8 +242,8 @@ def test_empty_quoted_argument_survives_the_field():
 def test_clearing_the_field_sends_an_explicit_empty_list():
     """[] clears inherited args; undefined means "inherit" to /load.
 
-    Collapsing a cleared field to undefined keeps launching the flags the user
-    just deleted, with nothing in the UI to show it.
+    Collapsing a cleared field to undefined keeps launching the deleted flags,
+    with nothing in the UI to show it.
     """
     out = _run(
         """

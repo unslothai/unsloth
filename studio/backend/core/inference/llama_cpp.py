@@ -1579,12 +1579,11 @@ _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
 def _canonical_long_flag_name(name: str) -> str:
     """``name`` with llama.cpp's long-option underscore folding applied.
 
-    common/arg.cpp runs ``std::replace(arg, '_', '-')`` on every ``--`` token
-    before matching, so ``--spec_type`` reaches ``--spec-type``. Every parser
-    reading pass-through extras must match the same way or Studio budgets VRAM,
-    picks a drafter and reports a launch mode the child resolves differently.
-    Shorts keep their exact spelling. Single source of truth for the module;
-    ``llama_server_args._flag_name`` mirrors it on the validation boundary.
+    common/arg.cpp folds ``_`` to ``-`` on every ``--`` token before matching, so
+    ``--spec_type`` reaches ``--spec-type``; every extras parser must match the
+    same way or Studio budgets VRAM and picks a drafter the child resolves
+    differently. Shorts keep their spelling. ``llama_server_args._flag_name``
+    mirrors this on the validation boundary.
     """
     return name.replace("_", "-") if name.startswith("--") else name
 
@@ -6187,9 +6186,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _canonical_long_flag(name: str) -> str:
-        """``name`` with llama.cpp's underscore folding (``--cache_type_v`` ->
-        ``--cache-type-v``); see ``_canonical_long_flag_name``. Pass only the
-        flag name, no attached value."""
+        """``_canonical_long_flag_name``; pass a flag name, no attached value."""
         return _canonical_long_flag_name(name)
 
     @staticmethod
@@ -6209,9 +6206,8 @@ class LlamaCppBackend:
         def flash_attn_parts(tok: str):
             """(canonical flag, inline value or None), or (None, None).
 
-            Extras are appended after Unsloth's own ``--flash-attn on``, so
-            last-wins lets ``--flash_attn=on`` decide the effective value;
-            matching raw text left it untouched and the retry crashed again.
+            Extras land after Unsloth's own ``--flash-attn on``, so last-wins
+            must also see ``--flash_attn=on`` or the retry crashes again.
             """
             name, eq, inline = tok.partition("=")
             canonical = _canonical_long_flag_name(name)
@@ -6233,7 +6229,7 @@ class LlamaCppBackend:
                 continue
             if inline is not None:
                 if inline in ("on", "auto"):
-                    # In place, in the user's spelling: length must not change.
+                    # Keep the user's spelling; token count must not change.
                     out[i] = f"{tok.partition('=')[0]}=off"
             elif explicit(i) in ("on", "auto"):
                 out[i + 1] = "off"

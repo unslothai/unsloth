@@ -609,8 +609,8 @@ def test_model_config_page_exposes_custom_llama_server_args():
 def test_llama_extra_args_formatter_quotes_quote_chars():
     """formatLlamaExtraArgs must re-quote tokens holding quote characters.
 
-    The field re-parses whatever was rendered, so a bare {"enable_thinking":false}
-    comes back as {enable_thinking:false} on the next blur, corrupting the flag.
+    The field re-parses what it rendered, so a bare {"enable_thinking":false}
+    comes back as {enable_thinking:false} on the next blur.
     """
     src = _read("features/model-picker/model-config/llama-extra-args.ts")
     assert "/[\\s\"']/.test(token)" in src
@@ -619,9 +619,9 @@ def test_llama_extra_args_formatter_quotes_quote_chars():
 def test_autoload_preflight_validates_the_args_it_loads():
     """The cached-autoload /validate must send the extras its /load sends.
 
-    /validate sizes the training-guard VRAM estimate from the extras (a -c
-    raises the KV budget) and rejects managed flags, so omitting them lets the
-    preflight pass a different command than the load that then fails.
+    /validate sizes the training-guard VRAM estimate from the extras (a -c raises
+    the KV budget) and rejects managed flags, so omitting them preflights a
+    different command than the load that then fails.
     """
     src = _read("features/chat/api/chat-adapter.ts")
     start = src.index("await canAutoLoad({")
@@ -645,25 +645,24 @@ def test_status_hydration_reseeds_llama_extra_args():
 def test_llama_extra_args_parser_keeps_non_escape_backslashes():
     """A quoted Windows path must survive the field.
 
-    Only a quote or another backslash escapes, as in a shell: treating every
+    Only a quote or another backslash escapes, as in a shell; treating every
     backslash as one turns "C:\\Program Files\\t.jinja" into
-    "C:Program Filest.jinja", on the very platform #7022 was reported from.
+    "C:Program Filest.jinja", on the platform #7022 came from.
     """
     src = _read("features/model-picker/model-config/llama-extra-args.ts")
     assert 'ch === "\\\\" && (next === quote || next === "\\\\")' in src
-    # Double quotes only. A shell keeps a single-quoted value verbatim, so the
-    # escape branch must not fire there (see the behavioural test in
-    # test_llama_extra_args_roundtrip.py).
+    # Double quotes only: a single-quoted value is verbatim, so the escape branch
+    # must not fire there (behavioural test in test_llama_extra_args_roundtrip.py).
     assert 'quote === \'"\' && ch === "\\\\"' in src
 
 
 def test_same_click_commit_covers_the_custom_llama_args_field():
     """The Custom llama-server Args field needs the same blur bridge.
 
-    It stages its draft only on blur, which commits via the parent update()
-    before the button's onClick runs, while handleRun's closure still holds the
-    pre-blur config. Without an imperative commit, typing flags and clicking Load
-    in one gesture launches the previous args while the panel shows the new ones.
+    It stages its draft only on blur, which commits before the button's onClick
+    while handleRun's closure still holds the pre-blur config. Without an
+    imperative commit, typing flags and clicking Load in one gesture launches the
+    previous args while the panel shows the new ones.
     """
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert "const llamaExtraArgsInputRef = useRef<LlamaExtraArgsInputHandle>(null);" in page
@@ -681,10 +680,9 @@ def test_same_click_commit_covers_the_custom_llama_args_field():
 def test_load_paths_baseline_on_the_servers_effective_args():
     """Every GGUF load path must baseline on what the server launched with.
 
-    /load strips the offload group from explicit extras when gpu_memory_mode is
-    manual, so seeding from the request advertises a dropped --cpu-moe as active
-    and baselines dirty tracking on a launch that never ran. Every sibling in
-    these setState calls (KV dtype, TP, spec type) already reads the response.
+    Manual gpu_memory_mode strips the offload group from explicit extras, so
+    seeding from the request advertises a dropped --cpu-moe as active. Every
+    sibling in these setState calls (KV dtype, TP, spec type) reads the response.
     """
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "loadResponse.llama_extra_args !== undefined" in runtime
@@ -709,9 +707,8 @@ def test_applying_a_config_without_args_clears_them_explicitly():
 
     Reset stages DEFAULT_PER_MODEL_CONFIG, whose llamaExtraArgs is absent. Mapped
     to null it collapses through llamaExtraArgsForLoad into an omitted field,
-    which /load reads as "inherit the previous same-model args" -- so Reset would
-    blank the input and relaunch the same flags. Every sibling field in this same
-    setState is already sent explicitly on the load that follows.
+    which /load reads as "inherit", so Reset would blank the input and relaunch
+    the same flags.
     """
     src = _read("features/model-picker/model-config/apply-per-model-config.ts")
     assert "llamaExtraArgs: config.llamaExtraArgs ?? []," in src
@@ -726,11 +723,10 @@ def test_applying_a_config_without_args_clears_them_explicitly():
 def test_default_gguf_autoload_baselines_the_args_fields():
     """The "download a small default GGUF" branch must reset both args fields.
 
-    loadedGpuMemoryFields only clears them on a non-GGUF response, and this
-    branch sends no llama_extra_args of its own, so args staged for a model that
-    never finished loading would stay in the store: the panel shows them for
-    Qwen and the next Reload sends them to it. Its siblings (KV dtype, TP, GPU
-    pick, chat template) are all re-baselined here already.
+    loadedGpuMemoryFields only clears them on a non-GGUF response and this branch
+    sends no llama_extra_args, so args staged for a model that never loaded would
+    stay in the store: the panel shows them for Qwen and the next Reload sends
+    them there. Its siblings (KV dtype, TP, GPU pick, template) reset here too.
     """
     src = _read("features/chat/api/chat-adapter.ts")
     branch = src.split('model_path: "unsloth/Qwen3.5-4B-MTP-GGUF"', 1)[1]

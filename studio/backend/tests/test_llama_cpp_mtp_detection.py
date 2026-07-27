@@ -2156,11 +2156,10 @@ def test_already_in_target_state_retries_after_hf_drafter_not_found():
 
 # ── Underscore aliases: llama.cpp folds `_` to `-` on every `--` arg ──
 #
-# common/arg.cpp runs std::replace(arg, '_', '-') before matching, verified on
-# llama-server b10107: `--spec_type BOGUS` reports `error while handling
-# argument "--spec-type"`, an unknown flag reports `invalid argument`. These
-# spellings pass validation, so the runtime parsers must resolve them the same
-# way or Studio budgets VRAM and reports a mode the child does not run.
+# common/arg.cpp runs std::replace(arg, '_', '-') before matching (verified on
+# llama-server b10107), and these spellings pass validation, so the runtime
+# parsers must resolve them the same way or Studio budgets VRAM and reports a
+# mode the child does not run.
 
 
 @pytest.mark.parametrize(
@@ -2175,8 +2174,8 @@ def test_offload_override_detects_underscore_aliases(extra_args):
 
 
 def test_spec_type_auto_emit_suppressed_by_underscore_alias():
-    # Missing this appends Unsloth's own --spec-type, and llama.cpp's last-wins
-    # parse then runs the user's mode against a budget sized for Unsloth's.
+    # Missing this appends Unsloth's own --spec-type, and last-wins then runs the
+    # user's mode against a budget sized for Unsloth's.
     assert _extra_args_set_spec_type(["--spec_type", "draft-mtp"]) is True
     assert _extra_args_set_spec_type(["--spec_default"]) is True
 
@@ -2241,9 +2240,9 @@ def test_underscore_folding_is_long_flags_only():
 def test_flash_attn_off_recovery_sees_underscore_aliases():
     """The FA-off crash-recovery rung must beat an appended underscore alias.
 
-    Unsloth emits its own `--flash-attn on` and appends user extras after it, so
-    last-wins lets a pass-through `--flash_attn=on` decide the effective value.
-    Matching raw text left it untouched and the retry crashed like the first try.
+    Extras land after Unsloth's own `--flash-attn on`, so last-wins lets
+    `--flash_attn=on` decide the effective value; matching raw text left it
+    untouched and the retry crashed like the first try.
     """
     studio = ["llama-server", "-m", "/m.gguf", "--flash-attn", "on", "--no-context-shift"]
     for extra, expected_tail in (
@@ -2255,8 +2254,8 @@ def test_flash_attn_off_recovery_sees_underscore_aliases():
         cmd = studio + extra
         retry = LlamaCppBackend._with_flash_attn_off(cmd)
         assert retry is not None, extra
-        # Length preserved for downstream slices, Unsloth's flag flipped, the
-        # user's alias neutralised in its own spelling.
+        # Length preserved, Unsloth's flag flipped, the alias neutralised in its
+        # own spelling.
         assert len(retry) == len(cmd), extra
         assert retry[3:5] == ["--flash-attn", "off"], extra
         assert retry[len(studio) :] == expected_tail, extra

@@ -269,8 +269,8 @@ def test_denylist_rejects_np_with_digit_prefix_and_junk(attached):
 
 def test_agent_alias_is_managed_like_tools_and_mcp_proxy():
     # common/arg.cpp: -ag/--agent sets server_tools={"all"} (exec_shell_command,
-    # write_file, ...) and ui_mcp_proxy=true -- the exact two options --tools and
-    # --ui-mcp-proxy are denied for, so denying only those is one alias away.
+    # write_file, ...) plus ui_mcp_proxy=true, exactly what --tools and
+    # --ui-mcp-proxy are denied for.
     for flag in ("-ag", "--agent", "-no-ag", "--no-agent", "--agent=1", "--no_agent"):
         assert is_managed_flag(flag) is True
         with pytest.raises(ValueError):
@@ -278,8 +278,8 @@ def test_agent_alias_is_managed_like_tools_and_mcp_proxy():
 
 
 def test_legacy_webui_aliases_are_managed():
-    # Upstream renamed --webui-* to --ui-* but kept both spellings on the same
-    # option (common/arg.cpp), so denying only the new names is a bypass.
+    # common/arg.cpp keeps the old --webui-* spellings on the renamed --ui-*
+    # options, so denying only the new names is a bypass.
     for flag in (
         "--webui-config",
         "--webui-config-file",
@@ -926,8 +926,7 @@ def test_strip_shadowing_flags_keeps_model_draft_without_spec():
     ],
 )
 def test_denylist_rejects_underscore_aliases(denied):
-    # common/arg.cpp runs std::replace(arg, '_', '-') on every `--` arg, so
-    # `--api_key` reaches --api-key: a hyphen-only denylist would be one
+    # `--api_key` reaches --api-key in the child, so a hyphen-only denylist is one
     # underscore from handing over auth, model identity and the port.
     with pytest.raises(ValueError):
         validate_extra_args([denied, "value"])
@@ -945,8 +944,8 @@ def test_underscore_normalisation_is_long_flags_only():
 
 
 def test_shadow_parsers_see_underscore_spellings():
-    # The child honours `--ctx_size`; missing it sizes the KV budget for a
-    # different context than the server allocates.
+    # The child honours `--ctx_size`; missing it sizes the KV budget for a context
+    # the server does not allocate.
     assert parse_ctx_override(["--ctx_size", "8192"]) == 8192
     assert parse_cache_override(["--cache_type_k", "q8_0"]) == "q8_0"
     assert parse_split_mode_override(["--split_mode", "tensor"]) == "tensor"

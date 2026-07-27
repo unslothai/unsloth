@@ -9,19 +9,16 @@ export function parseLlamaExtraArgsInput(input: string): string[] {
   }
   const tokens: string[] = [];
   let current = "";
-  // A token exists once one is opened, whatever it holds: keying on `current`
-  // would swallow a deliberate empty argument (`--flag ""`), and dropping it
-  // shifts the argv so llama-server reads the next token as the flag's value.
+  // Track "a token was opened" rather than keying on `current`, which would drop
+  // a deliberate `--flag ""` and shift the argv by one.
   let started = false;
   let quote: '"' | "'" | null = null;
   for (let i = 0; i < trimmed.length; i += 1) {
     const ch = trimmed[i];
     if (quote) {
-      // Only a quote or another backslash escapes, as in a shell: a quoted
-      // "C:\Program Files\t.jinja" survives as itself, not "C:Program Filest.jinja".
-      // Double quotes only: a shell keeps every character of a single-quoted
-      // value verbatim, so '{"path":"C:\\x"}' must reach llama-server with both
-      // backslashes -- collapsing them changes the JSON/grammar the user typed.
+      // Shell rules: only a quote or another backslash escapes, so a quoted
+      // "C:\Program Files\t.jinja" survives as itself. Double quotes only, since
+      // a single-quoted value is verbatim down to its backslashes.
       const next = i + 1 < trimmed.length ? trimmed[i + 1] : "";
       if (quote === '"' && ch === "\\" && (next === quote || next === "\\")) {
         current += next;
@@ -69,8 +66,8 @@ export function formatLlamaExtraArgs(
       if (token === "") {
         return '""';
       }
-      // Quote chars need quoting too, else re-parsing the field strips them
-      // (`{"a":1}` -> `{a:1}`) and silently corrupts the value on the next blur.
+      // Quote chars need quoting too, else the next blur re-parses `{"a":1}` as
+      // `{a:1}`.
       if (!/[\s"']/.test(token)) {
         return token;
       }
@@ -90,8 +87,8 @@ export function normalizeLlamaExtraArgs(
     if (typeof raw !== "string") {
       continue;
     }
-    // Verbatim: the parser only emits a blank or edge-padded token when the user
-    // quoted one, so rewriting it would persist a different argv than loaded.
+    // Verbatim: the parser only emits blank or padded tokens the user quoted, so
+    // rewriting would persist a different argv than loaded.
     out.push(raw);
   }
   return out;
