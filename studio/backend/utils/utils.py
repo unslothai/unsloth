@@ -108,7 +108,7 @@ def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
                 ref = repo_dir / "refs" / "main"
                 if not ref.is_file():
                     continue
-                commit = ref.read_text().strip()
+                commit = ref.read_text(encoding = "utf-8").strip()
                 if not commit:
                     continue
                 snapshot = repo_dir / "snapshots" / commit

@@ -569,7 +569,7 @@ def _load_swa_cache() -> dict:
         if _SWA_CACHE is not None:
             return _SWA_CACHE
         try:
-            with open(_swa_cache_path()) as f:
+            with open(_swa_cache_path(), encoding = "utf-8") as f:
                 _SWA_CACHE = json.load(f)
                 if not isinstance(_SWA_CACHE, dict):
                     _SWA_CACHE = {}
@@ -583,7 +583,7 @@ def _save_swa_cache(cache: dict) -> None:
         path = _swa_cache_path()
         path.parent.mkdir(parents = True, exist_ok = True)
         tmp = path.with_suffix(".json.tmp")
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding = "utf-8") as f:
             json.dump(cache, f, indent = 2, sort_keys = True)
         tmp.replace(path)
     except OSError:
@@ -620,7 +620,7 @@ def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
             repo_type = "model",
             cache_dir = active_hf_hub_cache(),
         )
-        with open(cfg_path) as f:
+        with open(cfg_path, encoding = "utf-8") as f:
             cfg = json.load(f)
     except Exception:
         return None
@@ -3596,7 +3596,7 @@ class LlamaCppBackend:
         except Exception:
             pass
         try:
-            with open("/proc/meminfo") as f:
+            with open("/proc/meminfo", encoding = "utf-8") as f:
                 for line in f:
                     if line.startswith("MemAvailable:"):
                         return int(line.split()[1]) // 1024  # kB -> MiB
@@ -9477,7 +9477,7 @@ class LlamaCppBackend:
             return
         try:
             path.parent.mkdir(parents = True, exist_ok = True)
-            path.write_text(f"{pid}:{cls._pid_start_identity(pid)}")
+            path.write_text(f"{pid}:{cls._pid_start_identity(pid)}", encoding = "utf-8")
         except Exception as e:
             logger.debug(f"Could not write llama-server pidfile: {e}")
 
@@ -9611,7 +9611,7 @@ class LlamaCppBackend:
         pid = -1
         identity = ""
         try:
-            pid_str, _, identity = path.read_text().strip().partition(":")
+            pid_str, _, identity = path.read_text(encoding = "utf-8").strip().partition(":")
             pid = int(pid_str)
         except Exception:
             pid = -1

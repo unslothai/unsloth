@@ -776,7 +776,7 @@ def _rocm_linux_sysfs_gpu_busy_pct() -> Optional[float]:
         files = glob.glob("/sys/class/drm/card*/device/gpu_busy_percent")
         if not files:
             return None
-        values = [int(open(f).read().strip()) for f in files]
+        values = [int(open(f, encoding = "utf-8").read().strip()) for f in files]
         return round(sum(values) / len(values), 1)
     except Exception:
         return None
@@ -790,7 +790,7 @@ def _rocm_linux_sysfs_temp_c() -> Optional[float]:
         files = glob.glob("/sys/class/drm/card*/device/hwmon/hwmon*/temp1_input")
         if not files:
             return None
-        temps = [int(open(f).read().strip()) / 1000.0 for f in files]
+        temps = [int(open(f, encoding = "utf-8").read().strip()) / 1000.0 for f in files]
         return round(max(temps), 1)
     except Exception:
         return None
@@ -807,7 +807,9 @@ def _rocm_linux_sysfs_power_w() -> Optional[float]:
         ):
             files = glob.glob(pattern)
             if files:
-                watts = sum(int(open(f).read().strip()) / 1_000_000.0 for f in files)
+                watts = sum(
+                    int(open(f, encoding = "utf-8").read().strip()) / 1_000_000.0 for f in files
+                )
                 return round(watts, 1)
         return None
     except Exception:
@@ -852,8 +854,8 @@ def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
         total_files = glob.glob("/sys/class/drm/card*/device/mem_info_vram_total")
         if not used_files or not total_files:
             return None, None
-        used_bytes = sum(int(open(f).read().strip()) for f in used_files)
-        total_bytes = sum(int(open(f).read().strip()) for f in total_files)
+        used_bytes = sum(int(open(f, encoding = "utf-8").read().strip()) for f in used_files)
+        total_bytes = sum(int(open(f, encoding = "utf-8").read().strip()) for f in total_files)
         if total_bytes == 0:
             return None, None
         return round(used_bytes / (1024**3), 2), round(total_bytes / (1024**3), 2)
@@ -893,7 +895,7 @@ def _rocm_kfd_gpu_pci_ids() -> list[str]:
             continue
         props: dict[str, int] = {}
         try:
-            with open(os.path.join(node_dir, "properties")) as f:
+            with open(os.path.join(node_dir, "properties"), encoding = "utf-8") as f:
                 for line in f:
                     parts = line.split()
                     if len(parts) == 2:
@@ -979,9 +981,9 @@ def _rocm_linux_sysfs_vram_by_pci_gb() -> dict[str, tuple[float, float]]:
             if not bdf:
                 continue
             try:
-                with open(os.path.join(dev_dir, "mem_info_vram_used")) as f:
+                with open(os.path.join(dev_dir, "mem_info_vram_used"), encoding = "utf-8") as f:
                     used_bytes = int(f.read().strip())
-                with open(os.path.join(dev_dir, "mem_info_vram_total")) as f:
+                with open(os.path.join(dev_dir, "mem_info_vram_total"), encoding = "utf-8") as f:
                     total_bytes = int(f.read().strip())
             except (OSError, ValueError):
                 continue
