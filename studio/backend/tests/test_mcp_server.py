@@ -309,7 +309,4 @@ def test_get_recipe_job_status_uses_authenticated_control_plane(monkeypatch):
 
     tool = _get_tool("get_recipe_job_status")
 
-    assert tool.fn(job_id = "job-1") == {
-        "job_id": "job-1",
-        "owner": "ui-account",
-    }
+    assert tool.fn(job_id = "job-1") == {"job_id": "job-1", "owner": "ui-account"}

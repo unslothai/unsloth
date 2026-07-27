@@ -186,9 +186,7 @@ def create_studio_mcp() -> FastMCP:
 
         limit = _clamp(limit, 1, 500)
         offset = max(0, offset)
-        result = get_job_manager().get_dataset_for_control_plane(
-            job_id, limit = limit, offset = offset
-        )
+        result = get_job_manager().get_dataset_for_control_plane(job_id, limit = limit, offset = offset)
         if result is None:
             raise ValueError("dataset not ready")
         if "error" in result:

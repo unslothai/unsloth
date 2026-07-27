@@ -16,14 +16,7 @@ EXECUTIONS_DB = (
     / "executions-db.ts"
 ).read_text(encoding = "utf-8")
 RECIPES_DB = (
-    ROOT
-    / "studio"
-    / "frontend"
-    / "src"
-    / "features"
-    / "data-recipes"
-    / "data"
-    / "recipes-db.ts"
+    ROOT / "studio" / "frontend" / "src" / "features" / "data-recipes" / "data" / "recipes-db.ts"
 ).read_text(encoding = "utf-8")
 
 
