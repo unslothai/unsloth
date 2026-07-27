@@ -433,13 +433,12 @@ function useExampleModelName(): string | null {
         ? `${pick.id}:${pick.quant}`
         : pick.id;
     };
-    // The store keeps a checkpoint across an idle unload, so it only names a
-    // runnable model while the catalog still backs it, or switching can reload it.
-    // null catalog means /v1/models has not answered, so don't call it unrunnable.
-    const backed =
-      catalog === null ||
-      autoSwitch ||
-      catalog.some((m) => m.loaded && sameBaseModelId(m.id, checkpoint ?? ""));
+    // The store keeps a checkpoint across an idle unload, and across the model
+    // being deleted, so it only names a runnable model while the catalog still
+    // lists it: resident, or downloaded with switching able to reload it. A null
+    // catalog means /v1/models has not answered, which is not evidence against it.
+    const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));
+    const backed = catalog === null || (!!entry && (entry.loaded || autoSwitch));
     if (usableCheckpoint && checkpoint && backed) {
       if (ggufVariant && !checkpoint.includes(":")) {
         return `${checkpoint}:${ggufVariant}`;
