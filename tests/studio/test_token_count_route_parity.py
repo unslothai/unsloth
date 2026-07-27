@@ -19,14 +19,20 @@ from pathlib import Path
 
 WORKDIR = Path(__file__).resolve().parents[2]
 BACKEND = WORKDIR / "studio/backend"
-REFRESH_TS = (
-    WORKDIR / "studio/frontend/src/features/chat/utils/refresh-context-usage.ts"
-)
+REFRESH_TS = WORKDIR / "studio/frontend/src/features/chat/utils/refresh-context-usage.ts"
 
 
 class _Payload:
-    def __init__(self, *, tools = None, tool_choice = None, messages = None,
-                 enable_tools = None, mcp_enabled = False, response_format = None):
+    def __init__(
+        self,
+        *,
+        tools = None,
+        tool_choice = None,
+        messages = None,
+        enable_tools = None,
+        mcp_enabled = False,
+        response_format = None,
+    ):
         self.tools = tools
         self.tool_choice = tool_choice
         self.messages = messages or []
@@ -36,7 +42,12 @@ class _Payload:
 
 
 class _Backend:
-    def __init__(self, *, supports_tools = True, supports_tool_passthrough = True):
+    def __init__(
+        self,
+        *,
+        supports_tools = True,
+        supports_tool_passthrough = True,
+    ):
         self.supports_tools = supports_tools
         self.supports_tool_passthrough = supports_tool_passthrough
 
@@ -45,7 +56,6 @@ def _route():
     if str(BACKEND) not in sys.path:
         sys.path.insert(0, str(BACKEND))
     from routes import inference
-
     return inference
 
 
@@ -54,8 +64,7 @@ TOOL_HISTORY = [
     {
         "role": "assistant",
         "tool_calls": [
-            {"id": "c1", "type": "function",
-             "function": {"name": "get_weather", "arguments": "{}"}}
+            {"id": "c1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}
         ],
     },
     {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
@@ -95,9 +104,7 @@ def test_a_cli_tool_policy_does_not_pull_a_passthrough_request_back():
     catalog = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
     assert inference._takes_tool_passthrough(_Payload(tools = catalog), backend) is True
     assert (
-        inference._takes_tool_passthrough(
-            _Payload(tools = catalog, tool_choice = "none"), backend
-        )
+        inference._takes_tool_passthrough(_Payload(tools = catalog, tool_choice = "none"), backend)
         is False
     )
 
@@ -123,9 +130,7 @@ def test_the_counter_and_the_completion_ask_the_same_helper():
     """Two copies of this rule drift, and the drift is invisible: the count just
     quietly describes a different request."""
     src = (BACKEND / "routes/inference.py").read_text(encoding = "utf-8")
-    calls = re.findall(
-        r"(?<!def )_takes_tool_passthrough\(payload, llama_backend\)", src
-    )
+    calls = re.findall(r"(?<!def )_takes_tool_passthrough\(payload, llama_backend\)", src)
     assert len(calls) == 2, calls
 
 

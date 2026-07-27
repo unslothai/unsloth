@@ -2152,9 +2152,7 @@ def _takes_tool_passthrough(payload, llama_backend) -> bool:
     has_client_contract = (
         bool(payload.tools) and getattr(payload, "tool_choice", None) != "none"
     ) or _has_openai_tool_history(payload.messages)
-    supports_passthrough = getattr(
-        llama_backend, "supports_tool_passthrough", supports_tools
-    )
+    supports_passthrough = getattr(llama_backend, "supports_tool_passthrough", supports_tools)
     if supports_passthrough and has_client_contract:
         return True
     if not hasattr(payload, "response_format"):
@@ -13011,9 +13009,7 @@ async def chat_count_tokens(
     )
     _tools_on = False if _client_disabled_tool_calls else _effective_enable_tools(payload)
     _mcp_allowed = (
-        not _client_disabled_tool_calls
-        and bool(payload.mcp_enabled)
-        and _cli_policy is not False
+        not _client_disabled_tool_calls and bool(payload.mcp_enabled) and _cli_policy is not False
     )
     if not _takes_passthrough and (_tools_on or _mcp_allowed) and llama_backend.supports_tools:
         tools_to_use = await _select_request_tools(
