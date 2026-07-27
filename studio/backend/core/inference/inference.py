@@ -322,6 +322,7 @@ class InferenceBackend:
         hf_token: Optional[str] = None,
         trust_remote_code: bool = False,
         gpu_ids: Optional[list[int]] = None,
+        local_files_only: bool = False,
     ) -> bool:
         """Load any model: base, LoRA adapter, text, or vision."""
         # Keep the token so the native-template fallback can fetch a
@@ -582,10 +583,14 @@ class InferenceBackend:
                     )
                     from transformers import AutoProcessor
 
+                    # Local-only loads: a LoRA base or export_metadata base_model
+                    # is a Hub repo id; resolve it from cache or fail the load
+                    # (candidate failover) instead of downloading the processor.
                     processor = AutoProcessor.from_pretrained(
                         processor_source,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
+                        local_files_only = local_files_only,
                     )
                     logger.info(f"Loaded {type(processor).__name__} from {processor_source}")
 

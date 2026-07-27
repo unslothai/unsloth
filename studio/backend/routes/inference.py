@@ -4897,6 +4897,9 @@ async def _load_model_impl(
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             gpu_ids = effective_gpu_ids,
             subject = current_subject,
+            # Threads the rewritten snapshot path and forced-offline load into
+            # the worker subprocess, which rebuilds its own ModelConfig.
+            local_files_only = request.local_files_only,
         )
 
         if not success:
@@ -5130,18 +5133,24 @@ async def validate_model(
 
     native_grant_backed = False
     model_log_label = request.model_path
+    # Local-only validation (background auto-loads) covers the WHOLE metadata
+    # and security preflight with a forced-offline env, not just the identifier
+    # probe: the upgrade, remote-code, and file-security helpers below all read
+    # Hub configs and would otherwise refetch them for a cache-only candidate.
+    import contextlib
+
+    _local_only_offline = contextlib.ExitStack()
     try:
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "validate-model")
         )
-        # Local-only validation (background auto-loads) forces offline so the
-        # metadata probe resolves from cache instead of the Hub.
-        with _hf_offline_if_dns_dead(force = request.local_files_only):
-            config = ModelConfig.from_identifier(
-                model_id = model_identifier,
-                hf_token = request.hf_token,
-                gguf_variant = request.gguf_variant,
-            )
+        if request.local_files_only:
+            _local_only_offline.enter_context(_hf_offline_if_dns_dead(force = True))
+        config = ModelConfig.from_identifier(
+            model_id = model_identifier,
+            hf_token = request.hf_token,
+            gguf_variant = request.gguf_variant,
+        )
 
         if not config:
             raise HTTPException(
@@ -5400,6 +5409,8 @@ async def validate_model(
             status_code = 400,
             detail = "Invalid model",
         )
+    finally:
+        _local_only_offline.close()
 
 
 # studio_router only: admin action, kept off the OpenAI-compatible /v1 mount.

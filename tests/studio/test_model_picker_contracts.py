@@ -1100,8 +1100,9 @@ def test_background_candidate_filters_have_no_side_effects():
     assert "local_files_only: bool = Field(" in validate_schema
 
     route = _read_backend("routes/inference.py")
-    # Both /load and /validate force offline resolution under local-only.
-    assert route.count("with _hf_offline_if_dns_dead(force = request.local_files_only):") == 2
+    # /load forces offline resolution under local-only; /validate covers its
+    # whole preflight via the ExitStack wrap (asserted separately below).
+    assert route.count("with _hf_offline_if_dns_dead(force = request.local_files_only):") == 1
     # Audio gate present in both routes, GGUF exempt (llama.cpp path already
     # resolves companions cached-or-skipped under the flag).
     assert route.count("needs audio codec downloads") == 2
@@ -1111,11 +1112,60 @@ def test_background_candidate_filters_have_no_side_effects():
 
     llama = _read_backend("core/inference/llama_cpp.py")
     assert "def _hf_offline_if_dns_dead(force: bool = False):" in llama
-    assert "if not force and not _probe_dns_dead():" in llama
+    # force must also override an explicitly falsy HF_HUB_OFFLINE=0: only a
+    # TRUTHY env value short-circuits, and prior values are restored on exit.
+    assert "if _hf_env_offline():" in llama
+    assert 'hub_prev = os.environ.get("HF_HUB_OFFLINE")' in llama
+    assert 'os.environ["HF_HUB_OFFLINE"] = hub_prev' in llama
 
     helper = _read_backend("hub/utils/local_snapshot.py")
     assert "def _snapshot_dir_fallback(" in helper
     assert "config.json" in helper
+
+
+def test_local_only_covers_every_load_and_validate_network_path():
+    """Round-14 gates. The Vulkan-ordinal GGUF preflight downloads FIRST, so it
+    takes the same local-only flag and forced-offline wrap as the Phase 2
+    download (whose cache-size check would otherwise call get_paths_info).
+    The validate route keeps its whole metadata/security preflight offline, not
+    just the identifier probe. The python load path survives the process
+    boundary: the orchestrator forwards the flag and the route-resolved
+    snapshot path into the worker, which runs the entire load under a scoped
+    offline env and passes the flag to the vision processor fallback."""
+    llama = _read_backend("core/inference/llama_cpp.py")
+    # Both GGUF download blocks in load_model force offline under local-only.
+    assert llama.count("with _hf_offline_if_dns_dead(force = local_files_only):") == 2
+    preflight = llama.split("_preflight_model_path = self._download_gguf(", 1)[1]
+    preflight = preflight.split(")", 1)[0]
+    assert "local_files_only = local_files_only," in preflight
+
+    route = _read_backend("routes/inference.py")
+    validate_src = route.split('operation = "validate-model"', 1)[1]
+    assert "_local_only_offline.enter_context(_hf_offline_if_dns_dead(force = True))" in validate_src
+    assert "_local_only_offline.close()" in validate_src
+    # The non-GGUF load threads the flag into the subprocess backend.
+    load_call = route.split("backend.load_model,\n            config = config,", 1)[1]
+    load_call = load_call.split(")", 1)[0]
+    assert "local_files_only = request.local_files_only," in load_call
+
+    orchestrator = _read_backend("core/inference/orchestrator.py")
+    assert '"local_files_only": bool(local_files_only),' in orchestrator
+    assert '"local_snapshot_path"' in orchestrator
+
+    worker = _read_backend("core/inference/worker.py")
+    assert "def _local_only_offline_env(" in worker
+    assert "_offline_guard.enter_context(" in worker
+    assert "_offline_guard.close()" in worker
+    # The route's snapshot rewrite is re-applied after the worker rebuilds
+    # its ModelConfig from the identifier.
+    assert 'snapshot_override = config.get("local_snapshot_path")' in worker
+    assert 'mc.path = snapshot_override' in worker
+    assert '"local_files_only": bool(config.get("local_files_only", False)),' in worker
+
+    inference = _read_backend("core/inference/inference.py")
+    processor_call = inference.split("processor = AutoProcessor.from_pretrained(", 1)[1]
+    processor_call = processor_call.split("logger.info", 1)[0]
+    assert "local_files_only = local_files_only," in processor_call
 
 
 def test_gguf_background_loads_never_download_companions():

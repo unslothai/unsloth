@@ -510,27 +510,44 @@ def _hf_env_offline() -> bool:
 def _hf_offline_if_dns_dead(force: bool = False):
     """Set HF_HUB_OFFLINE for this block only when DNS to huggingface.co fails;
     restores env on exit so a transient hiccup can't quarantine the process.
-    No-op if the user already set it. ``force`` skips the DNS probe and goes
-    offline unconditionally (local-only background loads resolve metadata
-    from the cache without any network)."""
-    if "HF_HUB_OFFLINE" in os.environ:
+    No-op when the user already set it to a truthy value. ``force`` skips the
+    DNS probe and goes offline unconditionally (local-only background loads
+    resolve metadata from the cache without any network), overriding even an
+    explicitly falsy HF_HUB_OFFLINE=0 for the block and restoring it after."""
+    if _hf_env_offline():
         yield False
         return
-    if not force and not _probe_dns_dead():
-        yield False
-        return
+    if not force:
+        if "HF_HUB_OFFLINE" in os.environ:
+            # A user-pinned falsy value stays authoritative for ordinary loads.
+            yield False
+            return
+        if not _probe_dns_dead():
+            yield False
+            return
 
-    transformers_was_set = "TRANSFORMERS_OFFLINE" in os.environ
+    hub_prev = os.environ.get("HF_HUB_OFFLINE")
+    transformers_prev = os.environ.get("TRANSFORMERS_OFFLINE")
+    wrote_transformers = transformers_prev is None or force
     os.environ["HF_HUB_OFFLINE"] = "1"
-    if not transformers_was_set:
+    if wrote_transformers:
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    logger.warning("huggingface.co unreachable; using local HF cache for this load.")
+    if force:
+        logger.info("Local-only load: forcing HF offline for this block.")
+    else:
+        logger.warning("huggingface.co unreachable; using local HF cache for this load.")
     try:
         yield True
     finally:
-        os.environ.pop("HF_HUB_OFFLINE", None)
-        if not transformers_was_set:
-            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+        if hub_prev is None:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+        else:
+            os.environ["HF_HUB_OFFLINE"] = hub_prev
+        if wrote_transformers:
+            if transformers_prev is None:
+                os.environ.pop("TRANSFORMERS_OFFLINE", None)
+            else:
+                os.environ["TRANSFORMERS_OFFLINE"] = transformers_prev
 
 
 try:
@@ -6560,11 +6577,15 @@ class LlamaCppBackend:
                         hf_repo,
                     )
                     hf_repo = _resolved_repo
-                with _hf_offline_if_dns_dead():
+                # Same local-only policy as the Phase 2 download below: this
+                # preflight runs FIRST, so without the flag it would be the
+                # download path a background load slips through.
+                with _hf_offline_if_dns_dead(force = local_files_only):
                     _preflight_model_path = self._download_gguf(
                         hf_repo = hf_repo,
                         hf_variant = hf_variant,
                         hf_token = hf_token,
+                        local_files_only = local_files_only,
                     )
                 if self._gguf_path_is_diffusion(_preflight_model_path, model_identifier):
                     raise ValueError(
@@ -6599,7 +6620,9 @@ class LlamaCppBackend:
                         hf_repo,
                     )
                     hf_repo = _resolved_repo
-                with _hf_offline_if_dns_dead():
+                # Forced offline under local-only so even the cache-size
+                # verification (get_paths_info) stays off the network.
+                with _hf_offline_if_dns_dead(force = local_files_only):
                     model_path = _preflight_model_path or self._download_gguf(
                         hf_repo = hf_repo,
                         hf_variant = hf_variant,

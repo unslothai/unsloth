@@ -13,6 +13,7 @@ mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 from loggers import get_logger
 import os
@@ -95,6 +96,28 @@ def _clean_token(value: str | None) -> str | None:
     return value if value and value.strip() else None
 
 
+@contextlib.contextmanager
+def _local_only_offline_env(enabled: bool):
+    """Force HF offline for a local-only background load. The worker is a
+    fresh per-load process, so scoping env here covers config resolution,
+    security gates, and every from_pretrained in the load, then restores it so
+    generation-time fetches (e.g. the chat template fallback) still work."""
+    if not enabled:
+        yield
+        return
+    prev = {key: os.environ.get(key) for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")}
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    try:
+        yield
+    finally:
+        for key, value in prev.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def _build_model_config(config: dict):
     """Build a ModelConfig from the config dict."""
     from utils.models import ModelConfig
@@ -107,6 +130,12 @@ def _build_model_config(config: dict):
     )
     if not mc:
         raise ValueError(f"Invalid model identifier: {model_name}")
+    # The route resolves a cached repo id to its local snapshot for local-only
+    # loads; from_identifier here rebuilds path as the repo id, losing that
+    # rewrite across the process boundary, so re-apply it.
+    snapshot_override = config.get("local_snapshot_path")
+    if snapshot_override:
+        mc.path = snapshot_override
     return mc
 
 
@@ -285,7 +314,13 @@ def _run_security_gates(
 
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     """Handle a load command: load a model into the backend."""
+    _offline_guard = contextlib.ExitStack()
     try:
+        # Local-only loads run the WHOLE load offline: config resolution,
+        # security gates, and from_pretrained can otherwise all reach the Hub.
+        _offline_guard.enter_context(
+            _local_only_offline_env(bool(config.get("local_files_only", False)))
+        )
         mc = _build_model_config(config)
 
         hf_token = _clean_token(config.get("hf_token"))
@@ -363,6 +398,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "hf_token": hf_token,
                 "trust_remote_code": trust_remote_code,
                 "gpu_ids": config.get("resolved_gpu_ids"),
+                "local_files_only": bool(config.get("local_files_only", False)),
             }
             if getattr(backend, "device", None) == "mlx":
                 load_kwargs["parallel_mode"] = config.get("mlx_parallel_mode")
@@ -435,6 +471,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "stack": traceback.format_exc(limit = 20),
             },
         )
+    finally:
+        _offline_guard.close()
 
 
 def _drain_skip_generate(cmd: dict, resp_queue: Any, drain_event) -> bool:

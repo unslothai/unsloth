@@ -973,6 +973,7 @@ class InferenceOrchestrator:
         subject: Optional[str] = None,
         tensor_parallel: bool = False,
         mlx_distributed: bool = False,
+        local_files_only: bool = False,
     ) -> bool:
         """Load a model for inference.
 
@@ -1000,6 +1001,14 @@ class InferenceOrchestrator:
                 "gpu_ids": gpu_ids,
                 "tensor_parallel": bool(tensor_parallel),
                 "mlx_distributed": bool(mlx_distributed),
+                "local_files_only": bool(local_files_only),
+                # Route-resolved local snapshot: the worker rebuilds its
+                # ModelConfig from model_name, which would lose the rewrite.
+                "local_snapshot_path": (
+                    getattr(config, "path", None)
+                    if local_files_only and getattr(config, "path", None) != model_name
+                    else None
+                ),
                 "mlx_parallel_mode": ("tensor" if tensor_parallel else "pipeline")
                 if mlx_distributed
                 else None,

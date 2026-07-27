@@ -524,6 +524,9 @@ class MLXInferenceBackend:
         dtype = None,
         parallel_mode = None,
         distributed_group = None,
+        # Accepted for worker parity; the load runs under the worker's forced
+        # offline env when set, which is what enforces local-only here.
+        local_files_only: bool = False,
     ) -> bool:
         import mlx.core as mx
 
