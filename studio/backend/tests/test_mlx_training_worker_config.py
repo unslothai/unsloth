@@ -15,6 +15,7 @@ def _load_worker_module():
         "utils",
         "utils.hardware",
         "utils.wheel_utils",
+        "utils.training_runs",
     )
     previous_modules = {name: sys.modules.get(name) for name in stub_names}
 
@@ -26,7 +27,9 @@ def _load_worker_module():
         sys.modules["loggers"] = loggers
 
         utils = types.ModuleType("utils")
-        utils.__path__ = []
+        # Real package directory: an empty __path__ shadows the package and
+        # breaks the worker's own imports. Only the stubs below replace it.
+        utils.__path__ = [str(Path(__file__).resolve().parents[1] / "utils")]
         sys.modules["utils"] = utils
 
         hardware = types.ModuleType("utils.hardware")
@@ -67,6 +70,7 @@ _mlx_vlm_resized_image_layout = _worker._mlx_vlm_resized_image_layout
 _copy_mlx_vlm_image_processor = _worker._copy_mlx_vlm_image_processor
 _resize_mlx_vlm_image = _worker._resize_mlx_vlm_image
 _adapt_for_mlx_vlm = _worker._adapt_for_mlx_vlm
+_mlx_dora_peft_kwargs = _worker._mlx_dora_peft_kwargs
 
 
 def test_mlx_studio_optimizer_aliases_are_explicit():
@@ -83,6 +87,68 @@ def test_mlx_studio_rejects_unknown_optimizer():
 def test_mlx_studio_rejects_unknown_scheduler():
     with pytest.raises(ValueError, match = "Unsupported LR scheduler for MLX training"):
         _normalize_mlx_studio_scheduler("linear_typo")
+
+
+def test_mlx_dora_requires_the_named_use_dora_parameter():
+    # The release predating MLX DoRA swallows use_dora through this catch-all
+    # and trains plain LoRA, so accepting-the-keyword is not support.
+    def old_zoo(
+        model,
+        r = 16,
+        **kwargs,
+    ):
+        return model
+
+    def new_zoo(
+        model,
+        r = 16,
+        use_dora = False,
+        **kwargs,
+    ):
+        return model
+
+    def keyword_only_zoo(model, *, use_dora = False):
+        return model
+
+    def positional_only_zoo(
+        model,
+        use_dora = False,
+        /,
+        **kwargs,
+    ):
+        return model
+
+    def var_positional_zoo(model, *use_dora):
+        return model
+
+    def var_keyword_zoo(model, **use_dora):
+        return model
+
+    for usable in (new_zoo, keyword_only_zoo):
+        assert _mlx_dora_peft_kwargs({"use_dora": True}, usable) == {"use_dora": True}
+    with pytest.raises(NotImplementedError, match = "unsloth-zoo"):
+        _mlx_dora_peft_kwargs({"use_dora": True}, old_zoo)
+    # None of these kinds prove support: two cannot be bound by keyword, and
+    # `**use_dora` only collects it the way the unsupporting version does.
+    for unusable in (positional_only_zoo, var_positional_zoo, var_keyword_zoo):
+        with pytest.raises(NotImplementedError, match = "unsloth-zoo"):
+            _mlx_dora_peft_kwargs({"use_dora": True}, unusable)
+    # An unreadable signature (inspect.signature raises here) is not support.
+    with pytest.raises(NotImplementedError, match = "unsloth-zoo"):
+        _mlx_dora_peft_kwargs({"use_dora": True}, object())
+    # An image-bearing dataset is not proof of a vision model; a text model
+    # can still train language-only DoRA from it.
+    assert _mlx_dora_peft_kwargs(
+        {
+            "use_dora": True,
+            "is_dataset_image": True,
+            "finetune_vision_layers": True,
+        },
+        new_zoo,
+    ) == {"use_dora": True}
+    # Nothing added, nothing checked, when DoRA was not requested.
+    assert _mlx_dora_peft_kwargs({}, old_zoo) == {}
+    assert _mlx_dora_peft_kwargs({"use_dora": False}, old_zoo) == {}
 
 
 def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():

@@ -550,9 +550,9 @@ class TrainingStartRequest(BaseModel):
     def _validate_lora_variant_flags(self) -> "TrainingStartRequest":
         # The frontend only ever sends one of these and never under Full
         # Finetuning, but a direct API/YAML/CLI caller can bypass that. Nothing
-        # downstream breaks (full finetune ignores them, MLX rejects use_dora/
-        # use_loftq outright), but reject early here for a clear error instead
-        # of a silently-ignored flag.
+        # downstream breaks (full finetune ignores them, MLX rejects use_loftq
+        # outright), but reject early here for a clear error instead of a
+        # silently-ignored flag.
         active = [
             name
             for name, enabled in (
