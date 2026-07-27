@@ -2508,7 +2508,7 @@ def detect_host() -> HostInfo:
                         if _vf.read().strip().lower() == "0x8086":
                             has_intel_gpu = True
                             break
-                except OSError:
+                except (OSError, UnicodeDecodeError):
                     continue
         elif is_windows:
             # Registry first (in-process; see windows_intel_gpu_in_registry).
@@ -4264,7 +4264,7 @@ def free_local_port() -> int:
 def read_log_excerpt(log_path: Path, *, max_lines: int = 60) -> str:
     try:
         content = log_path.read_text(encoding = "utf-8", errors = "replace")
-    except FileNotFoundError:
+    except (FileNotFoundError, UnicodeDecodeError):
         return ""
     return "\n".join(content.splitlines()[-max_lines:])
 
@@ -4680,7 +4680,7 @@ def _wsl_system_rocm_lib_dirs() -> list[str]:
         with open("/proc/version", encoding = "utf-8", errors = "replace") as fh:
             if "microsoft" not in fh.read().lower():
                 return []
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return []
     out: list[str] = []
     for d in ("/opt/rocm/lib", "/opt/rocm/lib64"):
