@@ -247,7 +247,6 @@ def finalize_worker_exit(
         # served by whatever is resident.
         try:
             from core.inference.local_model_resolver import invalidate_index
-
             invalidate_index()
         except Exception:
             pass
