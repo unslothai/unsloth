@@ -64,10 +64,12 @@ version = {attr = "unsloth.models._utils.__version__"}
 include-package-data = true
 
 [tool.setuptools.package-data]
+unsloth_cli = ["codex_fallback_prompt.md", "pi_subagent.ts"]
 studio = [
     "*.sh",
     "*.ps1",
     "*.bat",
+    "node_prebuilt_pins.json",
     "frontend/dist/**/*",
     "frontend/*.json",
     "frontend/*.ts",
@@ -77,6 +79,8 @@ studio = [
     "frontend/.git*",
     "backend/requirements/**/*",
     "backend/plugins/**/*",
+    "backend/assets/**/*.jinja",
+    "backend/assets/**/*.html",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
 ]
@@ -756,6 +760,7 @@ repository = "https://github.com/unslothai/unsloth"
 
 [tool.ruff]
 target-version = "py311"
+line-length = 100
 force-exclude = true
 extend-exclude = [
     "*chat_templates.py",
@@ -787,4 +792,5 @@ ignore = [
 # Narrow the default test discovery so `pytest` from the repo root
 # does NOT pick up the GPU-heavy tests under tests/python, tests/qlora,
 # etc. The CI security job runs `pytest tests/security` explicitly.
+pythonpath = ["."]
 testpaths = ["tests/security"]
