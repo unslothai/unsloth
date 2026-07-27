@@ -47,6 +47,7 @@ export function StudioPage(): ReactElement {
   const dialogOpen = useDatasetPreviewDialogStore((s) => s.open);
   const dialogMode = useDatasetPreviewDialogStore((s) => s.mode);
   const dialogInitial = useDatasetPreviewDialogStore((s) => s.initialData);
+  const previewTarget = useDatasetPreviewDialogStore((s) => s.previewTarget);
   const closeDialog = useDatasetPreviewDialogStore((s) => s.close);
 
   const [requestedTab, setRequestedTab] = useState("configure");
@@ -159,13 +160,14 @@ export function StudioPage(): ReactElement {
           onOpenChange={(open) => {
             if (!open) closeDialog();
           }}
-          datasetSource={config.datasetSource}
+          datasetSource={previewTarget?.source ?? config.datasetSource}
           datasetName={
-            config.datasetSource === "huggingface" ? config.dataset : config.uploadedFile
+            previewTarget?.path ??
+            (config.datasetSource === "huggingface" ? config.dataset : config.uploadedFile)
           }
           hfToken={config.hfToken.trim() || null}
-          datasetSubset={config.datasetSubset}
-          datasetSplit={config.datasetSplit}
+          datasetSubset={previewTarget ? previewTarget.subset : config.datasetSubset}
+          datasetSplit={previewTarget ? previewTarget.split : config.datasetSplit}
           mode={dialogMode}
           initialData={dialogInitial}
           isVlm={config.isVisionModel && config.isDatasetImage === true}

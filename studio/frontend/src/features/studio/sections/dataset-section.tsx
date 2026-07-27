@@ -1476,6 +1476,23 @@ export function DatasetSection({ disabled = false }: { disabled?: boolean }) {
                         <Button
                           variant="ghost"
                           size="sm"
+                          className="h-7 shrink-0 cursor-pointer gap-1 text-xs"
+                          onClick={() =>
+                            openPreview({
+                              source: entry.source,
+                              path: entry.path,
+                              subset: entry.subset ?? null,
+                              split: entry.split ?? null,
+                            })
+                          }
+                          aria-label={`Preview ${entry.path}`}
+                        >
+                          <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
+                          Preview
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           className="h-7 shrink-0 cursor-pointer text-xs text-destructive"
                           onClick={() => removeTrainingDataset(index)}
                         >
@@ -1540,7 +1557,7 @@ export function DatasetSection({ disabled = false }: { disabled?: boolean }) {
                 </button>
               )}
 
-              <div className="grid grid-cols-2 gap-2">
+              <div>
                 <Button
                   variant="outline"
                   size="sm"
@@ -1559,16 +1576,6 @@ export function DatasetSection({ disabled = false }: { disabled?: boolean }) {
                   {isUploading
                     ? t("studio.dataset.uploading")
                     : t("studio.dataset.upload")}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="cursor-pointer gap-1.5"
-                  disabled={!selectedDatasetName}
-                  onClick={() => openPreview()}
-                >
-                  <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
-                  {t("studio.dataset.viewDataset")}
                 </Button>
               </div>
             </div>

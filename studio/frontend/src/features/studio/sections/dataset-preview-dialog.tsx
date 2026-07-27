@@ -374,8 +374,11 @@ export function DatasetPreviewDialog({
             <div className="rounded-xl corner-squircle p-2 ring-1 ring-indigo-200 bg-indigo-50 text-indigo-600 dark:ring-indigo-800 dark:bg-indigo-950 dark:text-indigo-400 shrink-0">
               <HugeiconsIcon icon={Database02Icon} className="size-4" />
             </div>
-            <DialogTitle className="font-heading text-lg font-semibold tracking-tight">
-              Dataset Preview
+            <DialogTitle className="flex min-w-0 flex-col font-heading text-lg font-semibold tracking-tight">
+              <span>Dataset Preview</span>
+              <span className="truncate font-mono text-sm font-medium text-foreground" title={datasetName ?? undefined}>
+                {datasetName ?? "No dataset selected"}
+              </span>
             </DialogTitle>
           </div>
         </DialogHeader>
