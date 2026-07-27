@@ -342,9 +342,7 @@ class LlamaAdmissionQueue:
                     # Effective count is (_active - _parked); un-parking adds one
                     # to it, so there has to be room for that one. This holder's
                     # own reservation is excluded from the check it gates.
-                    if (
-                        self._active - self._parked + self._unpark_pending - 1
-                    ) < self._capacity:
+                    if (self._active - self._parked + self._unpark_pending - 1) < self._capacity:
                         self._parked -= 1
                         return
                     if cancel_event is not None and cancel_event.is_set():
@@ -387,9 +385,9 @@ class LlamaAdmissionQueue:
         # is waiting to resume. Without it, release() grants the freed slot to the
         # next waiter under this same lock, so an approved chat is overtaken by
         # every later arrival and starves under sustained traffic.
-        while self._waiters and (
-            self._active - self._parked + self._unpark_pending
-        ) < self._capacity:
+        while (
+            self._waiters and (self._active - self._parked + self._unpark_pending) < self._capacity
+        ):
             waiter = self._waiters.popleft()
             if waiter.cancelled or waiter.future.done():
                 continue
