@@ -717,3 +717,43 @@ def test_detect_mtp_file_keeps_snapshot_path_for_sharded_subdir_drafter(tmp_path
     found = detect_mtp_file(str(weight), str(snapshot))
     assert found == str(first)
     assert (Path(found).parent / second.name).exists()
+
+
+def test_detect_mtp_file_pairs_sharded_old_scheme_subdir_drafter(tmp_path):
+    """An old-scheme split copy is <model>-Q8_0-MTP-00001-of-00002.gguf, whose
+    stem does not end in -mtp until the shard suffix comes off."""
+    weight = tmp_path / "model-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    first = sub / "model-Q8_0-MTP-00001-of-00002.gguf"
+    first.write_bytes(b"x" * 4096)
+    (sub / "model-Q8_0-MTP-00002-of-00002.gguf").write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) == str(first)
+
+
+def test_detect_mtp_file_keeps_snapshot_path_for_sharded_root_drafter(tmp_path):
+    """The root branch needs the same shard handling as the MTP/ branch."""
+    blobs = tmp_path / "blobs"
+    snapshot = tmp_path / "snapshots" / "abc"
+    blobs.mkdir(parents = True)
+    snapshot.mkdir(parents = True)
+
+    (blobs / "sha_weight").write_bytes(b"w")
+    weight = snapshot / "model-Q4_0.gguf"
+    try:
+        weight.symlink_to(blobs / "sha_weight")
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+    first = snapshot / "mtp-model-Q4_0-00001-of-00002.gguf"
+    second = snapshot / "mtp-model-Q4_0-00002-of-00002.gguf"
+    (blobs / "sha_1").write_bytes(b"d" * 4096)
+    (blobs / "sha_2").write_bytes(b"d")
+    first.symlink_to(blobs / "sha_1")
+    second.symlink_to(blobs / "sha_2")
+
+    found = detect_mtp_file(str(weight), str(snapshot))
+    assert found == str(first)
+    assert (Path(found).parent / second.name).exists()

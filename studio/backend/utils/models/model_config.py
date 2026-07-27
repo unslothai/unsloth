@@ -1478,6 +1478,15 @@ def detect_mtp_file(
         # Full quant vocabulary, not a subset: K/IQ/UD/MXFP drafters pair too.
         return re.sub(rf"-(?:{_GGUF_KNOWN_QUANT_RE.pattern})$", "", stem, flags = re.IGNORECASE)
 
+    def _drafter_launch_path(candidate: Path) -> str:
+        # llama-server takes shard 1 as the model path, and a split copy must
+        # stay on its snapshot path: the blob target has no sibling shard
+        # names. Single-file drafters still resolve, as callers expect.
+        loadable = _local_gguf_load_path(candidate)
+        if _GGUF_SPLIT_FILE_RE.match(loadable.name):
+            return str(loadable)
+        return str(loadable.resolve())
+
     def _matches_weight(candidate: Path) -> bool:
         if weight_name is None:
             return True
@@ -1527,7 +1536,7 @@ def detect_mtp_file(
                     continue
                 try:
                     if f.is_file():
-                        return str(f.resolve())
+                        return _drafter_launch_path(f)
                 except OSError:
                     continue
 
@@ -1559,29 +1568,28 @@ def detect_mtp_file(
                 lower = f.name.lower()
                 if not lower.endswith(".gguf"):
                     continue
-                if not (lower.startswith("mtp-") or Path(lower).stem.endswith("-mtp")):
+                # Drop the shard suffix first: an old-scheme split copy is
+                # named <model>-Q8_0-MTP-00001-of-00002.gguf, whose stem does
+                # not end in -mtp.
+                stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", Path(lower).stem)
+                if not (lower.startswith("mtp-") or stem.endswith("-mtp")):
                     continue
                 if not _matches_weight(f):
                     continue
                 try:
                     if f.is_file():
-                        # llama-server takes shard 1 as the model path, so
-                        # collapse a split copy to it before ranking.
+                        # Collapse a split copy to shard 1 before ranking.
                         subdir_candidates.append(_local_gguf_load_path(f))
                 except OSError:
                     continue
 
     for candidate in sorted(dict.fromkeys(subdir_candidates), key = _smallest_first):
         try:
-            # A split copy keeps its snapshot path: resolving to the blob
-            # drops the sibling shard names llama-server needs to find.
-            resolved = (
-                candidate if _GGUF_SPLIT_FILE_RE.match(candidate.name) else candidate.resolve()
-            )
+            resolved = _drafter_launch_path(candidate)
         except OSError:
             continue
         logger.info(f"Detected MTP subdirectory drafter: {resolved}")
-        return str(resolved)
+        return resolved
     return None
 
 

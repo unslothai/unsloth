@@ -266,3 +266,23 @@ def test_reload_dedup_reloads_for_ordinary_load_when_root_drafter_appears(tmp_pa
     assert _request_matches_loaded_settings(request, backend, None, native_grant_backed = True)
     # An ordinary load would pick the root drafter, so it must reload.
     assert not _request_matches_loaded_settings(request, backend, None, native_grant_backed = False)
+
+
+def test_reload_dedup_native_load_with_no_admissible_drafter(tmp_path, monkeypatch):
+    """Root drafter out of the grant and no MTP/ copy: the load stores no
+    drafter, so dedup must compare against None rather than the root file."""
+    quant_dir = tmp_path / "Q4_0"
+    quant_dir.mkdir()
+    weight = quant_dir / "model.gguf"
+    weight.write_bytes(b"model")
+    (tmp_path / "mtp-model.gguf").write_bytes(b"root drafter")
+
+    monkeypatch.setattr(LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 0))
+    backend = LlamaCppBackend()
+    backend._gguf_path = str(weight)
+    backend._mtp_draft_path = None
+
+    request = LoadRequest(model_path = str(weight))
+    assert _request_matches_loaded_settings(request, backend, None, native_grant_backed = True)
+    # An ordinary load would launch the root drafter, so it must reload.
+    assert not _request_matches_loaded_settings(request, backend, None, native_grant_backed = False)

@@ -349,9 +349,11 @@ def test_local_mtp_warning_covers_path_and_native_gguf_sources():
     local = re.search(r"const isLocalGguf =.*?;", src, re.S)
     assert local
     assert "isGguf &&" in local.group(0)
-    assert "activeNativePathToken" in local.group(0)
     assert "activeModelIsLocal" in local.group(0)
     assert "isLocalModelPath" in local.group(0)
+    # A native token outlives a switch to a remote GGUF, so it must not
+    # classify the model here; activeModelIsLocal already covers native picks.
+    assert "activeNativePathToken" not in local.group(0)
     assert "isLocalGguf" in src.split('specFallbackReason === "drafter_not_found"', 1)[1]
 
 

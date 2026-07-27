@@ -3138,6 +3138,27 @@ def _validate_native_gguf_companion(
         ) from exc
 
 
+def _native_gguf_companion_usable(
+    companion_path: str | None,
+    gguf_path: str | None,
+    *,
+    mtp_search_root: str | Path | None = None,
+) -> bool:
+    """Whether a native load would accept this MTP drafter. Same rules as
+    _validate_native_gguf_companion, as a predicate for reload dedup."""
+    try:
+        _validate_native_gguf_companion(
+            companion_path,
+            gguf_path,
+            "MTP drafter",
+            allow_mtp_subdir = True,
+            mtp_search_root = mtp_search_root,
+        )
+    except HTTPException:
+        return False
+    return True
+
+
 def _normalise_settings_str(value: Optional[str]) -> Optional[str]:
     """Lowercase + strip a settings string, mapping blank/None to None."""
     if value is None:
@@ -3359,6 +3380,25 @@ def _request_matches_loaded_settings(
                 llama_backend.gguf_path, llama_backend.gguf_path
             )
             detected = detect_mtp_file(llama_backend.gguf_path, search_root = companion_root)
+            if native_grant_backed:
+                # Mirror the load path's choice, or the comparison is against a
+                # drafter that never launched. A native grant cannot reach a
+                # root drafter outside it, so the load falls back to the MTP/
+                # copy and, failing that, to no drafter at all. An ordinary
+                # load reaches the root drafter, so it keeps root-first
+                # detection and reloads when one appears.
+                if detected and not _native_gguf_companion_usable(
+                    detected, llama_backend.gguf_path, mtp_search_root = companion_root
+                ):
+                    detected = detect_mtp_file(
+                        llama_backend.gguf_path,
+                        search_root = companion_root,
+                        skip_root = True,
+                    )
+                    if detected and not _native_gguf_companion_usable(
+                        detected, llama_backend.gguf_path, mtp_search_root = companion_root
+                    ):
+                        detected = None
             stored = llama_backend.mtp_draft_path
             try:
                 detected_resolved = Path(detected).resolve() if detected else None
@@ -3366,23 +3406,7 @@ def _request_matches_loaded_settings(
             except OSError:
                 return False
             if detected_resolved != stored_resolved:
-                # A native load whose root drafter was out of bounds runs the
-                # MTP/ fallback instead, so root-first detection never equals
-                # what launched. Accept the subdir copy as current too, else
-                # that layout reloads on every apply. Native only: an ordinary
-                # load can reach the root drafter, so a newly added one must
-                # still reload.
-                if not native_grant_backed:
-                    return False
-                fallback = detect_mtp_file(
-                    llama_backend.gguf_path, search_root = companion_root, skip_root = True
-                )
-                try:
-                    fallback_resolved = Path(fallback).resolve() if fallback else None
-                except OSError:
-                    return False
-                if stored_resolved is None or fallback_resolved != stored_resolved:
-                    return False
+                return False
     return True
 
 
