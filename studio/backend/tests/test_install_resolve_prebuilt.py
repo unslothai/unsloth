@@ -6,7 +6,9 @@ by default; --published-repo overrides).
 
 These back the in-app update for source-build (markerless) installs: the backend
 asks the installer whether an official prebuilt exists for this host without
-downloading. Network and host detection are stubbed; no GPU or internet needed.
+downloading. Network and host detection are stubbed; no GPU or internet needed. The one
+exception is the windows-rocm floor guard, which reads the fork's published manifest
+because nothing in-tree mirrors it, and skips when that release is unreachable.
 """
 
 from __future__ import annotations
@@ -1136,7 +1138,10 @@ def test_route_to_vulkan_prebuilt_explicit_opt_in_overrides_hidden_nvidia(monkey
 
 
 # The gfx archs the fork's llama-prebuilt-manifest.json maps to a windows-rocm bundle
-# (gfx103X / gfx110X / gfx1150 / gfx1151 / gfx120X / gfx908 / gfx90a).
+# (gfx103X / gfx110X / gfx1150 / gfx1151 / gfx120X / gfx908 / gfx90a). Static because
+# parametrisation happens at import time and the routing tests below must stay offline;
+# the guard further down re-derives it from the published manifest and fails on drift, so
+# this is a checked mirror rather than a second hand-maintained source of truth.
 _FORK_WINDOWS_ROCM_GFX = (
     "gfx908",
     "gfx90a",
@@ -1155,13 +1160,68 @@ _FORK_WINDOWS_ROCM_GFX = (
 )
 
 
-def test_windows_hip_gfx_floor_covers_every_fork_windows_rocm_bundle():
-    # A gfx missing here bypasses the fork manifest, downgrading a hash-approved
-    # windows-rocm bundle to an unhashed upstream Vulkan build. Keep both in sync.
-    missing = [
-        gfx for gfx in _FORK_WINDOWS_ROCM_GFX if gfx not in ilp.WINDOWS_HIP_PREBUILT_GFX_TARGETS
+def _published_fork_windows_rocm_artifacts():
+    """The fork's windows-rocm artifact records, read the way an install reads them.
+
+    _download_host_resolved_release is the path a default fork install takes first
+    (iter_resolved_published_releases): it resolves the latest release off the download
+    host and hands llama-prebuilt-manifest.json to parse_published_release_bundle, so
+    these are the very records published_rocm_choice_for_host later matches a host gfx
+    against. No api.github.com call, hence no shared rate-limit bucket to exhaust.
+
+    The manifest ships only as a release asset, so this is the one honest source: nothing
+    in-tree mirrors it. Only OSError (URLError / HTTPError / socket) and the release-side
+    PrebuiltFallback become a skip, so a sandboxed or offline run stays quiet while a
+    manifest that fetches but no longer parses still fails loudly."""
+    try:
+        resolved = ilp._download_host_resolved_release(FORK)
+    except OSError as exc:
+        pytest.skip(f"{FORK} release manifest unreachable: {exc}")
+    except ilp.PrebuiltFallback as exc:
+        pytest.skip(f"{FORK} latest release was rejected before its manifest parsed: {exc}")
+    if resolved is None:
+        pytest.skip(f"{FORK} published no resolvable latest release")
+    tag = resolved.bundle.release_tag
+    artifacts = [
+        artifact
+        for artifact in resolved.bundle.artifacts
+        if artifact.install_kind == "windows-rocm"
     ]
-    assert not missing, f"auto-Vulkan would steal fork windows-rocm archs: {missing}"
+    assert artifacts, f"{FORK}@{tag} manifest listed no windows-rocm artifacts"
+    return tag, artifacts
+
+
+def test_windows_hip_gfx_floor_covers_every_fork_windows_rocm_bundle():
+    # Derived from the published manifest rather than compared against a second literal:
+    # a gfx the fork builds but the floor omits bypasses the fork manifest, downgrading a
+    # hash-approved windows-rocm bundle to an unhashed upstream Vulkan build. A newly
+    # published arch must redden here instead of silently rerouting those hosts.
+    tag, artifacts = _published_fork_windows_rocm_artifacts()
+    # published_rocm_choice_for_host serves a bundle on a concrete mapped_targets entry or
+    # on the umbrella gfx_target itself, so both spellings have to clear a floor. A
+    # gfx_target absent from its own mapped_targets is the family label (gfx110X); one
+    # present in it is a standalone bundle (gfx908) already counted as concrete.
+    concrete = {target.lower() for artifact in artifacts for target in artifact.mapped_targets}
+    labels = {
+        artifact.gfx_target.lower()
+        for artifact in artifacts
+        if artifact.gfx_target and artifact.gfx_target.lower() not in concrete
+    }
+    unfloored = sorted(concrete - ilp.WINDOWS_HIP_PREBUILT_GFX_TARGETS)
+    assert not unfloored, (
+        f"auto-Vulkan would steal windows-rocm archs published in {FORK}@{tag}: {unfloored}"
+    )
+    unlabelled = sorted(labels - ilp.WINDOWS_ROCM_FAMILY_GFX_LABELS)
+    assert not unlabelled, (
+        f"update markers forward family labels {FORK}@{tag} publishes but "
+        f"WINDOWS_ROCM_FAMILY_GFX_LABELS omits: {unlabelled}"
+    )
+    # Keep the import-time tuple the offline routing tests parametrise on an exact mirror.
+    assert set(_FORK_WINDOWS_ROCM_GFX) == concrete, (
+        f"_FORK_WINDOWS_ROCM_GFX drifted from {FORK}@{tag}: "
+        f"gained {sorted(concrete - set(_FORK_WINDOWS_ROCM_GFX))}, "
+        f"lost {sorted(set(_FORK_WINDOWS_ROCM_GFX) - concrete)}"
+    )
 
 
 @pytest.mark.parametrize("gfx", _FORK_WINDOWS_ROCM_GFX)
