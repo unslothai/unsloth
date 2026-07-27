@@ -712,6 +712,8 @@ sleep 120
     async fn managed_runtime_probe_survives_more_stdout_than_the_pipe_holds() {
         // The probe imports the whole backend, so output can exceed the 64 KiB
         // pipe buffer, and waiting before draining wedges the child mid-write.
+        // This CLI writes ~1 MiB before the payload, so the drain both keeps up
+        // and keeps only the tail, which still has to contain the payload.
         let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
         let _cache_home = ManagedCapabilityCacheHome::new("runtime-noisy");
         remove_managed_capability_cache();
@@ -720,7 +722,7 @@ sleep 120
             "runtime-noisy",
             r#"#!/bin/sh
 if [ "$1" = "studio" ] && [ "$2" = "desktop-runtime-check" ] && [ "$3" = "--json" ]; then
-  awk 'BEGIN { while (i++ < 4000) print "import chatter on stdout" }'
+  awk 'BEGIN { while (i++ < 40000) print "import chatter on stdout" }'
   printf '{"runtime_ready":true}\n'
   exit 0
 fi

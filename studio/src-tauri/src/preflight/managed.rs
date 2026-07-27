@@ -303,6 +303,30 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> bool {
     }
 }
 
+/// Room for the payload and what preceded it. Bounded because the binary being
+/// probed is a possibly damaged install, and keeping every byte lets an import
+/// stuck printing grow this buffer for the whole timeout.
+const PROBE_TAIL_BYTES: usize = 64 * 1024;
+
+/// Drained while the wait runs: the backend import can print more than the pipe
+/// holds, and waiting first deadlocks, timing out a healthy install into repair.
+fn drain_probe_tail(mut stdout: tokio::process::ChildStdout) -> tokio::task::JoinHandle<Vec<u8>> {
+    tokio::spawn(async move {
+        let mut tail = Vec::new();
+        let mut chunk = [0u8; 8192];
+        while let Ok(read) = stdout.read(&mut chunk).await {
+            if read == 0 {
+                break;
+            }
+            tail.extend_from_slice(&chunk[..read]);
+            if tail.len() > PROBE_TAIL_BYTES {
+                tail.drain(..tail.len() - PROBE_TAIL_BYTES);
+            }
+        }
+        tail
+    })
+}
+
 /// The probe could not answer: it would not run, or exited without a payload.
 /// Distinct from a CLI that is simply too old to know the command.
 const RUNTIME_PROBE_FAILED: &str = "studio_runtime_probe_failed";
@@ -353,17 +377,11 @@ async fn probe_cli_runtime(bin: &Path) -> Result<(), String> {
         );
         return Err(RUNTIME_PROBE_FAILED.to_string());
     };
-    let Some(mut stdout) = child.stdout.take() else {
+    let Some(stdout) = child.stdout.take() else {
         return Err(RUNTIME_PROBE_FAILED.to_string());
     };
 
-    // Drain while waiting: the backend import can print more than the pipe holds,
-    // and waiting first deadlocks, timing out a healthy install into repair.
-    let reader = tokio::spawn(async move {
-        let mut buffer = Vec::new();
-        let _ = stdout.read_to_end(&mut buffer).await;
-        buffer
-    });
+    let reader = drain_probe_tail(stdout);
 
     let status = match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
         Ok(Ok(status)) => status,
@@ -445,16 +463,11 @@ async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
         );
         return None;
     };
-    let Some(mut stdout) = child.stdout.take() else {
+    let Some(stdout) = child.stdout.take() else {
         return None;
     };
 
-    // Same reason as the runtime probe above.
-    let reader = tokio::spawn(async move {
-        let mut buffer = Vec::new();
-        let _ = stdout.read_to_end(&mut buffer).await;
-        buffer
-    });
+    let reader = drain_probe_tail(stdout);
 
     match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
         Ok(Ok(status)) if status.success() => {}

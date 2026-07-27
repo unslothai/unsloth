@@ -252,3 +252,35 @@ def test_a_root_pin_is_checked_even_when_a_dependency_names_it_first(monkeypatch
         studio.desktop_runtime_check(_json_output = True)
 
     assert json.loads(capsys.readouterr().out)["module"] == "huggingface-hub"
+
+
+def test_a_record_without_its_package_is_reported_missing(monkeypatch, capsys, tmp_path):
+    """An interrupted replace can delete the package and leave its RECORD, so a
+    readable file list is not proof the modules are there."""
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    backend = tmp_path / "backend"
+    requirements = backend / "requirements"
+    requirements.mkdir(parents = True)
+    (requirements / "studio.txt").write_text("structlog\n", encoding = "utf-8")
+    run_mod = SimpleNamespace(__file__ = str(backend / "run.py"))
+    monkeypatch.setattr(studio, "_load_run_module", lambda: run_mod)
+
+    site_packages = tmp_path / "site-packages"
+    (site_packages / "structlog-25.1.0.dist-info").mkdir(parents = True)
+    installed = SimpleNamespace(
+        version = "25.1.0",
+        requires = None,
+        files = ["structlog/__init__.py", "structlog-25.1.0.dist-info/RECORD"],
+        locate_file = lambda name: site_packages / name,
+    )
+    monkeypatch.setattr(
+        importlib.import_module("importlib.metadata"), "distribution", lambda _name: installed,
+    )
+
+    with pytest.raises(typer.Exit):
+        studio.desktop_runtime_check(_json_output = True)
+    assert json.loads(capsys.readouterr().out)["module"] == "structlog"
+
+    (site_packages / "structlog").mkdir()
+    studio.desktop_runtime_check(_json_output = True)
+    assert json.loads(capsys.readouterr().out) == {"runtime_ready": True}

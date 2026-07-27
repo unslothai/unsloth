@@ -268,6 +268,9 @@ impl BackendOwnerState {
     /// Only while the file is still ours. Cleanup after an exit can take seconds,
     /// and a start in that window already wrote the next metadata to this path.
     pub(crate) fn remove(self) {
+        // Held across the check and the unlink: a start that lands between the
+        // two would otherwise have its file deleted by the backend it replaced.
+        let _guard = lock_metadata();
         if let Ok(Some(on_disk)) = read_metadata(&self.path) {
             if on_disk.token_sha256 != self.metadata.token_sha256 {
                 warn!(
@@ -316,7 +319,16 @@ impl BackendOwnerState {
     }
 }
 
+/// Serializes activation against cleanup. Both run in this process, and the
+/// check in remove() only holds if no write can land inside it.
+static METADATA_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_metadata() -> std::sync::MutexGuard<'static, ()> {
+    METADATA_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn write_metadata(path: &Path, metadata: &DesktopBackendMetadata) -> Result<(), String> {
+    let _guard = lock_metadata();
     let parent = path
         .parent()
         .ok_or_else(|| "desktop owner metadata path has no parent".to_string())?;
