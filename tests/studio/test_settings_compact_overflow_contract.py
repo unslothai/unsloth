@@ -26,9 +26,7 @@ def test_api_monitor_entries_and_expanded_text_can_shrink():
     assert '<section className="flex min-w-0 flex-col gap-1.5">' in source
     # Prompt and reply are unbounded user text: they must be height-capped,
     # scrollable, and wrap rather than stretch the pane.
-    assert (
-        "max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50" in source
-    )
+    assert "max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50" in source
     # A model id or path has no spaces to wrap on, so it needs break-all.
     assert 'className="min-w-0 break-all font-mono' in source
 

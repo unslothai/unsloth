@@ -4759,6 +4759,8 @@ def test_removal_of_a_path_still_only_touches_the_exact_key(monkeypatch):
     )
     # A different file must survive its neighbour being forgotten.
     assert settings.get_model_override("/models/foo.gguf")["max_seq_length"] == 8192
+
+
 def test_a_tag_that_names_no_quant_resolves_to_the_repo(monkeypatch):
     # A downloaded but unloaded GGUF asked for as org/model:latest missed the
     # resolver, so the switch path could not load it: with auto-download on it
