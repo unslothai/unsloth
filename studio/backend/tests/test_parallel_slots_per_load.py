@@ -364,3 +364,31 @@ def test_validate_route_prefers_request_n_parallel():
     fallback = validate_impl.index('getattr(fastapi_request.app.state, "llama_parallel_slots", 1)')
     guard = validate_impl.index("_guard_chat_load_against_training")
     assert guard < resolve and guard < fallback, "the guard call resolves the slots inline"
+
+
+def _load_model_source() -> str:
+    return inspect.getsource(LlamaCppBackend.load_model)
+
+
+def test_slots_fall_back_to_one_without_kv_unified():
+    # Unless --kv-unified is passed llama-server gives each slot -c/N, so on a build
+    # without the flag an explicit --parallel N shrinks every context window.
+    src = _load_model_source()
+    clamp = src.find("supports_kv_unified")
+    assert clamp != -1, "load_model must check for --kv-unified before honouring the slots"
+    block = src[clamp : clamp + 700]
+    assert "n_parallel > 1" in src[clamp - 300 : clamp], "only an explicit multi-slot load is clamped"
+    assert "n_parallel = 1" in block
+
+
+def test_clamp_sits_between_the_echo_and_the_fit():
+    # The echo reports what the load asked for, the fit is computed from what will
+    # actually launch, so the clamp belongs between the two.
+    src = _load_model_source()
+    pending = src.index("_pending_load_kwargs")
+    clamp = src.index("supports_kv_unified")
+    estimate = src.index("_estimate")
+    commit = src.index("_commit_effective_parallel_slots")
+    assert pending < clamp, "the requested count is captured before the clamp"
+    assert clamp < estimate, "the fit must be estimated from the effective slot count"
+    assert clamp < commit, "the committed effective count is the clamped one"

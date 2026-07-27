@@ -6534,6 +6534,25 @@ class LlamaCppBackend:
             binary = self._find_llama_server_binary()
             is_vulkan_backend = self._is_vulkan_backend(binary)
 
+            # Without --kv-unified an explicit --parallel N splits -c into windows of -c/N, so a
+            # build lacking the flag would shrink every context window for a feature it cannot
+            # serve: use one slot. After the requested count is captured (the echo still reports
+            # it), before the KV estimates (the fit matches what launches).
+            if (
+                n_parallel > 1
+                and binary
+                and not self.probe_server_capabilities(binary).get("supports_kv_unified")
+            ):
+                logger.warning(
+                    "llama-server at %s has no --kv-unified, so %d parallel slots would "
+                    "split the context window %d ways. Using 1 slot instead; update "
+                    "llama.cpp to run chats in parallel.",
+                    binary,
+                    n_parallel,
+                    n_parallel,
+                )
+                n_parallel = 1
+
             # ── Vulkan-ordinal preflight (BEFORE the Phase 1 kill) ────────
             # An explicit Vulkan pin the ggml probe never enumerated cannot be honored.
             # Validate it ABOVE the kill so an invalid selection leaves the live model
