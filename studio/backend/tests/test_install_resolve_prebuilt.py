@@ -1498,26 +1498,73 @@ def test_marker_records_no_backend_when_vulkan_fell_back_to_cpu(tmp_path):
 # may outrank that flag on any host.
 _SIM_PLATFORMS = {
     # WSL presents as Linux to this resolver, so it rides the Linux row.
-    "Linux": dict(system = "Linux", is_windows = False, is_linux = True, is_macos = False,
-                  machine = "x86_64", is_x86_64 = True, is_arm64 = False),
-    "Windows": dict(system = "Windows", is_windows = True, is_linux = False, is_macos = False,
-                    machine = "amd64", is_x86_64 = True, is_arm64 = False),
-    "macOS": dict(system = "Darwin", is_windows = False, is_linux = False, is_macos = True,
-                  machine = "arm64", is_x86_64 = False, is_arm64 = True),
+    "Linux": dict(
+        system = "Linux",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        machine = "x86_64",
+        is_x86_64 = True,
+        is_arm64 = False,
+    ),
+    "Windows": dict(
+        system = "Windows",
+        is_windows = True,
+        is_linux = False,
+        is_macos = False,
+        machine = "amd64",
+        is_x86_64 = True,
+        is_arm64 = False,
+    ),
+    "macOS": dict(
+        system = "Darwin",
+        is_windows = False,
+        is_linux = False,
+        is_macos = True,
+        machine = "arm64",
+        is_x86_64 = False,
+        is_arm64 = True,
+    ),
 }
 _SIM_GPUS = {
-    "nvidia": dict(has_physical_nvidia = True, has_usable_nvidia = True, has_rocm = False,
-                   has_intel_gpu = False, nvidia_smi = "/usr/bin/nvidia-smi",
-                   driver_cuda_version = "12.4", compute_caps = ["8.9"]),
-    "amd": dict(has_physical_nvidia = False, has_usable_nvidia = False, has_rocm = True,
-                has_intel_gpu = False, nvidia_smi = None, driver_cuda_version = None,
-                compute_caps = [], rocm_gfx_target = "gfx803", rocm_gfx_targets = ["gfx803"]),
-    "intel": dict(has_physical_nvidia = False, has_usable_nvidia = False, has_rocm = False,
-                  has_intel_gpu = True, nvidia_smi = None, driver_cuda_version = None,
-                  compute_caps = []),
-    "cpu_only": dict(has_physical_nvidia = False, has_usable_nvidia = False, has_rocm = False,
-                     has_intel_gpu = False, nvidia_smi = None, driver_cuda_version = None,
-                     compute_caps = []),
+    "nvidia": dict(
+        has_physical_nvidia = True,
+        has_usable_nvidia = True,
+        has_rocm = False,
+        has_intel_gpu = False,
+        nvidia_smi = "/usr/bin/nvidia-smi",
+        driver_cuda_version = "12.4",
+        compute_caps = ["8.9"],
+    ),
+    "amd": dict(
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        has_rocm = True,
+        has_intel_gpu = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        rocm_gfx_target = "gfx803",
+        rocm_gfx_targets = ["gfx803"],
+    ),
+    "intel": dict(
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        has_rocm = False,
+        has_intel_gpu = True,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+    ),
+    "cpu_only": dict(
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        has_rocm = False,
+        has_intel_gpu = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+    ),
 }
 
 
@@ -1545,8 +1592,11 @@ def test_forced_cpu_outranks_every_vulkan_trigger(
 
     repo, tag = "unslothai/llama.cpp-prebuilt", "latest"
     _, out_repo, _, persist = ilp._route_to_vulkan_prebuilt(
-        _sim_host(platform_name, gpu_name), repo, tag,
-        force_cpu = True, llama_backend = "vulkan",
+        _sim_host(platform_name, gpu_name),
+        repo,
+        tag,
+        force_cpu = True,
+        llama_backend = "vulkan",
     )
     assert out_repo == repo, (platform_name, gpu_name, backend_env)
     assert persist is None, (platform_name, gpu_name, backend_env)
@@ -1557,7 +1607,10 @@ def test_the_forced_cpu_guard_is_not_vacuous():
     would pass on a resolver that had stopped routing to Vulkan entirely."""
     repo, tag = "unslothai/llama.cpp-prebuilt", "latest"
     _, out_repo, _, persist = ilp._route_to_vulkan_prebuilt(
-        _sim_host("Linux", "amd"), repo, tag,
-        force_cpu = False, llama_backend = "vulkan",
+        _sim_host("Linux", "amd"),
+        repo,
+        tag,
+        force_cpu = False,
+        llama_backend = "vulkan",
     )
     assert out_repo != repo or persist == "vulkan"
