@@ -13695,7 +13695,8 @@ async def anthropic_messages(
         (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
         for t in payload.tools or []
     )
-    if requested_studio_tools and _has_client_tool:
+    _explicit_server_tools = bool(requested_studio_tools) or payload.enable_tools is True
+    if _explicit_server_tools and _has_client_tool:
         raise HTTPException(
             status_code = 400,
             detail = (
@@ -13718,7 +13719,11 @@ async def anthropic_messages(
     # post-switch); an image request can never take the server-tool path, so it is
     # excluded as in the server_tools gate below. off/full and an explicit
     # confirm_tool_calls=False opt-out always pass.
-    _enable_pre = _effective_enable_tools(payload)
+    # A process-wide ``--enable-tools`` policy is only a default for ordinary
+    # chat. It must not steal an explicit Anthropic client-tool catalog (Claude
+    # Code's Write/Edit/Bash tools) and turn it into Unsloth's local tool loop.
+    # An explicit per-request server-tool ask was rejected as mixed mode above.
+    _enable_pre = False if _has_client_tool else _effective_enable_tools(payload)
     _server_tools_requested_pre = (
         _enable_pre or (_enable_pre is None and bool(requested_studio_tools))
     ) and not _anthropic_request_has_image(payload)
@@ -13847,7 +13852,7 @@ async def anthropic_messages(
     # An Anthropic server-tool declaration implies server-tool mode, but only
     # when tools aren't explicitly disabled (CLI --disable-tools or per-request
     # enable_tools=false). Explicit False always wins.
-    _enable = _effective_enable_tools(payload)
+    _enable = False if _has_client_tool else _effective_enable_tools(payload)
     server_tools = (
         (_enable or (_enable is None and bool(requested_studio_tools)))
         and llama_backend.supports_tools

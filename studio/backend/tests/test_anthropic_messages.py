@@ -1735,6 +1735,67 @@ class TestAnthropicMessagesToolRouting:
         assert exc.value.status_code == 400
         assert "Mixing Anthropic server tools" in exc.value.detail
 
+    def test_explicit_server_loop_and_client_tools_rejected_with_400(self, monkeypatch):
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            enable_tools = True,
+            tools = [{"name": "Write", "input_schema": {"type": "object"}}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "Mixing Anthropic server tools" in exc.value.detail
+
+    @pytest.mark.parametrize("permission_mode", [None, "ask"])
+    def test_process_tool_policy_does_not_steal_client_tools(
+        self, monkeypatch, permission_mode
+    ):
+        """A server-wide tool default must not replace Claude Code's own tools."""
+        import routes.inference as inf_mod
+        from fastapi.responses import JSONResponse
+
+        backend = _mock_backend(monkeypatch)
+        captured = {}
+
+        async def _passthrough(*args, **kwargs):
+            captured["tools"] = args[2]
+            return JSONResponse(
+                {
+                    "id": "msg_test",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "model": "test-model",
+                    "stop_reason": "end_turn",
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            )
+
+        monkeypatch.setattr(inf_mod, "_anthropic_passthrough_non_streaming", _passthrough)
+        set_tool_policy(True)
+        fields = {
+            "tools": [
+                {
+                    "name": "Write",
+                    "description": "Write a file",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                    },
+                }
+            ],
+        }
+        if permission_mode is not None:
+            fields["permission_mode"] = permission_mode
+        payload = _basic_payload(**fields)
+
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+        assert backend.calls == []
+        assert captured["tools"][0]["function"]["name"] == "Write"
+
     def test_mixed_rejected_when_client_tool_name_collides_with_server_alias(self, monkeypatch):
         # Regression: a client tool sharing a name with a mapped server tool
         # (e.g. a custom "web_search") must still trigger the mixed-mode 400;
