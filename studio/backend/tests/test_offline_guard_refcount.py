@@ -125,9 +125,9 @@ def test_nonforce_never_extends_forced_window(clean_env):
     assert forced.__enter__() is True
     assert plain.__enter__() is False
     forced.__exit__(None, None, None)
-    assert "HF_HUB_OFFLINE" not in os.environ, (
-        "the forced owner's exit restores; the ordinary no-op guard holds nothing"
-    )
+    assert (
+        "HF_HUB_OFFLINE" not in os.environ
+    ), "the forced owner's exit restores; the ordinary no-op guard holds nothing"
     plain.__exit__(None, None, None)
     assert "HF_HUB_OFFLINE" not in os.environ
 
