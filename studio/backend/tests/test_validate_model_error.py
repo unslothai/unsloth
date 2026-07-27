@@ -427,3 +427,101 @@ def test_load_response_reports_the_effective_llama_extra_args():
     src = inspect.getsource(inf._load_model_impl)
     assert src.count("llama_extra_args = llama_backend.extra_args,") == 2
     assert "llama_extra_args = request.llama_extra_args," not in src
+
+
+# ── Training preflight: extras cache precision sizes the KV reserve ──
+
+
+def _kv_probe_backend():
+    """A plain GQA backend with just enough metadata for _estimate_kv_cache_bytes."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    probe = LlamaCppBackend()
+    probe._architecture = "llama"
+    probe._n_layers = 32
+    probe._n_heads = 32
+    probe._n_kv_heads = 8
+    probe._kv_key_length = 128
+    probe._kv_value_length = 128
+    probe._embed = 4096
+    probe._context_length = 8192
+    assert probe._can_estimate_kv()
+    return probe
+
+
+def _estimate_kv_gb_with(monkeypatch, extra_args, *, ctx = 8192, n_parallel = 1):
+    """Run the route's KV sizer over a probe with fixed metadata."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    class _Probe(LlamaCppBackend):
+        def _read_gguf_metadata(self, _path):
+            for attr, value in vars(_kv_probe_backend()).items():
+                setattr(self, attr, value)
+
+    monkeypatch.setattr(inf, "LlamaCppBackend", _Probe)
+    return inf._estimate_gguf_kv_gb("/no/such/model.gguf", ctx, extra_args, n_parallel)
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--cache-type-k", "f32", "--cache-type-v", "f32"],
+        ["--cache-type-k=f32", "--cache-type-v=f32"],
+        # llama.cpp folds `_` to `-` on long flags, so the alias must size the same.
+        ["--cache_type_k", "f32", "--cache_type_v", "f32"],
+        ["-ctk", "f32", "-ctv", "f32"],
+    ],
+)
+def test_training_preflight_budgets_the_extras_cache_precision(monkeypatch, extra_args):
+    # f32 K and V are twice the f16 default the sizer used to assume, so the
+    # preflight (and the /load it gates) could admit a model that then exhausts
+    # VRAM under an active training run.
+    probe = _kv_probe_backend()
+    default_gb = probe._estimate_kv_cache_bytes(8192) / (1024**3)
+    f32_gb = probe._estimate_kv_cache_bytes(8192, "f32") / (1024**3)
+    assert f32_gb == pytest.approx(2 * default_gb)
+
+    assert _estimate_kv_gb_with(monkeypatch, extra_args) == pytest.approx(f32_gb)
+
+
+def test_training_preflight_budgets_the_heavier_axis_when_k_and_v_differ(monkeypatch):
+    # The axes are independent and last-wins per axis, so a lighter trailing
+    # --cache-type-v must not shrink the reserve the heavier K axis needs.
+    probe = _kv_probe_backend()
+    heavy_gb = probe._estimate_kv_cache_bytes(8192, "f32") / (1024**3)
+
+    for extras in (
+        ["--cache-type-k", "f32", "--cache-type-v", "f16"],
+        ["--cache-type-v", "q8_0", "--cache-type-k", "f32"],
+    ):
+        assert _estimate_kv_gb_with(monkeypatch, extras) == pytest.approx(heavy_gb)
+
+
+def test_training_preflight_reuses_the_llama_cpp_load_time_cache_derivation():
+    # One derivation for both budgets: a second parser here is how the guard
+    # drifts below the launch reserve again.
+    import inspect
+
+    from core.inference.llama_cpp import _extra_args_main_cache_type_for_budget
+
+    src = inspect.getsource(inf._estimate_gguf_kv_gb)
+    assert "_extra_args_main_cache_type_for_budget" in src
+    assert "parse_cache_override" not in src  # not a second, last-wins-only copy
+
+    load_src = inspect.getsource(
+        __import__("core.inference.llama_cpp", fromlist = ["x"]).LlamaCppBackend.load_model
+    )
+    assert "_extra_args_main_cache_type_for_budget(extra_args)" in load_src
+
+    # And the shared helper really is per-axis heavier-wins.
+    assert _extra_args_main_cache_type_for_budget(["-ctk", "f32", "-ctv", "f16"]) == "f32"
+    assert _extra_args_main_cache_type_for_budget([]) is None
+
+
+def test_training_preflight_keeps_the_f16_default_without_a_cache_override(monkeypatch):
+    # No explicit type means the child inherits llama.cpp's f16 default; the
+    # reserve must not silently inflate.
+    probe = _kv_probe_backend()
+    default_gb = probe._estimate_kv_cache_bytes(8192) / (1024**3)
+    assert _estimate_kv_gb_with(monkeypatch, ["--no-mmap"]) == pytest.approx(default_gb)
+    assert _estimate_kv_gb_with(monkeypatch, None) == pytest.approx(default_gb)

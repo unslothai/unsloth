@@ -6284,6 +6284,44 @@ class LlamaCppBackend:
         return out
 
     @staticmethod
+    def _extras_after_startup_recovery(
+        retry_cmd: list[str],
+        extra_args: Optional[List[str]],
+        extras_start: int,
+    ) -> Optional[List[str]]:
+        """The user's pass-through args as a crash-recovery retry rewrote them.
+
+        ``_with_flash_attn_off`` rewrites the WHOLE argv, and the user's extras
+        are appended last, so a ``--flash-attn on`` / ``--cache-type-v q8_0``
+        the user typed comes back as ``off`` / ``f16`` in the argv that actually
+        launched. Only ``cmd`` is rewritten though, so ``self._extra_args`` would
+        keep advertising the pre-recovery request: the settings panel then shows
+        flags the surviving server never ran, the user saves that, and the saved
+        per-model config re-launches the flags that just crashed. Mirrors the
+        manual-GPU strip, which already commits its rewritten extras.
+
+        The rewrite preserves the token count and edits in place, so the extras
+        still occupy ``[extras_start, extras_start + len(extra_args))``. None
+        when that window does not line up flag-for-flag, so the caller keeps the
+        original rather than reporting a mis-sliced list.
+        """
+        if not extra_args:
+            return None
+        originals = [str(a) for a in extra_args]
+        end = extras_start + len(originals)
+        if extras_start < 0 or end > len(retry_cmd):
+            return None
+        window = [str(token) for token in retry_cmd[extras_start:end]]
+        for original, rewritten in zip(originals, window):
+            if not original.startswith("-"):
+                continue
+            if _canonical_long_flag_name(
+                original.partition("=")[0]
+            ) != _canonical_long_flag_name(rewritten.partition("=")[0]):
+                return None
+        return window
+
+    @staticmethod
     def _drop_env_quantized_v_cache(env: MutableMapping[str, str]) -> bool:
         """Drop an inherited quantized V-cache env var (main or draft) in place
         before a flash-attn-off retry, returning True if anything was removed.
@@ -8161,6 +8199,11 @@ class LlamaCppBackend:
                 if extra_args:
                     cmd.extend(str(a) for a in extra_args)
                     logger.info(f"Appending user extra args to llama-server: {list(extra_args)}")
+                # Where the extras start in the launch argv. The startup-crash
+                # retries rewrite tokens in place (and the --fit retry only
+                # appends), so this window still holds them afterwards and
+                # _extras_after_startup_recovery can read back what launched.
+                _extra_args_start = len(cmd) - len(extra_args or ())
 
                 logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(cmd))}")
 
@@ -8426,6 +8469,28 @@ class LlamaCppBackend:
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
 
+                def _adopt_recovered_extras(retry_cmd):
+                    """Re-read the extras out of a recovery-rewritten argv.
+
+                    Every rung below builds on retry_cmd, and the healthy-load
+                    commit stores ``extra_args``, so adopting the rewrite here
+                    keeps /load, /status and the settings panel on the flags the
+                    surviving server runs.
+                    """
+                    nonlocal extra_args
+                    recovered = self._extras_after_startup_recovery(
+                        retry_cmd, extra_args, _extra_args_start
+                    )
+                    if recovered is None or recovered == [str(a) for a in extra_args or ()]:
+                        return
+                    logger.info(
+                        "Crash recovery rewrote the custom llama-server args from "
+                        "%s to %s; reporting the launched flags.",
+                        list(extra_args or ()),
+                        recovered,
+                    )
+                    extra_args = recovered
+
                 healthy = _spawn_and_wait(cmd)
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
                 # the flash-attn-off retry below can't run tensor (needs flash_attn),
@@ -8469,6 +8534,7 @@ class LlamaCppBackend:
                                 "--flash-attn off retry (requires flash attention)."
                             )
                         cmd = _fa_cmd
+                        _adopt_recovered_extras(_fa_cmd)
                         healthy = _spawn_and_wait(_fa_cmd, label = "-noflash")
 
                 # MTP from Unsloth's spec flags or the user's (extra_args
@@ -8521,6 +8587,7 @@ class LlamaCppBackend:
                                 "--flash-attn off retry (requires flash attention)."
                             )
                         cmd = _fa_cmd
+                        _adopt_recovered_extras(_fa_cmd)
                         healthy = (
                             _spawn_and_wait(_fa_cmd, label = "-noflash-mtp")
                             and self._probe_mtp_decode()

@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import inspect
 import os
+import re
 import struct
 import sys
 import types as _types
@@ -2263,3 +2264,117 @@ def test_flash_attn_off_recovery_sees_underscore_aliases():
     # An effective value that is already off means there is nothing to retry.
     assert LlamaCppBackend._with_flash_attn_off(studio + ["--flash_attn=off"]) is None
     assert LlamaCppBackend._with_flash_attn_off(["llama-server", "-m", "/m.gguf"]) is None
+
+
+# ── Crash recovery reports the flags it launched, not the request ──
+#
+# _with_flash_attn_off rewrites the WHOLE argv, user extras included, so the
+# surviving server can run `--flash-attn off --cache-type-v f16` while the
+# request said `on` / `q8_0`. The load commits `extra_args` to _extra_args,
+# which /load and /status echo, so the panel must not baseline on the request:
+# the user saves what it shows, and the saved per-model config then re-launches
+# the flags that just crashed.
+
+
+_STUDIO_CMD = [
+    "llama-server",
+    "-m",
+    "/m.gguf",
+    "--flash-attn",
+    "on",
+    "--no-context-shift",
+    "--cache-type-v",
+    "q8_0",
+]
+
+
+def _launch_argv(extras):
+    """The argv load_model builds: Unsloth's flags, then the extras last."""
+    cmd = _STUDIO_CMD + [str(a) for a in extras]
+    return cmd, len(cmd) - len(extras)
+
+
+def test_recovered_extras_report_the_flags_the_retry_launched():
+    typed = ["--flash-attn", "on", "--cache-type-v", "q8_0"]
+    cmd, start = _launch_argv(typed)
+    retry = LlamaCppBackend._with_flash_attn_off(cmd)
+    assert retry is not None
+
+    recovered = LlamaCppBackend._extras_after_startup_recovery(retry, typed, start)
+    assert recovered == ["--flash-attn", "off", "--cache-type-v", "f16"]
+    # And it is exactly the window the retry actually runs.
+    assert recovered == retry[start:]
+
+
+def test_recovered_extras_keep_the_users_own_spelling():
+    # The rewrite preserves the underscore alias and the inline form, so the
+    # field the user reads back is still their own text, just with the value
+    # the server runs.
+    typed = ["--flash_attn=on", "--cache_type_v=q8_0"]
+    cmd, start = _launch_argv(typed)
+    retry = LlamaCppBackend._with_flash_attn_off(cmd)
+    assert LlamaCppBackend._extras_after_startup_recovery(retry, typed, start) == [
+        "--flash_attn=off",
+        "--cache_type_v=f16",
+    ]
+
+
+def test_recovered_extras_survive_the_fit_off_retry_appending_flags():
+    # _spawn_and_wait's one-shot `--fit off` retry appends AFTER the extras, so
+    # a tail slice would read the wrong tokens; the recorded start index must be
+    # what locates them.
+    typed = ["--flash-attn", "on", "--cache-type-v", "q8_0"]
+    cmd, start = _launch_argv(typed)
+    spawned = [*cmd, "--fit", "off"]
+    retry = LlamaCppBackend._with_flash_attn_off(spawned)
+    assert retry is not None
+    assert retry[-2:] == ["--fit", "off"]
+    assert LlamaCppBackend._extras_after_startup_recovery(retry, typed, start) == [
+        "--flash-attn",
+        "off",
+        "--cache-type-v",
+        "f16",
+    ]
+
+
+def test_recovered_extras_leave_untouched_flags_alone():
+    # A non-quantized V cache and a K cache run fine without flash attention, so
+    # the recovery leaves them be and the reported list must match.
+    typed = ["--cache-type-k", "q8_0", "--cache-type-v", "f16", "--no-mmap"]
+    cmd, start = _launch_argv(typed)
+    retry = LlamaCppBackend._with_flash_attn_off(cmd)
+    assert LlamaCppBackend._extras_after_startup_recovery(retry, typed, start) == typed
+
+
+def test_recovered_extras_refuse_a_window_that_does_not_line_up():
+    # Defensive: a shifted or truncated argv must yield None so the caller keeps
+    # the original rather than reporting a mis-sliced list.
+    typed = ["--flash-attn", "on", "--cache-type-v", "q8_0"]
+    cmd, start = _launch_argv(typed)
+    retry = LlamaCppBackend._with_flash_attn_off(cmd)
+    assert LlamaCppBackend._extras_after_startup_recovery(retry, typed, start + 1) is None
+    assert LlamaCppBackend._extras_after_startup_recovery(retry[:-1], typed, start) is None
+    assert LlamaCppBackend._extras_after_startup_recovery(retry, typed, -1) is None
+    # Nothing to recover without extras.
+    assert LlamaCppBackend._extras_after_startup_recovery(retry, None, start) is None
+    assert LlamaCppBackend._extras_after_startup_recovery(retry, [], start) is None
+
+
+def test_load_model_adopts_the_recovered_extras_at_both_flash_attn_rungs():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+
+    # The start index is recorded where the extras are appended, before any spawn.
+    append = src.index("cmd.extend(str(a) for a in extra_args)")
+    record = src.index("_extra_args_start = len(cmd) - len(extra_args or ())")
+    first_spawn = src.index("healthy = _spawn_and_wait(cmd)")
+    assert append < record < first_spawn
+
+    # Both flash-attn recovery rungs adopt the rewrite before respawning, so the
+    # healthy-load commit reports the launched flags.
+    adopt = [m for m in re.finditer(r"_adopt_recovered_extras\(_fa_cmd\)", src)]
+    assert len(adopt) == 2, "both --flash-attn off rungs must adopt the rewrite"
+    for match, spawn in zip(adopt, re.finditer(r"_spawn_and_wait\(_fa_cmd", src)):
+        assert match.start() < spawn.start()
+
+    # The commit itself still stores exactly that list.
+    assert "self._extra_args = list(extra_args)" in src

@@ -995,9 +995,11 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             def _estimate_kv_cache_bytes(
                 self,
                 ctx,
+                cache_type_kv = None,
                 n_parallel = 1,
             ):
                 seen["ctx"] = ctx
+                seen["cache_type_kv"] = cache_type_kv
                 seen["n_parallel"] = n_parallel
                 return ctx * n_parallel * (1024**2)  # 1 MiB per ctx unit per slot
 
@@ -1009,6 +1011,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
             self.assertEqual(seen["ctx"], 131072)
             self.assertEqual(seen["n_parallel"], 1)  # default single slot
+            self.assertIsNone(seen["cache_type_kv"])  # no override -> f16 default
             # override below max_seq_length -> larger (max_seq_length) wins
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "1024"]), 4.0)
             self.assertEqual(seen["ctx"], 4096)
@@ -1020,6 +1023,10 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             # --parallel slots scale the cache the same way the launcher does
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, None, 4), 16.0)
             self.assertEqual(seen["n_parallel"], 4)
+            # The heavier of the per-axis --cache-type-k/-v reaches the estimator,
+            # matching the llama.cpp load-time budget.
+            r._estimate_gguf_kv_gb("m", 4096, ["--cache-type-k", "f32", "--cache-type-v", "f16"])
+            self.assertEqual(seen["cache_type_kv"], "f32")
 
 
 # ── load_model integration: authoritative 409, and no unload before refusal ──

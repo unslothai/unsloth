@@ -3829,9 +3829,17 @@ def _estimate_gguf_kv_gb(
     n_parallel: int = 1,
 ) -> float:
     """KV-cache VRAM (GB) at the larger of max_seq_length and any `--ctx-size`/`-c`
-    override, over n_parallel slots, with the default f16 cache so the estimate is
-    never below what the server allocates. 0 if metadata is unreadable."""
+    override, over n_parallel slots, at the cache precision the extras request, so
+    the estimate is never below what the server allocates. 0 if metadata is unreadable.
+
+    `--cache-type-k` / `--cache-type-v` are per-axis and may differ, so the type
+    comes from the SAME helper the llama.cpp load-time budget uses
+    (`_extra_args_main_cache_type_for_budget`): it reads each axis separately and
+    budgets the heavier one. Sharing that helper keeps this guard from drifting
+    below the launch budget, which a second copy of the parsing invites. None
+    (no explicit type) keeps llama.cpp's f16 default."""
     try:
+        from core.inference.llama_cpp import _extra_args_main_cache_type_for_budget
         from core.inference.llama_server_args import parse_ctx_override
 
         probe = LlamaCppBackend()
@@ -3842,10 +3850,16 @@ def _estimate_gguf_kv_gb(
             ctx_override = parse_ctx_override(llama_extra_args) or 0
         except Exception:
             ctx_override = 0  # malformed extras are rejected upstream; fall back
+        try:
+            cache_type_kv = _extra_args_main_cache_type_for_budget(llama_extra_args)
+        except Exception:
+            cache_type_kv = None  # malformed extras are rejected upstream; fall back
         ctx = max(max_seq_length or 0, ctx_override) or (probe._context_length or 0)
         if ctx <= 0:
             return 0.0
-        kv = probe._estimate_kv_cache_bytes(ctx, n_parallel = max(1, n_parallel or 1))
+        kv = probe._estimate_kv_cache_bytes(
+            ctx, cache_type_kv, n_parallel = max(1, n_parallel or 1)
+        )
         return kv / (1024**3)
     except Exception as e:
         logger.warning(f"Could not size GGUF KV cache for training guard: {e}")
