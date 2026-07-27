@@ -12,7 +12,7 @@ import type {
 } from "@/types/training";
 import type { BackendModelConfig } from "../api/models-api";
 
-export type LoraVariant = "lora" | "rslora" | "loftq";
+export type LoraVariant = "lora" | "rslora" | "loftq" | "dora";
 
 /** Column-to-role mapping, e.g. { "problem": "user", "solution": "assistant", "context": "system" } */
 export type DatasetManualMapping = Record<string, string>;

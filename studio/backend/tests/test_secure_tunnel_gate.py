@@ -85,6 +85,14 @@ def test_arg_parser_secure_polarity_and_not_secure_alias():
     assert parser.parse_args(["--not-secure", "--secure"]).secure is True
 
 
+def test_arg_parser_dns_pinning_opt_out_defaults_off():
+    import run
+
+    parser = run._build_arg_parser()
+    assert parser.parse_args([]).disable_dns_pinning is False
+    assert parser.parse_args(["--disable-dns-pinning"]).disable_dns_pinning is True
+
+
 def test_run_server_accepts_enable_tools_kwarg():
     import inspect
 

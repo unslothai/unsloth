@@ -346,7 +346,7 @@ class TestSourcePatternsSh:
 
     @pytest.fixture(autouse = True)
     def _load_source(self):
-        self.content = SETUP_SH.read_text()
+        self.content = SETUP_SH.read_text(encoding = "utf-8")
 
     def test_has_default_pr_force(self):
         assert '_DEFAULT_LLAMA_PR_FORCE=""' in self.content
@@ -412,7 +412,7 @@ class TestSourcePatternsPs1:
 
     @pytest.fixture(autouse = True)
     def _load_source(self):
-        self.content = SETUP_PS1.read_text()
+        self.content = SETUP_PS1.read_text(encoding = "utf-8")
 
     def test_has_default_pr_force(self):
         assert '$DefaultLlamaPrForce = ""' in self.content
