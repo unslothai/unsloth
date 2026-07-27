@@ -161,13 +161,17 @@ class ApiMonitor:
         model: str,
         reason: Optional[str] = None,
         running: bool = False,
-    ) -> str:
+    ) -> Optional[str]:
         """Record a model load/unload alongside the request traffic that caused it.
 
         ``running=True`` opens the row for the caller to close with :meth:`finish` /
         :meth:`fail`; an unload is terminal on arrival. Rows are shared (visible to
         every subject) and share the request retention budget.
+
+        Returns ``None`` when the monitor is disabled, same as :meth:`start`.
         """
+        if not self.enabled:
+            return None
         now = time.time()
         entry = ApiMonitorEntry(
             id = f"apievt_{uuid.uuid4().hex[:12]}",

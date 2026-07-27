@@ -77,6 +77,22 @@ def test_api_monitor_explicit_enabled_overrides_env(monkeypatch):
     assert len(monitor.snapshot()) == 1
 
 
+def test_api_monitor_disabled_skips_lifecycle_rows(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_API_MONITOR_LOGS", "1")
+    monitor = ApiMonitor(max_entries = 3)
+
+    # Load/unload rows carry no prompt text, but the flag turns the monitor off, not
+    # just its request logging -- leaving these on would keep the console populated.
+    load = monitor.record_lifecycle(event = "load", model = "org/A-GGUF", running = True)
+    assert load is None
+    monitor.relabel(load, "org/A-GGUF")
+    monitor.finish(load)
+    assert monitor.record_lifecycle(event = "unload", model = "org/A-GGUF") is None
+
+    assert monitor.snapshot() == []
+    assert monitor.active_count() == 0
+
+
 def test_monitor_route_reports_logging_enabled(monkeypatch):
     # Pinned rather than inherited: the module singleton reads the env var at import
     # time, so a developer running with logging off would otherwise flip this test.
