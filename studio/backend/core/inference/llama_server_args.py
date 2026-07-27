@@ -118,6 +118,7 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
     parse_ctx_override(out)
     parse_cache_override(out)
     parse_split_mode_override(out)
+    parse_gpu_layers_override(out)
     return out
 
 
@@ -193,9 +194,8 @@ _SPLIT_SHADOWING_FLAGS: frozenset[str] = _SPLIT_MODE_FLAGS | _TENSOR_SPLIT_FLAGS
 # inherited -ngl is respected (the offload_overridden path), so this group is
 # opt-in, not default. Layer flags are shared with llama_cpp's override
 # detection; the MoE flags are strip-only (manual's --n-cpu-moe slider owns them).
-_LAYER_OFFLOAD_FLAGS: frozenset[str] = frozenset(
-    {"-ngl", "--gpu-layers", "--n-gpu-layers", "-fit", "--fit"}
-)
+_GPU_LAYER_FLAGS: frozenset[str] = frozenset({"-ngl", "--gpu-layers", "--n-gpu-layers"})
+_LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | frozenset({"-fit", "--fit"})
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
 
@@ -304,6 +304,26 @@ def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
     Unsloth's KV estimate has a single cache_type_kv knob.
     """
     return _last_flag_value(args, _CACHE_FLAGS)
+
+
+def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
+    """Return the last user-supplied GPU layer count from extras.
+
+    Manual GPU memory mode strips llama.cpp offload flags because the
+    first-class load fields own them. Callers use this parser first to preserve
+    an explicit ``-ngl`` / ``--gpu-layers`` / ``--n-gpu-layers`` value when
+    translating the extras into those fields.
+    """
+    raw_value = _last_flag_value(args, _GPU_LAYER_FLAGS)
+    if raw_value is None:
+        return None
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("llama-server GPU layers flag requires an integer value") from exc
+    if value < -1:
+        raise ValueError("llama-server GPU layers flag requires an integer value of at least -1")
+    return value
 
 
 def parse_cache_override_per_axis(

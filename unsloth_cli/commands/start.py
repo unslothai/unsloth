@@ -4,6 +4,7 @@
 """`unsloth start` — launch a coding agent against a running Unsloth server."""
 
 import atexit
+import base64
 import contextlib
 import json
 import os
@@ -19,7 +20,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import NamedTuple, NoReturn, Optional
+from typing import Literal, NamedTuple, NoReturn, Optional
 from urllib.parse import urlencode, urlparse
 
 import click
@@ -84,8 +85,33 @@ _SUBAGENT_INSTRUCTIONS = (
     "use the available tools when useful, verify your work, and return a concise result to the "
     "parent agent."
 )
+_SUBAGENT_PLAN_DESCRIPTION = (
+    "Read-only local coding subagent powered by Unsloth for planning and codebase research. "
+    "Use this local agent when Claude is in plan mode."
+)
+_SUBAGENT_PLAN_INSTRUCTIONS = (
+    "You are a read-only local coding subagent powered by Unsloth. Investigate the assigned "
+    "task with read-only tools, produce a concrete plan or answer, and return a concise result "
+    "to the parent agent. Do not modify files."
+)
 _CLAUDE_SUBAGENT_MCP_MODULE = "unsloth_cli.claude_subagent_mcp"
 _CLAUDE_SUBAGENT_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_agent"
+_CLAUDE_SUBAGENT_PLAN_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_plan_agent"
+_CODEX_SUBAGENT_MCP_MODULE = "unsloth_cli.codex_subagent_mcp"
+_CODEX_SUBAGENT_MCP_SERVER = "unsloth_local_agent"
+_CODEX_SUBAGENT_MCP_TOOL = "spawn_local_agent"
+_CODEX_SUBAGENT_CONFIG_ENV = "UNSLOTH_CODEX_SUBAGENT_CONFIG"
+_CODEX_PARENT_OVERLAY_MANIFEST = ".unsloth-parent-overlay.json"
+_CODEX_SUBAGENT_TOOL_DESCRIPTION = (
+    f"{_SUBAGENT_DESCRIPTION} Use this tool instead of the built-in spawn_agent tool for those "
+    "requests. Other subagent requests may use the built-in tools normally."
+)
+_CODEX_SUBAGENT_ROUTING_INSTRUCTIONS = (
+    "When the user asks to spawn an Unsloth agent or local agent, you must call the "
+    "spawn_local_agent MCP tool once with the complete task. Do not answer, simulate the "
+    "result, call wait, or use a built-in subagent before calling the tool. Use built-in "
+    "subagents for other delegation requests."
+)
 _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
 # OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid
 # colliding with a user's providers; provider filters are set in the launch-time overlay.
@@ -113,12 +139,14 @@ class _PassthroughCommand(TyperCommand):
 
 
 _CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
+_CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 
 # Shared by every agent command; only the config/env/command differ.
 # Help is grouped into rich panels so `--help` reads as Model / Server / Session
 # instead of one long unaligned list.
 _PANEL_MODEL = "Model"
 _PANEL_SERVER = "Server"
+_PANEL_SAMPLING = "Sampling"
 _PANEL_SESSION = "Agent session"
 
 _MODEL_OPTION = typer.Option(
@@ -155,6 +183,17 @@ _TENSOR_PARALLEL_OPTION = typer.Option(
     rich_help_panel = _PANEL_MODEL,
     help = "Split a GGUF across GPUs by tensor instead of by layer (multi-GPU only).",
 )
+_GPU_MEMORY_MODE_OPTION = typer.Option(
+    None,
+    "--gpu-memory-mode",
+    rich_help_panel = _PANEL_MODEL,
+    help = (
+        "GPU memory strategy for GGUF models loaded by this command. Auto lets "
+        "Unsloth manage placement. Manual with default layers and context delegates "
+        "placement and sizing to llama.cpp --fit. Omit when attaching to preserve "
+        "the running model's mode."
+    ),
+)
 
 # Server knobs. Only used when `unsloth start` auto-starts the server (--serve);
 # they have no effect when attaching to a server someone else already started.
@@ -185,6 +224,56 @@ _TOOL_CALL_NUDGING_OPTION = typer.Option(
     rich_help_panel = _PANEL_SERVER,
     help = "Retry once with a nudge when a non-streaming passthrough tool call can't be healed. "
     "On by default; when the flag is omitted an inherited UNSLOTH_TOOL_CALL_NUDGE is kept.",
+)
+# Sampling overrides pin a value on the auto-started server (winning over the client and the
+# per-model recommendation). Default unset -> the model's recommended sampling is used.
+_TEMPERATURE_OPTION = typer.Option(
+    None,
+    "--temperature",
+    min = 0.0,
+    max = 2.0,
+    rich_help_panel = _PANEL_SAMPLING,
+    help = "Pin the sampling temperature. Default: unset (per-model recommendation).",
+)
+_TOP_P_OPTION = typer.Option(
+    None,
+    "--top-p",
+    min = 0.0,
+    max = 1.0,
+    rich_help_panel = _PANEL_SAMPLING,
+    help = "Pin top-p (nucleus) sampling. Default: unset (per-model recommendation).",
+)
+_TOP_K_OPTION = typer.Option(
+    None,
+    "--top-k",
+    min = -1,
+    max = 100,
+    rich_help_panel = _PANEL_SAMPLING,
+    help = "Pin top-k sampling. Default: unset (per-model recommendation).",
+)
+_MIN_P_OPTION = typer.Option(
+    None,
+    "--min-p",
+    min = 0.0,
+    max = 1.0,
+    rich_help_panel = _PANEL_SAMPLING,
+    help = "Pin min-p sampling threshold. Default: unset (per-model recommendation).",
+)
+_REPETITION_PENALTY_OPTION = typer.Option(
+    None,
+    "--repetition-penalty",
+    min = 1.0,
+    max = 2.0,
+    rich_help_panel = _PANEL_SAMPLING,
+    help = "Pin the repetition penalty. Default: unset (per-model recommendation).",
+)
+_PRESENCE_PENALTY_OPTION = typer.Option(
+    None,
+    "--presence-penalty",
+    min = 0.0,
+    max = 2.0,
+    rich_help_panel = _PANEL_SAMPLING,
+    help = "Pin the presence penalty. Default: unset (per-model recommendation).",
 )
 
 # Agent-session knobs.
@@ -381,6 +470,7 @@ class LoadOptions(NamedTuple):
     max_seq_length: int = 0
     load_in_4bit: bool = True
     tensor_parallel: bool = False
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
 
 
 class ServerOptions(NamedTuple):
@@ -389,6 +479,12 @@ class ServerOptions(NamedTuple):
     enable_tools: bool = False
     tool_call_healing: Optional[bool] = None
     tool_call_nudging: Optional[bool] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    min_p: Optional[float] = None
+    repetition_penalty: Optional[float] = None
+    presence_penalty: Optional[float] = None
 
 
 def _split_repo_variant(model: str) -> tuple:
@@ -476,11 +572,18 @@ def _subagent_model_id(
             )
         if status.get("is_gguf"):
             variant = status.get("gguf_variant")
-    return (
-        _display_model_spec(model_id, str(variant))
-        if variant and _is_hub_model_id(model_id)
-        else model_id
-    )
+    if variant and _is_hub_model_id(model_id):
+        return _display_model_spec(model_id, str(variant))
+    if variant:
+        # A path load is advertised as a bare basename with no ":variant" channel,
+        # so the quant cannot be recorded and a later reload picks for itself.
+        typer.echo(
+            f"Warning: {model_id} loaded from a path, so the subagent config cannot "
+            f"pin the {variant} quant; a reload may choose a different one. Load the "
+            "model by repository id to pin it.",
+            err = True,
+        )
+    return model_id
 
 
 def _fail(message: str) -> NoReturn:
@@ -489,9 +592,8 @@ def _fail(message: str) -> NoReturn:
 
 
 def _reject_as_subagent(agent: str, args: list) -> None:
-    # Reject early; otherwise the flag reaches the agent binary and fails after
-    # Studio has already loaded the model.
-    if "--as-subagent" in args:
+    # Reject early, or the flag reaches the agent binary after Studio loaded the model.
+    if any(arg == "--as-subagent" or arg.startswith("--as-subagent=") for arg in args):
         _fail(f"--as-subagent is not supported for {agent}.")
 
 
@@ -903,6 +1005,8 @@ def _start_studio_server(
         command += ["--no-load-in-4bit"]
     if load.tensor_parallel:
         command += ["--tensor-parallel"]
+    if load.gpu_memory_mode is not None:
+        command += ["--gpu-memory-mode", load.gpu_memory_mode]
 
     log_path = Path(tempfile.gettempdir()) / f"unsloth-start-server-{os.getpid()}.log"
     typer.echo("Starting Unsloth server")
@@ -932,6 +1036,18 @@ def _start_studio_server(
         child_env["UNSLOTH_TOOL_CALL_NUDGE"] = "1" if server.tool_call_nudging else "0"
     elif "UNSLOTH_TOOL_CALL_NUDGE" not in child_env:
         child_env["UNSLOTH_TOOL_CALL_NUDGE"] = "1"
+    # Forward any sampling pin via the env; `unsloth run` reads UNSLOTH_SAMPLING_* and the
+    # backend resolver applies it as a hard override. Only set fields the operator specified.
+    for _sampling_env, _sampling_value in (
+        ("UNSLOTH_SAMPLING_TEMPERATURE", server.temperature),
+        ("UNSLOTH_SAMPLING_TOP_P", server.top_p),
+        ("UNSLOTH_SAMPLING_TOP_K", server.top_k),
+        ("UNSLOTH_SAMPLING_MIN_P", server.min_p),
+        ("UNSLOTH_SAMPLING_REPETITION_PENALTY", server.repetition_penalty),
+        ("UNSLOTH_SAMPLING_PRESENCE_PENALTY", server.presence_penalty),
+    ):
+        if _sampling_value is not None:
+            child_env[_sampling_env] = str(_sampling_value)
     kwargs: dict = {
         "stdout": log,
         "stderr": subprocess.STDOUT,
@@ -1019,6 +1135,30 @@ def _require_studio(
     """Return (base, server). server is a Popen only when WE auto-started it."""
     base = find_studio_server()
     if base is not None:
+        # Attaching to a server someone else started: UNSLOTH_SAMPLING_* pins only reach the
+        # server process when WE launch it (via _start_studio_server), so a sampling flag on the
+        # attach path can't take effect. Warn instead of silently dropping it, so the operator is
+        # not misled into thinking generation now uses the pinned value.
+        _pinned = [
+            _flag
+            for _flag, _value in (
+                ("--temperature", server_options.temperature),
+                ("--top-p", server_options.top_p),
+                ("--top-k", server_options.top_k),
+                ("--min-p", server_options.min_p),
+                ("--repetition-penalty", server_options.repetition_penalty),
+                ("--presence-penalty", server_options.presence_penalty),
+            )
+            if _value is not None
+        ]
+        if _pinned:
+            typer.echo(
+                f"Warning: an Unsloth server is already running at {base}; sampling pins "
+                f"({', '.join(_pinned)}) apply only when this command starts the server, so the "
+                "running server keeps its current sampling. Stop it with `unsloth studio stop` "
+                "and re-run to apply them.",
+                err = True,
+            )
         return base, None
     expected = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
     # Auto-start a local server only for an interactive launch with a model to serve, and
@@ -1091,6 +1231,13 @@ def _write_private_json(path: Path, data: dict) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as handle:
         handle.write(json.dumps(data, indent = 2) + "\n")
+
+
+def _write_private_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+        handle.write(text)
 
 
 def _read_json_object(path: Path) -> Optional[dict]:
@@ -1260,6 +1407,37 @@ def _is_hub_model_id(value: object) -> bool:
     return True
 
 
+def _is_model_path(value: str) -> bool:
+    """Mirrors core.inference.model_ids._looks_like_path: a repo id is exactly
+    ``org/model``; anything else with a separator, drive, prefix or .gguf is a path.
+
+    Deliberately not named _looks_like_path: that name is taken further down by the
+    WSLENV classifier, which only matches absolute paths and would shadow this one.
+    """
+    if value.lower().endswith(".gguf"):
+        return True
+    if value.startswith(("/", "\\", "./", "../", ".\\", "..\\", "~")):
+        return True
+    if len(value) >= 2 and value[1] == ":":
+        return True
+    return value.count("/") >= 2 or "\\" in value
+
+
+def _public_model_id(value: Optional[str]) -> Optional[str]:
+    """The id Unsloth advertises for a model loaded by path.
+
+    /v1/models never echoes a host path: it reports the file or directory name
+    with any .gguf suffix stripped (core.inference.model_ids.public_model_id), so
+    a path we asked to load has to be matched by that name too.
+    """
+    if not value or not _is_model_path(value):
+        return None
+    name = os.path.basename(value.replace("\\", "/").rstrip("/"))
+    if name.lower().endswith(".gguf"):
+        name = name[: -len(".gguf")]
+    return name or None
+
+
 def _model_id_matches(
     actual: object,
     requested: object,
@@ -1299,7 +1477,11 @@ def _resolve_model(
     # without reloading when the variant AND settings match, so a second session running
     # the same command still attaches without evicting the first.
     load_has_overrides = bool(
-        load.gguf_variant or load.max_seq_length or not load.load_in_4bit or load.tensor_parallel
+        load.gguf_variant
+        or load.max_seq_length
+        or not load.load_in_4bit
+        or load.tensor_parallel
+        or load.gpu_memory_mode is not None
     )
     # /v1/models also lists cached-but-unloaded catalog entries (loaded == False);
     # matching one would skip /api/inference/load and leave the agent pointed at a
@@ -1353,6 +1535,10 @@ def _resolve_model(
             payload["load_in_4bit"] = False
         if load.tensor_parallel:
             payload["tensor_parallel"] = True
+        if load.gpu_memory_mode is not None:
+            payload["gpu_memory_mode"] = load.gpu_memory_mode
+            if load.gpu_memory_mode == "manual":
+                payload["gpu_layers"] = -1
         loaded = _load_model_with_progress(base, key, requested, load, payload)
         if loaded.get("status") == "already_loaded":
             typer.echo(f"Reusing loaded model: {_display_model_spec(requested, load.gguf_variant)}")
@@ -1360,7 +1546,7 @@ def _resolve_model(
         # casing) that /v1/models echoes but which may differ from the path we
         # passed; match on the id the load reports so we don't silently fall
         # through to models[0] and connect to a different loaded model.
-        wanted = {requested}
+        wanted = {requested, _public_model_id(requested)} - {None}
         if isinstance(loaded, dict):
             wanted |= {loaded.get("model"), loaded.get("display_name")} - {None}
         models = _loaded_models(base, key)
@@ -1422,10 +1608,18 @@ _DYNAMIC_SECTIONS_FLAG = "--exclude-dynamic-system-prompt-sections"
 
 def _claude_settings_overlay(model_id: str) -> str:
     # Session-only `claude --settings` overlay (command-line tier, no ~/.claude write):
-    # suppress the attribution header, and pin availableModels to the served model so a
-    # user allowlist can't reject it. The pin must be non-empty; [] is ignored.
+    # suppress the attribution header, keep every subagent on the served model (a user
+    # CLAUDE_CODE_SUBAGENT_MODEL pin would otherwise route delegated work off the local
+    # endpoint), and pin availableModels to the served model so a user allowlist can't
+    # reject it. The pin must be non-empty; [] is ignored.
     return json.dumps(
-        {"env": {"CLAUDE_CODE_ATTRIBUTION_HEADER": "0"}, "availableModels": [model_id]}
+        {
+            "env": {
+                "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+                "CLAUDE_CODE_SUBAGENT_MODEL": "inherit",
+            },
+            "availableModels": [model_id],
+        }
     )
 
 
@@ -1591,60 +1785,212 @@ def write_codex_config(base: str, model: dict, home: Path) -> None:
         typer.echo(f"Updated {profile}")
 
 
-def write_codex_subagent_config(base: str, key: str, model: dict, home: Path) -> Path:
-    """Write a session-scoped Codex custom agent without replacing the main model."""
-    home.mkdir(parents = True, exist_ok = True)
-    model_id = model["id"]
-    window = model.get("context_length") or model.get("max_context_length")
-    catalog_name = "unsloth-model-catalog.json"
-    text = (
-        f"name = {json.dumps(_SUBAGENT_NAME)}\n"
-        f"description = {json.dumps(_SUBAGENT_DESCRIPTION)}\n"
-        f"developer_instructions = {json.dumps(_SUBAGENT_INSTRUCTIONS)}\n"
-        f"model_provider = {json.dumps(_CODEX_PROFILE)}\n"
-        f"model = {json.dumps(model_id)}\n"
+def write_codex_subagent_bridge(
+    base: str, key: str, model: dict, home: Path, *, yolo: bool
+) -> Path:
+    """Write private config for an explicit local Codex child launched through MCP."""
+    child_home = home / "child"
+    write_codex_config(base, model, child_home)
+    path = home / "subagent.json"
+    _write_private_json(
+        path,
+        {
+            "api_key": key,
+            "codex_home": str(child_home),
+            "bypass_permissions": yolo,
+        },
     )
-    if _codex_supports_model_catalog() and _CODEX_FALLBACK_PROMPT.is_file():
-        catalog = home / catalog_name
-        catalog_text = json.dumps(_codex_model_catalog(model), indent = 2) + "\n"
-        if not catalog.exists() or catalog.read_text(encoding = "utf-8") != catalog_text:
-            catalog.write_text(catalog_text, encoding = "utf-8")
-            typer.echo(f"Updated {catalog}")
-        text += f"model_catalog_json = {json.dumps(catalog_name)}\n"
-    if window:
-        text += f"model_context_window = {int(window)}\n"
-    credential = home / "unsloth-auth.json"
-    _write_private_json(credential, {"token": key})
-    auth_command = sys.executable
-    auth_args = [
-        "-c",
-        "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8'))['token'])",
-        str(credential),
-    ]
-    if _wsl_windows_executable(["codex"]):
-        auth_command = "wsl.exe"
-        auth_args = [
-            "-d",
-            os.environ["WSL_DISTRO_NAME"],
-            "--",
-            sys.executable,
-            *auth_args,
-        ]
-    text += (
-        f"\n{_PROVIDER_HEADER}\n"
-        'name = "Unsloth Studio"\n'
-        f"base_url = {json.dumps(base + '/v1')}\n"
-        'wire_api = "responses"\n'
-        f"\n{_PROVIDER_HEADER[:-1]}.auth]\n"
-        f"command = {json.dumps(auth_command)}\n"
-        f"args = {json.dumps(auth_args)}\n"
-        "timeout_ms = 5000\n"
-    )
-    path = home / f"{_SUBAGENT_NAME}.toml"
-    if not path.exists() or path.read_text(encoding = "utf-8") != text:
-        path.write_text(text, encoding = "utf-8")
-        typer.echo(f"Updated {path}")
     return path
+
+
+def _wsl_windows_user_profile(executable: str) -> Path:
+    """Return the Windows user profile as a path accessible from WSL."""
+    profile = os.environ.get("USERPROFILE", "").strip()
+    if not profile:
+        try:
+            profile = subprocess.check_output(
+                ["cmd.exe", "/d", "/c", "echo %USERPROFILE%"],
+                text = True,
+                stderr = subprocess.DEVNULL,
+                cwd = str(Path(executable).parent),
+            ).strip()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            _fail(f"Could not find the Windows user profile for Codex: {exc}")
+    if not profile or profile == "%USERPROFILE%":
+        _fail("Could not find the Windows user profile for Codex.")
+    if profile.startswith("/"):
+        return Path(profile)
+    try:
+        translated = subprocess.check_output(
+            ["wslpath", "-u", profile],
+            text = True,
+            stderr = subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        _fail(f"Could not translate Windows user profile {profile}: {exc}")
+    if not translated:
+        _fail(f"Could not translate Windows user profile {profile}.")
+    return Path(translated)
+
+
+def _codex_source_home(*, ignore_configured: bool = False) -> Path:
+    configured = None if ignore_configured else os.environ.get("CODEX_HOME")
+    if configured:
+        if _wsl_windows_executable(["codex"]) and _looks_like_path(configured):
+            if not configured.startswith("/"):
+                try:
+                    configured = subprocess.check_output(
+                        ["wslpath", "-u", configured],
+                        text = True,
+                        stderr = subprocess.DEVNULL,
+                    ).strip()
+                except (OSError, subprocess.CalledProcessError) as exc:
+                    _fail(f"Could not translate Windows CODEX_HOME {configured}: {exc}")
+                if not configured:
+                    _fail("Could not translate Windows CODEX_HOME.")
+        return Path(configured).expanduser()
+    executable = _wsl_windows_executable(["codex"])
+    if executable:
+        return _wsl_windows_user_profile(executable) / ".codex"
+    return Path.home() / ".codex"
+
+
+def _remove_overlay_entry(path: Path) -> None:
+    is_junction = getattr(path, "is_junction", None)
+    if is_junction and is_junction():
+        path.rmdir()
+    elif path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
+def _create_directory_junction(source: Path, target: Path) -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        result = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(target), str(source)],
+            capture_output = True,
+            text = True,
+            timeout = 30,
+            check = False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def write_codex_parent_overlay(overlay: Path) -> Path:
+    """Add local-agent routing without replacing the cloud parent's configuration."""
+    overlay.mkdir(parents = True, exist_ok = True, mode = 0o700)
+
+    manifest_path = overlay / _CODEX_PARENT_OVERLAY_MANIFEST
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        manifest = None
+    source_home = _codex_source_home()
+    overlay_key = str(overlay.resolve(strict = False))
+    source_key = str(source_home.resolve(strict = False))
+    if source_key == overlay_key:
+        previous_source = manifest.get("source_home") if isinstance(manifest, dict) else None
+        if isinstance(previous_source, str) and previous_source:
+            candidate = Path(previous_source).expanduser()
+            if str(candidate.resolve(strict = False)) != overlay_key:
+                source_home = candidate
+            else:
+                source_home = _codex_source_home(ignore_configured = True)
+        else:
+            source_home = _codex_source_home(ignore_configured = True)
+        source_key = str(source_home.resolve(strict = False))
+    same_source = isinstance(manifest, dict) and manifest.get("source_home") == source_key
+    if same_source:
+        managed_entries = manifest.get("entries", [])
+        if not isinstance(managed_entries, list):
+            managed_entries = []
+        for name in managed_entries:
+            if isinstance(name, str) and name not in {"", ".", ".."} and Path(name).name == name:
+                _remove_overlay_entry(overlay / name)
+    else:
+        # A reused overlay must never mix credentials, config, or plugins from two
+        # different Codex homes. Legacy overlays have no manifest, so rebuild them once.
+        for target in list(overlay.iterdir()):
+            _remove_overlay_entry(target)
+
+    # Keep the user's auth, config, plugins, agents, skills, rules, and session state visible.
+    # Symlinks make this an overlay rather than a stale copy. If Windows denies them,
+    # use directory junctions so large runtime state remains shared without a bulk copy.
+    # Copy the configuration surfaces and sessions only if both link forms are unavailable.
+    fallback_dirs = {"agents", "skills", "rules", "plugins", "marketplaces", "sessions"}
+    entries = []
+    if source_home.is_dir():
+        for source in source_home.iterdir():
+            if source.name in {
+                "AGENTS.md",
+                "AGENTS.override.md",
+                _CODEX_PARENT_OVERLAY_MANIFEST,
+            }:
+                continue
+            target = overlay / source.name
+            _remove_overlay_entry(target)
+            try:
+                target.symlink_to(source, target_is_directory = source.is_dir())
+                entries.append(source.name)
+            except OSError:
+                if source.is_file():
+                    shutil.copy2(source, target)
+                    entries.append(source.name)
+                elif source.is_dir():
+                    if _create_directory_junction(source, target):
+                        entries.append(source.name)
+                    elif source.name in fallback_dirs:
+                        shutil.copytree(source, target)
+                        entries.append(source.name)
+
+    _write_private_json(
+        manifest_path,
+        {"source_home": source_key, "entries": sorted(entries)},
+    )
+
+    inherited = ""
+    instruction_name = "AGENTS.md"
+    for candidate in (source_home / "AGENTS.override.md", source_home / "AGENTS.md"):
+        try:
+            text = candidate.read_text(encoding = "utf-8")
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            _fail(f"Could not preserve Codex instructions from {candidate}: {exc}")
+        if text.strip():
+            inherited = text.rstrip()
+            instruction_name = candidate.name
+            break
+
+    other_name = "AGENTS.md" if instruction_name == "AGENTS.override.md" else "AGENTS.override.md"
+    other = overlay / other_name
+    if other.is_file() or other.is_symlink():
+        other.unlink()
+    routing = _CODEX_SUBAGENT_ROUTING_INSTRUCTIONS
+    combined = f"{inherited}\n\n{routing}\n" if inherited else f"{routing}\n"
+    _write_private_text(overlay / instruction_name, combined)
+    return overlay
+
+
+@contextlib.contextmanager
+def _codex_parent_overlay(session_home: Path, *, launch: bool, persist: bool):
+    if launch and not persist:
+        temp_root = _agents_config_root() / ".tmp"
+        temp_root.mkdir(parents = True, exist_ok = True, mode = 0o700)
+        overlay = Path(tempfile.mkdtemp(prefix = "codex-parent-", dir = temp_root))
+        try:
+            yield write_codex_parent_overlay(overlay)
+        finally:
+            shutil.rmtree(overlay, ignore_errors = True)
+    else:
+        yield write_codex_parent_overlay(session_home / "parent")
 
 
 def _agent_config_path(path: Path, command: list) -> str:
@@ -1668,7 +2014,15 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
     def merge_provider_filters(effective_config: dict) -> None:
         enabled = effective_config.get("enabled_providers")
         if isinstance(enabled, list):
-            inline["enabled_providers"] = list(dict.fromkeys([*enabled, _OPENCODE_PROVIDER]))
+            inherited_enabled = inline.get("enabled_providers")
+            if not isinstance(inherited_enabled, list):
+                inherited_enabled = []
+            providers = [
+                provider
+                for provider in [*inherited_enabled, *enabled]
+                if provider != _OPENCODE_PROVIDER
+            ]
+            inline["enabled_providers"] = list(dict.fromkeys([*providers, _OPENCODE_PROVIDER]))
         disabled = effective_config.get("disabled_providers")
         if isinstance(disabled, list) and _OPENCODE_PROVIDER in disabled:
             inline["disabled_providers"] = [
@@ -1721,6 +2075,32 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
     return inline
 
 
+def _b64_path(path: Path) -> str:
+    """Path as base64, so it can cross a shell without being expanded."""
+    return base64.b64encode(str(path).encode("utf-8")).decode("ascii")
+
+
+_CLAUDE_PLAN_GATE_SCRIPT = '''\
+"""Deny the editing agent while the parent session is in plan mode."""
+import json, sys
+
+try:
+    mode = (json.load(sys.stdin) or {}).get("permission_mode")
+except Exception:
+    sys.exit(0)  # fail open: a hook error must never block the parent session
+if mode == "plan":
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": (
+            "Plan mode is active. Call the read-only Unsloth plan agent "
+            "(unsloth_plan_agent) instead of unsloth_agent."
+        ),
+    }}))
+sys.exit(0)
+'''
+
+
 def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
     """Write a session plugin that exposes the local Claude child through MCP."""
     plugin = path / "unsloth-local-agent"
@@ -1763,6 +2143,52 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
             }
         },
     )
+    # Claude already refuses the editing tool in plan mode, since it advertises
+    # readOnlyHint false. This PreToolUse hook replaces that dead end with a reason
+    # naming the read-only tool to call instead. Skipped under the WSL bridge, where
+    # the gate is a Linux path but the hook would run beside the Windows claude.
+    gate = plugin / "hooks" / "plan_gate.py"
+    if command == "wsl.exe":
+        # A persisted plugin dir may still hold a gate from an earlier non-WSL run.
+        for stale in (gate, plugin / "hooks" / "hooks.json"):
+            stale.unlink(missing_ok = True)
+    else:
+        _write_private_text(gate, _CLAUDE_PLAN_GATE_SCRIPT)
+        _write_private_json(
+            plugin / "hooks" / "hooks.json",
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": _CLAUDE_SUBAGENT_TOOL,
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    # Run through runpy rather than handing the path to
+                                    # the interpreter: a missing gate is then an
+                                    # ordinary traceback (exit 1, fails open) instead
+                                    # of exit 2, which Claude treats as a blocking
+                                    # error and would deny the tool in every mode.
+                                    # The path is base64'd because this string goes
+                                    # through a shell: a temp root holding $(..) or a
+                                    # backtick expands under sh, %VAR% under cmd, and
+                                    # the gate then silently fails open. base64's
+                                    # alphabet has no metacharacter in either.
+                                    "command": (
+                                        f'"{sys.executable}" -c '
+                                        f'"import base64,runpy; runpy.run_path('
+                                        f"base64.b64decode('{_b64_path(gate)}').decode())\""
+                                    ),
+                                    # A hook with no timeout stalls the parent for as
+                                    # long as it hangs; measured unbounded past 400s.
+                                    "timeout": 10,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            },
+        )
     skill = plugin / "skills" / "local-agent" / "SKILL.md"
     skill.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
     skill.write_text(
@@ -1770,25 +2196,42 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
         "description: Delegate a task to the local agent powered by Unsloth. Use when the "
         "user asks to spawn an Unsloth agent or local agent.\n"
         "---\n\n"
-        "Call the Unsloth local agent tool once with the complete task. Return its result "
-        "to the user without claiming that the cloud parent completed the local work.\n",
+        "Call the Unsloth local agent tool once with the complete task. In plan mode, call "
+        "the read-only Unsloth plan agent instead. Return its result to the user without "
+        "claiming that the cloud parent completed the local work.\n",
         encoding = "utf-8",
     )
     return plugin
 
 
 def _codex_subagent_flags(path: Path) -> list[str]:
-    config_path = _agent_config_path(path, ["codex"])
-    return [
-        "--enable",
-        "multi_agent",
-        "-c",
-        "agents.max_depth=1",
-        "-c",
-        f"agents.{_SUBAGENT_NAME}.description={json.dumps(_SUBAGENT_DESCRIPTION)}",
-        "-c",
-        f"agents.{_SUBAGENT_NAME}.config_file={json.dumps(config_path)}",
-    ]
+    command = sys.executable
+    package_root = str(Path(__file__).resolve().parents[2])
+    bootstrap = (
+        f"import sys;sys.path.insert(0,{json.dumps(package_root)});"
+        f"from {_CODEX_SUBAGENT_MCP_MODULE} import main;main()"
+    )
+    args = ["-c", bootstrap, str(path)]
+    if _wsl_windows_executable(["codex"]):
+        command = "wsl.exe"
+        args = [
+            "-d",
+            os.environ["WSL_DISTRO_NAME"],
+            "--",
+            sys.executable,
+            "-c",
+            bootstrap,
+            str(path),
+        ]
+    server = (
+        "{ "
+        f"command = {json.dumps(command)}, "
+        f"args = {json.dumps(args)}, "
+        f"required = true, enabled_tools = [{json.dumps(_CODEX_SUBAGENT_MCP_TOOL)}], "
+        'default_tools_approval_mode = "approve", '
+        "startup_timeout_sec = 15, tool_timeout_sec = 3600 }"
+    )
+    return ["-c", f"mcp_servers.{_CODEX_SUBAGENT_MCP_SERVER}={server}"]
 
 
 def _wsl_windows_executable(command: list) -> Optional[str]:
@@ -2110,6 +2553,11 @@ def _launch(
         for name in unset_env:
             child_env.pop(name, None)
     child_env.update(env)
+    if os.name != "nt" and not wsl_env_bridge:
+        # Keep POSIX child processes from seeing a stale inherited PWD when
+        # subprocess cwd was changed by the caller. Some Node CLIs use PWD for
+        # project-root discovery instead of process.cwd().
+        child_env["PWD"] = os.getcwd()
     # Ctrl+C cancels a turn inside the agent; don't let it kill this wrapper.
     previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
@@ -2563,7 +3011,13 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
         typer.echo(f"Updated {path}")
 
 
-def write_pi_subagent_config(base: str, key: str, model: dict, path: Path) -> None:
+def write_pi_subagent_config(
+    base: str,
+    key: str,
+    model: dict,
+    path: Path,
+    approve: bool = False,
+) -> None:
     """Write private bootstrap data for the bundled Pi extension."""
     window = model.get("context_length") or model.get("max_context_length")
     window = int(window) if window else 32768
@@ -2575,6 +3029,7 @@ def write_pi_subagent_config(base: str, key: str, model: dict, path: Path) -> No
             "model": model["id"],
             "contextWindow": window,
             "maxTokens": min(window // 4, 8192),
+            "approve": approve,
         },
     )
 
@@ -2589,9 +3044,16 @@ def claude(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -2603,10 +3065,20 @@ def claude(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
         serve = serve,
         launch = launch,
-        server_options = ServerOptions(enable_tools, tool_call_healing, tool_call_nudging),
+        server_options = ServerOptions(
+            enable_tools = enable_tools,
+            tool_call_healing = tool_call_healing,
+            tool_call_nudging = tool_call_nudging,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+        ),
     )
     model_id = entry["id"]
     install_hint = (
@@ -2634,7 +3106,7 @@ def claude(
                 _agent_config_path(plugin, ["claude"]),
                 # Before ctx.args: a forwarded `--` would turn later flags positional.
                 "--allowedTools",
-                _CLAUDE_SUBAGENT_TOOL,
+                f"{_CLAUDE_SUBAGENT_TOOL},{_CLAUDE_SUBAGENT_PLAN_TOOL}",
                 *_yolo_command_flags("claude", yolo),
                 *ctx.args,
             ]
@@ -2690,9 +3162,16 @@ def codex(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -2704,10 +3183,20 @@ def codex(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
         serve = serve,
         launch = launch,
-        server_options = ServerOptions(enable_tools, tool_call_healing, tool_call_nudging),
+        server_options = ServerOptions(
+            enable_tools = enable_tools,
+            tool_call_healing = tool_call_healing,
+            tool_call_nudging = tool_call_nudging,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+        ),
     )
     # This preflight runs after _connect may have auto-started a server but before _run
     # takes over its lifecycle, so tear the server down here if it rejects the model
@@ -2721,25 +3210,32 @@ def codex(
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
         subagent_model = {**entry, "id": subagent_id}
         with _session_config("codex-subagent", launch, persist = persist) as home:
-            agent_config = write_codex_subagent_config(base, key, subagent_model, home)
-            command = [
-                "codex",
-                *_codex_subagent_flags(agent_config),
-                *_yolo_command_flags("codex", yolo),
-                *ctx.args,
-            ]
-            typer.echo(
-                "Unsloth is available as the `unsloth` local agent. "
-                "Ask Codex to spawn an Unsloth or local agent."
-            )
-            _run(
+            bridge_config = write_codex_subagent_bridge(
                 base,
+                key,
                 subagent_model,
-                {},
-                command,
-                launch = launch,
-                install_hint = "npm install -g @openai/codex",
+                home,
+                yolo = yolo,
             )
+            with _codex_parent_overlay(home, launch = launch, persist = persist) as parent_home:
+                command = [
+                    "codex",
+                    *_codex_subagent_flags(bridge_config),
+                    *_yolo_command_flags("codex", yolo),
+                    *ctx.args,
+                ]
+                typer.echo(
+                    "Unsloth is available as a local agent. "
+                    "Ask Codex to spawn an Unsloth or local agent."
+                )
+                _run(
+                    base,
+                    subagent_model,
+                    {"CODEX_HOME": str(parent_home)},
+                    command,
+                    launch = launch,
+                    install_hint = "npm install -g @openai/codex",
+                )
         return
     command = [
         "codex",
@@ -2765,9 +3261,16 @@ def openclaw(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -2779,10 +3282,20 @@ def openclaw(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
         serve = serve,
         launch = launch,
-        server_options = ServerOptions(enable_tools, tool_call_healing, tool_call_nudging),
+        server_options = ServerOptions(
+            enable_tools = enable_tools,
+            tool_call_healing = tool_call_healing,
+            tool_call_nudging = tool_call_nudging,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+        ),
     )
     openclaw_args = list(ctx.args)
     # Default a bare `unsloth start openclaw` to the local TUI. Anything the caller
@@ -2829,9 +3342,16 @@ def opencode(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -2843,10 +3363,20 @@ def opencode(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
         serve = serve,
         launch = launch,
-        server_options = ServerOptions(enable_tools, tool_call_healing, tool_call_nudging),
+        server_options = ServerOptions(
+            enable_tools = enable_tools,
+            tool_call_healing = tool_call_healing,
+            tool_call_nudging = tool_call_nudging,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+        ),
     )
     if as_subagent:
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
@@ -2973,9 +3503,16 @@ def hermes(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -2989,10 +3526,20 @@ def hermes(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
         serve = serve,
         launch = launch,
-        server_options = ServerOptions(enable_tools, tool_call_healing, tool_call_nudging),
+        server_options = ServerOptions(
+            enable_tools = enable_tools,
+            tool_call_healing = tool_call_healing,
+            tool_call_nudging = tool_call_nudging,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+        ),
     )
     install_hint = _hermes_install_hint()
     with _session_config("hermes", launch, persist = persist) as home:
@@ -3013,9 +3560,16 @@ def pi(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -3027,10 +3581,20 @@ def pi(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
         serve = serve,
         launch = launch,
-        server_options = ServerOptions(enable_tools, tool_call_healing, tool_call_nudging),
+        server_options = ServerOptions(
+            enable_tools = enable_tools,
+            tool_call_healing = tool_call_healing,
+            tool_call_nudging = tool_call_nudging,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+        ),
     )
     install_hint = "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
     if as_subagent:
@@ -3041,7 +3605,13 @@ def pi(
         extension = _agent_config_path(_PI_SUBAGENT_EXTENSION, ["pi"])
         with _session_config("pi-subagent", launch, persist = persist) as config:
             config_path = config / "subagent.json"
-            write_pi_subagent_config(base, key, subagent_model, config_path)
+            write_pi_subagent_config(
+                base,
+                key,
+                subagent_model,
+                config_path,
+                approve = yolo,
+            )
             command = [
                 "pi",
                 "--extension",

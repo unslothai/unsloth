@@ -19,6 +19,8 @@ from unsloth_cli.commands.start import (
     _CLAUDE_ENV_UNSET,
     _SUBAGENT_DESCRIPTION,
     _SUBAGENT_INSTRUCTIONS,
+    _SUBAGENT_PLAN_DESCRIPTION,
+    _SUBAGENT_PLAN_INSTRUCTIONS,
     _claude_flags,
     _claude_local_env,
     _wsl_shim_env,
@@ -27,6 +29,10 @@ from unsloth_cli.commands.start import (
 _MAX_RESULT_CHARACTERS = 100_000
 _CANCEL_POLL_SECONDS = 0.1
 _CANCEL_GRACE_SECONDS = 2.0
+# A local server that accepts the connection and then never answers leaves the
+# child, and the parent waiting on it, blocked forever. Generous enough not to cut
+# a long legitimate run short; 0 restores the unbounded wait.
+_DEFAULT_TIMEOUT_SECONDS = 1800.0
 
 
 def _required_env(name: str) -> str:
@@ -34,6 +40,18 @@ def _required_env(name: str) -> str:
     if not value:
         raise RuntimeError(f"Missing {name}.")
     return value
+
+
+def _timeout_seconds() -> float:
+    """Wall-clock cap on one child run; 0 or unparsable means wait forever."""
+    raw = os.environ.get("UNSLOTH_CLAUDE_SUBAGENT_TIMEOUT")
+    if raw is None or not raw.strip():
+        return _DEFAULT_TIMEOUT_SECONDS
+    try:
+        parsed = float(raw.strip())
+    except ValueError:
+        return _DEFAULT_TIMEOUT_SECONDS
+    return parsed if parsed > 0 else 0.0
 
 
 def _bounded(text: str) -> str:
@@ -113,7 +131,11 @@ def _stop_child(process: subprocess.Popen) -> None:
                 pass
 
 
-def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> str:
+def run_local_agent(
+    task: str,
+    cancel_event: threading.Event | None = None,
+    read_only: bool = False,
+) -> str:
     base = _required_env("UNSLOTH_CLAUDE_SUBAGENT_BASE_URL")
     key = _required_env("UNSLOTH_CLAUDE_SUBAGENT_API_KEY")
     model = _required_env("UNSLOTH_CLAUDE_SUBAGENT_MODEL")
@@ -135,16 +157,31 @@ def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> s
         *_claude_flags(model),
         "--permission-mode",
         (
-            "bypassPermissions"
-            if os.environ.get("UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS") == "1"
-            else "acceptEdits"
+            "plan"
+            if read_only
+            else (
+                "bypassPermissions"
+                if os.environ.get("UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS") == "1"
+                else "acceptEdits"
+            )
         ),
         "--print",
         "--output-format",
         "json",
         "--no-session-persistence",
+        # Strip human-blocking tools so the child runs unattended. Only the read-only
+        # child's writers bite today, since a --print child is never offered the plan
+        # or prompt tools; those are listed anyway so a version that starts offering
+        # them cannot stall the subagent. Bash is denied read-only side because plan
+        # mode gates it through the same local model, which is not a write barrier.
+        "--disallowedTools",
+        (
+            "AskUserQuestion,EnterPlanMode,Edit,Write,NotebookEdit,Bash"
+            if read_only
+            else "AskUserQuestion,EnterPlanMode,ExitPlanMode"
+        ),
         "--append-system-prompt",
-        _SUBAGENT_INSTRUCTIONS,
+        _SUBAGENT_PLAN_INSTRUCTIONS if read_only else _SUBAGENT_INSTRUCTIONS,
         f"Task: {task}",
     ]
     bridged, wsl_names = _wsl_shim_env(command, local_env, _CLAUDE_ENV_UNSET)
@@ -175,6 +212,8 @@ def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> s
         [executable, *command[1:]],
         **popen_kwargs,
     )
+    deadline = _timeout_seconds()
+    started_at = time.monotonic()
     try:
         while True:
             try:
@@ -184,6 +223,13 @@ def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> s
                 if cancel_event.is_set():
                     _stop_child(process)
                     raise RuntimeError("The local Claude agent was cancelled.")
+                waited = time.monotonic() - started_at
+                if deadline and waited > deadline:
+                    _stop_child(process)
+                    raise RuntimeError(
+                        f"The local Claude agent produced nothing after {waited:.0f}s. "
+                        "The local server is likely wedged; check that a model is loaded."
+                    )
     except BaseException:
         if process.poll() is None:
             _stop_child(process)
@@ -196,7 +242,15 @@ def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> s
     return _result_text(stdout)
 
 
-def _response(request: dict, run_agent: Callable[[str], str] = run_local_agent) -> dict | None:
+def _response(
+    request: dict,
+    run_agent: Callable[[str], str] = run_local_agent,
+    tool_name: str = "unsloth_agent",
+    tool_description: str | None = None,
+    run_read_only_agent: Callable[[str], str] | None = None,
+    read_only_tool_name: str | None = None,
+    instructions: str | None = None,
+) -> dict | None:
     request_id = request.get("id")
     method = request.get("method")
     if request_id is None:
@@ -208,40 +262,55 @@ def _response(request: dict, run_agent: Callable[[str], str] = run_local_agent) 
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": "unsloth-local-agent", "version": "1.0.0"},
         }
+        if instructions:
+            result["instructions"] = instructions
     elif method == "ping":
         result = {}
     elif method == "tools/list":
-        result = {
-            "tools": [
-                {
-                    "name": "unsloth_agent",
-                    "title": "Unsloth local agent",
-                    "description": _SUBAGENT_DESCRIPTION,
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "task": {
-                                "type": "string",
-                                "description": "The complete task for the local Unsloth agent.",
-                            }
-                        },
-                        "required": ["task"],
-                        "additionalProperties": False,
+
+        def tool_definition(name: str, description: str, read_only: bool) -> dict:
+            return {
+                "name": name,
+                "title": "Unsloth local plan agent" if read_only else "Unsloth local agent",
+                "description": description,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task": {
+                            "type": "string",
+                            "description": "The complete task for the local Unsloth agent.",
+                        }
                     },
-                    "annotations": {
-                        "readOnlyHint": False,
-                        "destructiveHint": True,
-                        "idempotentHint": False,
-                        "openWorldHint": True,
-                    },
-                    "_meta": {"anthropic/maxResultSizeChars": _MAX_RESULT_CHARACTERS},
-                }
-            ]
-        }
+                    "required": ["task"],
+                    "additionalProperties": False,
+                },
+                "annotations": {
+                    "readOnlyHint": read_only,
+                    "destructiveHint": not read_only,
+                    "idempotentHint": read_only,
+                    "openWorldHint": True,
+                },
+                "_meta": {"anthropic/maxResultSizeChars": _MAX_RESULT_CHARACTERS},
+            }
+
+        tools = [tool_definition(tool_name, tool_description or _SUBAGENT_DESCRIPTION, False)]
+        if read_only_tool_name and run_read_only_agent:
+            tools.append(tool_definition(read_only_tool_name, _SUBAGENT_PLAN_DESCRIPTION, True))
+        result = {"tools": tools}
     elif method == "tools/call":
         params = request.get("params") or {}
         arguments = params.get("arguments") or {}
-        task = arguments.get("task") if params.get("name") == "unsloth_agent" else None
+        requested_tool = params.get("name")
+        selected_agent = (
+            run_agent
+            if requested_tool == tool_name
+            else (
+                run_read_only_agent
+                if requested_tool == read_only_tool_name and run_read_only_agent
+                else None
+            )
+        )
+        task = arguments.get("task") if selected_agent else None
         if not isinstance(task, str) or not task.strip():
             result = {
                 "content": [{"type": "text", "text": "A non-empty task is required."}],
@@ -249,7 +318,7 @@ def _response(request: dict, run_agent: Callable[[str], str] = run_local_agent) 
             }
         else:
             try:
-                text = run_agent(task.strip())
+                text = selected_agent(task.strip())
                 result = {"content": [{"type": "text", "text": text}], "isError": False}
             except Exception as exc:
                 result = {
@@ -269,6 +338,11 @@ def serve(
     stdin: Any = sys.stdin,
     stdout: Any = sys.stdout,
     run_agent: Callable[[str, threading.Event], str] = run_local_agent,
+    tool_name: str = "unsloth_agent",
+    tool_description: str | None = None,
+    run_read_only_agent: Callable[[str, threading.Event], str] | None = None,
+    read_only_tool_name: str | None = None,
+    instructions: str | None = None,
 ) -> None:
     active: dict[object, threading.Event] = {}
     workers: list[threading.Thread] = []
@@ -308,6 +382,15 @@ def serve(
             response = _response(
                 request,
                 run_agent = lambda task: run_agent(task, cancel_event),
+                tool_name = tool_name,
+                tool_description = tool_description,
+                run_read_only_agent = (
+                    (lambda task: run_read_only_agent(task, cancel_event))
+                    if run_read_only_agent
+                    else None
+                ),
+                read_only_tool_name = read_only_tool_name,
+                instructions = instructions,
             )
             if not cancel_event.is_set():
                 send(response)
@@ -343,7 +426,18 @@ def serve(
                     worker.start()
                     response = None
                 else:
-                    response = _response(request)
+                    response = _response(
+                        request,
+                        tool_name = tool_name,
+                        tool_description = tool_description,
+                        run_read_only_agent = (
+                            (lambda task: run_read_only_agent(task, threading.Event()))
+                            if run_read_only_agent
+                            else None
+                        ),
+                        read_only_tool_name = read_only_tool_name,
+                        instructions = instructions,
+                    )
             except Exception as exc:
                 response = {
                     "jsonrpc": "2.0",
@@ -362,5 +456,14 @@ def serve(
             signal.signal(signum, handler)
 
 
+def main() -> None:
+    serve(
+        run_read_only_agent = lambda task, cancel_event: run_local_agent(
+            task, cancel_event, read_only = True
+        ),
+        read_only_tool_name = "unsloth_plan_agent",
+    )
+
+
 if __name__ == "__main__":
-    serve()
+    main()

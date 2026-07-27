@@ -420,7 +420,7 @@ def _resolve_base_model(model_name: str) -> str:
     adapter_cfg_path = local_path / "adapter_config.json"
     if _safe_is_file(adapter_cfg_path):
         try:
-            with open(adapter_cfg_path) as f:
+            with open(adapter_cfg_path, encoding = "utf-8") as f:
                 cfg = json.load(f)
             base = cfg.get("base_model_name_or_path")
             if base:
@@ -437,7 +437,7 @@ def _resolve_base_model(model_name: str) -> str:
     config_json_path = local_path / "config.json"
     if _safe_is_file(config_json_path):
         try:
-            with open(config_json_path) as f:
+            with open(config_json_path, encoding = "utf-8") as f:
                 cfg = json.load(f)
             # Unsloth writes model_name, HF writes _name_or_path; skip a self-reference.
             for _key in ("model_name", "_name_or_path"):
@@ -534,14 +534,19 @@ def _adapter_base_from_hf_cache(model_name: str) -> str | None:
     try:
         if ref_main.is_file():
             candidates.append(
-                repo_dir / "snapshots" / ref_main.read_text().strip() / "adapter_config.json"
+                repo_dir
+                / "snapshots"
+                / ref_main.read_text(encoding = "utf-8").strip()
+                / "adapter_config.json"
             )
         candidates += sorted(
             repo_dir.glob("snapshots/*/adapter_config.json"), key = _mtime, reverse = True
         )
         for cfg_path in candidates:
             if cfg_path.is_file():
-                base = json.loads(cfg_path.read_text()).get("base_model_name_or_path")
+                base = json.loads(cfg_path.read_text(encoding = "utf-8")).get(
+                    "base_model_name_or_path"
+                )
                 return base or None
     except Exception as exc:
         logger.debug("HF cache adapter_config.json lookup failed for '%s': %s", model_name, exc)
@@ -611,7 +616,7 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
     local_tc = local_path / "tokenizer_config.json"
     if _safe_is_file(local_tc):
         try:
-            with open(local_tc) as f:
+            with open(local_tc, encoding = "utf-8") as f:
                 data = json.load(f)
             tokenizer_class = data.get("tokenizer_class", "")
             result = tokenizer_class in _TRANSFORMERS_5_TOKENIZER_CLASSES
@@ -688,7 +693,12 @@ def _config_json_from_hf_cache(model_name: str) -> dict | None:
     ref_main = repo_dir / "refs" / "main"
     try:
         if ref_main.is_file():
-            candidates.append(repo_dir / "snapshots" / ref_main.read_text().strip() / "config.json")
+            candidates.append(
+                repo_dir
+                / "snapshots"
+                / ref_main.read_text(encoding = "utf-8").strip()
+                / "config.json"
+            )
         # No refs/main (e.g. commit-pinned downloads): newest snapshot by mtime, not a stale
         # lexicographically-first SHA, matching what the Hub cache would actually load.
         candidates += sorted(
@@ -696,7 +706,7 @@ def _config_json_from_hf_cache(model_name: str) -> dict | None:
         )
         for cfg_path in candidates:
             if cfg_path.is_file():
-                with open(cfg_path) as f:
+                with open(cfg_path, encoding = "utf-8") as f:
                     return json.load(f)
     except Exception as exc:
         logger.debug("HF cache config.json lookup failed for '%s': %s", model_name, exc)
@@ -721,7 +731,7 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     local_cfg = Path(model_name) / "config.json"
     if _safe_is_file(local_cfg):
         try:
-            with open(local_cfg) as f:
+            with open(local_cfg, encoding = "utf-8") as f:
                 cfg = json.load(f)
             _config_json_cache[cache_key] = cfg
             return cfg
@@ -1755,7 +1765,7 @@ def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
             metadata = di / "METADATA"
             if not metadata.is_file():
                 continue
-            for line in metadata.read_text(errors = "replace").splitlines():
+            for line in metadata.read_text(errors = "replace", encoding = "utf-8").splitlines():
                 if line.startswith("Version:"):
                     installed_ver = line.split(":", 1)[1].strip()
                     if installed_ver != pkg_version:
@@ -2391,7 +2401,10 @@ def _llmcompressor_shadow_is_valid() -> bool:
     """True if the shadow dir exists with a marker matching the current pin fingerprint."""
     marker = Path(_VENV_LLMCOMPRESSOR_DIR) / _LLMC_SHADOW_MARKER
     try:
-        return marker.is_file() and marker.read_text().strip() == _LLMC_SHADOW_FINGERPRINT
+        return (
+            marker.is_file()
+            and marker.read_text(encoding = "utf-8").strip() == _LLMC_SHADOW_FINGERPRINT
+        )
     except Exception:
         return False
 
@@ -2460,7 +2473,7 @@ def _ensure_venv_llmcompressor_exists() -> bool:
         if result.returncode == 0:
             try:
                 (Path(_VENV_LLMCOMPRESSOR_DIR) / _LLMC_SHADOW_MARKER).write_text(
-                    _LLMC_SHADOW_FINGERPRINT
+                    _LLMC_SHADOW_FINGERPRINT, encoding = "utf-8"
                 )
             except Exception:
                 pass

@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 import typer
 
 from unsloth_cli.commands import _password_prompt
@@ -335,7 +335,7 @@ def _iter_editable_studio_source_roots(venv_dir: Path):
             for finder in sp.glob("__editable___*_finder.py"):
                 try:
                     src = finder.read_text(encoding = "utf-8")
-                except OSError:
+                except (OSError, UnicodeDecodeError):
                     continue
                 # Tolerate single- or multi-line dict literals; [^}]* still
                 # rejects nested dicts, which the setuptools template never
@@ -719,7 +719,7 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
             # credential after a later reset-password deletes auth.db. Mirrors
             # backend clear_bootstrap_password().
             try:
-                stale_path.write_text("")
+                stale_path.write_text("", encoding = "utf-8")
                 cleared = True
             except OSError:
                 cleared = False
@@ -1172,6 +1172,7 @@ def _load_model_via_http(
     gguf_variant: Optional[str],
     max_seq_length: int,
     load_in_4bit: bool,
+    gpu_memory_mode: Literal["auto", "manual"] = "auto",
     tensor_parallel: bool = False,
     llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
@@ -1188,6 +1189,9 @@ def _load_model_via_http(
     }
     if gguf_variant:
         payload["gguf_variant"] = gguf_variant
+    if gpu_memory_mode == "manual":
+        payload["gpu_memory_mode"] = "manual"
+        payload["gpu_layers"] = -1
     if tensor_parallel:
         payload["tensor_parallel"] = True
     if llama_extra_args:
@@ -1285,6 +1289,12 @@ def studio_default(
         help = "Force server-side tools (web search, code execution) on or off for "
         "every request. Default: on for every bind, with the per-chat UI toggle honored.",
     ),
+    disable_dns_pinning: bool = typer.Option(
+        False,
+        "--disable-dns-pinning",
+        help = "Allow hostname-based web fetches for enterprise proxies. WARNING: weakens "
+        "DNS-rebinding protection; hostname and redirect validation remain enabled.",
+    ),
     password: str = typer.Option(
         "",
         "--password",
@@ -1354,6 +1364,15 @@ def studio_default(
                 err = True,
             )
             raise typer.Exit(2)
+        if disable_dns_pinning:
+            typer.echo(
+                "Error: --disable-dns-pinning on `unsloth studio` applies to the "
+                f"plain-server path only. For `unsloth studio {ctx.invoked_subcommand}`, "
+                f"put it after the subcommand: `unsloth studio {ctx.invoked_subcommand} "
+                "--disable-dns-pinning ...`",
+                err = True,
+            )
+            raise typer.Exit(2)
         # Same for --api-only: dropping it here would silently serve the UI.
         if api_only:
             typer.echo(
@@ -1398,6 +1417,10 @@ def studio_default(
     # default (plain-server path; the `run` subcommand has its own --verbose).
     if verbose:
         _enable_verbose_access_logs()
+    if disable_dns_pinning:
+        os.environ["UNSLOTH_STUDIO_DISABLE_DNS_PINNING"] = "1"
+    else:
+        os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "0")
 
     # Use the studio venv if present and not already in it. Resolve the child
     # launcher BEFORE the gate: a headless gate strips the seeded
@@ -1661,6 +1684,7 @@ def _consume_legacy_short_aliases(
 _RUN_PANEL_MODEL = "Model"
 _RUN_PANEL_SERVER = "Server & network"
 _RUN_PANEL_TOOLS = "Tool calls"
+_RUN_PANEL_SAMPLING = "Sampling"
 _RUN_PANEL_ADVANCED = "Advanced"
 
 
@@ -1708,6 +1732,16 @@ def run(
         rich_help_panel = _RUN_PANEL_MODEL,
         help = "Runtime context length in tokens (0 = model default for GGUF; 2048 for hub models)",
     ),
+    gpu_memory_mode: Literal["auto", "manual"] = typer.Option(
+        "auto",
+        "--gpu-memory-mode",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = (
+            "GPU memory strategy for GGUF models. Auto lets Unsloth select GPUs "
+            "and cap context to fit VRAM. Manual with default layers and context "
+            "delegates placement and sizing to llama.cpp --fit."
+        ),
+    ),
     load_in_4bit: bool = typer.Option(
         True, "--load-in-4bit/--no-load-in-4bit", rich_help_panel = _RUN_PANEL_MODEL
     ),
@@ -1738,6 +1772,13 @@ def run(
             "every request. Default: on for every bind."
         ),
     ),
+    disable_dns_pinning: bool = typer.Option(
+        False,
+        "--disable-dns-pinning",
+        rich_help_panel = _RUN_PANEL_TOOLS,
+        help = "Allow hostname-based web fetches for enterprise proxies. WARNING: weakens "
+        "DNS-rebinding protection; hostname and redirect validation remain enabled.",
+    ),
     tool_call_healing: Optional[bool] = typer.Option(
         None,
         "--enable-tool-call-healing/--disable-tool-call-healing",
@@ -1757,6 +1798,57 @@ def run(
             "nudge when the model emitted a tool signal that healing could not repair. "
             "Default: on. No effect on streaming requests or the server-side agentic loop."
         ),
+    ),
+    temperature: Optional[float] = typer.Option(
+        None,
+        "--temperature",
+        min = 0.0,
+        max = 2.0,
+        rich_help_panel = _RUN_PANEL_SAMPLING,
+        help = (
+            "Pin the sampling temperature for every request that omits it, overriding the "
+            "model's recommended value. Default: unset (use the per-model recommendation)."
+        ),
+    ),
+    top_p: Optional[float] = typer.Option(
+        None,
+        "--top-p",
+        min = 0.0,
+        max = 1.0,
+        rich_help_panel = _RUN_PANEL_SAMPLING,
+        help = "Pin top-p (nucleus) sampling. Default: unset (per-model recommendation).",
+    ),
+    top_k: Optional[int] = typer.Option(
+        None,
+        "--top-k",
+        min = -1,
+        max = 100,
+        rich_help_panel = _RUN_PANEL_SAMPLING,
+        help = "Pin top-k sampling. Default: unset (per-model recommendation).",
+    ),
+    min_p: Optional[float] = typer.Option(
+        None,
+        "--min-p",
+        min = 0.0,
+        max = 1.0,
+        rich_help_panel = _RUN_PANEL_SAMPLING,
+        help = "Pin min-p sampling threshold. Default: unset (per-model recommendation).",
+    ),
+    repetition_penalty: Optional[float] = typer.Option(
+        None,
+        "--repetition-penalty",
+        min = 1.0,
+        max = 2.0,
+        rich_help_panel = _RUN_PANEL_SAMPLING,
+        help = "Pin the repetition penalty. Default: unset (per-model recommendation).",
+    ),
+    presence_penalty: Optional[float] = typer.Option(
+        None,
+        "--presence-penalty",
+        min = 0.0,
+        max = 2.0,
+        rich_help_panel = _RUN_PANEL_SAMPLING,
+        help = "Pin the presence penalty. Default: unset (per-model recommendation).",
     ),
     yes: bool = typer.Option(
         False,
@@ -1841,7 +1933,7 @@ def run(
 
     Example:
         unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL
-        unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --top-k 20 --seed 42 --parallel 8
+        unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --temperature 0.7 --seed 42 --parallel 8
         unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
         unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
     """
@@ -1870,6 +1962,21 @@ def run(
     elif "UNSLOTH_TOOL_CALL_NUDGE" not in os.environ:
         os.environ["UNSLOTH_TOOL_CALL_NUDGE"] = "1"
 
+    # Sampling overrides: the backend resolver reads UNSLOTH_SAMPLING_* to hard-pin a field
+    # (winning over both the client and the per-model recommendation). Only write a flag that
+    # was set explicitly so an omitted flag inherits any value the parent forwarded (e.g.
+    # `unsloth start`) and, when nothing is set, leaves the per-model recommendation in charge.
+    for _sampling_env, _sampling_value in (
+        ("UNSLOTH_SAMPLING_TEMPERATURE", temperature),
+        ("UNSLOTH_SAMPLING_TOP_P", top_p),
+        ("UNSLOTH_SAMPLING_TOP_K", top_k),
+        ("UNSLOTH_SAMPLING_MIN_P", min_p),
+        ("UNSLOTH_SAMPLING_REPETITION_PENALTY", repetition_penalty),
+        ("UNSLOTH_SAMPLING_PRESENCE_PENALTY", presence_penalty),
+    ):
+        if _sampling_value is not None:
+            os.environ[_sampling_env] = str(_sampling_value)
+
     # Set before any re-exec so the in-venv server inherits it via the env.
     # `run --verbose` used to pass through to llama-server (its own -v); keep
     # that by forwarding --log-verbose so we add Unsloth logs without dropping it.
@@ -1877,6 +1984,10 @@ def run(
         _enable_verbose_access_logs()
         if not any(a in ("--verbose", "-v", "--log-verbose") for a in extra_llama_args):
             extra_llama_args.append("--log-verbose")
+    if disable_dns_pinning:
+        os.environ["UNSLOTH_STUDIO_DISABLE_DNS_PINNING"] = "1"
+    else:
+        os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "0")
 
     # Promote legacy exact `-m`/`-hfr`/`-f` back into typer params;
     # clusters stay in extras.
@@ -2030,6 +2141,8 @@ def run(
             "--host",
             host,
         ]
+        if gpu_memory_mode != "auto":
+            args.extend(["--gpu-memory-mode", gpu_memory_mode])
         if gguf_variant:
             args.extend(["--gguf-variant", gguf_variant])
         # Forward the explicit polarity; a future default flip on one
@@ -2147,6 +2260,7 @@ def run(
                 gguf_variant = gguf_variant,
                 max_seq_length = max_seq_length,
                 load_in_4bit = load_in_4bit,
+                gpu_memory_mode = gpu_memory_mode,
                 tensor_parallel = tensor_parallel,
                 llama_extra_args = extra_llama_args,
             )
@@ -2309,7 +2423,7 @@ def stop():
         typer.echo("No running Unsloth server found (no PID file).")
         raise typer.Exit(0)
 
-    pid_text = _PID_FILE.read_text().strip()
+    pid_text = _PID_FILE.read_text(encoding = "utf-8").strip()
     if not pid_text.isdigit():
         typer.echo(f"Invalid PID file contents: {pid_text}")
         _PID_FILE.unlink(missing_ok = True)
@@ -2766,7 +2880,7 @@ def reset_password():
             path.unlink(missing_ok = True)
         except OSError:
             try:
-                path.write_text("")
+                path.write_text("", encoding = "utf-8")
             except OSError as exc:
                 typer.echo(
                     f"Error: could not remove or clear {path.name} ({exc}); delete "

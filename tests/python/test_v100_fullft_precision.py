@@ -29,7 +29,7 @@ RL_PY = Path(__file__).resolve().parents[2] / "unsloth" / "models" / "rl.py"
 
 
 def _extract_mixed_precision_code() -> str:
-    lines = RL_PY.read_text().split("\n")
+    lines = RL_PY.read_text(encoding = "utf-8").split("\n")
     try:
         start = next(i for i, l in enumerate(lines) if "mixed_precision = (" in l)
     except StopIteration:

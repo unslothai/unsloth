@@ -67,6 +67,15 @@ fi
 step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
 substep() { printf "  %-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 
+# ── Helper: can the controlling terminal actually be opened for reading? ──
+# `test -r` only checks permission bits, which look fine in containers and
+# systemd units where open() then fails with ENXIO. Probe with a real open.
+# Mirrors install.sh's _can_read_tty; defined here too because setup.sh runs
+# as its own process (install.sh invokes it, it does not source it).
+_can_read_tty() {
+    ( : </dev/tty ) >/dev/null 2>&1
+}
+
 _is_verbose() {
     [ "${UNSLOTH_VERBOSE:-0}" = "1" ]
 }
@@ -249,6 +258,38 @@ _resolve_cuda_archs() {
         fi
     done <<< "$_raw_caps"
     printf '%s' "$_archs"
+}
+
+# Opt-in staged GPU smoke test after a source build (#5854 gap 2). Default off:
+# llama-server's first GPU forward pass JIT-compiles CUDA kernels and stalls
+# installs for minutes on Blackwell. Same env as install_llama_prebuilt.py.
+_staged_validation_enabled() {
+    local _raw="${UNSLOTH_LLAMA_STAGED_VALIDATION:-}"
+    # Match install_llama_prebuilt.py staged_validation_enabled(): strip + lowercase.
+    _raw="$(printf '%s' "$_raw" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+    case "$_raw" in
+        1|true|yes|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Map the source-build GPU backend to install_llama_prebuilt --install-kind so
+# validate_server enables --n-gpu-layers for the right backends.
+_source_smoke_install_kind() {
+    if [ "${_TRY_METAL_CPU_FALLBACK:-false}" = true ]; then
+        printf '%s' "macos-arm64"
+        return 0
+    fi
+    case "${GPU_BACKEND:-}" in
+        cuda)
+            case "$(uname -m 2>/dev/null || true)" in
+                aarch64|arm64) printf '%s' "linux-arm64-cuda" ;;
+                *) printf '%s' "linux-cuda" ;;
+            esac
+            ;;
+        rocm) printf '%s' "linux-rocm" ;;
+        *) printf '%s' "" ;;
+    esac
 }
 
 # Run a GPU probe under a 10s timeout when `timeout` is available so a wedged
@@ -1135,12 +1176,14 @@ elif [ "$_setup_amd_detected" = true ]; then
         # gfx1102 matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
         # gfx1102 (bash case has no negative lookahead like the PS tables).
         case "$_setup_mkt" in
-            *"9070 XT"*|*9080*)                                                                            _setup_gfx="gfx1201" ;;  # RDNA 4
-            *9070*|*9060*)                                                                                 _setup_gfx="gfx1200" ;;  # RDNA 4
+            *9070*|*9080*)                                                                                 _setup_gfx="gfx1201" ;;  # RDNA 4 (Navi 48)
+            *9060*)                                                                                        _setup_gfx="gfx1200" ;;  # RDNA 4 (Navi 44)
             *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _setup_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
-            *"890M"*|*"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _setup_gfx="gfx1150" ;;  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
-            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"PRO V710"*)                  _setup_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
-            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*|*"PRO W7900"*|*"PRO W7800"*|*"PRO W7700"*)                  _setup_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
+            *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) _setup_gfx="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
+            *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _setup_gfx="gfx1152" ;;  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
+            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*)                              _setup_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
+            *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _setup_gfx="gfx1101" ;;  # RDNA 3 (Navi 32)
+            *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _setup_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
             *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _setup_gfx="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
             *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _setup_gfx="gfx1030" ;;  # RDNA 2 (Navi 21)
             *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _setup_gfx="gfx1032" ;;  # RDNA 2 (Navi 23)
@@ -1190,6 +1233,7 @@ LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
+_LLAMA_CPP_NO_SPACE=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
@@ -1417,6 +1461,13 @@ else
         fi
         substep "close Unsloth or other llama.cpp users and retry"
         exit 3
+    elif [ "$_PREBUILT_STATUS" -eq 4 ]; then
+        step "llama.cpp" "not enough disk space to install llama.cpp" "$C_WARN"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        substep "free up disk or move UNSLOTH_STUDIO_HOME/TMPDIR to a larger volume, then re-run"
+        _LLAMA_CPP_NO_SPACE=true
+        _has_local_llama_server "$LLAMA_CPP_DIR" || _LLAMA_CPP_DEGRADED=true
     else
         step "llama.cpp" "prebuilt install failed (continuing)" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
@@ -1468,25 +1519,46 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && grep -qi microsoft /proc/version 2>
         step "gguf deps" "installed"
     elif command -v sudo >/dev/null 2>&1; then
         step "gguf deps" "sudo required for: $_STILL_MISSING" "$C_WARN"
-        printf "  %-15s" ""
-        printf "accept? [Y/n] "
-        if [ -r /dev/tty ]; then
-            read -r REPLY </dev/tty || REPLY="y"
+        if _can_read_tty; then
+            printf "  %-15s" ""
+            printf "accept? [Y/n] "
+            # The device opened, so a failed read is EOF, not consent: decline.
+            read -r REPLY </dev/tty || REPLY="n"
+            case "$REPLY" in
+                [nN]*)
+                    substep "skipped -- run manually:"
+                    substep "sudo apt-get install -y $_STILL_MISSING"
+                    _SKIP_GGUF_BUILD=true
+                    ;;
+                *)
+                    # Degrade like the no-sudo branch below rather than letting
+                    # set -e abort setup on a bare apt error: missing GGUF build
+                    # deps are recoverable, not fatal.
+                    if sudo apt-get update -y </dev/null &&
+                        sudo apt-get install -y $_STILL_MISSING </dev/null; then
+                        step "gguf deps" "installed"
+                    else
+                        step "gguf deps" "install failed -- run manually:" "$C_WARN"
+                        substep "sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                        _SKIP_GGUF_BUILD=true
+                    fi
+                    ;;
+            esac
         else
-            REPLY="y"
-        fi
-        case "$REPLY" in
-            [nN]*)
-                substep "skipped -- run manually:"
-                substep "sudo apt-get install -y $_STILL_MISSING"
+            # Nobody can answer a prompt or type a password here, so -n makes
+            # sudo refuse rather than prompt into a closed stdin, and -k ignores
+            # any cached timestamp so only a real NOPASSWD rule gets through.
+            # Same treatment as install.sh's _smart_apt_install. This is the WSL
+            # GGUF-export case noted above, where sudo does want a password.
+            if sudo -n -k apt-get update -y </dev/null &&
+                sudo -n -k apt-get install -y $_STILL_MISSING </dev/null; then
+                step "gguf deps" "installed (non-interactive sudo)"
+            else
+                step "gguf deps" "needs sudo, no terminal -- run manually:" "$C_WARN"
+                substep "sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
                 _SKIP_GGUF_BUILD=true
-                ;;
-            *)
-                sudo apt-get update -y
-                sudo apt-get install -y $_STILL_MISSING
-                step "gguf deps" "installed"
-                ;;
-        esac
+            fi
+        fi
     else
         step "gguf deps" "missing (no sudo) -- install manually:" "$C_WARN"
         substep "apt-get install -y $_STILL_MISSING"
@@ -1900,6 +1972,44 @@ else
             run_quiet_no_exit "build diffusion visual server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
         fi
 
+        # Opt-in post-build GPU smoke test (#5854 gap 2). Default off (Blackwell
+        # CUDA JIT stalls). On failure, reuse the CPU fallback path so the user
+        # still gets a working llama-server. Runs before the install swap.
+        if [ "$BUILD_OK" = true ] && _staged_validation_enabled; then
+            _FB_LABEL="$(_gpu_fallback_label)"
+            _SMOKE_KIND="$(_source_smoke_install_kind)"
+            if [ -n "$_FB_LABEL" ]; then
+                _SMOKE_CMD=(
+                    python "$SCRIPT_DIR/install_llama_prebuilt.py"
+                    --validate-install "$_BUILD_TMP"
+                )
+                [ -n "$_SMOKE_KIND" ] && _SMOKE_CMD+=(--install-kind "$_SMOKE_KIND")
+                _SMOKE_RC=0
+                run_quiet_no_exit "validate source llama.cpp" "${_SMOKE_CMD[@]}" || _SMOKE_RC=$?
+                # Exit 4 is a full disk, not a bad build: the CPU rebuild needs even
+                # more space, so keep what we already have.
+                if [ "$_SMOKE_RC" -eq 4 ]; then
+                    substep "not enough disk space to validate the $_FB_LABEL build; keeping it" "$C_WARN"
+                    _LLAMA_CPP_NO_SPACE=true
+                elif [ "$_SMOKE_RC" -ne 0 ]; then
+                    substep "$_FB_LABEL source build failed smoke test; retrying CPU build..." "$C_WARN"
+                    _TRY_METAL_CPU_FALLBACK=false
+                    rm -rf "$_BUILD_TMP/build"
+                    if run_quiet_no_exit "cmake llama.cpp (cpu fallback)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS; then
+                        _BUILD_DESC="building (CPU fallback after $_FB_LABEL smoke failed)"
+                        GPU_BACKEND=""
+                        run_quiet_no_exit "build llama-server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+                        if [ "$BUILD_OK" = true ]; then
+                            run_quiet_no_exit "build llama-quantize (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
+                            run_quiet_no_exit "build diffusion visual server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
+                        fi
+                    else
+                        BUILD_OK=false
+                    fi
+                fi
+            fi
+        fi
+
         # Swap only after build succeeds -- preserves existing install on failure
         if [ "$BUILD_OK" = true ]; then
             _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
@@ -1938,8 +2048,10 @@ fi  # end _SKIP_GGUF_BUILD check
 # An arm64 Linux GPU host source-builds for the GPU above. If that produced no
 # binary, install the fork's arm64 CPU prebuilt (app-<tag>-linux-arm64-cpu.tar.gz)
 # instead of leaving the host without llama.cpp. --cpu-fallback drops the GPU
-# attributes so the CPU bundle is selected rather than re-attempting CUDA.
+# attributes so the CPU bundle is selected rather than re-attempting CUDA. Skipped
+# on a full disk: the retry fails the same way and buries the hint.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] \
+        && [ "$_LLAMA_CPP_NO_SPACE" != true ] \
         && [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; }; then
     substep "GPU source build unavailable; trying arm64 CPU prebuilt..."

@@ -3,10 +3,13 @@
 
 """Persisted opt-in controls for OpenAI-compatible model auto-switching.
 
-Two settings, both off by default so existing API behavior is unchanged:
+All off by default so existing API behavior is unchanged:
 - ``openai_api_auto_switch_model``: when on, a ``/v1`` request whose ``model``
   names a downloaded local GGUF different from the loaded one transparently
   loads it before serving (llama-swap-style). Unknown names pass through.
+- ``openai_api_auto_download_model``: when on, a ``/v1`` request naming an
+  undownloaded GGUF repo starts a background download instead of failing.
+  Gated on auto-switch, which is what serves the model once it lands.
 - ``openai_api_auto_unload_idle_seconds``: when > 0, the loaded GGUF is
   unloaded after this many idle seconds to free VRAM. Enabled values have a
   60s floor (0 stays "off"): a tiny TTL tears the model down between turns of
@@ -29,12 +32,14 @@ import time
 from typing import Any, Optional
 
 OPENAI_AUTO_SWITCH_SETTING_KEY = "openai_api_auto_switch_model"
+OPENAI_AUTO_DOWNLOAD_SETTING_KEY = "openai_api_auto_download_model"
 AUTO_UNLOAD_IDLE_SETTING_KEY = "openai_api_auto_unload_idle_seconds"
 AUTO_UNLOAD_KEEP_KV_SETTING_KEY = "openai_api_auto_unload_keep_kv"
 MODEL_OVERRIDES_SETTING_KEY = "openai_api_auto_switch_overrides"
 MODEL_IDLE_TTL_ENV_VAR = "UNSLOTH_MODEL_IDLE_TTL"
 
 DEFAULT_OPENAI_AUTO_SWITCH_ENABLED = False
+DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED = False
 DEFAULT_AUTO_UNLOAD_IDLE_SECONDS = 0
 DEFAULT_AUTO_UNLOAD_KEEP_KV = True
 MIN_AUTO_UNLOAD_IDLE_SECONDS = 60
@@ -93,6 +98,22 @@ def _invalidate(key: str) -> None:
 def get_openai_auto_switch_enabled() -> bool:
     parsed = _coerce_bool(_cached_setting(OPENAI_AUTO_SWITCH_SETTING_KEY, None))
     return parsed if parsed is not None else DEFAULT_OPENAI_AUTO_SWITCH_ENABLED
+
+
+def get_stored_openai_auto_download_enabled() -> bool:
+    """The persisted auto-download flag, independent of auto-switch, so the UI
+    round-trips the saved value across an auto-switch toggle instead of erasing it."""
+    parsed = _coerce_bool(_cached_setting(OPENAI_AUTO_DOWNLOAD_SETTING_KEY, None))
+    return parsed if parsed is not None else DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED
+
+
+def get_openai_auto_download_enabled() -> bool:
+    """Whether a /v1 request may download a GGUF repo it names but doesn't have.
+
+    Gated on auto-switch: that is what loads the model once it lands, so without
+    it we would fetch gigabytes nothing can serve.
+    """
+    return get_stored_openai_auto_download_enabled() and get_openai_auto_switch_enabled()
 
 
 def _stored_idle_seconds() -> Optional[int]:
@@ -170,7 +191,8 @@ def set_openai_auto_switch(
     enabled: Any,
     idle_seconds: Any,
     keep_kv: Any = None,
-) -> tuple[bool, int, bool]:
+    auto_download: Any = None,
+) -> tuple[bool, int, bool, bool]:
     """One-transaction write; ``None`` leaves a stored value untouched."""
     parsed_enabled = _coerce_bool(enabled)
     if parsed_enabled is None:
@@ -190,6 +212,11 @@ def set_openai_auto_switch(
         parsed_keep_kv = _coerce_bool(keep_kv)
         if parsed_keep_kv is None:
             raise ValueError("Keep KV on idle unload must be true or false.")
+    parsed_auto_download = None
+    if auto_download is not None:
+        parsed_auto_download = _coerce_bool(auto_download)
+        if parsed_auto_download is None:
+            raise ValueError("Auto-download missing models must be true or false.")
     from storage.studio_db import upsert_app_settings
 
     updates: dict[str, Any] = {OPENAI_AUTO_SWITCH_SETTING_KEY: parsed_enabled}
@@ -197,16 +224,25 @@ def set_openai_auto_switch(
         updates[AUTO_UNLOAD_IDLE_SETTING_KEY] = parsed_idle
     if parsed_keep_kv is not None:
         updates[AUTO_UNLOAD_KEEP_KV_SETTING_KEY] = parsed_keep_kv
+    if parsed_auto_download is not None:
+        updates[OPENAI_AUTO_DOWNLOAD_SETTING_KEY] = parsed_auto_download
     upsert_app_settings(updates)
     _invalidate(OPENAI_AUTO_SWITCH_SETTING_KEY)
     if parsed_idle is not None:
         _invalidate(AUTO_UNLOAD_IDLE_SETTING_KEY)
     if parsed_keep_kv is not None:
         _invalidate(AUTO_UNLOAD_KEEP_KV_SETTING_KEY)
+    if parsed_auto_download is not None:
+        _invalidate(OPENAI_AUTO_DOWNLOAD_SETTING_KEY)
     return (
         parsed_enabled,
         parsed_idle if parsed_idle is not None else get_stored_auto_unload_idle_seconds(),
         parsed_keep_kv if parsed_keep_kv is not None else get_auto_unload_keep_kv(),
+        (
+            parsed_auto_download
+            if parsed_auto_download is not None
+            else get_stored_openai_auto_download_enabled()
+        ),
     )
 
 

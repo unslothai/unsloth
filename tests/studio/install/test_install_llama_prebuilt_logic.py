@@ -1253,6 +1253,7 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
         initial_fallback_used = False,
         existing_install_dir = None,
         force_cpu = False,
+        llama_backend = None,
     ):
         call_log.append((llama_tag, initial_fallback_used))
         if llama_tag == "b9002":
@@ -2457,6 +2458,7 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
         initial_fallback_used = False,
         existing_install_dir = None,
         force_cpu = False,
+        llama_backend = None,
     ):
         call_log.append(llama_tag)
         raise PrebuiltFallback("validation failed for latest release")
@@ -2605,6 +2607,7 @@ def test_install_prebuilt_skips_same_release_fallback_attempt_when_installed(
         prebuilt_fallback_used,
         quantized_path,
         force_cpu = False,
+        llama_backend = None,
     ):
         attempted_names.append(choice.name)
         if choice.name == first_choice.name:
@@ -2732,6 +2735,7 @@ def test_install_prebuilt_same_tag_upstream_failure_uses_older_unsloth_release_p
         initial_fallback_used = False,
         existing_install_dir = None,
         force_cpu = False,
+        llama_backend = None,
     ):
         attempted.append((llama_tag, release_tag, attempts[0].source_label))
         if llama_tag == "b9002":
@@ -3322,6 +3326,66 @@ def test_validate_prebuilt_choice_approved_validation_runs_when_flag_enabled(tmp
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", True)
     calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = "ab" * 32)
     assert calls == {"quantize": 1, "server": 1}
+
+
+def test_staged_validation_enabled_default_off(monkeypatch):
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_STAGED_VALIDATION", raising = False)
+    assert INSTALL_LLAMA_PREBUILT.staged_validation_enabled() is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
+def test_staged_validation_enabled_env_opt_in(monkeypatch, value):
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", False)
+    monkeypatch.setenv("UNSLOTH_LLAMA_STAGED_VALIDATION", value)
+    assert INSTALL_LLAMA_PREBUILT.staged_validation_enabled() is True
+
+
+def test_validate_prebuilt_choice_approved_validation_runs_when_env_enabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", False)
+    monkeypatch.setenv("UNSLOTH_LLAMA_STAGED_VALIDATION", "1")
+    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = "ab" * 32)
+    assert calls == {"quantize": 1, "server": 1}
+
+
+def test_validate_existing_install_runs_server_smoke(tmp_path, monkeypatch):
+    # setup.sh --validate-install path: exercise smoke helpers without a real GPU.
+    install_dir = tmp_path / "llama.cpp"
+    bin_dir = install_dir / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    (bin_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
+    (bin_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
+    calls: dict[str, int] = {"quantize": 0, "server": 0, "download": 0}
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "download_validation_model",
+        lambda path, cache = None: calls.__setitem__("download", calls["download"] + 1),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "validate_quantize",
+        lambda *a, **k: calls.__setitem__("quantize", calls["quantize"] + 1),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "validate_server",
+        lambda *a, **k: calls.__setitem__("server", calls["server"] + 1),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "detect_host",
+        lambda: linux_host(),
+    )
+
+    INSTALL_LLAMA_PREBUILT.validate_existing_install(install_dir, install_kind = "linux-cuda")
+    assert calls == {"quantize": 1, "server": 1, "download": 1}
+
+
+def test_validate_existing_install_missing_server_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: linux_host())
+    with pytest.raises(INSTALL_LLAMA_PREBUILT.PrebuiltFallback, match = "llama-server not found"):
+        INSTALL_LLAMA_PREBUILT.validate_existing_install(tmp_path / "missing")
 
 
 def test_diffusion_visual_server_uses_approved_checksum_download(monkeypatch, tmp_path: Path):
