@@ -50,10 +50,44 @@ logger = logging.getLogger(__name__)
 # OAI-compat Connections that can drive Unsloth's local tool runtime.
 LOCAL_TOOL_RUNTIME_PROVIDER_TYPES = frozenset({"ollama", "llama_cpp", "vllm", "custom"})
 
+# Cap the tool calls taken from a single round, mirroring `_MAX_TOOL_CALLS_PER_TURN` in
+# the local llama.cpp and safetensors loops. llama-server constrains its own fan-out with
+# a grammar; a remote OAI-compat server does not, so one turn could otherwise ask for
+# hundreds of parallel calls and have them all scheduled before the budget check.
+_MAX_TOOL_CALLS_PER_TURN = 8
+
+# Comment line that keeps the SSE connection warm while a tool blocks. Same payload as
+# `_OPENAI_PASSTHROUGH_SSE_KEEPALIVE` in routes/inference.py; the caller appends the blank
+# line that terminates the event.
+_SSE_KEEPALIVE_LINE = ": keep-alive"
+_TOOL_STREAM_KEEPALIVE_S = 15.0
+
 
 def provider_supports_local_tool_runtime(provider_type: Optional[str]) -> bool:
     """True for OAI-compat Connections that may use Studio's local tools."""
     return (provider_type or "") in LOCAL_TOOL_RUNTIME_PROVIDER_TYPES
+
+
+async def _run_with_keepalive(coro: Any, out: list[Any]) -> AsyncGenerator[str, None]:
+    """Yield SSE keepalive comments while ``coro`` runs, then append its result to ``out``.
+
+    A terminal / python / MCP tool, or a human deciding on an approval prompt, can hold the
+    loop for minutes between ``tool_start`` and ``tool_end``. With no bytes on the wire in
+    that window an intermediate proxy or the browser drops the stream, and the user loses
+    the answer the tool was fetching. Exceptions from ``coro`` surface on the final
+    iteration so callers keep their existing try/except semantics.
+    """
+    task = asyncio.ensure_future(coro)
+    try:
+        while True:
+            done, _pending = await asyncio.wait({task}, timeout = _TOOL_STREAM_KEEPALIVE_S)
+            if done:
+                break
+            yield _SSE_KEEPALIVE_LINE
+    finally:
+        if not task.done():
+            task.cancel()
+    out.append(task.result())
 
 
 def _parse_sse_data_line(line: str) -> Optional[dict[str, Any]]:
@@ -329,6 +363,10 @@ async def stream_external_local_tool_loop(
         ordered_calls = [tool_calls_acc[i] for i in sorted(tool_calls_acc) if tool_calls_acc[i]]
         # Drop empty / nameless fragments.
         ordered_calls = [tc for tc in ordered_calls if (tc.get("function") or {}).get("name")]
+        # Bound one round's fan-out before the budget slice, matching the local loops: the
+        # remaining budget can be large (or the whole per-message allowance), so without this
+        # a single runaway round could schedule every remaining call at once.
+        ordered_calls = ordered_calls[:_MAX_TOOL_CALLS_PER_TURN]
 
         if not ordered_calls or finish_reason not in (None, "tool_calls", "stop"):
             # No tool calls: emit a terminal finish if we streamed content.
@@ -345,6 +383,11 @@ async def stream_external_local_tool_loop(
 
         # Enforce the per-message call budget across parallel calls in a round.
         if calls_remaining <= 0:
+            if assistant_content:
+                # This round's prose already streamed to the user. Keep it in the transcript
+                # so the tools-free synthesis pass below continues from it instead of writing
+                # the same paragraph a second time under the one already on screen.
+                conversation.append({"role": "assistant", "content": assistant_content})
             break
         ordered_calls = ordered_calls[:calls_remaining]
 
@@ -376,9 +419,14 @@ async def stream_external_local_tool_loop(
             }
         )
 
+        # Track how this round resolved so a round that ran nothing can stop the loop.
+        handled_calls = 0
+        rejected_calls = 0
+
         for tc in assistant_tool_calls:
             if cancel_event.is_set():
                 break
+            handled_calls += 1
             name = tc["function"]["name"]
             raw_args = tc["function"].get("arguments") or "{}"
             arguments = _coerce_tool_arguments(raw_args)
@@ -388,11 +436,17 @@ async def stream_external_local_tool_loop(
             # Later rounds must be free to answer; a forced choice applies only to the first round.
             active_tool_choice = "auto"
 
-            # Skip tools the caller did not enable (defense in depth).
-            if enabled_names and name not in enabled_names:
+            # Skip tools the caller did not enable (defense in depth). The check is
+            # unconditional: an empty tool set means nothing is enabled, so guarding it with
+            # `enabled_names and ...` would read an empty set as "no restriction" and let a
+            # remote model that ignores an empty tools array run whatever it names. Nothing
+            # executed, so no tool_start / tool_end card is emitted either - the local loops
+            # only surface real executions (ToolCallDecision.emit_visible_events), and a card
+            # for a tool the user never got makes a hallucinated name look like a real run.
+            # The matching role=tool reply still goes back so the transcript stays well-formed.
+            if name not in enabled_names:
+                rejected_calls += 1
                 result = f"Error: tool '{name}' is not enabled for this request."
-                yield f"data: {json.dumps({'type': 'tool_start', 'tool_name': name, 'tool_call_id': tool_call_id, 'arguments': arguments, 'provenance': _prov})}"
-                yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': name, 'tool_call_id': tool_call_id, 'result': result, 'provenance': _prov})}"
                 conversation.append(
                     {
                         "role": "tool",
@@ -454,12 +508,19 @@ async def stream_external_local_tool_loop(
 
                 denied = False
                 if needs_confirm and decision_slot is not None:
-                    decision = await asyncio.to_thread(
-                        wait_tool_decision,
-                        decision_slot,
-                        approval_id,
-                        cancel_event,
-                    )
+                    # Keep the stream alive while the user decides on the approval prompt.
+                    decision_out: list[Any] = []
+                    async for keepalive in _run_with_keepalive(
+                        asyncio.to_thread(
+                            wait_tool_decision,
+                            decision_slot,
+                            approval_id,
+                            cancel_event,
+                        ),
+                        decision_out,
+                    ):
+                        yield keepalive
+                    decision = decision_out[0]
                     if decision != "allow":
                         denied = True
                         result = TOOL_REJECTED_MESSAGE
@@ -467,18 +528,26 @@ async def stream_external_local_tool_loop(
                         decision_slot = None
                 if not denied:
                     try:
-                        result = await asyncio.to_thread(
-                            execute_tool,
-                            name,
-                            arguments,
-                            cancel_event,
-                            effective_tool_timeout,
-                            session_id,
-                            thread_id,
-                            rag_scope,
-                            bypass_permissions,
-                            None,
-                        )
+                        # Keep the stream alive while a slow tool runs; a search / terminal /
+                        # MCP call can hold this for minutes with nothing else to send.
+                        result_out: list[Any] = []
+                        async for keepalive in _run_with_keepalive(
+                            asyncio.to_thread(
+                                execute_tool,
+                                name,
+                                arguments,
+                                cancel_event,
+                                effective_tool_timeout,
+                                session_id,
+                                thread_id,
+                                rag_scope,
+                                bypass_permissions,
+                                None,
+                            ),
+                            result_out,
+                        ):
+                            yield keepalive
+                        result = result_out[0]
                     except Exception as exc:
                         logger.exception("external_agentic.tool_failed name=%s", name)
                         result = f"Error executing tool '{name}': {exc}"
@@ -510,6 +579,15 @@ async def stream_external_local_tool_loop(
                         "content": strip_result_for_model(model_result),
                     }
                 )
+
+        # Every call this round named a tool that is not enabled, so nothing ran. The model
+        # has already been told so in the transcript; giving it another round just spends a
+        # remote request on the same hallucination, and because a rejection costs no budget
+        # it can repeat that for every remaining iteration. Go straight to the tools-free
+        # synthesis instead, which is what the local loops do on a disabled call.
+        if handled_calls and rejected_calls == handled_calls:
+            forced_final = True
+            break
 
         # A terminal no-op (render_html repeat / duplicate limit) declares the answer
         # final: break to the tools-free synthesis pass so a differently-named tool the

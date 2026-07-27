@@ -2189,13 +2189,17 @@ export function ChatPage({
     const storedWebFetchToolsEnabled = loadOptionalBool(
       CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
     );
+    // A Connection points at someone else's endpoint, and the local tool runtime runs
+    // Search / Code / MCP on this machine and feeds the output back to that endpoint. So
+    // the pills start off for it and are never seeded from the shared
+    // CHAT_TOOLS_ENABLED_KEY / CHAT_CODE_TOOLS_ENABLED_KEY, which a local GGUF chat may
+    // have set: selecting a remote model must not silently start shipping local tool
+    // output off-box. The user turns the pill on per model.
     const nextToolsEnabled = supportsBuiltinWebSearch
       ? isKimi
         ? false
         : (storedToolsEnabled ?? searchOnByDefault)
-      : supportsLocalToolRuntime
-        ? (storedToolsEnabled ?? false)
-        : false;
+      : false;
     useChatRuntimeStore.setState({
       supportsReasoning: reasoningCaps.supportsReasoning,
       reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
@@ -2219,10 +2223,9 @@ export function ChatPage({
       supportsBuiltinImageGeneration,
       supportsBuiltinWebFetch,
       toolsEnabled: nextToolsEnabled,
-      codeToolsEnabled:
-        supportsBuiltinCodeExecution || supportsLocalToolRuntime
-          ? (storedCodeToolsEnabled ?? false)
-          : false,
+      codeToolsEnabled: supportsBuiltinCodeExecution
+        ? (storedCodeToolsEnabled ?? false)
+        : false,
       imageToolsEnabled: supportsBuiltinImageGeneration
         ? (storedImageToolsEnabled ?? false)
         : false,
@@ -2721,13 +2724,14 @@ export function ChatPage({
         const storedWebFetchToolsEnabled = loadOptionalBool(
           CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
         );
+        // Same opt-in rule as the initial-selection block above: a Connection never
+        // inherits the shared tool toggles, because its local tool output leaves the
+        // machine. See the comment there.
         const nextToolsEnabled = supportsBuiltinWebSearch
           ? isKimi
             ? false
             : (storedToolsEnabled ?? searchOnByDefault)
-          : supportsLocalToolRuntime
-            ? (storedToolsEnabled ?? false)
-            : false;
+          : false;
         useChatRuntimeStore.setState({
           activeGgufVariant: null,
           ggufContextLength: null,
@@ -2760,10 +2764,9 @@ export function ChatPage({
           supportsBuiltinImageGeneration,
           supportsBuiltinWebFetch,
           toolsEnabled: nextToolsEnabled,
-          codeToolsEnabled:
-            supportsBuiltinCodeExecution || supportsLocalToolRuntime
-              ? (storedCodeToolsEnabled ?? false)
-              : false,
+          codeToolsEnabled: supportsBuiltinCodeExecution
+            ? (storedCodeToolsEnabled ?? false)
+            : false,
           imageToolsEnabled: supportsBuiltinImageGeneration
             ? (storedImageToolsEnabled ?? false)
             : false,

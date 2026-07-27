@@ -9811,13 +9811,19 @@ async def _proxy_to_external_provider(
 
         _confirm = _permission_mode_confirm(payload)
         cancel_event = threading.Event()
-        _cancel_keys = (payload.cancel_id, payload.session_id, None)
+        # Mint the completion id here rather than letting the loop generate its own, so the
+        # id the client reads off the SSE chunks is the id registered for cancellation.
+        # `POST /cancel` accepts completion_id as a fallback when no cancel_id was sent, and
+        # a placeholder key would silently drop that request on this path alone.
+        _loop_completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        _cancel_keys = (payload.cancel_id, payload.session_id, _loop_completion_id)
         with _TrackedCancel(cancel_event, *_cancel_keys):
             gen = stream_external_local_tool_loop(
                 client = client,
                 messages = loop_messages,
                 model = model,
                 tools = tools_to_use,
+                completion_id = _loop_completion_id,
                 temperature = payload.temperature,
                 top_p = payload.top_p,
                 max_tokens = _effective_max_tokens(payload),

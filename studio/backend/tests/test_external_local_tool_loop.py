@@ -271,8 +271,14 @@ def test_stream_external_local_tool_loop_rejects_disabled_tool(monkeypatch):
     lines = asyncio.run(_run())
     assert called["n"] == 0
     events = _parse_events(lines)
-    end = next(e for e in events if e.get("type") == "tool_end")
-    assert "not enabled" in end["result"]
+    # Nothing ran, so nothing is shown: a tool card here would put a tool the user never
+    # got into the transcript.
+    assert not [e for e in events if e.get("type") in ("tool_start", "tool_end")]
+    # The model is still told why, on the follow-up (tools-free) pass.
+    follow_up = client.requests[1]["messages"]
+    assert any(
+        m.get("role") == "tool" and "not enabled" in m.get("content", "") for m in follow_up
+    )
 
 
 def test_stream_external_local_tool_loop_rejects_fabricated_mcp_tool(monkeypatch):
@@ -321,8 +327,11 @@ def test_stream_external_local_tool_loop_rejects_fabricated_mcp_tool(monkeypatch
     lines = asyncio.run(_run())
     assert called["n"] == 0
     events = _parse_events(lines)
-    end = next(e for e in events if e.get("type") == "tool_end")
-    assert "not enabled" in end["result"]
+    assert not [e for e in events if e.get("type") in ("tool_start", "tool_end")]
+    follow_up = client.requests[1]["messages"]
+    assert any(
+        m.get("role") == "tool" and "not enabled" in m.get("content", "") for m in follow_up
+    )
 
 
 def test_stream_external_local_tool_loop_awaiting_confirmation(monkeypatch):
@@ -1378,3 +1387,414 @@ def test_stream_external_local_tool_loop_feeds_error_nudge(monkeypatch):
     assert any(TOOL_ERROR_NUDGE in m["content"] for m in tool_msgs)
     # The raw error text is still present for context.
     assert any("search backend unavailable" in m["content"] for m in tool_msgs)
+
+
+def test_stream_external_local_tool_loop_caps_parallel_calls_per_turn(monkeypatch):
+    # A remote OAI-compat server is not grammar-bounded, so one turn can ask for an
+    # arbitrary number of parallel calls. Cap a single round at _MAX_TOOL_CALLS_PER_TURN
+    # the way the local llama.cpp / safetensors loops do, even when budget is left.
+    from core.inference.external_agentic import _MAX_TOOL_CALLS_PER_TURN
+
+    burst = [
+        _sse_chunk(
+            tool_calls = [
+                {
+                    "index": i,
+                    "id": f"call_{i}",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": f'{{"query":"q{i}"}}'},
+                }
+                for i in range(20)
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+    follow_up = [_sse_chunk(content = "done", finish_reason = "stop"), "data: [DONE]"]
+    client = _FakeClient([burst, follow_up, follow_up])
+
+    executed = []
+    monkeypatch.setattr(
+        "core.inference.external_agentic.execute_tool",
+        lambda name, arguments, *a, **k: executed.append(arguments.get("query")) or "hit",
+    )
+
+    async def _run():
+        async for _ in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "go"}],
+            model = "m",
+            tools = [WEB_SEARCH_TOOL],
+            confirm_tool_calls = False,
+            max_tool_iterations = 25,  # budget is not the limiter here
+        ):
+            pass
+
+    asyncio.run(_run())
+    assert _MAX_TOOL_CALLS_PER_TURN == 8
+    assert len(executed) == _MAX_TOOL_CALLS_PER_TURN
+    assert executed == [f"q{i}" for i in range(_MAX_TOOL_CALLS_PER_TURN)]
+    # The assistant transcript must list exactly the calls that got a tool reply, or the
+    # next request carries tool_calls with no matching results.
+    second_msgs = client.requests[1]["messages"]
+    assistant = next(m for m in second_msgs if m.get("role") == "assistant" and m.get("tool_calls"))
+    assert len(assistant["tool_calls"]) == _MAX_TOOL_CALLS_PER_TURN
+    assert len([m for m in second_msgs if m.get("role") == "tool"]) == _MAX_TOOL_CALLS_PER_TURN
+
+
+def test_stream_external_local_tool_loop_stops_after_a_round_of_unknown_tools(monkeypatch):
+    # A model that invents a NEW tool name every round never spends budget, so before this
+    # it could burn every remaining iteration on a full remote round-trip each time.
+    def bogus_round(n):
+        return [
+            _sse_chunk(
+                tool_calls = [
+                    {
+                        "index": 0,
+                        "id": f"call_b{n}",
+                        "type": "function",
+                        "function": {"name": f"bogus_tool_{n}", "arguments": '{"x":1}'},
+                    }
+                ],
+                finish_reason = "tool_calls",
+            ),
+            "data: [DONE]",
+        ]
+
+    final = [_sse_chunk(content = "final", finish_reason = "stop"), "data: [DONE]"]
+    client = _FakeClient([bogus_round(i) for i in range(10)] + [final])
+
+    called = {"n": 0}
+    monkeypatch.setattr(
+        "core.inference.external_agentic.execute_tool",
+        lambda *a, **k: called.__setitem__("n", called["n"] + 1) or "ran",
+    )
+
+    async def _run():
+        lines = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "go"}],
+            model = "m",
+            tools = [WEB_SEARCH_TOOL],
+            confirm_tool_calls = False,
+            max_tool_iterations = 10,
+        ):
+            lines.append(line)
+        return lines
+
+    lines = asyncio.run(_run())
+    assert called["n"] == 0
+    # One tool round, then the tools-free synthesis. Not ten rounds of hallucination:
+    # ten more rounds were queued and available, and none of them was requested.
+    assert len(client.requests) == 2
+    assert client.requests[1].get("tools") is None
+    assert client.requests[1].get("tool_choice") == "none"
+    events = _parse_events(lines)
+    assert not [e for e in events if e.get("type") in ("tool_start", "tool_end")]
+    assert lines[-1] == "data: [DONE]"
+
+
+def test_stream_external_local_tool_loop_rejects_calls_when_no_tool_is_enabled(monkeypatch):
+    # An empty tool set means nothing is enabled, not "no restriction". A remote model that
+    # ignores an empty tools array must not get its calls executed.
+    stream = [
+        _sse_chunk(
+            tool_calls = [
+                {
+                    "index": 0,
+                    "id": "call_d",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": '{"command":"id"}'},
+                }
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+    final = [_sse_chunk(content = "ok", finish_reason = "stop"), "data: [DONE]"]
+    client = _FakeClient([stream, final])
+
+    called = {"n": 0}
+    monkeypatch.setattr(
+        "core.inference.external_agentic.execute_tool",
+        lambda *a, **k: called.__setitem__("n", called["n"] + 1) or "ran",
+    )
+
+    async def _run():
+        lines = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "hi"}],
+            model = "m",
+            tools = [],
+            confirm_tool_calls = False,
+        ):
+            lines.append(line)
+        return lines
+
+    lines = asyncio.run(_run())
+    assert called["n"] == 0
+    events = _parse_events(lines)
+    assert not [e for e in events if e.get("type") in ("tool_start", "tool_end")]
+
+
+def test_stream_external_local_tool_loop_keeps_prose_when_budget_runs_out(monkeypatch):
+    # Round 2 streams prose and then asks for one more call with the budget already spent.
+    # The prose has reached the user, so it has to enter the transcript before the loop
+    # breaks; otherwise the tools-free synthesis writes the same paragraph again and the
+    # user reads it twice.
+    from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
+
+    round0 = [
+        _sse_chunk(
+            tool_calls = [
+                {
+                    "index": 0,
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"a"}'},
+                },
+                {
+                    "index": 1,
+                    "id": "c2",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"b"}'},
+                },
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+    round1 = [
+        _sse_chunk(content = "PROSE_THAT_MAY_DUPLICATE"),
+        _sse_chunk(
+            tool_calls = [
+                {
+                    "index": 0,
+                    "id": "c3",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"c"}'},
+                }
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+    final = [_sse_chunk(content = "FINAL", finish_reason = "stop"), "data: [DONE]"]
+    client = _FakeClient([round0, round1, final])
+
+    monkeypatch.setattr(
+        "core.inference.external_agentic.execute_tool",
+        lambda name, arguments, *a, **k: f"hit {arguments.get('query')}",
+    )
+
+    async def _run():
+        lines = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "go"}],
+            model = "m",
+            tools = [WEB_SEARCH_TOOL],
+            confirm_tool_calls = False,
+            max_tool_iterations = 2,
+        ):
+            lines.append(line)
+        return lines
+
+    lines = asyncio.run(_run())
+    # The prose was streamed to the client exactly once.
+    assert sum(line.count("PROSE_THAT_MAY_DUPLICATE") for line in lines) == 1
+    synthesis_msgs = client.requests[2]["messages"]
+    assert synthesis_msgs[-1] == {"role": "user", "content": BUDGET_EXHAUSTED_NUDGE}
+    # The dropped round's text is in the transcript the synthesis pass continues from.
+    assert synthesis_msgs[-2] == {
+        "role": "assistant",
+        "content": "PROSE_THAT_MAY_DUPLICATE",
+    }
+    # The abandoned third call left no orphan tool_call in the transcript.
+    assert not any(
+        tc.get("id") == "c3"
+        for m in synthesis_msgs
+        for tc in (m.get("tool_calls") or [])
+    )
+
+
+def test_stream_external_local_tool_loop_keepalive_while_tool_runs(monkeypatch):
+    # A search / terminal / MCP call can hold the loop for minutes between tool_start and
+    # tool_end. Without traffic an intermediate proxy drops the stream.
+    import time as _time
+
+    import core.inference.external_agentic as ext
+
+    monkeypatch.setattr(ext, "_TOOL_STREAM_KEEPALIVE_S", 0.01)
+
+    stream = [
+        _sse_chunk(
+            tool_calls = [
+                {
+                    "index": 0,
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"slow"}'},
+                }
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+    final = [_sse_chunk(content = "done", finish_reason = "stop"), "data: [DONE]"]
+    client = _FakeClient([stream, final])
+
+    def slow_tool(*_a, **_k):
+        _time.sleep(0.3)
+        return "hit"
+
+    monkeypatch.setattr(ext, "execute_tool", slow_tool)
+
+    async def _run():
+        lines = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "go"}],
+            model = "m",
+            tools = [WEB_SEARCH_TOOL],
+            confirm_tool_calls = False,
+        ):
+            lines.append(line)
+        return lines
+
+    lines = asyncio.run(_run())
+    start_at = next(i for i, line in enumerate(lines) if '"tool_start"' in line)
+    end_at = next(i for i, line in enumerate(lines) if '"tool_end"' in line)
+    between = lines[start_at + 1 : end_at]
+    assert any(line == ": keep-alive" for line in between), between
+    # The tool result still arrives intact.
+    assert '"result": "hit"' in lines[end_at]
+
+
+def test_stream_external_local_tool_loop_keepalive_while_awaiting_confirmation(monkeypatch):
+    import core.inference.external_agentic as ext
+
+    monkeypatch.setattr(ext, "_TOOL_STREAM_KEEPALIVE_S", 0.01)
+
+    stream = [
+        _sse_chunk(
+            tool_calls = [
+                {
+                    "index": 0,
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"x"}'},
+                }
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+    final = [_sse_chunk(content = "done", finish_reason = "stop"), "data: [DONE]"]
+    client = _FakeClient([stream, final])
+
+    def slow_decision(*_a, **_k):
+        import time as _t
+
+        _t.sleep(0.3)
+        return "allow"
+
+    monkeypatch.setattr(ext, "wait_tool_decision", slow_decision)
+    monkeypatch.setattr(ext, "execute_tool", lambda *a, **k: "hit")
+
+    async def _run():
+        lines = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "go"}],
+            model = "m",
+            tools = [WEB_SEARCH_TOOL],
+            confirm_tool_calls = True,
+            permission_mode = "ask",
+        ):
+            lines.append(line)
+        return lines
+
+    lines = asyncio.run(_run())
+    start_at = next(i for i, line in enumerate(lines) if '"tool_start"' in line)
+    end_at = next(i for i, line in enumerate(lines) if '"tool_end"' in line)
+    assert any(line == ": keep-alive" for line in lines[start_at + 1 : end_at])
+    assert '"result": "hit"' in lines[end_at]
+
+
+def test_proxy_local_tool_loop_registers_completion_id_for_cancel(monkeypatch):
+    """`POST /cancel` accepts completion_id; this path must register a real one."""
+    import routes.inference as inf_mod
+    from models.inference import ChatCompletionRequest, ChatMessage
+    from routes.inference import _proxy_to_external_provider
+
+    class _Req:
+        url = type("U", (), {"path": "/v1/chat/completions"})()
+        method = "POST"
+        state = type("S", (), {"skip_api_monitor": True})()
+
+    seen = {"registry": set()}
+
+    class DummyExternalClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def stream_chat_completion(self, **_kwargs):
+            # Snapshot the cancel registry while the stream is live.
+            seen["registry"] = set(inf_mod._CANCEL_REGISTRY.keys())
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "id": "remote-side-id",
+                        "object": "chat.completion.chunk",
+                        "created": 1,
+                        "model": "m",
+                        "choices": [
+                            {"index": 0, "delta": {"content": "hi"}, "finish_reason": "stop"}
+                        ],
+                    }
+                )
+            )
+            yield "data: [DONE]"
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(inf_mod, "ExternalProviderClient", DummyExternalClient)
+    payload = ChatCompletionRequest(
+        model = "default",
+        external_model = "qwen3:8b",
+        provider_type = "ollama",
+        provider_base_url = "http://127.0.0.1:11434/v1",
+        messages = [ChatMessage(role = "user", content = "hi")],
+        stream = True,
+        enable_tools = True,
+        enabled_tools = ["web_search"],
+        session_id = "sess-cancel",
+    )
+
+    async def _run():
+        response = await _proxy_to_external_provider(payload, _Req())
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk if isinstance(chunk, str) else chunk.decode())
+        return "".join(chunks)
+
+    text = asyncio.run(_run())
+    # The id the client sees on the wire is the loop's own, not the remote's.
+    emitted_ids = {
+        json.loads(line[5:].strip())["id"]
+        for line in text.split("\n")
+        if line.startswith("data:") and line[5:].strip() not in ("", "[DONE]")
+    }
+    assert emitted_ids
+    assert "remote-side-id" not in emitted_ids
+    completion_id = emitted_ids.pop()
+    assert completion_id.startswith("chatcmpl-")
+    # That same id was registered, so a cancel keyed on it reaches this stream.
+    assert completion_id in seen["registry"]
+    assert "sess-cancel" in seen["registry"]
+    assert None not in seen["registry"]
