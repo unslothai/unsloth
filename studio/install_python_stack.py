@@ -28,6 +28,10 @@ _BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(1, str(_BACKEND_DIR))
 
+# Always run as a script (setup.sh/setup.ps1 invoke it by path), so this file's
+# directory is sys.path[0] and the plain import resolves.
+import install_manifest  # noqa: E402
+
 from backend.utils.wheel_utils import (
     flash_attn_package_version,
     flash_attn_wheel_url,
@@ -2709,6 +2713,10 @@ def install_python_stack() -> int:
             base_total += 2  # flash-attn + torch final repair (step 13), Linux
     _TOTAL = (base_total - 1) if skip_base else base_total
 
+    # Drop it up front: if this run is interrupted, the missing manifest is what
+    # tells the CLI, setup.sh and the preflight that the venv is half-built.
+    install_manifest.remove_manifest()
+
     # 1. Try uv for faster installs (before pip upgrade -- uv venvs don't
     #    include pip by default).
     USE_UV = _bootstrap_uv()
@@ -3078,6 +3086,13 @@ def install_python_stack() -> int:
         stdout = subprocess.DEVNULL,
         stderr = subprocess.DEVNULL,
         **_windows_hidden_subprocess_kwargs(),
+    )
+
+    # 15. Record success. Written last on purpose: an earlier kill leaves none.
+    install_manifest.write_manifest(
+        req_root = REQ_ROOT,
+        steps_total = _TOTAL,
+        package_name = package_name,
     )
 
     _step(_LABEL, "installed")

@@ -2963,6 +2963,27 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
             substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..." "Cyan"
             $SkipPythonDeps = $false
         }
+        # An interrupted install leaves $_PkgName current (installed early)
+        # while studio.txt never finished, so the compare above says "up to
+        # date" and update -- plus the desktop Repair button that calls it --
+        # would no-op on a venv whose server dies on `import structlog`.
+        $_studioInstallIncomplete = $false
+        try {
+            & python -c "
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+except Exception:
+    sys.exit(0)  # older tree without the manifest helper: leave the fast path alone
+sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
+" "$PSScriptRoot" 2>$null
+            if ($LASTEXITCODE -ne 0) { $_studioInstallIncomplete = $true }
+        } catch {}
+        if ($_studioInstallIncomplete) {
+            substep "studio install incomplete -- forcing dependency pass to repair..." "Cyan"
+            $SkipPythonDeps = $false
+        }
         # ...but not if an AMD GPU is present and installed PyTorch is CPU-only
         # (host predates ROCm-wheel support, or GPU added later): the fast "up to
         # date" path would leave the user on CPU torch with Train/Export disabled.

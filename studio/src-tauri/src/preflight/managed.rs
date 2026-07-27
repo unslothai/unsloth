@@ -11,7 +11,8 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
-const MANAGED_CAPABILITY_CACHE_SCHEMA: u16 = 2;
+// 3: the cached capability gained studio_install_ok / studio_install_reason.
+const MANAGED_CAPABILITY_CACHE_SCHEMA: u16 = 3;
 
 const FNV64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV64_PRIME: u64 = 0x100000001b3;
@@ -33,6 +34,11 @@ struct DesktopCapability {
     supports_provision_desktop_auth: Option<bool>,
     supports_desktop_backend_ownership: Option<bool>,
     desktop_auth_stale_reason: Option<String>,
+    // An installer killed part-way leaves a venv whose CLI answers `-h` fine but
+    // whose backend dies on `import structlog`, so readiness cannot be inferred
+    // from the CLI running.
+    studio_install_ok: Option<bool>,
+    studio_install_reason: Option<String>,
     version: Option<String>,
 }
 
@@ -401,6 +407,16 @@ fn desktop_capability_stale_reason(capability: &DesktopCapability) -> Option<Str
     if capability.supports_desktop_backend_ownership != Some(true) {
         return Some("desktop_backend_ownership_unsupported".to_string());
     }
+    // Half-installed is Stale, not Ready: starting the backend just crashes it.
+    // A CLI too old to answer is already rejected above on manageability.
+    if capability.studio_install_ok != Some(true) {
+        return Some(
+            capability
+                .studio_install_reason
+                .clone()
+                .unwrap_or_else(|| "studio_install_incomplete".to_string()),
+        );
+    }
     backend_version_stale_reason(capability.version.as_deref())
 }
 
@@ -491,4 +507,112 @@ pub(super) async fn probe_managed_install() -> ManagedProbe {
 
 pub async fn managed_install_ready() -> bool {
     matches!(probe_managed_install().await, ManagedProbe::Ready { .. })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn healthy_capability() -> DesktopCapability {
+        DesktopCapability {
+            desktop_protocol_version: Some(DESKTOP_PROTOCOL_VERSION),
+            desktop_manageability_version: Some(DESKTOP_MANAGEABILITY_VERSION),
+            supports_api_only: Some(true),
+            supports_provision_desktop_auth: Some(true),
+            supports_desktop_backend_ownership: Some(true),
+            desktop_auth_stale_reason: None,
+            studio_install_ok: Some(true),
+            studio_install_reason: None,
+            version: Some("2026.7.5".to_string()),
+        }
+    }
+
+    #[test]
+    fn complete_install_is_ready() {
+        assert_eq!(desktop_capability_stale_reason(&healthy_capability()), None);
+        assert!(desktop_capability_ready(&healthy_capability()));
+    }
+
+    #[test]
+    fn incomplete_install_is_stale_with_the_cli_reason() {
+        // The installer was killed during `studio deps`, so the venv has the CLI
+        // but not structlog. Preflight must repair instead of spawning a backend
+        // that cannot import.
+        let mut capability = healthy_capability();
+        capability.studio_install_ok = Some(false);
+        capability.studio_install_reason = Some("studio_install_incomplete".to_string());
+        assert_eq!(
+            desktop_capability_stale_reason(&capability).as_deref(),
+            Some("studio_install_incomplete")
+        );
+        assert!(!desktop_capability_ready(&capability));
+    }
+
+    #[test]
+    fn deps_removed_after_install_is_stale() {
+        let mut capability = healthy_capability();
+        capability.studio_install_ok = Some(false);
+        capability.studio_install_reason = Some("studio_deps_missing".to_string());
+        assert_eq!(
+            desktop_capability_stale_reason(&capability).as_deref(),
+            Some("studio_deps_missing")
+        );
+    }
+
+    #[test]
+    fn missing_install_field_falls_back_to_a_generic_reason() {
+        let mut capability = healthy_capability();
+        capability.studio_install_ok = None;
+        capability.studio_install_reason = None;
+        assert_eq!(
+            desktop_capability_stale_reason(&capability).as_deref(),
+            Some("studio_install_incomplete")
+        );
+    }
+
+    #[test]
+    fn older_cli_is_rejected_on_manageability_before_the_install_check() {
+        // A CLI predating this feature cannot answer studio_install_ok, so it is
+        // already stale for manageability; the more specific reason must win so
+        // the diagnostics name the real gap.
+        let mut capability = healthy_capability();
+        capability.desktop_manageability_version = Some(1);
+        capability.studio_install_ok = None;
+        assert_eq!(
+            desktop_capability_stale_reason(&capability).as_deref(),
+            Some("desktop_manageability_unsupported")
+        );
+    }
+
+    #[test]
+    fn a_stale_capability_is_never_served_from_cache() {
+        // write_cached_capability runs before the ready check, so an incomplete
+        // install does get cached; cache_matches must refuse to reuse it, else a
+        // repaired venv would keep reporting the stale answer.
+        let mut capability = healthy_capability();
+        capability.studio_install_ok = Some(false);
+        let cache = ManagedCapabilityCache {
+            schema: MANAGED_CAPABILITY_CACHE_SCHEMA,
+            bin_path: "/managed/unsloth".to_string(),
+            bin_size: 1,
+            bin_mtime_ms: 1,
+            studio_root_id: None,
+            marker_path: None,
+            marker_size: None,
+            marker_mtime_ms: None,
+            desktop_protocol_version: DESKTOP_PROTOCOL_VERSION,
+            desktop_manageability_version: DESKTOP_MANAGEABILITY_VERSION,
+            capability,
+        };
+        let fingerprint = ManagedBinFingerprint {
+            bin_path: "/managed/unsloth".to_string(),
+            bin_size: 1,
+            bin_mtime_ms: 1,
+            studio_root_id: None,
+            marker_path: None,
+            marker_size: None,
+            marker_mtime_ms: None,
+        };
+        assert!(!cache_matches(&cache, &fingerprint));
+    }
 }
