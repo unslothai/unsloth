@@ -52,7 +52,8 @@ export const PERMISSION_MODE_OPTIONS: readonly {
   {
     value: "auto",
     label: "Approve for me",
-    description: "Only ask for actions detected as potentially unsafe",
+    description:
+      "Run tool calls, but ask before high-risk actions like credential access, privilege escalation, or destructive commands",
     icon: ShieldCheck,
   },
   {
@@ -76,6 +77,8 @@ export const FULL_ACCESS_WARNING =
 export function permissionModeOption(mode: PermissionMode) {
   return (
     PERMISSION_MODE_OPTIONS.find((option) => option.value === mode) ??
+    // Unknown values fall back to the default ("Approve for me"), not row 0 ("Ask").
+    PERMISSION_MODE_OPTIONS.find((option) => option.value === "auto") ??
     PERMISSION_MODE_OPTIONS[0]
   );
 }

