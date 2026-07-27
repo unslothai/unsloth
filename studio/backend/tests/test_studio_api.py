@@ -784,11 +784,16 @@ def _start_server(model: str, variant: str | None) -> tuple[subprocess.Popen, st
 
     LOG_FILE.parent.mkdir(parents = True, exist_ok = True)
     log_fh = open(LOG_FILE, "w", encoding = "utf-8")
+    # The child writes to this descriptor itself, so the parent's encoding does
+    # not transcode anything: tell the child to emit utf-8 or the reads below
+    # decode its locale bytes as utf-8 and raise on the first non-ASCII glyph.
+    child_env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     proc = subprocess.Popen(
         cmd,
         stdout = log_fh,
         stderr = subprocess.STDOUT,
         preexec_fn = os.setsid,
+        env = child_env,
     )
 
     # Wait for the banner containing the API key

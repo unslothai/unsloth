@@ -866,7 +866,8 @@ sed "s|@@DATA_DIR@@|$_sed_safe|g" "{launcher_path}" > "{launcher_path}.tmp" \\
     && mv "{launcher_path}.tmp" "{launcher_path}"
 """
     subprocess.run(["bash", "-c", script], check = True)
-    final = launcher_path.read_text()
+    # written as utf-8 just above, and the template carries U+2500.
+    final = launcher_path.read_text(encoding = "utf-8")
     assert (
         f"DATA_DIR='{weird_data_dir}'" in final
     ), f"DATA_DIR must be preserved verbatim (no @@STUDIO_ROOT_ID@@ mutation); got: {final[:500]}"
