@@ -188,6 +188,13 @@ class CachedModelRepo(CachedRepoBase):
     pipeline_tag: Optional[str] = None
     library_name: Optional[str] = None
     tags: Optional[List[str]] = None
+    snapshot_size_bytes: Optional[int] = Field(
+        None,
+        description = (
+            "Weight bytes of the newest cached snapshot only (what a load "
+            "resolves); size_bytes sums blobs across every cached revision."
+        ),
+    )
 
 
 class CachedModelsResponse(BaseModel):

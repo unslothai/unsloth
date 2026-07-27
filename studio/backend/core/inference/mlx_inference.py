@@ -606,8 +606,13 @@ class MLXInferenceBackend:
             else:
                 load_kwargs["tensor_group"] = distributed_group
 
+        # Registry identity stays the repo id (model_name); the LOAD source
+        # honors config.path so a route-resolved local snapshot (local-only
+        # loads against a moved live cache) is read instead of re-resolving
+        # the id through the import-time cache location.
+        load_source = getattr(config, "path", None) or model_name
         model, tokenizer_or_processor = FastMLXModel.from_pretrained(
-            model_name,
+            load_source,
             **load_kwargs,
         )
 

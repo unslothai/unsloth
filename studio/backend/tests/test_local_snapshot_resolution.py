@@ -84,6 +84,34 @@ def test_uncached_repo_resolves_to_none(tmp_path):
     assert resolve_local_snapshot_path("org/never-downloaded", cache_dir = str(tmp_path)) is None
 
 
+def test_newest_snapshot_preferred_over_refs_main(tmp_path):
+    """A newer snapshot downloaded at an explicit revision outranks the older
+    refs/main target: the inventory surfaces the newest snapshot by mtime, so
+    the load must resolve the same one instead of an older (possibly
+    incomplete) main revision."""
+    import os
+    import time
+
+    old_main = _build_cached_repo(
+        tmp_path,
+        "org/newer-rev",
+        {"config.json": "{}"},
+        rev = "a" * 40,
+    )
+    stale = time.time() - 1000
+    os.utime(old_main, (stale, stale))
+    newer = _build_cached_repo(
+        tmp_path,
+        "org/newer-rev",
+        {"config.json": "{}", "model.safetensors": "weights"},
+        with_refs = False,
+        rev = "b" * 40,
+    )
+    resolved = resolve_local_snapshot_path("org/newer-rev", cache_dir = str(tmp_path))
+    assert resolved is not None
+    assert Path(resolved).resolve() == newer.resolve()
+
+
 def test_revision_only_snapshot_resolves_without_refs(tmp_path):
     """snapshot_download(local_files_only = True) needs refs/main, but the
     inventory scanner accepts revision-only layouts (pruned refs), so the

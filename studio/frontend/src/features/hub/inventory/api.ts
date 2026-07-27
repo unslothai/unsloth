@@ -65,6 +65,9 @@ export interface CachedModelRepo {
   format_variant?: string | null;
   capabilities?: BackendModelCapabilities | null;
   size_bytes: number;
+  /** Weight bytes of the newest cached snapshot only (what a load resolves);
+   * size_bytes sums selected-format blobs across every cached revision. */
+  snapshot_size_bytes?: number | null;
   cache_path?: string;
   last_modified?: number | null;
   partial?: boolean;

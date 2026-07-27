@@ -506,6 +506,13 @@ def _hf_env_offline() -> bool:
         return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+# Overlapping offline guards share one env override: the count tracks active
+# guards and the saved values are restored only when the LAST guard exits, so
+# a request finishing early cannot re-enable network for one still running.
+_OFFLINE_GUARD_LOCK = threading.Lock()
+_OFFLINE_GUARD_STATE: dict = {"count": 0, "hub_prev": None, "transformers_prev": None}
+
+
 @contextlib.contextmanager
 def _hf_offline_if_dns_dead(force: bool = False):
     """Set HF_HUB_OFFLINE for this block only when DNS to huggingface.co fails;
@@ -513,41 +520,56 @@ def _hf_offline_if_dns_dead(force: bool = False):
     No-op when the user already set it to a truthy value. ``force`` skips the
     DNS probe and goes offline unconditionally (local-only background loads
     resolve metadata from the cache without any network), overriding even an
-    explicitly falsy HF_HUB_OFFLINE=0 for the block and restoring it after."""
-    if _hf_env_offline():
+    explicitly falsy HF_HUB_OFFLINE=0 for the block and restoring it after.
+    Guards are refcounted so overlapping loads/validations each keep offline
+    until the last one exits."""
+    entered = False  # this guard joined or created the env override
+    owner = False  # this guard created it (first in)
+    with _OFFLINE_GUARD_LOCK:
+        if _OFFLINE_GUARD_STATE["count"] > 0:
+            # Join the active override so the env survives until every guard
+            # exits, whichever request finishes first.
+            _OFFLINE_GUARD_STATE["count"] += 1
+            entered = True
+        elif _hf_env_offline():
+            # User-set truthy env (count is 0): already offline, nothing to
+            # arrange or restore.
+            pass
+        elif not force and "HF_HUB_OFFLINE" in os.environ:
+            # A user-pinned falsy value stays authoritative for ordinary loads.
+            pass
+        elif force or _probe_dns_dead():
+            _OFFLINE_GUARD_STATE["hub_prev"] = os.environ.get("HF_HUB_OFFLINE")
+            _OFFLINE_GUARD_STATE["transformers_prev"] = os.environ.get("TRANSFORMERS_OFFLINE")
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            _OFFLINE_GUARD_STATE["count"] = 1
+            entered = True
+            owner = True
+    if not entered:
         yield False
         return
-    if not force:
-        if "HF_HUB_OFFLINE" in os.environ:
-            # A user-pinned falsy value stays authoritative for ordinary loads.
-            yield False
-            return
-        if not _probe_dns_dead():
-            yield False
-            return
-
-    hub_prev = os.environ.get("HF_HUB_OFFLINE")
-    transformers_prev = os.environ.get("TRANSFORMERS_OFFLINE")
-    wrote_transformers = transformers_prev is None or force
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    if wrote_transformers:
-        os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    if force:
-        logger.info("Local-only load: forcing HF offline for this block.")
-    else:
-        logger.warning("huggingface.co unreachable; using local HF cache for this load.")
+    if owner:
+        if force:
+            logger.info("Local-only load: forcing HF offline for this block.")
+        else:
+            logger.warning("huggingface.co unreachable; using local HF cache for this load.")
     try:
         yield True
     finally:
-        if hub_prev is None:
-            os.environ.pop("HF_HUB_OFFLINE", None)
-        else:
-            os.environ["HF_HUB_OFFLINE"] = hub_prev
-        if wrote_transformers:
-            if transformers_prev is None:
-                os.environ.pop("TRANSFORMERS_OFFLINE", None)
-            else:
-                os.environ["TRANSFORMERS_OFFLINE"] = transformers_prev
+        with _OFFLINE_GUARD_LOCK:
+            _OFFLINE_GUARD_STATE["count"] -= 1
+            if _OFFLINE_GUARD_STATE["count"] == 0:
+                for key, prev in (
+                    ("HF_HUB_OFFLINE", _OFFLINE_GUARD_STATE["hub_prev"]),
+                    ("TRANSFORMERS_OFFLINE", _OFFLINE_GUARD_STATE["transformers_prev"]),
+                ):
+                    if prev is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = prev
+                _OFFLINE_GUARD_STATE["hub_prev"] = None
+                _OFFLINE_GUARD_STATE["transformers_prev"] = None
 
 
 try:

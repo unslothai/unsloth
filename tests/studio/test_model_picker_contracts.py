@@ -848,12 +848,11 @@ def test_fallback_orders_by_resolved_quant_size():
     # Cached GGUF repos order on the resolved quant size too.
     assert "const resolveCachedGgufEntry" in auto_load
     assert "sizeBytes: sizeOrUnknownBytes(variant.size_bytes)" in auto_load
-    # The all-variant row sum only orders non-GGUF cached repos, whose
-    # snapshot loads whole.
+    # Non-GGUF cached repos order on the SELECTED snapshot's size (falling
+    # back to the all-revisions row sum for older backends).
     seed_block = auto_load.split("for (const repo of platform.chatOnly ? [] : modelRepos)", 1)[1]
     seed_block = seed_block.split("const resolveCachedGgufEntry", 1)[0]
-    assert "sizeOrUnknownBytes(repo.size_bytes)" in seed_block
-    assert auto_load.count("sizeOrUnknownBytes(repo.size_bytes)") == 1
+    assert "repo.snapshot_size_bytes ?? repo.size_bytes" in seed_block
 
 
 def test_cascade_retries_next_quant_after_load_failure():
@@ -1112,11 +1111,13 @@ def test_background_candidate_filters_have_no_side_effects():
 
     llama = _read_backend("core/inference/llama_cpp.py")
     assert "def _hf_offline_if_dns_dead(force: bool = False):" in llama
-    # force must also override an explicitly falsy HF_HUB_OFFLINE=0: only a
-    # TRUTHY env value short-circuits, and prior values are restored on exit.
-    assert "if _hf_env_offline():" in llama
-    assert 'hub_prev = os.environ.get("HF_HUB_OFFLINE")' in llama
-    assert 'os.environ["HF_HUB_OFFLINE"] = hub_prev' in llama
+    # force must also override an explicitly falsy HF_HUB_OFFLINE=0 (only a
+    # TRUTHY env value short-circuits), and overlapping guards are refcounted
+    # so the env is restored only when the LAST one exits; behavior is
+    # exercised directly in test_offline_guard_refcount.py.
+    assert "elif _hf_env_offline():" in llama
+    assert "_OFFLINE_GUARD_LOCK" in llama
+    assert '_OFFLINE_GUARD_STATE["count"] += 1' in llama
 
     helper = _read_backend("hub/utils/local_snapshot.py")
     assert "def _snapshot_dir_fallback(" in helper
@@ -1168,6 +1169,52 @@ def test_local_only_covers_every_load_and_validate_network_path():
     processor_call = inference.split("processor = AutoProcessor.from_pretrained(", 1)[1]
     processor_call = processor_call.split("logger.info", 1)[0]
     assert "local_files_only = local_files_only," in processor_call
+
+
+def test_background_picks_mirror_inventory_and_skip_installers():
+    """Round-15 gates. Cached checkpoint repos (pickle weights) are excluded
+    from background picks like local checkpoint rows. The worker keeps its
+    ENTIRE bootstrap offline under local-only and never pip-installs SSM
+    kernels (missing fatal kernels fail into candidate failover). Snapshot
+    resolution prefers the newest snapshot dir, matching the inventory
+    scanner's latest_snapshot_dir selection, before consulting refs/main.
+    MLX loads read config.path so the live-cache rewrite is honored. Cached
+    non-GGUF ordering uses the selected snapshot's size, not the
+    all-revisions blob total."""
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    cached_filter = adapter.split("function isAutoLoadableCachedRepo", 1)[1]
+    cached_filter = cached_filter.split("AUTO_LOAD_LOCAL_SOURCES", 1)[0]
+    assert 'if (repo.model_format === "checkpoint") {' in cached_filter
+    assert "repo.snapshot_size_bytes ?? repo.size_bytes" in adapter
+
+    worker = _read_backend("core/inference/worker.py")
+    assert "_bootstrap_offline = contextlib.ExitStack()" in worker
+    # Entered before base resolution / gates / kernels, closed before BOTH
+    # command loops (MLX and GPU paths).
+    bootstrap = worker.split("_bootstrap_offline = contextlib.ExitStack()", 1)[1]
+    assert bootstrap.count("_bootstrap_offline.close()") == 2
+    assert "def _ensure_ssm_kernels(targets: list, resp_queue: Any, local_files_only: bool = False) -> bool:" in worker
+    ssm = worker.split("def _ensure_ssm_kernels", 1)[1]
+    ssm = ssm.split("def _run_security_gates", 1)[0]
+    assert "if local_files_only:" in ssm
+    assert 'importlib.util.find_spec("mamba_ssm") is None' in ssm
+
+    helper = _read_backend("hub/utils/local_snapshot.py")
+    resolve = helper.split("def resolve_local_snapshot_path", 1)[1]
+    # Newest-snapshot scan runs BEFORE the refs/main-based resolver (compare
+    # the actual calls, not docstring mentions).
+    assert resolve.index("resolved = _snapshot_dir_fallback(") < resolve.index(
+        "return snapshot_download("
+    )
+
+    mlx = _read_backend("core/inference/mlx_inference.py")
+    assert 'load_source = getattr(config, "path", None) or model_name' in mlx
+
+    inventory = _read_backend("hub/services/models/cache_inventory.py")
+    assert "snapshot_size_bytes" in inventory
+    assert "def _snapshot_dir_mtime(" in inventory
+    schema = _read_backend("hub/schemas/inventory.py")
+    assert "snapshot_size_bytes" in schema
 
 
 def test_gguf_background_loads_never_download_companions():

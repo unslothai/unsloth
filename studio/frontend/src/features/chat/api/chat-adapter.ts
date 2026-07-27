@@ -1468,6 +1468,12 @@ function isAutoLoadableCachedRepo(repo: {
 }): boolean {
   if (repo.partial) return false;
   if (repo.model_format === "adapter") return false;
+  // Cached checkpoint repos (pickle .bin/.pt weights) stay interactive-only,
+  // like local checkpoint rows: forced-offline validation cannot consult the
+  // Hub security scan, and deserializing a pickle can execute code.
+  if (repo.model_format === "checkpoint") {
+    return false;
+  }
   if (repo.capabilities?.can_chat === false) return false;
   return !isHiddenModelId(repo.repo_id);
 }
@@ -2326,7 +2332,13 @@ export async function autoLoadOnDeviceModel(): Promise<{
       insertReady({
         type: "cached-model",
         repo,
-        sizeBytes: sizeOrUnknownBytes(repo.size_bytes),
+        // Order by the snapshot the load will actually resolve: the row's
+        // size_bytes sums weight blobs across EVERY cached revision, so a
+        // small current revision beside a huge stale one would otherwise be
+        // ranked as their total and sink behind genuinely larger candidates.
+        sizeBytes: sizeOrUnknownBytes(
+          repo.snapshot_size_bytes ?? repo.size_bytes,
+        ),
       });
     }
     // Smallest complete, auto-loadable, not-yet-skipped quant of a managed

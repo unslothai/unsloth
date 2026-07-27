@@ -383,6 +383,9 @@ export interface CachedModelRepo {
   repo_id: string;
   load_id?: string | null;
   size_bytes: number;
+  /** Weight bytes of the newest cached snapshot only (what a load resolves);
+   * size_bytes sums selected-format blobs across every cached revision. */
+  snapshot_size_bytes?: number | null;
   /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
    * newest-first. Optional for older-backend compatibility. */
   last_modified?: number;

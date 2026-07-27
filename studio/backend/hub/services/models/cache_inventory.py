@@ -415,9 +415,22 @@ async def list_cached_gguf_response(hf_token: Optional[str] = None):
 
 class _CachedNonGgufPayload(NamedTuple):
     size_bytes: int
+    snapshot_size_bytes: int
     has_runnable_weights: bool
     model_format: ModelFormat
     last_modified: float
+
+
+def _snapshot_dir_mtime(revision) -> float:
+    """mtime of a revision's snapshot dir; the same signal latest_snapshot_dir
+    (and therefore the load-side snapshot resolution) selects by."""
+    snapshot_path = getattr(revision, "snapshot_path", None)
+    if not snapshot_path:
+        return 0.0
+    try:
+        return float(Path(snapshot_path).stat().st_mtime)
+    except OSError:
+        return 0.0
 
 
 def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
@@ -425,6 +438,11 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     adapter_blobs: dict[str, tuple[int, float]] = {}
     safetensors_blobs: dict[str, tuple[int, float]] = {}
     checkpoint_blobs: dict[str, tuple[int, float]] = {}
+    # Per-revision selected-format byte sums, so the row can also report the
+    # size of the ONE snapshot a load resolves (newest by snapshot-dir mtime)
+    # rather than only the all-revisions total.
+    rev_category_sizes: dict[str, dict[str, int]] = {}
+    rev_snapshot_mtimes: dict[str, float] = {}
     has_config = False
     has_adapter_config = False
     has_adapter_weights = False
@@ -433,7 +451,11 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     has_checkpoint = False
 
     def _record_blob(
-        target: dict[str, tuple[int, float]], file_obj, rev_id: str, file_name: str
+        target: dict[str, tuple[int, float]],
+        file_obj,
+        rev_id: str,
+        file_name: str,
+        category: str,
     ) -> None:
         blob_path = getattr(file_obj, "blob_path", None)
         size = int(file_obj.size_on_disk or 0)
@@ -441,9 +463,13 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
         value = (size, _blob_mtime(file_obj))
         target[key] = value
         all_weight_blobs[key] = value
+        per_rev = rev_category_sizes.setdefault(rev_id, {})
+        per_rev[category] = per_rev.get(category, 0) + size
+        per_rev["all"] = per_rev.get("all", 0) + size
 
     for revision in repo_info.revisions:
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
+        rev_snapshot_mtimes[rev_id] = _snapshot_dir_mtime(revision)
         for f in revision.files:
             file_name = str(f.file_name)
             lower = file_name.lower()
@@ -461,15 +487,15 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
             is_checkpoint = _is_checkpoint_weight_name(name)
             if is_adapter:
                 has_adapter_weights = True
-                _record_blob(adapter_blobs, f, rev_id, file_name)
+                _record_blob(adapter_blobs, f, rev_id, file_name, "adapter")
             if is_safetensors:
                 has_safetensors = True
                 if _is_transformers_safetensors_weight_name(name):
                     has_transformers_safetensors = True
-                _record_blob(safetensors_blobs, f, rev_id, file_name)
+                _record_blob(safetensors_blobs, f, rev_id, file_name, "safetensors")
             if is_checkpoint:
                 has_checkpoint = True
-                _record_blob(checkpoint_blobs, f, rev_id, file_name)
+                _record_blob(checkpoint_blobs, f, rev_id, file_name, "checkpoint")
 
     model_format = (
         _classify_non_gguf_model_format(
@@ -485,15 +511,35 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     )
     if model_format == "adapter":
         selected_blobs = adapter_blobs
+        selected_category = "adapter"
     elif model_format == "safetensors":
         selected_blobs = safetensors_blobs
+        selected_category = "safetensors"
     elif model_format == "checkpoint":
         selected_blobs = checkpoint_blobs
+        selected_category = "checkpoint"
     else:
         selected_blobs = all_weight_blobs
+        selected_category = "all"
+
+    size_bytes = sum(size for size, _mtime in selected_blobs.values())
+    # The one snapshot a load resolves (newest snapshot-dir mtime) among the
+    # revisions actually holding selected-format weights; falls back to the
+    # all-revisions total when no revision reports one.
+    weight_revs = [
+        rev_id
+        for rev_id, sizes in rev_category_sizes.items()
+        if sizes.get(selected_category, 0) > 0
+    ]
+    if weight_revs:
+        newest_rev = max(weight_revs, key = lambda rev_id: rev_snapshot_mtimes.get(rev_id, 0.0))
+        snapshot_size_bytes = rev_category_sizes[newest_rev].get(selected_category, 0)
+    else:
+        snapshot_size_bytes = size_bytes
 
     return _CachedNonGgufPayload(
-        size_bytes = sum(size for size, _mtime in selected_blobs.values()),
+        size_bytes = size_bytes,
+        snapshot_size_bytes = snapshot_size_bytes,
         has_runnable_weights = model_format != "unknown",
         model_format = model_format,
         last_modified = max((mtime for _size, mtime in selected_blobs.values()), default = 0.0),
@@ -636,6 +682,7 @@ def _scan_cached_models() -> list[dict]:
                 row = {
                     "repo_id": repo_id,
                     "size_bytes": payload.size_bytes,
+                    "snapshot_size_bytes": payload.snapshot_size_bytes,
                     "cache_path": str(repo_info.repo_path),
                     "partial": snapshot_partial,
                     "partial_transport": (

@@ -204,19 +204,45 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     return load_in_4bit
 
 
-def _ensure_ssm_kernels(targets: list, resp_queue: Any) -> bool:
+def _ensure_ssm_kernels(targets: list, resp_queue: Any, local_files_only: bool = False) -> bool:
     """Install the SSM kernels the given model(s) lazy-import in from_pretrained; no-op for
     non-SSM models, idempotent. Returns True on success; on a fatal mamba-ssm failure sends a
     'loaded' failure response and returns False. Call BEFORE importing transformers, which
     snapshots its optional-backend gates at import (a later install may not be picked up).
+    Under ``local_files_only`` nothing is ever installed: kernels already present are used,
+    a missing fatal kernel fails the load into candidate failover, and the optional
+    causal-conv1d fast path is skipped (its torch fallback covers it).
     """
     try:
-        from utils.ssm_runtime import ensure_ssm_runtime
+        from utils.ssm_runtime import ensure_ssm_runtime, model_is_ssm
     except Exception as exc:
         logger.debug("ssm_runtime unavailable (%s); skipping SSM kernel pre-install", exc)
         return True
 
     _ssm_status = lambda m: _send_response(resp_queue, {"type": "status", "message": m})
+    if local_files_only:
+        import importlib.util
+
+        for ssm_target in dict.fromkeys(t for t in targets if t):
+            try:
+                needs_mamba = model_is_ssm(ssm_target)
+            except Exception:
+                needs_mamba = False
+            if needs_mamba and importlib.util.find_spec("mamba_ssm") is None:
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "loaded",
+                        "success": False,
+                        "message": (
+                            "This model needs the mamba-ssm kernel, which is not "
+                            "installed; select the model explicitly to install it."
+                        ),
+                        "error_kind": "ssm_runtime_install_failed",
+                    },
+                )
+                return False
+        return True
     try:
         for ssm_target in dict.fromkeys(t for t in targets if t):
             ensure_ssm_runtime(ssm_target, status_cb = _ssm_status)
@@ -370,7 +396,11 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 str(mc.base_model) if (mc.is_lora and getattr(mc, "base_model", None)) else None
             )
             ssm_targets = [ssm_probe_identifier(config["model_name"], _ssm_base)]
-            if not _ensure_ssm_kernels(ssm_targets, resp_queue):
+            if not _ensure_ssm_kernels(
+                ssm_targets,
+                resp_queue,
+                local_files_only = bool(config.get("local_files_only", False)),
+            ):
                 return
 
         # Heartbeat keeps the orchestrator's inactivity deadline alive during slow
@@ -834,6 +864,16 @@ def run_inference_process(
 
     apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
+    # Local-only background loads keep the ENTIRE bootstrap offline: base
+    # resolution, transformers activation, security gates, kernel probes and
+    # the initial load can all reach the Hub otherwise. Closed before the
+    # command loop so generation-time fetches (e.g. the chat template
+    # fallback) still work; error-path returns end the process anyway.
+    _bootstrap_offline = contextlib.ExitStack()
+    _bootstrap_offline.enter_context(
+        _local_only_offline_env(bool(config.get("local_files_only", False)))
+    )
+
     model_name = config["model_name"]
 
     # ── 0. MLX fast-path — skip torch/transformers ──
@@ -895,6 +935,7 @@ def run_inference_process(
             return
 
         # Enter the same command loop as the GPU path.
+        _bootstrap_offline.close()
         logger.info("MLX inference subprocess ready, entering command loop")
         while True:
             try:
@@ -1050,7 +1091,11 @@ def run_inference_process(
     from utils.ssm_runtime import ssm_probe_identifier
 
     _ssm_targets = [ssm_probe_identifier(model_name, _base)]
-    if not _ensure_ssm_kernels(_ssm_targets, resp_queue):
+    if not _ensure_ssm_kernels(
+        _ssm_targets,
+        resp_queue,
+        local_files_only = bool(config.get("local_files_only", False)),
+    ):
         return
 
     # ── 2. Import ML libraries (fresh in this clean process) ──
@@ -1111,6 +1156,8 @@ def run_inference_process(
             },
         )
         return
+
+    _bootstrap_offline.close()
 
     # ── 4. Command loop — process commands until shutdown ──
     # cancel_event is an mp.Event the parent can set anytime to cancel
