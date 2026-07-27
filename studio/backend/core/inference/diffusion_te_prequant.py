@@ -418,6 +418,35 @@ def _validate_checkpoint(ckpt: Any, scheme: str, component: str, base: str, logg
     return True
 
 
+def te_prequant_hub_files(
+    sources: dict[str, "TePrequantSource"], api: Any, logger: Any = None
+) -> dict[str, list[tuple[str, int]]]:
+    """``{component: [(rfilename, size)]}`` for every hosted pre-cast checkpoint that really
+    resolves on the Hub.
+
+    Only a component listed here may have its dense weights dropped from a plan or a prefetch:
+    an unpublished / gated / renamed artifact keeps its dense encoder, exactly as the load's own
+    fallback does. Checked per source so one missing repo cannot sink the whole plan. A local
+    path override is already on disk and is never staged."""
+    found: dict[str, list[tuple[str, int]]] = {}
+    for component, source in sources.items():
+        if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
+            continue
+        try:
+            info = api.model_info(source.location, files_metadata = True)
+        except Exception as exc:  # noqa: BLE001 -- unavailable pre-cast means the dense encoder
+            _warn(logger, f"hub_files:{source.location}", exc)
+            continue
+        files = [
+            (s.rfilename, int(getattr(s, "size", 0) or 0))
+            for s in (info.siblings or [])
+            if s.rfilename == source.filename
+        ]
+        if files:
+            found[component] = files
+    return found
+
+
 def _has_meta_tensors(module: Any) -> bool:
     """True if any parameter or buffer is still on the meta device after loading."""
     from itertools import chain

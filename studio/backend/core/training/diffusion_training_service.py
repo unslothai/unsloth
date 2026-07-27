@@ -78,6 +78,16 @@ class DatasetMutationInFlight(RuntimeError):
     """A start was refused because a dataset mutation is open (route: 409)."""
 
 
+def _llm_training_active() -> bool:
+    """Whether the LLM trainer holds the GPU. Best-effort: an import/health failure must not
+    block a diffusion start, exactly as the route's own reciprocal check fails open."""
+    try:
+        from core.training import get_training_backend
+        return bool(get_training_backend().is_training_active())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 # ── persisted run history ──────────────────────────────────────────────────────
 # Every terminal run is recorded as one JSON file (summary + scrubbed config + metric logs) so
 # the Train tab can show history. JSON, not the LLM sqlite, so diffusion runs stay off the LLM
@@ -274,6 +284,16 @@ class DiffusionTrainingService:
                 raise RuntimeError(
                     "A model is being loaded onto the GPU right now. Wait for that to finish, "
                     "then start the run."
+                )
+            # The LLM trainer under the SAME lock, not just at the route's earlier check: that check
+            # and this reservation are separated by several network-bound preflights, so an LLM start
+            # could spawn in between and both trainers would allocate on one GPU. The LLM route holds
+            # gpu_load_admission() across its own spawn, so between the two either this raises or
+            # that one does -- never neither.
+            if _llm_training_active():
+                raise RuntimeError(
+                    "An LLM training job is already running. "
+                    "Stop it before starting diffusion (Images) training."
                 )
             self._reserved = True
 

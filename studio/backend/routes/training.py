@@ -5,6 +5,7 @@
 Training API routes
 """
 
+import contextlib
 import sys
 import threading
 from pathlib import Path
@@ -541,12 +542,28 @@ async def start_training(
             # generation locks until an in-flight denoise step hits its cancel callback (and the export
             # subprocess teardown can take seconds), which would otherwise freeze every concurrent
             # status/cancel/UI request. Overlapping starts are serialized by the backend's own guard.
-            success = await asyncio.to_thread(
-                backend.start_training,
-                job_id = job_id,
-                before_spawn = _free_vram_for_training,
-                resume_source_run_id = resume_run["id"] if resume_run else None,
-                **training_kwargs,
+            #
+            # The diffusion admission is held ACROSS the spawn so the cross-trainer decision is
+            # atomic. The _diffusion_training_active() check above is separated from this point by
+            # dataset validation and memory coordination, and the diffusion route likewise checks
+            # this backend well before it reserves, so two near-simultaneous starts of different
+            # types could both pass their checks and train on the same GPU. Entering this context
+            # re-tests the diffusion state under the service's own lock, and while it is held
+            # reserve() refuses -- so exactly one of the two wins.
+            with _diffusion_gpu_admission():
+                success = await asyncio.to_thread(
+                    backend.start_training,
+                    job_id = job_id,
+                    before_spawn = _free_vram_for_training,
+                    resume_source_run_id = resume_run["id"] if resume_run else None,
+                    **training_kwargs,
+                )
+        except _DiffusionStartInFlight as exc:
+            return TrainingJobResponse(
+                job_id = "",
+                status = "error",
+                message = str(exc),
+                error = "Diffusion training already active",
             )
         except SidecarSwapInProgress as exc:
             # Expected loss of the race against a sidecar install: a retryable
@@ -1158,6 +1175,46 @@ def _diffusion_training_active() -> bool:
         return get_diffusion_training_service().is_active()
     except Exception:  # noqa: BLE001
         return False
+
+
+class _DiffusionStartInFlight(RuntimeError):
+    """An LLM start lost the race to a diffusion start (route: refuse, don't spawn)."""
+
+
+@contextlib.contextmanager
+def _diffusion_gpu_admission():
+    """Hold the diffusion service's GPU admission across the LLM spawn.
+
+    Makes the cross-trainer admission atomic: entering re-tests the diffusion state under the
+    service's own lock and raises if a diffusion run is reserved or active, and while it is held
+    the diffusion ``reserve()`` refuses. So of two near-simultaneous starts of different types,
+    exactly one proceeds. Fails OPEN on an import/health failure, like every other guard here: a
+    chat-only install has no diffusion service and must still be able to train."""
+    try:
+        from core.training.diffusion_training_service import (
+            TrainingActiveError,
+            get_diffusion_training_service,
+        )
+        service = get_diffusion_training_service()
+    except Exception:  # noqa: BLE001 -- no diffusion stack: nothing to coordinate with
+        yield
+        return
+    try:
+        cm = service.gpu_load_admission()
+    except Exception:  # noqa: BLE001
+        yield
+        return
+    try:
+        cm.__enter__()
+    except TrainingActiveError as exc:
+        raise _DiffusionStartInFlight(
+            "A diffusion (Images) LoRA training job is already running. "
+            "Stop it before starting an LLM training run."
+        ) from exc
+    try:
+        yield
+    finally:
+        cm.__exit__(None, None, None)
 
 
 def _require_diffusion_dataset_mutable() -> None:

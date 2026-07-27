@@ -3868,3 +3868,118 @@ def test_download_plan_is_empty_for_a_local_path(tmp_path, monkeypatch):
 
     plan = DiffusionBackend().download_plan(str(local), gguf_filename = "weights.gguf")
     assert plan["entries"] == []
+
+
+def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monkeypatch):
+    # An fp8 text-encoder request loads a hosted PRE-CAST checkpoint, so the plan must stage that
+    # file and NOT the base repo's dense encoder shards. Without this the manager downloaded tens of
+    # GB the load never opens, and the load then pulled the pre-cast file inline, outside the
+    # manager's progress and disk preflight.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
+            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
+            "unsloth/FLUX.1-schnell-FP8": [
+                _FakeSibling("text_encoder_2-fp8.pt", 1 * GB),
+                _FakeSibling("README.md", 100),
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+    )
+    # The pick resolves one hosted pre-cast encoder for text_encoder_2 (flux.1 hosts its T5-XXL).
+    monkeypatch.setattr(
+        "core.inference.diffusion_te_prequant.te_prequant_sources",
+        lambda fam, *, te_quant_mode, target: (
+            {
+                "text_encoder_2": types.SimpleNamespace(
+                    kind = "repo",
+                    location = "unsloth/FLUX.1-schnell-FP8",
+                    filename = "text_encoder_2-fp8.pt",
+                )
+            }
+            if te_quant_mode == "fp8"
+            else {}
+        ),
+    )
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF",
+        gguf_filename = "flux1-dev-Q4_K_M.gguf",
+        text_encoder_quant = "fp8",
+    )
+    by_repo = {e["repo_id"]: e for e in plan["entries"]}
+    assert "unsloth/FLUX.1-schnell-FP8" in by_repo
+    assert by_repo["unsloth/FLUX.1-schnell-FP8"]["files"] == ["text_encoder_2-fp8.pt"]
+    base = by_repo["black-forest-labs/FLUX.1-dev"]
+    # text_encoder_2's dense weights are gone; text_encoder (no hosted artifact here) stays, and so
+    # do the non-weight files the pre-cast loader still meta-inits from.
+    assert not any(f.startswith("text_encoder_2/") and f.endswith(".safetensors") for f in base["files"])
+    assert "text_encoder/model.safetensors" in base["files"]
+    assert "model_index.json" in base["files"]
+    assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])
+
+
+def test_download_plan_keeps_the_dense_encoder_without_an_fp8_request(monkeypatch):
+    # No fp8 request -> no hosted checkpoint -> the dense encoder is exactly as before.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
+            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+    )
+    plan = DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    )
+    base = next(e for e in plan["entries"] if e["repo_id"] == "black-forest-labs/FLUX.1-dev")
+    assert "text_encoder/model.safetensors" in base["files"]
+    assert len(plan["entries"]) == 2
+
+
+def test_download_plan_keeps_the_dense_encoder_when_the_precast_repo_is_unavailable(monkeypatch):
+    # A gated / renamed / unpublished artifact must NOT cost the dense encoder: the load falls back
+    # to the dense weights, so the plan has to stage them.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
+            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion_te_prequant.te_prequant_sources",
+        lambda fam, *, te_quant_mode, target: {
+            "text_encoder": types.SimpleNamespace(
+                kind = "repo", location = "unsloth/does-not-exist", filename = "te-fp8.pt"
+            )
+        },
+    )
+    plan = DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF",
+        gguf_filename = "flux1-dev-Q4_K_M.gguf",
+        text_encoder_quant = "fp8",
+    )
+    base = next(e for e in plan["entries"] if e["repo_id"] == "black-forest-labs/FLUX.1-dev")
+    assert "text_encoder/model.safetensors" in base["files"]
+    assert not any(e["repo_id"] == "unsloth/does-not-exist" for e in plan["entries"])

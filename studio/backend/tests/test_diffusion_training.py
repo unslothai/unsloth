@@ -1976,3 +1976,74 @@ def test_route_rejects_cond_cache_dir_for_sdxl(client):
     r = client.post("/api/train/diffusion/start", json = {**_BODY, "model_family": "sdxl"})
     assert r.status_code == 200, r.text
     assert client._fake.started_with["cond_cache_dir"] is None
+
+
+def test_service_reserve_refuses_while_the_llm_trainer_holds_the_gpu(monkeypatch):
+    # The route's reciprocal check runs several network-bound preflights before reserve(), so an LLM
+    # start could spawn inside that window and both trainers would allocate on one GPU. reserve()
+    # re-tests the LLM backend under its own lock, which is the half of the interlock that closes.
+    import types
+
+    import core.training.diffusion_training_service as dts
+    from core.training.diffusion_training_service import DiffusionTrainingService
+
+    svc = DiffusionTrainingService()
+    monkeypatch.setattr(dts, "_llm_training_active", lambda: True)
+    with pytest.raises(RuntimeError, match = "LLM training job is already running"):
+        svc.reserve()
+    assert svc.is_active() is False  # the refused start left no claim behind
+
+    monkeypatch.setattr(dts, "_llm_training_active", lambda: False)
+    svc.reserve()
+    assert svc.is_active() is True
+
+
+def test_llm_active_probe_fails_open(monkeypatch):
+    # A chat-only install (or a wedged backend) must not block a diffusion start.
+    import sys
+
+    import core.training.diffusion_training_service as dts
+
+    monkeypatch.setitem(sys.modules, "core.training", None)  # import raises
+    assert dts._llm_training_active() is False
+
+
+def test_llm_start_holds_the_diffusion_admission_across_its_spawn(monkeypatch):
+    # The other half: while the LLM route is spawning, a diffusion reserve() must lose. The route
+    # holds gpu_load_admission() across start_training, and reserve() already refuses while an
+    # admission is open.
+    from core.training.diffusion_training_service import DiffusionTrainingService
+    import routes.training as tr
+
+    svc = DiffusionTrainingService()
+    monkeypatch.setattr(
+        "core.training.diffusion_training_service.get_diffusion_training_service", lambda: svc
+    )
+    with tr._diffusion_gpu_admission():
+        with pytest.raises(RuntimeError, match = "being loaded onto the GPU"):
+            svc.reserve()
+    svc.reserve()  # released once the spawn is done
+
+
+def test_llm_start_admission_refuses_when_diffusion_is_already_reserved(monkeypatch):
+    from core.training.diffusion_training_service import DiffusionTrainingService
+    import routes.training as tr
+
+    svc = DiffusionTrainingService()
+    monkeypatch.setattr(
+        "core.training.diffusion_training_service.get_diffusion_training_service", lambda: svc
+    )
+    svc.reserve()
+    with pytest.raises(tr._DiffusionStartInFlight):
+        with tr._diffusion_gpu_admission():
+            pass
+
+
+def test_llm_start_admission_fails_open_without_a_diffusion_stack(monkeypatch):
+    import sys
+
+    import routes.training as tr
+
+    monkeypatch.setitem(sys.modules, "core.training.diffusion_training_service", None)
+    with tr._diffusion_gpu_admission():
+        pass  # a chat-only install still trains

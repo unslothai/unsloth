@@ -891,6 +891,12 @@ class DiffusionBackend:
                     kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token")
                 )
             kwargs["base_repo"] = base
+            # The pre-cast encoder injection replaces these components' weights, so prefetching the
+            # dense shards for them downloads tens of GB nothing opens. Same resolver the injection
+            # uses, so the prefetch and the load can never disagree about which encoders are dense.
+            te_prequant_files = self._te_prequant_plan_files(
+                fam, kwargs.get("text_encoder_quant"), kwargs.get("hf_token")
+            )
             expected, base_files = self._estimate_download_bytes(
                 kwargs["repo_id"],
                 kwargs.get("gguf_filename"),
@@ -901,6 +907,7 @@ class DiffusionBackend:
                 # Pull the base shards here rather than inside the locked, unpreemptable finalize.
                 include_transformer = kind == "gguf"
                 and self._dense_quant_prefetch_needed(fam, kwargs),
+                skip_te_components = tuple(te_prequant_files),
             )
             with self._lock:
                 # Stamp progress only if this load is still current (a superseder has its own token).
@@ -975,6 +982,33 @@ class DiffusionBackend:
             return tuple(r for r in (loading.repo_id, loading.base_repo) if r)
 
     @staticmethod
+    def _te_prequant_plan_files(
+        fam: Any, text_encoder_quant: Optional[str], hf_token: Optional[str]
+    ) -> dict[str, tuple[str, list[tuple[str, int]]]]:
+        """``{component: (repo_id, [(rfilename, size)])}`` for the text encoders this pick will
+        take PRE-CAST from a hosted checkpoint instead of the base repo's dense weights.
+
+        Empty unless the request asked for a scheme with a hosted artifact AND that artifact
+        really resolves, so a plan can never drop a dense encoder the load still wants."""
+        try:
+            from huggingface_hub import HfApi
+
+            from .diffusion_te_prequant import te_prequant_hub_files, te_prequant_sources
+
+            sources = te_prequant_sources(
+                fam,
+                te_quant_mode = text_encoder_quant,
+                target = resolve_diffusion_device_target(),
+            )
+            if not sources:
+                return {}
+            files = te_prequant_hub_files(sources, HfApi(token = hf_token or None), logger)
+            return {c: (sources[c].location, f) for c, f in files.items()}
+        except Exception as exc:  # noqa: BLE001 -- an unresolvable pre-cast keeps the dense encoder
+            logger.warning("diffusion.te_prequant_plan_failed: %s", exc)
+            return {}
+
+    @staticmethod
     def _estimate_download_bytes(
         repo_id: str,
         gguf_filename: Optional[str],
@@ -985,6 +1019,7 @@ class DiffusionBackend:
         single_file_is_pipeline: bool = False,
         include_transformer: bool = False,
         sizes_out: Optional[dict[str, int]] = None,
+        skip_te_components: tuple[str, ...] = (),
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to
         fetch (the prefetch reuses this list, so the base is listed only once).
@@ -997,16 +1032,35 @@ class DiffusionBackend:
         single-file paths, where the transformer is the single file and the base repo
         supplies only the companions. For a ``single_file_is_pipeline`` family (SDXL) the
         single file is the WHOLE pipeline, so the base repo supplies only config/tokenizer
-        (no weights) and its weight files are skipped."""
+        (no weights) and its weight files are skipped.
+
+        ``skip_te_components`` names the text encoders this pick loads PRE-CAST from a hosted
+        checkpoint, so their dense weight shards are not counted or fetched: staging the dense
+        encoder for a pre-cast load wastes tens of GB (FLUX.2-dev's Mistral-24B is ~48 GB,
+        Qwen-Image's Qwen2.5-VL ~16.6 GB) and nothing ever opens them. Everything else in the
+        component folder (config, shard index, tokenizer) is kept -- the pre-cast loader
+        meta-inits the encoder from the base repo's config."""
         from huggingface_hub import HfApi
+
+        from .diffusion_te_prequant import is_prequant_covered_weight
 
         api = HfApi()
         total = 0
         base_files: list[str] = []
+
+        def _dense_te_shard(rfilename: str) -> bool:
+            return bool(skip_te_components) and is_prequant_covered_weight(
+                rfilename, skip_te_components
+            )
+
         try:
             if kind == "pipeline":
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
-                picked = [s for s in info.siblings if _pipeline_file_downloaded(s.rfilename)]
+                picked = [
+                    s
+                    for s in info.siblings
+                    if _pipeline_file_downloaded(s.rfilename) and not _dense_te_shard(s.rfilename)
+                ]
                 # diffusers prefers safetensors: drop a .bin whose dir also has a picked .safetensors.
                 st_dirs = {
                     s.rfilename.rsplit("/", 1)[0]
@@ -1040,7 +1094,7 @@ class DiffusionBackend:
             base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
             base_bytes = 0
             for s in base_info.siblings:
-                if base_filter(s.rfilename):
+                if base_filter(s.rfilename) and not _dense_te_shard(s.rfilename):
                     base_files.append(s.rfilename)
                     base_bytes += s.size or 0
             total += base_bytes
@@ -1059,6 +1113,7 @@ class DiffusionBackend:
         family_override: Optional[str] = None,
         model_kind: Optional[str] = None,
         hf_token: Optional[str] = None,
+        text_encoder_quant: Optional[str] = None,
         **load_kwargs: Any,
     ) -> dict[str, Any]:
         """The repos + exact files this pick needs, so the Hub download manager can fetch
@@ -1067,13 +1122,21 @@ class DiffusionBackend:
         A plain snapshot_download would also pull what the loader deliberately skips (the
         packaged root single, transformer/ shards, fp16 twins) -- tens of GB per FLUX repo.
         Resolves family/kind/base exactly as ``_run_load`` does, so the plan and the load
-        agree. Local paths are already on disk and yield no entries."""
+        agree. Local paths are already on disk and yield no entries.
+
+        ``text_encoder_quant`` is read for the same reason as the DiT quant: an fp8 request
+        loads a hosted PRE-CAST encoder, so the base repo's dense encoder shards must not be
+        staged and the pre-cast checkpoint must be. Without it the manager stages the dense
+        encoder (tens of GB the load never opens) and the load then pulls the pre-cast file
+        inline, outside the manager's progress and disk preflight."""
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         kind = resolve_model_kind(gguf_filename, model_kind)
         if kind == "pipeline":
             base = repo_id  # the full pipeline IS the repo
         else:
             base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
+        # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards.
+        te_files = self._te_prequant_plan_files(fam, text_encoder_quant, hf_token)
         sizes: dict[str, int] = {}
         total, base_files = self._estimate_download_bytes(
             repo_id,
@@ -1085,8 +1148,19 @@ class DiffusionBackend:
             include_transformer = kind == "gguf"
             and self._dense_quant_prefetch_needed(fam, load_kwargs),
             sizes_out = sizes,
+            skip_te_components = tuple(te_files),
         )
         entries: list[dict[str, Any]] = []
+        for repo, files in te_files.values():
+            entries.append(
+                {
+                    "repo_id": repo,
+                    "files": [name for name, _size in files],
+                    "bytes": int(sum(size for _name, size in files)),
+                    "gguf_filename": None,
+                }
+            )
+            total += int(sum(size for _name, size in files))
         if gguf_filename and not Path(repo_id).expanduser().exists():
             entries.append(
                 {

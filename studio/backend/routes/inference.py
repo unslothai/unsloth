@@ -16095,6 +16095,11 @@ async def diffusion_download_plan(
             model_kind = kind,
             hf_token = request.hf_token,
             transformer_quant = request.transformer_quant,
+            # An fp8 encoder request loads a hosted pre-cast checkpoint, so the plan has to stage
+            # that file instead of the base repo's dense encoder shards -- otherwise the manager
+            # downloads tens of GB the load never opens and then pulls the pre-cast file inline,
+            # outside its progress and disk preflight.
+            text_encoder_quant = request.text_encoder_quant,
             speed_mode = request.speed_mode,
             # The dense-quant prefetch decision reads the memory policy, the prequant path and the adapter
             # selection too (an offload policy never runs the dense build; a baked LoRA always does), so the
