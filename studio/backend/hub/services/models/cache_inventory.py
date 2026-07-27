@@ -165,11 +165,24 @@ def _repo_has_mmproj(repo_info) -> bool:
     )
 
 
-def _cached_repo_file_name(file_obj) -> str:
+def _cached_repo_file_name(file_obj, snapshot_path = None) -> str:
+    """The file's repo-relative path, spelled as the Hub sibling spells it.
+
+    ``file_name`` is only the basename, which drops a subdir quant. Prefer the
+    revision's own ``snapshots/<revision>`` dir when the caller has it: the
+    last-``snapshots`` scan below is a guess, and a repo path that itself holds a
+    ``snapshots`` component (``assets/snapshots/Q6_K-MTP/model.gguf``) makes it
+    cut at the wrong one and return the bare basename, losing the quant.
+    """
     file_path = getattr(file_obj, "file_path", None)
     if file_path:
         try:
             path = Path(file_path)
+            if snapshot_path is not None:
+                try:
+                    return path.relative_to(snapshot_path).as_posix()
+                except ValueError:
+                    pass
             parts = path.parts
             snapshots_idx = max(i for i, part in enumerate(parts) if part == "snapshots")
             if len(parts) > snapshots_idx + 2:
@@ -235,7 +248,7 @@ def _repo_gguf_blob_map(repo_info, *, include_companions: bool = False) -> dict[
             blob_path = getattr(f, "blob_path", None)
             if not blob_path:
                 continue
-            name = _cached_repo_file_name(f)
+            name = _cached_repo_file_name(f, getattr(revision, "snapshot_path", None))
             identity = _cached_blob_hash(blob_path, repo_path)
             if identity is None:
                 size = int(getattr(f, "size_on_disk", 0) or 0)

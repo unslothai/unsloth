@@ -193,7 +193,15 @@ def gguf_variant_requirements(
     # Pre-#7460 keys stored the base quant. Same fallback the worker's
     # _gguf_variant_target_plan applies to these very plans.
     compatible = compatible_base_quant_label(variant, requirements)
-    return requirements[compatible] if compatible is not None else None
+    if compatible is None:
+        return None
+    requirement = requirements[compatible]
+    # The fetch above files plans under the labels the repo publishes, so the
+    # stored key alone would miss forever and re-hit model_info on every
+    # download-status poll. The shared positive TTL bounds this alias, and it is
+    # only ever written when no exact plan exists.
+    _variant_requirement_cache_set_many(repo_id, hf_token, {variant: requirement})
+    return requirement
 
 
 def _fetch_gguf_variant_requirements(

@@ -1528,6 +1528,41 @@ def test_gguf_variant_requirements_reject_ambiguous_base_quant(monkeypatch):
     assert gguf_variants.gguf_variant_requirements("Org/Gemma", "Q6_K", None) is None
 
 
+def test_gguf_variant_requirements_cache_pre_7460_base_quant_key(monkeypatch):
+    # The fetch only files plans under the labels the repo publishes, so the
+    # stored key misses every time. compute_snapshot_progress resolves it on
+    # every download-status poll, which is one Hub round trip per poll.
+    with gguf_variants._VARIANT_HASH_LOCK:
+        gguf_variants._VARIANT_HASH_CACHE.clear()
+        gguf_variants._VARIANT_REQUIREMENT_CACHE.clear()
+        gguf_variants._VARIANT_REQUIREMENT_NEG_CACHE.clear()
+    fetches = []
+
+    def _model_info(*_args, **_kwargs):
+        fetches.append(1)
+        return SimpleNamespace(
+            siblings = [
+                _sibling("model-Q6_K-MTP.gguf", 10, "q6-main"),
+                _sibling("mmproj-F16.gguf", 5, "shared-mmproj"),
+            ]
+        )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(
+            HfApi = lambda *_args, **_kwargs: SimpleNamespace(model_info = _model_info)
+        ),
+    )
+
+    first = gguf_variants.gguf_variant_requirements("Org/Gemma", "Q6_K", None)
+    second = gguf_variants.gguf_variant_requirements("Org/Gemma", "Q6_K", None)
+
+    assert first is not None
+    assert second == first
+    assert len(fetches) == 1
+
+
 def test_download_snapshot_recovers_manifest_after_metadata_fallback(monkeypatch, tmp_path):
     metadata_calls = []
     written = []
@@ -3801,22 +3836,24 @@ def test_scan_folder_rejects_credential_directories(tmp_path):
 def _build_variant_cache_repo(repo_dir, blob_specs, snapshot_links):
     """Build a HF cache repo dir with blobs + snapshot symlinks for the
     per-variant deletion path. blob_specs: {blob_name: bytes_payload};
-    snapshot_links: list of (revision, filename, blob_name)."""
+    snapshot_links: list of (revision, filename, blob_name). *filename* may hold
+    subdirs; the scan reports ``file_name`` as the basename and carries the
+    revision's ``snapshot_path``, exactly as huggingface_hub does."""
     blobs_dir = repo_dir / "blobs"
     blobs_dir.mkdir(parents = True)
     for blob_name, payload in blob_specs.items():
         (blobs_dir / blob_name).write_bytes(payload)
 
-    files = []
+    by_revision: dict[str, list] = {}
     for revision, filename, blob_name in snapshot_links:
         snap_dir = repo_dir / "snapshots" / revision
-        snap_dir.mkdir(parents = True, exist_ok = True)
         blob = blobs_dir / blob_name
         link = snap_dir / filename
+        link.parent.mkdir(parents = True, exist_ok = True)
         link.symlink_to(blob)
-        files.append(
+        by_revision.setdefault(revision, []).append(
             SimpleNamespace(
-                file_name = filename,
+                file_name = Path(filename).name,
                 file_path = str(link),
                 blob_path = str(blob),
                 size_on_disk = blob.stat().st_size,
@@ -3826,7 +3863,14 @@ def _build_variant_cache_repo(repo_dir, blob_specs, snapshot_links):
         repo_id = "Org/Repo-GGUF",
         repo_type = "model",
         repo_path = repo_dir,
-        revisions = [SimpleNamespace(commit_hash = "rev1", files = files)],
+        revisions = [
+            SimpleNamespace(
+                commit_hash = revision,
+                snapshot_path = repo_dir / "snapshots" / revision,
+                files = files,
+            )
+            for revision, files in by_revision.items()
+        ],
     )
     return repo
 
@@ -4163,6 +4207,53 @@ def test_delete_variant_exact_label_wins_over_flavored_sibling(monkeypatch, tmp_
     snap = repo_dir / "snapshots" / "rev1"
     assert not (snap / "model-Q6_K.gguf").exists()
     assert (snap / "model-Q6_K-MTP.gguf").exists()
+
+
+def test_cached_repo_file_name_keeps_repo_path_holding_a_snapshots_dir():
+    # Nothing stops a repo from shipping its own snapshots/ dir. Guessing the
+    # cache's revision root as the LAST such component cuts at the repo's one and
+    # returns the bare basename, so the quant the listing shows is lost.
+    rev_root = Path("/hub/models--Org--Repo-GGUF/snapshots/rev1")
+    cached = SimpleNamespace(
+        file_name = "model.gguf",
+        file_path = str(rev_root / "assets/snapshots/Q6_K-MTP/model.gguf"),
+    )
+
+    name = cache_inventory._cached_repo_file_name(cached, rev_root)
+
+    assert name == "assets/snapshots/Q6_K-MTP/model.gguf"
+    assert gguf.extract_quant_label(name) == "Q6_K-MTP"
+
+
+def test_delete_variant_reclaims_repo_path_holding_a_snapshots_dir(monkeypatch, tmp_path):
+    # The listing labels this file Q6_K-MTP off the sibling's full rfilename. A
+    # deletion predicate that reads it as plain "model" matches nothing, so the
+    # displayed variant reports no deletion and its bytes stay on disk.
+    repo_dir, delete = _delete_variant_with_cached_mains(
+        monkeypatch,
+        tmp_path,
+        ["assets/snapshots/Q6_K-MTP/model.gguf"],
+        "Q6_K-MTP",
+    )
+
+    assert delete()["status"] == "deleted"
+    assert not (repo_dir / "snapshots/rev1/assets/snapshots/Q6_K-MTP/model.gguf").exists()
+    assert not (repo_dir / "blobs" / "blob0").exists()
+
+
+def test_repo_gguf_blob_map_keys_repo_path_holding_a_snapshots_dir(tmp_path):
+    # The update check buckets these keys by quant too, so the same truncation
+    # files the file under an unknown quant and shows a phantom update.
+    repo_dir = tmp_path / "models--Org--Repo-GGUF"
+    repo = _build_variant_cache_repo(
+        repo_dir,
+        blob_specs = {"blob0": b"x" * 100},
+        snapshot_links = [("rev1", "assets/snapshots/Q6_K-MTP/model.gguf", "blob0")],
+    )
+
+    blob_map = cache_inventory._repo_gguf_blob_map(repo)
+
+    assert list(blob_map) == ["assets/snapshots/Q6_K-MTP/model.gguf"]
 
 
 @pytest.mark.parametrize(
