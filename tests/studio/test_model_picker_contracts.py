@@ -23,7 +23,7 @@ FRONTEND = WORKDIR / "studio" / "frontend" / "src"
 def _read(rel: str) -> str:
     path = FRONTEND / rel
     assert path.exists(), f"missing source file: {path}"
-    return path.read_text()
+    return path.read_text(encoding = "utf-8")
 
 
 def test_models_api_sends_token_via_header_not_query():

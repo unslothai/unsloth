@@ -450,7 +450,7 @@ def test_fallback_hint_uses_effective_tensor_request_not_just_toggle():
     """Tensor intent keys off _effective_tensor_parallel (toggle + extras + env), not
     just the toggle, so extra/env-driven tensor users keep multi-GPU (#6659)."""
     route = Path(_BACKEND_DIR) / "routes" / "inference.py"
-    src = route.read_text()
+    src = route.read_text(encoding = "utf-8")
     idx = src.find("_tensor_intent_overall = _effective_tensor_parallel(")
     assert idx != -1, "the GGUF load closure must compute tensor intent"
     block = src[idx : idx + 300]
@@ -482,7 +482,7 @@ def test_preserved_fallback_carried_across_non_drop_reload():
     gated on the same model loaded, so a ctx-only reload keeps multi-GPU but a model
     switch / explicit drop doesn't inherit it (#6659)."""
     route = Path(_BACKEND_DIR) / "routes" / "inference.py"
-    src = route.read_text()
+    src = route.read_text(encoding = "utf-8")
     idx = src.find("_tensor_intent_overall = _effective_tensor_parallel(")
     assert idx != -1
     block = src[idx : idx + 400]
@@ -499,7 +499,7 @@ def test_same_model_guard_checks_path_and_variant():
     repo), so a reload keeps the carry-forward and a different variant doesn't inherit
     the prior one's preserved tensor intent (#6659)."""
     route = Path(_BACKEND_DIR) / "routes" / "inference.py"
-    src = route.read_text()
+    src = route.read_text(encoding = "utf-8")
     idx = src.find("_same_model_loaded = (")
     assert idx != -1
     block = src[idx : idx + 1300]
@@ -748,7 +748,7 @@ def test_explicit_tensor_drop_uses_shared_helper_in_both_readers():
     _is_explicit_tensor_drop, so they agree on what counts as a drop -- a reload for
     an unrelated extra still carries the preserved intent rather than collapsing to one
     GPU (Codex #6659)."""
-    src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text()
+    src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     # Dedup reader (the preserved-fallback reload guard).
     assert "layer_preserves_tensor_intent and _is_explicit_tensor_drop(request)" in src
     # Load carry-forward reader feeds the same decision into the carry-forward.

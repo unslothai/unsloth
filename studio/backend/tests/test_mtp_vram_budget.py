@@ -321,7 +321,7 @@ class TestFitContextWithMtp:
     def _fit_backend(self, kv_per_token = 325_000):
         b = _make_backend()
         b._can_estimate_kv = lambda: True
-        b._estimate_kv_cache_bytes = lambda n, _t = None, **_k: (0 if n <= 0 else n * kv_per_token)
+        b._estimate_kv_cache_bytes = lambda n, _t = None, **_k: 0 if n <= 0 else n * kv_per_token
         return b
 
     def test_overhead_fn_lowers_context(self):
@@ -348,19 +348,23 @@ class TestFitContextWithMtp:
             131072,
             avail_mib,
             model,
-            mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(
-                c, draft_cache_type_k = "f16", draft_cache_type_v = "f16"
-            )
-            or 0,
+            mtp_overhead_fn = lambda c: (
+                b._estimate_mtp_overhead_bytes(
+                    c, draft_cache_type_k = "f16", draft_cache_type_v = "f16"
+                )
+                or 0
+            ),
         )
         q4 = b._fit_context_to_vram(
             131072,
             avail_mib,
             model,
-            mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(
-                c, draft_cache_type_k = "q4_0", draft_cache_type_v = "q4_0"
-            )
-            or 0,
+            mtp_overhead_fn = lambda c: (
+                b._estimate_mtp_overhead_bytes(
+                    c, draft_cache_type_k = "q4_0", draft_cache_type_v = "q4_0"
+                )
+                or 0
+            ),
         )
         assert 0 < q4 == f16
 
@@ -844,9 +848,9 @@ class TestExtraArgsMtpDetection:
         # helper, or an env-driven tensor server (or its layer downgrade) is
         # needlessly reloaded (#6312). Read from disk (importing routes.inference
         # drags in heavy deps).
-        routes_src = (
-            Path(__file__).resolve().parent.parent / "routes" / "inference.py"
-        ).read_text()
+        routes_src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+            encoding = "utf-8"
+        )
         start = routes_src.index("def _request_matches_loaded_settings")
         end = routes_src.index("\ndef ", start + 1)
         body = "".join(routes_src[start:end].split())
@@ -858,9 +862,9 @@ class TestExtraArgsMtpDetection:
     def test_route_matcher_retries_after_drafter_not_found(self):
         # drafter_not_found must not report "already loaded" or the reload never
         # retries the download (#6459). Read source: importing routes pulls deps.
-        routes_src = (
-            Path(__file__).resolve().parent.parent / "routes" / "inference.py"
-        ).read_text()
+        routes_src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+            encoding = "utf-8"
+        )
         start = routes_src.index("def _request_matches_loaded_settings")
         end = routes_src.index("\ndef ", start + 1)
         body = "".join(routes_src[start:end].split())
@@ -1016,7 +1020,7 @@ def test_qwen36_class_regression_picks_lower_ctx_with_mtp():
     strictly lower one once the MTP draft reserve is accounted for."""
     b = _make_backend()
     b._can_estimate_kv = lambda: True
-    b._estimate_kv_cache_bytes = lambda n, _t = None, **_k: (0 if n <= 0 else int(n * 66_000))
+    b._estimate_kv_cache_bytes = lambda n, _t = None, **_k: 0 if n <= 0 else int(n * 66_000)
     avail_mib = 24_000
     model = int(17.9 * GIB)  # UD-Q4_K_XL weights
     no_mtp = b._fit_context_to_vram(262144, avail_mib, model)

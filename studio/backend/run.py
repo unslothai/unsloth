@@ -1886,6 +1886,12 @@ def _build_arg_parser():
         help = "Force server-side tools off for every request.",
     )
     parser.add_argument(
+        "--disable-dns-pinning",
+        action = "store_true",
+        help = "Allow hostname-based web fetches for enterprise proxies. WARNING: weakens "
+        "DNS-rebinding protection; hostname and redirect validation remain enabled.",
+    )
+    parser.add_argument(
         "--parallel",
         "--n-parallel",
         type = int,
@@ -1924,6 +1930,10 @@ if __name__ == "__main__":
         parser.error(
             "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare"
         )
+    if args.disable_dns_pinning:
+        os.environ["UNSLOTH_STUDIO_DISABLE_DNS_PINNING"] = "1"
+    else:
+        os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "0")
 
     kwargs = dict(
         host = args.host,
