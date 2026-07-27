@@ -843,6 +843,14 @@ def _get_effective_local_files_only(kwargs):
     return _env_says_offline()
 
 
+def _tokenizer_wants_local_only(tokenizer):
+    """True when Hub metadata probes should be skipped for this tokenizer."""
+    if _env_says_offline():
+        return True
+    init_kwargs = getattr(tokenizer, "init_kwargs", None) or {}
+    return bool(init_kwargs.get("local_files_only"))
+
+
 def _is_offline_related_error(exc):
     """True if exc (or its cause/context chain) is a lost-connection error, not a
     missing file. Plain FileNotFoundError propagates; LocalEntryNotFoundError is offline."""

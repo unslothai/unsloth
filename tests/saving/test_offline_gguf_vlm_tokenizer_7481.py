@@ -180,3 +180,39 @@ def test_has_tokenizer_model_offline_skips_model_info(tmp_path, monkeypatch):
     with patch("huggingface_hub.HfApi.model_info") as model_info:
         model_info.side_effect = AssertionError("model_info must not run offline")
         assert _has_tokenizer_model(tok, token = None) is False
+
+
+def test_has_tokenizer_model_probes_cache_before_model_info(tmp_path, monkeypatch):
+    from unsloth.save import _TOKENIZER_MODEL_CACHE, _has_tokenizer_model
+
+    snap = _write_gemma4_cache(tmp_path)
+    (snap / "tokenizer.model").write_bytes(b"sp-model")
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    _TOKENIZER_MODEL_CACHE.clear()
+
+    tok = SimpleNamespace(name_or_path = _REPO)
+
+    with patch("huggingface_hub.HfApi.model_info") as model_info:
+        model_info.side_effect = AssertionError("model_info must not run when cache hit")
+        assert _has_tokenizer_model(tok, token = None) is True
+
+
+def test_has_tokenizer_model_local_files_only_skips_model_info(tmp_path, monkeypatch):
+    from unsloth.save import _TOKENIZER_MODEL_CACHE, _has_tokenizer_model
+
+    _write_gemma4_cache(tmp_path)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    _TOKENIZER_MODEL_CACHE.clear()
+
+    tok = SimpleNamespace(
+        name_or_path = _REPO,
+        init_kwargs = {"local_files_only": True},
+    )
+
+    with patch("huggingface_hub.HfApi.model_info") as model_info:
+        model_info.side_effect = AssertionError("model_info must not run with local_files_only")
+        assert _has_tokenizer_model(tok, token = None) is False

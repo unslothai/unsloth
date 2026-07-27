@@ -95,8 +95,6 @@ def test_real_cached_unsloth_helpers_offline(monkeypatch):
     _offline_env(monkeypatch)
     _block_network(monkeypatch)
 
-    from types import SimpleNamespace
-
     from unsloth.models.loader_utils import _load_pretrained_tokenizer_fast
     from unsloth.save import _has_tokenizer_model
 
@@ -106,4 +104,4 @@ def test_real_cached_unsloth_helpers_offline(monkeypatch):
         cache_dir = str(CACHE_ROOT / "hub"),
     )
     assert tok.vocab_size > 0
-    assert _has_tokenizer_model(SimpleNamespace(name_or_path = REPO, tokenizer = None)) is True
+    assert _has_tokenizer_model(tok) is True
