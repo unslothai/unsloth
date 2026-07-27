@@ -327,7 +327,7 @@ def _scan_cached_gguf() -> list[dict]:
                     continue
                 repo_id = repo_info.repo_id
                 repo_path = Path(repo_info.repo_path)
-                snapshot_path = _cached_model_snapshot_path(repo_path)
+                snapshot_path = _cached_gguf_repo_snapshot_path(repo_path)
                 total_size = _repo_gguf_size_bytes(repo_info)
                 has_variant_state, variant_state_size = _gguf_variant_state_summary(
                     repo_id,
@@ -552,13 +552,12 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     )
 
 
-def _weightful_snapshot_path(repo_path: Path) -> Optional[Path]:
-    """Newest snapshot dir holding config.json plus a safetensors weight.
+def _newest_snapshot_where(repo_path: Path, loadable) -> Optional[Path]:
+    """Newest snapshots/* dir (by mtime) whose entry names satisfy *loadable*.
 
-    Inactive-cache rows emit this snapshot path as their load_id, which the
-    load consumes directly (it bypasses the repo-id resolver), so a newest
-    metadata-only revision must not be emitted while an older revision holds
-    the weights the row was classified from.
+    Inactive-cache rows emit the selected snapshot path as their load_id,
+    which the load consumes directly (it bypasses the repo-id resolver), so
+    the snapshot must actually hold the format the row was classified from.
     """
     snapshots = repo_path / "snapshots"
     try:
@@ -566,14 +565,54 @@ def _weightful_snapshot_path(repo_path: Path) -> Optional[Path]:
     except OSError:
         return None
 
-    def _loadable(rev: Path) -> bool:
+    def _ok(rev: Path) -> bool:
         try:
             names = [entry.name for entry in rev.iterdir()]
         except OSError:
             return False
-        return "config.json" in names and any(n.endswith(".safetensors") for n in names)
+        return loadable(names)
 
-    candidates = [rev for rev in revisions if _loadable(rev)]
+    candidates = [rev for rev in revisions if _ok(rev)]
+    if not candidates:
+        return None
+    try:
+        return max(candidates, key = lambda rev: rev.stat().st_mtime).resolve()
+    except OSError:
+        return None
+
+
+def _weightful_snapshot_path(repo_path: Path) -> Optional[Path]:
+    """Newest snapshot holding config.json plus a safetensors weight (the
+    non-GGUF resolvers' complete-revision predicate)."""
+    return _newest_snapshot_where(
+        repo_path,
+        lambda names: "config.json" in names
+        and any(n.endswith(".safetensors") for n in names),
+    )
+
+
+def _gguf_snapshot_path(repo_path: Path) -> Optional[Path]:
+    """Newest snapshot holding a GGUF file (top level or one folder deep,
+    where multi-quant repos keep per-quant subfolders)."""
+    direct = _newest_snapshot_where(
+        repo_path,
+        lambda names: any(_is_gguf_filename(n.lower()) for n in names),
+    )
+    if direct is not None:
+        return direct
+    snapshots = repo_path / "snapshots"
+    try:
+        revisions = [entry for entry in snapshots.iterdir() if entry.is_dir()]
+    except OSError:
+        return None
+
+    def _has_nested_gguf(rev: Path) -> bool:
+        try:
+            return any(True for _ in rev.glob("*/*.gguf"))
+        except OSError:
+            return False
+
+    candidates = [rev for rev in revisions if _has_nested_gguf(rev)]
     if not candidates:
         return None
     try:
@@ -586,6 +625,19 @@ def _cached_model_snapshot_path(repo_path: Path) -> Optional[Path]:
     weightful = _weightful_snapshot_path(repo_path)
     if weightful is not None:
         return weightful
+    resolved = hf_cache_scan.resolve_hf_cache_realpath(repo_path)
+    if not resolved:
+        return None
+    path = Path(resolved)
+    return path if path.is_dir() else None
+
+
+def _cached_gguf_repo_snapshot_path(repo_path: Path) -> Optional[Path]:
+    """Snapshot path for a GGUF row: a safetensors-bearing revision of a
+    mixed repo must not become the GGUF row's load target."""
+    gguf_snapshot = _gguf_snapshot_path(repo_path)
+    if gguf_snapshot is not None:
+        return gguf_snapshot
     resolved = hf_cache_scan.resolve_hf_cache_realpath(repo_path)
     if not resolved:
         return None

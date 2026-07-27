@@ -162,6 +162,41 @@ def test_refless_fallback_picks_newest_snapshot_with_config(tmp_path):
     assert Path(resolved).resolve() == new.resolve()
 
 
+def test_gguf_rows_select_gguf_bearing_snapshot_in_mixed_repos(tmp_path):
+    """A mixed repo caching a newer safetensors revision beside an older GGUF
+    revision: the GGUF row's snapshot selection must return the GGUF-bearing
+    revision, not the safetensors one the model row prefers."""
+    import os
+    import sys
+    import time
+
+    backend_dir = str(Path(__file__).resolve().parent.parent)
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    from hub.services.models.cache_inventory import (
+        _cached_gguf_repo_snapshot_path,
+        _cached_model_snapshot_path,
+    )
+
+    repo_dir = tmp_path / "models--org--mixed"
+    gguf_rev = repo_dir / "snapshots" / ("a" * 40)
+    gguf_rev.mkdir(parents = True)
+    (gguf_rev / "mixed-Q4_K_M.gguf").write_text("gguf-bytes")
+    stale = time.time() - 1000
+    os.utime(gguf_rev, (stale, stale))
+    st_rev = repo_dir / "snapshots" / ("b" * 40)
+    st_rev.mkdir(parents = True)
+    (st_rev / "config.json").write_text("{}")
+    (st_rev / "model.safetensors").write_text("weights")
+
+    gguf_pick = _cached_gguf_repo_snapshot_path(repo_dir)
+    assert gguf_pick is not None
+    assert Path(gguf_pick).resolve() == gguf_rev.resolve()
+    model_pick = _cached_model_snapshot_path(repo_dir)
+    assert model_pick is not None
+    assert Path(model_pick).resolve() == st_rev.resolve()
+
+
 def test_weightless_newest_snapshot_does_not_shadow_complete_older_one(tmp_path):
     """A newest metadata-only revision (config.json, no weights) must not win
     over an older revision holding the inventoried safetensors weights: the

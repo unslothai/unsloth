@@ -4573,7 +4573,13 @@ async def _load_model_impl(
         # to match. Off-loop: tier resolution reads configs.
         if effective_load_in_4bit and not config.is_gguf:
             from utils.transformers_version import latest_tier_active_for
-            if await asyncio.to_thread(latest_tier_active_for, config.identifier, request.hf_token):
+
+            # Local-only loads probe the tier against the resolved snapshot:
+            # a repo id would reach _remote_lora_base's raw HTTP request and
+            # Hub config reads, while a local path resolves from config.json
+            # on disk (non-canonical ids skip the remote adapter probe).
+            _tier_target = config.path if request.local_files_only else config.identifier
+            if await asyncio.to_thread(latest_tier_active_for, _tier_target, request.hf_token):
                 effective_load_in_4bit = False
                 logger.info(
                     f"Latest-transformers sidecar active for '{model_log_label}' - "
@@ -4595,10 +4601,19 @@ async def _load_model_impl(
 
         # Apply the training coexistence policy before the unload step below
         # frees the resident model. Off-loop: the default-mode guard does sync work.
+        # Local-only non-GGUF loads size against the resolved snapshot so the
+        # guard's memory estimation reads local files instead of hf model_info
+        # (which performs no offline-mode check). GGUF sizing already reads
+        # the cached file under its own local-only handling.
+        _guard_identifier = (
+            config.path
+            if request.local_files_only and not config.is_gguf
+            else model_identifier
+        )
         await asyncio.to_thread(
             _guard_chat_load_against_training,
             config,
-            model_identifier = model_identifier,
+            model_identifier = _guard_identifier,
             hf_token = request.hf_token,
             load_in_4bit = effective_load_in_4bit,
             max_seq_length = request.max_seq_length,

@@ -1324,6 +1324,31 @@ def test_local_only_gguf_reuse_and_platform_gates_are_authoritative():
     assert 'if selected_category == "safetensors":' in inventory
 
 
+def test_route_preflights_and_gguf_rows_stay_format_true():
+    """Round-19 gates. The /load route's sidecar tier probe and training
+    guard size local-only candidates against the resolved snapshot path (a
+    repo id would reach _remote_lora_base's raw HTTP request and hf
+    model_info, neither of which honors offline mode). GGUF cached rows
+    select a GGUF-bearing snapshot, so a mixed repo's safetensors revision
+    cannot become the GGUF row's load target."""
+    route = _read_backend("routes/inference.py")
+    assert "_tier_target = config.path if request.local_files_only else config.identifier" in route
+    guard_block = route.split("_guard_identifier = (", 1)[1]
+    guard_block = guard_block.split("await asyncio.to_thread(", 1)[0]
+    assert "config.path" in guard_block
+    assert "request.local_files_only and not config.is_gguf" in guard_block
+    assert "model_identifier = _guard_identifier," in route
+
+    inventory = _read_backend("hub/services/models/cache_inventory.py")
+    assert "def _newest_snapshot_where(" in inventory
+    assert "def _gguf_snapshot_path(" in inventory
+    assert "def _cached_gguf_repo_snapshot_path(" in inventory
+    gguf_scan = inventory.split("def _scan_cached_gguf(", 1)[1]
+    gguf_scan = gguf_scan.split("def ", 1)[0]
+    assert "_cached_gguf_repo_snapshot_path(repo_path)" in gguf_scan
+    assert "_cached_model_snapshot_path(repo_path)" not in gguf_scan
+
+
 def test_gguf_background_loads_never_download_companions():
     """A cached GGUF load can still fetch from the Hub through its optional
     companions (mmproj, MTP drafter) or a cache-miss main quant. Background
