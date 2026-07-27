@@ -5,9 +5,12 @@ Drop-in replacement for InferenceBackend — same interface, uses mlx-lm/mlx-vlm
 instead of torch/transformers for model loading and generation.
 """
 
+import copy
+import hashlib
 import json
 import os
 import threading
+from collections import OrderedDict
 from contextlib import contextmanager
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
@@ -329,6 +332,339 @@ class _MLXPromptCacheHistory:
         self._lru.insert_cache(key, tokens, cache)
 
 
+def _mlx_vlm_prompt_cache_api(model = None):
+    """Return the upstream state class only when cached continuation is safe.
+
+    Some VLM language models keep multimodal position, attention, image, or
+    generation metadata on the model object rather than in the KV cache.
+    Image/generation state cannot be reconstructed by the cache contract.
+    Position state is safe only when upstream can prime it from the full prompt
+    before trimming to the uncached suffix. Unknown or older combinations
+    deliberately fall back to cold prefill.
+    """
+    try:
+        from mlx_vlm import PromptCacheState, stream_generate
+    except (ImportError, AttributeError):
+        return None
+    language_model = getattr(model, "language_model", None)
+    has_unrestorable_generation_state = any(
+        hasattr(language_model, attr)
+        for attr in (
+            "_image_cache",
+            "_token_bounds",
+            "_generated_ids_list",
+            "_last_predicted_patch_id",
+        )
+    )
+    if has_unrestorable_generation_state:
+        return None
+    has_multimodal_position_state = any(
+        hasattr(language_model, attr)
+        for attr in (
+            "_rope_delta",
+            "_rope_deltas",
+            "_position_ids",
+            "_pos_hw",
+            "_full_attn_mask",
+        )
+    )
+    if has_multimodal_position_state:
+        # Multimodal RoPE models are refused on every runtime. Newer mlx-vlm
+        # primes rope deltas before a cached-prefix trim, but reuse still decodes
+        # differently from a cold run for these architectures — measured on
+        # Qwen2.5-VL, with and without Studio's own cut — because the suffix is
+        # positioned arithmetically from the cache offset rather than from the
+        # multimodal position map the prefill used. Presence of the priming
+        # helper is therefore not evidence that reuse is safe.
+        return None
+    return PromptCacheState
+
+
+def _vlm_media_fingerprint(media):
+    """Hash the media that will be paired with a retained multimodal prefix.
+
+    In-memory images include pixel representation and structural attributes.
+    Paletted images additionally include their palette and transparency because
+    equal palette indices can represent different colors. Media naming a file,
+    including a bytes value the runtime would open as a pathname, is refused
+    rather than hashed, because that file can change between this hash and the
+    read. Any object whose identity cannot be established conservatively
+    disables reuse for that request.
+    """
+    digest = hashlib.sha256()
+
+    def update(value):
+        if value is None:
+            digest.update(b"none")
+            return True
+        if isinstance(value, (list, tuple)):
+            digest.update(f"{type(value).__name__}:{len(value)}".encode())
+            return all(update(item) for item in value)
+        if isinstance(value, (str, bytes, os.PathLike)):
+            # Studio decodes media in process, so a name here is not the payload
+            # the model will actually read -- and a bytes value is opened as a
+            # pathname too. The file can change between this hash and that read,
+            # which would retain one image's state under another's identity, so
+            # refuse rather than fingerprint external mutable state.
+            return False
+        if isinstance(value, (bytearray, memoryview)):
+            digest.update(bytes(value))
+            return True
+        tobytes = getattr(value, "tobytes", None)
+        if not callable(tobytes):
+            return False
+        digest.update(
+            repr(
+                (
+                    type(value).__module__,
+                    type(value).__qualname__,
+                    getattr(value, "mode", None),
+                    getattr(value, "size", None),
+                    getattr(value, "shape", None),
+                    str(getattr(value, "dtype", None)),
+                )
+            ).encode()
+        )
+        getpalette = getattr(value, "getpalette", None)
+        if callable(getpalette):
+            digest.update(repr(getpalette()).encode())
+            digest.update(repr(getattr(value, "info", {}).get("transparency")).encode())
+        digest.update(tobytes())
+        return True
+
+    try:
+        return digest.hexdigest() if update(media) else None
+    except Exception as exc:
+        logger.debug("MLX VLM prompt cache: could not fingerprint media: %s", exc)
+        return None
+
+
+def _vlm_prompt_cache_state_nbytes(state):
+    cache = getattr(state, "cache", None)
+    if not cache:
+        return None
+    total = len(getattr(state, "token_ids", None) or ()) * 8
+    try:
+        for entry in _flatten_kv_entries(cache):
+            nbytes = getattr(entry, "nbytes")
+            total += int(nbytes)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return total
+
+
+# The fields Studio knows how to restore when it cuts a state. A plain entry
+# carries only the first set; a sliding-window entry adds its window bounds and
+# ring position. Anything else — wrapper tensors, nested caches, unknown fields —
+# holds state derived from one sequence that no cut can rebuild.
+_PLAIN_KV_ATTRIBUTES = frozenset({"keys", "values", "offset", "step", "nbytes"})
+_ROTATING_KV_ATTRIBUTES = _PLAIN_KV_ATTRIBUTES | {"max_size", "keep", "_idx"}
+
+
+def _vlm_cache_entry_shape(entry):
+    """Classify an entry as ``"plain"``, ``"rotating"``, or ``None`` (refused)."""
+    keys = getattr(entry, "keys", None)
+    values = getattr(entry, "values", None)
+    attributes = getattr(entry, "__dict__", None)
+    if keys is None or values is None or attributes is None:
+        return None
+    # Both tensors must already hold every token the counters claim, or a cut
+    # would leave the runtime a state asserting more cached tokens than it has.
+    offset = getattr(entry, "offset", 0)
+    if keys.shape[2] < offset or values.shape[2] < offset:
+        return None
+    names = set(attributes)
+    if not names - _PLAIN_KV_ATTRIBUTES:
+        return "plain"
+    if names - _ROTATING_KV_ATTRIBUTES or not {"max_size", "_idx"} <= names:
+        return None
+    if entry.keep != 0 or _rotating_entry_is_wrapped(entry):
+        return None
+    return "rotating"
+
+
+def _rotating_entry_is_wrapped(entry):
+    """Whether the ring has already discarded its earliest tokens.
+
+    A wrapped ring holds only its most recent window, so it can neither be cut
+    to a shorter prefix nor be shown to continue identically to a fresh prefill.
+    Such states are not retained, which leaves those conversations prefilling
+    from cold exactly as before.
+    """
+    return entry._idx != entry.offset or entry.offset >= entry.max_size
+
+
+def _vlm_cache_is_retainable(cache, allow_rotating = True):
+    if not cache:
+        return False
+    for entry in cache:
+        shape = _vlm_cache_entry_shape(entry)
+        if shape is None or (shape == "rotating" and not allow_rotating):
+            return False
+    return True
+
+
+def _cut_vlm_cache_to_prefix(cache, prefix):
+    """Make every entry end at ``prefix``, or report that reuse must be abandoned.
+
+    Retention already refuses wrapped rings, so every entry reaching here holds a
+    contiguous run from the start and can be cut by slicing and resetting its
+    counters — the restoration the runtime's own truncation omits.
+    """
+    plan = []
+    for entry in cache:
+        shape = _vlm_cache_entry_shape(entry)
+        if shape is None or entry.offset < prefix:
+            return False
+        plan.append(entry)
+    for entry in plan:
+        if entry.keys.shape[2] > prefix:
+            entry.keys = entry.keys[:, :, :prefix, :]
+        if entry.values.shape[2] > prefix:
+            entry.values = entry.values[:, :, :prefix, :]
+        entry.offset = prefix
+        if hasattr(entry, "_idx"):
+            entry._idx = prefix
+    return True
+
+
+def _studio_prompt_cache_state_cls(base_cls, _cache = {}):
+    """Subclass the runtime's state so its prefix callback applies Studio's cut."""
+    if not isinstance(base_cls, type):
+        return base_cls
+    cls = _cache.get(base_cls)
+    if cls is None:
+
+        class _StudioPromptCacheState(base_cls):
+            observed_prefix = 0
+            prefix_checked = False
+
+            def find_prefix_length(self, new_ids):
+                prefix = int(super().find_prefix_length(new_ids))
+                self.observed_prefix = 0
+                self.prefix_checked = True
+                if 0 < prefix < len(new_ids) and self.cache:
+                    if not _cut_vlm_cache_to_prefix(self.cache, prefix):
+                        return 0
+                    self.observed_prefix = prefix
+                return prefix
+
+        cls = _cache[base_cls] = _StudioPromptCacheState
+    return cls
+
+
+class _MLXVLMPromptCacheHistory:
+    """Retain only committed, byte-bounded VLM state snapshots.
+
+    Entries are addressed by content, not by conversation. Within one
+    ``(model, adapter state, media fingerprint)`` scope a request reuses the
+    retained entry whose prompt is the longest literal prefix of its own, so a
+    retained state is never applied to a prompt that does not continue the one
+    it was built from; upstream then revalidates the exact token prefix.
+
+    ``mlx-vlm`` mutates KV objects while generation is still in progress.
+    Fetching therefore returns a deep copy so cancellation, close, or an
+    exception cannot corrupt the last committed snapshot. Insertions verify
+    that every cache layer covers the same non-rotated prefix and that its
+    memory can be measured before it enters the pool.
+    """
+
+    def __init__(self, max_entries, max_bytes):
+        self._max_entries = max_entries
+        self._max_bytes = max_bytes
+        self._nbytes = 0
+        self._entries = OrderedDict()
+        self._next_id = 0
+
+    def fetch(self, state_cls, scope, prompt):
+        matched_id, matched_length = None, 0
+        for entry_id, (_, _, entry_scope, entry_prompt) in self._entries.items():
+            if entry_scope != scope or len(entry_prompt) <= matched_length:
+                continue
+            if prompt.startswith(entry_prompt):
+                matched_id, matched_length = entry_id, len(entry_prompt)
+        if matched_id is None:
+            return state_cls(), [], None
+        state = copy.deepcopy(self._entries[matched_id][0])
+        self._entries.move_to_end(matched_id)
+        return state, list(getattr(state, "token_ids", None) or ()), matched_id
+
+    def insert(self, commit, state):
+        scope, prompt, continued_id = commit
+        tokens = list(getattr(state, "token_ids", None) or ())
+        covered = _kv_prefix_coverage(getattr(state, "cache", None) or ())
+        if covered is None or covered <= 0 or covered > len(tokens):
+            logger.debug("MLX VLM prompt cache: skipping unverifiable prefix coverage")
+            return False
+        if not _vlm_cache_is_retainable(
+            getattr(state, "cache", None) or (),
+            allow_rotating = hasattr(state, "observed_prefix"),
+        ):
+            logger.debug("MLX VLM prompt cache: skipping cache Studio cannot cut to a prefix")
+            return False
+        state.token_ids = tokens[:covered]
+        nbytes = _vlm_prompt_cache_state_nbytes(state)
+        if nbytes is None or nbytes > self._max_bytes:
+            logger.debug("MLX VLM prompt cache: skipping unbounded or over-budget state")
+            return False
+        # Store first, then drop the entry this request continued, so a failure
+        # here cannot leave the pool without either version. Superseding keeps a
+        # linear conversation at one entry, while a prompt that continues none of
+        # the retained entries is added beside them.
+        self._entries[self._next_id] = (state, nbytes, scope, prompt)
+        self._next_id += 1
+        self._nbytes += nbytes
+        previous = self._entries.pop(continued_id, None) if continued_id is not None else None
+        if previous is not None:
+            self._nbytes -= previous[1]
+        while len(self._entries) > self._max_entries or self._nbytes > self._max_bytes:
+            _, (_, evicted_bytes, _, _) = self._entries.popitem(last = False)
+            self._nbytes -= evicted_bytes
+        return True
+
+
+def _legacy_vlm_cached_tokens(previous_ids, state, response):
+    """Infer successful reuse for runtimes without explicit cache metadata.
+
+    Legacy ``mlx-vlm`` accepts a cached prefix only when it is non-empty and
+    shorter than the new prompt. The inference is reported only after normal
+    exhaustion, when the upstream state contains the completed prompt.
+    """
+    token_ids = list(getattr(state, "token_ids", None) or ())
+    generated_n = int(getattr(response, "generation_tokens", 0) or 0)
+    prompt_n = max(0, len(token_ids) - generated_n)
+    if not previous_ids or prompt_n <= 0:
+        return 0
+    current_prompt = token_ids[:prompt_n]
+    common = 0
+    for old, new in zip(previous_ids, current_prompt):
+        if old != new:
+            break
+        common += 1
+    return common if 0 < common < prompt_n else 0
+
+
+def _build_vlm_generation_stats(response, cached_n):
+    """Map total VLM prefill metrics onto Studio's cached/uncached split.
+
+    Upstream measures prefill time against the total logical prompt even when
+    part of it came from cache. Scaling throughput by the uncached fraction
+    preserves that measured duration while exposing ``cache_n`` separately.
+    """
+    # mlx-vlm reports total prompt tokens and total/prefill-second even on a hit.
+    total_prompt_n = int(getattr(response, "prompt_tokens", 0) or 0)
+    prompt_n = max(total_prompt_n - cached_n, 0)
+    total_prompt_tps = float(getattr(response, "prompt_tps", 0.0) or 0.0)
+    prompt_tps = total_prompt_tps * prompt_n / total_prompt_n if total_prompt_n > 0 else 0.0
+    return _build_generation_stats(
+        prompt_n,
+        prompt_tps,
+        getattr(response, "generation_tokens", 0),
+        getattr(response, "generation_tps", 0.0),
+        cached_n,
+    )
+
+
 def _mlx_distributed_rank_size(group = None):
     """Return ``(rank, world_size)`` for an optional MLX distributed group."""
     if group is None:
@@ -435,6 +771,8 @@ class MLXInferenceBackend:
 
         self._prompt_cache_history = None
         self._prompt_cache_unavailable = False
+        self._vlm_prompt_cache_history = None
+        self._vlm_prompt_cache_unavailable = False
 
     def _prompt_cache(self):
         if self._prompt_cache_history is not None or self._prompt_cache_unavailable:
@@ -463,6 +801,61 @@ class MLXInferenceBackend:
     def _clear_prompt_cache(self):
         self._prompt_cache_history = None
         self._prompt_cache_unavailable = False
+        self._clear_vlm_prompt_cache()
+
+    def _clear_vlm_prompt_cache(self):
+        self._vlm_prompt_cache_history = None
+        self._vlm_prompt_cache_unavailable = False
+
+    def _prepare_vlm_prompt_cache(self, prompt, image, adapter_state):
+        """Create a request-local state for one exact compatibility domain.
+
+        A rendered prompt, loaded model, adapter selection, and media
+        fingerprint are all required. Fetch/copy failure falls back to a fresh
+        state with no commit context, preserving the prior snapshot even if the
+        cold request succeeds.
+        """
+        if not prompt or not self.active_model_name:
+            return None, None, []
+        media_fingerprint = _vlm_media_fingerprint(image)
+        if media_fingerprint is None:
+            return None, None, []
+        state_cls = _mlx_vlm_prompt_cache_api(self._model)
+        if state_cls is not None:
+            state_cls = _studio_prompt_cache_state_cls(state_cls)
+        if state_cls is None:
+            self._vlm_prompt_cache_unavailable = True
+            return None, None, []
+        if self._vlm_prompt_cache_unavailable:
+            return None, None, []
+        if self._vlm_prompt_cache_history is None:
+            max_bytes = _prompt_cache_max_bytes(self._memory_limits_applied.get("recommended_gb"))
+            if max_bytes <= 0:
+                self._vlm_prompt_cache_unavailable = True
+                return None, None, []
+            self._vlm_prompt_cache_history = _MLXVLMPromptCacheHistory(
+                PROMPT_CACHE_ENTRIES,
+                max_bytes,
+            )
+        scope = (
+            self.active_model_name,
+            repr(adapter_state),
+            media_fingerprint,
+        )
+        try:
+            state, previous_ids, continued_id = self._vlm_prompt_cache_history.fetch(
+                state_cls,
+                scope,
+                prompt,
+            )
+        except Exception as exc:
+            logger.debug("MLX VLM prompt cache lookup failed: %s", exc)
+            try:
+                state = state_cls()
+            except Exception:
+                return None, None, []
+            return state, None, []
+        return state, (scope, prompt, continued_id), previous_ids
 
     def _prepare_prompt_cache(self, prompt, adapter_state):
         history = self._prompt_cache()
@@ -607,6 +1000,9 @@ class MLXInferenceBackend:
             model_name,
             **load_kwargs,
         )
+        # A successful reload may reuse the same public identifier for different
+        # weights or adapters; no retained VLM state survives that model object swap.
+        self._clear_vlm_prompt_cache()
 
         if is_vision:
             processor = tokenizer_or_processor
@@ -750,7 +1146,12 @@ class MLXInferenceBackend:
         full_messages.extend(messages)
 
         # Inject image into the last user message for VLM
-        if self._is_vlm and image is not None:
+        has_structured_image = any(
+            _count_vlm_images(message.get("content")) > 0
+            for message in full_messages
+            if isinstance(message, dict)
+        )
+        if self._is_vlm and image is not None and not has_structured_image:
             for msg in reversed(full_messages):
                 if msg.get("role") == "user":
                     content = msg.get("content", "")
@@ -760,9 +1161,7 @@ class MLXInferenceBackend:
                             {"type": "text", "text": content},
                         ]
                     elif isinstance(content, list):
-                        has_image = _count_vlm_images(content) > 0
-                        if not has_image:
-                            content.insert(0, {"type": "image"})
+                        content.insert(0, {"type": "image"})
                     break
 
         if self._is_vlm:
@@ -1142,7 +1541,22 @@ class MLXInferenceBackend:
             # whole stream so Base-vs-LoRA compare mode honors use_adapter and the
             # wrapper tree is restored on completion, cancellation, or close.
             with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
+                # Upstream seeds history-based logits processors only from the
+                # uncached suffix. Reuse would therefore change penalty semantics.
+                if _rep_active or presence_penalty:
+                    cache_state, cache_commit, previous_ids = None, None, []
+                else:
+                    cache_state, cache_commit, previous_ids = self._prepare_vlm_prompt_cache(
+                        prompt,
+                        image,
+                        _adapter_state,
+                    )
+                request_kwargs = dict(vlm_kwargs)
+                if cache_state is not None:
+                    request_kwargs["prompt_cache_state"] = cache_state
                 final_response = None
+                cached_n = 0
+                completed = False
                 try:
                     # Emit any prefilled <think> block before the first token so the
                     # UI renders it during prefill, matching _generate_text. Done
@@ -1155,22 +1569,48 @@ class MLXInferenceBackend:
                         self._processor,
                         prompt,
                         images,
-                        **vlm_kwargs,
+                        **request_kwargs,
                     ):
                         final_response = response
+                        exposed_cached_n = getattr(response, "cached_tokens", None)
+                        if exposed_cached_n is not None:
+                            cached_n = int(exposed_cached_n or 0)
                         token_text = response.text if hasattr(response, "text") else str(response)
                         cumulative += token_text
                         yield cumulative
                         if cancel_event and cancel_event.is_set():
                             break
+                    else:
+                        completed = True
+                    cancelled = cancel_event is not None and cancel_event.is_set()
+                    if (
+                        completed
+                        and not cancelled
+                        and cache_state is not None
+                        and cache_commit is not None
+                        and final_response is not None
+                    ):
+                        if not hasattr(final_response, "cached_tokens"):
+                            if getattr(cache_state, "prefix_checked", False):
+                                cached_n = cache_state.observed_prefix
+                            else:
+                                cached_n = _legacy_vlm_cached_tokens(
+                                    previous_ids,
+                                    cache_state,
+                                    final_response,
+                                )
+                        history = self._vlm_prompt_cache_history
+                        if history is not None:
+                            try:
+                                history.insert(cache_commit, cache_state)
+                            except Exception as exc:
+                                logger.debug("MLX VLM prompt cache insert failed: %s", exc)
                 finally:
                     # mlx_vlm exposes the same stats fields as mlx_lm.
                     if final_response is not None:
-                        self.last_generation_stats = _build_generation_stats(
-                            getattr(final_response, "prompt_tokens", 0),
-                            getattr(final_response, "prompt_tps", 0.0),
-                            getattr(final_response, "generation_tokens", 0),
-                            getattr(final_response, "generation_tps", 0.0),
+                        self.last_generation_stats = _build_vlm_generation_stats(
+                            final_response,
+                            cached_n,
                         )
 
         yield from normalize_reasoning_snapshots(
