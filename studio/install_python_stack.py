@@ -776,7 +776,7 @@ def _linux_amd_gfx_from_cpuinfo() -> "str | None":
     """Infer gfx arch from /proc/cpuinfo on integrated AMD APUs (Strix Halo/Point)."""
     try:
         text = Path("/proc/cpuinfo").read_text(encoding = "utf-8", errors = "replace")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     if re.search(r"Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo", text, re.IGNORECASE):
         return "gfx1151"
@@ -828,7 +828,7 @@ def _is_wsl() -> bool:
     try:
         with open("/proc/version", encoding = "utf-8", errors = "replace") as fh:
             return "microsoft" in fh.read().lower()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return False
 
 
@@ -856,7 +856,7 @@ def _linux_amd_display_device_present() -> bool:
                     continue
                 if (dev / "class").read_text(encoding = "utf-8").strip().startswith("0x03"):
                     return True
-            except OSError:
+            except (OSError, UnicodeDecodeError):
                 continue
     except OSError:
         pass
@@ -1069,7 +1069,7 @@ def _has_rocm_gpu() -> bool:
                     try:
                         with open(gpu_id_path, encoding = "utf-8") as fh:
                             gpu_id = fh.read().strip()
-                    except OSError:
+                    except (OSError, UnicodeDecodeError):
                         continue
                     if not gpu_id or gpu_id == "0":  # gpu_id 0 = CPU node
                         continue
@@ -1081,7 +1081,7 @@ def _has_rocm_gpu() -> bool:
                     try:
                         with open(props_path, encoding = "utf-8") as fh:
                             props = fh.read()
-                    except OSError:
+                    except (OSError, UnicodeDecodeError):
                         continue  # can't confirm vendor -- skip
                     if not re.search(r"\bvendor_id\s+4098\b", props):
                         continue

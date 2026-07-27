@@ -903,7 +903,7 @@ def _rocm_kfd_gpu_pci_ids() -> list[str]:
                             props[parts[0]] = int(parts[1])
                         except ValueError:
                             continue
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return []  # unreadable node could be a GPU: fail closed, don't shift
         if props.get("simd_count", 0) <= 0:
             continue  # CPU node, not a GPU
