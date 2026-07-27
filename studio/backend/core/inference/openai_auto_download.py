@@ -210,6 +210,7 @@ def _gguf_variants(siblings) -> dict[str, int]:
     the companions back into every quant, so the disk reserve is measured against
     what the worker fetches rather than the main files alone.
     """
+    from hub.utils.gguf import extract_quant_label as canonical_quant_label
     from hub.utils.gguf_plan import build_gguf_variant_plans
     from utils.models.model_config import (
         _extract_quant_label,
@@ -226,6 +227,12 @@ def _gguf_variants(siblings) -> dict[str, int]:
         if not name.lower().endswith(".gguf"):
             continue
         quant = _extract_quant_label(name)
+        if not looks_like_quant(quant):
+            # With no recognized quant token the two extractors part ways: this one
+            # takes the last hyphenated segment ("7b" of llama-7b) while the plan and
+            # the worker key the whole stem. Advertising ours dispatches a variant the
+            # worker cannot resolve, so take theirs for the unrecognized case only.
+            quant = canonical_quant_label(name) or quant
         if _is_mmproj(name) or _is_mtp_drafter(name) or _is_big_endian_gguf_path(name, quant):
             continue
         plan = plans.get(quant.lower())

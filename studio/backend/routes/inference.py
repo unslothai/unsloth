@@ -3806,7 +3806,10 @@ def _norm_path(value: str) -> str:
     """Compare-ready path. normcase, not lower: on a case-sensitive filesystem
     /srv/models/Foo and /srv/models/foo are different models."""
     import os
-    return os.path.normcase(str(value).replace("\\", "/").rstrip("/"))
+    # normcase after, not before: on Windows it folds case *and* rewrites the
+    # separator to a backslash, so normalizing first leaves the descendant checks
+    # below comparing a "/" against a path that no longer has any.
+    return os.path.normcase(str(value)).replace("\\", "/").rstrip("/")
 
 
 def _resident_quant_is(variant: Optional[str]) -> bool:

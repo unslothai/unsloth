@@ -1451,3 +1451,41 @@ def test_a_remote_tag_that_names_no_quant_picks_the_preferred_one(hub):
     refusal = _run("unsloth/x-GGUF:Q2_K")
     assert refusal.status == 404 and "no quant" in refusal.message
     assert hub["started"] == []
+
+
+def test_a_generic_gguf_advertises_the_label_the_worker_resolves(hub):
+    # With no recognized quant token the label extractors part ways: one takes the
+    # last hyphenated segment, the plan and the worker key the whole stem. Dispatching
+    # ours made the worker exit with "No GGUF shards matching variant".
+    from hub.utils.gguf import extract_quant_label as canonical
+    from hub.utils.gguf_plan import build_gguf_variant_plans
+
+    sibling = _Sibling("llama-7b.gguf", 4 * 1024**3)
+    hub["info"] = _Info([sibling])
+    assert _run("unsloth/generic-GGUF").code == "model_downloading"
+    dispatched = hub["started"][0][1]
+    assert dispatched == canonical("llama-7b.gguf")
+    # The key the worker will look up has to contain it, which is the whole point.
+    assert dispatched.lower() in build_gguf_variant_plans([sibling])
+
+
+def test_windows_style_paths_still_match_their_own_directory(monkeypatch):
+    # normcase folds case and rewrites the separator to a backslash on Windows, so
+    # normalizing to "/" before it left the descendant checks comparing a "/" against
+    # a path that had none, and a resident model read as a different one.
+    import ntpath
+
+    monkeypatch.setattr(inference_route.os.path, "normcase", ntpath.normcase)
+    # A manual load records the file, so only the descendant check can match the
+    # directory the resolver returns; an equality match would prove nothing here.
+    loaded = _Loaded("C:\\models\\repo\\model.gguf")
+    loaded.gguf_path = "C:\\models\\repo\\model.gguf"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    assert inference_route._resolves_to_resident("C:\\models\\repo") is True
+    assert inference_route._resolves_to_resident("C:\\Models\\Repo") is True
+    assert inference_route._resolves_to_resident("C:\\models\\other") is False
