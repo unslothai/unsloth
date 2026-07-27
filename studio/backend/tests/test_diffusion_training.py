@@ -1911,3 +1911,26 @@ def test_gpu_load_admission_and_reserve_exclude_each_other():
             svc.reserve()
     svc.reserve()
     svc.unreserve()
+
+
+def test_route_start_carries_and_contains_the_conditioning_cache_dir(client):
+    # The trainer's persistent conditioning cache (cond_cache_dir) skips loading the VAE and the
+    # multi-GB text encoders on a rerun, but the start schema omitted the field, so Pydantic
+    # dropped it silently and every API-driven run fell back to the in-memory cache. It also has to
+    # be contained like output_dir: the trainer subprocess would otherwise resolve it against its
+    # own cwd.
+    from pathlib import Path
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "cond_cache_dir": "cond-cache"})
+    assert r.status_code == 200, r.text
+    resolved = client._fake.started_with["cond_cache_dir"]
+    assert Path(resolved).is_absolute()
+    assert Path(resolved).name == "cond-cache"
+
+    # Omitted or blank keeps the in-memory cache rather than resolving to the outputs root.
+    r = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r.status_code == 200, r.text
+    assert client._fake.started_with["cond_cache_dir"] is None
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "cond_cache_dir": "   "})
+    assert r.status_code == 200, r.text
+    assert client._fake.started_with["cond_cache_dir"] is None

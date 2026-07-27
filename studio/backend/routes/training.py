@@ -1375,6 +1375,11 @@ async def start_diffusion_training(
         from utils.paths import resolve_output_dir
         config["data_dir"] = str(_resolve_diffusion_data_dir(config["data_dir"]))
         config["output_dir"] = str(resolve_output_dir(config["output_dir"]))
+        # The persistent conditioning cache is another directory the TRAINER writes to, so it gets
+        # the same containment as output_dir rather than the trainer's cwd. Blank/None means the
+        # in-memory cache (the trainer's own "off"), so it must not resolve to the outputs root.
+        cond_cache = str(config.get("cond_cache_dir") or "").strip()
+        config["cond_cache_dir"] = str(resolve_output_dir(cond_cache)) if cond_cache else None
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
 

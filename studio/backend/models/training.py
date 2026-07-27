@@ -798,6 +798,16 @@ class DiffusionTrainingStartRequest(BaseModel):
     cache_variants: int = Field(
         4, ge = 1, le = 16, description = "Frozen crop/flip variants per image in the latent cache"
     )
+    cond_cache_dir: Optional[str] = Field(
+        None,
+        description = (
+            "Directory for the PERSISTENT conditioning cache (latents + text embeddings), reused "
+            "across runs: a rerun whose images, captions and resolution are unchanged skips "
+            "loading the VAE and the multi-GB text encoders entirely. Studio-relative names are "
+            "resolved under the Studio outputs root and absolute paths must stay inside it. "
+            "null or blank keeps the in-memory cache, which is rebuilt every run."
+        ),
+    )
     compile_transformer: Literal["off", "on", "auto"] = Field(
         "auto", description = "Regional torch.compile of the transformer blocks"
     )
