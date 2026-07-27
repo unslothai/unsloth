@@ -1851,6 +1851,6 @@ def test_cached_repo_task_agrees_with_the_image_loader(monkeypatch):
             loader_accepts = True
         except (ValueError, FileNotFoundError, RuntimeError):
             loader_accepts = False
-        assert (task == "text-to-image") == loader_accepts, (
-            f"{repo_id}: picker task={task} but loader accepts={loader_accepts}"
-        )
+        assert (
+            task == "text-to-image"
+        ) == loader_accepts, f"{repo_id}: picker task={task} but loader accepts={loader_accepts}"

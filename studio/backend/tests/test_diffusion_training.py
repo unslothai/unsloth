@@ -1973,8 +1973,6 @@ def test_route_rejects_cond_cache_dir_for_sdxl(client):
 
     assert Path(client._fake.started_with["cond_cache_dir"]).is_absolute()
     # And omitting it stays off (the trainer's in-memory default), not resolved to the outputs root.
-    r = client.post(
-        "/api/train/diffusion/start", json = {**_BODY, "model_family": "sdxl"}
-    )
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "model_family": "sdxl"})
     assert r.status_code == 200, r.text
     assert client._fake.started_with["cond_cache_dir"] is None

@@ -1032,9 +1032,7 @@ class VideoBackend:
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 local = Path(
-                    hf_hub_download_with_xet_fallback(
-                        base, name, hf_token, cancel_event = cancel
-                    )
+                    hf_hub_download_with_xet_fallback(base, name, hf_token, cancel_event = cancel)
                 )
                 if name == "model_index.json":
                     snapshot_root = local.parent
