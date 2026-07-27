@@ -36,16 +36,22 @@ export const MessageHtmlArtifacts: FC = () => {
       .map((part) => (part as { text: string }).text)
       .join(PART_SEPARATOR),
   );
+  const artifactsEnabled = useChatRuntimeStore(
+    (state) => state.artifactsEnabled,
+  );
+  const collapseHtmlArtifacts = useChatRuntimeStore(
+    (state) => state.collapseHtmlArtifacts,
+  );
+  const loadedIsDiffusion = useChatRuntimeStore(
+    (state) => state.loadedIsDiffusion,
+  );
+  const cardsEnabled = artifactsEnabled || collapseHtmlArtifacts;
   // Full docs already shown by the in-place collapse; excluded for diffusion,
   // which keeps its code inline instead.
-  const collapsesFullDocs = useChatRuntimeStore(
-    (state) =>
-      (state.artifactsEnabled || state.collapseHtmlArtifacts) &&
-      !state.loadedIsDiffusion,
-  );
+  const collapsesFullDocs = cardsEnabled && !loadedIsDiffusion;
 
   const fences = useMemo(() => {
-    if (isRunning || hasRenderHtmlTool) {
+    if (isRunning || hasRenderHtmlTool || !cardsEnabled) {
       return [];
     }
     return textBlob
@@ -56,7 +62,7 @@ export const MessageHtmlArtifacts: FC = () => {
           // Skip only the plain fences the in-place collapse actually handles.
           !(fence.isFullDocument && fence.isPlainFence && collapsesFullDocs),
       );
-  }, [isRunning, hasRenderHtmlTool, textBlob, collapsesFullDocs]);
+  }, [isRunning, hasRenderHtmlTool, cardsEnabled, textBlob, collapsesFullDocs]);
 
   if (fences.length === 0) {
     return null;
