@@ -6188,9 +6188,12 @@ def _windows_hip_gfx_targets(published_repo: str | None) -> frozenset[str]:
 def _gfx_is_windows_hip_supported(gfx: str, published_repo: str | None = None) -> bool:
     token = gfx.lower().strip()
     if token in WINDOWS_ROCM_FAMILY_GFX_LABELS:
-        # A family label names a fork bundle whose members upstream's windows-hip targets
-        # all build too (gfx103X -> gfx1030..1032 etc), so HIP serves it against either
-        # repo.
+        # A bundle name, not an arch, so the concrete GPU is unknown here. The fork builds
+        # every member; upstream builds all but gfx1034 / gfx1103. Answering "unsupported"
+        # to cover that pair would move gfx1030..1032 / gfx1100..1102 off a working HIP
+        # build onto Vulkan for a member the label cannot identify, so HIP serves it either
+        # way. A concrete arch below still answers per repo, which is where gfx1034 and
+        # gfx1103 do reach Vulkan.
         return True
     return token in _windows_hip_gfx_targets(published_repo)
 

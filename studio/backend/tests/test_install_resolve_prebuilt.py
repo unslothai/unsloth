@@ -980,7 +980,9 @@ def test_auto_vulkan_is_repository_specific_for_fork_only_gfx():
     supported = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
     assert ilp._should_auto_vulkan_for_amd_windows(supported, FORK) is False
     assert ilp._should_auto_vulkan_for_amd_windows(supported, UPSTREAM) is False
-    # Family labels resolve to members both repos build, so neither needs Vulkan.
+    # A family label is a bundle name, not an arch: upstream builds every member but
+    # gfx1034 / gfx1103, and the label cannot say which card this is, so it stays on HIP
+    # rather than moving the covered members onto Vulkan.
     family = _windows_amd_host(rocm_gfx_target = "gfx110X", rocm_gfx_targets = ["gfx110X"])
     assert ilp._should_auto_vulkan_for_amd_windows(family, UPSTREAM) is False
 
