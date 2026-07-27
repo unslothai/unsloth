@@ -33,8 +33,8 @@ matched by name without resolving the receiver. `f.read(n)` on a binary handle,
 `resp.read(limit)` on an HTTP response and `handle.read(chunk)` are all spelled
 identically, and flagging those would be a false positive with no compliant fix
 -- the exact failure mode this guard is built to avoid. The one live
-`ConfigParser.read` in the tree (/etc/wsl.conf, hub/utils/paths.py) names its
-encoding; a future one has to be caught in review.
+`ConfigParser.read` in the tree (/etc/wsl.conf, hub/utils/paths.py) is pinned by
+hand; a future one has to be caught in review.
 """
 
 # `str | None` below is evaluated at import on Python 3.9 without this, and
@@ -42,6 +42,7 @@ encoding; a future one has to be caught in review.
 from __future__ import annotations
 
 import ast
+import subprocess
 from pathlib import Path
 
 
@@ -53,10 +54,12 @@ REPO = Path(__file__).resolve().parent.parent
 # by test_source_read_encoding.py under a narrower import-time rule.
 ROOTS = (REPO / "unsloth", REPO / "studio", REPO / "unsloth_cli")
 # The frontend tree is TypeScript; node_modules is vendored third-party code.
-SKIP_DIRS = {"frontend", "node_modules", "src-tauri", ".venv", "site-packages"}
+SKIP_DIRS = {"build", "dist", "frontend", "node_modules", "src-tauri", ".venv", "site-packages"}
 GUARDED_METHODS = {"read_text", "write_text"}
 # Path classes, so an unbound `Path.open(p)` shifts every argument one right.
 PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
+# Values that re-select the platform default when passed as the encoding.
+PLATFORM_DEFAULT_ENCODINGS = (None, "locale")
 # Modules whose `open` IS the builtin: same signature, same platform default.
 BUILTIN_OPEN_MODULES = {"builtins", "io"}
 # These wrap the stream in a TextIOWrapper for a "t" mode, so they take an
@@ -154,6 +157,13 @@ def _open_alias(name, modules):
     return parts[0] if parts[0] in COMPRESSED_OPENERS else None
 
 
+def _is_path_class(name, modules) -> bool:
+    """True for a pathlib class, including under an alias."""
+    if name is None:
+        return False
+    return (modules.get(name) or name).split(".")[-1] in PATH_CLASSES
+
+
 def _foreign_receiver(node, modules) -> bool:
     """True when the thing before `.open` is an object another library built.
 
@@ -178,11 +188,18 @@ def _offender(call: ast.Call, modules = None) -> str | None:
     func = call.func
     if isinstance(func, ast.Attribute):
         receiver = func.value.id if isinstance(func.value, ast.Name) else None
+        # `Path.read_text(p)` is the unbound spelling of `p.read_text()`: the
+        # instance takes slot 0, so every argument shifts one place right.
+        shift = 1 if _is_path_class(receiver, modules) else 0
         if func.attr in GUARDED_METHODS:
-            # importlib.metadata's Distribution.read_text takes a positional
-            # filename and has no encoding parameter at all, so a positional
-            # argument means the receiver is not a Path.
-            if func.attr == "read_text" and call.args:
+            if func.attr == "read_text" and not shift and call.args:
+                first = call.args[0]
+                # Bound read_text takes encoding first, so None or "locale"
+                # there is a platform-default read. Any other positional means
+                # the receiver is importlib.metadata's Distribution, whose
+                # argument is a filename and which takes no encoding at all.
+                if isinstance(first, ast.Constant) and first.value in PLATFORM_DEFAULT_ENCODINGS:
+                    return "read_text()"
                 return None
             return None if _names_encoding(call) else f"{func.attr}()"
         if func.attr == "open":
@@ -204,7 +221,7 @@ def _offender(call: ast.Call, modules = None) -> str | None:
                 return None
             if _foreign_receiver(func.value, modules):
                 return None
-            if not _is_text(call, 0):
+            if not _is_text(call, shift):
                 return None
             return None if _names_encoding(call) else "Path.open()"
         return None
@@ -243,24 +260,46 @@ def _offenders_in(src: str, label: str = "<snippet>"):
     return found
 
 
+def _tracked_sources():
+    """Shipping *.py that git is actually tracking.
+
+    A walk also picks up whatever is lying in the checkout: a previously built
+    `build/lib` copy of a plugin, a nested worktree, a vendored dependency.
+    None of those are ours to police, and a stale artifact would fail this for
+    everybody who has one.
+    """
+    listed = subprocess.run(
+        ["git", "-C", str(REPO), "ls-files", "-z", "--", "*.py"],
+        capture_output = True,
+        timeout = 60,
+    )
+    if listed.returncode != 0:
+        return None  # not a checkout, so fall back to walking
+    names = listed.stdout.decode("utf-8", errors = "replace").split("\0")
+    return [REPO / n for n in names if n]
+
+
+def _walked_sources():
+    return [p for root in ROOTS if root.is_dir() for p in sorted(root.rglob("*.py"))]
+
+
 def test_shipping_code_names_an_encoding():
     offenders = []
-    for root in ROOTS:
-        if not root.is_dir():
+    sources = _tracked_sources()
+    if sources is None:
+        sources = _walked_sources()
+    roots = {r.resolve() for r in ROOTS}
+    for path in sorted(sources):
+        if not roots.intersection(path.resolve().parents) or _is_test_path(path):
             continue
-        for path in sorted(root.rglob("*.py")):
-            if _is_test_path(path):
-                continue
-            src = path.read_text(encoding = "utf-8")
-            try:
-                tree = ast.parse(src, filename = str(path))
-            except SyntaxError:
-                continue
-            rel = path.relative_to(REPO).as_posix()
-            modules = _imported_names(tree)
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
+        try:
+            tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
+        except SyntaxError:
+            continue
+        rel = path.relative_to(REPO).as_posix()
+        modules = _imported_names(tree)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
                 name = _offender(node, modules)
                 if name is not None:
                     offenders.append(f"{rel}:{node.lineno}: {name}")
