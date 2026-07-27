@@ -369,7 +369,10 @@ def _downloading_refusal(label: str, percent: Optional[float]) -> AutoDownloadRe
 
 
 async def maybe_auto_download(
-    requested_model: str, *, hf_token: Optional[str] = None, require_vision: bool = False
+    requested_model: str,
+    *,
+    hf_token: Optional[str] = None,
+    require_vision: bool = False,
 ) -> Optional[AutoDownloadRefusal]:
     """Start (or report on) a background fetch of *requested_model*.
 

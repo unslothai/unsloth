@@ -3713,7 +3713,10 @@ def _auto_download_hf_token(fastapi_request: Optional[Request]) -> Optional[str]
 
 
 async def _maybe_auto_download_model(
-    requested_model: str, fastapi_request: Optional[Request], *, require_vision: bool = False
+    requested_model: str,
+    fastapi_request: Optional[Request],
+    *,
+    require_vision: bool = False,
 ) -> None:
     """Opt-in: start fetching a named GGUF this server doesn't have.
 
@@ -3803,7 +3806,6 @@ def _norm_path(value: str) -> str:
     """Compare-ready path. normcase, not lower: on a case-sensitive filesystem
     /srv/models/Foo and /srv/models/foo are different models."""
     import os
-
     return os.path.normcase(str(value).replace("\\", "/").rstrip("/"))
 
 
