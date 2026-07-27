@@ -12441,10 +12441,9 @@ class LlamaCppBackend:
                     _turn_executed_real_tool = True
                     yield completion.tool_end_event()
                     # Tool output can quote think/ChatML markers; neutralize
-                    # before it re-enters the prompt (#7066). The whole message,
-                    # not just content: tool_call_id and name must take the same
-                    # rewrite as the assistant call above or the pair stops
-                    # matching and the template falls back to the raw name.
+                    # before it re-enters the prompt (#7066). Whole message, not
+                    # just content: tool_call_id and name need the same rewrite as
+                    # the assistant call, or the pair stops matching.
                     from core.inference.chat_template_helpers import (
                         neutralize_control_markup_in_messages,
                     )
