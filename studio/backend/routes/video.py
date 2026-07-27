@@ -187,7 +187,6 @@ async def load_video_model(
             # diffusion-training start reserving here would free residents this load has not
             # registered yet (see _diffusion_training_admission).
             from routes.inference import _diffusion_training_admission
-
             def _acquire_and_begin():
                 with _diffusion_training_admission():
                     return acquire_for(VIDEO, _begin_load)

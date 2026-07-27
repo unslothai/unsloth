@@ -16015,7 +16015,6 @@ def _diffusion_training_admission():
     only; the LLM trainer admits loads that fit beside it, which is a different contract."""
     try:
         from core.training.diffusion_training_service import get_diffusion_training_service
-
         service = get_diffusion_training_service()
     except Exception:  # noqa: BLE001 -- unknowable state never blocks a load
         yield
