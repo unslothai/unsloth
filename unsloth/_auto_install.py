@@ -45,6 +45,11 @@ else: raise RuntimeError(f"Torch = {v} too new!")
 if v > V('2.6.9') and cuda not in ("11.8", "12.6", "12.8", "13.0"): raise RuntimeError(f"CUDA = {cuda} not supported!")
 if v >= V('2.10.0') and cuda not in ("12.6", "12.8", "13.0"): raise RuntimeError(f"Torch = {v} requires CUDA 12.6, 12.8, or 13.0! Got CUDA = {cuda}")
 # torch 2.12 is published on the cu126 and cu130 indexes only, so there is no cu128 extra.
+# Of those two, only cu130 covers Blackwell: measured on 2.12.1, the cu126 build's
+# arch list ends at sm_90 while cu130 carries sm_100 and sm_120, so on a B200 a cu126
+# 2.12 fails even a plain matmul with "no kernel image is available for execution on
+# the device". This gate keys off the detected CUDA, not the GPU, so cu126 stays valid
+# for pre-Blackwell; a Blackwell host needs CUDA 13.
 if v >= V('2.12.0') and cuda not in ("12.6", "13.0"): raise RuntimeError(f"Torch = {v} requires CUDA 12.6 or 13.0! Got CUDA = {cuda}")
 x = x.format(cuda.replace(".", ""), "-ampere" if False else "") # is_ampere is broken due to flash-attn
 # torch2110 and later extras pin +cuNNN local builds that only resolve from the matching index.
