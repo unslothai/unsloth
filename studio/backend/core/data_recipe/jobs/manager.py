@@ -359,7 +359,6 @@ class JobManager:
             }
 
     def get_status_for_control_plane(self, job_id: str) -> dict | None:
-        """Read the live job through the separately authenticated MCP control plane."""
         with self._lock:
             if self._job is None or self._job.job_id != job_id:
                 return None
@@ -446,7 +445,6 @@ class JobManager:
         limit: int,
         offset: int = 0,
     ) -> dict[str, Any] | None:
-        """Read live job data through the separately authenticated MCP control plane."""
         with self._lock:
             if self._job is None or self._job.job_id != job_id:
                 return None
