@@ -432,6 +432,14 @@ def render_native_template(
     if native_tpl is None:
         # A LoRA adapter's native template lives on the base model, not the adapter id.
         template_source = model_info.get("base_model") or active_model_name
+        # A local-only (background) load resolved its weights to a local
+        # snapshot; the template reload must read the SAME files. For a
+        # non-LoRA model prefer the stored load path over the repo id, and
+        # either way pass local_files_only so a cache miss fails the fallback
+        # instead of downloading tokenizer files mid-generation.
+        local_files_only = bool(model_info.get("local_files_only", False))
+        if local_files_only and not model_info.get("base_model"):
+            template_source = model_info.get("model_path") or template_source
         # Re-use the load-time trust_remote_code so a custom-code tokenizer repo can
         # instantiate its class (the stored flag already covers template_source).
         trust_remote_code = bool(model_info.get("trust_remote_code", False))
@@ -441,6 +449,7 @@ def render_native_template(
                 template_source,
                 token = hf_token if hf_token and hf_token.strip() else None,
                 trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
             )
             native_tpl = nt.chat_template or False
         except Exception as exc:

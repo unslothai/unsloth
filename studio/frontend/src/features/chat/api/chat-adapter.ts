@@ -1626,6 +1626,44 @@ const BEST_EFFORT_PREFETCH_GRACE_MS = 1_000;
 // path after this window and join the pool in size order as they resolve.
 const AUTO_LOAD_RESOLVE_GRACE_MS = 2500;
 
+// Upper bound on ONE GGUF variant scan. Pending scans hold the model-kind
+// gate, and the underlying fetch has no timeout of its own, so a single hung
+// request would otherwise gate Send forever. Matches the inventory calls'
+// own 30s bound; on expiry the scan job settles as failed and a ready
+// safetensors candidate can proceed.
+const AUTO_LOAD_VARIANT_SCAN_TIMEOUT_MS = 30_000;
+
+// An HF cache snapshot dir: captures the cache repo ROOT before /snapshots/.
+const HF_SNAPSHOT_PATH_RE = /^(.*)[\\/]snapshots[\\/][^\\/]+[\\/]?$/;
+
+// A custom scan folder registered at an HF cache snapshot aliases the cached
+// row for the same repo, but the cached row contributes the cache repo ROOT
+// (cache_path) while the custom row contributes its snapshots/<rev> dir.
+// Expanding a snapshot path with its cache root lets the two rows collide on
+// one seen-set key, so shared files consume one attempt.
+function expandSeenValues(value: string): string[] {
+  const snapshotMatch = HF_SNAPSHOT_PATH_RE.exec(value);
+  return snapshotMatch ? [value, snapshotMatch[1]] : [value];
+}
+
+async function listGgufVariantsBounded(
+  repoId: string,
+  options: { preferLocalCache?: boolean; localPath?: string | null },
+) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, AUTO_LOAD_VARIANT_SCAN_TIMEOUT_MS);
+  try {
+    return await listGgufVariants(repoId, undefined, {
+      ...options,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 type ResolvedLocalCandidate = {
   candidate: AutoLoadCandidate;
   /** Size of what would actually load: the resolved quant's own size for a
@@ -1649,7 +1687,7 @@ async function resolveLocalRowCandidate(
       // cache but missing at row's own path. A local-path repo id routes
       // the backend straight to the filesystem scan of that folder.
       const variantScanTarget = isLocalModelPath(row.id) ? row.id : row.path;
-      const variants = await listGgufVariants(variantScanTarget, undefined, {
+      const variants = await listGgufVariantsBounded(variantScanTarget, {
         preferLocalCache: true,
         localPath: row.path,
       });
@@ -2128,7 +2166,9 @@ export async function autoLoadOnDeviceModel(): Promise<{
   ): void => {
     for (const value of values) {
       if (value) {
-        seenLoadTargets.add(`${kind}:${normalizeLoadTargetKey(value)}`);
+        for (const alias of expandSeenValues(value)) {
+          seenLoadTargets.add(`${kind}:${normalizeLoadTargetKey(alias)}`);
+        }
       }
     }
   };
@@ -2139,7 +2179,9 @@ export async function autoLoadOnDeviceModel(): Promise<{
     values.some(
       (value) =>
         !!value &&
-        seenLoadTargets.has(`${kind}:${normalizeLoadTargetKey(value)}`),
+        expandSeenValues(value).some((alias) =>
+          seenLoadTargets.has(`${kind}:${normalizeLoadTargetKey(alias)}`),
+        ),
     );
 
   try {
@@ -2188,7 +2230,7 @@ export async function autoLoadOnDeviceModel(): Promise<{
           // may still pick another complete quant from this repo (only the
           // failed candidate key below is excluded).
           try {
-            const variants = await listGgufVariants(repo.repo_id, undefined, {
+            const variants = await listGgufVariantsBounded(repo.repo_id, {
               preferLocalCache: true,
               localPath: repo.cache_path,
             });
@@ -2346,7 +2388,7 @@ export async function autoLoadOnDeviceModel(): Promise<{
     const resolveCachedGgufEntry = async (
       repo: CachedGgufRepo,
     ): Promise<Extract<FallbackCandidate, { type: "cached-gguf" }> | null> => {
-      const variants = await listGgufVariants(repo.repo_id, undefined, {
+      const variants = await listGgufVariantsBounded(repo.repo_id, {
         preferLocalCache: true,
         localPath: repo.cache_path,
       });

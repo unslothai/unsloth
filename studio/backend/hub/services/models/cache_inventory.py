@@ -542,7 +542,40 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     )
 
 
+def _weightful_snapshot_path(repo_path: Path) -> Optional[Path]:
+    """Newest snapshot dir holding config.json plus a safetensors weight.
+
+    Inactive-cache rows emit this snapshot path as their load_id, which the
+    load consumes directly (it bypasses the repo-id resolver), so a newest
+    metadata-only revision must not be emitted while an older revision holds
+    the weights the row was classified from.
+    """
+    snapshots = repo_path / "snapshots"
+    try:
+        revisions = [entry for entry in snapshots.iterdir() if entry.is_dir()]
+    except OSError:
+        return None
+
+    def _loadable(rev: Path) -> bool:
+        try:
+            names = [entry.name for entry in rev.iterdir()]
+        except OSError:
+            return False
+        return "config.json" in names and any(n.endswith(".safetensors") for n in names)
+
+    candidates = [rev for rev in revisions if _loadable(rev)]
+    if not candidates:
+        return None
+    try:
+        return max(candidates, key = lambda rev: rev.stat().st_mtime).resolve()
+    except OSError:
+        return None
+
+
 def _cached_model_snapshot_path(repo_path: Path) -> Optional[Path]:
+    weightful = _weightful_snapshot_path(repo_path)
+    if weightful is not None:
+        return weightful
     resolved = hf_cache_scan.resolve_hf_cache_realpath(repo_path)
     if not resolved:
         return None

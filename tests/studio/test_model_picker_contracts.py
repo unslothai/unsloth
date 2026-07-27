@@ -714,7 +714,7 @@ def test_autoload_deduplicates_cached_and_local_candidates():
     assert "const seenLoadTargets = new Set<string>()" in auto_load
     # Keys carry the model kind: a folder emitting both GGUF and safetensors
     # rows shares a path while holding two different models.
-    assert "seenLoadTargets.add(`${kind}:${normalizeLoadTargetKey(value)}`)" in auto_load
+    assert "seenLoadTargets.add(`${kind}:${normalizeLoadTargetKey(alias)}`)" in auto_load
     assert 'markSeen("gguf", repo.load_id || repo.repo_id, repo.cache_path)' in auto_load
     assert 'markSeen("model", repo.load_id || repo.repo_id, repo.cache_path)' in auto_load
     assert "isSeen(localCandidate.kind, row.load_id, row.id, row.path)" in auto_load
@@ -809,7 +809,7 @@ def test_directory_gguf_rows_resolve_variant_like_picker():
     # Quants must be resolved from the folder the row will load from, not
     # from a same-id HF cache repo whose quants may be absent locally.
     assert "const variantScanTarget = isLocalModelPath(row.id) ? row.id : row.path;" in resolve_fn
-    assert "listGgufVariants(variantScanTarget" in resolve_fn
+    assert "listGgufVariantsBounded(variantScanTarget" in resolve_fn
     assert "localPath: row.path" in resolve_fn
     assert "entry.downloaded && !entry.partial && isAutoLoadableGgufVariant(entry)" in resolve_fn
     # The cascade must keep directory GGUF rows as candidates.
@@ -1242,6 +1242,53 @@ def test_forced_offline_is_hub_specific_and_covers_parent_preflight():
     tier_probe = preflight.split("with _preflight_offline():", 1)[1]
     assert "needs_transformers_5" in tier_probe.split("with _preflight_offline():", 1)[0]
     assert "prepare_gpu_selection(" in tier_probe.split("_spawn_subprocess", 1)[0]
+
+
+def test_generation_and_scan_paths_stay_bounded_and_local():
+    """Round-17 gates. Inactive-cache rows emit a weight-bearing snapshot as
+    their load_id (the load consumes it directly, bypassing the repo-id
+    resolver). Ordinary offline guards never extend a forced window. The
+    generation-time native template reload honors the load's local-only flag
+    and resolved path instead of refetching the repo id online. Every GGUF
+    variant scan behind the model-kind gate is bounded by an abortable
+    timeout, and an HF cache snapshot registered as a custom folder dedupes
+    against its cached row through the shared cache root."""
+    inventory = _read_backend("hub/services/models/cache_inventory.py")
+    assert "def _weightful_snapshot_path(" in inventory
+    resolver = inventory.split("def _cached_model_snapshot_path(", 1)[1]
+    resolver = resolver.split("def ", 1)[0]
+    assert "_weightful_snapshot_path(repo_path)" in resolver
+
+    llama = _read_backend("core/inference/llama_cpp.py")
+    join_branch = llama.split('if _OFFLINE_GUARD_STATE["count"] > 0:', 1)[1]
+    join_branch = join_branch.split("elif", 1)[0]
+    assert "if force:" in join_branch
+
+    helpers = _read_backend("core/inference/chat_template_helpers.py")
+    reload_block = helpers.split("native_chat_template", 1)[1]
+    reload_block = reload_block.split("model_info[", 1)[0]
+    assert 'local_files_only = bool(model_info.get("local_files_only", False))' in reload_block
+    assert 'template_source = model_info.get("model_path") or template_source' in reload_block
+    assert "local_files_only = local_files_only," in reload_block
+    inference = _read_backend("core/inference/inference.py")
+    assert '"local_files_only": local_files_only,' in inference
+    mlx = _read_backend("core/inference/mlx_inference.py")
+    assert '"local_files_only": local_files_only,' in mlx
+    assert '"model_path": load_source,' in mlx
+
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    assert "AUTO_LOAD_VARIANT_SCAN_TIMEOUT_MS" in adapter
+    assert "async function listGgufVariantsBounded(" in adapter
+    assert "controller.abort()" in adapter
+    # No unbounded scan calls remain in the adapter: every call site routes
+    # through the bounded wrapper (the wrapper itself holds the one direct
+    # call, with the timeout signal attached).
+    assert adapter.count("await listGgufVariants(") == 1
+    chat_api = _read("features/chat/api/chat-api.ts")
+    assert "signal: options?.signal," in chat_api
+
+    assert "function expandSeenValues(" in adapter
+    assert adapter.count("expandSeenValues(value)") == 2
 
 
 def test_gguf_background_loads_never_download_companions():

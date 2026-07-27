@@ -635,6 +635,10 @@ class MLXInferenceBackend:
             "hf_token": hf_token,
             # Per-model trust_remote_code reused by the native-template reload (matches transformers).
             "trust_remote_code": trust_remote_code,
+            # Local-only loads: generation-time repo fallbacks (native
+            # template reload) must also resolve from cache, not the Hub.
+            "local_files_only": local_files_only,
+            "model_path": load_source,
             "model": self._model,
             "tokenizer": self._tokenizer,
             "processor": self._processor,

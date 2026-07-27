@@ -952,6 +952,9 @@ export async function listGgufVariants(
   options?: {
     preferLocalCache?: boolean;
     localPath?: string | null;
+    /** Aborts the underlying fetch; background scans pass a timeout signal so
+     * one hung request cannot gate Send forever. */
+    signal?: AbortSignal;
   },
 ): Promise<GgufVariantsResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
@@ -964,6 +967,7 @@ export async function listGgufVariants(
   }
   const response = await authFetch(`/api/models/gguf-variants?${params}`, {
     headers: hubTokenHeader(hfToken),
+    signal: options?.signal,
   });
   return parseJsonOrThrow<GgufVariantsResponse>(response);
 }

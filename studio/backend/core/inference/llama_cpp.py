@@ -534,10 +534,15 @@ def _hf_offline_if_dns_dead(force: bool = False):
     owner = False  # this guard created it (first in)
     with _OFFLINE_GUARD_LOCK:
         if _OFFLINE_GUARD_STATE["count"] > 0:
-            # Join the active override so the env survives until every guard
-            # exits, whichever request finishes first.
-            _OFFLINE_GUARD_STATE["count"] += 1
-            entered = True
+            if force:
+                # Join the active override so the env survives until every
+                # local-only guard exits, whichever request finishes first.
+                _OFFLINE_GUARD_STATE["count"] += 1
+                entered = True
+            # An ordinary guard never joins: its block tolerates either env
+            # state (it would have run online), so extending the forced
+            # window would only widen the exposure of concurrent online
+            # work to the process-global override. It no-ops instead.
         elif _hf_env_offline() and (not force or _hub_offline_env_truthy()):
             # User-set truthy env (count is 0): already offline, nothing to
             # arrange or restore. A forced guard only trusts HF_HUB_OFFLINE

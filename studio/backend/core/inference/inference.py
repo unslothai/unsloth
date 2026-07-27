@@ -365,6 +365,9 @@ class InferenceBackend:
                 "trust_remote_code": trust_remote_code,
                 "is_vision": config.is_vision,
                 "is_lora": config.is_lora,
+                # Local-only loads: generation-time repo fallbacks (native
+                # template reload) must also resolve from cache, not the Hub.
+                "local_files_only": local_files_only,
                 "is_audio": config.is_audio,
                 "audio_type": config.audio_type,
                 "has_audio_input": config.has_audio_input,

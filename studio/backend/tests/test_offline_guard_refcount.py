@@ -114,15 +114,33 @@ def test_transformers_only_env_does_not_satisfy_forced_guard(clean_env):
     assert os.environ.get("TRANSFORMERS_OFFLINE") == "1"
 
 
-def test_nonforce_joins_active_override(clean_env):
-    """A DNS-alive non-force guard entering while a forced guard is active must
-    JOIN the refcount (deferring the restore) rather than no-op."""
+def test_nonforce_never_extends_forced_window(clean_env):
+    """An ordinary (non-force) guard entering while a forced override is
+    active must no-op, not join: its block tolerates either env state, and
+    joining would only widen the exposure of concurrent online work to the
+    process-global override."""
     guard = _load_guard()
     forced = guard(force = True)
     plain = guard(force = False)
     assert forced.__enter__() is True
-    assert plain.__enter__() is True
+    assert plain.__enter__() is False
     forced.__exit__(None, None, None)
-    assert os.environ.get("HF_HUB_OFFLINE") == "1"
+    assert "HF_HUB_OFFLINE" not in os.environ, (
+        "the forced owner's exit restores; the ordinary no-op guard holds nothing"
+    )
     plain.__exit__(None, None, None)
+    assert "HF_HUB_OFFLINE" not in os.environ
+
+
+def test_forced_guards_share_windows_with_dns_dead_owners(clean_env):
+    """A forced guard joining a DNS-dead override keeps the env until the
+    forced guard itself exits, even when the owner exits first."""
+    guard = _load_guard(dns_dead = True)
+    plain = guard(force = False)
+    forced = guard(force = True)
+    assert plain.__enter__() is True
+    assert forced.__enter__() is True
+    plain.__exit__(None, None, None)
+    assert os.environ.get("HF_HUB_OFFLINE") == "1"
+    forced.__exit__(None, None, None)
     assert "HF_HUB_OFFLINE" not in os.environ
