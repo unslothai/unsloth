@@ -1126,6 +1126,113 @@ def _has_local_processor_files(path):
     )
 
 
+def _resolve_hub_repo_local_dir(
+    repo_id,
+    *,
+    token = None,
+    cache_dir = None,
+    local_files_only = False,
+    filenames = (
+        "tokenizer_config.json",
+        "config.json",
+        "tokenizer.json",
+        "preprocessor_config.json",
+        "processor_config.json",
+    ),
+):
+    """Return a local snapshot directory for a Hub repo id when files are cached.
+
+    ``PreTrainedTokenizerFast.from_pretrained`` on a repo id can call
+    ``is_base_mistral()`` -> ``model_info()`` even with ``local_files_only=True``
+    (issue #7481). Loading from the resolved snapshot dir avoids that probe.
+    """
+    if not isinstance(repo_id, str) or not repo_id:
+        return None
+    if os.path.isdir(repo_id):
+        return repo_id
+    if cache_dir is None:
+        cache_dir = os.environ.get("HF_HUB_CACHE")
+    from huggingface_hub import hf_hub_download
+
+    for filename in filenames:
+        try:
+            path = hf_hub_download(
+                repo_id = repo_id,
+                filename = filename,
+                token = token,
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
+            )
+            if path and os.path.isfile(path):
+                return os.path.dirname(path)
+        except Exception:
+            continue
+    return None
+
+
+def _hub_repo_or_local_path(
+    repo_id,
+    *,
+    token = None,
+    cache_dir = None,
+    local_files_only = False,
+    filenames = None,
+):
+    """Prefer a cached snapshot path over a Hub repo id when offline or ``local_files_only``."""
+    lfo = bool(local_files_only) or _env_says_offline()
+    if not lfo and os.path.isdir(repo_id):
+        return repo_id
+    local_dir = _resolve_hub_repo_local_dir(
+        repo_id,
+        token = token,
+        cache_dir = cache_dir,
+        local_files_only = lfo,
+        filenames = filenames
+        or (
+            "tokenizer_config.json",
+            "config.json",
+            "tokenizer.json",
+            "preprocessor_config.json",
+            "processor_config.json",
+        ),
+    )
+    return local_dir if local_dir is not None else repo_id
+
+
+def _load_pretrained_tokenizer_fast(
+    tokenizer_name,
+    *,
+    padding_side = "left",
+    token = None,
+    trust_remote_code = False,
+    cache_dir = None,
+    local_files_only = False,
+):
+    """Load ``PreTrainedTokenizerFast`` without Hub metadata probes when cached/offline."""
+    from transformers import PreTrainedTokenizerFast
+
+    lfo = bool(local_files_only) or _env_says_offline()
+    load_path = _hub_repo_or_local_path(
+        tokenizer_name,
+        token = token,
+        cache_dir = cache_dir,
+        local_files_only = lfo,
+        filenames = (
+            "tokenizer_config.json",
+            "tokenizer.json",
+            "tokenizer.model",
+        ),
+    )
+    return PreTrainedTokenizerFast.from_pretrained(
+        load_path,
+        padding_side = padding_side,
+        token = token,
+        trust_remote_code = trust_remote_code,
+        cache_dir = cache_dir,
+        local_files_only = lfo,
+    )
+
+
 def _resolve_checkpoint_tokenizer_name(
     old_model_name,
     kwargs,

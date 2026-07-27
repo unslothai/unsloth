@@ -529,7 +529,9 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 # Offline helpers live in loader_utils.py (shared canonical source).
 from .loader_utils import (
     _get_effective_local_files_only,
+    _hub_repo_or_local_path,
     _is_offline_related_error,
+    _load_pretrained_tokenizer_fast,
     _offline_aware_load,
 )
 
@@ -565,20 +567,27 @@ def _construct_vlm_processor_fallback(
     tell an offline failure (retry from cache) from a genuine one."""
     _fb_err = None
     try:
-        from transformers import AutoImageProcessor, PreTrainedTokenizerFast, AutoConfig
+        from transformers import AutoImageProcessor, AutoConfig
         from transformers.models.auto.processing_auto import PROCESSOR_MAPPING_NAMES
         import json
 
+        load_path = _hub_repo_or_local_path(
+            tokenizer_name,
+            token = token,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+        )
         # Load image processor
         image_processor = AutoImageProcessor.from_pretrained(
-            tokenizer_name,
+            load_path,
             token = token,
             trust_remote_code = trust_remote_code,
             cache_dir = cache_dir,
             local_files_only = local_files_only,
         )
-        # Load tokenizer via PreTrainedTokenizerFast (bypasses tokenizer_class check)
-        tok = PreTrainedTokenizerFast.from_pretrained(
+        # Load tokenizer via PreTrainedTokenizerFast (bypasses tokenizer_class check).
+        # Resolve the cached snapshot first so transformers does not call model_info (#7481).
+        tok = _load_pretrained_tokenizer_fast(
             tokenizer_name,
             padding_side = "left",
             token = token,
@@ -638,7 +647,7 @@ def _construct_vlm_processor_fallback(
             # Try the top-level config.model_type which often has the processor mapping.
             try:
                 config = AutoConfig.from_pretrained(
-                    tokenizer_name,
+                    load_path,
                     token = token,
                     trust_remote_code = trust_remote_code,
                     cache_dir = cache_dir,
@@ -1551,9 +1560,16 @@ class FastBaseModel:
             # Last resort: AutoTokenizer, then PreTrainedTokenizerFast (raise on network failure to retry).
             def _last_resort_tokenizer(lfo):
                 from transformers import AutoTokenizer as _AutoTokenizer
+
+                load_path = _hub_repo_or_local_path(
+                    tokenizer_name,
+                    token = token,
+                    cache_dir = kwargs.get("cache_dir"),
+                    local_files_only = lfo,
+                )
                 try:
                     return _AutoTokenizer.from_pretrained(
-                        tokenizer_name,
+                        load_path,
                         padding_side = "left",
                         token = token,
                         trust_remote_code = trust_remote_code,
@@ -1561,8 +1577,7 @@ class FastBaseModel:
                         local_files_only = lfo,
                     )
                 except Exception:
-                    from transformers import PreTrainedTokenizerFast
-                    return PreTrainedTokenizerFast.from_pretrained(
+                    return _load_pretrained_tokenizer_fast(
                         tokenizer_name,
                         padding_side = "left",
                         token = token,
