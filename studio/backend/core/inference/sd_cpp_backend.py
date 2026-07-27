@@ -707,7 +707,6 @@ class SdCppDiffusionBackend:
         out: dict[tuple[str, str], int] = {}
         try:
             from huggingface_hub import HfApi
-
             api = HfApi(token = hf_token)
         except Exception:  # noqa: BLE001 -- sizes are best-effort
             return out

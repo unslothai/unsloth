@@ -16097,7 +16097,6 @@ async def diffusion_download_plan(
         planner = backend
         if fam is not None and predict_engine(fam, model_kind = kind) == ENGINE_SD_CPP:
             from core.inference.sd_cpp_backend import get_sd_cpp_backend
-
             planner = get_sd_cpp_backend()
         plan = await asyncio.to_thread(
             planner.download_plan,

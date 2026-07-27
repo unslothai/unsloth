@@ -240,9 +240,12 @@ def test_download_plan_stages_exactly_what_sd_cli_opens(monkeypatch):
     )
 
     fam = detect_family("z-image")
-    expected = {(r, f) for r, f, _k in b._asset_specs(
-        "unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf", fam
-    )}
+    expected = {
+        (r, f)
+        for r, f, _k in b._asset_specs(
+            "unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf", fam
+        )
+    }
     listed = {(e["repo_id"], f) for e in plan["entries"] for f in e["files"]}
     assert listed == expected
     assert plan["total_bytes"] == 12_300

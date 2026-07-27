@@ -408,9 +408,9 @@ def test_predict_engine_falls_back_when_install_is_disabled_and_nothing_is_insta
 @pytest.mark.parametrize(
     "kwargs, device",
     [
-        ({"model_kind": "pipeline"}, "cpu"),   # native is GGUF-only
+        ({"model_kind": "pipeline"}, "cpu"),  # native is GGUF-only
         ({"model_kind": "single_file"}, "cpu"),
-        ({"model_kind": "gguf"}, "cuda"),      # a usable GPU always means diffusers
+        ({"model_kind": "gguf"}, "cuda"),  # a usable GPU always means diffusers
     ],
 )
 def test_predict_engine_returns_diffusers_where_the_load_would(monkeypatch, kwargs, device):

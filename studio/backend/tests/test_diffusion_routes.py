@@ -1082,8 +1082,14 @@ def test_download_plan_uses_the_engine_the_load_will_pick(client, monkeypatch):
 
     monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_SD_CPP)
     native_plan = {
-        "entries": [{"repo_id": "Comfy-Org/z_image_turbo", "files": ["ae.safetensors"],
-                     "bytes": 7, "gguf_filename": None}],
+        "entries": [
+            {
+                "repo_id": "Comfy-Org/z_image_turbo",
+                "files": ["ae.safetensors"],
+                "bytes": 7,
+                "gguf_filename": None,
+            }
+        ],
         "total_bytes": 7,
     }
     seen: dict = {}
