@@ -52,7 +52,7 @@ import {
   useHfTokenStore,
   useOnlineStatus,
 } from "@/features/hub";
-import { useDebouncedValue, useGpuInfo } from "@/hooks";
+import { useDebouncedValue, useGpuInfo, useInferenceGpuInfo } from "@/hooks";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
@@ -720,6 +720,7 @@ function GgufVariantExpander({
   onSelect,
   gpuGb,
   systemRamGb,
+  budgetKnown = false,
   hfToken,
   parentOptionKey,
   onNavigatePastStart,
@@ -735,6 +736,7 @@ function GgufVariantExpander({
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   gpuGb?: number;
   systemRamGb?: number;
+  budgetKnown?: boolean;
   /** HF token threaded into the variant fetch so private/gated repos resolve
    *  their GGUF variants (and update badges). */
   hfToken?: string;
@@ -854,8 +856,9 @@ function GgufVariantExpander({
 
   const getGgufFit = useCallback(
     (sizeBytes: number): "fits" | "tight" | "oom" => {
-      // No device budget at all: can't classify, so don't show OOM badges.
-      if (totalBudgetGb <= 0) return "fits";
+      // Preserve permissive behavior only when no budget was measured. A known
+      // zero Vulkan budget means every non-empty variant is OOM.
+      if (totalBudgetGb <= 0) return budgetKnown ? "oom" : "fits";
       const gb = sizeBytes / 1024 ** 3;
       if (gb <= 0 || gb <= gpuBudgetGb) return "fits";
       // No-GPU / unified-memory hosts (Mac) have only the RAM budget, so the tier
@@ -864,13 +867,17 @@ function GgufVariantExpander({
       if (gb <= totalBudgetGb) return "tight";
       return "oom";
     },
-    [gpuBudgetGb, totalBudgetGb],
+    [budgetKnown, gpuBudgetGb, totalBudgetGb],
   );
 
   // If the recommended variant is OOM, pick the largest fitting one;
   // if all are OOM, recommend the smallest.
   const effectiveRecommended = useMemo(() => {
-    if (!variants || variants.length === 0 || totalBudgetGb <= 0) {
+    if (
+      !variants ||
+      variants.length === 0 ||
+      (totalBudgetGb <= 0 && !budgetKnown)
+    ) {
       return defaultVariant;
     }
     const defaultV = variants.find((v) => v.quant === defaultVariant);
@@ -885,7 +892,7 @@ function GgufVariantExpander({
     // All OOM -- recommend smallest (most likely to partially run)
     const sorted = [...variants].sort((a, b) => a.size_bytes - b.size_bytes);
     return sorted[0]?.quant ?? defaultVariant;
-  }, [variants, defaultVariant, totalBudgetGb, getGgufFit]);
+  }, [variants, defaultVariant, totalBudgetGb, budgetKnown, getGgufFit]);
 
   const sortedVariants = useMemo(() => {
     if (!variants) return variants;
@@ -1396,6 +1403,7 @@ export function HubModelPicker({
   onEject?: () => void;
 }) {
   const gpu = useGpuInfo();
+  const inferenceGpu = useInferenceGpuInfo();
   // Live model id from the runtime store (backend-mirrored active_model), not the dropdown
   // highlight which can be a staged pick. Disables the update action for it.
   const loadedModelId = useChatRuntimeStore((s) => s.params.checkpoint);
@@ -1854,7 +1862,7 @@ export function HubModelPicker({
     return rows.filter((r) => {
       // Downloaded models always show, regardless of device fit.
       if (downloadedSet.has(r.id.toLowerCase())) return true;
-      return hfModelFitsDevice(r, gpu);
+      return hfModelFitsDevice(r, r.isGguf ? inferenceGpu : gpu);
     });
   }, [
     recommendedSearch.results,
@@ -1864,6 +1872,7 @@ export function HubModelPicker({
     formatFilter,
     isMac,
     gpu,
+    inferenceGpu,
     isChatSupported,
   ]);
 
@@ -1904,14 +1913,17 @@ export function HubModelPicker({
           r.estimatedSizeBytes ??
           (params ? estimateQuantBytes(params) : undefined);
         const hasDeviceBudget =
-          gpu.memoryTotalGb > 0 || gpu.systemRamAvailableGb > 0;
+          inferenceGpu.budgetKnown ||
+          inferenceGpu.memoryTotalGb > 0 ||
+          inferenceGpu.systemRamAvailableGb > 0;
         const exceeds =
           hasDeviceBudget &&
           sizeBytes != null &&
           !fitsDevice({
             sizeBytes,
-            gpuGb: gpu.memoryTotalGb,
-            systemRamGb: gpu.systemRamAvailableGb,
+            gpuGb: inferenceGpu.memoryTotalGb,
+            systemRamGb: inferenceGpu.systemRamAvailableGb,
+            budgetKnown: inferenceGpu.budgetKnown,
           });
         map.set(r.id, {
           meta,
@@ -1928,7 +1940,7 @@ export function HubModelPicker({
       map.set(r.id, { meta, status, est });
     }
     return map;
-  }, [recommendedSearch.results, isKnownGgufRepo, gpu]);
+  }, [recommendedSearch.results, isKnownGgufRepo, gpu, inferenceGpu]);
 
   // Tag-accurate capabilities keyed by repo id, pooled from both HF listings.
   // Rows look it up by id and fall back to name detection when absent.
@@ -2249,7 +2261,7 @@ export function HubModelPicker({
                 totalParams: recommendedParamCountById.get(id),
                 isGguf: isKnownGgufRepo(id),
               },
-              gpu,
+              isKnownGgufRepo(id) ? inferenceGpu : gpu,
             ),
         )
     );
@@ -2263,6 +2275,7 @@ export function HubModelPicker({
     downloadedSet,
     recommendedParamCountById,
     gpu,
+    inferenceGpu,
   ]);
 
   const recommendedSet = useMemo(
@@ -2280,7 +2293,7 @@ export function HubModelPicker({
           (r) =>
             !fitOnDeviceOnly ||
             downloadedSet.has(r.id.toLowerCase()) ||
-            hfModelFitsDevice(r, gpu),
+            hfModelFitsDevice(r, r.isGguf ? inferenceGpu : gpu),
         )
         .map((result) => result.id)
         .filter((id) => !isHiddenModelId(id))
@@ -2309,6 +2322,7 @@ export function HubModelPicker({
     fitOnDeviceOnly,
     downloadedSet,
     gpu,
+    inferenceGpu,
     isMac,
   ]);
 
@@ -2905,8 +2919,9 @@ export function HubModelPicker({
             parentOptionKey={optionKey}
             onNavigatePastStart={() => hubModelList.focusOption(optionKey)}
             onNavigatePastEnd={() => hubModelList.moveFocus(optionKey, "next")}
-            gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
-            systemRamGb={gpu.systemRamAvailableGb || undefined}
+            gpuGb={inferenceGpu.available ? inferenceGpu.memoryTotalGb : undefined}
+            systemRamGb={inferenceGpu.systemRamAvailableGb || undefined}
+            budgetKnown={inferenceGpu.budgetKnown}
             variantActions={{
               onUpdate: (quant, expectedBytes) =>
                 updateGgufVariant(c.repo_id, quant, expectedBytes),
@@ -3064,13 +3079,18 @@ export function HubModelPicker({
           ) : null}
         </div>
 
-        {/* Section tabs then the format and sort dropdowns, packed left with one
-          uniform gap between every control. The box is sized so the last
-          dropdown still lands on Search Hub's edge. Dropdowns hide on Connected. */}
-        <div className="flex items-center gap-2">
+        {/* Keep the left-packed controls on one line while they fit, then wrap
+          whole groups before their intrinsic widths cross the picker edge.
+          Dropdowns hide on Connected. */}
+        <div
+          className={cn(
+            "flex flex-wrap items-center gap-2",
+            hasConnected ? "-mr-4" : "-mr-2",
+          )}
+        >
           {sectionToggle}
           {showConnected ? null : (
-            <div className="flex items-center gap-2">
+            <div className="flex max-w-full min-w-0 flex-wrap items-center gap-2">
               <HubOptionMenu
                 value={formatFilter}
                 options={FORMAT_FILTER_OPTIONS}
@@ -3359,7 +3379,7 @@ export function HubModelPicker({
                         loraModelList={hubModelList}
                         expandedGguf={expandedGguf}
                         setExpandedGguf={setExpandedGguf}
-                        gpu={gpu}
+                        gpu={inferenceGpu}
                       />
                     )}
                   </>
@@ -3686,13 +3706,14 @@ export function HubModelPicker({
                                     hubModelList.moveFocus(optionKey, "next")
                                   }
                                   gpuGb={
-                                    gpu.available
-                                      ? gpu.memoryTotalGb
+                                    inferenceGpu.available
+                                      ? inferenceGpu.memoryTotalGb
                                       : undefined
                                   }
                                   systemRamGb={
-                                    gpu.systemRamAvailableGb || undefined
+                                    inferenceGpu.systemRamAvailableGb || undefined
                                   }
+                                  budgetKnown={inferenceGpu.budgetKnown}
                                 />
                               )}
                           </div>
@@ -3811,11 +3832,14 @@ export function HubModelPicker({
                                   hubModelList.moveFocus(optionKey, "next")
                                 }
                                 gpuGb={
-                                  gpu.available ? gpu.memoryTotalGb : undefined
+                                  inferenceGpu.available
+                                    ? inferenceGpu.memoryTotalGb
+                                    : undefined
                                 }
                                 systemRamGb={
-                                  gpu.systemRamAvailableGb || undefined
+                                  inferenceGpu.systemRamAvailableGb || undefined
                                 }
+                                budgetKnown={inferenceGpu.budgetKnown}
                               />
                             )}
                           </div>
@@ -3924,11 +3948,14 @@ export function HubModelPicker({
                                   hubModelList.moveFocus(optionKey, "next")
                                 }
                                 gpuGb={
-                                  gpu.available ? gpu.memoryTotalGb : undefined
+                                  inferenceGpu.available
+                                    ? inferenceGpu.memoryTotalGb
+                                    : undefined
                                 }
                                 systemRamGb={
-                                  gpu.systemRamAvailableGb || undefined
+                                  inferenceGpu.systemRamAvailableGb || undefined
                                 }
+                                budgetKnown={inferenceGpu.budgetKnown}
                               />
                             )}
                           </div>
@@ -3992,7 +4019,13 @@ export function HubModelPicker({
                               vramStatus={info?.status ?? null}
                               vramEst={info?.est}
                               gpuGb={
-                                gpu.available ? gpu.memoryTotalGb : undefined
+                                isG
+                                  ? inferenceGpu.available
+                                    ? inferenceGpu.memoryTotalGb
+                                    : undefined
+                                  : gpu.available
+                                    ? gpu.memoryTotalGb
+                                    : undefined
                               }
                               onArrowDownIntoChildren={
                                 expandedGguf === id
@@ -4014,11 +4047,14 @@ export function HubModelPicker({
                                   hubModelList.moveFocus(optionKey, "next")
                                 }
                                 gpuGb={
-                                  gpu.available ? gpu.memoryTotalGb : undefined
+                                  inferenceGpu.available
+                                    ? inferenceGpu.memoryTotalGb
+                                    : undefined
                                 }
                                 systemRamGb={
-                                  gpu.systemRamAvailableGb || undefined
+                                  inferenceGpu.systemRamAvailableGb || undefined
                                 }
+                                budgetKnown={inferenceGpu.budgetKnown}
                                 variantActions={{
                                   onDelete: async (quant) => {
                                     await deleteCachedModel(
@@ -4097,7 +4133,13 @@ export function HubModelPicker({
                               isKnownGgufRepo(id) ? undefined : vram?.est
                             }
                             gpuGb={
-                              gpu.available ? gpu.memoryTotalGb : undefined
+                              isKnownGgufRepo(id)
+                                ? inferenceGpu.available
+                                  ? inferenceGpu.memoryTotalGb
+                                  : undefined
+                                : gpu.available
+                                  ? gpu.memoryTotalGb
+                                  : undefined
                             }
                             onArrowDownIntoChildren={
                               expandedGguf === id
@@ -4123,11 +4165,14 @@ export function HubModelPicker({
                                 hubModelList.moveFocus(optionKey, "next")
                               }
                               gpuGb={
-                                gpu.available ? gpu.memoryTotalGb : undefined
+                                inferenceGpu.available
+                                  ? inferenceGpu.memoryTotalGb
+                                  : undefined
                               }
                               systemRamGb={
-                                gpu.systemRamAvailableGb || undefined
+                                inferenceGpu.systemRamAvailableGb || undefined
                               }
+                              budgetKnown={inferenceGpu.budgetKnown}
                               variantActions={{
                                 onDelete: async (quant) => {
                                   await deleteCachedModel(
@@ -4202,7 +4247,13 @@ export function HubModelPicker({
                               }
                               vramEst={isSearchGguf ? undefined : vram?.est}
                               gpuGb={
-                                gpu.available ? gpu.memoryTotalGb : undefined
+                                isSearchGguf
+                                  ? inferenceGpu.available
+                                    ? inferenceGpu.memoryTotalGb
+                                    : undefined
+                                  : gpu.available
+                                    ? gpu.memoryTotalGb
+                                    : undefined
                               }
                               onArrowDownIntoChildren={
                                 expandedGguf === id
@@ -4228,11 +4279,14 @@ export function HubModelPicker({
                                   hubModelList.moveFocus(optionKey, "next")
                                 }
                                 gpuGb={
-                                  gpu.available ? gpu.memoryTotalGb : undefined
+                                  inferenceGpu.available
+                                    ? inferenceGpu.memoryTotalGb
+                                    : undefined
                                 }
                                 systemRamGb={
-                                  gpu.systemRamAvailableGb || undefined
+                                  inferenceGpu.systemRamAvailableGb || undefined
                                 }
+                                budgetKnown={inferenceGpu.budgetKnown}
                                 variantActions={{
                                   onDelete: async (quant) => {
                                     await deleteCachedModel(
@@ -4315,6 +4369,7 @@ function FineTunedRows({
   setExpandedGguf: Dispatch<SetStateAction<string | null>>;
   gpu: {
     available: boolean;
+    budgetKnown: boolean;
     memoryTotalGb: number;
     systemRamAvailableGb: number;
   };
@@ -4451,6 +4506,7 @@ function FineTunedRows({
                 }
                 gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                 systemRamGb={gpu.systemRamAvailableGb || undefined}
+                budgetKnown={gpu.budgetKnown}
                 sourceOverride={isExportedGguf ? "exported" : undefined}
                 variantActions={{
                   deleteTitle: "Delete exported GGUF variant?",
