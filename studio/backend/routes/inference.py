@@ -5152,7 +5152,11 @@ async def validate_model(
         # Same audio gate as /load: non-GGUF audio models pull codec repos at
         # load time, so a local-only candidate is rejected here before the
         # frontend burns a load attempt on it.
-        if request.local_files_only and not getattr(config, "is_gguf", False) and getattr(config, "is_audio", False):
+        if (
+            request.local_files_only
+            and not getattr(config, "is_gguf", False)
+            and getattr(config, "is_audio", False)
+        ):
             raise HTTPException(
                 status_code = 409,
                 detail = (

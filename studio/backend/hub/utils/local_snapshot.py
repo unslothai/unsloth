@@ -28,9 +28,7 @@ def _snapshot_dir_fallback(repo_id: str, cache_dir: Optional[str]) -> Optional[s
         ]
     except OSError:
         return None
-    candidates = [
-        rev for rev in revisions if os.path.isfile(os.path.join(rev, "config.json"))
-    ]
+    candidates = [rev for rev in revisions if os.path.isfile(os.path.join(rev, "config.json"))]
     if not candidates:
         return None
     return max(candidates, key = os.path.getmtime)
