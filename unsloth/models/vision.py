@@ -1560,7 +1560,6 @@ class FastBaseModel:
             # Last resort: AutoTokenizer, then PreTrainedTokenizerFast (raise on network failure to retry).
             def _last_resort_tokenizer(lfo):
                 from transformers import AutoTokenizer as _AutoTokenizer
-
                 load_path = _hub_repo_or_local_path(
                     tokenizer_name,
                     token = token,
