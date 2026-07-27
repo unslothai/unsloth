@@ -58,6 +58,6 @@ def test_the_tts_request_names_its_thread():
     # two requests for a single TTS chat.
     src = _read("features/chat/api/chat-adapter.ts")
     call = src.index("const result = await generateAudio(")
-    assert "thread_id: resolvedThreadId" in src[call : call + 600], (
-        "the TTS payload must carry the resolved thread id"
-    )
+    assert (
+        "thread_id: resolvedThreadId" in src[call : call + 600]
+    ), "the TTS payload must carry the resolved thread id"
