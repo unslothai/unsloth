@@ -2504,7 +2504,7 @@ def detect_host() -> HostInfo:
         if is_linux:
             for _vendor_file in glob.glob("/sys/class/drm/card*/device/vendor"):
                 try:
-                    with open(_vendor_file) as _vf:
+                    with open(_vendor_file, encoding = "utf-8") as _vf:
                         if _vf.read().strip().lower() == "0x8086":
                             has_intel_gpu = True
                             break
@@ -3050,7 +3050,7 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         os.path.join(rocm_root, "lib", "rocm_version"),
     ):
         try:
-            with open(path) as fh:
+            with open(path, encoding = "utf-8") as fh:
                 parts = fh.read().strip().split("-")[0].split(".")
             # Explicit length guard avoids relying on the broad except
             # below to swallow IndexError when the version file contains
@@ -5526,7 +5526,9 @@ def write_prebuilt_metadata(
         "prebuilt_fallback_used": prebuilt_fallback_used,
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(metadata, indent = 2) + "\n")
+    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        json.dumps(metadata, indent = 2) + "\n", encoding = "utf-8"
+    )
 
 
 def sync_marker_force_cpu(install_dir: Path, persist_force_cpu: bool) -> None:
@@ -5537,13 +5539,13 @@ def sync_marker_force_cpu(install_dir: Path, persist_force_cpu: bool) -> None:
     GPU/Vulkan bundle that revives the crash (#7213)."""
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
     try:
-        marker = json.loads(marker_path.read_text())
+        marker = json.loads(marker_path.read_text(encoding = "utf-8"))
     except (OSError, ValueError):
         return
     if not isinstance(marker, dict) or bool(marker.get("force_cpu")) == persist_force_cpu:
         return
     marker["force_cpu"] = persist_force_cpu
-    marker_path.write_text(json.dumps(marker, indent = 2) + "\n")
+    marker_path.write_text(json.dumps(marker, indent = 2) + "\n", encoding = "utf-8")
     log(f"existing install reused; recorded force_cpu={persist_force_cpu} from this run")
 
 
