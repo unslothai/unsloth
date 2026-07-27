@@ -351,9 +351,12 @@ def test_local_mtp_warning_covers_path_and_native_gguf_sources():
     assert "isGguf &&" in local.group(0)
     assert "activeModelIsLocal" in local.group(0)
     assert "isLocalModelPath" in local.group(0)
-    # A native token outlives a switch to a remote GGUF, so it must not
-    # classify the model here; activeModelIsLocal already covers native picks.
+    # Two signals must not classify the model here, because both mislabel a
+    # remote GGUF as local: a native token, which outlives a switch to a remote
+    # model, and a bare .gguf suffix, since a one-slash org/name.gguf is a
+    # repository id. activeModelIsLocal is the backend's own answer for both.
     assert "activeNativePathToken" not in local.group(0)
+    assert ".gguf" not in local.group(0)
     assert "isLocalGguf" in src.split('specFallbackReason === "drafter_not_found"', 1)[1]
 
 
@@ -380,7 +383,9 @@ def test_local_mtp_warning_uses_backend_source_metadata():
     # the filesystem would flip a local model to remote once its directory goes
     # away underneath a running server.
     assert "llama_backend._is_local_model = bool(native_grant_backed or config.is_local)" in route
-    assert "is_local_model = _loaded_is_local_model(" in route
+    # Both GGUF responses report it: the status poll and the already_loaded
+    # dedup reply. Either one re-deriving it reintroduces the flip.
+    assert route.count("is_local_model = _loaded_is_local_model(") >= 2
     assert "backend.active_model_name and is_local_path(backend.active_model_name)" in route
 
 

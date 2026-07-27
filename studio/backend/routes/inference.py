@@ -4509,8 +4509,9 @@ async def _load_model_impl(
                     is_vision = llama_backend._is_vision,
                     is_lora = False,
                     is_gguf = True,
-                    is_local_model = native_grant_backed
-                    or is_local_path(llama_backend.model_identifier),
+                    is_local_model = _loaded_is_local_model(
+                        llama_backend, native_grant_backed, llama_backend.model_identifier
+                    ),
                     is_diffusion = llama_backend.is_diffusion,
                     is_audio = _gguf_is_audio,
                     audio_type = _gguf_audio,

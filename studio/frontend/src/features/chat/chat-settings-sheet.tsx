@@ -394,14 +394,12 @@ export function ChatSettingsPanel({
     ggufContextLength != null ||
     (currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
   // activeModelIsLocal is the backend's own classification and covers native
-  // picks. activeNativePathToken must not be used here: status reconciliation
-  // keeps it across a switch to a remote GGUF (no replacement token exists),
-  // so a stale token would label that remote model local.
+  // picks. Two things must not decide this: activeNativePathToken, which
+  // status reconciliation keeps across a switch to a remote GGUF (no
+  // replacement token exists), and a bare .gguf suffix, since the backend
+  // reads a one-slash org/name.gguf as a repository id, not a file.
   const isLocalGguf =
-    isGguf &&
-    (activeModelIsLocal ||
-      isLocalModelPath(currentCheckpoint ?? "") ||
-      (currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false));
+    isGguf && (activeModelIsLocal || isLocalModelPath(currentCheckpoint ?? ""));
   const ggufMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
   );
