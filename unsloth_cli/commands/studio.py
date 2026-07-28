@@ -2471,14 +2471,14 @@ def _pid_file_entries() -> "list[tuple[int, list[float | None], list[Path]]]":
     return [(pid, times, files) for pid, (times, files) in by_pid.items()]
 
 
-def _pid_is_studio_server(pid: int, created_times: "Sequence[float | None]" = ()) -> bool:
-    """Guard against PID reuse: a stale record must not get an unrelated process killed.
+def _pid_is_studio_server(pid: int, created_times: "Sequence[float | None]" = ()) -> "bool | None":
+    """Guard against PID reuse. True = ours, False = not ours, None = can't tell.
 
-    A start time only exists if psutil was available when the server started, so
-    without psutil now such a record cannot be trusted -- but untimed (legacy)
-    records must keep working, or `stop` stops nothing on a psutil-less install.
-    The cmdline check covers those: the in-venv path runs run_server() in-process,
-    so its argv is `unsloth studio ...` with no run.py.
+    psutil is not a base CLI dependency but the managed backend has it, so the CLI
+    can meet timestamped records it cannot verify. Those are None, never False:
+    deleting one silently orphans a live server, which is the bug this fixes.
+    The cmdline check covers untimed legacy records -- the in-venv path runs
+    run_server() in-process, so its argv is `unsloth studio ...` with no run.py.
     """
     known = [c for c in created_times if c is not None]
     untimed = not created_times or len(known) < len(created_times)
@@ -2486,12 +2486,12 @@ def _pid_is_studio_server(pid: int, created_times: "Sequence[float | None]" = ()
         import psutil
         proc = psutil.Process(pid)
     except Exception:
-        return untimed
+        return True if untimed else None
     if known:
         try:
             actual = proc.create_time()
         except Exception:
-            return untimed
+            return True if untimed else None
         if any(abs(actual - c) < 1.0 for c in known):
             return True
         if not untimed:
@@ -2499,7 +2499,7 @@ def _pid_is_studio_server(pid: int, created_times: "Sequence[float | None]" = ()
     try:
         cmdline = " ".join(proc.cmdline()).lower()
     except Exception:
-        return untimed
+        return True
     return "studio" in cmdline and ("run.py" in cmdline or "unsloth" in cmdline)
 
 
@@ -2531,9 +2531,19 @@ def stop():
         typer.echo("No running Unsloth server found (no PID file).")
         raise typer.Exit(0)
 
-    signalled, failed = [], []
+    signalled, failed, unverified = [], [], []
     for pid, created_times, paths in entries:
-        if not _pid_alive(pid) or not _pid_is_studio_server(pid, created_times):
+        identity = _pid_is_studio_server(pid, created_times) if _pid_alive(pid) else False
+        if identity is None:
+            # Keep the record: deleting it is what strands a live server.
+            unverified.append(pid)
+            typer.echo(
+                f"Cannot confirm PID {pid} is an Unsloth server (install psutil to check); "
+                "leaving it alone. Stop it manually if it is one.",
+                err = True,
+            )
+            continue
+        if not identity:
             for path in paths:
                 path.unlink(missing_ok = True)
             continue
@@ -2546,6 +2556,8 @@ def stop():
         signalled.append((pid, paths))
 
     if not signalled and not failed:
+        if unverified:
+            raise typer.Exit(1)
         typer.echo("No running Unsloth server found (cleaned up stale PID files).")
         raise typer.Exit(0)
 
@@ -2566,7 +2578,7 @@ def stop():
         typer.echo(f"Unsloth server{'s' if stopped > 1 else ''} stopped ({stopped}).")
     for pid, _paths in pending:
         typer.echo(f"Unsloth server (PID {pid}) is shutting down (may take a few seconds).")
-    if failed:
+    if failed or unverified:
         raise typer.Exit(1)
 
 

@@ -184,15 +184,30 @@ def test_pid_identity_check_accepts_an_in_process_studio(monkeypatch):
     assert studio_mod._pid_is_studio_server(8550) is True
 
 
-def test_a_timestamped_record_is_not_trusted_without_psutil(monkeypatch):
-    # psutil is not a base CLI dependency. A start time only exists if psutil was
-    # present when the server started, so without it now the record is unverifiable
-    # and must not get a reused PID killed.
+def test_a_timestamped_record_is_unverifiable_without_psutil(monkeypatch):
+    # psutil is not a base CLI dependency but the managed backend has it, so the
+    # CLI meets records it cannot check. Unknown, not "not ours".
     studio_mod = _studio()
     monkeypatch.setitem(sys.modules, "psutil", None)
 
-    assert studio_mod._pid_is_studio_server(8550, [111.5]) is False
+    assert studio_mod._pid_is_studio_server(8550, [111.5]) is None
     assert studio_mod._pid_is_studio_server(8550, [None]) is True
+
+
+def test_stop_keeps_an_unverifiable_record_instead_of_deleting_it(monkeypatch, tmp_path):
+    # Deleting it strands a live server with no record -- the bug this PR fixes.
+    studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550})
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", _REAL_IS_STUDIO_SERVER)
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    (tmp_path / "studio-8901-8550.pid").write_text("8550\n111.5", encoding = "utf-8")
+
+    result = _run_stop(studio_mod)
+
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert result.exit_code == 1, combined
+    assert killed == []
+    assert (tmp_path / "studio-8901-8550.pid").exists()
+    assert "cannot confirm pid 8550" in combined.lower()
 
 
 def test_a_legacy_record_survives_a_stale_timestamp_for_the_same_pid(monkeypatch):
