@@ -87,12 +87,10 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
 
 /// Ask before quitting on top of a running install. Returns true to proceed.
 ///
-/// `cleanup_child_processes` SIGTERMs the installer's process group. Mid
-/// dependency-pass that leaves a venv whose CLI works but whose server stack is
-/// missing, and the next launch dies on `import structlog`: the reported failure.
-///
-/// Tray Quit only, where a user and a UI are present. RunEvent::Exit (OS shutdown,
-/// SIGTERM) must never block on a dialog nobody can answer, so it is left alone.
+/// `cleanup_child_processes` SIGTERMs the installer mid dependency-pass, leaving a venv
+/// whose CLI works but whose server stack is missing (next launch dies on `import
+/// structlog`). Tray Quit only: RunEvent::Exit (OS shutdown, SIGTERM) must never block
+/// on a dialog nobody can answer.
 fn confirm_quit_during_install(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 

@@ -783,11 +783,7 @@ pub fn record_install_intentional_stop(state: &InstallState, diagnostics: &Diagn
     }
 }
 
-/// Stop a running install process gracefully.
-/// Unix: SIGTERM to process group -> wait up to 5s -> SIGKILL
-/// Windows: hidden taskkill /T /F to terminate the installer tree
-/// Whether an installer is running right now, so callers can warn before quitting
-/// tears it down mid dependency-pass and leaves an unimportable venv.
+/// True while an installer runs, so callers can warn before quitting leaves a broken venv.
 pub fn is_install_running(state: &InstallState) -> bool {
     state
         .lock()
@@ -795,6 +791,9 @@ pub fn is_install_running(state: &InstallState) -> bool {
         .unwrap_or(false)
 }
 
+/// Stop a running install process gracefully.
+/// Unix: SIGTERM to process group -> wait up to 5s -> SIGKILL
+/// Windows: hidden taskkill /T /F to terminate the installer tree
 pub fn stop_install(state: &InstallState) -> Result<(), String> {
     let mut child = {
         let mut install = match state.lock() {
