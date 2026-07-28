@@ -10,7 +10,9 @@ lookup must return nothing rather than the newest section it can find."""
 from __future__ import annotations
 
 import http.server
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -29,8 +31,29 @@ NOTES_HOOK = FRONTEND / "hooks/use-release-notes.ts"
 PREVIEW = FRONTEND / "lib/release-notes-preview.ts"
 CODE_SPANS = FRONTEND / "lib/markdown-code-spans.ts"
 LINKS = FRONTEND / "lib/changelog-links.ts"
+LIST_COLUMNS = FRONTEND / "lib/markdown-list-columns.ts"
 WEB_BANNER = FRONTEND / "components/web/update-banner.tsx"
 TAURI_BANNER = FRONTEND / "components/tauri/update-banner.tsx"
+
+# The scanners are the frontend's half of the contract the parser implements on
+# the backend, so they are run rather than read. Node strips the types; nothing
+# here imports a package, so no install is needed.
+_TS_ALIAS = re.compile(r'"@/lib/([a-z-]+)"')
+_TS_RUNNER = """
+import { resolveChangelogLinks } from "./changelog-links.ts";
+import { releaseNotesPreview } from "./release-notes-preview.ts";
+
+const chunks: Buffer[] = [];
+process.stdin.on("data", (chunk: Buffer) => chunks.push(chunk));
+process.stdin.on("end", () => {
+  const markdown = Buffer.concat(chunks).toString("utf8");
+  const result =
+    process.argv[2] === "links"
+      ? resolveChangelogLinks(markdown)
+      : releaseNotesPreview(markdown);
+  process.stdout.write(JSON.stringify(result));
+});
+"""
 
 SAMPLE = """# Changelog
 
@@ -580,7 +603,8 @@ def test_preview_joins_an_indented_continuation_line():
     """Four spaces only start code outside a paragraph. Inside one the line is
     a wrapped continuation, so it must not be dropped from the preview."""
     src = PREVIEW.read_text(encoding = "utf-8")
-    assert "!insideBlock && line.indent >= INDENTED_CODE_INDENT" in src
+    # Measured from the line's container, so an item's own indent does not count.
+    assert "!insideBlock && line.indent - line.column >= INDENTED_CODE_INDENT" in src
     # A fence indented into a list item is a block, not a wrapped line.
     assert "opensDeepFence" in src
 
@@ -1305,7 +1329,7 @@ def test_preview_collects_labels_only_from_real_definitions():
     collect = src.index("let deepFence: string | null = null;")
     prescan = " ".join(src[scan:collect].split())
     assert "let labelFence: string | null = null;" in prescan
-    assert "if (line.indent >= INDENTED_CODE_INDENT) { continue; }" in prescan
+    assert "if (line.indent - line.column >= INDENTED_CODE_INDENT) { continue; }" in prescan
     assert "closesDeepFence(labelFence, line)" in prescan
 
 
@@ -1337,3 +1361,143 @@ def test_the_download_panel_can_shrink_inside_the_capped_stack():
     assert 'positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end"' in panel
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding="utf-8")
     assert "max-h-[calc(100dvh_-_2rem)]" in provider, "the cap this has to absorb"
+
+
+@pytest.fixture(scope="module")
+def run_scanner(tmp_path_factory):
+    """Run the frontend's markdown scanners under node.
+
+    Their job is to classify a line the way a CommonMark renderer would, which
+    only a real run can show. The sources are copied with their "@/lib" aliases
+    rewritten, because that alias resolves through Vite and not through node."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is needed to run the TypeScript scanners")
+    work = tmp_path_factory.mktemp("release-notes-scanners")
+    for source in (PREVIEW, CODE_SPANS, LINKS, LIST_COLUMNS):
+        rewritten = _TS_ALIAS.sub(r'"./\1.ts"', source.read_text(encoding="utf-8"))
+        (work / source.name).write_text(rewritten, encoding="utf-8")
+    (work / "run.ts").write_text(_TS_RUNNER, encoding="utf-8")
+
+    def run(kind: str, markdown: str):
+        result = subprocess.run(
+            [node, "--experimental-strip-types", "--no-warnings", str(work / "run.ts"), kind],
+            input=markdown,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            pytest.skip(f"node could not run the scanners: {result.stderr.strip()[:200]}")
+        return json.loads(result.stdout)
+
+    return run
+
+
+def preview_leads(preview) -> list[str]:
+    return [item["lead"] for item in preview["items"]]
+
+
+def test_a_link_indented_under_a_bullet_still_resolves(run_scanner):
+    """CommonMark measures indentation from the container, not the margin
+    (spec 0.31.2 section 5.2, list items). Under "- Details:" the content column
+    is 2, so a four-space line is only two columns in: a paragraph holding a
+    link, which GitHub renders and follows. The scanner measured from the margin
+    instead, called it an indented code block (section 4.4) and left the
+    destination relative, so the link resolved against Studio's own origin."""
+    resolved = run_scanner("links", "- Details:\n\n    [guide](docs/a.md)\n")
+    assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in resolved
+    # The same prose one column further in really is code, and stays untouched.
+    code = run_scanner("links", "- Added.\n\n      [guide](docs/a.md)\n")
+    assert "[guide](docs/a.md)" in code and "github.com" not in code
+    # At document level four spaces is code, so that link is still left alone.
+    top = run_scanner("links", "Intro.\n\n    [guide](docs/a.md)\n")
+    assert "[guide](docs/a.md)" in top and "github.com" not in top
+
+
+def test_an_indented_fence_does_not_swallow_the_bullets_below_it(run_scanner):
+    """A four-space line at document level is an indented code block, and a
+    top-level bullet is not indented enough to continue it, so the block ends
+    and the list renders. Promoting the line to a list-contained fence left a
+    block open with no closer, so every bullet after it was skipped and the
+    collapsed popup lost its summary."""
+    swallowed = "Example:\n\n    ```\n\n- Added the exporter\n- Fixed the crash\n"
+    assert preview_leads(run_scanner("preview", swallowed)) == [
+        "Added the exporter",
+        "Fixed the crash",
+    ]
+    # With nothing else to fall back on the summary disappeared entirely.
+    assert preview_leads(run_scanner("preview", "    ```\n\n- Added the exporter\n")) == [
+        "Added the exporter"
+    ]
+    # A fence that really is inside an item still hides that item's code.
+    nested = "- a\n  - b\n    ```\n    - not a bullet\n    ```\n\n- Added tests\n"
+    assert preview_leads(run_scanner("preview", nested)) == ["a", "Added tests"]
+
+
+def test_a_table_only_release_previews_as_nothing(run_scanner):
+    """A release written as a GFM table renders as a grid, and the panel treats
+    notes that preview as nothing by staying collapsed rather than showing an
+    empty strip. Falling through to the prose collector put the raw
+    "| Change | Detail | | --- | --- |" delimiters in the popup instead."""
+    table = "| Change | Detail |\n| --- | --- |\n| Exporter | Added GGUF |\n"
+    assert run_scanner("preview", table)["items"] == []
+    # A table after prose is dropped too, rather than joined onto it.
+    assert preview_leads(run_scanner("preview", f"Some prose.\n\n{table}")) == ["Some prose."]
+    # A bullet right after the rows ends the table, so it still previews.
+    assert preview_leads(run_scanner("preview", f"{table}- Added tests\n")) == ["Added tests"]
+    # A header and delimiter of different widths is not a table at all, which
+    # is what GitHub does, so the two lines stay one ordinary paragraph.
+    assert preview_leads(run_scanner("preview", "| a | b |\n| --- |\n")) == ["| a | b | | --- |"]
+
+
+def test_a_fence_inside_a_list_item_ends_with_the_item(changelog_module):
+    """A fence is scoped to its container: with no closer it runs to the end of
+    the containing block, not the document (spec 0.31.2 section 4.5). A
+    dedented "## 2.0" closes the list item, so it is a real release heading.
+    Document-wide fence state kept the block open and hid every release below
+    it, so one missing closing line emptied the rest of the changelog."""
+    text = "## 1.0\n\n- item\n  ```\n\n## 2.0\n\n- two\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0", "2.0"]
+    # A fence at document level still runs to the end of the file.
+    top = "## 1.0\n\n```\n\n## 2.0\n\n- two\n"
+    assert [e.version for e in changelog_module.parse_changelog(top)] == ["1.0"]
+    # A closed fence inside an item is unaffected, and its sample stays hidden.
+    closed = "## 1.0\n\n- Run:\n  ```bash\n  ## 9.9.9\n  ```\n\n## 2.0\n\n- two\n"
+    assert [e.version for e in changelog_module.parse_changelog(closed)] == ["1.0", "2.0"]
+    # Content dedented out of the item ends the item and the fence with it.
+    assert changelog_module.find_release_notes(text, "2.0").body == "- two"
+
+
+def test_stripping_comments_stays_linear_in_the_code_spans(changelog_module):
+    """The comment scanner restarted its code-span search at the first span for
+    every opener, so a line of N spans and N openers cost N squared. A 203 KiB
+    line is well inside the 2 MiB the fetcher accepts, and notes are reparsed on
+    every request, so one such line held a worker for over ten seconds."""
+    line = "`a` <!--x--> " * 16_000
+    assert len(line) < changelog_module.CHANGELOG_MAX_BYTES
+    started = time.monotonic()
+    visible, in_comment = changelog_module._strip_comments(line, False)
+    elapsed = time.monotonic() - started
+    # Roughly 40ms scanning forward against roughly 11s restarting each time.
+    assert elapsed < 2.0, f"comment stripping took {elapsed:.1f}s"
+    # Same result as before: the spans survive and the comments are gone.
+    assert in_comment is False
+    assert "<!--" not in visible and visible.count("`a`") == 16_000
+
+
+def test_the_three_scanners_share_one_list_column_rule():
+    """The parser and both frontend scanners have to classify a line the same
+    way, and drifting apart on indentation is what put a paragraph link inside a
+    code block. The frontend pair reads its list columns from one module, ported
+    from the backend's own tracker."""
+    shared = LIST_COLUMNS.read_text(encoding="utf-8")
+    assert "export function openLists(" in shared
+    assert "_open_lists" in shared, "the backend function this mirrors"
+    for source in (PREVIEW, LINKS):
+        src = source.read_text(encoding="utf-8")
+        assert 'from "@/lib/markdown-list-columns"' in src
+        assert "openLists(" in src
+    # Both sides measure indented code from the container, not from the margin.
+    backend = (BACKEND / "utils" / "changelog.py").read_text(encoding="utf-8")
+    assert "_indent_width(visible) - column >= 4" in backend
+    assert "indentWidth(line) - column >= INDENTED_CODE_INDENT" in LINKS.read_text(encoding="utf-8")

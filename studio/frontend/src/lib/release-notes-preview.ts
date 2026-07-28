@@ -3,6 +3,12 @@
 
 // Top changelog bullets, shown in the collapsed update popup.
 import { codeSpans, parkCodeSpans } from "@/lib/markdown-code-spans";
+import {
+  EMPTY_LIST_STATE,
+  type ListState,
+  indentWidth,
+  openLists,
+} from "@/lib/markdown-list-columns";
 
 export const RELEASE_NOTES_PREVIEW_ITEMS = 4;
 const PREVIEW_ITEM_MAX_CHARS = 120;
@@ -21,6 +27,8 @@ const BULLET = /^(?:[-*+]|(\d{1,9})[.)])[ \t]+(.*)$/;
 // At most three leading spaces, as everywhere else: deeper is indented code,
 // so a quoted line inside a code sample cannot reach the collector.
 const BLOCKQUOTE = /^ {0,3}>[ \t]?/;
+// A GFM delimiter cell is hyphens with an optional alignment colon each side.
+const TABLE_DELIMITER_CELL = /^:?-+:?$/;
 // "- - -" and "***" are horizontal rules, not bullets and not notes.
 const THEMATIC_BREAK =
   /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
@@ -238,6 +246,9 @@ interface ContentLine {
   indent: number;
   // Blockquoted lines are quoted examples, not the release's own bullets.
   quoted: boolean;
+  // Content column of the innermost open list item. CommonMark measures
+  // indentation from here, so `indent - column` is the real depth.
+  column: number;
 }
 
 /** `line` with its comments removed, and whether a comment stays open. */
@@ -318,27 +329,35 @@ function opensHtmlBlock(line: string, afterParagraph: boolean): boolean {
 
 interface ScanState {
   openFence: string | null;
+  // Content column of the list item an open fence belongs to, 0 at document
+  // level. A fence is scoped to its container, so the item's end closes it.
+  fenceColumn: number;
   inComment: boolean;
   inRawHtml: number | null;
   inHtmlBlock: boolean;
   afterParagraph: boolean;
 }
 
-/**
- * Text of `line` a reader would see: "" for structure and hidden blocks, null
- * for fenced content, which is skipped so it cannot split a bullet.
- */
-function visibleText(line: string, state: ScanState): string | null {
+interface ScannedLine {
+  // What a reader would see: "" for structure and hidden blocks, null for
+  // fenced content, which is skipped so it cannot split a bullet.
+  text: string | null;
+  // The same line as list tracking sees it: blank wherever nothing renders,
+  // but kept whole where an indent still closes an open item.
+  structural: string;
+}
+
+function visibleText(line: string, state: ScanState): ScannedLine {
   // Raw HTML first: its contents are literal, so a fence inside it is not one.
   if (state.inRawHtml !== null) {
     const [after, stillInRaw] = stripRawHtml(line, state.inRawHtml);
     state.inRawHtml = stillInRaw;
-    return after;
+    return { text: after, structural: "" };
   }
   if (state.inHtmlBlock) {
     // A blank line is the only thing that ends a type 6 or 7 block.
     state.inHtmlBlock = line.trim() !== "";
-    return "";
+    return { text: "", structural: "" };
   }
   const fence = state.inComment ? null : FENCE.exec(line);
   // A backtick fence whose info string holds a backtick is prose, not a fence.
@@ -351,10 +370,11 @@ function visibleText(line: string, state: ScanState): string | null {
       fence[1] ?? "",
       fence[2] ?? "",
     );
-    return "";
+    // Hidden from the collector, but its indent still closes an item.
+    return { text: "", structural: line };
   }
   if (state.openFence !== null) {
-    return null;
+    return { text: null, structural: "" };
   }
   // Commented-out notes are not rendered, so they are not previewed either.
   const [uncommented, stillInComment] = stripCommentSpans(
@@ -370,14 +390,23 @@ function visibleText(line: string, state: ScanState): string | null {
     opensHtmlBlock(visible, state.afterParagraph)
   ) {
     state.inHtmlBlock = true;
-    return "";
+    // Taken before the opener is hidden: it renders as nothing, but its
+    // indentation still closes a list item it sits to the left of.
+    return { text: "", structural: visible };
   }
-  return visible;
+  return { text: visible, structural: visible };
 }
 
-/** Marker of a fence the line scanner skipped because it is indented. */
+/**
+ * Marker of a fence the line scanner skipped because it is indented. Only a
+ * line within three columns of its list item's content column is one: deeper
+ * than that it is an indented code block, which a dedented bullet ends.
+ */
 function opensDeepFence(line: ContentLine): string | null {
-  if (line.indent < INDENTED_CODE_INDENT) {
+  if (
+    line.indent < INDENTED_CODE_INDENT ||
+    line.indent - line.column >= INDENTED_CODE_INDENT
+  ) {
     return null;
   }
   const fence = FENCE.exec(line.text);
@@ -396,6 +425,107 @@ function closesDeepFence(marker: string, line: ContentLine): boolean {
     closer.length >= marker.length &&
     !NON_SPACE.test(fence[2] ?? "")
   );
+}
+
+/**
+ * Cells of a GFM table row, or null when the line holds no pipe at all. The
+ * optional leading and trailing pipes are delimiters, not empty cells, and a
+ * `\|` is literal text inside one.
+ */
+function tableCells(text: string): string[] | null {
+  if (!text.includes("|")) {
+    return null;
+  }
+  const cells: string[] = [];
+  let cell = "";
+  for (let at = 0; at < text.length; at += 1) {
+    const char = text[at];
+    if (char === "\\") {
+      cell += char + (text[at + 1] ?? "");
+      at += 1;
+      continue;
+    }
+    if (char === "|") {
+      cells.push(cell);
+      cell = "";
+      continue;
+    }
+    cell += char;
+  }
+  cells.push(cell);
+  if (cells.length > 1 && text.startsWith("|")) {
+    cells.shift();
+  }
+  if (cells.length > 1 && text.endsWith("|")) {
+    cells.pop();
+  }
+  return cells;
+}
+
+/** Width of a GFM delimiter row such as `| --- |:-:|`, or null if not one. */
+function delimiterWidth(text: string): number | null {
+  const cells = tableCells(text);
+  if (cells === null || cells.length === 0) {
+    return null;
+  }
+  return cells.every((cell) => TABLE_DELIMITER_CELL.test(cell.trim()))
+    ? cells.length
+    : null;
+}
+
+/**
+ * Line indices that belong to a GFM table. A table needs a header row and a
+ * delimiter row of the same width, and runs until a blank line or the start of
+ * another block. Its cells render as a table rather than as prose, so the
+ * collapsed preview drops them the way it drops a code block.
+ */
+function opensTable(
+  header: ContentLine | undefined,
+  delimiter: ContentLine | undefined,
+): boolean {
+  if (header === undefined || delimiter === undefined) {
+    return false;
+  }
+  if (!header.text || header.quoted) {
+    return false;
+  }
+  if (header.indent - header.column >= INDENTED_CODE_INDENT) {
+    return false;
+  }
+  const width = delimiterWidth(delimiter.text);
+  const cells = tableCells(header.text);
+  return width !== null && cells !== null && cells.length === width;
+}
+
+/** A blank line, a heading or a list marker: where GFM breaks a table. */
+function breaksTable(line: ContentLine | undefined): boolean {
+  return (
+    !line?.text ||
+    line.quoted ||
+    HEADING.test(line.text) ||
+    BULLET.test(line.text) ||
+    line.indent - line.column >= INDENTED_CODE_INDENT
+  );
+}
+
+function tableLines(lines: ContentLine[]): Set<number> {
+  const rows = new Set<number>();
+  let at = 0;
+  while (at + 1 < lines.length) {
+    if (!opensTable(lines[at], lines[at + 1])) {
+      at += 1;
+      continue;
+    }
+    rows.add(at);
+    rows.add(at + 1);
+    let row = at + 2;
+    while (row < lines.length && !breaksTable(lines[row])) {
+      rows.add(row);
+      row += 1;
+    }
+    at = row;
+  }
+  return rows;
 }
 
 /** A backtick fence's info string may not contain a backtick. */
@@ -419,38 +549,79 @@ function nextFence(
   return closes ? null : open;
 }
 
+/**
+ * A fence inside a list item runs only to the end of that item, so a line
+ * dedented out of the item closes both. Lazy continuation cannot reach into a
+ * fence, so any content to the left of the item ends it.
+ */
+function closeDedentedFence(line: string, state: ScanState): void {
+  if (state.openFence === null || state.fenceColumn === 0) {
+    return;
+  }
+  if (line.trim() && indentWidth(line) < state.fenceColumn) {
+    state.openFence = null;
+    state.fenceColumn = 0;
+  }
+}
+
+/** Ties a fence just opened to the list item it is written inside. */
+function scopeFence(
+  state: ScanState,
+  wasFenced: boolean,
+  lists: ListState,
+): void {
+  if (state.openFence === null) {
+    state.fenceColumn = 0;
+    return;
+  }
+  if (!wasFenced) {
+    // The opener closed the items it is dedented out of first, so this is the
+    // column of the item the fence really sits in.
+    state.fenceColumn = lists.columns.at(-1) ?? 0;
+  }
+}
+
 function contentLines(markdown: string): ContentLine[] {
   const lines: ContentLine[] = [];
   const state: ScanState = {
     openFence: null,
+    fenceColumn: 0,
     inComment: false,
     inRawHtml: null,
     inHtmlBlock: false,
     afterParagraph: false,
   };
+  let lists: ListState = EMPTY_LIST_STATE;
 
   for (const rawLine of markdown.split("\n")) {
-    const visible = visibleText(
-      rawLine.replace(/\t/g, " ".repeat(TAB_WIDTH)),
-      state,
-    );
+    const line = rawLine.replace(/\t/g, " ".repeat(TAB_WIDTH));
+    closeDedentedFence(line, state);
+    const wasFenced = state.openFence !== null;
+    const { text: visible, structural } = visibleText(line, state);
+    // Taken with the paragraph state from the line above, as a renderer would.
+    lists = openLists(structural, lists, state.afterParagraph);
+    scopeFence(state, wasFenced, lists);
     if (visible === null) {
       continue;
     }
     if (!visible.trim() || THEMATIC_BREAK.test(visible)) {
       // A rule separates notes, so it breaks a bullet just like a blank line.
       state.afterParagraph = false;
-      lines.push({ text: "", indent: 0, quoted: false });
+      lines.push({ text: "", indent: 0, quoted: false, column: 0 });
       continue;
     }
     const quoted = BLOCKQUOTE.test(visible);
     const stripped = visible.replace(BLOCKQUOTE, "");
     const indent = stripped.length - stripped.trimStart().length;
+    // A quoted line is measured inside its quote, where the document's open
+    // list items do not reach.
+    const column = quoted ? 0 : (lists.columns.at(-1) ?? 0);
     // Only ordinary text continues a paragraph; a heading or indented code
-    // line (four spaces, outside a paragraph) ends one.
-    const startsCode = !state.afterParagraph && indent >= INDENTED_CODE_INDENT;
+    // line (four columns past its container, outside a paragraph) ends one.
+    const startsCode =
+      !state.afterParagraph && indent - column >= INDENTED_CODE_INDENT;
     state.afterParagraph = !HEADING_LINE.test(stripped) && !startsCode;
-    lines.push({ text: stripped.trim(), indent, quoted });
+    lines.push({ text: stripped.trim(), indent, quoted, column });
   }
   return lines;
 }
@@ -564,7 +735,7 @@ function collectBullets(markdown: string): {
       labelFence = opener;
       continue;
     }
-    if (line.indent >= INDENTED_CODE_INDENT) {
+    if (line.indent - line.column >= INDENTED_CODE_INDENT) {
       continue;
     }
     const definition = DEFINITION.exec(line.text);
@@ -575,9 +746,16 @@ function collectBullets(markdown: string): {
     }
   }
 
+  const tables = tableLines(lines);
   let deepFence: string | null = null;
-  for (const line of lines) {
+  for (const [index, line] of lines.entries()) {
     if (!line.text || HEADING.test(line.text)) {
+      flush(collector);
+      continue;
+    }
+    // A table renders as a grid, not as prose, so its rows are no more
+    // previewable than a code block. It also ends whatever came before it.
+    if (tables.has(index)) {
       flush(collector);
       continue;
     }
@@ -602,7 +780,7 @@ function collectBullets(markdown: string): {
     // a bullet. Inside an open bullet or paragraph it is just a wrapped line.
     const insideBlock =
       collector.current !== null || collector.paragraph !== "";
-    if (!insideBlock && line.indent >= INDENTED_CODE_INDENT) {
+    if (!insideBlock && line.indent - line.column >= INDENTED_CODE_INDENT) {
       continue;
     }
     const bullet = BULLET.exec(line.text);

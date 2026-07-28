@@ -12,6 +12,12 @@ import {
   codeSpans,
   insideSpan,
 } from "@/lib/markdown-code-spans";
+import {
+  EMPTY_LIST_STATE,
+  type ListState,
+  indentWidth,
+  openLists,
+} from "@/lib/markdown-list-columns";
 
 const LINK_BASE = "https://github.com/unslothai/unsloth/blob/main/";
 const IMAGE_BASE = "https://raw.githubusercontent.com/unslothai/unsloth/main/";
@@ -29,8 +35,10 @@ const REFERENCE_TARGET = /^( {0,3}\[((?:[^[\]\\]|\\.)*)\]:\s*)(<[^<>\n]*>|\S+)/;
 const IMAGE_REFERENCE =
   /!\[((?:[^[\]\\]|\\.)*)\](?:\[((?:[^[\]\\]|\\.)*)\]|(?!\())/g;
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
-// Four spaces starts an indented code block, unless a paragraph is open.
-const INDENTED_CODE = /^(?: {4}|\t)/;
+// Four columns past the container start an indented code block, unless a
+// paragraph is open. Inside a list item that is four past the item's content
+// column, so a link indented under a bullet is prose and still resolves.
+const INDENTED_CODE_INDENT = 4;
 // CommonMark type 1 HTML blocks show their contents verbatim.
 const RAW_HTML_OPEN = /^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)/i;
 const RAW_HTML_CLOSE = /<\/(pre|script|style|textarea)\s*>/i;
@@ -220,27 +228,51 @@ function classify(lines: string[]): Classified {
   const definition = new Set<number>();
   const masked: string[] = [];
   let openFence: string | null = null;
+  // Content column of the list item an open fence belongs to, 0 at document
+  // level. A fence is scoped to its container, so the item's end closes it.
+  let fenceColumn = 0;
   let inRawHtml = false;
   let inHtmlBlock = false;
   let inComment = false;
   let inCode = false;
   let afterParagraph = false;
+  let lists: ListState = EMPTY_LIST_STATE;
   const comments: CodeSpan[] = [];
   let offset = 0;
+
+  // The line as list tracking sees it: blank wherever nothing renders. Taken
+  // with the paragraph state from the line above, as the renderer would.
+  const track = (structural: string): void => {
+    lists = openLists(structural, lists, afterParagraph);
+  };
 
   lines.forEach((original, index) => {
     const start = offset;
     offset += original.length + 1;
+    // A fence inside a list item runs only to the end of that item, so a line
+    // dedented out of the item closes both. Lazy continuation cannot reach
+    // into a fence, so any content to the left of the item ends it.
+    if (
+      openFence !== null &&
+      fenceColumn > 0 &&
+      original.trim() &&
+      indentWidth(original) < fenceColumn
+    ) {
+      openFence = null;
+      fenceColumn = 0;
+    }
     // A comment cannot open a fence and a fence hides a comment opener, so
     // resolve them in that order or a hidden delimiter opens a phantom fence.
     const fenceSource = inComment ? null : FENCE.exec(original);
     if (inRawHtml) {
+      track("");
       inRawHtml = !RAW_HTML_CLOSE.test(original);
       masked.push(" ".repeat(original.length));
       afterParagraph = false;
       return;
     }
     if (inHtmlBlock) {
+      track("");
       // Only a blank line ends a type 6 or 7 block, so nothing inside one is
       // a fence or a link.
       inHtmlBlock = !!original.trim();
@@ -250,6 +282,8 @@ function classify(lines: string[]): Classified {
     }
     const fence = fenceSource;
     if (fence) {
+      // A fence renders as nothing, but its indent still closes an item.
+      track(original);
       const marker = fence[1] ?? "";
       if (openFence === null) {
         // A backtick fence's info string may not contain a backtick.
@@ -261,6 +295,9 @@ function classify(lines: string[]): Classified {
           afterParagraph = true;
           return;
         }
+        // Taken after the opener closed the items it is dedented out of, so
+        // the fence belongs to the item it is really written inside.
+        fenceColumn = lists.columns.at(-1) ?? 0;
       } else if (
         // A closer matches the opening character and carries nothing after it.
         marker[0] === openFence[0] &&
@@ -268,12 +305,14 @@ function classify(lines: string[]): Classified {
         !NON_SPACE.test(fence[2] ?? "")
       ) {
         openFence = null;
+        fenceColumn = 0;
       }
       masked.push(" ".repeat(original.length));
       afterParagraph = false;
       return;
     }
     if (openFence !== null) {
+      track("");
       // Fenced content is literal, so a comment opener in it is not one.
       masked.push(" ".repeat(original.length));
       return;
@@ -281,6 +320,9 @@ function classify(lines: string[]): Classified {
     // Only now, outside every fence, does a comment hide what follows.
     const [line, stillInComment] = maskComments(original, inComment);
     inComment = stillInComment;
+    // Taken before an HTML opener is hidden: it renders as nothing, but its
+    // indentation still closes a list item it sits to the left of.
+    track(line);
     for (let at = 0; at < line.length; at += 1) {
       if (line[at] === " " && original[at] !== " ") {
         const from = at;
@@ -303,11 +345,15 @@ function classify(lines: string[]): Classified {
       return;
     }
     const blank = !line.trim();
+    // Measured from the innermost open item's content column, not the margin:
+    // four spaces under "- Details:" is a paragraph, not a code block.
+    const column = lists.columns.at(-1) ?? 0;
+    const indented = indentWidth(line) - column >= INDENTED_CODE_INDENT;
     // Indented code starts only outside a paragraph and runs to a dedent.
     if (inCode) {
-      inCode = blank || INDENTED_CODE.test(line);
+      inCode = blank || indented;
     } else {
-      inCode = !afterParagraph && !blank && INDENTED_CODE.test(line);
+      inCode = !afterParagraph && !blank && indented;
     }
     if (inCode) {
       masked.push(" ".repeat(line.length));

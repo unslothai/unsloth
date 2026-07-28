@@ -187,6 +187,9 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
     version: str | None = None
     body: list[str] = []
     open_fence: str | None = None
+    # Content column of the list item an open fence belongs to, 0 at document
+    # level. A fence is scoped to its container, so the item's end closes it.
+    fence_column = 0
     in_comment = False
     in_raw_html: int | None = None
     in_html_block = False
@@ -208,6 +211,13 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
     for line in _markdown_lines(text):
         # The line as list tracking sees it: blank wherever nothing renders.
         structural = ""
+        opened_fence = False
+        # A fence inside a list item runs only to the end of that item, so a
+        # line dedented out of the item closes both. Lazy continuation cannot
+        # reach into a fence, so any content to the left ends it.
+        if open_fence and fence_column and line.strip() and _indent_width(line) < fence_column:
+            open_fence = None
+            fence_column = 0
         # Raw HTML first: its contents are literal, so a fence in it is not one.
         if in_raw_html is not None:
             visible, in_raw_html = _strip_raw_html(line, in_raw_html)
@@ -216,7 +226,9 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             in_html_block = line.strip() != ""
             visible = ""
         elif (fence := _FENCE_PATTERN.match(line)) and not in_comment:
+            was_open = open_fence
             open_fence = _next_fence_state(open_fence, fence.group("marker"), fence.group("rest"))
+            opened_fence = was_open is None and open_fence is not None
             # Hidden from heading matching, but its indent still closes items.
             visible = ""
             structural = line
@@ -260,6 +272,12 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             continue
         # A dashed underline is not a list marker, so track lists after setext.
         lists = _open_lists(structural, lists, after_paragraph)
+        # Taken after the opening line closed the items it is dedented out of,
+        # so the fence belongs to the item it is really written inside.
+        if opened_fence:
+            fence_column = lists.columns[-1] if lists.columns else 0
+        elif open_fence is None:
+            fence_column = 0
         # At an open item's content column a heading is nested, not a boundary.
         if lists.columns and _indent_width(visible) >= lists.columns[0]:
             match = None
@@ -639,16 +657,21 @@ def _strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
     visible: list[str] = []
     index = 0
     spans = _code_span_ranges(line)
+    # Spans are ordered and disjoint and each opener sits at or past the one
+    # before, so the search resumes where it stopped. Restarting it per opener
+    # is quadratic, and a long line of code spans is reparsed on every request.
+    cursor = 0
     while index < len(line):
         opening = line.find(_COMMENT_OPEN, index)
         if opening == -1:
             visible.append(line[index:])
             break
 
-        span = next((s for s in spans if s[0] <= opening < s[1]), None)
-        if span is not None:
-            visible.append(line[index : span[1]])
-            index = span[1]
+        while cursor < len(spans) and spans[cursor][1] <= opening:
+            cursor += 1
+        if cursor < len(spans) and spans[cursor][0] <= opening:
+            visible.append(line[index : spans[cursor][1]])
+            index = spans[cursor][1]
             continue
 
         visible.append(line[index:opening])
