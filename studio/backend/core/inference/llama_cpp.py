@@ -1762,16 +1762,27 @@ def _extra_args_draft_offloaded_to_cpu(
     return False
 
 
-def _extra_args_draft_device(extra_args: Optional[Iterable[str]]) -> Optional[str]:
-    """Return the last explicit draft-device value, if any."""
-    dev_flags = {"--spec-draft-device", "-devd", "--device-draft"}
+def _extra_args_device(
+    extra_args: Optional[Iterable[str]], flags: Collection[str]
+) -> Optional[str]:
+    """Return the last value for any device flag in ``flags``."""
     args = [str(a) for a in extra_args] if extra_args else []
-    last_dev: Optional[str] = None
+    value: Optional[str] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
-        if flag in dev_flags:
-            last_dev = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-    return last_dev
+        if flag in flags:
+            value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+    return value
+
+
+def _extra_args_main_device(extra_args: Optional[Iterable[str]]) -> Optional[str]:
+    """Return the last explicit main-device value, if any."""
+    return _extra_args_device(extra_args, {"--device", "-dev"})
+
+
+def _extra_args_draft_device(extra_args: Optional[Iterable[str]]) -> Optional[str]:
+    """Return the last explicit draft-device value, if any."""
+    return _extra_args_device(extra_args, {"--spec-draft-device", "-devd", "--device-draft"})
 
 
 def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optional[str]:
@@ -8131,6 +8142,9 @@ class LlamaCppBackend:
                 # Speculative decoding. See _build_speculative_flags for the
                 # mode resolution, benchmarks, and llama.cpp references.
                 _vulkan_pin_ids = gpu_indices if gpu_indices is not None else (gpu_ids or None)
+                _draft_device = _extra_args_main_device(extra_args) if gpu_ids is None else None
+                if _draft_device is None and is_vulkan_backend and _vulkan_pin_ids:
+                    _draft_device = ",".join(f"Vulkan{i}" for i in _vulkan_pin_ids)
                 launch_mtp_draft_path = self._resolve_launch_mtp_path(
                     mtp_draft_path = mtp_draft_path,
                 )
@@ -8143,11 +8157,7 @@ class LlamaCppBackend:
                     gpus = bool(_detected_gpus),
                     binary = binary,
                     mtp_draft_path = launch_mtp_draft_path,
-                    draft_device = (
-                        ",".join(f"Vulkan{i}" for i in _vulkan_pin_ids)
-                        if is_vulkan_backend and _vulkan_pin_ids
-                        else None
-                    ),
+                    draft_device = _draft_device,
                 )
                 # Remember where the spec block sits so a drafter-load failure
                 # can be retried with these flags swapped out (see below).

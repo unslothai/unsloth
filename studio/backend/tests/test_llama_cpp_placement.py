@@ -158,7 +158,17 @@ def test_vulkan_selection_uses_ordinals_and_owns_device_flags(tmp_path):
     assert backend.gpu_ids == [1]
 
 
-def test_vulkan_auto_fit_and_launch_share_discrete_pool(tmp_path):
+@pytest.mark.parametrize(
+    "gpu_ids,extra_args,expected_draft,user_device_survives",
+    [
+        (None, None, "Vulkan1", False),
+        (None, ["--device", "Vulkan1", "-dev=Vulkan0"], "Vulkan0", True),
+        ([1], ["--device", "Vulkan1", "-dev=Vulkan0"], "Vulkan1", False),
+    ],
+)
+def test_vulkan_fit_and_mtp_drafter_follow_placement_owner(
+    tmp_path, gpu_ids, extra_args, expected_draft, user_device_survives
+):
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -181,13 +191,16 @@ def test_vulkan_auto_fit_and_launch_share_discrete_pool(tmp_path):
         gguf,
         mtp_draft_path = "/fake/mtp.gguf",
         speculative_type = "mtp",
+        gpu_ids = gpu_ids,
+        extra_args = extra_args,
     )
 
     assert planned
     assert all(gpus == [(1, 8_000)] for gpus in planned)
     cmd = result["cmd"]
     assert cmd[cmd.index("--device") + 1] == "Vulkan1"
-    assert cmd[cmd.index("--spec-draft-device") + 1] == "Vulkan1"
+    assert cmd[cmd.index("--spec-draft-device") + 1] == expected_draft
+    assert ("-dev=Vulkan0" in cmd) is user_device_survives
 
 
 def test_cuda_selection_uses_visibility_and_removes_environment_placement(tmp_path, monkeypatch):
