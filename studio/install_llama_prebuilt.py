@@ -6218,8 +6218,15 @@ def llama_backend_from_env() -> str | None:
 
     ``UNSLOTH_LLAMA_CPP_BACKEND`` is shared with setup.sh/setup.ps1. ``auto`` and
     unknown values leave selection automatic; ``cpu`` and ``vulkan`` are explicit.
+    Falls back to the legacy ``UNSLOTH_LLAMA_BACKEND`` var (pre-consolidation name)
+    when the new one is unset/auto, so an existing UNSLOTH_LLAMA_BACKEND=vulkan
+    environment still forces Vulkan instead of silently reverting to auto-detected
+    CUDA/ROCm/CPU.
     """
-    return _normalized_llama_backend(os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND"))
+    backend = _normalized_llama_backend(os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND"))
+    if backend is not None:
+        return backend
+    return _normalized_llama_backend(os.environ.get("UNSLOTH_LLAMA_BACKEND"))
 
 
 def resolved_llama_backend(llama_backend: str | None = None) -> str | None:

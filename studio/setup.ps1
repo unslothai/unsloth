@@ -3482,6 +3482,12 @@ $ResolvedSourceRef = $RequestedLlamaTag
 $ResolvedSourceRefKind = "tag"
 $ResolvedLlamaTag = $RequestedLlamaTag
 $sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
+if (-not $sourceLlamaBackend) {
+    # Legacy pre-consolidation var name; still honored so an existing
+    # UNSLOTH_LLAMA_BACKEND=vulkan environment keeps forcing Vulkan instead of
+    # silently reverting to auto-detected CUDA/ROCm/CPU.
+    $sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_BACKEND)".Trim().ToLowerInvariant()
+}
 $sourceLegacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()
 $explicitVulkanSourceBuild = (
     -not $IsMacOS -and
@@ -3746,7 +3752,7 @@ if ($LocalLlamaCppLinked) {
                 Write-Host "  llama.cpp      Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" -ForegroundColor Cyan
             }
         } elseif ($llamaBackend -and $llamaBackend -notin @("auto", "vulkan")) {
-            Write-Host "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$($env:UNSLOTH_LLAMA_CPP_BACKEND)' (expected 'auto', 'cpu', or 'vulkan')" -ForegroundColor Yellow
+            Write-Host "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND/UNSLOTH_LLAMA_BACKEND='$llamaBackend' (expected 'auto', 'cpu', or 'vulkan')" -ForegroundColor Yellow
         }
         if (-not $IsMacOS -and $llamaBackend -ne "cpu" -and $legacyForceVulkan -in @("1", "true", "yes", "on")) {
             if ($windowsArm64) {

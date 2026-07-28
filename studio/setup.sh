@@ -40,6 +40,8 @@ fi
 #   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", or "vulkan". "cpu"
 #                               forces the CPU-only prebuilt. "vulkan" selects
 #                               Vulkan even when CUDA or ROCm is detected.
+#                               UNSLOTH_LLAMA_BACKEND (legacy name) is honored
+#                               as a fallback when this is unset.
 # ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
@@ -1238,7 +1240,13 @@ _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
 _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
-_source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
+_source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" | awk '{$1=$1; print tolower($0)}')"
+if [ -z "$_source_backend_choice" ]; then
+    # Legacy pre-consolidation var name; still honored so an existing
+    # UNSLOTH_LLAMA_BACKEND=vulkan environment keeps forcing Vulkan instead of
+    # silently reverting to auto-detected CUDA/ROCm/CPU.
+    _source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
+fi
 _source_legacy_force_vulkan="$(printf '%s' "${UNSLOTH_FORCE_VULKAN:-}" | awk '{$1=$1; print tolower($0)}')"
 _explicit_vulkan_source_build=false
 if [ "$_HOST_SYSTEM" != "Darwin" ] && [ "$_source_backend_choice" != "cpu" ]; then
@@ -1451,7 +1459,7 @@ else
             fi
             ;;
         ""|auto) ;;
-        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$UNSLOTH_LLAMA_CPP_BACKEND' (expected 'auto', 'cpu', or 'vulkan')" "$C_WARN" >&2 ;;
+        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND/UNSLOTH_LLAMA_BACKEND='$_llama_backend' (expected 'auto', 'cpu', or 'vulkan')" "$C_WARN" >&2 ;;
     esac
     if [ "$_llama_backend" != "cpu" ] && [ "$_HOST_SYSTEM" != "Darwin" ]; then
         case "$_legacy_force_vulkan" in

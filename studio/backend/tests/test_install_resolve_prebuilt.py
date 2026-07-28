@@ -1352,6 +1352,33 @@ def test_llama_cpp_backend_auto_does_not_trigger_vulkan(monkeypatch):
     assert ilp.force_vulkan_requested() is False
 
 
+def test_legacy_llama_backend_env_still_forces_vulkan(monkeypatch):
+    # UNSLOTH_LLAMA_BACKEND=vulkan was the documented override before the
+    # consolidation onto UNSLOTH_LLAMA_CPP_BACKEND; an environment that still
+    # sets only the legacy name must keep forcing Vulkan, not silently fall
+    # back to auto-detected CUDA/ROCm/CPU.
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
+    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "vulkan")
+    assert ilp.llama_backend_from_env() == "vulkan"
+    assert ilp.force_vulkan_requested() is True
+
+
+def test_new_llama_cpp_backend_env_takes_precedence_over_legacy(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "cpu")
+    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "vulkan")
+    assert ilp.llama_backend_from_env() == "cpu"
+    assert ilp.force_vulkan_requested() is False
+
+
+def test_legacy_llama_backend_env_ignored_when_new_var_unrecognized(monkeypatch):
+    # An unrecognized UNSLOTH_LLAMA_CPP_BACKEND value (e.g. a typo) still
+    # normalizes to None, so the legacy var is consulted as a fallback rather
+    # than the invalid value silently winning.
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "banana")
+    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "vulkan")
+    assert ilp.llama_backend_from_env() == "vulkan"
+
+
 def test_route_to_vulkan_prebuilt_hidden_physical_nvidia_amd_not_rerouted():
     # Vulkan ignores CUDA_VISIBLE_DEVICES, so a CUDA-masked NVIDIA card next to a legacy
     # AMD gfx must not auto-route: Vulkan could grab the reserved NVIDIA GPU.

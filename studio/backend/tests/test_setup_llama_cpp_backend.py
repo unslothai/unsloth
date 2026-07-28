@@ -156,6 +156,25 @@ def test_explicit_vulkan_source_build_fails_closed():
     assert "exit 1" in guarded
 
 
+def test_force_compile_sets_need_source_build_before_vulkan_guard():
+    # UNSLOTH_LLAMA_FORCE_COMPILE=1 combined with an explicit Vulkan backend must
+    # hit the "Vulkan source builds are not supported" rejection, not silently
+    # fall through to a CUDA/ROCm/CPU source build. That only holds if
+    # _NEED_LLAMA_SOURCE_BUILD/$NeedLlamaSourceBuild is already true by the time
+    # the explicit-Vulkan elif guard runs, i.e. set earlier in the script.
+    sh = _SETUP_SH.read_text(encoding = "utf-8")
+    force_compile_set = sh.index('if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then\n    _NEED_LLAMA_SOURCE_BUILD=true')
+    vulkan_guard = sh.index('elif [ "$_explicit_vulkan_source_build" = true ] && ')
+    assert force_compile_set < vulkan_guard
+
+    ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
+    force_compile_set = ps1.index(
+        'if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {\n    $NeedLlamaSourceBuild = $true'
+    )
+    vulkan_guard = ps1.index("} elseif ($explicitVulkanSourceBuild -and $NeedLlamaSourceBuild) {")
+    assert force_compile_set < vulkan_guard
+
+
 def test_legacy_force_vulkan_gets_the_same_strict_fallback():
     sh = _SETUP_SH.read_text(encoding = "utf-8")
     assert "_legacy_force_vulkan=" in sh
@@ -164,6 +183,53 @@ def test_legacy_force_vulkan_gets_the_same_strict_fallback():
     ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
     assert "$legacyForceVulkan = $sourceLegacyForceVulkan" in ps1
     assert '$legacyForceVulkan -in @("1", "true", "yes", "on")' in ps1
+
+
+def _source_backend_choice_block() -> str:
+    text = _SETUP_SH.read_text(encoding = "utf-8")
+    m = re.search(
+        r'_source_backend_choice="\$\(printf.*?\n(?:.*?\n)*?fi\n',
+        text,
+    )
+    assert m, "_source_backend_choice fallback block not found in setup.sh"
+    return m.group(0)
+
+
+@_SKIP_NO_BASH
+@pytest.mark.parametrize(
+    "cpp_backend, legacy_backend, expected",
+    [
+        (None, "vulkan", "vulkan"),
+        (None, "VULKAN", "vulkan"),
+        (None, None, "auto"),
+        ("cpu", "vulkan", "cpu"),
+        ("vulkan", None, "vulkan"),
+    ],
+)
+def test_legacy_llama_backend_env_falls_back_in_setup_sh(
+    cpp_backend, legacy_backend, expected
+):
+    # UNSLOTH_LLAMA_BACKEND was the documented override before setup.sh moved to
+    # UNSLOTH_LLAMA_CPP_BACKEND; an environment that still sets only the legacy
+    # name must resolve the same as if the new var had been set directly.
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("UNSLOTH_LLAMA_CPP_BACKEND", "UNSLOTH_LLAMA_BACKEND")
+    }
+    if cpp_backend is not None:
+        env["UNSLOTH_LLAMA_CPP_BACKEND"] = cpp_backend
+    if legacy_backend is not None:
+        env["UNSLOTH_LLAMA_BACKEND"] = legacy_backend
+    harness = (
+        "set -u\n"
+        f"{_source_backend_choice_block()}\n"
+        'printf "%s" "$_source_backend_choice"'
+    )
+    out = subprocess.run(
+        ["bash", "-c", harness], capture_output = True, text = True, env = env, check = True
+    )
+    assert out.stdout == expected
 
 
 def _ps1_search(pattern: str, flags = 0) -> str:
@@ -177,7 +243,7 @@ def _run_ps1(value: str | None) -> str:
     # applied to $prebuiltArgs lower down; compose both real snippets.
     normalize = _ps1_search(
         r"\$llamaBackend = \$sourceLlamaBackend.*?"
-        r"Ignoring UNSLOTH_LLAMA_CPP_BACKEND=.*?\n\s*\}",
+        r"Ignoring UNSLOTH_LLAMA_CPP_BACKEND.*?\n\s*\}",
         re.DOTALL,
     )
     apply_flag = _ps1_search(

@@ -184,7 +184,9 @@ def test_gpu_picker_round_trips_requested_pool_not_fitted_subset():
     store = _read("features/chat/stores/chat-runtime-store.ts")
     assert 'hasOwnProperty.call(resp, "requested_gpu_ids")' in store
     assert "const reportedGpuIds = requestedGpuIdsFromResponse(resp)" in store
-    assert "reportedGpuIds != null && gpuIndexKind != null" in store
+    # A cold discovery cache reports gpuIndexKind === undefined (deferred, not
+    # rejected); only a warm cache's definitive null should drop the pin.
+    assert "reportedGpuIds != null && gpuIndexKind !== null" in store
 
     status = _read("features/chat/lib/apply-inference-status-to-store.ts")
     assert "const incomingGpuFields = loadedGpuMemoryFields(status)" in status

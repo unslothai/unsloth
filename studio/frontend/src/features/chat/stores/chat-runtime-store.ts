@@ -711,11 +711,15 @@ export function loadedGpuMemoryFields(resp: {
     reportedGpuIds == null
       ? null
       : cachedPinnableGpuIndexKind(resp.is_diffusion === true);
-  // A numeric ID is unsafe to adopt or persist until discovery says whether it
-  // is a physical CUDA/ROCm ID or a Vulkan ordinal. A later status refresh can
-  // restore the requested pool after the shared system cache is warm.
+  // A numeric ID is unsafe to adopt or persist once discovery says it is NOT a
+  // physical CUDA/ROCm ID or a Vulkan ordinal (gpuIndexKind === null, cache
+  // warm). But while discovery is still cold (gpuIndexKind === undefined) the
+  // namespace is merely deferred, not rejected -- keep the just-applied pin so
+  // a reload/rollback in that window doesn't omit gpu_ids and let llama.cpp
+  // fall back to every device. A later status refresh resolves the namespace
+  // once the shared system cache warms.
   const gpuIds =
-    reportedGpuIds != null && gpuIndexKind != null ? reportedGpuIds : null;
+    reportedGpuIds != null && gpuIndexKind !== null ? reportedGpuIds : null;
   // Layer/MoE/split knobs apply (and are reported) only in manual mode; in auto
   // the server ignores them, so don't seed the loaded baseline or the editable
   // knobs with values it never applied. In manual, the server reports gpu_layers
@@ -755,7 +759,10 @@ export function loadedGpuMemoryFields(resp: {
     moeLayerCount: resp.n_moe_layers ?? null,
     // The picker reflects the requested placement pool, not a fitted subset.
     selectedGpuIds: gpuIds,
-    selectedGpuIndexKind: gpuIds == null ? null : gpuIndexKind,
+    // gpuIndexKind is `undefined` only in the deferred (cache-cold) case here,
+    // since a `null` kind already forced gpuIds to null above. Normalize to the
+    // explicit-null-namespace convention (discovery not complete yet).
+    selectedGpuIndexKind: gpuIds == null ? null : (gpuIndexKind ?? null),
     loadedGpuIds: gpuIds,
     ...manualKnobs,
   };
