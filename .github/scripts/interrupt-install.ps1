@@ -81,11 +81,22 @@ if (-not $killed -and -not $proc.HasExited) { if (-not $reason) { $reason = 'dea
 if ($killed) {
   Write-Host "[interrupt] killing process tree of $($proc.Id) ($reason)"
   Stop-Tree $proc.Id
-  # Any straggler uv/python that reparented away from the installer.
-  foreach ($name in 'uv', 'python') {
-    Get-Process -Name $name -ErrorAction SilentlyContinue |
-      Where-Object { $_.Path -and $_.Path -like "*$env:UNSLOTH_STUDIO_HOME*" } |
-      ForEach-Object { try { Stop-Process -Id $_.Id -Force } catch { } }
+  # Any straggler uv/python that reparented away from the installer. The old sweep
+  # matched nothing: UNSLOTH_STUDIO_HOME arrives as `D:\a\r\r/.studio-home`
+  # (github.workspace joined with a forward slash) while Process.Path is all
+  # backslashes, so the literal -like missed even the venv's own python, and uv is
+  # never under the studio home anyway (install.ps1 takes it from winget or
+  # astral.sh). Normalise the separators, and take uv by name since the runner is
+  # ephemeral and runs no other uv.
+  $homeNorm = if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $null }
+              else { ($env:UNSLOTH_STUDIO_HOME -replace '/', '\').TrimEnd('\') }
+  foreach ($p in @(Get-Process -Name 'uv', 'python', 'pythonw' -ErrorAction SilentlyContinue)) {
+    $path = $null
+    try { $path = $p.Path } catch { }
+    $inHome = $homeNorm -and $path -and ($path -like "$homeNorm\*")
+    if ($p.ProcessName -eq 'uv' -or $inHome) {
+      try { Stop-Process -Id $p.Id -Force; Write-Host "[interrupt] swept $($p.ProcessName) pid=$($p.Id)" } catch { }
+    }
   }
 }
 

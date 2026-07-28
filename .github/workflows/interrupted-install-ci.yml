@@ -151,9 +151,12 @@ jobs:
           exit "$rc"
 
       - name: A re-run must repair, not short-circuit
-        # Only meaningful when the install is broken but present. The bug's second half
-        # is that `install.sh` sees a "current" version and no-ops over a broken venv.
-        if: always() && steps.probe.outputs.verdict != 'NO_CLI' && steps.probe.outputs.verdict != 'HEALTHY'
+        # NO_CLI included. A kill at venv or torch lands before "Installing Unsloth"
+        # (install.sh:2125 / :3667 / :3961), so those legs always take NO_CLI, and
+        # skipping the re-run left three non-experimental legs asserting nothing but
+        # that a marker appeared. The bug's second half is that `install.sh` sees a
+        # "current" version and no-ops over a broken venv.
+        if: always() && steps.probe.outputs.verdict != 'HEALTHY'
         run: |
           set -o pipefail
           rc=0
@@ -161,6 +164,13 @@ jobs:
           echo "repair exit: $rc"
           BIN="$HOME/.unsloth/studio/unsloth_studio/bin/unsloth"
           [ -x "$BIN" ] || BIN="$HOME/.unsloth/studio/bin/unsloth"
+          # The probe exits without writing verdict.json when the bin is missing, so
+          # check here or the json.load below crashes instead of reporting.
+          if [ ! -x "$BIN" ]; then
+            echo "::error::after a full re-run there is still no unsloth CLI at $BIN"
+            tail -30 logs/repair.log || true
+            exit 1
+          fi
           python3 .github/scripts/interrupted_install_probe.py "$BIN" --out probe-after || true
           v="$(python3 -c "import json;print(json.load(open('probe-after/verdict.json'))['verdict'])")"
           # A booting backend IS the repair, whatever the log narrated. Judging by
@@ -259,15 +269,21 @@ jobs:
           exit $rc
 
       - name: A re-run must repair, not short-circuit
-        # Same assertion the POSIX legs make. Without it a Windows leg proves only that
+        # Same assertion the POSIX legs make, NO_CLI included: a leg that left no CLI
+        # otherwise asserts nothing, and without this a Windows leg proves only that
         # the break was DETECTED, never that install.ps1's version fast path does not
-        # short-circuit over it -- which is the half of the bug that strands the user.
-        if: always() && steps.probe.outputs.verdict != 'NO_CLI' && steps.probe.outputs.verdict != 'HEALTHY'
+        # short-circuit over it, which is the half of the bug that strands the user.
+        if: always() && steps.probe.outputs.verdict != 'HEALTHY'
         shell: pwsh
         run: |
           pwsh -NoProfile -NonInteractive -File install.ps1 ${{ matrix.installArgs }} *>&1 |
             Tee-Object -FilePath logs/repair.log
           $bin = Join-Path $env:UNSLOTH_STUDIO_HOME 'unsloth_studio\Scripts\unsloth.exe'
+          if (-not (Test-Path $bin)) {
+            Write-Host "::error::after a full re-run there is still no unsloth CLI at $bin"
+            Get-Content logs/repair.log -Tail 30 -ErrorAction SilentlyContinue
+            exit 1
+          }
           python .github/scripts/interrupted_install_probe.py $bin --out probe-after
           $v = (Get-Content probe-after/verdict.json -Raw | ConvertFrom-Json).verdict
           # A booting backend IS the repair, whatever the log narrated. Judging by
