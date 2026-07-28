@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import ts from "typescript";
 
 import {
   buildArtifactSourceKey,
@@ -72,4 +76,57 @@ test("the source key changes for two canvases with the same shape", () => {
 test("hashArtifactCode separates same-length codes and empty from whitespace", () => {
   assert.notEqual(hashArtifactCode("<p>ab</p>"), hashArtifactCode("<p>ba</p>"));
   assert.notEqual(hashArtifactCode(""), hashArtifactCode(" "));
+});
+
+const KEYED_BY_HELPER = /^\{buildArtifactSourceKey\(\s*artifact\s*\)\}$/;
+
+const SURFACE_PATH = fileURLToPath(
+  new URL(
+    "../src/features/chat/artifacts/artifact-surface.tsx",
+    import.meta.url,
+  ),
+);
+
+/** The opening tag of `node`, for both `<x>` and `<x />`. */
+const openingTag = (node: ts.Node): ts.JsxOpeningLikeElement | null => {
+  if (ts.isJsxSelfClosingElement(node)) return node;
+  if (ts.isJsxElement(node)) return node.openingElement;
+  return null;
+};
+
+/** The `key` expression on the source view's Streamdown, or null if unkeyed. */
+function readStreamdownKey(): string | null {
+  const source = ts.createSourceFile(
+    SURFACE_PATH,
+    readFileSync(SURFACE_PATH, "utf8"),
+    ts.ScriptTarget.ESNext,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let key: string | null = null;
+  const visit = (node: ts.Node): void => {
+    const opening = openingTag(node);
+    if (opening?.tagName.getText() === "Streamdown") {
+      for (const attribute of opening.attributes.properties) {
+        if (
+          ts.isJsxAttribute(attribute) &&
+          attribute.name.getText() === "key"
+        ) {
+          key = attribute.initializer?.getText() ?? "";
+        }
+      }
+    }
+    node.forEachChild(visit);
+  };
+  source.forEachChild(visit);
+  return key;
+}
+
+// Without this, the suite passes even with the key deleted from the component,
+// which is the regression itself. No DOM renderer is available here, so assert
+// the wiring in the source instead.
+test("the source view's Streamdown is keyed by the shipped helper", () => {
+  const key = readStreamdownKey();
+  assert.ok(key, "source view <Streamdown> has no key prop");
+  assert.match(key, KEYED_BY_HELPER);
 });
