@@ -43,11 +43,7 @@ def _assert_env_unset(output: str, name: str) -> None:
 
 
 def _assert_env_cwd(output: str, name: str) -> None:
-    needle = (
-        f"$env:{name} = (Get-Location).Path"
-        if os.name == "nt"
-        else f'export {name}="$PWD"'
-    )
+    needle = f"$env:{name} = (Get-Location).Path" if os.name == "nt" else f'export {name}="$PWD"'
     assert needle in output, f"{needle!r} not found in:\n{output}"
 
 

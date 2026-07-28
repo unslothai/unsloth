@@ -2566,9 +2566,7 @@ def _wsl_shim_env(
     # live cwd, not a stale inherited Linux PWD. Don't freeze env["PWD"]: a --no-launch
     # recipe must translate the live PWD when run, not when generated; _launch overrides it.
     # cwd_env values likewise resolve at execution time and are always filesystem paths.
-    return env, tuple(
-        dict.fromkeys((*wsl_env_bridge, *(f"{name}/p" for name in cwd_env), "PWD/p"))
-    )
+    return env, tuple(dict.fromkeys((*wsl_env_bridge, *(f"{name}/p" for name in cwd_env), "PWD/p")))
 
 
 def _launch(
