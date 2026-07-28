@@ -136,6 +136,12 @@ def test_usage_examples_has_no_duplicate_auto_switch_control():
 # configuration and links across; these contracts follow the behaviour, not the
 # old file.
 API_MONITOR_TSX = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
+# The lifecycle labels live in their own module: the overlay is mounted from
+# __root.tsx, so importing them from the page pulled the whole page into the
+# eager bundle and undid the route's lazyRouteComponent.
+API_MONITOR_LIFECYCLE_TS = (
+    REPO / "studio/frontend/src/features/api-monitor/lifecycle.ts"
+)
 MONITOR_LINK_TSX = SETTINGS / "components/monitor-link.tsx"
 
 
@@ -153,12 +159,14 @@ def test_api_monitor_history_does_not_reorder_under_the_reader():
 
 def test_api_monitor_renders_lifecycle_rows():
     src = API_MONITOR_TSX.read_text(encoding = "utf-8")
-    assert "export function isLifecycleEntry(" in src
-    assert 'entry.kind === "lifecycle"' in src
+    labels = API_MONITOR_LIFECYCLE_TS.read_text(encoding = "utf-8")
+    assert "export function isLifecycleEntry(" in labels
+    assert 'entry.kind === "lifecycle"' in labels
     for label in ("Loading model", "Model loaded", "Model unloaded"):
-        assert label in src
+        assert label in labels
     # A lifecycle row has no prompt or reply, so it is not selectable for detail.
     assert "if (isLifecycleEntry(entry)) {" in src
+    assert 'from "./lifecycle"' in src
 
 
 def test_auto_switch_section_sits_above_the_usage_examples():
@@ -174,7 +182,7 @@ EN_TS = REPO / "studio/frontend/src/i18n/locales/en.ts"
 
 
 def test_api_monitor_renders_download_rows():
-    src = API_MONITOR_TSX.read_text(encoding = "utf-8")
+    src = API_MONITOR_LIFECYCLE_TS.read_text(encoding = "utf-8")
     assert 'entry.event === "download"' in src
     for label in ("Downloading model", "Model downloaded", "Model download failed"):
         assert label in src
