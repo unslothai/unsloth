@@ -1379,6 +1379,44 @@ def test_legacy_llama_backend_env_ignored_when_new_var_unrecognized(monkeypatch)
     assert ilp.llama_backend_from_env() == "vulkan"
 
 
+@pytest.mark.parametrize("legacy_value", ["hip", "HIP", "rocm", "ROCM", " hip "])
+def test_legacy_hip_rocm_backend_env_is_an_explicit_non_vulkan_opt_out(legacy_value, monkeypatch):
+    # UNSLOTH_LLAMA_BACKEND=hip/rocm was the documented pre-consolidation opt-out that
+    # keeps HIP even when Vulkan would otherwise auto-route. It must normalize to an
+    # explicit backend (not None), or force_vulkan_requested()/_route_to_vulkan_prebuilt()
+    # read it as "no backend named" and silently route to Vulkan anyway.
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", legacy_value)
+    assert ilp.llama_backend_from_env() == "hip"
+    assert ilp.force_vulkan_requested() is False
+
+
+def test_legacy_hip_backend_env_overrules_a_stale_force_vulkan(monkeypatch):
+    # The explicit hip opt-out is authoritative: a stale UNSLOTH_FORCE_VULKAN=1 left over
+    # from a previous run must not overrule it (matches force_vulkan_requested's own
+    # "so =hip is a real opt-out a stale UNSLOTH_FORCE_VULKAN cannot overrule" comment).
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
+    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "hip")
+    monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
+    assert ilp.force_vulkan_requested() is False
+
+
+def test_legacy_hip_backend_env_suppresses_auto_vulkan_fallback_on_unsupported_gfx(monkeypatch):
+    # Same unsupported-gfx host as test_route_to_vulkan_prebuilt_auto_fallback_for_legacy_amd_gfx
+    # (which auto-falls-back to Vulkan when NO backend is named), but with an explicit
+    # UNSLOTH_LLAMA_BACKEND=hip opt-out: _route_to_vulkan_prebuilt must keep HIP, not
+    # silently substitute Vulkan for the request meant to fail closed on HIP.
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "hip")
+    host = _windows_amd_host(rocm_gfx_target = "gfx803", rocm_gfx_targets = ["gfx803"])
+    routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert routed is host
+    assert repo == FORK
+    assert persist is None
+
+
 def test_route_to_vulkan_prebuilt_hidden_physical_nvidia_amd_not_rerouted():
     # Vulkan ignores CUDA_VISIBLE_DEVICES, so a CUDA-masked NVIDIA card next to a legacy
     # AMD gfx must not auto-route: Vulkan could grab the reserved NVIDIA GPU.

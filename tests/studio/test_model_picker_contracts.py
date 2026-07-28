@@ -73,6 +73,30 @@ def test_autoload_records_backend_loaded_model_identity():
     assert "m.id === loadedModelId" in autoload
 
 
+def test_autoload_staged_metadata_probe_prepares_the_hf_token():
+    """Startup auto-load restoring a cached GGUF with saved gpu_ids probes
+    fetchGgufStagedMetadata for its diffusion classification. Unlike
+    validateModel/loadModel (which prepare the token internally),
+    fetchGgufStagedMetadata sends whatever hf_token it is given straight to
+    /api/inference/validate -- an expired/invalid stored token would 401 even a
+    public repo and abort this candidate before the anonymous/replace-token
+    recovery in prepareHfTokenForUse ever runs. The caller must prepare it
+    first, mirroring performLoad's identical guard in use-chat-model-runtime.ts.
+    """
+    src = _read("features/chat/api/chat-adapter.ts")
+    assert 'import { prepareHfTokenForUse } from "@/features/hf-auth";' in src
+    autoload = src.split("async function loadAutoLoadCandidate", 1)[1]
+    autoload = autoload.split("\n  try {", 1)[0]
+    prepare_idx = autoload.index("const preparedToken = await prepareHfTokenForUse(hfToken)")
+    metadata_idx = autoload.index("await fetchGgufStagedMetadata({")
+    assert prepare_idx < metadata_idx
+    assert "if (!preparedToken.proceed) {" in autoload
+    assert "hf_token: preparedToken.token," in autoload
+    # The raw, unprepared token must not reach fetchGgufStagedMetadata directly.
+    between = autoload[metadata_idx : autoload.index("\n", autoload.index("hf_token:", metadata_idx))]
+    assert "hf_token: hfToken" not in between
+
+
 def test_chat_autoload_toast_is_persistent_and_dismissible():
     """Send-triggered autoload stays visible until it settles but remains
     dismissible, matching the explicit model-loading toast's lifetime."""
@@ -770,11 +794,17 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     applicator speaks, and a Vulkan pick does not use them.
     """
     src = " ".join(_read("hooks/use-gpu-info.ts").split())
-    # The Vulkan inventory is consulted first, and only when it has devices.
+    # The Vulkan inventory is consulted first, on backend alone -- NOT gated on
+    # devices already being non-empty, or a confirmed-Vulkan host whose probe is
+    # still cold/transiently empty would fall through to the code below and
+    # expose torch/CUDA physical IDs the Vulkan backend cannot use.
     assert (
         "const inference = data?.inference_gpu; "
-        'if (inference?.backend === "vulkan" && (inference.devices ?? []).length) {' in src
+        'if (inference?.backend === "vulkan") {' in src
     )
+    # A confirmed-Vulkan backend with no enumerated devices yet must return no
+    # devices, not fall through to the torch/CUDA inventory below.
+    assert "if (!(inference.devices ?? []).length) return [];" in src
     # Pinnable on the ggml ordinal space, gated on the backend's own support flag.
     assert "const picksAccepted = inference.gguf_gpu_ids_supported !== false;" in src
     assert 'pinnable: picksAccepted && d.index_kind === "vulkan",' in src
