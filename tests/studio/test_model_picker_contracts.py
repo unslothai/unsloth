@@ -740,8 +740,7 @@ def test_hydration_clears_the_slot_baseline_for_a_slotless_model():
     older backend and must NOT wipe the baseline."""
     src = _read("features/chat/lib/apply-inference-status-to-store.ts")
     assert (
-        "(status.is_gguf === false || status.requested_parallel_slots === null) && {"
-        in src
+        "(status.is_gguf === false || status.requested_parallel_slots === null) && {" in src
     ), "the slotless clear must key on is_gguf or an explicit null echo"
     clear = src.index("status.is_gguf === false || status.requested_parallel_slots === null")
     assert "loadedNParallel: null," in src[clear : clear + 200]
