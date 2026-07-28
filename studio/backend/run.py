@@ -689,26 +689,31 @@ def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
     return None
 
 
-def _bind_address(host: str, port: int) -> str:
-    """The address a bind to *host* actually uses -- resolved exactly as
-    _is_port_free does, so a recorded address and a requested one normalize alike."""
+def _bind_addresses(host: str, port: int) -> "set[str]":
+    """Every address *host* resolves to. `localhost` is both 127.0.0.1 and ::1, and
+    recording only the first lets a later launch on the other one miss us."""
     import socket
+
     try:
-        return socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)[0][4][0]
-    except (OSError, IndexError):
-        return host
+        infos = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except OSError:
+        return {host}
+    return {info[4][0] for info in infos} or {host}
 
 
 def _addresses_collide(recorded: "str | None", host: str, port: int) -> bool:
     """Would a server bound to *recorded* block a bind to *host*?
 
-    Unknown or wildcard on either side collides: refusing with a clear message
-    beats silently starting a duplicate.
+    *recorded* may list several addresses. Unknown or wildcard on either side
+    collides: refusing with a clear message beats silently starting a duplicate.
     """
     wildcards = ("0.0.0.0", "::", "")
-    if not recorded or recorded in wildcards or host in wildcards:
+    if not recorded or host in wildcards:
         return True
-    return recorded == _bind_address(host, port)
+    listed = {a.strip() for a in recorded.split(",") if a.strip()}
+    if not listed or listed & set(wildcards):
+        return True
+    return bool(listed & _bind_addresses(host, port))
 
 
 def _is_port_free(host: str, port: int) -> bool:
@@ -961,7 +966,7 @@ def _write_pid_file(port: int, host: str = ""):
         # Start time pins the record to this process; the bind address tells a
         # later launch whether this server would actually block it.
         created = _process_create_time(os.getpid())
-        address = _bind_address(host, port) if host else ""
+        address = ",".join(sorted(_bind_addresses(host, port))) if host else ""
         body = f"{os.getpid()}\n{'' if created is None else repr(created)}\n{address}"
         path.write_text(body, encoding = "utf-8")
         # An older CLI's `stop` only reads this one, and expects a bare PID.

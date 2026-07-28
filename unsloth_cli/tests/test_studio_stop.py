@@ -184,18 +184,20 @@ def test_pid_identity_check_accepts_an_in_process_studio(monkeypatch):
     assert studio_mod._pid_is_studio_server(8550) is True
 
 
-def test_a_timestamped_record_is_unverifiable_without_psutil(monkeypatch):
-    # psutil is not a base CLI dependency but the managed backend has it, so the
-    # CLI meets records it cannot check. Unknown, not "not ours".
+def test_an_unverifiable_record_is_still_stopped(monkeypatch):
+    # psutil is not a base CLI dependency, so the CLI meets timestamped records it
+    # cannot check. The old `stop` signalled with no checks at all -- skipping one
+    # would leave a live server running, the orphan bug this exists to fix.
     studio_mod = _studio()
     monkeypatch.setitem(sys.modules, "psutil", None)
 
-    assert studio_mod._pid_is_studio_server(8550, [111.5]) is None
+    assert studio_mod._pid_is_studio_server(8550, [111.5]) is True
     assert studio_mod._pid_is_studio_server(8550, [None]) is True
 
 
-def test_stop_keeps_an_unverifiable_record_instead_of_deleting_it(monkeypatch, tmp_path):
-    # Deleting it strands a live server with no record -- the bug this PR fixes.
+def test_stop_signals_a_timestamped_record_without_psutil(monkeypatch, tmp_path):
+    # Multiple servers on different ports: only the newest is also in studio.pid,
+    # so the earlier ones are timestamp-only and must still be stopped.
     studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550})
     monkeypatch.setattr(studio_mod, "_pid_is_studio_server", _REAL_IS_STUDIO_SERVER)
     monkeypatch.setitem(sys.modules, "psutil", None)
@@ -203,11 +205,9 @@ def test_stop_keeps_an_unverifiable_record_instead_of_deleting_it(monkeypatch, t
 
     result = _run_stop(studio_mod)
 
-    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
-    assert result.exit_code == 1, combined
-    assert killed == []
-    assert (tmp_path / "studio-8901-8550.pid").exists()
-    assert "cannot confirm pid 8550" in combined.lower()
+    assert result.exit_code == 0, result.output
+    assert killed == [8550]
+    assert not (tmp_path / "studio-8901-8550.pid").exists()
 
 
 def test_a_legacy_record_survives_a_stale_timestamp_for_the_same_pid(monkeypatch):

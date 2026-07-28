@@ -322,9 +322,27 @@ def test_address_matching(tmp_path):
 def test_a_hostname_resolves_the_same_way_the_bind_does(tmp_path):
     # `localhost` and the address _is_port_free actually binds must agree, or a
     # recorded server is missed and a duplicate starts.
-    recorded = run._bind_address("localhost", 8889)
+    recorded = ",".join(sorted(run._bind_addresses("localhost", 8889)))
 
     assert run._addresses_collide(recorded, "localhost", 8889) is True
+
+
+def test_a_hostname_records_every_address_it_resolves_to(tmp_path):
+    # `localhost` binds 127.0.0.1 AND ::1. Recording only the first lets a later
+    # launch on the other literal miss us and start a duplicate.
+    addrs = run._bind_addresses("localhost", 8889)
+    recorded = ",".join(sorted(addrs))
+
+    for literal in addrs:
+        assert run._addresses_collide(recorded, literal, 8889) is True
+
+
+def test_a_multi_address_record_matches_either_literal(tmp_path):
+    recorded = "127.0.0.1,::1"
+
+    assert run._addresses_collide(recorded, "127.0.0.1", 8889) is True
+    assert run._addresses_collide(recorded, "::1", 8889) is True
+    assert run._addresses_collide("127.0.0.1", "::1", 8889) is False
 
 
 def test_fallback_aborts_on_our_own_server_further_up_the_range(tmp_path, monkeypatch):
