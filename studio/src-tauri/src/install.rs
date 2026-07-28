@@ -63,6 +63,7 @@ struct InstallOutputLine {
 #[derive(Default)]
 struct InstallFailureContext {
     explicit_error: Option<String>,
+    explicit_error_stream: Option<InstallOutputStream>,
     default_error: Option<String>,
     output_tail: VecDeque<InstallOutputLine>,
 }
@@ -70,8 +71,10 @@ struct InstallFailureContext {
 impl InstallFailureContext {
     fn observe_stdout(&mut self, text: &str) -> bool {
         if text.starts_with("[TAURI:ERROR_CLEAR] ") {
-            self.explicit_error = None;
-            self.default_error = None;
+            self.clear_failure(InstallOutputStream::Stdout);
+            return true;
+        }
+        if text.starts_with("[TAURI:OUTPUT_CLEAR] ") {
             self.clear_stream(InstallOutputStream::Stdout);
             return true;
         }
@@ -79,8 +82,13 @@ impl InstallFailureContext {
             let message = message.trim();
             if !message.is_empty() {
                 self.explicit_error = Some(Self::bounded_line(message));
+                self.explicit_error_stream = Some(InstallOutputStream::Stdout);
             }
             return false;
+        }
+        if let Some(message) = text.strip_prefix("[TAURI:ERROR_OUTPUT] ") {
+            self.capture_output_error(InstallOutputStream::Stdout, message);
+            return true;
         }
         if let Some(message) = text.strip_prefix("[TAURI:ERROR_DEFAULT] ") {
             let message = message.trim();
@@ -97,11 +105,50 @@ impl InstallFailureContext {
 
     fn observe_stderr(&mut self, text: &str) -> bool {
         if text.starts_with("[TAURI:ERROR_CLEAR] ") {
+            self.clear_failure(InstallOutputStream::Stderr);
+            return true;
+        }
+        if text.starts_with("[TAURI:OUTPUT_CLEAR] ") {
             self.clear_stream(InstallOutputStream::Stderr);
+            return true;
+        }
+        if let Some(message) = text.strip_prefix("[TAURI:ERROR_OUTPUT] ") {
+            self.capture_output_error(InstallOutputStream::Stderr, message);
             return true;
         }
         self.push_output(InstallOutputStream::Stderr, text);
         false
+    }
+
+    fn capture_output_error(&mut self, stream: InstallOutputStream, fallback: &str) {
+        let fallback = fallback.trim();
+        let detail = self
+            .output_tail
+            .iter()
+            .rev()
+            .find(|line| line.stream == stream)
+            .map(|line| line.text.as_str());
+        if let Some(error) = match (fallback.is_empty(), detail) {
+            (_, Some(detail)) if fallback == detail => Some(detail.to_owned()),
+            (false, Some(detail)) => Some(Self::bounded_line(&format!("{fallback}: {detail}"))),
+            (false, None) => Some(Self::bounded_line(fallback)),
+            (true, Some(detail)) => Some(detail.to_owned()),
+            (true, None) => None,
+        } {
+            self.explicit_error = Some(error);
+            self.explicit_error_stream = Some(stream);
+        }
+    }
+
+    fn clear_failure(&mut self, stream: InstallOutputStream) {
+        if self.explicit_error_stream == Some(stream) {
+            self.explicit_error = None;
+            self.explicit_error_stream = None;
+        }
+        if stream == InstallOutputStream::Stdout {
+            self.default_error = None;
+        }
+        self.clear_stream(stream);
     }
 
     fn clear_stream(&mut self, stream: InstallOutputStream) {
@@ -1046,10 +1093,35 @@ mod tests {
     }
 
     #[test]
+    fn command_error_includes_preceding_output_from_the_same_stream() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("unrelated stdout");
+        context.observe_stderr("resolver error: no space left on device");
+        assert!(context.observe_stderr("[TAURI:ERROR_OUTPUT] install unsloth failed (exit code 1)"));
+        context.observe_stdout("[TAURI:ERROR_DEFAULT] Failed to install unsloth");
+        assert_eq!(
+            context.message(1),
+            "Installation failed: install unsloth failed (exit code 1): resolver error: no space left on device"
+        );
+    }
+
+    #[test]
+    fn command_error_without_output_uses_its_fallback() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("unrelated output from an earlier step");
+        assert!(context.observe_stdout("[TAURI:OUTPUT_CLEAR] create venv"));
+        assert!(context.observe_stdout("[TAURI:ERROR_OUTPUT] create venv failed (exit code 2)"));
+        assert_eq!(
+            context.message(2),
+            "Installation failed: create venv failed (exit code 2)"
+        );
+    }
+
+    #[test]
     fn recovered_retry_clears_stale_installer_error() {
         let mut context = InstallFailureContext::default();
-        context.observe_stdout("[TAURI:ERROR] install PyTorch failed (exit code 1)");
         context.observe_stderr("ERROR: transient PyTorch download failure");
+        assert!(context.observe_stderr("[TAURI:ERROR_OUTPUT] install PyTorch failed (exit code 1)"));
         assert!(context.observe_stdout("[TAURI:ERROR_CLEAR] install PyTorch recovered after retry"));
         assert!(context.observe_stderr("[TAURI:ERROR_CLEAR] install PyTorch recovered after retry"));
         context.observe_stderr("ERROR: studio setup failed");
@@ -1057,6 +1129,21 @@ mod tests {
         assert!(message.contains("studio setup failed"));
         assert!(!message.contains("install PyTorch"));
         assert!(!message.contains("transient PyTorch"));
+    }
+
+    #[test]
+    fn recovery_clear_is_order_independent_across_streams() {
+        let mut context = InstallFailureContext::default();
+        assert!(context.observe_stdout("[TAURI:ERROR_CLEAR] install PyTorch recovered"));
+        context.observe_stderr("ERROR: transient PyTorch download failure");
+        assert!(context.observe_stderr("[TAURI:ERROR_OUTPUT] install PyTorch failed (exit code 1)"));
+        assert!(context.observe_stderr("[TAURI:ERROR_CLEAR] install PyTorch recovered"));
+        context.observe_stdout("[TAURI:ERROR] later setup failure");
+        assert!(context.observe_stderr("[TAURI:ERROR_CLEAR] delayed recovery clear"));
+        assert_eq!(
+            context.message(1),
+            "Installation failed: later setup failure"
+        );
     }
 
     #[test]

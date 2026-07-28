@@ -91,12 +91,10 @@ function Install-UnslothStudio {
     function Exit-InstallFailure {
         param(
             [Parameter(Mandatory = $true)][string]$Message,
-            [int]$Code = 1,
-            [switch]$UseOutputContext
+            [int]$Code = 1
         )
         if ($Code -eq 0) { $Code = 1 }
-        $errorTag = if ($UseOutputContext) { "ERROR_DEFAULT" } else { "ERROR" }
-        Write-TauriLog $errorTag $Message
+        Write-TauriLog "ERROR_DEFAULT" $Message
         if (Get-Command Restore-StudioVenvRollback -CommandType Function -ErrorAction SilentlyContinue) {
             Restore-StudioVenvRollback
         }
@@ -495,7 +493,8 @@ function Install-UnslothStudio {
     # Full command output is shown only when --verbose / UNSLOTH_VERBOSE=1.
     function Invoke-InstallCommand {
         param(
-            [Parameter(Mandatory = $true)][ScriptBlock]$Command
+            [Parameter(Mandatory = $true)][ScriptBlock]$Command,
+            [string]$Label = "install command"
         )
         # Installer-pinned index installs (torch) must beat an inherited uv mirror (#6898):
         # for --default-index, clear the uv index env vars (restore in finally) and set
@@ -514,6 +513,7 @@ function Install-UnslothStudio {
         try {
             # Reset to avoid stale values from prior native commands.
             $global:LASTEXITCODE = 0
+            Write-TauriLog "OUTPUT_CLEAR" $Label
             if ($script:UnslothVerbose) {
                 # Merge stderr into stdout so progress/warning output stays visible
                 # without flipping $? on successful native commands (PS 5.1 treats
@@ -528,7 +528,13 @@ function Install-UnslothStudio {
                     Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
                 }
             }
-            return [int]$LASTEXITCODE
+            $exitCode = [int]$LASTEXITCODE
+            if ($exitCode -eq 0) {
+                Clear-TauriInstallError "$Label recovered"
+            } else {
+                Write-TauriLog "ERROR_OUTPUT" "$Label failed (exit code $exitCode)"
+            }
+            return $exitCode
         } finally {
             $ErrorActionPreference = $prevEap
             if ($savedUvIndex) {
@@ -559,11 +565,8 @@ function Install-UnslothStudio {
         }
         $attempt = 1
         while ($true) {
-            $code = Invoke-InstallCommand $Command
-            if ($code -eq 0) {
-                Clear-TauriInstallError "$Label recovered"
-                return 0
-            }
+            $code = Invoke-InstallCommand -Command $Command -Label $Label
+            if ($code -eq 0) { return 0 }
             if ($attempt -ge $maxAttempts) { return $code }
             substep ("retrying ""$Label"" after transient failure (attempt $($attempt + 1)/$maxAttempts, waiting ${delay}s)...") "Yellow"
             Start-Sleep -Seconds $delay
@@ -1616,7 +1619,7 @@ exit 0
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         step "venv" "creating Python $($DetectedPython.Version) virtual environment"
         substep "$VenvDir"
-        $venvExit = Invoke-InstallCommand { uv venv $VenvDir --python "$($DetectedPython.Path)" }
+        $venvExit = Invoke-InstallCommand -Label "create virtual environment" { uv venv $VenvDir --python "$($DetectedPython.Path)" }
         if ($venvExit -ne 0) {
             Write-Host "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
             return (Exit-InstallFailure "Failed to create virtual environment (exit code $venvExit)" $venvExit)
@@ -2388,7 +2391,7 @@ exit 0
         }
         if ($StudioLocalInstall) {
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
@@ -2477,7 +2480,7 @@ exit 0
 
         if ($StudioLocalInstall) {
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
@@ -2500,7 +2503,7 @@ exit 0
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
             }
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
@@ -2548,7 +2551,7 @@ exit 0
                     $visionSpec = if ($PinnedRocmVisionSpec) { $PinnedRocmVisionSpec } elseif ($ROCmGfxArch -and $torchvisionFloorMap -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
                     $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need ROCm) -- reinstalling correct build..." "Yellow"
-                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
+                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch (ROCm)" { uv pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
                     if ($torchFixExit -ne 0) {
                         Write-Host "[ERROR] Failed to reinstall PyTorch with the correct ROCm build (exit code $torchFixExit)" -ForegroundColor Red
                         return (Exit-InstallFailure "Failed to reinstall PyTorch (ROCm) (exit code $torchFixExit)" $torchFixExit)
@@ -2557,7 +2560,7 @@ exit 0
                 } elseif ($expectedTorchTag -ne 'rocm') {
                     # CUDA: stale +cpu (or wrong cuXXX) against a CUDA index -> reinstall triplet.
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need $expectedTorchTag) -- reinstalling correct build..." "Yellow"
-                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
+                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch ($expectedTorchTag)" { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
                     if ($torchFixExit -ne 0) {
                         Write-Host "[ERROR] Failed to reinstall PyTorch with the correct CUDA build (exit code $torchFixExit)" -ForegroundColor Red
                         return (Exit-InstallFailure "Failed to reinstall PyTorch ($expectedTorchTag) (exit code $torchFixExit)" $torchFixExit)
@@ -2703,7 +2706,7 @@ exit 0
         if (-not $TauriMode) {
             Write-Host "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
         }
-        return (Exit-InstallFailure "unsloth studio setup failed (exit code $setupExit)" $setupExit -UseOutputContext)
+        return (Exit-InstallFailure "unsloth studio setup failed (exit code $setupExit)" $setupExit)
     }
     Clear-TauriInstallError "studio setup completed"
 

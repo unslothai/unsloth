@@ -14,6 +14,7 @@ _FUNC_FILE=$(mktemp)
     sed -n '/^run_install_cmd()/,/^}/p' "$INSTALL_SH"
     sed -n '/^run_install_cmd_retry()/,/^}/p' "$INSTALL_SH"
     sed -n '/^tauri_log()/,/^}/p' "$INSTALL_SH"
+    sed -n '/^tauri_stream_log()/,/^}/p' "$INSTALL_SH"
     sed -n '/^tauri_clear_install_error()/,/^}/p' "$INSTALL_SH"
 } > "$_FUNC_FILE"
 # shellcheck disable=SC1090
@@ -64,6 +65,7 @@ fi
 echo "  PASS: recovered retry clears stale context on both streams"
 
 _test_command() {
+    printf '%s\n' "resolver error: no space left on device"
     return 9
 }
 
@@ -82,7 +84,14 @@ if grep -q '^\[TAURI:ERROR_CLEAR\]' "$_stdout_file" ||
     echo "  FAIL: permanent failure cleared its failure context"
     exit 1
 fi
-echo "  PASS: permanent failure retains its failure and exit code"
+if ! grep -qxF '[TAURI:OUTPUT_CLEAR] install PyTorch' "$_stderr_file" ||
+    ! grep -qxF 'resolver error: no space left on device' "$_stderr_file" ||
+    ! tail -n 1 "$_stderr_file" |
+        grep -qxF '[TAURI:ERROR_OUTPUT] install PyTorch failed (exit code 9)'; then
+    echo "  FAIL: quiet failure did not bind its command output to the structured error"
+    exit 1
+fi
+echo "  PASS: permanent failure retains its command output and exit code"
 
 UNSLOTH_INSTALL_RETRIES=1
 if run_install_cmd_retry "preferred PyTorch build" _test_command >"$_stdout_file" 2>"$_stderr_file"; then
@@ -115,6 +124,7 @@ _is_verbose() {
     return 0
 }
 _test_command() {
+    printf '%s\n' "resolver error: proxy authentication required"
     return 7
 }
 set +e
@@ -128,11 +138,14 @@ if [ "$_exit_code" -ne 7 ]; then
     echo "  FAIL: verbose failure returned exit code $_exit_code instead of 7"
     exit 1
 fi
-if ! grep -q '^\[TAURI:ERROR\] verbose failure failed (exit code 7)$' "$_stdout_file"; then
-    echo "  FAIL: verbose failure did not preserve its exit code in the structured error"
+if ! grep -qxF '[TAURI:OUTPUT_CLEAR] verbose failure' "$_stdout_file" ||
+    ! grep -qxF 'resolver error: proxy authentication required' "$_stdout_file" ||
+    ! tail -n 1 "$_stdout_file" |
+        grep -qxF '[TAURI:ERROR_OUTPUT] verbose failure failed (exit code 7)'; then
+    echo "  FAIL: verbose failure did not bind its command output and exit code"
     exit 1
 fi
-echo "  PASS: verbose failure preserves its command exit code under set -e"
+echo "  PASS: verbose failure retains its command output and exit code under set -e"
 
 _test_command() {
     _cmd_rc=9
@@ -162,7 +175,7 @@ set +e
 _exit_code=$?
 set -e
 if [ "$_exit_code" -ne 1 ] ||
-    ! grep -q '^\[TAURI:ERROR\] missing status file failed (exit code 1)$' "$_stdout_file"; then
+    ! grep -q '^\[TAURI:ERROR_OUTPUT\] missing status file failed (exit code 1)$' "$_stdout_file"; then
     echo "  FAIL: missing verbose status defaulted to an empty or invalid exit code"
     exit 1
 fi
@@ -247,7 +260,7 @@ echo "  PASS: studio setup success clears recovered errors and failure preserves
 _ps_setup_block=$(sed -n \
     '/if (\$setupExit -ne 0) {/,/# ── Expose `unsloth` via a shim dir/p' \
     "$INSTALL_PS1")
-if ! printf '%s\n' "$_ps_setup_block" | grep -q -- '-UseOutputContext' ||
+if ! printf '%s\n' "$_ps_setup_block" | grep -q 'Exit-InstallFailure' ||
     ! printf '%s\n' "$_ps_setup_block" |
         grep -q 'Clear-TauriInstallError "studio setup completed"'; then
     echo "  FAIL: Windows setup does not preserve failed output and clear successful output"
@@ -268,12 +281,27 @@ if [ "$_ps_setup_exit_count" -ne 1 ] ||
 fi
 echo "  PASS: Windows setup routes explicit exits through Exit-SetupFailure"
 
-_ps_retry_block=$(sed -n \
-    '/function Invoke-InstallCommandRetry {/,/function New-StudioShortcuts {/p' \
+_ps_command_block=$(sed -n \
+    '/function Invoke-InstallCommand {/,/function New-StudioShortcuts {/p' \
     "$INSTALL_PS1")
-if ! printf '%s\n' "$_ps_retry_block" |
-    grep -q 'Clear-TauriInstallError "$Label recovered"'; then
-    echo "  FAIL: a recovered Windows retry leaves stale failure output"
+if ! printf '%s\n' "$_ps_command_block" |
+    grep -q 'Write-TauriLog "ERROR_OUTPUT" "$Label failed' ||
+    ! printf '%s\n' "$_ps_command_block" |
+        grep -q 'Write-TauriLog "OUTPUT_CLEAR" \$Label' ||
+    ! printf '%s\n' "$_ps_command_block" |
+        grep -q 'Clear-TauriInstallError "$Label recovered"' ||
+    ! printf '%s\n' "$_ps_command_block" |
+        grep -q 'Invoke-InstallCommand -Command \$Command -Label \$Label'; then
+    echo "  FAIL: Windows command output is not attributed and cleared at the command boundary"
     exit 1
 fi
-echo "  PASS: recovered Windows retries clear stale failure output"
+
+_ps_exit_block=$(sed -n \
+    '/function Exit-InstallFailure {/,/# ── Parse flags/p' \
+    "$INSTALL_PS1")
+if ! printf '%s\n' "$_ps_exit_block" |
+    grep -q 'Write-TauriLog "ERROR_DEFAULT" \$Message'; then
+    echo "  FAIL: Windows finalization can overwrite producer-owned failure context"
+    exit 1
+fi
+echo "  PASS: Windows command failures preserve output through retries and finalization"

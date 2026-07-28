@@ -207,6 +207,7 @@ run_install_cmd() {
         # command's exit code across the pipe without relying on pipefail
         # (this script runs under plain sh).
         _rcf=$(mktemp)
+        tauri_stream_log stdout "OUTPUT_CLEAR" "$_label"
         {
             if "$@" 2>&1; then
                 _cmd_rc=0
@@ -222,20 +223,21 @@ run_install_cmd() {
             tauri_clear_install_error "$_label recovered"
             return 0
         fi
-        tauri_log "ERROR" "$_label failed (exit code $_rc)"
+        tauri_stream_log stdout "ERROR_OUTPUT" "$_label failed (exit code $_rc)"
         step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
         return "$_rc"
     fi
     _log=$(mktemp)
+    tauri_stream_log stderr "OUTPUT_CLEAR" "$_label"
     "$@" >"$_log" 2>&1 && {
         rm -f "$_log"
         tauri_clear_install_error "$_label recovered"
         return 0
     }
     _rc=$?
-    tauri_log "ERROR" "$_label failed (exit code $_rc)"
     step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
     _redact_install_output "$_log" >&2
+    tauri_stream_log stderr "ERROR_OUTPUT" "$_label failed (exit code $_rc)"
     rm -f "$_log"
     return $_rc
 }
@@ -397,6 +399,19 @@ esac
 tauri_log() {
     if [ "$TAURI_MODE" = true ]; then
         echo "[TAURI:$1] $2"
+    fi
+}
+
+tauri_stream_log() {
+    _tsl_stream="$1"
+    _tsl_tag="$2"
+    shift 2
+    if [ "$TAURI_MODE" = true ]; then
+        if [ "$_tsl_stream" = stderr ]; then
+            printf '[TAURI:%s] %s\n' "$_tsl_tag" "$*" >&2
+        else
+            printf '[TAURI:%s] %s\n' "$_tsl_tag" "$*"
+        fi
     fi
 }
 
