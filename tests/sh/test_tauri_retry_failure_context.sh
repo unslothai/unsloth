@@ -5,6 +5,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
+INSTALL_PS1="$SCRIPT_DIR/../../install.ps1"
 
 _FUNC_FILE=$(mktemp)
 {
@@ -34,7 +35,7 @@ _is_verbose() {
 }
 
 _redact_install_output() {
-    cat "$1"
+    cat "$@"
 }
 
 echo "=== run_install_cmd_retry Tauri failure context ==="
@@ -96,3 +97,111 @@ if ! grep -q '^\[TAURI:ERROR_CLEAR\] fallback PyTorch build recovered$' "$_stdou
     exit 1
 fi
 echo "  PASS: successful fallback clears an exhausted preferred failure"
+
+_test_command() {
+    return 0
+}
+run_install_cmd "successful unstructured fallback" _test_command >"$_stdout_file" 2>"$_stderr_file"
+if ! grep -q '^\[TAURI:ERROR_CLEAR\] successful unstructured fallback recovered$' "$_stdout_file" ||
+    ! grep -q '^\[TAURI:ERROR_CLEAR\] successful unstructured fallback recovered$' "$_stderr_file"; then
+    echo "  FAIL: initial success did not clear unstructured failure context"
+    exit 1
+fi
+echo "  PASS: every successful wrapped command clears unstructured failure context"
+
+_is_verbose() {
+    return 0
+}
+_test_command() {
+    return 7
+}
+set +e
+(
+    set -e
+    run_install_cmd "verbose failure" _test_command
+) >"$_stdout_file" 2>"$_stderr_file"
+_exit_code=$?
+set -e
+if [ "$_exit_code" -ne 7 ]; then
+    echo "  FAIL: verbose failure returned exit code $_exit_code instead of 7"
+    exit 1
+fi
+if ! grep -q '^\[TAURI:ERROR\] verbose failure failed (exit code 7)$' "$_stdout_file"; then
+    echo "  FAIL: verbose failure did not preserve its exit code in the structured error"
+    exit 1
+fi
+echo "  PASS: verbose failure preserves its command exit code under set -e"
+
+_test_command() {
+    _cmd_rc=9
+    return 0
+}
+run_install_cmd "verbose clobbering success" _test_command >"$_stdout_file" 2>"$_stderr_file"
+if ! grep -q '^\[TAURI:ERROR_CLEAR\] verbose clobbering success recovered$' "$_stdout_file"; then
+    echo "  FAIL: verbose success inherited a status variable written by the wrapped function"
+    exit 1
+fi
+echo "  PASS: verbose success records its status after the wrapped function returns"
+
+_test_command() {
+    return 7
+}
+_missing_status_parent=$(mktemp -d)
+rmdir "$_missing_status_parent"
+_missing_status_path="$_missing_status_parent/status"
+set +e
+(
+    set -e
+    mktemp() {
+        printf '%s\n' "$_missing_status_path"
+    }
+    run_install_cmd "missing status file" _test_command
+) >"$_stdout_file" 2>"$_stderr_file"
+_exit_code=$?
+set -e
+if [ "$_exit_code" -ne 1 ] ||
+    ! grep -q '^\[TAURI:ERROR\] missing status file failed (exit code 1)$' "$_stdout_file"; then
+    echo "  FAIL: missing verbose status defaulted to an empty or invalid exit code"
+    exit 1
+fi
+echo "  PASS: missing verbose status defaults before reporting the failure"
+
+_setup_success_block=$(sed -n \
+    '/^if \[ "$_SETUP_EXIT" -eq 0 \]; then$/,/^mkdir -p "\$_LOCAL_BIN"$/p' \
+    "$INSTALL_SH")
+if ! printf '%s\n' "$_setup_success_block" |
+    grep -q 'tauri_clear_install_error "studio setup completed"'; then
+    echo "  FAIL: successful studio setup does not clear recovered setup errors before post-setup work"
+    exit 1
+fi
+
+_setup_failure_block=$(sed -n \
+    '/^# If setup.sh failed, report and exit now\.$/,/^fi$/p' \
+    "$INSTALL_SH")
+if ! printf '%s\n' "$_setup_failure_block" |
+    grep -q 'tauri_log "ERROR_DEFAULT" "studio setup failed'; then
+    echo "  FAIL: failed studio setup does not preserve output before its generic fallback"
+    exit 1
+fi
+echo "  PASS: studio setup success clears recovered errors and failure preserves specific output"
+
+_ps_setup_block=$(sed -n \
+    '/if (\$setupExit -ne 0) {/,/# ── Expose `unsloth` via a shim dir/p' \
+    "$INSTALL_PS1")
+if ! printf '%s\n' "$_ps_setup_block" | grep -q -- '-UseOutputContext' ||
+    ! printf '%s\n' "$_ps_setup_block" |
+        grep -q 'Clear-TauriInstallError "studio setup completed"'; then
+    echo "  FAIL: Windows setup does not preserve failed output and clear successful output"
+    exit 1
+fi
+echo "  PASS: Windows setup uses the same failure-context boundaries"
+
+_ps_retry_block=$(sed -n \
+    '/function Invoke-InstallCommandRetry {/,/function New-StudioShortcuts {/p' \
+    "$INSTALL_PS1")
+if ! printf '%s\n' "$_ps_retry_block" |
+    grep -q 'Clear-TauriInstallError "$Label recovered"'; then
+    echo "  FAIL: a recovered Windows retry leaves stale failure output"
+    exit 1
+fi
+echo "  PASS: recovered Windows retries clear stale failure output"

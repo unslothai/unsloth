@@ -28,6 +28,14 @@ function Install-UnslothStudio {
         }
     }
 
+    function Clear-TauriInstallError {
+        param([string]$Message)
+        if ($TauriMode) {
+            Write-TauriLog "ERROR_CLEAR" $Message
+            [Console]::Error.WriteLine("[TAURI:ERROR_CLEAR] $Message")
+        }
+    }
+
     function Format-TauriDiagBool {
         param([bool]$Value)
         if ($Value) { return "true" }
@@ -83,10 +91,12 @@ function Install-UnslothStudio {
     function Exit-InstallFailure {
         param(
             [Parameter(Mandatory = $true)][string]$Message,
-            [int]$Code = 1
+            [int]$Code = 1,
+            [switch]$UseOutputContext
         )
         if ($Code -eq 0) { $Code = 1 }
-        Write-TauriLog "ERROR" $Message
+        $errorTag = if ($UseOutputContext) { "ERROR_DEFAULT" } else { "ERROR" }
+        Write-TauriLog $errorTag $Message
         if (Get-Command Restore-StudioVenvRollback -CommandType Function -ErrorAction SilentlyContinue) {
             Restore-StudioVenvRollback
         }
@@ -550,7 +560,10 @@ function Install-UnslothStudio {
         $attempt = 1
         while ($true) {
             $code = Invoke-InstallCommand $Command
-            if ($code -eq 0) { return 0 }
+            if ($code -eq 0) {
+                Clear-TauriInstallError "$Label recovered"
+                return 0
+            }
             if ($attempt -ge $maxAttempts) { return $code }
             substep ("retrying ""$Label"" after transient failure (attempt $($attempt + 1)/$maxAttempts, waiting ${delay}s)...") "Yellow"
             Start-Sleep -Seconds $delay
@@ -2679,9 +2692,12 @@ exit 0
         Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue
     }
     if ($setupExit -ne 0) {
-        Write-Host "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
-        return (Exit-InstallFailure "unsloth studio setup failed (exit code $setupExit)" $setupExit)
+        if (-not $TauriMode) {
+            Write-Host "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
+        }
+        return (Exit-InstallFailure "unsloth studio setup failed (exit code $setupExit)" $setupExit -UseOutputContext)
     }
+    Clear-TauriInstallError "studio setup completed"
 
     # ── Expose `unsloth` via a shim dir containing only unsloth.exe ──
     # We do NOT add the venv Scripts dir to PATH (it also holds python.exe

@@ -42,16 +42,38 @@ use crate::process::trim_line_endings;
 const FAILURE_CONTEXT_LINES: usize = 8;
 const FAILURE_CONTEXT_LINE_BYTES: usize = 1_000;
 
+fn generic_failure_message(code: i32) -> String {
+    format!(
+        "Installation failed with exit code {}. Open the installer logs for details.",
+        code
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InstallOutputStream {
+    Stdout,
+    Stderr,
+}
+
+struct InstallOutputLine {
+    stream: InstallOutputStream,
+    text: String,
+}
+
 #[derive(Default)]
 struct InstallFailureContext {
     explicit_error: Option<String>,
-    stderr_tail: VecDeque<String>,
+    default_error: Option<String>,
+    output_tail: VecDeque<InstallOutputLine>,
+    failure_tail: VecDeque<InstallOutputLine>,
 }
 
 impl InstallFailureContext {
     fn observe_stdout(&mut self, text: &str) -> bool {
         if text.starts_with("[TAURI:ERROR_CLEAR] ") {
             self.explicit_error = None;
+            self.default_error = None;
+            self.clear_stream(InstallOutputStream::Stdout);
             return true;
         }
         if let Some(message) = text.strip_prefix("[TAURI:ERROR] ") {
@@ -59,62 +81,122 @@ impl InstallFailureContext {
             if !message.is_empty() {
                 self.explicit_error = Some(Self::bounded_line(message));
             }
+            return false;
+        }
+        if let Some(message) = text.strip_prefix("[TAURI:ERROR_DEFAULT] ") {
+            let message = message.trim();
+            if !message.is_empty() {
+                self.default_error = Some(Self::bounded_line(message));
+            }
+            return true;
+        }
+        if !text.starts_with("[TAURI:") {
+            self.push_output(InstallOutputStream::Stdout, text);
         }
         false
     }
 
     fn observe_stderr(&mut self, text: &str) -> bool {
         if text.starts_with("[TAURI:ERROR_CLEAR] ") {
-            self.stderr_tail.clear();
+            self.clear_stream(InstallOutputStream::Stderr);
             return true;
         }
-        let text = text.trim();
-        if text.is_empty() {
-            return false;
-        }
-        self.stderr_tail.push_back(Self::bounded_line(text));
-        while self.stderr_tail.len() > FAILURE_CONTEXT_LINES {
-            self.stderr_tail.pop_front();
-        }
+        self.push_output(InstallOutputStream::Stderr, text);
         false
     }
 
+    fn clear_stream(&mut self, stream: InstallOutputStream) {
+        self.output_tail.retain(|line| line.stream != stream);
+        self.failure_tail.retain(|line| line.stream != stream);
+    }
+
+    fn push_output(&mut self, stream: InstallOutputStream, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let text = Self::bounded_line(text);
+        if Self::is_specific_failure(&text) {
+            self.failure_tail.push_back(InstallOutputLine {
+                stream,
+                text: text.clone(),
+            });
+            while self.failure_tail.len() > FAILURE_CONTEXT_LINES {
+                self.failure_tail.pop_front();
+            }
+        }
+        self.output_tail
+            .push_back(InstallOutputLine { stream, text });
+        while self.output_tail.len() > FAILURE_CONTEXT_LINES {
+            self.output_tail.pop_front();
+        }
+    }
+
     fn bounded_line(text: &str) -> String {
-        let text = diagnostics::redact_for_display(text);
+        let mut text = diagnostics::redact_for_display(text);
         let boundary =
             diagnostics::valid_utf8_boundary(&text, text.len().min(FAILURE_CONTEXT_LINE_BYTES));
-        text[..boundary].to_string()
+        text.truncate(boundary);
+        text
+    }
+
+    fn is_recovery_output(lower: &str) -> bool {
+        lower.contains("cleanup") || lower.contains("rollback") || lower.contains("restoring")
+    }
+
+    fn is_specific_failure(text: &str) -> bool {
+        let lower = text.to_ascii_lowercase();
+        !Self::is_recovery_output(&lower)
+            && !lower.contains("continuing")
+            && !lower.contains("falling back")
+            && !lower.contains("retrying")
+            && !lower.contains("remain available")
+            && !lower.contains("keeping existing")
+            // Studio setup treats every whisper.cpp failure as fail-open.
+            && !lower.contains("whisper.cpp")
+            && (lower.contains("error")
+                || lower.contains("fail")
+                || lower.contains("fatal")
+                || lower.contains("invalid")
+                || lower.contains("cannot")
+                || lower.contains("could not")
+                || lower.contains("unable to")
+                || lower.contains("denied")
+                || lower.contains("traceback")
+                || lower.contains("exception")
+                || lower.contains("blocked")
+                || lower.contains("not found")
+                || lower.contains("does not exist")
+                || lower.contains("not enough disk")
+                || lower.contains("no space left"))
     }
 
     fn message(&self, code: i32) -> String {
-        let detail = self.explicit_error.as_deref().or_else(|| {
-            self.stderr_tail
-                .iter()
-                .rev()
-                .find(|line| {
-                    let lower = line.to_ascii_lowercase();
-                    (lower.contains("error") || lower.contains("failed"))
-                        && !lower.contains("cleanup")
-                        && !lower.contains("rollback")
-                        && !lower.contains("restoring")
-                })
-                .or_else(|| {
-                    self.stderr_tail.iter().rev().find(|line| {
-                        let lower = line.to_ascii_lowercase();
-                        lower.contains("error") || lower.contains("failed")
+        let detail = self
+            .explicit_error
+            .as_deref()
+            .or_else(|| self.failure_tail.back().map(|line| line.text.as_str()))
+            .or(self.default_error.as_deref())
+            .or_else(|| {
+                self.output_tail
+                    .iter()
+                    .rev()
+                    .find(|line| {
+                        let lower = line.text.to_ascii_lowercase();
+                        !Self::is_recovery_output(&lower)
                     })
-                })
-                .or_else(|| self.stderr_tail.back())
-                .map(String::as_str)
-        });
+                    .or_else(|| self.output_tail.back())
+                    .map(|line| line.text.as_str())
+            });
         match detail {
             Some(detail) => format!("Installation failed: {}", detail),
-            None => format!(
-                "Installation failed with exit code {}. Open the installer logs for details.",
-                code
-            ),
+            None => generic_failure_message(code),
         }
     }
+}
+
+fn is_elevation_request(code: i32, packages: &[String]) -> bool {
+    code == 2 && !packages.is_empty()
 }
 
 // ── Script Resolution ──
@@ -591,12 +673,12 @@ fn run_install_with_event_mode(
         }
         Ok((status, intentional)) => {
             let code = status.code().unwrap_or(-1);
-            if code == 2 {
+            let packages = state
+                .lock()
+                .map(|install| install.needed_packages.clone())
+                .unwrap_or_default();
+            if is_elevation_request(code, &packages) {
                 // Script needs elevated package install — report to frontend
-                let packages = state
-                    .lock()
-                    .map(|i| i.needed_packages.clone())
-                    .unwrap_or_default();
                 diagnostics::record_elevation_packages(&diagnostics, &attempt, &packages);
                 diagnostics::finish_attempt(
                     &diagnostics,
@@ -612,12 +694,7 @@ fn run_install_with_event_mode(
                 let msg = failure_context
                     .lock()
                     .map(|context| context.message(code))
-                    .unwrap_or_else(|_| {
-                        format!(
-                            "Installation failed with exit code {}. Open the installer logs for details.",
-                            code
-                        )
-                    });
+                    .unwrap_or_else(|_| generic_failure_message(code));
                 diagnostics::finish_attempt(
                     &diagnostics,
                     &attempt,
@@ -1005,6 +1082,9 @@ mod tests {
             "repair-needs-elevation"
         );
         assert!(!InstallEventMode::Repair.emit_terminal_events());
+        assert!(!is_elevation_request(2, &[]));
+        assert!(is_elevation_request(2, &["cmake".to_string()]));
+        assert!(!is_elevation_request(1, &["cmake".to_string()]));
     }
 
     #[test]
@@ -1030,6 +1110,81 @@ mod tests {
         assert!(message.contains("studio setup failed"));
         assert!(!message.contains("install PyTorch"));
         assert!(!message.contains("transient PyTorch"));
+    }
+
+    #[test]
+    fn successful_fallback_clears_unstructured_stderr() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("bitsandbytes pre-release install failed");
+        assert!(context.observe_stderr("[TAURI:ERROR_CLEAR] bitsandbytes pypi fallback recovered"));
+        context.observe_stderr("mkdir: cannot create directory: Permission denied");
+        assert_eq!(
+            context.message(1),
+            "Installation failed: mkdir: cannot create directory: Permission denied"
+        );
+    }
+
+    #[test]
+    fn setup_failure_uses_specific_output_before_default() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("UNSLOTH_LLAMA_PR=invalid is not a valid PR number");
+        assert!(context.observe_stdout("[TAURI:ERROR_DEFAULT] studio setup failed (exit code 4)"));
+        assert_eq!(
+            context.message(4),
+            "Installation failed: UNSLOTH_LLAMA_PR=invalid is not a valid PR number"
+        );
+    }
+
+    #[test]
+    fn setup_failure_uses_default_without_specific_output() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("Finishing setup");
+        assert!(context.observe_stdout("[TAURI:ERROR_DEFAULT] studio setup failed (exit code 4)"));
+        context.observe_stderr("restored previous environment");
+        assert_eq!(
+            context.message(4),
+            "Installation failed: studio setup failed (exit code 4)"
+        );
+    }
+
+    #[test]
+    fn setup_failure_preserves_cause_past_footer_and_ignores_optional_failure() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("llama.cpp      not enough disk space to install llama.cpp");
+        context.observe_stderr("whisper.cpp source build failed (exit code 1)");
+        context.observe_stdout(
+            "whisper.cpp    prebuilt install failed; browser and Transformers dictation remain available",
+        );
+        for index in 0..10 {
+            context.observe_stdout(&format!("setup footer line {index}"));
+        }
+        assert!(context.observe_stdout("[TAURI:ERROR_DEFAULT] studio setup failed (exit code 1)"));
+        assert_eq!(
+            context.message(1),
+            "Installation failed: llama.cpp      not enough disk space to install llama.cpp"
+        );
+    }
+
+    #[test]
+    fn setup_failure_recognizes_blocked_install() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("llama.cpp      install blocked by active llama.cpp process");
+        assert!(context.observe_stdout("[TAURI:ERROR_DEFAULT] studio setup failed (exit code 3)"));
+        assert_eq!(
+            context.message(3),
+            "Installation failed: llama.cpp      install blocked by active llama.cpp process"
+        );
+    }
+
+    #[test]
+    fn latest_terminal_output_beats_tolerated_setup_failure() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("optional llama-quantize build failed");
+        context.observe_stderr("mv: cannot move build: Permission denied");
+        assert_eq!(
+            context.message(1),
+            "Installation failed: mv: cannot move build: Permission denied"
+        );
     }
 
     #[test]
@@ -1070,14 +1225,15 @@ mod tests {
         assert!(explicit_error.len() <= FAILURE_CONTEXT_LINE_BYTES);
         assert!(explicit_error.is_char_boundary(explicit_error.len()));
         assert!(!explicit_error.contains("secret"));
-        assert_eq!(context.stderr_tail.len(), FAILURE_CONTEXT_LINES);
+        assert_eq!(context.output_tail.len(), FAILURE_CONTEXT_LINES);
+        assert!(context.failure_tail.len() <= FAILURE_CONTEXT_LINES);
         assert!(context
-            .stderr_tail
+            .output_tail
             .iter()
-            .all(|line| line.len() <= FAILURE_CONTEXT_LINE_BYTES));
+            .all(|line| line.text.len() <= FAILURE_CONTEXT_LINE_BYTES));
         assert!(context
-            .stderr_tail
+            .output_tail
             .iter()
-            .all(|line| line.is_char_boundary(line.len())));
+            .all(|line| line.text.is_char_boundary(line.text.len())));
     }
 }

@@ -207,15 +207,22 @@ run_install_cmd() {
         # command's exit code across the pipe without relying on pipefail
         # (this script runs under plain sh).
         _rcf=$(mktemp)
-        { "$@" 2>&1; printf '%s' "$?" > "$_rcf"; } | _redact_install_output
+        {
+            if "$@" 2>&1; then
+                _cmd_rc=0
+            else
+                _cmd_rc=$?
+            fi
+            printf '%s' "$_cmd_rc" > "$_rcf"
+        } | _redact_install_output
         _rc=$(cat "$_rcf" 2>/dev/null || echo 1)
         rm -f "$_rcf"
-        if [ "${_rc:-1}" -eq 0 ] 2>/dev/null; then
+        _rc=${_rc:-1}
+        if [ "$_rc" -eq 0 ] 2>/dev/null; then
             tauri_clear_install_error "$_label recovered"
             return 0
         fi
         tauri_log "ERROR" "$_label failed (exit code $_rc)"
-        _TAURI_INSTALL_ERROR_PENDING=true
         step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
         return "$_rc"
     fi
@@ -227,7 +234,6 @@ run_install_cmd() {
     }
     _rc=$?
     tauri_log "ERROR" "$_label failed (exit code $_rc)"
-    _TAURI_INSTALL_ERROR_PENDING=true
     step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
     _redact_install_output "$_log" >&2
     rm -f "$_log"
@@ -395,11 +401,10 @@ tauri_log() {
 }
 
 tauri_clear_install_error() {
-    if [ "${_TAURI_INSTALL_ERROR_PENDING:-false}" = true ] && [ "$TAURI_MODE" = true ]; then
+    if [ "$TAURI_MODE" = true ]; then
         tauri_log "ERROR_CLEAR" "$1"
         printf '[TAURI:ERROR_CLEAR] %s\n' "$1" >&2
     fi
-    _TAURI_INSTALL_ERROR_PENDING=false
 }
 
 tauri_diag_marker() {
@@ -4131,6 +4136,10 @@ else
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 fi
 
+if [ "$_SETUP_EXIT" -eq 0 ]; then
+    tauri_clear_install_error "studio setup completed"
+fi
+
 # ── Make 'unsloth' available via $_LOCAL_BIN (resolved earlier) ──
 # Env-mode: $_LOCAL_BIN is $STUDIO_HOME/bin; skip shell-rc PATH append so we
 # don't pollute the user's profile with a workspace-scoped path.
@@ -4186,8 +4195,11 @@ fi
 # PATH and shortcuts are already set up so the user can fix and retry.
 if [ "$_SETUP_EXIT" -ne 0 ]; then
     echo ""
-    tauri_log "ERROR" "studio setup failed (exit code $_SETUP_EXIT)"
-    step "error" "studio setup failed (exit code $_SETUP_EXIT)" "$C_ERR"
+    if [ "$TAURI_MODE" = true ]; then
+        tauri_log "ERROR_DEFAULT" "studio setup failed (exit code $_SETUP_EXIT)"
+    else
+        step "error" "studio setup failed (exit code $_SETUP_EXIT)" "$C_ERR"
+    fi
     echo ""
     exit "$_SETUP_EXIT"
 fi
