@@ -342,6 +342,15 @@ export function applyActiveModelStatusToStore(
       (prevState.loadedNParallel === null || hydratingExistingModel) && {
         loadedNParallel: status.requested_parallel_slots,
       }),
+    // A slotless active model must not keep the previous GGUF's baseline: the
+    // rollback re-sends it and preset capture would claim slots the model never
+    // used. /status omits the echo entirely for non-GGUF and sends an explicit
+    // null for the diffusion runner, so an absent field on a GGUF is an older
+    // backend and leaves the baseline alone.
+    ...(seedLoadParams &&
+      (status.is_gguf === false || status.requested_parallel_slots === null) && {
+        loadedNParallel: null,
+      }),
     // Slots are per-model, so a model/variant change underneath this tab blanks
     // the control the way performLoad's cross-model reset does. Without it the
     // previous model's explicit count follows onto the new model, and saving or

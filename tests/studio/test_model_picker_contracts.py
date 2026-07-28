@@ -732,6 +732,24 @@ def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
     assert "loadedNParallel: null," in fresh_default
 
 
+def test_hydration_clears_the_slot_baseline_for_a_slotless_model():
+    """The baseline is what a failed-switch rollback re-sends and what preset
+    capture reads, so a model that cannot have slots must not inherit the
+    previous GGUF's count. /status omits the echo for non-GGUF and sends an
+    explicit null for the diffusion runner; an absent field on a GGUF is an
+    older backend and must NOT wipe the baseline."""
+    src = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    assert (
+        "(status.is_gguf === false || status.requested_parallel_slots === null) && {"
+        in src
+    ), "the slotless clear must key on is_gguf or an explicit null echo"
+    clear = src.index("status.is_gguf === false || status.requested_parallel_slots === null")
+    assert "loadedNParallel: null," in src[clear : clear + 200]
+    # Never `!= null`: that also matches an absent field, which is how an older
+    # backend reports a GGUF whose slots it simply does not echo.
+    assert "status.requested_parallel_slots !== null && {" not in src
+
+
 def test_hydration_keeps_the_slot_control_when_readopting_the_running_model():
     """`hydratingExistingModel` is true whenever the incoming status disagrees
     with what this tab last recorded, which includes RE-ADOPTING a model the tab
