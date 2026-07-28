@@ -126,8 +126,10 @@ def _call(
     with patch.object(sys, "platform", platform):
         # isdir too: the llvm probe requires a directory, so a fake host that only
         # answers exists() would report every nested llvm dir as missing.
-        with patch("os.path.exists", _fake_exists(present)), \
-             patch("os.path.isdir", _fake_exists(present)):
+        with (
+            patch("os.path.exists", _fake_exists(present)),
+            patch("os.path.isdir", _fake_exists(present)),
+        ):
             return _norm(impl(str(bundle)))
 
 
@@ -326,9 +328,11 @@ class TestNativeLinuxRootResolution:
         # A test host may itself have a real /opt/rocm (the default candidate), so
         # assert on the bogus entry rather than on the whole list.
         for where, impl in _impls().items():
-            with patch.object(sys, "platform", "linux"), \
-                 patch.dict(os.environ, {"ROCM_PATH": str(root)}, clear = True), \
-                 patch("os.path.exists", _exists):
+            with (
+                patch.object(sys, "platform", "linux"),
+                patch.dict(os.environ, {"ROCM_PATH": str(root)}, clear = True),
+                patch("os.path.exists", _exists),
+            ):
                 out = impl(str(bundle_dir))
             assert str(root / "lib") in out, where
             assert str(root / "lib" / "llvm" / "lib") not in out, where
