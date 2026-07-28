@@ -464,9 +464,14 @@ def _redirection_span(tokens: "list[str]", index: int) -> "tuple[int, ...]":
         # the command (verified: both really run the payload behind them).
         span.append(nxt)
         nxt += 1
-    if nxt < len(tokens) and not tokens[nxt].startswith("-") and not _looks_like_separator(tokens[nxt]):
+    if (
+        nxt < len(tokens)
+        and not tokens[nxt].startswith("-")
+        and not _looks_like_separator(tokens[nxt])
+    ):
         span.append(nxt)
     return tuple(span)
+
 
 # `[` and `[[` are the test builtins, not patterns.
 _TEST_BUILTINS = frozenset({"[", "[[", "]", "]]"})
