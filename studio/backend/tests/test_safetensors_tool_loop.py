@@ -3625,8 +3625,13 @@ class TestGGUFSafetensorsHealingParity:
             "Let me check",
             "I am going to call the tool",
             "First, I will explore",
+            "First, let's search the web",
+            "First, let us search the web",
             "Here's my plan",
             "Now I need to call web_search",
+            # The "let me know" exemption is scoped to "let me", not every
+            # direct-intent form.
+            "I will know the answer after I search the web",
         ):
             assert shared_re.search(phrase), f"missed {phrase!r}"
             assert shared_fn(phrase), f"helper missed {phrase!r}"
@@ -3642,6 +3647,9 @@ class TestGGUFSafetensorsHealingParity:
             # force a tool-call re-prompt on it.
             "I will not search the web for that.",
             "I'll never call that tool.",
+            # Hands control back rather than announcing an action.
+            "Let me know if you need anything else.",
+            "First, the answer is 42",
         ):
             assert not shared_re.search(plain), f"wrongly fired on {plain!r}"
             assert not shared_fn(plain), f"helper wrongly fired on {plain!r}"

@@ -169,13 +169,15 @@ RAG_SEARCH_CAP_NUDGE = (
 # Forward-looking intent: the model says what it *will* do, not a final answer.
 INTENT_SIGNAL = re.compile(
     r"(?i)("
-    # Direct intent ("I'll", "Let me"); lookahead drops negated forms ("I will
-    # not") and "let me know", which hands control back rather than announcing.
-    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b(?!\s+(?:not|never|know)\b)"
+    # Direct intent ("I'll"); lookahead drops negated forms ("I will not").
+    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall)\b(?!\s+(?:not|never)\b)"
+    r"|"
+    # "let me know" hands control back rather than announcing an action.
+    r"\b(?:let me|allow me)\b(?!\s+(?:not|never|know)\b)"
     r"|"
     # Step/plan framing: "First, I ...", "Step 1:", "Here's my plan". "first"
     # needs first person so "First, the answer is 42" isn't read as a stall.
-    r"\b(?:first,?\s+(?:i|let me|we)\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
+    r"\b(?:first,?\s+(?:i|we|let['\u2019]?s|let us)\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
     r"|"
     r"\b(?:now i|next i)\b"
     r")"

@@ -340,6 +340,13 @@ _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
 # loop). Structured delta.tool_calls are grammar-bounded by llama-server; text
 # parsed from content is not, so one runaway turn could fan out unbounded.
 _MAX_TOOL_CALLS_PER_TURN = 8
+# Obligation phrasing INTENT_SIGNAL leaves alone ("I need to call ..."), paired
+# with an action verb: the bare topic words this replaced ate real answers.
+_FORCED_PLAN_INTENT = re.compile(
+    r"(?:\bi\s+(?:need|have|ought)\s+to|^need\s+to|^going\s+to)"
+    r"\s+(?:\w+\s+){0,2}?(?:call|use|run|search|fetch|render|invoke|query)\b",
+    re.I,
+)
 _FINAL_ANSWER_SIGNAL = re.compile(
     r"\b(?:final\s+answer|answer\s*:|here\s+is|here's|in\s+summary|result\s*:)\b",
     re.I,
@@ -440,8 +447,9 @@ def _should_suppress_forced_no_tool_output(text: str) -> bool:
         return False
     if _FINAL_ANSWER_SIGNAL.search(stripped):
         return False
-    # Planning language, not topic words: "call|use|run|search" ate real answers.
-    return _is_short_intent_without_action(stripped)
+    if _is_short_intent_without_action(stripped):
+        return True
+    return _FORCED_PLAN_INTENT.search(stripped) is not None
 
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
@@ -11239,6 +11247,8 @@ class LlamaCppBackend:
         # direct answer ("4", "Hello!") won't match. Pattern shared with the
         # safetensors loop (tool_call_parser.INTENT_SIGNAL).
         _reprompt_count = 0
+        # Budgeted apart from _reprompt_count so a pre-tool nudge can't spend it.
+        _post_tool_reprompts = 0
         # Text that triggered the last nudge; if the retry restates it, stop.
         _last_reprompt_text = ""
         # Gates ``max_tool_iterations`` on real tool turns (not the enlarged range) so reserved
@@ -11248,7 +11258,7 @@ class LlamaCppBackend:
 
         # Reserve extra iterations for re-prompts so they don't consume the
         # caller's tool-call budget; only when tool iterations are allowed.
-        _extra = _MAX_REPROMPTS if max_tool_iterations > 0 else 0
+        _extra = _MAX_REPROMPTS + 1 if max_tool_iterations > 0 else 0
         for iteration in range(max_tool_iterations + _extra):
             if cancel_event is not None and cancel_event.is_set():
                 return
@@ -11892,21 +11902,26 @@ class LlamaCppBackend:
                         # A stall after a tool ran still deserves a nudge, but
                         # each retry re-runs tools, so allow only one.
                         _already_acted = any(record.executed for record in tool_controller.history)
-                        _reprompt_cap = 1 if _already_acted else _MAX_REPROMPTS
+                        if _already_acted:
+                            _reprompt_used, _reprompt_cap = _post_tool_reprompts, 1
+                        else:
+                            _reprompt_used, _reprompt_cap = _reprompt_count, _MAX_REPROMPTS
                         # None keeps the default-on re-prompt; False disables it.
                         if (
                             auto_heal_tool_calls
                             and (nudge_tool_calls is None or nudge_tool_calls)
                             and active_tools
                             and not _render_html_already_done_intent
-                            and _reprompt_count < _reprompt_cap
+                            and _reprompt_used < _reprompt_cap
                             and not _is_reprompt_repeat(_stripped, _last_reprompt_text)
                             and _is_short_intent_without_action(_stripped)
                         ):
                             _reprompt_count += 1
+                            if _already_acted:
+                                _post_tool_reprompts += 1
                             _last_reprompt_text = _stripped
                             logger.info(
-                                f"Re-prompt {_reprompt_count}/{_reprompt_cap}: "
+                                f"Re-prompt {_reprompt_used + 1}/{_reprompt_cap}: "
                                 f"model responded without calling tools "
                                 f"({len(_stripped)} chars)"
                             )

@@ -1490,6 +1490,157 @@ def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
     assert len(payloads) == 3 < _MAX_REPROMPTS + 1
 
 
+def test_post_tool_stall_still_nudged_after_a_pre_tool_reprompt(monkeypatch):
+    """The post-tool nudge has its own budget, so an earlier stall can't spend it."""
+
+    streams = [
+        [_sse({"content": "I will search the web now."}), _done()],
+        [
+            _sse(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_first",
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": json.dumps({"query": "red square"}),
+                            },
+                        }
+                    ]
+                }
+            ),
+            _done(),
+        ],
+        [_sse({"content": "Let me summarize the results."}), _done()],
+        [_sse({"content": "Final answer: the square is red."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "Search results: red is #f00."
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        }
+    ]
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Make a red square."}],
+            tools = tools,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert len(payloads) == 4
+    assert len(calls) == 1
+    nudges = [
+        message
+        for message in payloads[-1]["messages"]
+        if message.get("role") == "user" and "call web_search now" in message.get("content", "")
+    ]
+    assert len(nudges) == 2
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert content_texts[-1] == "Final answer: the square is red."
+
+
+def test_post_tool_reprompt_budget_is_one(monkeypatch):
+    """The post-tool nudge fires once; a second stall is surrendered as the answer."""
+
+    streams = [
+        [
+            _sse(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_first",
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": json.dumps({"query": "red square"}),
+                            },
+                        }
+                    ]
+                }
+            ),
+            _done(),
+        ],
+        [_sse({"content": "Let me summarize the results."}), _done()],
+        [_sse({"content": "Now I will check the sources."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_a, **_k: "Search results: red is #f00.",
+    )
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        }
+    ]
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Make a red square."}],
+            tools = tools,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert len(payloads) == 3
+
+
+def test_forced_turn_suppression_covers_obligation_phrasing():
+    from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
+
+    for stall in (
+        "I need to use render_html now",
+        "Need to call web_search",
+        "I will summarize the results now",
+        "I have to run the search first",
+    ):
+        assert suppress(stall), f"leaked {stall!r}"
+
+    for answer in (
+        "You need to install the package first.",
+        "The square is red.",
+        "Here is the summary of what I found.",
+        "Run `pip install unsloth` to get started.",
+    ):
+        assert not suppress(answer), f"dropped {answer!r}"
+
+
 def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
     """A hidden forced re-prompt may fall back to a plain final answer."""
 
