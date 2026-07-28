@@ -12376,9 +12376,8 @@ class LlamaCppBackend:
                             _it_r = _iter_timings or {}
                             _accumulated_predicted_ms += _it_r.get("predicted_ms", 0)
                             _accumulated_predicted_n += _it_r.get("predicted_n", 0)
-                            # Blank first (the route resets its text cursor only on
-                            # an empty status), then the badge so the hidden retry
-                            # does not read as a hang.
+                            # Blank first (the route resets its text cursor only on an
+                            # empty status), then the badge so the retry is not a hang.
                             yield {"type": "status", "text": ""}
                             yield {"type": "status", "text": _NUDGE_TOOL_CALLS_STATUS}
                             continue

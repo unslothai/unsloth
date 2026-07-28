@@ -1911,7 +1911,6 @@ def test_plan_without_action_nudge_is_announced_on_the_status_channel(monkeypatc
     # Blank first: the route resets its text cursor only on an empty status.
     # index > 0 matters: at 0, statuses[-1] wraps to the terminal clear.
     assert index > 0 and statuses[index - 1] == ""
-    # The retry's tool takes the badge over, then it clears.
     assert statuses[index + 1].startswith("Searching:")
     assert statuses[-1] == ""
 
