@@ -167,6 +167,17 @@ def is_supported_version_query(version: str) -> bool:
     return _parse_version(candidate) is not None
 
 
+def _markdown_lines(text: str) -> list[str]:
+    """``text`` split the way CommonMark ends lines.
+
+    str.splitlines also breaks on U+2028, U+2029, NEL, vertical tab and form
+    feed, none of which end a line in Markdown. A separator sitting in prose
+    before "## 9.9.9" would otherwise index a release the renderer never shows
+    and truncate the notes above it.
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+
 def parse_changelog(text: str) -> list[ChangelogEntry]:
     """Parse `## <version>` sections, in file order.
 
@@ -198,7 +209,7 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
                 )
             )
 
-    for line in text.splitlines():
+    for line in _markdown_lines(text):
         # The line as list tracking sees it: blank where the renderer shows
         # nothing, so hidden lines neither open nor close an item.
         structural = ""
@@ -823,7 +834,7 @@ def _parse_version(version: str) -> Version | None:
 def _close_open_fence(markdown: str) -> str:
     """Close a fence the truncation cut in half, so the rest still renders."""
     open_fence: str | None = None
-    for line in markdown.splitlines():
+    for line in _markdown_lines(markdown):
         fence = _FENCE_PATTERN.match(line)
         if fence:
             open_fence = _next_fence_state(open_fence, fence.group("marker"), fence.group("rest"))
@@ -833,7 +844,7 @@ def _close_open_fence(markdown: str) -> str:
 def _renders_visibly(markdown: str) -> bool:
     """Whether a section body renders anything at all."""
     in_comment = False
-    for line in markdown.splitlines():
+    for line in _markdown_lines(markdown):
         opens_raw = any(opener.match(line) for opener, _ in _RAW_BLOCKS)
         if not in_comment and (_FENCE_PATTERN.match(line) or opens_raw):
             # A code block or raw HTML block renders even when it is empty.

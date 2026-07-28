@@ -62,6 +62,48 @@ const LINE_ENDINGS = /\r\n?/g;
 // `//` needs a host after it, so `///docs` stays a repository path.
 const ABSOLUTE = /^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|\/\/[^/]|#)/;
 
+const COMMENT_OPEN = "<!--";
+const COMMENT_CLOSE = "-->";
+
+/**
+ * `line` with its commented spans blanked, and whether a comment stays open.
+ *
+ * Commented content is not rendered, so nothing in it is a fence, a block or a
+ * code span. Lengths are preserved so an offset in the result still points at
+ * the same character of the original line.
+ */
+function maskComments(line: string, inComment: boolean): [string, boolean] {
+  let out = "";
+  let index = 0;
+  let open = inComment;
+  while (index < line.length) {
+    if (open) {
+      const close = line.indexOf(COMMENT_CLOSE, index);
+      if (close < 0) {
+        return [out + " ".repeat(line.length - index), true];
+      }
+      out += " ".repeat(close + COMMENT_CLOSE.length - index);
+      index = close + COMMENT_CLOSE.length;
+      open = false;
+      continue;
+    }
+    const start = line.indexOf(COMMENT_OPEN, index);
+    if (start < 0) {
+      return [out + line.slice(index), false];
+    }
+    out += line.slice(index, start);
+    // `<!-->` and `<!--->` are complete comments, so the closer may overlap the
+    // opener. Searching past it would miss them and blank the rest of the file.
+    const close = line.indexOf(COMMENT_CLOSE, start + 2);
+    if (close < 0) {
+      return [out + " ".repeat(line.length - start), true];
+    }
+    out += " ".repeat(close + COMMENT_CLOSE.length - start);
+    index = close + COMMENT_CLOSE.length;
+  }
+  return [out, open];
+}
+
 /** True if `line` starts a CommonMark type 6 or type 7 HTML block. */
 function opensHtmlBlock(line: string, afterParagraph: boolean): boolean {
   const named = HTML_BLOCK_OPEN.exec(line);
@@ -172,6 +214,8 @@ interface Classified {
   masked: string;
   // Lines where a `[label]: dest` definition can start.
   definition: Set<number>;
+  // Document ranges the renderer hides inside HTML comments.
+  comments: CodeSpan[];
 }
 
 /**
@@ -186,25 +230,35 @@ function classify(lines: string[]): Classified {
   let openFence: string | null = null;
   let inRawHtml = false;
   let inHtmlBlock = false;
+  let inComment = false;
   let inCode = false;
   let afterParagraph = false;
+  const comments: CodeSpan[] = [];
+  let offset = 0;
 
-  lines.forEach((line, index) => {
+  lines.forEach((original, index) => {
+    const start = offset;
+    offset += original.length + 1;
+    // A comment cannot open a fence, and a fence hides a comment opener, so the
+    // two have to be resolved in that order. Reading the hidden delimiter as a
+    // real fence left openFence set, and every visible line below was then
+    // classified as code and its links were never resolved.
+    const fenceSource = inComment ? null : FENCE.exec(original);
     if (inRawHtml) {
-      inRawHtml = !RAW_HTML_CLOSE.test(line);
-      masked.push(" ".repeat(line.length));
+      inRawHtml = !RAW_HTML_CLOSE.test(original);
+      masked.push(" ".repeat(original.length));
       afterParagraph = false;
       return;
     }
     if (inHtmlBlock) {
       // A blank line is the only thing that ends a type 6 or 7 block, so a
       // fence inside one is not a fence and a link inside one is not a link.
-      inHtmlBlock = !!line.trim();
-      masked.push(" ".repeat(line.length));
+      inHtmlBlock = !!original.trim();
+      masked.push(" ".repeat(original.length));
       afterParagraph = false;
       return;
     }
-    const fence = FENCE.exec(line);
+    const fence = fenceSource;
     if (fence) {
       const marker = fence[1] ?? "";
       if (openFence === null) {
@@ -213,7 +267,7 @@ function classify(lines: string[]): Classified {
           marker[0] !== "`" || !(fence[2] ?? "").includes("`") ? marker : null;
         if (openFence === null) {
           text.push(index);
-          masked.push(line);
+          masked.push(original);
           afterParagraph = true;
           return;
         }
@@ -225,13 +279,26 @@ function classify(lines: string[]): Classified {
       ) {
         openFence = null;
       }
-      masked.push(" ".repeat(line.length));
+      masked.push(" ".repeat(original.length));
       afterParagraph = false;
       return;
     }
     if (openFence !== null) {
-      masked.push(" ".repeat(line.length));
+      // Fenced content is literal, so a comment opener in it is not one.
+      masked.push(" ".repeat(original.length));
       return;
+    }
+    // Only now, outside every fence, does a comment hide what follows.
+    const [line, stillInComment] = maskComments(original, inComment);
+    inComment = stillInComment;
+    for (let at = 0; at < line.length; at += 1) {
+      if (line[at] === " " && original[at] !== " ") {
+        const from = at;
+        while (at < line.length && line[at] === " " && original[at] !== " ") {
+          at += 1;
+        }
+        comments.push({ start: start + from, end: start + at, content: "" });
+      }
     }
     if (RAW_HTML_OPEN.test(line)) {
       inRawHtml = !RAW_HTML_CLOSE.test(line.replace(RAW_HTML_OPEN, ""));
@@ -266,16 +333,21 @@ function classify(lines: string[]): Classified {
     afterParagraph = !blank && !BLOCK_LINE.test(line);
   });
 
-  return { text, masked: masked.join("\n"), definition };
+  return { text, masked: masked.join("\n"), definition, comments };
 }
 
 /** Absolute repository URLs for every relative link and image in `markdown`. */
 export function resolveChangelogLinks(markdown: string): string {
   // The desktop updater body arrives with CRLF, which would hide fences.
   const lines = markdown.replace(LINE_ENDINGS, "\n").split("\n");
-  const { text, masked, definition } = classify(lines);
+  const { text, masked, definition, comments } = classify(lines);
   // Scanned over the whole document, so a span may cross a line break.
-  const spans = codeSpans(masked);
+  // Commented ranges join the code spans: both are places the renderer
+  // never shows, so a link written in one is not a link the reader can
+  // follow and rewriting it would only mutate hidden text.
+  const spans = [...codeSpans(masked), ...comments].sort(
+    (a, b) => a.start - b.start,
+  );
 
   // Offset of each line in the document, to place matches inside it.
   const offsets: number[] = [];

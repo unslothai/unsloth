@@ -1220,7 +1220,7 @@ def test_link_resolver_reads_html_containers_the_way_the_others_do():
         text = source.read_text(encoding = "utf-8")
         assert "HTML_BLOCK_TAGS" in text and "HTML_TAG_ONLY_LINE" in text
     # A blank line, not the closing tag, is what ends the block.
-    assert "inHtmlBlock = !!line.trim()" in links
+    assert "inHtmlBlock = !!original.trim()" in links
     # Type 7 cannot interrupt a paragraph, so prose above it keeps its links.
     assert "return !afterParagraph && HTML_TAG_ONLY_LINE.test(line);" in links
 
@@ -1232,3 +1232,53 @@ def test_an_escaped_mark_makes_an_image_a_link():
     assert 'const image = bang === "!" && !isEscaped(line, offset);' in links
     # The reference pre-scan has to skip it too, or the definition flips host.
     assert "isEscaped(line, match.index)" in links
+
+
+def test_only_markdown_line_endings_split_the_changelog(changelog_module):
+    """str.splitlines also breaks on U+2028, U+2029, NEL, vertical tab and form
+    feed, none of which end a line in CommonMark. A separator sitting in prose
+    ahead of "## 9.9.9" made the parser index a release the renderer never shows
+    and truncate the notes above it."""
+    text = "## 2.0\n\nnote with a separator  ## 9.9.9\n\n## 1.0\n\n- old\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["2.0", "1.0"]
+    # The prose stays whole rather than being cut at the separator.
+    entry = changelog_module.find_release_notes(text, "2.0")
+    assert entry is not None and "9.9.9" in entry.body
+    for separator in (" ", "\x85", "\x0b", "\x0c"):
+        broken = f"## 2.0\n\nnote{separator}## 9.9.9\n\n## 1.0\n\n- old\n"
+        assert [e.version for e in changelog_module.parse_changelog(broken)] == ["2.0", "1.0"]
+    # The three real line endings still split.
+    for ending in ("\n", "\r\n", "\r"):
+        real = f"## 2.0{ending}{ending}- new{ending}{ending}## 1.0{ending}{ending}- old{ending}"
+        assert [e.version for e in changelog_module.parse_changelog(real)] == ["2.0", "1.0"]
+
+
+def test_the_build_does_not_require_a_writable_source_tree():
+    """A PEP 517 build may run against an immutable checkout (Nix, Bazel, a
+    read-only container mount). Writing the snapshot beside the sources raised
+    PermissionError before build_py started, so no wheel could be built at all.
+    """
+    src = (REPO / "_changelog_build.py").read_text(encoding = "utf-8")
+    # The source-tree copy is best effort.
+    assert "except OSError:" in src
+    # The wheel gets its copy from the staging directory either way.
+    assert "Path(self.build_lib) / \"studio\" / \"CHANGELOG.md\"" in src
+
+
+def test_link_resolver_reads_comments_before_fences():
+    """A fence delimiter hidden inside an HTML comment is not a fence. Reading
+    it as one left the fence open, so every visible line below was classified as
+    code and none of its links were resolved, which is far worse than the
+    mutated-text case: the whole rest of the notes silently stops working. The
+    order matters both ways, so a comment opener inside a real fence is not a
+    comment either."""
+    links = LINKS.read_text(encoding = "utf-8")
+    # Fence state is read before comments are masked, and suppressed while one
+    # is open, which is the same order the collapsed preview uses.
+    assert "const fenceSource = inComment ? null : FENCE.exec(original);" in links
+    # Masking happens only after the in-fence early return.
+    fence_return = links.index("// Fenced content is literal")
+    assert links.index("const [line, stillInComment] = maskComments(") > fence_return
+    # Commented ranges join the code spans, so a link the reader cannot see is
+    # not rewritten either.
+    assert "const spans = [...codeSpans(masked), ...comments].sort(" in links

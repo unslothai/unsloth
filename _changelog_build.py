@@ -21,6 +21,19 @@ SNAPSHOT = ROOT / "studio" / "CHANGELOG.md"
 
 class build_py(_build_py):
     def run(self) -> None:
+        # Written into the source tree only when that tree is writable, and
+        # always into the staging directory. A PEP 517 build may run against an
+        # immutable checkout (Nix, Bazel, a read-only container mount), where
+        # copying beside the sources raised PermissionError before build_py had
+        # even started and no wheel could be produced at all.
         if SOURCE.is_file():
-            shutil.copyfile(SOURCE, SNAPSHOT)
+            try:
+                shutil.copyfile(SOURCE, SNAPSHOT)
+            except OSError:
+                pass
         super().run()
+        if not SOURCE.is_file():
+            return
+        staged = Path(self.build_lib) / "studio" / "CHANGELOG.md"
+        staged.parent.mkdir(parents = True, exist_ok = True)
+        shutil.copyfile(SOURCE, staged)
