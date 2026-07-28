@@ -2841,9 +2841,7 @@ class TestInstallBnbWindowsRocm:
     def test_falls_back_to_pypi_when_prerelease_install_fails(self):
         """A blocked GitHub pre-release URL must fall through to the PyPI floor rather
         than leaving Windows ROCm with no working bitsandbytes."""
-        with patch.object(
-            stack_mod, "pip_install_try", side_effect = [False, True]
-        ) as mock_pip:
+        with patch.object(stack_mod, "pip_install_try", side_effect = [False, True]) as mock_pip:
             with patch.object(stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "72"):
                 result = stack_mod._install_bnb_windows_rocm()
         assert result is True
