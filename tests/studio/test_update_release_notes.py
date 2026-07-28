@@ -1672,9 +1672,7 @@ def test_an_html_block_inside_a_container_is_literal_too(run_scanner):
     so a `<details>` under a nested bullet and a `<pre>` inside a quote both
     show their contents verbatim. Missing the opener treated the body as
     Markdown and rewrote the literal examples in it."""
-    nested = run_scanner(
-        "links", "- a\n  - b\n    <details>\n    [x](docs/x.md)\n    </details>\n"
-    )
+    nested = run_scanner("links", "- a\n  - b\n    <details>\n    [x](docs/x.md)\n    </details>\n")
     assert "[x](docs/x.md)" in nested and "github.com" not in nested
     quoted = run_scanner("links", "> <pre>\n> [x](docs/x.md)\n> </pre>\n")
     assert "[x](docs/x.md)" in quoted and "github.com" not in quoted
