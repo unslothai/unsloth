@@ -1131,7 +1131,13 @@ class FastModel(FastBaseModel):
         assert load_in_fp8 in (True, False, "block")
 
         patch_compiled_autograd()
-        patch_compiling_bitsandbytes()
+        # Same best-effort wrapper as the FastLanguageModel path: unsloth_zoo's
+        # patch imports bitsandbytes unconditionally, so on a host without it this
+        # raised before the capability fallback below could take the 16bit path.
+        try:
+            patch_compiling_bitsandbytes()
+        except Exception as e:
+            print(f"Unsloth: Could not patch bitsandbytes for torch.compile - {e}")
 
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print(
@@ -1141,35 +1147,6 @@ class FastModel(FastBaseModel):
             load_in_8bit = False
             load_in_fp8 = False
             load_in_16bit = False
-
-        if (
-            int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) + int(load_in_fp8 != False)
-            >= 2
-        ):
-            raise RuntimeError(
-                "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!\n"
-                "Also, we by default set `load_in_4bit = True`.\n"
-                "If you want 8bit finetuning, set both `load_in_4bit = False` and `load_in_8bit = True`\n"
-                "If you want 16bit LoRA finetuning, set `load_in_16bit = True`"
-            )
-
-        if qat_scheme is not None and not full_finetuning:
-            raise ValueError(
-                "Specifying `qat_scheme` in `FastLanguageModel.from_pretrained(...)` is only "
-                "compatible with `full_finetuning=True`. If you wish to use QAT with LoRA, "
-                "please pass in `qat_scheme` in `FastLanguageModel.get_peft_model(...)` instead."
-            )
-        if qat_scheme == "phone-deployment":
-            qat_scheme = "int8-int4"
-
-        # Distributed-safe device placement for quantized models.
-        # In multi-GPU (torchrun), each rank must load the model on its own device
-        # to avoid Accelerate device relocation errors with quantized weights.
-        is_quantized = load_in_4bit or load_in_8bit or load_in_fp8
-        if is_quantized and isinstance(device_map, str):
-            distributed_device_map, is_dist = prepare_device_map()
-            if is_dist:
-                device_map = distributed_device_map
 
         # bitsandbytes unusable (absent, or unstable as on some AMD stacks). This is
         # a capability check, so it is not gated on use_exact_model_name: that only
@@ -1207,6 +1184,36 @@ class FastModel(FastBaseModel):
             load_in_8bit = False
             if _wants_bnb:
                 kwargs.pop("quantization_config", None)
+
+        if (
+            int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) + int(load_in_fp8 != False)
+            >= 2
+        ):
+            raise RuntimeError(
+                "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!\n"
+                "Also, we by default set `load_in_4bit = True`.\n"
+                "If you want 8bit finetuning, set both `load_in_4bit = False` and `load_in_8bit = True`\n"
+                "If you want 16bit LoRA finetuning, set `load_in_16bit = True`"
+            )
+
+        if qat_scheme is not None and not full_finetuning:
+            raise ValueError(
+                "Specifying `qat_scheme` in `FastLanguageModel.from_pretrained(...)` is only "
+                "compatible with `full_finetuning=True`. If you wish to use QAT with LoRA, "
+                "please pass in `qat_scheme` in `FastLanguageModel.get_peft_model(...)` instead."
+            )
+        if qat_scheme == "phone-deployment":
+            qat_scheme = "int8-int4"
+
+        # Distributed-safe device placement for quantized models.
+        # In multi-GPU (torchrun), each rank must load the model on its own device
+        # to avoid Accelerate device relocation errors with quantized weights.
+        is_quantized = load_in_4bit or load_in_8bit or load_in_fp8
+        if is_quantized and isinstance(device_map, str):
+            distributed_device_map, is_dist = prepare_device_map()
+            if is_dist:
+                device_map = distributed_device_map
+
 
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:

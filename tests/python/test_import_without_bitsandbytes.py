@@ -228,3 +228,69 @@ def test_bitsandbytes_guard_clears_8bit_as_well_as_4bit():
             "load_in_4bit",
             "load_in_8bit",
         } <= cleared, f"guard at line {guard.lineno} clears only {sorted(cleared)}"
+
+
+def test_capability_fallback_precedes_the_mutually_exclusive_mode_check():
+    """load_in_4bit defaults to True, so load_in_16bit=True trips the
+    "can only load in 4bit or 8bit or 16bit" RuntimeError unless the unavailable
+    4bit request is cleared first. That check must come after the fallback."""
+    src, _ = _bnb_guards()
+    tree = ast.parse(src)
+    checked = 0
+    # Scope to the enclosing function: the other loader's guard sits earlier in the
+    # file and would otherwise satisfy a plain line-number comparison.
+    for func in ast.walk(tree):
+        if not isinstance(func, ast.FunctionDef):
+            continue
+        raises = [
+            node.lineno
+            for node in ast.walk(func)
+            if isinstance(node, ast.Raise)
+            and "Can only load in 4bit or 8bit or 16bit" in ast.unparse(node)
+        ]
+        if not raises:
+            continue
+        guards = [
+            node.lineno
+            for node in ast.walk(func)
+            if isinstance(node, ast.If)
+            and any(
+                isinstance(n, ast.Name) and n.id == "ALLOW_BITSANDBYTES"
+                for n in ast.walk(node.test)
+            )
+        ]
+        for lineno in raises:
+            checked += 1
+            assert any(g < lineno for g in guards), (
+                f"{func.name}: the mode check at line {lineno} runs before this "
+                "function's ALLOW_BITSANDBYTES fallback, so load_in_16bit=True on a "
+                "bnb-less host raises instead of taking the 16bit path"
+            )
+    assert checked, "mode-exclusivity check not found"
+
+
+def test_bitsandbytes_compile_patch_is_never_called_unguarded():
+    """unsloth_zoo's patch_compiling_bitsandbytes imports bitsandbytes
+    unconditionally, so an unwrapped call raises on a bnb-less host before any
+    fallback can run."""
+    src = (REPO_ROOT / "unsloth" / "models" / "loader.py").read_text(encoding = "utf-8")
+    tree = ast.parse(src)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "patch_compiling_bitsandbytes"
+    ]
+    assert calls, "call sites not found"
+    guarded = {
+        call.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Try)
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "patch_compiling_bitsandbytes"
+    }
+    unguarded = sorted({c.lineno for c in calls} - guarded)
+    assert not unguarded, f"patch_compiling_bitsandbytes called unguarded at {unguarded}"
