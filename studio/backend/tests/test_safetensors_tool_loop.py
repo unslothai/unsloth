@@ -3762,7 +3762,6 @@ class TestGGUFSafetensorsHealingParity:
     def test_reprompt_repeat_keeps_articles_that_name_a_target(self):
         # "The Who" and "Who" are different searches, so articles are not filler.
         from core.inference.tool_call_parser import is_reprompt_repeat
-
         assert not is_reprompt_repeat(
             "I will search for The Who discography",
             "I will search for Who discography",

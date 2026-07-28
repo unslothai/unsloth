@@ -212,9 +212,7 @@ _REPEAT_TRAIL_PUNCT = ".,;:!?\"'`()[]{}<>‘’“”"
 _REPEAT_LEAD_PUNCT = "\"'`([{‘“"
 # Wording that can drift between two attempts without the attempt changing.
 # Articles stay out: "The Who" and "Who" are different search targets.
-_REPEAT_FILLER = frozenset(
-    {"now", "then", "just", "so", "ok", "okay", "please", "also", "again"}
-)
+_REPEAT_FILLER = frozenset({"now", "then", "just", "so", "ok", "okay", "please", "also", "again"})
 
 
 def _normalize_for_repeat(text: str) -> str:
