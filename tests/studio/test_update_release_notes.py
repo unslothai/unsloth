@@ -1258,11 +1258,11 @@ def test_the_build_does_not_require_a_writable_source_tree():
     read-only container mount). Writing the snapshot beside the sources raised
     PermissionError before build_py started, so no wheel could be built at all.
     """
-    src = (REPO / "_changelog_build.py").read_text(encoding = "utf-8")
+    src = (REPO / "_changelog_build.py").read_text(encoding="utf-8")
     # The source-tree copy is best effort.
     assert "except OSError:" in src
     # The wheel gets its copy from the staging directory either way.
-    assert "Path(self.build_lib) / \"studio\" / \"CHANGELOG.md\"" in src
+    assert 'Path(self.build_lib) / "studio" / "CHANGELOG.md"' in src
 
 
 def test_link_resolver_reads_comments_before_fences():
@@ -1272,7 +1272,7 @@ def test_link_resolver_reads_comments_before_fences():
     mutated-text case: the whole rest of the notes silently stops working. The
     order matters both ways, so a comment opener inside a real fence is not a
     comment either."""
-    links = LINKS.read_text(encoding = "utf-8")
+    links = LINKS.read_text(encoding="utf-8")
     # Fence state is read before comments are masked, and suppressed while one
     # is open, which is the same order the collapsed preview uses.
     assert "const fenceSource = inComment ? null : FENCE.exec(original);" in links
