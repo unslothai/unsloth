@@ -228,6 +228,57 @@ def test_legacy_records_do_not_match_a_training_run(monkeypatch):
     assert run._pid_is_studio_backend(9999) is False
 
 
+def test_a_legacy_server_on_the_port_is_recognised(tmp_path, monkeypatch):
+    # Pre-upgrade servers wrote only studio.pid. Falling back past one strands it
+    # and then overwrites its record.
+    monkeypatch.setattr(run, "_get_pid_on_port", lambda p: (8550, "python"))
+    (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
+
+    assert run._own_studio_on_port(8901, "127.0.0.1") == 8550
+
+
+def test_a_legacy_record_for_a_different_listener_falls_back(tmp_path, monkeypatch):
+    # jupyter holds the port; the legacy server is elsewhere. Keep falling back.
+    monkeypatch.setattr(run, "_get_pid_on_port", lambda p: (117, "jupyter-lab"))
+    (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
+
+    assert run._own_studio_on_port(8901, "127.0.0.1") is None
+
+
+def test_an_unknowable_listener_treats_the_legacy_record_as_ours(tmp_path, monkeypatch):
+    # No psutil: _get_pid_on_port can't say. Refusing beats a silent duplicate.
+    monkeypatch.setattr(run, "_get_pid_on_port", lambda p: None)
+    (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
+
+    assert run._own_studio_on_port(8901, "127.0.0.1") == 8550
+
+
+def test_a_dead_legacy_record_falls_back(tmp_path, monkeypatch):
+    monkeypatch.setattr(run, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(run, "_get_pid_on_port", lambda p: None)
+    (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
+
+    assert run._own_studio_on_port(8901, "127.0.0.1") is None
+
+
+def test_a_current_server_elsewhere_does_not_block_a_foreign_port(tmp_path, monkeypatch):
+    # Current builds write studio.pid too. Without psutil the legacy check can't
+    # see the listener, so it must not claim our 8901 server holds jupyter's 8888.
+    monkeypatch.setattr(run, "_get_pid_on_port", lambda p: None)
+    (tmp_path / "studio-8901-5000.pid").write_text("5000\n\n127.0.0.1", encoding = "utf-8")
+    (tmp_path / "studio.pid").write_text("5000", encoding = "utf-8")
+
+    assert run._own_studio_on_port(8888, "127.0.0.1") is None
+
+
+def test_a_per_port_record_is_preferred_over_the_legacy_one(tmp_path, monkeypatch):
+    monkeypatch.setattr(run, "_get_pid_on_port", lambda p: (8550, "python"))
+    (tmp_path / "studio-8901-8600.pid").write_text("8600\n\n127.0.0.1", encoding = "utf-8")
+    (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
+
+    assert run._own_studio_on_port(8901, "127.0.0.1") == 8600
+
+
 def test_our_studio_on_another_bind_address_does_not_abort(tmp_path):
     # Our server holds ::1:8889; binding 127.0.0.1:8889 is not a conflict with us,
     # so fall through to the next port instead of refusing.

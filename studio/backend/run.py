@@ -875,7 +875,38 @@ def _own_studio_on_port(port: int, host: str) -> "int | None":
         # None (unverifiable) counts as ours: refusing beats a silent duplicate.
         if _pid_is_studio_backend(pid, [created]) is not False:
             return pid
-    return None
+    return _legacy_studio_on_port(port)
+
+
+def _legacy_studio_on_port(port: int) -> "int | None":
+    """A pre-upgrade server recorded only its PID, so match it to the listener.
+
+    Falling back past one leaves it running while `_write_pid_file` overwrites the
+    only record of it. When the listener is unknowable, assume it is ours.
+    """
+    record = _read_pid_record(_PID_FILE)
+    if record is None:
+        return None
+    pid, created, _address = record
+    if not _pid_alive(pid):
+        return None
+    # A current build writes a per-port file too, so its port is already known --
+    # and this port's records were just checked. Only unported records get here.
+    if any(r and r[0] == pid for r in _per_port_records()):
+        return None
+    blocker = _get_pid_on_port(port)
+    if blocker is not None and blocker[0] != pid:
+        return None
+    if _pid_is_studio_backend(pid, [created]) is False:
+        return None
+    return pid
+
+
+def _per_port_records() -> "list[tuple[int, float | None, str | None] | None]":
+    try:
+        return [_read_pid_record(p) for p in _studio_root().glob(PID_FILE_GLOB)]
+    except OSError:
+        return []
 
 
 def _abort_already_running(pid: int, port: int) -> "NoReturn":
