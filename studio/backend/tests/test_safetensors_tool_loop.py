@@ -3664,8 +3664,7 @@ class TestGGUFSafetensorsHealingParity:
             "First, our approach is to check the docs.",
             "Here's my plan",
             "Now I need to call web_search",
-            # The "let me know" exemption is scoped to "let me", not every
-            # direct-intent form.
+            # The "let me know" exemption is scoped to "let me", not all direct intent.
             "I will know the answer after I search the web",
         ):
             assert shared_re.search(phrase), f"missed {phrase!r}"
@@ -3703,7 +3702,7 @@ class TestGGUFSafetensorsHealingParity:
 
     def test_reprompt_repeat_keeps_punctuation_bearing_terms(self):
         # Stripping every non-word character collapsed "C++" and "C#" to "c", so two
-        # different search plans compared equal and the retry lost its nudge.
+        # different plans compared equal and the retry lost its nudge.
         from core.inference.tool_call_parser import is_reprompt_repeat
 
         assert not is_reprompt_repeat("I will search for C#.", "I will search for C++.")
@@ -4263,8 +4262,8 @@ class TestPlanWithoutActionReprompt:
         # final answer and no further turn is generated.
         from core.inference.tool_call_parser import MAX_ACT_REPROMPTS
 
-        # Distinct stalls: identical ones are stopped by the repeat guard after the
-        # first nudge (covered separately), which would never reach the cap.
+        # Distinct stalls: identical ones stop at the repeat guard (covered
+        # separately) and would never reach the cap.
         stalls = [f"Let me look into detail {i} first." for i in range(MAX_ACT_REPROMPTS)]
         stall = stalls[-1]
         turns = [["I'll search the web for that."]]

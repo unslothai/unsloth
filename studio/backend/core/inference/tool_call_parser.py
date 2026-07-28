@@ -175,11 +175,10 @@ INTENT_SIGNAL = re.compile(
     # "let me know" hands control back rather than announcing an action.
     r"\b(?:let me|allow me)\b(?!\s+(?:not|never|know)\b)"
     r"|"
-    # Step/plan framing: "First, I ...", "First, search ...", "The first step is
-    # to ...", "Step 1:", "Here's my plan". "first" only opens a sentence (so
-    # "The first line is blank." is prose) and must not be followed by a
-    # determiner, which is what factual openings look like ("First, the answer
-    # is 42"). Everything else after it announces an action.
+    # Step/plan framing: "First, I ...", "The first step is to ...", "Step 1:",
+    # "Here's my plan". "first" must open a sentence ("The first line is blank."
+    # is prose) and not be followed by a determiner, which is how factual
+    # openings read ("First, the answer is 42").
     r"(?:^|[.!?]\s+)\s*(?:the\s+)?first\s+step\b"
     r"|(?:^|[.!?]\s+)\s*first[,:]?\s+(?:my|our)\s+(?:plan|approach|step)\b"
     r"|(?:^|[.!?]\s+)\s*first[,:]?\s+"
@@ -201,20 +200,15 @@ def is_short_intent_without_action(text: str) -> bool:
     return 0 < len(stripped) < REPROMPT_MAX_CHARS and INTENT_SIGNAL.search(stripped) is not None
 
 
-# Trailing sentence punctuation always goes; leading punctuation only when it is a
-# quote or bracket, so a token that starts with a mark (".NET") keeps it.
+# Leading marks are kept unless they are quotes or brackets, so ".NET" survives;
+# stripping all non-word chars would collapse "C++" and "C#" to the same token.
 _REPEAT_TRAIL_PUNCT = ".,;:!?\"'`()[]{}<>‘’“”"
 _REPEAT_LEAD_PUNCT = "\"'`([{‘“"
-# Tight on purpose. At 0.85 a single changed token in a 15-word plan still scores
-# ~0.87, so a corrected query ("CUDA 12.4" -> "12.5") read as a repeat and cost the
-# model its remaining nudge. At 0.95 only filler drift survives the comparison.
+# At 0.85 one changed token in a 15-word plan still scored ~0.87, so a corrected
+# query ("CUDA 12.4" -> "12.5") read as a repeat and cost the model its nudge.
 REPROMPT_REPEAT_SIMILARITY = 0.95
 
 
-# Only sentence punctuation is stripped, and only from the token edges. Removing
-# every non-word character collapsed "C++" and "C#" to the same token, and
-# stripping leading marks too collapsed ".NET" into "NET", so two different search
-# plans compared equal and the second one lost its nudge.
 def _normalize_for_repeat(text: str) -> str:
     return " ".join(
         stripped
@@ -238,12 +232,9 @@ def is_reprompt_repeat(text: str, previous: str) -> bool:
     return len(wa & wb) / len(wa | wb) >= REPROMPT_REPEAT_SIMILARITY
 
 
-# Stricter sibling of ``is_reprompt_repeat``: the retry said the same thing again,
-# word for word. Near-repeat is the right test for "stop nudging, it isn't working",
-# but not for "throw the turn away" -- a retry that keeps the plan and appends the
-# answer ("... for you: Tokyo.") clears the similarity bar, and dropping it loses
-# the answer. Order and deletions are kept: a single dropped word can invert the
-# meaning ("is not supported" -> "is supported"), which a set comparison misses.
+# Stricter sibling of ``is_reprompt_repeat``: exact equality, because this decides
+# whether to throw the turn away. A retry that appends the answer to the plan would
+# clear the fuzzy bar, and deletions matter ("is not supported" -> "is supported").
 def is_reprompt_restatement(text: str, previous: str) -> bool:
     if not previous:
         return False

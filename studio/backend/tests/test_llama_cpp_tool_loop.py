@@ -1714,8 +1714,7 @@ def test_forced_turn_suppression_covers_obligation_phrasing():
         "I have to run the search first",
         "I should call web_search now",
         "I should use render_html now",
-        # Plain modals take a bare infinitive, so they need their own
-        # alternative next to "should" -- not the need|have|ought "to" group.
+        # Plain modals take a bare infinitive, not the need|have|ought "to" group.
         "I must call web_search now",
         "I must use render_html now",
         "I must run the search first",
@@ -1762,8 +1761,7 @@ def test_forced_turn_intent_lead_in_needs_a_restatement_to_be_dropped():
     # Progress past the nudged text keeps the answer, lead-in and all.
     assert not suppress(answer, stall)
     assert not suppress("Step 3: done. Tokyo is the capital.", stall)
-    # A short fact appended to an unchanged preamble is progress, not a repeat:
-    # near-repeat is enough to stop nudging, never enough to drop the turn.
+    # Near-repeat is enough to stop nudging, never enough to drop the turn.
     assert not suppress(stall + ": Tokyo.", stall)
     # An obligation plan is a stall on its own, no previous text needed.
     assert suppress("I must call web_search now", answer)
@@ -2369,8 +2367,8 @@ def test_rag_autoinject_counts_as_a_prior_tool_execution(monkeypatch):
         )
     )
 
-    # One post-tool nudge, not _MAX_REPROMPTS: the initial turn plus a single retry.
-    # Counting the autoinject as pre-tool would spend the full three-nudge budget.
+    # Initial turn plus a single retry: counting the autoinject as pre-tool would
+    # spend the full _MAX_REPROMPTS budget.
     assert len(payloads) == 2, payloads
     nudges = [
         message

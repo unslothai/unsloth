@@ -560,8 +560,7 @@ def run_safetensors_tool_loop(
     final_attempt_done = False
     next_call_id = 0
     reprompt_count = 0
-    # Text that triggered the last nudge; a retry that restates it has not worked,
-    # so stop there instead of spending the rest of the budget (GGUF parity).
+    # Text that triggered the last nudge; if the retry restates it, stop (GGUF parity).
     last_reprompt_text = ""
     # A denied tool confirmation must not be answered with a plan-without-action
     # re-prompt (which would raise the confirmation gate again).
