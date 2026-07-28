@@ -2698,7 +2698,6 @@ def _locked_file(path: Path, blocking: bool = True):
                 acquired = False
         else:
             import fcntl
-
             mode = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
             try:
                 fcntl.flock(handle.fileno(), mode)

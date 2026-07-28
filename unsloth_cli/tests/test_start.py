@@ -4727,10 +4727,7 @@ def test_session_config_codex_uses_short_ephemeral_parent(monkeypatch, tmp_path)
     assert not home.exists()
 
 
-def test_session_config_reclaims_stale_short_homes_but_keeps_live(
-    monkeypatch,
-    tmp_path,
-):
+def test_session_config_reclaims_stale_short_homes_but_keeps_live(monkeypatch, tmp_path):
     short_parent = tmp_path / "u"
     short_parent.mkdir()
     stale = short_parent / "u-codex-abandoned"
