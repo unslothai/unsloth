@@ -45,6 +45,7 @@ fn save_filter(file_name: &str) -> (&'static str, Vec<&'static str>) {
         Some("json") => ("JSON", vec!["json"]),
         Some("jsonl") | Some("ndjson") => ("JSON Lines", vec!["jsonl", "ndjson"]),
         Some("csv") => ("CSV", vec!["csv"]),
+        Some("yaml") | Some("yml") => ("YAML", vec!["yaml", "yml"]),
         Some("md") | Some("markdown") => ("Markdown", vec!["md", "markdown"]),
         Some("html") | Some("htm") => ("HTML", vec!["html", "htm"]),
         Some("zip") => ("ZIP archive", vec!["zip"]),
@@ -253,6 +254,12 @@ mod tests {
             save_filter("message.md"),
             ("Markdown", vec!["md", "markdown"])
         );
+    }
+
+    #[test]
+    fn training_configs_use_a_yaml_save_filter() {
+        assert_eq!(save_filter("training.yaml"), ("YAML", vec!["yaml", "yml"]));
+        assert_eq!(save_filter("training.YML"), ("YAML", vec!["yaml", "yml"]));
     }
 
     #[test]

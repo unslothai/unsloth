@@ -15,6 +15,15 @@ export const zhCN = {
     searchAriaLabel: "搜索{noun}",
     rateLimitedTitle: "已达到 Hugging Face 速率限制",
     rateLimitedBody: "请稍候，然后重试搜索{noun}。",
+    hfToken: {
+      label: "HF 令牌",
+      saved: "已保存",
+      add: "添加",
+      savedAriaLabel: "Hugging Face 令牌已保存",
+      addAriaLabel: "设置 Hugging Face 令牌",
+      savedHint: "令牌已保存，使用时会验证访问权限。",
+      addHint: "设置令牌以访问私有和受限仓库。",
+    },
   },
   common: {
     cancel: "取消",
@@ -151,8 +160,7 @@ export const zhCN = {
         preloadOnStartup: "启动时预缓存辅助 LLM",
         preloadOnStartupDescription:
           "启动时在后台下载 AI Assist 辅助模型。默认关闭；AI Assist 仍可按需获取。",
-        disabledByEnv:
-          "已由后端环境中的 UNSLOTH_HELPER_MODEL_DISABLE 禁用。",
+        disabledByEnv: "已由后端环境中的 UNSLOTH_HELPER_MODEL_DISABLE 禁用。",
         loadError: "加载辅助 LLM 设置失败。",
         saveError: "保存辅助 LLM 设置失败。",
       },
@@ -204,8 +212,7 @@ export const zhCN = {
       uploads: {
         sectionTitle: "上传",
         maxUploadSize: "训练数据集上传上限",
-        maxUploadSizeDescription:
-          "默认值为 {defaultSize} MB。",
+        maxUploadSizeDescription: "默认值为 {defaultSize} MB。",
       },
       rag: {
         sectionTitle: "文档与 RAG",
@@ -440,8 +447,7 @@ export const zhCN = {
       title: "聊天",
       description: "管理此设备上保存的聊天记录。",
       modelDisclaimer: "显示模型免责声明",
-      modelDisclaimerDescription:
-        "在聊天框下方显示“LLM 可能会出错”。",
+      modelDisclaimerDescription: "在聊天框下方显示“LLM 可能会出错”。",
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "折叠 HTML 块",
@@ -548,7 +554,8 @@ export const zhCN = {
       codingAgents: "编程智能体",
       codingAgentsHint:
         "针对此服务器启动编程智能体。它会使用已加载的模型；本地服务器会自动生成 API 密钥，远程服务器则会将其包含在命令中。",
-      codingAgentsSwap: "可将 claude 替换为 codex、openclaw、opencode、hermes 或 pi。",
+      codingAgentsSwap:
+        "可将 claude 替换为 codex、openclaw、opencode、hermes 或 pi。",
       codingAgentDetected: "已安装在本机",
       codingAgentsDetectedHint: "本机检测到：{agents}。",
       relativeNever: "从未",
@@ -624,8 +631,7 @@ export const zhCN = {
         repoCheckoutFallback:
           "如果你仍保留 Unsloth 仓库 checkout，请从该 checkout 运行本地安装器：",
         restartAfterUpdate: "更新后请重启 Unsloth。",
-        desktopManaged:
-          "桌面应用会自动更新其内置后端，有新版本时会提示。",
+        desktopManaged: "桌面应用会自动更新其内置后端，有新版本时会提示。",
         unknownInstall:
           "Unsloth 无法检测安装方式。如果你使用一键安装器或 PyPI 安装，请使用上面的命令。",
         localCheckout:
@@ -660,8 +666,7 @@ export const zhCN = {
       saveYaml: "保存 YAML",
       resetDefaults: "重置为默认值",
       cachedModelGoneTitle: "缓存模型已不可用",
-      cachedModelGoneDescription:
-        "模型文件已不在此设备上，训练时将重新下载。",
+      cachedModelGoneDescription: "模型文件已不在此设备上，训练时将重新下载。",
       cachedDatasetGoneTitle: "缓存数据集已不可用",
       cachedDatasetGoneDescription:
         "数据集文件已不在此设备上，训练时将重新下载。",
@@ -684,6 +689,7 @@ export const zhCN = {
       noGpu: "未检测到 GPU",
       hfToken: "HF token",
       connected: "已连接",
+      saved: "已保存",
       notSet: "未设置",
       files: "文件",
       model: "模型",
@@ -853,6 +859,7 @@ export const zhCN = {
       advanced: "高级",
       targetFormat: "目标格式",
       targetFormatTooltip: "训练数据的格式。自动检测对大多数数据集都有效。",
+      streamingInfoAriaLabel: "数据集流式传输信息",
       auto: "自动",
       rawText: "原始文本",
       trainSplitStart: "训练切分起始",
@@ -893,7 +900,8 @@ export const zhCN = {
         secretAccessKey: "秘密访问密钥",
         secretAccessKeyPlaceholder: "你的 AWS 秘密访问密钥",
         useIamRole: "使用 IAM 角色",
-        useIamRoleTooltip: "使用 IAM 角色凭证而非访问密钥（推荐用于 EC2/SageMaker）",
+        useIamRoleTooltip:
+          "使用 IAM 角色凭证而非访问密钥（推荐用于 EC2/SageMaker）",
         testConnection: "测试连接",
         connectionSuccess: "成功连接到 S3 存储桶",
         connectionFailed: "无法连接到 S3 存储桶",
@@ -1002,6 +1010,8 @@ export const zhCN = {
       chooseModel: "选择模型",
       chooseDataset: "选择数据集",
       chooseModelAndDataset: "选择模型和数据集",
+      modelUnverified:
+        "无法验证该模型的设置。请检查网络连接或 Hugging Face token，然后重试。",
       datasetUnverified:
         "无法验证该数据集与此模型兼容。请检查网络连接或 Hugging Face token，开始训练时将重新检查。",
       upload: "上传",
@@ -1014,6 +1024,7 @@ export const zhCN = {
       failedToLoadConfig: "加载配置失败",
       invalidYamlFile: "无效的 YAML 文件",
       failedToReadFile: "读取文件失败",
+      failedToSaveConfig: "保存配置失败",
       parametersReset: "参数已重置为模型默认值",
       audioIncompatible:
         "该模型不支持音频。请切换到支持音频的模型，或选择非音频数据集。",

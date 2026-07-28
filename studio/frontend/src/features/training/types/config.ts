@@ -26,6 +26,18 @@ export interface DatasetCacheReferenceOptions {
   localPath?: string | null;
 }
 
+export type BrowseDatasetSelection =
+  | {
+      source: "huggingface";
+      dataset: string | null;
+      knownCached: boolean;
+      localPath: string | null;
+    }
+  | {
+      source: "upload";
+      uploadedFile: string | null;
+    };
+
 /** Column-to-role mapping, e.g. { "problem": "user", "solution": "assistant", "context": "system" } */
 export type DatasetManualMapping = Record<string, string>;
 
@@ -39,6 +51,7 @@ export interface TrainingConfigState {
   projectName: string;
   trainingMethod: TrainingMethod;
   datasetSource: DatasetSource;
+  browseDatasetSelection: BrowseDatasetSelection;
   datasetFormat: DatasetFormat;
   dataset: string | null;
   datasetKnownCached: boolean;
@@ -148,6 +161,7 @@ export interface TrainingConfigActions {
   ) => void;
   selectLocalDataset: (file: string | null) => void;
   selectS3Source: () => void;
+  restoreBrowseDatasetSource: () => void;
   setDatasetFormat: (format: DatasetFormat) => void;
   setDataset: (dataset: string | null) => void;
   setDatasetSubset: (subset: string | null) => void;

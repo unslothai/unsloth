@@ -5,6 +5,7 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { RefreshIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { PICKER_OPTION_FOCUS_VISIBLE_CLASS } from "./picker-focus";
 import { pickerTabId } from "./picker-tab-state";
 
 function nextPickerTab<T extends string>(
@@ -31,11 +32,45 @@ export function RetryButton({ onRetry }: { onRetry: () => void }) {
     <button
       type="button"
       onClick={onRetry}
-      className="mt-1 inline-flex items-center gap-1.5 rounded-full border border-border/70 px-3 py-1 text-ui-11 font-medium text-foreground transition-colors hover:bg-foreground/[0.05]"
+      className={cn(
+        "mt-1 inline-flex items-center gap-1.5 rounded-full border border-border/70 px-3 py-1 text-ui-11 font-medium text-foreground transition-colors hover:bg-foreground/[0.05]",
+        PICKER_OPTION_FOCUS_VISIBLE_CLASS,
+      )}
     >
       <HugeiconsIcon icon={RefreshIcon} strokeWidth={1.75} className="size-3" />
       {t("picker.retry")}
     </button>
+  );
+}
+
+export function PickerSearchError({
+  title,
+  detail,
+  onRetry,
+  compact = false,
+}: {
+  title: string;
+  detail: string;
+  onRetry: () => void;
+  compact?: boolean;
+}) {
+  return (
+    <div
+      role="alert"
+      className={
+        compact
+          ? "flex items-start justify-between gap-3 border-t border-border/60 px-2.5 py-2"
+          : "flex flex-col items-center gap-1.5 px-4 py-8 text-center"
+      }
+    >
+      <div className={cn("min-w-0", compact && "text-left")}>
+        <p className="text-ui-12p5 font-medium text-foreground">{title}</p>
+        <p className="text-ui-11 leading-snug text-muted-foreground">
+          {detail}
+        </p>
+      </div>
+      <RetryButton onRetry={onRetry} />
+    </div>
   );
 }
 
@@ -90,6 +125,7 @@ export function PickerTabToggle<T extends string>({
             onClick={() => onTabChange(entry.value)}
             className={cn(
               "relative z-10 inline-flex h-7 flex-1 select-none items-center justify-center rounded-full px-3 text-ui-12p5 transition-colors",
+              PICKER_OPTION_FOCUS_VISIBLE_CLASS,
               selected
                 ? "text-foreground"
                 : "text-muted-foreground hover:text-foreground",

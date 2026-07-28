@@ -47,24 +47,26 @@ export const MODEL_TYPES: ReadonlyArray<{
     label: "Text",
     description: "Language models",
   },
-    {
-      value: "vision",
-      label: "Vision",
-      description: "Image understanding models",
-    },
-    {
-      value: "audio",
-      label: "Audio",
-      description: "Audio and speech models",
-    },
-    {
-      value: "embeddings",
-      label: "Embeddings",
-      description: "Text embedding models",
-    },
-  ];
+  {
+    value: "vision",
+    label: "Vision",
+    description: "Image understanding models",
+  },
+  {
+    value: "audio",
+    label: "Audio",
+    description: "Audio and speech models",
+  },
+  {
+    value: "embeddings",
+    label: "Embeddings",
+    description: "Text embedding models",
+  },
+];
 
-export const CONTEXT_LENGTHS = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144];
+export const CONTEXT_LENGTHS = [
+  512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144,
+];
 
 export const TARGET_MODULES = [
   "q_proj",
@@ -83,7 +85,10 @@ export const CPT_TARGET_MODULES = [
   "lm_head",
 ];
 
-export const OPTIMIZER_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+export const OPTIMIZER_OPTIONS: ReadonlyArray<{
+  value: string;
+  label: string;
+}> = [
   { value: "adamw_8bit", label: "AdamW 8-bit" },
   { value: "paged_adamw_8bit", label: "Paged AdamW 8-bit" },
   { value: "adamw_bnb_8bit", label: "AdamW BNB 8-bit" },
@@ -94,7 +99,10 @@ export const OPTIMIZER_OPTIONS: ReadonlyArray<{ value: string; label: string }> 
 
 // MLX trainer optimizers (Apple Silicon); must match SUPPORTED_MLX_OPTIMIZERS in
 // unsloth-zoo's mlx/trainer.py. The CUDA/torch names above are remapped to AdamW on MLX.
-export const MLX_OPTIMIZER_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+export const MLX_OPTIMIZER_OPTIONS: ReadonlyArray<{
+  value: string;
+  label: string;
+}> = [
   { value: "adamw", label: "AdamW" },
   { value: "adam", label: "Adam" },
   { value: "lion", label: "Lion" },
@@ -103,7 +111,10 @@ export const MLX_OPTIMIZER_OPTIONS: ReadonlyArray<{ value: string; label: string
   { value: "adafactor", label: "Adafactor" },
 ];
 
-export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{
+  value: string;
+  label: string;
+}> = [
   { value: "linear", label: "Linear" },
   { value: "cosine", label: "Cosine" },
 ];
@@ -135,7 +146,7 @@ export const DEFAULT_HYPERPARAMS = {
   warmupSteps: 5,
   maxSteps: 60,
   saveSteps: 0,
-  evalSteps: 0.00,
+  evalSteps: 0.0,
   packing: false,
   trainOnCompletions: false,
   gradientCheckpointing: "unsloth" as const,

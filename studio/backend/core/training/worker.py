@@ -83,24 +83,86 @@ def _resolve_cached_model_load_name(config: dict) -> str:
     return config.get("model_snapshot_path") or config["model_name"]
 
 
+def _effective_training_load_in_4bit(
+    config: dict,
+    model_load_target: str,
+    hf_token: str | None,
+) -> bool:
+    load_in_4bit = bool(config.get("load_in_4bit"))
+    if not load_in_4bit:
+        return False
+    from utils.transformers_version import latest_tier_active_for
+
+    return not latest_tier_active_for(model_load_target, hf_token)
+
+
 def _drop_model_pin(config: dict) -> str:
     config["model_snapshot_path"] = None
+    config["actual_model_repo_id"] = None
     return config["model_name"]
 
 
-def _verify_config_pins(config: dict, event_queue: Any) -> None:
+def _cache_artifact_fallback_allowed(
+    config: dict,
+    error: BaseException | None,
+) -> bool:
+    if config.get("require_exact_resume_resources"):
+        return False
+    from hub.utils.dataset_cache import is_cache_artifact_error
+
+    return is_cache_artifact_error(error)
+
+
+def _require_strict_cached_dataset(
+    config: dict,
+    dataset: Any,
+    split: str,
+) -> Any:
+    if config.get("require_exact_resume_resources") and dataset is None:
+        raise FileNotFoundError(
+            f"The exact cached dataset split '{split}' is no longer available."
+        )
+    return dataset
+
+
+def _verify_config_pins(config: dict, event_queue: Any) -> bool:
+    if config.get("require_exact_resume_resources"):
+        from core.training.provenance import (
+            ExactResumeResourcesUnavailable,
+            validate_exact_resource_pins,
+        )
+
+        try:
+            model_snapshot, dataset_snapshot = validate_exact_resource_pins(config)
+        except ExactResumeResourcesUnavailable as error:
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": str(error),
+                    "stack": "",
+                    "ts": time.time(),
+                }
+            )
+            return False
+        config["model_snapshot_path"] = model_snapshot
+        config["dataset_snapshot_path"] = dataset_snapshot
+        return True
+
     for message in config.get("cache_pin_warnings") or []:
         _send_status(event_queue, message)
     model_path = config.get("model_snapshot_path")
     if model_path:
         from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
 
+        pinned_repo_id = config.get("actual_model_repo_id") or config["model_name"]
         config["model_snapshot_path"] = latest_snapshot_from_cache_path(
             model_path,
             "model",
-            config["model_name"],
+            pinned_repo_id,
             ("config.json", "adapter_config.json"),
         )
+        if config["model_snapshot_path"] is None:
+            config["actual_model_repo_id"] = None
     dataset_path = config.get("dataset_snapshot_path")
     if dataset_path:
         from hub.utils.dataset_cache import dataset_cache_path_from_cache_path
@@ -110,6 +172,7 @@ def _verify_config_pins(config: dict, event_queue: Any) -> None:
             config.get("hf_dataset") or "",
         )
         config["dataset_snapshot_path"] = str(resolved) if resolved else None
+    return True
 
 
 def _load_cached_dataset_for_config(
@@ -144,6 +207,7 @@ def _load_hf_train_and_eval_datasets(
     eval_split = config.get("eval_split")
     dataset = None
     loaded_from_cache = False
+    config["_dataset_loaded_from_exact_snapshot"] = False
 
     def load_remote(split: str):
         kwargs = {"split": split, "token": token}
@@ -155,11 +219,10 @@ def _load_hf_train_and_eval_datasets(
         status_callback(f"Loading cached dataset: {hf_dataset}")
         try:
             dataset = _load_cached_dataset_for_config(config, train_split, token)
+            dataset = _require_strict_cached_dataset(config, dataset, train_split)
             loaded_from_cache = dataset is not None
         except Exception as error:
-            from hub.utils.dataset_cache import is_cache_artifact_error
-
-            if not is_cache_artifact_error(error):
+            if not _cache_artifact_fallback_allowed(config, error):
                 raise
             status_callback("Cached dataset unavailable; downloading from the Hub...")
 
@@ -172,10 +235,13 @@ def _load_hf_train_and_eval_datasets(
             if loaded_from_cache:
                 try:
                     eval_dataset = _load_cached_dataset_for_config(config, eval_split, token)
+                    eval_dataset = _require_strict_cached_dataset(
+                        config,
+                        eval_dataset,
+                        eval_split,
+                    )
                 except Exception as error:
-                    from hub.utils.dataset_cache import is_cache_artifact_error
-
-                    if not is_cache_artifact_error(error):
+                    if not _cache_artifact_fallback_allowed(config, error):
                         raise
                     status_callback(
                         "Cached eval split unavailable; reloading train and eval from the Hub..."
@@ -184,13 +250,80 @@ def _load_hf_train_and_eval_datasets(
                     remote_eval = load_remote(eval_split)
                     dataset = remote_train
                     eval_dataset = remote_eval
+                    loaded_from_cache = False
             else:
                 eval_dataset = load_remote(eval_split)
         except Exception as error:
+            if config.get("require_exact_resume_resources"):
+                raise
             status_callback(f"Eval split load failed: {error}")
             eval_dataset = None
 
+    if loaded_from_cache:
+        from core.training.provenance import exact_dataset_snapshot_path
+
+        config["_dataset_loaded_from_exact_snapshot"] = bool(
+            exact_dataset_snapshot_path(
+                config.get("dataset_snapshot_path"),
+                hf_dataset,
+            )
+        )
     return dataset, eval_dataset
+
+
+def _load_embedding_hf_dataset(
+    config: dict,
+    load_dataset: Callable,
+    status_callback: Callable[[str], None],
+):
+    hf_dataset = str(config.get("hf_dataset") or "").strip()
+    if not hf_dataset:
+        return None
+
+    subset = config.get("subset") or None
+    train_split = config.get("train_split", "train") or "train"
+    token = config.get("hf_token", "")
+    token = token if token and token.strip() else None
+    dataset = None
+    config["_dataset_loaded_from_exact_snapshot"] = False
+
+    if _dataset_local_files_only(config):
+        status_callback(f"Loading cached dataset: {hf_dataset}")
+        try:
+            dataset = _load_cached_dataset_for_config(
+                config,
+                train_split,
+                token,
+            )
+            dataset = _require_strict_cached_dataset(
+                config,
+                dataset,
+                train_split,
+            )
+            if dataset is not None:
+                from core.training.provenance import exact_dataset_snapshot_path
+
+                config["_dataset_loaded_from_exact_snapshot"] = bool(
+                    exact_dataset_snapshot_path(
+                        config.get("dataset_snapshot_path"),
+                        hf_dataset,
+                    )
+                )
+        except Exception as error:
+            if not _cache_artifact_fallback_allowed(config, error):
+                raise
+            status_callback("Cached dataset unavailable; downloading from the Hub...")
+            dataset = None
+            config["_dataset_loaded_from_exact_snapshot"] = False
+
+    if dataset is None:
+        dataset = load_dataset(
+            hf_dataset,
+            subset,
+            split = train_split,
+            token = token,
+        )
+    return dataset
 
 
 def _pre_detect_training_model(
@@ -252,6 +385,7 @@ def _model_load_security_error(
         logger.debug("Could not resolve LoRA base for security scan: %s", error)
 
     primary_name = config["model_name"]
+    selected_snapshot = config.get("model_snapshot_path")
     for target in dict.fromkeys(targets):
         load_subdirs = security_load_subdirs(
             primary_name if target == load_target else target,
@@ -261,6 +395,7 @@ def _model_load_security_error(
             target,
             hf_token = hf_token,
             load_subdirs = load_subdirs,
+            local_only_load = bool(selected_snapshot and target == selected_snapshot),
         )
         if decision.blocked:
             return {
@@ -1840,9 +1975,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             random_state = model_random_state,
         )
     except Exception as error:
-        from hub.utils.dataset_cache import is_cache_artifact_error
-
-        if not model_local_only or not is_cache_artifact_error(error):
+        if not model_local_only or not _cache_artifact_fallback_allowed(config, error):
             raise
         security_error = _model_load_security_error(config, model_name, hf_token)
         if security_error:
@@ -1866,6 +1999,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             random_state = model_random_state,
         )
 
+    loaded_model_for_provenance = model
     is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
     model._is_vlm_model = is_vlm
     vision_image_size = config.get("vision_image_size")
@@ -1938,6 +2072,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     hf_dataset = config.get("hf_dataset", "")
     slice_start = config.get("dataset_slice_start")
     slice_end = config.get("dataset_slice_end")
+    config["_dataset_loaded_from_exact_snapshot"] = False
 
     def _slice(ds):
         if slice_start is not None or slice_end is not None:
@@ -1995,6 +2130,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
         dataset = _slice(dataset)
     else:
         raise ValueError("No dataset specified")
+
+    _emit_resource_provenance(
+        event_queue,
+        config,
+        loaded_model_for_provenance,
+        model_load_target = model_load_name,
+        model_load_in_4bit = bool(config.get("load_in_4bit")),
+        dataset_loaded_from_exact_snapshot = bool(
+            config.get("_dataset_loaded_from_exact_snapshot")
+        ),
+    )
 
     # Eval dataset (separate split or local file)
     if not hf_dataset and config.get("local_eval_datasets"):
@@ -2442,6 +2588,7 @@ def run_mlx_training_process(
 ) -> None:
     """MLX worker entrypoint shared by Unsloth subprocesses and the CLI adapter."""
     model_name = config["model_name"]
+    model_load_target = _resolve_cached_model_load_name(config)
 
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
@@ -2455,7 +2602,10 @@ def run_mlx_training_process(
 
     if not transformers_activated:
         # Must precede detect_hardware(): its MLX stack check imports mlx_lm, hence transformers.
-        _activate_transformers_version_or_warn(model_name, config.get("hf_token") or None)
+        _activate_transformers_version_or_warn(
+            model_load_target,
+            config.get("hf_token") or None,
+        )
 
     from utils.hardware import hardware as _hw
 
@@ -2571,9 +2721,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
-    _verify_config_pins(config, event_queue)
+    if not _verify_config_pins(config, event_queue):
+        return
 
     model_name = config["model_name"]
+    model_load_target = _resolve_cached_model_load_name(config)
 
     format_error = _untrainable_model_format_error(config)
     if format_error:
@@ -2600,7 +2752,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     mlx_transformers_activated = False
     if mlx_backend_requested and _is_current_process_apple_silicon():
         # Must precede detect_hardware(): its MLX stack check imports mlx_lm, hence transformers.
-        _activate_transformers_version_or_warn(model_name, config.get("hf_token") or None)
+        _activate_transformers_version_or_warn(
+            model_load_target,
+            config.get("hf_token") or None,
+        )
         mlx_transformers_activated = True
 
     from utils.hardware import hardware as _hw
@@ -2617,7 +2772,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     try:
-        _activate_transformers_version(model_name, config.get("hf_token") or None)
+        _activate_transformers_version(
+            model_load_target,
+            config.get("hf_token") or None,
+        )
     except Exception as exc:
         event_queue.put(
             {
@@ -3146,7 +3304,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         model_load_name = _resolve_cached_model_load_name(config)
         model_local_only = _model_local_files_only(config)
         dataset_local_only = _dataset_local_files_only(config)
-        from hub.utils.dataset_cache import is_cache_artifact_error
 
         hf_dataset = config.get("hf_dataset", "")
         training_type = config.get("training_type", "LoRA/QLoRA")
@@ -3170,6 +3327,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 s3_config = config.get("s3_config"),
                 dataset_local_files_only = dataset_local_only,
                 dataset_local_path = config.get("dataset_snapshot_path"),
+                require_exact_resume_resources = bool(
+                    config.get("require_exact_resume_resources")
+                ),
             )
             if isinstance(result, tuple):
                 loaded_dataset, loaded_eval_dataset = result
@@ -3193,7 +3353,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 model_local_only,
             )
         except Exception as error:
-            if not model_local_only or not is_cache_artifact_error(error):
+            if not model_local_only or not _cache_artifact_fallback_allowed(config, error):
                 raise
             security_error = _model_load_security_error(config, model_name, hf_token)
             if security_error:
@@ -3277,16 +3437,17 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         # Latest-sidecar models load 16-bit here too: bnb 4-bit feeds quantized
         # expert weights into unvalidated paths (same flip as the chat worker).
-        _train_load_in_4bit = config["load_in_4bit"]
-        if _train_load_in_4bit:
-            from utils.transformers_version import latest_tier_active_for
-            if latest_tier_active_for(model_name, hf_token):
-                _train_load_in_4bit = False
-                logger.info(
-                    "Latest-transformers sidecar active for %s - forcing a 16-bit "
-                    "training load (4-bit is disabled for brand-new architectures)",
-                    model_name,
-                )
+        _train_load_in_4bit = _effective_training_load_in_4bit(
+            config,
+            model_load_name,
+            hf_token,
+        )
+        if config["load_in_4bit"] and not _train_load_in_4bit:
+            logger.info(
+                "Latest-transformers sidecar active for %s - forcing a 16-bit "
+                "training load (4-bit is disabled for brand-new architectures)",
+                model_load_name,
+            )
 
         try:
             success = trainer.load_model(
@@ -3306,7 +3467,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 not success
                 and model_local_only
                 and not trainer.should_stop
-                and is_cache_artifact_error(trainer.model_load_error)
+                and _cache_artifact_fallback_allowed(config, trainer.model_load_error)
             ):
                 security_error = _model_load_security_error(config, model_name, hf_token)
                 if security_error:
@@ -3370,6 +3531,17 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     }
                 )
             return
+
+        _emit_resource_provenance(
+            event_queue,
+            config,
+            trainer.model,
+            model_load_target = model_load_name,
+            model_load_in_4bit = _train_load_in_4bit,
+            dataset_loaded_from_exact_snapshot = bool(
+                getattr(trainer, "dataset_loaded_from_exact_snapshot", False)
+            ),
+        )
 
         if eval_dataset is not None:
             event_queue.put(
@@ -3619,6 +3791,35 @@ def _emit_output_dir(event_queue: Any, output_dir: str) -> None:
         pass
 
 
+def _emit_resource_provenance(
+    event_queue: Any,
+    config: dict,
+    model: Any,
+    *,
+    model_load_target: str,
+    model_load_in_4bit: bool,
+    dataset_loaded_from_exact_snapshot: bool,
+) -> None:
+    from core.training.provenance import (
+        build_worker_provenance_event,
+        incomplete_worker_provenance_event,
+    )
+
+    try:
+        event = build_worker_provenance_event(
+            config,
+            model,
+            model_load_target = model_load_target,
+            model_load_in_4bit = model_load_in_4bit,
+            dataset_loaded_from_exact_snapshot = dataset_loaded_from_exact_snapshot,
+        )
+    except Exception:
+        logger.warning("Could not attest training resource provenance", exc_info = True)
+        event = incomplete_worker_provenance_event("provenance_attestation_failed")
+    event["ts"] = time.time()
+    event_queue.put(event)
+
+
 def _mlx_has_checkpoint_at_step(output_dir, step: int) -> bool:
     if step <= 0:
         return False
@@ -3762,9 +3963,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 token = hf_token,
             )
         except Exception as error:
-            from hub.utils.dataset_cache import is_cache_artifact_error
-
-            if not model_local_only or not is_cache_artifact_error(error):
+            if not model_local_only or not _cache_artifact_fallback_allowed(config, error):
                 raise
             security_error = _model_load_security_error(config, model_name, hf_token)
             if security_error:
@@ -3793,6 +3992,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         return
 
+    loaded_model_for_provenance = model
     if _should_stop:
         event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
         return
@@ -3841,10 +4041,9 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     # ── 4. Load dataset ──
     _send_status(event_queue, "Loading dataset...")
     try:
-        hf_dataset = config.get("hf_dataset", "")
+        config["_dataset_loaded_from_exact_snapshot"] = False
+        hf_dataset = str(config.get("hf_dataset") or "").strip()
         local_datasets = config.get("local_datasets") or []
-        subset = config.get("subset") or None
-        train_split = config.get("train_split", "train") or "train"
 
         def _load_local_embedding_dataset(dataset_paths: list[str]):
             all_files: list[str] = []
@@ -3892,35 +4091,12 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 raise ValueError(f"Unsupported local dataset format: {all_files[0]}")
             return load_dataset(loader, data_files = all_files, split = "train")
 
-        if hf_dataset and hf_dataset.strip():
-            dataset = None
-            if _dataset_local_files_only(config):
-                _send_status(event_queue, f"Loading cached dataset: {hf_dataset.strip()}")
-                try:
-                    dataset = _load_cached_dataset_for_config(
-                        config,
-                        train_split,
-                        config.get("hf_token") or None,
-                    )
-                except Exception as error:
-                    from hub.utils.dataset_cache import is_cache_artifact_error
-
-                    if not is_cache_artifact_error(error):
-                        raise
-                    _send_status(
-                        event_queue,
-                        "Cached dataset unavailable; downloading from the Hub...",
-                    )
-                    dataset = None
-            if dataset is None:
-                hf_token = config.get("hf_token", "")
-                hf_token = hf_token if hf_token and hf_token.strip() else None
-                dataset = load_dataset(
-                    hf_dataset.strip(),
-                    subset,
-                    split = train_split,
-                    token = hf_token,
-                )
+        if hf_dataset:
+            dataset = _load_embedding_hf_dataset(
+                config,
+                load_dataset,
+                lambda message: _send_status(event_queue, message),
+            )
         elif local_datasets:
             dataset = _load_local_embedding_dataset(local_datasets)
         elif config.get("s3_config"):
@@ -3984,6 +4160,17 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     if _should_stop:
         event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
         return
+
+    _emit_resource_provenance(
+        event_queue,
+        config,
+        loaded_model_for_provenance,
+        model_load_target = model_load_name,
+        model_load_in_4bit = False,
+        dataset_loaded_from_exact_snapshot = bool(
+            config.get("_dataset_loaded_from_exact_snapshot")
+        ),
+    )
 
     # ── 5. Create loss function ──
     loss = MultipleNegativesRankingLoss(model)

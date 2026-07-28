@@ -66,7 +66,6 @@
 
   .field-soft:focus-visible {
     background-color: color-mix(in srgb, var(--foreground) 8%, transparent) !important;
-    box-shadow: none !important;
     outline: none;
   }
 
@@ -81,7 +80,6 @@
 
   .dark .field-soft:focus-visible {
     background-color: #1c1c1c !important;
-    box-shadow: none !important;
   }
 
   /* The Hub search field is `type="search"` (so the browser won't offer saved

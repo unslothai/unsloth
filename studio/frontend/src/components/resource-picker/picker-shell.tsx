@@ -21,7 +21,12 @@ import {
   type ReactNode,
   type RefObject,
   useId,
+  useRef,
 } from "react";
+import {
+  PICKER_FOCUS_VISIBLE_CLASS,
+  PICKER_OPTION_FOCUS_VISIBLE_CLASS,
+} from "./picker-focus";
 import { PICKER_TAB, type PickerTab, pickerTabId } from "./picker-tab-state";
 import { PickerTabToggle } from "./picker-tab-toggle";
 
@@ -49,7 +54,10 @@ function OfflineHubState({
       <button
         type="button"
         onClick={onSwitchDevice}
-        className="hub-action-btn mt-1 h-7 px-3 text-ui-11p5"
+        className={cn(
+          "hub-action-btn mt-1 h-7 px-3 text-ui-11p5",
+          PICKER_OPTION_FOCUS_VISIBLE_CLASS,
+        )}
       >
         {t("picker.offlineSwitchDevice")}
       </button>
@@ -76,6 +84,15 @@ function optionMatchesQuery(option: HTMLButtonElement, query: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isImeCompositionKey(
+  event: KeyboardEvent,
+  compositionActive: boolean,
+): boolean {
+  return (
+    compositionActive || event.nativeEvent.isComposing || event.keyCode === 229
+  );
 }
 
 function nextPickerNavigationTarget(
@@ -119,6 +136,7 @@ export function PickerShell({
   isHubLoading,
   noun,
   offlineNoun = noun,
+  onExactQueryCommit,
   onOpenChange,
   onQueryChange,
   onTabChange,
@@ -141,6 +159,7 @@ export function PickerShell({
   isHubLoading: boolean;
   noun: string;
   offlineNoun?: string;
+  onExactQueryCommit?: (query: string) => boolean;
   onOpenChange: (open: boolean) => void;
   onQueryChange: (value: string) => void;
   onTabChange: (tab: PickerTab) => void;
@@ -158,12 +177,17 @@ export function PickerShell({
   const idBase = useId();
   const panelId = `${idBase}-panel`;
   const activeTabId = pickerTabId(idBase, tab);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const isComposingRef = useRef(false);
   const tabs = [
     { value: PICKER_TAB.device, label: t("picker.onDevice") },
     { value: PICKER_TAB.hub, label: t("picker.huggingFace") },
   ] as const;
 
   function handlePickerNavigation(event: KeyboardEvent<HTMLDivElement>) {
+    if (isImeCompositionKey(event, isComposingRef.current)) {
+      return;
+    }
     const key = event.key;
     if (key !== "ArrowDown" && key !== "ArrowUp") {
       return;
@@ -181,6 +205,15 @@ export function PickerShell({
     next.scrollIntoView({ block: "nearest" });
   }
 
+  function switchToDevice() {
+    onTabChange(PICKER_TAB.device);
+    window.requestAnimationFrame(() => {
+      panelRef.current
+        ?.querySelector<HTMLInputElement>('[data-picker-search="true"]')
+        ?.focus();
+    });
+  }
+
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild={true}>{trigger}</PopoverTrigger>
@@ -189,8 +222,9 @@ export function PickerShell({
         sideOffset={8}
         collisionPadding={16}
         onKeyDown={handlePickerNavigation}
+        aria-label={t("picker.searchAriaLabel", { noun })}
         className={cn(
-          "w-[min(420px,calc(100vw-2rem))] rounded-2xl p-4",
+          "max-h-(--radix-popover-content-available-height) w-[min(420px,calc(100vw-2rem))] overflow-hidden rounded-2xl p-4",
           contentClassName,
         )}
       >
@@ -202,10 +236,11 @@ export function PickerShell({
           panelId={panelId}
         />
         <div
+          ref={panelRef}
           id={panelId}
           role="tabpanel"
           aria-labelledby={activeTabId}
-          className="mt-2.5 flex flex-col gap-2"
+          className="mt-2.5 flex min-h-0 flex-1 flex-col gap-2"
         >
           <div className="relative">
             <HugeiconsIcon
@@ -218,13 +253,28 @@ export function PickerShell({
               autoFocus={true}
               value={tab === PICKER_TAB.hub ? hubQuery : deviceQuery}
               onChange={(e) => onQueryChange(e.target.value)}
+              onCompositionStart={() => {
+                isComposingRef.current = true;
+              }}
+              onCompositionEnd={() => {
+                isComposingRef.current = false;
+              }}
+              onBlur={() => {
+                isComposingRef.current = false;
+              }}
               onKeyDown={(e) => {
+                if (isImeCompositionKey(e, isComposingRef.current)) {
+                  return;
+                }
                 if (e.key !== "Enter") {
                   return;
                 }
                 e.preventDefault();
                 if (showUseThis) {
                   onUseThis();
+                  return;
+                }
+                if (onExactQueryCommit?.(activeQuery)) {
                   return;
                 }
                 const exactMatch = scrollRef.current
@@ -238,7 +288,10 @@ export function PickerShell({
                 tab === PICKER_TAB.hub ? placeholder.hub : placeholder.device
               }
               aria-label={t("picker.searchAriaLabel", { noun })}
-              className="field-soft h-9 rounded-full pl-9 text-ui-12p5"
+              className={cn(
+                "field-soft h-9 rounded-full pl-9 text-ui-12p5",
+                PICKER_FOCUS_VISIBLE_CLASS,
+              )}
             />
             {tab === PICKER_TAB.hub && isHubLoading && (
               <Spinner className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -247,7 +300,7 @@ export function PickerShell({
 
           <div
             ref={scrollRef}
-            className="max-h-[320px] overflow-y-auto overscroll-contain rounded-[10px] [scrollbar-width:thin]"
+            className="min-h-0 max-h-[320px] flex-1 overflow-y-auto overscroll-contain rounded-[10px] [scrollbar-width:thin]"
           >
             {showUseThis && (
               <button
@@ -255,7 +308,10 @@ export function PickerShell({
                 data-picker-option="true"
                 data-picker-values={JSON.stringify([activeQuery])}
                 onClick={onUseThis}
-                className="mb-1 flex w-full items-center gap-2 rounded-[8px] border border-dashed border-primary/30 bg-primary/[0.04] px-2.5 py-2 text-left text-ui-12p5 transition-colors hover:bg-primary/[0.08]"
+                className={cn(
+                  "mb-1 flex w-full items-center gap-2 rounded-[8px] border border-dashed border-primary/30 bg-primary/[0.04] px-2.5 py-2 text-left text-ui-12p5 transition-colors hover:bg-primary/[0.08]",
+                  PICKER_OPTION_FOCUS_VISIBLE_CLASS,
+                )}
               >
                 <HugeiconsIcon
                   icon={
@@ -286,7 +342,7 @@ export function PickerShell({
             ) : (
               <OfflineHubState
                 noun={offlineNoun}
-                onSwitchDevice={() => onTabChange(PICKER_TAB.device)}
+                onSwitchDevice={switchToDevice}
               />
             )}
           </div>

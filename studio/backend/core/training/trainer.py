@@ -142,6 +142,7 @@ class UnslothTrainer:
         self._spark_tts_repo_dir = None  # Downloaded Spark-TTS repo path (for BiCodecTokenizer)
         self.model_name = None
         self.model_load_error = None
+        self.dataset_loaded_from_exact_snapshot = False
 
         # Training metrics tracking
         self.training_start_time: Optional[float] = None
@@ -2286,6 +2287,7 @@ class UnslothTrainer:
         s3_config: dict = None,
         dataset_local_files_only: bool = False,
         dataset_local_path: Optional[str] = None,
+        require_exact_resume_resources: bool = False,
     ) -> Optional[tuple]:
         """
         Load and prepare a dataset for training.
@@ -2300,6 +2302,7 @@ class UnslothTrainer:
 
         s3_download = None
         try:
+            self.dataset_loaded_from_exact_snapshot = False
             dataset = None
             eval_dataset = None
             has_separate_eval_source = False  # True if eval comes from a separate HF split
@@ -2457,7 +2460,20 @@ class UnslothTrainer:
                         )
                         try:
                             dataset = _load_selected_cached_dataset(split_name)
+                            if require_exact_resume_resources and dataset is None:
+                                raise FileNotFoundError(
+                                    f"The exact cached dataset split '{split_name}' "
+                                    "is no longer available."
+                                )
                             dataset_loaded_from_cache = True
+                            from core.training.provenance import exact_dataset_snapshot_path
+
+                            self.dataset_loaded_from_exact_snapshot = bool(
+                                exact_dataset_snapshot_path(
+                                    dataset_local_path,
+                                    dataset_source,
+                                )
+                            )
                             logger.info(
                                 f"Loaded cached dataset for {dataset_source}: "
                                 f"{len(dataset)} rows\n"
@@ -2465,7 +2481,10 @@ class UnslothTrainer:
                         except Exception as error:
                             from hub.utils.dataset_cache import is_cache_artifact_error
 
-                            if not is_cache_artifact_error(error):
+                            if (
+                                require_exact_resume_resources
+                                or not is_cache_artifact_error(error)
+                            ):
                                 raise
                             self._update_progress(
                                 status_message = (
@@ -2563,10 +2582,21 @@ class UnslothTrainer:
                             if dataset_loaded_from_cache:
                                 try:
                                     eval_dataset = _load_selected_cached_dataset(eval_split)
+                                    if (
+                                        require_exact_resume_resources
+                                        and eval_dataset is None
+                                    ):
+                                        raise FileNotFoundError(
+                                            f"The exact cached dataset split '{eval_split}' "
+                                            "is no longer available."
+                                        )
                                 except Exception as error:
                                     from hub.utils.dataset_cache import is_cache_artifact_error
 
-                                    if not is_cache_artifact_error(error):
+                                    if (
+                                        require_exact_resume_resources
+                                        or not is_cache_artifact_error(error)
+                                    ):
                                         raise
                                     self._update_progress(
                                         status_message = (
@@ -2579,6 +2609,7 @@ class UnslothTrainer:
                                     dataset = remote_train
                                     eval_dataset = remote_eval
                                     dataset_loaded_from_cache = False
+                                    self.dataset_loaded_from_exact_snapshot = False
                             else:
                                 eval_dataset = load_dataset(**eval_load_kwargs)
 

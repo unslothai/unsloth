@@ -27,6 +27,7 @@ try:
         can_resume_run,
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
+        training_run_config,
     )
     from storage.studio_db import get_resumable_run_by_output_dir
     from utils.models.model_config import detect_gguf_model, load_model_defaults
@@ -41,6 +42,7 @@ except ImportError:
         can_resume_run,
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
+        training_run_config,
     )
     from storage.studio_db import get_resumable_run_by_output_dir
     from utils.models.model_config import detect_gguf_model, load_model_defaults
@@ -209,6 +211,99 @@ def _reject_untrainable_model_request(request: TrainingStartRequest) -> None:
         )
 
 
+_RESUME_DATASET_DEFAULTS = {
+    "hf_dataset": None,
+    "local_datasets": [],
+    "local_eval_datasets": [],
+    "format_type": "",
+    "subset": None,
+    "train_split": "train",
+    "eval_split": None,
+    "dataset_streaming": False,
+    "dataset_slice_start": None,
+    "dataset_slice_end": None,
+    "custom_format_mapping": None,
+    "is_dataset_image": False,
+    "is_dataset_audio": False,
+    "is_embedding": False,
+}
+_RESUME_CACHE_FIELDS = (
+    "model_known_cached",
+    "model_local_path",
+    "model_format",
+    "model_snapshot_path",
+    "dataset_known_cached",
+    "dataset_local_path",
+    "dataset_snapshot_path",
+)
+
+
+def _normalized_optional_string(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _apply_resume_resource_provenance(
+    request: TrainingStartRequest,
+    resume_run: dict,
+) -> Optional[str]:
+    stored = training_run_config(resume_run)
+    from core.training.provenance import resource_provenance_allows_resume
+
+    if not resource_provenance_allows_resume(stored):
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "The source run has invalid resource provenance or its exact snapshots "
+                "are no longer available."
+            ),
+        )
+    stored_model = _normalized_optional_string(resume_run.get("model_name")) or (
+        _normalized_optional_string(stored.get("model_name"))
+    )
+    if stored_model is None:
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "The source run does not contain model provenance and cannot be resumed safely."
+            ),
+        )
+    if request.model_name != stored_model:
+        raise HTTPException(
+            status_code = 409,
+            detail = "The selected model does not match the model used by the source run.",
+        )
+
+    stored_training_type = stored.get("training_type")
+    if isinstance(stored_training_type, str) and stored_training_type:
+        if request.training_type != stored_training_type:
+            raise HTTPException(
+                status_code = 409,
+                detail = "The training type does not match the source run.",
+            )
+        request.training_type = stored_training_type
+
+    stored_dataset = _normalized_optional_string(stored.get("hf_dataset"))
+    requested_dataset = _normalized_optional_string(request.hf_dataset)
+    if requested_dataset != stored_dataset:
+        raise HTTPException(
+            status_code = 409,
+            detail = "The selected dataset does not match the dataset used by the source run.",
+    )
+
+    request.model_name = stored_model
+    for field, default in _RESUME_DATASET_DEFAULTS.items():
+        value = stored.get(field, default)
+        setattr(request, field, list(value) if isinstance(value, list) else value)
+    request.s3_config = None
+    for field in _RESUME_CACHE_FIELDS:
+        default = False if field.endswith("_known_cached") else None
+        setattr(request, field, stored.get(field, default))
+    return _normalized_optional_string(stored.get("actual_model_repo_id"))
+
+
 @router.get("/hardware")
 async def get_hardware_utilization(current_subject: str = Depends(get_current_subject)):
     """
@@ -277,7 +372,7 @@ async def start_training(
         # S3 dataset loading needs the optional boto3 dependency. Reject early
         # with a clear message so credentials are never accepted and then
         # silently dropped on a host without boto3 installed.
-        if request.s3_config is not None:
+        if request.s3_config is not None and not request.resume_from_checkpoint:
             from core.training.s3_dataset import boto3_available
             if not boto3_available():
                 raise HTTPException(
@@ -302,18 +397,10 @@ async def start_training(
         # pump thread is dead.
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
 
-        # Validate dataset paths if provided.
-        if request.local_datasets:
-            request.local_datasets = _validate_local_dataset_paths(
-                request.local_datasets, "Local dataset"
-            )
-        if request.local_eval_datasets and request.eval_steps > 0:
-            request.local_eval_datasets = _validate_local_dataset_paths(
-                request.local_eval_datasets, "Local eval dataset"
-            )
-        _reject_untrainable_model_request(request)
         resume_output_dir: Optional[str] = None
         resume_run: Optional[dict] = None
+        resume_actual_model_repo_id: Optional[str] = None
+        resume_requires_exact_resources = False
         if request.resume_from_checkpoint:
             try:
                 resume_output_dir = normalize_resume_output_dir(request.resume_from_checkpoint)
@@ -335,6 +422,22 @@ async def start_training(
                     detail = "Resume checkpoint must include saved trainer state.",
                 )
             request.resume_from_checkpoint = resume_checkpoint
+            resume_actual_model_repo_id = _apply_resume_resource_provenance(request, resume_run)
+            from core.training.provenance import resource_provenance_is_complete
+
+            resume_requires_exact_resources = resource_provenance_is_complete(
+                training_run_config(resume_run)
+            )
+
+        if request.local_datasets:
+            request.local_datasets = _validate_local_dataset_paths(
+                request.local_datasets, "Local dataset"
+            )
+        if request.local_eval_datasets and request.eval_steps > 0:
+            request.local_eval_datasets = _validate_local_dataset_paths(
+                request.local_eval_datasets, "Local eval dataset"
+            )
+        _reject_untrainable_model_request(request)
 
         # Validate streaming-mode compatibility before any expensive work.
         # Streaming is supported only for Hugging Face text datasets.
@@ -420,6 +523,7 @@ async def start_training(
             "model_local_path": request.model_local_path,
             "model_format": request.model_format,
             "model_snapshot_path": request.model_snapshot_path,
+            "actual_model_repo_id": resume_actual_model_repo_id,
             "dataset_known_cached": request.dataset_known_cached,
             "dataset_local_path": request.dataset_local_path,
             "dataset_snapshot_path": request.dataset_snapshot_path,
@@ -478,6 +582,7 @@ async def start_training(
             "tensorboard_dir": request.tensorboard_dir or "",
             "output_dir": resume_output_dir,
             "resume_from_checkpoint": request.resume_from_checkpoint,
+            "require_exact_resume_resources": resume_requires_exact_resources,
             "trust_remote_code": request.trust_remote_code,
             "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
             "subject": current_subject,
@@ -488,11 +593,22 @@ async def start_training(
         # Latest-sidecar models size and train 16-bit (same flip as chat load):
         # 4-bit is disabled for brand-new architectures, so VRAM coexistence
         # checks must not underestimate against a load the worker will refuse.
+        from core.training.provenance import ExactResumeResourcesUnavailable
+
         if training_kwargs["load_in_4bit"]:
+            from core.training.training import resolve_training_model_load_target
             from utils.transformers_version import latest_tier_active_for
+
+            try:
+                model_load_target = await asyncio.to_thread(
+                    resolve_training_model_load_target,
+                    training_kwargs,
+                )
+            except ExactResumeResourcesUnavailable as exc:
+                raise HTTPException(status_code = 409, detail = str(exc))
             if await asyncio.to_thread(
                 latest_tier_active_for,
-                training_kwargs["model_name"],
+                model_load_target,
                 training_kwargs["hf_token"] or None,
             ):
                 training_kwargs["load_in_4bit"] = False
@@ -500,7 +616,7 @@ async def start_training(
                     "Latest-transformers sidecar active for %s - sizing and "
                     "training in 16-bit (4-bit is disabled for brand-new "
                     "architectures)",
-                    training_kwargs["model_name"],
+                    model_load_target,
                 )
 
         # Training page has no trust_remote_code toggle, so honor the YAML default
@@ -583,6 +699,8 @@ async def start_training(
         except SidecarSwapInProgress as exc:
             # Expected loss of the race against a sidecar install: a retryable
             # 409 matching the route-entry guard, not an internal error.
+            raise HTTPException(status_code = 409, detail = str(exc))
+        except ExactResumeResourcesUnavailable as exc:
             raise HTTPException(status_code = 409, detail = str(exc))
 
         if not success:

@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getHfToken, useHfTokenStore } from "@/features/hub";
-import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
+import { getHfToken, useHfTokenStore } from "@/features/hub";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
-import { useCallback } from "react";
+import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { toast } from "@/lib/toast";
+import { useCallback } from "react";
 import { checkDatasetFormat } from "../api/datasets-api";
-import { emitTrainingRunsChanged } from "../events";
 import { getTrainingRun } from "../api/history-api";
 import { buildTrainingStartPayload } from "../api/mappers";
 import { resetTraining, startTraining, stopTraining } from "../api/train-api";
+import { emitTrainingRunsChanged } from "../events";
 import { cacheLocalPathMatchesSelection } from "../lib/cache-reference";
 import { isMissingLocalDatasetCacheError } from "../lib/local-cache-errors";
-import { isRawTextDatasetFormat } from "../lib/training-methods";
 import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
+import { isRawTextDatasetFormat } from "../lib/training-methods";
 import { validateTrainingConfig } from "../lib/validation";
 import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-store";
 import { useTrainingConfigStore } from "../stores/training-config-store";
@@ -62,6 +62,7 @@ export function useTrainingActions() {
     const currentToken = getHfToken();
     const preparedToken = await prepareHfTokenForUse(currentToken);
     if (!preparedToken.proceed) return false;
+    const actionHfToken = preparedToken.token;
     if ((preparedToken.token ?? "") !== currentToken) {
       useHfTokenStore.getState().setToken(preparedToken.token ?? "");
     }
@@ -84,13 +85,15 @@ export function useTrainingActions() {
         const preferLocalCache =
           config.datasetSource === "huggingface" && config.datasetKnownCached;
         const datasetLocalPath =
-          config.datasetSource === "huggingface" ? config.datasetLocalPath : null;
+          config.datasetSource === "huggingface"
+            ? config.datasetLocalPath
+            : null;
         let check: CheckFormatResponse;
 
         try {
           check = await checkDatasetFormat({
             datasetName,
-            hfToken: getHfToken().trim() || null,
+            hfToken: actionHfToken,
             subset: config.datasetSubset,
             split: config.datasetSplit,
             isVlm,
@@ -105,7 +108,7 @@ export function useTrainingActions() {
           clearMissingDatasetCacheReference(datasetName, datasetLocalPath);
           check = await checkDatasetFormat({
             datasetName,
-            hfToken: getHfToken().trim() || null,
+            hfToken: actionHfToken,
             subset: config.datasetSubset,
             split: config.datasetSplit,
             isVlm,
@@ -122,7 +125,10 @@ export function useTrainingActions() {
         if (isImage && config.isVisionModel) {
           isVlm = true;
         }
-        if (isImage !== config.isDatasetImage || isAudio !== config.isDatasetAudio) {
+        if (
+          isImage !== config.isDatasetImage ||
+          isAudio !== config.isDatasetAudio
+        ) {
           useTrainingConfigStore.setState({
             isDatasetImage: isImage,
             isDatasetAudio: isAudio,
@@ -185,7 +191,7 @@ export function useTrainingActions() {
       if (config.selectedModel) {
         const remoteCodeOk = await confirmRemoteCodeIfNeeded({
           modelName: config.selectedModel,
-          hfToken: getHfToken().trim() || null,
+          hfToken: actionHfToken,
           requiresTrustRemoteCode: config.trustRemoteCode,
           onApprove: (fingerprint) =>
             useTrainingConfigStore.setState({
@@ -200,7 +206,10 @@ export function useTrainingActions() {
       }
 
       // Re-read config after potential store updates from dataset check
-      const payload = buildTrainingStartPayload(useTrainingConfigStore.getState());
+      const payload = {
+        ...buildTrainingStartPayload(useTrainingConfigStore.getState()),
+        hf_token: actionHfToken,
+      };
       runtimeStore.setStartResources(
         payload.model_name,
         payload.hf_dataset,
@@ -247,90 +256,96 @@ export function useTrainingActions() {
     }
   }, []);
 
-  const resumeTrainingRunFromHistory = useCallback(async (runId: string): Promise<boolean> => {
-    const runtimeStore = useTrainingRuntimeStore.getState();
-    runtimeStore.setStartError(null);
-    runtimeStore.setStartResources(null, null, true, null);
-    runtimeStore.setStarting(true);
+  const resumeTrainingRunFromHistory = useCallback(
+    async (runId: string): Promise<boolean> => {
+      const runtimeStore = useTrainingRuntimeStore.getState();
+      runtimeStore.setStartError(null);
+      runtimeStore.setStartResources(null, null, true, null);
+      runtimeStore.setStarting(true);
 
-    try {
-      const detail = await getTrainingRun(runId);
-      const outputDir = detail.run.output_dir;
-      if (!detail.run.can_resume || !outputDir) {
-        throw new Error("Only stopped or errored runs with a saved checkpoint can be resumed.");
-      }
+      try {
+        const detail = await getTrainingRun(runId);
+        const outputDir = detail.run.output_dir;
+        if (!detail.run.can_resume || !outputDir) {
+          throw new Error(
+            "Only stopped or errored runs with a saved checkpoint can be resumed.",
+          );
+        }
 
-      primeNativeNotificationPermission().catch(() => undefined);
+        primeNativeNotificationPermission().catch(() => undefined);
 
-      const savedConfig = detail.config as Partial<TrainingStartRequest>;
-      const payload = {
-        ...savedConfig,
-        hf_token:
-          typeof savedConfig.hf_token === "string"
-            ? savedConfig.hf_token
-            : getHfToken().trim() || null,
-        wandb_token: null,
-        resume_from_checkpoint: outputDir,
-      } as TrainingStartRequest;
+        const savedConfig = detail.config as Partial<TrainingStartRequest>;
+        const payload = {
+          ...savedConfig,
+          hf_token:
+            typeof savedConfig.hf_token === "string"
+              ? savedConfig.hf_token
+              : getHfToken().trim() || null,
+          wandb_token: null,
+          resume_from_checkpoint: outputDir,
+        } as TrainingStartRequest;
 
-      const preparedToken = await prepareHfTokenForUse(payload.hf_token);
-      if (!preparedToken.proceed) {
-        runtimeStore.setStarting(false);
-        return false;
-      }
-      payload.hf_token = preparedToken.token;
-
-      runtimeStore.setStartResources(
-        payload.model_name,
-        payload.hf_dataset,
-        true,
-        payload.project_name ?? "",
-      );
-
-      // Resume goes straight to startTraining, so it runs the same consent gate as a
-      // fresh start; otherwise a resumed custom-code run hits the worker block with no dialog.
-      if (payload.model_name) {
-        let trustRemoteCode = Boolean(payload.trust_remote_code);
-        let approvedRemoteCodeFingerprint =
-          payload.approved_remote_code_fingerprint ?? null;
-        const remoteCodeOk = await confirmRemoteCodeIfNeeded({
-          modelName: payload.model_name,
-          hfToken: payload.hf_token ?? null,
-          requiresTrustRemoteCode: trustRemoteCode,
-          onApprove: (fingerprint) => {
-            trustRemoteCode = true;
-            approvedRemoteCodeFingerprint = fingerprint;
-          },
-        });
-        if (!remoteCodeOk) {
+        const preparedToken = await prepareHfTokenForUse(payload.hf_token);
+        if (!preparedToken.proceed) {
           runtimeStore.setStarting(false);
           return false;
         }
-        payload.trust_remote_code = trustRemoteCode;
-        payload.approved_remote_code_fingerprint = approvedRemoteCodeFingerprint;
-      }
+        payload.hf_token = preparedToken.token;
 
-      const response = await startTraining(payload);
-      if (response.status === "error") {
-        throw new Error(response.error || response.message);
-      }
+        runtimeStore.setStartResources(
+          payload.model_name,
+          payload.hf_dataset,
+          true,
+          payload.project_name ?? "",
+        );
 
-      runtimeStore.setStartQueued(response.job_id, response.message);
-      emitTrainingRunsChanged();
-      await syncTrainingRuntimeFromBackend();
-      return true;
-    } catch (error) {
-      const rawMessage =
-        error instanceof Error ? error.message : "Failed to resume training";
-      const safeMessage = normalizeTrainingStartError(rawMessage);
-      runtimeStore.setStartError(safeMessage);
-      runtimeStore.setStarting(false);
-      toast.error("Could not resume training", {
-        description: safeMessage,
-      });
-      return false;
-    }
-  }, []);
+        // Resume goes straight to startTraining, so it runs the same consent gate as a
+        // fresh start; otherwise a resumed custom-code run hits the worker block with no dialog.
+        if (payload.model_name) {
+          let trustRemoteCode = Boolean(payload.trust_remote_code);
+          let approvedRemoteCodeFingerprint =
+            payload.approved_remote_code_fingerprint ?? null;
+          const remoteCodeOk = await confirmRemoteCodeIfNeeded({
+            modelName: payload.model_name,
+            hfToken: payload.hf_token ?? null,
+            requiresTrustRemoteCode: trustRemoteCode,
+            onApprove: (fingerprint) => {
+              trustRemoteCode = true;
+              approvedRemoteCodeFingerprint = fingerprint;
+            },
+          });
+          if (!remoteCodeOk) {
+            runtimeStore.setStarting(false);
+            return false;
+          }
+          payload.trust_remote_code = trustRemoteCode;
+          payload.approved_remote_code_fingerprint =
+            approvedRemoteCodeFingerprint;
+        }
+
+        const response = await startTraining(payload);
+        if (response.status === "error") {
+          throw new Error(response.error || response.message);
+        }
+
+        runtimeStore.setStartQueued(response.job_id, response.message);
+        emitTrainingRunsChanged();
+        await syncTrainingRuntimeFromBackend();
+        return true;
+      } catch (error) {
+        const rawMessage =
+          error instanceof Error ? error.message : "Failed to resume training";
+        const safeMessage = normalizeTrainingStartError(rawMessage);
+        runtimeStore.setStartError(safeMessage);
+        runtimeStore.setStarting(false);
+        toast.error("Could not resume training", {
+          description: safeMessage,
+        });
+        return false;
+      }
+    },
+    [],
+  );
 
   const dismissTrainingRun = useCallback(async (): Promise<void> => {
     try {
@@ -387,7 +402,11 @@ function getHfDatasetName(config: TrainingConfigState): string | null {
   return config.datasetSource === "huggingface" ? config.dataset : null;
 }
 
-function hasManualMapping(config: TrainingConfigState, isVlm = false, isAudio = false): boolean {
+function hasManualMapping(
+  config: TrainingConfigState,
+  isVlm = false,
+  isAudio = false,
+): boolean {
   const mapping = config.datasetManualMapping;
   const roles = new Set(Object.values(mapping));
   if (isAudio) return roles.has("audio") && roles.has("text");

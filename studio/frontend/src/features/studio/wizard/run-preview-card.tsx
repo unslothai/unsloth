@@ -415,9 +415,7 @@ export function RunPreviewCard({
         <MetaRow
           label={t("studio.preview.hfToken")}
           value={
-            hasToken
-              ? t("studio.preview.connected")
-              : t("studio.preview.notSet")
+            hasToken ? t("studio.preview.saved") : t("studio.preview.notSet")
           }
         />
       </section>

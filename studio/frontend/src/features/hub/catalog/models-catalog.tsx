@@ -5,6 +5,7 @@ import { usePlatformStore } from "@/config/env";
 import { cn } from "@/lib/utils";
 import {
   type ReactNode,
+  type Ref,
   type RefObject,
   memo,
   useCallback,
@@ -59,7 +60,7 @@ export interface ModelsCatalogState {
 
 export interface ModelsCatalogPagination {
   scrollRef: RefObject<HTMLDivElement | null>;
-  sentinelRef: RefObject<HTMLDivElement | null>;
+  sentinelRef: Ref<HTMLDivElement>;
   isLoadingMore: boolean;
 }
 

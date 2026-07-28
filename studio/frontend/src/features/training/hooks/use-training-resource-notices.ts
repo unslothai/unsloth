@@ -113,14 +113,17 @@ function resolveDatasetNotice({
   rows: readonly ModelInventoryRow[];
   partialSet: ReadonlySet<string>;
 }): TrainingResourceNotice | null {
+  if (streaming) {
+    return null;
+  }
   return resolveTrainingResourceNotice({
     kind: "dataset",
     id,
     isLocal: !isHf,
-    knownCached: !streaming && knownCached,
-    localPath: streaming ? null : localPath,
-    completeSet: streaming ? EMPTY_RESOURCE_SET : completeResourceSet(rows),
-    partialSet: streaming ? EMPTY_RESOURCE_SET : partialSet,
+    knownCached,
+    localPath,
+    completeSet: completeResourceSet(rows),
+    partialSet,
   });
 }
 

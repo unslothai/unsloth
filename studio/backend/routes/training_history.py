@@ -8,8 +8,8 @@ Training history API routes — browse, view, and delete past training runs.
 import asyncio
 import json
 import shutil
-from pathlib import Path, PureWindowsPath
-from typing import Optional
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loggers import get_logger
@@ -45,16 +45,22 @@ router = APIRouter()
 def _canonical_output_dir(output_dir: Optional[str]) -> Optional[Path]:
     if not output_dir or not str(output_dir).strip():
         return None
+    raw = str(output_dir).strip()
+    native_path = Path(raw).expanduser()
+    if (
+        PureWindowsPath(raw).is_absolute() or PurePosixPath(raw).is_absolute()
+    ) and not native_path.is_absolute():
+        return None
     try:
         outputs_base = outputs_root().expanduser().resolve(strict = False)
         try:
             candidate = resolve_output_dir(output_dir)
         except ValueError:
-            raw = str(output_dir).strip()
-            path = Path(raw).expanduser()
-            if PureWindowsPath(raw).is_absolute() and not path.is_absolute():
-                return None
-            candidate = path if path.is_absolute() else outputs_base / path
+            candidate = (
+                native_path
+                if native_path.is_absolute()
+                else outputs_base / native_path
+            )
         resolved = candidate.resolve(strict = False)
         resolved.relative_to(outputs_base)
         return resolved
@@ -131,14 +137,45 @@ def _active_training_output_dir() -> Optional[str]:
 def _same_output_dir(first: Optional[str], second: Optional[str]) -> bool:
     first_path = _canonical_output_dir(first)
     second_path = _canonical_output_dir(second)
-    return first_path is not None and first_path == second_path
+    if first_path is None or second_path is None:
+        return False
+    try:
+        if first_path.exists() and second_path.exists() and first_path.samefile(second_path):
+            return True
+    except OSError:
+        pass
+    return first_path == second_path
+
+
+def _output_dirs_overlap(first: Optional[str], second: Optional[str]) -> bool:
+    first_path = _canonical_output_dir(first)
+    second_path = _canonical_output_dir(second)
+    if first_path is None or second_path is None:
+        return False
+    if _same_output_dir(str(first_path), str(second_path)):
+        return True
+    return first_path in second_path.parents or second_path in first_path.parents
 
 
 def _output_dir_shared(output_dir: str, run_id: str) -> bool:
     return any(
-        _same_output_dir(output_dir, candidate)
+        _output_dirs_overlap(output_dir, candidate)
         for candidate in list_other_run_output_dirs(run_id)
     )
+
+
+_ArtifactDeleteOutcome = Literal["deleted", "active", "shared", "failed"]
+
+
+def _delete_run_output_dir_guarded(run_id: str, output_dir: str) -> _ArtifactDeleteOutcome:
+    from core.training.lifecycle import training_lifecycle_guard
+
+    with training_lifecycle_guard():
+        if _output_dirs_overlap(output_dir, _active_training_output_dir()):
+            return "active"
+        if _output_dir_shared(output_dir, run_id):
+            return "shared"
+        return "deleted" if _delete_run_output_dir(run_id, output_dir) else "failed"
 
 
 @router.get("/runs", response_model = TrainingRunListResponse)
@@ -222,29 +259,38 @@ async def delete_training_run(
     if delete_artifacts:
         output_dir = run.get("output_dir")
         if output_dir:
-            if _same_output_dir(output_dir, _active_training_output_dir()):
+            if _output_dirs_overlap(output_dir, _active_training_output_dir()):
                 raise HTTPException(
                     status_code = 409,
                     detail = (
                         "Cannot delete artifacts while a training run is writing to this directory"
                     ),
                 )
-            if _output_dir_shared(output_dir, run_id):
+            delete_outcome = await asyncio.to_thread(
+                _delete_run_output_dir_guarded,
+                run_id,
+                output_dir,
+            )
+            if delete_outcome == "active":
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        "Cannot delete artifacts while a training run is writing "
+                        "to this directory"
+                    ),
+                )
+            if delete_outcome == "shared":
                 artifacts_kept_reason = "shared_output_dir"
                 logger.info(
                     "Keeping artifacts for run %s; another run shares %s", run_id, output_dir
                 )
-            else:
-                artifacts_deleted = await asyncio.to_thread(
-                    _delete_run_output_dir,
-                    run_id,
-                    output_dir,
+            elif delete_outcome == "failed":
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "Could not delete run artifacts; training history was retained",
                 )
-                if not artifacts_deleted:
-                    raise HTTPException(
-                        status_code = 409,
-                        detail = "Could not delete run artifacts; training history was retained",
-                    )
+            else:
+                artifacts_deleted = True
     delete_run(run_id)
     return TrainingRunDeleteResponse(
         status = "deleted",

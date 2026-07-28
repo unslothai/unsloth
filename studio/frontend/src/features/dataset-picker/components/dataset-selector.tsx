@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { hubResourceIdsEqual } from "@/components/resource-picker/hub-resource-id";
+import { PICKER_FOCUS_VISIBLE_CLASS } from "@/components/resource-picker/picker-focus";
 import { PickerShell } from "@/components/resource-picker/picker-shell";
-import { isHfAuthError } from "@/components/resource-picker/picker-tab-state";
-import { RetryButton } from "@/components/resource-picker/picker-tab-toggle";
-import { SelectablePickerItem } from "@/components/resource-picker/selectable-picker-item";
 import { useHfErrorToast } from "@/components/resource-picker/use-hf-error-toast";
+import { usePickerHubPagination } from "@/components/resource-picker/use-picker-hub-pagination";
 import { usePickerState } from "@/components/resource-picker/use-picker-state";
-import { Spinner } from "@/components/ui/spinner";
 import {
   type CachedInventoryRow,
   hfApiToken,
@@ -17,55 +16,58 @@ import {
   useHubDatasetSearch,
   useHubInfiniteScroll,
   useHubInventory,
-  useLatestRef,
   useOnlineStatus,
 } from "@/features/hub";
-import { useTrainingConfigStore } from "@/features/training";
+import {
+  cacheLocalPathMatchesSelection,
+  useTrainingConfigStore,
+} from "@/features/training";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { ArrowDown01Icon, Database02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type RefObject, useCallback, useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { datasetDisplayName } from "../lib/display";
+import {
+  type DatasetDeviceItem,
+  DatasetDeviceList,
+  DatasetHubList,
+} from "./dataset-selector-lists";
 
 const DATASET_PICKER_TAB_STORAGE_KEY = "unsloth.studio.train.datasetPickerTab";
 
 const TRIGGER_BASE = cn(
   "hub-menu-trigger field-soft inline-flex h-9 w-full cursor-pointer select-none items-center gap-1.5 rounded-[12px] px-3 text-ui-12p5 text-muted-foreground transition-colors",
-  "focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0",
+  PICKER_FOCUS_VISIBLE_CLASS,
 );
 
-type DeviceDatasetItem =
-  | {
-      kind: "local";
-      key: string;
-      title: string;
-      detail: string;
-      path: string;
-    }
-  | {
-      kind: "cached";
-      key: string;
-      title: string;
-      detail: string;
-      repoId: string;
-      cachePath: string | null;
-    };
+function findExactLocalDataset(
+  query: string,
+  deviceItems: readonly DatasetDeviceItem[],
+): Extract<DatasetDeviceItem, { kind: "local" }> | undefined {
+  return deviceItems.find(
+    (item): item is Extract<DatasetDeviceItem, { kind: "local" }> =>
+      item.kind === "local" && cacheLocalPathMatchesSelection(item.path, query),
+  );
+}
 
 function hasExactDatasetMatch(
   query: string,
   tab: "device" | "hub",
   hubItems: readonly { id: string }[],
-  deviceItems: readonly DeviceDatasetItem[],
+  deviceItems: readonly DatasetDeviceItem[],
 ): boolean {
   if (!query) {
     return false;
   }
   if (tab === "hub") {
-    return hubItems.some((item) => item.id === query);
+    return hubItems.some((item) => hubResourceIdsEqual(item.id, query));
   }
-  return deviceItems.some((item) =>
-    item.kind === "cached" ? item.repoId === query : item.path === query,
+  return (
+    deviceItems.some(
+      (item) =>
+        item.kind === "cached" && hubResourceIdsEqual(item.repoId, query),
+    ) || findExactLocalDataset(query, deviceItems) !== undefined
   );
 }
 
@@ -109,6 +111,7 @@ export function DatasetSelector({
     hfToken,
     online,
   });
+  const { closePicker } = picker;
   const {
     cachedRows,
     localRows,
@@ -139,7 +142,8 @@ export function DatasetSelector({
   const selectHubDataset = useCallback(
     (id: string) => {
       const cached = cachedDatasetById.get(id.trim().toLowerCase());
-      selectHfDataset(id, {
+      const canonicalId = cached?.repoId ?? id.trim();
+      selectHfDataset(canonicalId, {
         knownCached: cached !== undefined,
         localPath: cached?.cachePath ?? null,
       });
@@ -147,8 +151,8 @@ export function DatasetSelector({
     [selectHfDataset, cachedDatasetById],
   );
 
-  const deviceItems = useMemo<DeviceDatasetItem[]>(() => {
-    const cachedItems: DeviceDatasetItem[] = cachedRows
+  const deviceItems = useMemo<DatasetDeviceItem[]>(() => {
+    const cachedItems: DatasetDeviceItem[] = cachedRows
       .filter((d) => !d.partial)
       .map((d) => ({
         kind: "cached",
@@ -158,7 +162,7 @@ export function DatasetSelector({
         repoId: d.repoId,
         cachePath: d.cachePath ?? null,
       }));
-    const localItems: DeviceDatasetItem[] = localRows.map((d) => ({
+    const localItems: DatasetDeviceItem[] = localRows.map((d) => ({
       kind: "local",
       key: `local:${d.path}`,
       title: d.title || d.id,
@@ -183,6 +187,8 @@ export function DatasetSelector({
     fetchMore: fetchMoreHf,
     retry: retryHf,
     error: hfError,
+    scannedCount: scannedHfCount,
+    hasMore: hasMoreHf,
   } = useHubDatasetSearch(picker.debouncedHubQuery, {
     modelType,
     enabled: online && picker.open && tab === "hub",
@@ -190,21 +196,33 @@ export function DatasetSelector({
   });
 
   const hubSearchActive = online && picker.open && tab === "hub";
-  const hubSearchActiveRef = useLatestRef(hubSearchActive);
-  const fetchMoreHfRef = useLatestRef(fetchMoreHf);
   useHfErrorToast(hubSearchActive ? hfError : null, "datasets");
 
-  const fetchMoreOpenHf = useCallback(() => {
-    if (!hubSearchActiveRef.current) {
-      return;
+  const hubItems = useMemo(() => {
+    if (
+      datasetSource !== "huggingface" ||
+      !dataset ||
+      hfResults.some((item) => hubResourceIdsEqual(item.id, dataset))
+    ) {
+      return hfResults;
     }
-    fetchMoreHfRef.current();
-  }, [hubSearchActiveRef, fetchMoreHfRef]);
+    return [...hfResults, { id: dataset }];
+  }, [dataset, datasetSource, hfResults]);
+
+  const hubPagination = usePickerHubPagination({
+    enabled: hubSearchActive,
+    fetchMore: fetchMoreHf,
+    hasMore: hasMoreHf,
+    isFetching: isLoadingHf || isLoadingHfMore,
+    resetKey: picker.debouncedHubQuery,
+    resultCount: hfResults.length,
+    scannedCount: scannedHfCount,
+  });
 
   const { scrollRef, sentinelRef } = useHubInfiniteScroll(
-    fetchMoreOpenHf,
-    hfResults.length,
-    { enabled: hubSearchActive },
+    hubPagination.fetchMore,
+    hubPagination.signal,
+    hubPagination.options,
   );
 
   const filteredDevice = useMemo(() => {
@@ -223,7 +241,7 @@ export function DatasetSelector({
   const hasExactMatch = hasExactDatasetMatch(
     activeQuery,
     tab,
-    hfResults,
+    hubItems,
     deviceItems,
   );
   const showUseThis = activeQuery.length > 0 && !hasExactMatch;
@@ -242,15 +260,48 @@ export function DatasetSelector({
     } else {
       selectLocalDataset(next);
     }
-    picker.closePicker();
+    closePicker();
   };
+
+  const commitExactQuery = useCallback(
+    (query: string) => {
+      if (tab === "hub") {
+        const item = hubItems.find((candidate) =>
+          hubResourceIdsEqual(candidate.id, query),
+        );
+        if (!item) {
+          return false;
+        }
+        selectHubDataset(item.id);
+        closePicker();
+        return true;
+      }
+      const item = findExactLocalDataset(query, deviceItems);
+      if (!item) {
+        return false;
+      }
+      selectLocalDataset(item.path);
+      closePicker();
+      return true;
+    },
+    [
+      closePicker,
+      deviceItems,
+      hubItems,
+      selectHubDataset,
+      selectLocalDataset,
+      tab,
+    ],
+  );
 
   const selectedLocalDatasetTitle = useMemo(() => {
     if (datasetSource !== "upload" || !uploadedFile) {
       return null;
     }
     const selected = deviceItems.find(
-      (item) => item.kind === "local" && item.path === uploadedFile,
+      (item) =>
+        item.kind === "local" &&
+        cacheLocalPathMatchesSelection(item.path, uploadedFile),
     );
     return selected?.title ?? null;
   }, [datasetSource, uploadedFile, deviceItems]);
@@ -278,6 +329,7 @@ export function DatasetSelector({
       showUseThis={showUseThis}
       useThisLabel={useThisLabel}
       onUseThis={() => commitRaw(activeQuery)}
+      onExactQueryCommit={commitExactQuery}
       placeholder={{
         hub: t("studio.datasetPicker.hubPlaceholder"),
         device: t("studio.datasetPicker.devicePlaceholder"),
@@ -312,7 +364,7 @@ export function DatasetSelector({
         </button>
       }
       deviceContent={
-        <DeviceList
+        <DatasetDeviceList
           items={filteredDevice}
           isLoading={isLoadingLocal}
           error={localError}
@@ -330,13 +382,13 @@ export function DatasetSelector({
                 localPath: item.cachePath,
               });
             }
-            picker.closePicker();
+            closePicker();
           }}
         />
       }
       hubContent={
-        <HubList
-          items={hfResults}
+        <DatasetHubList
+          items={hubItems}
           isLoading={isLoadingHf}
           isLoadingMore={isLoadingHfMore}
           value={dataset}
@@ -344,180 +396,12 @@ export function DatasetSelector({
           error={hfError}
           onPick={(id) => {
             selectHubDataset(id);
-            picker.closePicker();
+            closePicker();
           }}
           onRetry={retryHf}
           sentinelRef={sentinelRef}
         />
       }
     />
-  );
-}
-
-function DeviceList({
-  items,
-  isLoading,
-  error,
-  warning,
-  hasQuery,
-  onRetry,
-  selectedLocalPath,
-  selectedHfRepoId,
-  onPick,
-}: {
-  items: DeviceDatasetItem[];
-  isLoading: boolean;
-  error: string | null;
-  warning: boolean;
-  hasQuery: boolean;
-  onRetry: () => void;
-  selectedLocalPath: string | null;
-  selectedHfRepoId: string | null;
-  onPick: (item: DeviceDatasetItem) => void;
-}) {
-  const t = useT();
-  if (isLoading && items.length === 0) {
-    return (
-      <div className="flex items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
-        <Spinner className="size-4" /> {t("studio.datasetPicker.scanningLocal")}
-      </div>
-    );
-  }
-  if (items.length === 0) {
-    if (error) {
-      return (
-        <div className="flex flex-col items-center gap-1.5 px-4 py-8 text-center">
-          <p className="text-ui-12p5 font-medium text-foreground">
-            {t("studio.datasetPicker.couldntScan")}
-          </p>
-          <p className="text-ui-11 leading-snug text-muted-foreground">
-            {error}
-          </p>
-          <RetryButton onRetry={onRetry} />
-        </div>
-      );
-    }
-    if (hasQuery) {
-      return null;
-    }
-    return (
-      <div className="px-4 py-8 text-center text-xs text-muted-foreground">
-        {t("studio.datasetPicker.noLocalDatasets")}
-      </div>
-    );
-  }
-  return (
-    <ul className="flex flex-col gap-0.5 p-0.5">
-      {items.map((item) => {
-        const active =
-          item.kind === "local"
-            ? selectedLocalPath === item.path
-            : selectedHfRepoId === item.repoId;
-        return (
-          <li key={item.key}>
-            <SelectablePickerItem
-              active={active}
-              onSelect={() => onPick(item)}
-              values={[item.kind === "local" ? item.path : item.repoId]}
-            >
-              <span className="block min-w-0 flex-1 truncate">
-                {item.title}
-              </span>
-              <span className="ml-auto shrink-0 text-ui-10 text-muted-foreground">
-                {item.detail}
-              </span>
-            </SelectablePickerItem>
-          </li>
-        );
-      })}
-      {warning && (
-        <li className="px-2 py-1 text-ui-10p5 text-muted-foreground/80">
-          {t("studio.datasetPicker.someLocationsUnscanned")}
-        </li>
-      )}
-    </ul>
-  );
-}
-
-function HubList({
-  items,
-  isLoading,
-  isLoadingMore,
-  value,
-  hasQuery,
-  error,
-  onPick,
-  onRetry,
-  sentinelRef,
-}: {
-  items: ReadonlyArray<{ id: string; downloads?: number | null }>;
-  isLoading: boolean;
-  isLoadingMore: boolean;
-  value: string | null;
-  hasQuery: boolean;
-  error: string | null;
-  onPick: (id: string) => void;
-  onRetry: () => void;
-  sentinelRef: RefObject<HTMLDivElement | null>;
-}) {
-  const t = useT();
-  if (isLoading && items.length === 0) {
-    return (
-      <div className="flex items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
-        <Spinner className="size-4" /> {t("studio.datasetPicker.searchingHub")}
-      </div>
-    );
-  }
-  if (items.length === 0) {
-    if (error) {
-      const isAuth = isHfAuthError(error);
-      return (
-        <div className="flex flex-col items-center gap-1.5 px-4 py-8 text-center">
-          <p className="text-ui-12p5 font-medium text-foreground">
-            {isAuth
-              ? t("studio.datasetPicker.tokenRejectedTitle")
-              : t("studio.datasetPicker.hubUnreachable")}
-          </p>
-          <p className="text-ui-11 leading-snug text-muted-foreground">
-            {isAuth ? t("studio.datasetPicker.tokenRejectedBody") : error}
-          </p>
-          <RetryButton onRetry={onRetry} />
-        </div>
-      );
-    }
-    if (hasQuery) {
-      return null;
-    }
-    return (
-      <div className="px-4 py-8 text-center text-xs text-muted-foreground">
-        {t("studio.datasetPicker.noDatasetsFound")}
-      </div>
-    );
-  }
-  return (
-    <>
-      <ul className="flex flex-col gap-0.5 p-0.5">
-        {items.map((d) => {
-          const active = value === d.id;
-          return (
-            <li key={d.id}>
-              <SelectablePickerItem
-                active={active}
-                onSelect={() => onPick(d.id)}
-                values={[d.id]}
-              >
-                <span className="block min-w-0 flex-1 truncate">{d.id}</span>
-              </SelectablePickerItem>
-            </li>
-          );
-        })}
-      </ul>
-      <div ref={sentinelRef} className="h-px" />
-      {isLoadingMore && (
-        <div className="flex items-center justify-center py-2">
-          <Spinner className="size-3.5 text-muted-foreground" />
-        </div>
-      )}
-    </>
   );
 }

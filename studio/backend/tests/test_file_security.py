@@ -182,6 +182,39 @@ def test_scans_inactive_hf_cache_snapshot_path(tmp_path):
     assert model_info.call_args.kwargs["revision"] == "deadbeef"
 
 
+def test_local_only_scan_inspects_exact_inactive_snapshot(tmp_path):
+    repo = tmp_path / "models--evil--repo"
+    selected = repo / "snapshots" / "commit-old"
+    active = repo / "snapshots" / "commit-new"
+    selected.mkdir(parents = True)
+    active.mkdir(parents = True)
+    (selected / "pytorch_model.bin").write_bytes(b"pickle")
+    (active / "model.safetensors").write_bytes(b"safe")
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text("commit-new")
+
+    with patch("utils.utils.hf_cache_snapshot_dir", return_value = active):
+        decision = evaluate_file_security(str(selected), local_only_load = True)
+
+    assert decision.blocked is True
+    assert decision.unsafe_files == [{"path": "pytorch_model.bin", "level": "unscanned"}]
+
+
+def test_local_only_scan_allows_exact_safetensors_snapshot(tmp_path):
+    snapshot = tmp_path / "models--good--repo" / "snapshots" / "deadbeef"
+    snapshot.mkdir(parents = True)
+    (snapshot / "model.safetensors").write_bytes(b"safe")
+
+    with patch(
+        "utils.security.file_security._fetch_security_status",
+        side_effect = AssertionError("local-only scan must not contact the Hub"),
+    ):
+        decision = evaluate_file_security(str(snapshot), local_only_load = True)
+
+    assert decision.blocked is False
+    assert "inert" in decision.reason
+
+
 def test_remote_gguf_named_repo_is_still_scanned():
     # Only LOCAL paths skip the Hub scan, so a remote .gguf repo is still scanned and a
     # poisoned pickle smuggled into it is blocked.

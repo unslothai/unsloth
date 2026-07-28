@@ -41,12 +41,12 @@ import {
   useHubDatasetSearch,
   useHubInfiniteScroll,
 } from "@/features/hub";
-import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
-import { cn } from "@/lib/utils";
 import {
   HfDatasetSubsetSplitSelectors,
   useTrainingConfigStore,
 } from "@/features/training";
+import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
+import { cn } from "@/lib/utils";
 import type { DatasetFormat } from "@/types/training";
 import {
   InformationCircleIcon,
@@ -129,11 +129,15 @@ export function DatasetStep() {
   const resultIds = useMemo(() => hfResults.map((r) => r.id), [hfResults]);
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
-  const { scrollRef, sentinelRef } = useHubInfiniteScroll(fetchMore, scannedCount, {
-    isFetching: isLoading || isLoadingMore,
-    resultCount: hfResults.length,
-    resetKey: debouncedQuery,
-  });
+  const { scrollRef, sentinelRef } = useHubInfiniteScroll(
+    fetchMore,
+    scannedCount,
+    {
+      isFetching: isLoading || isLoadingMore,
+      resultCount: hfResults.length,
+      resetKey: debouncedQuery,
+    },
+  );
 
   const handleFileUpload = () => {
     setUploadedFile("my_dataset.jsonl");

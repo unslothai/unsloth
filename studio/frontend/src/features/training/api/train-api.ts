@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import type {
   TrainingStartRequest,
@@ -31,12 +30,10 @@ async function parseJson<T>(response: Response): Promise<T> {
 export async function startTraining(
   payload: TrainingStartRequest,
 ): Promise<TrainingStartResponse> {
-  const preparedToken = await prepareHfTokenForUse(payload.hf_token);
-  if (!preparedToken.proceed) throw new Error("Training start cancelled.");
   const response = await authFetch("/api/train/start", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...payload, hf_token: preparedToken.token }),
+    body: JSON.stringify(payload),
   });
   return parseJson<TrainingStartResponse>(response);
 }

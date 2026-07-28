@@ -12,6 +12,15 @@ export const en = {
     searchAriaLabel: "Search {noun}",
     rateLimitedTitle: "Hugging Face rate limit reached",
     rateLimitedBody: "Wait a moment, then retry searching {noun}.",
+    hfToken: {
+      label: "HF token",
+      saved: "Saved",
+      add: "Add",
+      savedAriaLabel: "Hugging Face token saved",
+      addAriaLabel: "Set Hugging Face token",
+      savedHint: "Token saved. Access is checked when you use it.",
+      addHint: "Set a token to access private and gated repositories.",
+    },
   },
   common: {
     cancel: "Cancel",
@@ -992,6 +1001,7 @@ export const en = {
       noGpu: "No GPU detected",
       hfToken: "HF token",
       connected: "Connected",
+      saved: "Saved",
       notSet: "Not set",
       files: "Files",
       model: "Model",
@@ -1185,6 +1195,7 @@ export const en = {
       targetFormat: "Target Format",
       targetFormatTooltip:
         "Format of your training data. Auto-detect works for most datasets.",
+      streamingInfoAriaLabel: "Dataset streaming information",
       auto: "Auto",
       rawText: "Raw Text",
       trainSplitStart: "Train Split Start",
@@ -1354,6 +1365,8 @@ export const en = {
       chooseModel: "Choose a model",
       chooseDataset: "Choose a dataset",
       chooseModelAndDataset: "Choose model and dataset",
+      modelUnverified:
+        "Couldn't verify this model's settings. Check your connection or Hugging Face token, then retry.",
       datasetUnverified:
         "Couldn't verify the dataset is compatible with this model. Check your connection or Hugging Face token — starting training will retry the check.",
       configLabel: "Training Config",
@@ -1367,6 +1380,7 @@ export const en = {
       failedToLoadConfig: "Failed to load config",
       invalidYamlFile: "Invalid YAML file",
       failedToReadFile: "Failed to read file",
+      failedToSaveConfig: "Failed to save config",
       parametersReset: "Parameters reset to model defaults",
       audioIncompatible:
         "This model does not support audio. Switch to an audio-capable model or choose a non-audio dataset.",

@@ -154,6 +154,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "model_local_path": values.get("model_local_path"),
         "model_format": values.get("model_format"),
         "model_snapshot_path": values.get("model_snapshot_path"),
+        "actual_model_repo_id": values.get("actual_model_repo_id"),
         "dataset_known_cached": values.get("dataset_known_cached", False),
         "dataset_local_path": values.get("dataset_local_path"),
         "dataset_snapshot_path": values.get("dataset_snapshot_path"),
@@ -215,6 +216,9 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "enable_tensorboard": values.get("enable_tensorboard", False),
         "tensorboard_dir": values.get("tensorboard_dir", "runs"),
         "resume_from_checkpoint": values.get("resume_from_checkpoint"),
+        "require_exact_resume_resources": values.get(
+            "require_exact_resume_resources", False
+        ),
         "trust_remote_code": values.get("trust_remote_code", False),
         "approved_remote_code_fingerprint": values.get("approved_remote_code_fingerprint"),
         "subject": values.get("subject"),
@@ -242,7 +246,15 @@ def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
     db_config = {
         k: v
         for k, v in config.items()
-        if k not in {"hf_token", "wandb_token", "s3_config", "subject", "cache_pin_warnings"}
+        if k
+        not in {
+            "hf_token",
+            "wandb_token",
+            "s3_config",
+            "subject",
+            "cache_pin_warnings",
+            "require_exact_resume_resources",
+        }
     }
     s3_config = config.get("s3_config")
     if hasattr(s3_config, "model_dump"):
@@ -293,8 +305,7 @@ def _snapshot_declares_quantization(snapshot_path: str) -> bool:
         return False
 
 
-def _apply_cache_pins(config: dict[str, Any]) -> None:
-    warnings: list[str] = []
+def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
     resume = bool(config.get("resume_from_checkpoint"))
     model_name = config["model_name"]
     requested_pin = config.get("model_snapshot_path")
@@ -302,17 +313,27 @@ def _apply_cache_pins(config: dict[str, Any]) -> None:
     if resume and requested_pin:
         from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
 
+        pinned_repo_id = config.get("actual_model_repo_id") or model_name
         pin = latest_snapshot_from_cache_path(
-            requested_pin, "model", model_name, _MODEL_SNAPSHOT_METADATA
+            requested_pin, "model", pinned_repo_id, _MODEL_SNAPSHOT_METADATA
         )
         if pin is None:
+            if config.get("require_exact_resume_resources"):
+                from .provenance import ExactResumeResourcesUnavailable
+
+                raise ExactResumeResourcesUnavailable(
+                    "The exact model snapshot for this run is no longer available."
+                )
             warnings.append(
                 f"The cached model snapshot this run was trained from is no longer on "
                 f"disk; resuming by downloading {model_name} from Hugging Face — base "
                 f"weights may differ from the original run."
             )
         config["model_snapshot_path"] = pin
+        if pin is None:
+            config["actual_model_repo_id"] = None
     elif model_claimed:
+        config["actual_model_repo_id"] = None
         pin = _resolve_model_snapshot(model_name, config.get("model_local_path"))
         if (
             pin is not None
@@ -331,6 +352,36 @@ def _apply_cache_pins(config: dict[str, Any]) -> None:
         config["model_snapshot_path"] = pin
     else:
         config["model_snapshot_path"] = None
+        config["actual_model_repo_id"] = None
+
+
+def resolve_training_model_load_target(values: dict[str, Any]) -> str:
+    config = {
+        "model_name": values["model_name"],
+        "model_known_cached": values.get("model_known_cached", False),
+        "model_local_path": values.get("model_local_path"),
+        "model_snapshot_path": values.get("model_snapshot_path"),
+        "actual_model_repo_id": values.get("actual_model_repo_id"),
+        "resume_from_checkpoint": values.get("resume_from_checkpoint"),
+        "require_exact_resume_resources": values.get(
+            "require_exact_resume_resources", False
+        ),
+        "load_in_4bit": values.get("load_in_4bit", True),
+    }
+    _apply_model_cache_pin(config, [])
+    return config.get("model_snapshot_path") or config["model_name"]
+
+
+def _apply_cache_pins(config: dict[str, Any]) -> None:
+    warnings: list[str] = []
+    resume = bool(config.get("resume_from_checkpoint"))
+    if resume and config.get("require_exact_resume_resources"):
+        from .provenance import validate_exact_resource_pins
+
+        model_snapshot, dataset_snapshot = validate_exact_resource_pins(config)
+        config["model_snapshot_path"] = model_snapshot
+        config["dataset_snapshot_path"] = dataset_snapshot
+    _apply_model_cache_pin(config, warnings)
 
     hf_dataset = config.get("hf_dataset") or ""
     requested_ds_pin = config.get("dataset_snapshot_path")
@@ -342,6 +393,12 @@ def _apply_cache_pins(config: dict[str, Any]) -> None:
 
         snap = dataset_cache_path_from_cache_path(requested_ds_pin, hf_dataset)
         if snap is None:
+            if config.get("require_exact_resume_resources"):
+                from .provenance import ExactResumeResourcesUnavailable
+
+                raise ExactResumeResourcesUnavailable(
+                    "The exact dataset snapshot for this run is no longer available."
+                )
             warnings.append(
                 f"The cached dataset data this run was trained from is no longer on "
                 f"disk; resuming by downloading {hf_dataset} from Hugging Face."
@@ -948,6 +1005,35 @@ class TrainingBackend:
         resume_source_run_id: Optional[str] = None,
         **kwargs,
     ) -> bool:
+        from .lifecycle import training_lifecycle_guard
+
+        with training_lifecycle_guard():
+            resume_checkpoint = kwargs.get("resume_from_checkpoint")
+            if resume_checkpoint:
+                from .resume import get_resume_checkpoint_path
+
+                if get_resume_checkpoint_path(resume_checkpoint) is None:
+                    message = "Resume checkpoint is no longer available."
+                    with self._lock:
+                        self._progress.is_training = False
+                        self._progress.error = message
+                        self._progress.status_message = message
+                    return False
+            return self._start_training_with_lifecycle_reserved(
+                job_id,
+                before_spawn = before_spawn,
+                resume_source_run_id = resume_source_run_id,
+                **kwargs,
+            )
+
+    def _start_training_with_lifecycle_reserved(
+        self,
+        job_id: str,
+        *,
+        before_spawn = None,
+        resume_source_run_id: Optional[str] = None,
+        **kwargs,
+    ) -> bool:
         """Spawn a subprocess to run the full training pipeline.
 
         All kwargs are serialized into a config dict and sent to the worker.
@@ -979,6 +1065,9 @@ class TrainingBackend:
         config = _build_training_worker_config(kwargs)
 
         _apply_cache_pins(config)
+        from .provenance import initialize_resource_provenance
+
+        initialize_resource_provenance(config)
 
         # Split GPU validation from placement around the VRAM hook:
         #   * Explicit gpu_ids are validated here (raises -> the route returns 400
@@ -1701,14 +1790,18 @@ class TrainingBackend:
     def active_output_dir(self) -> Optional[str]:
         if not self.is_training_active():
             return None
-        config = self._db_config or {}
-        output_dir = config.get("output_dir")
+        with self._lock:
+            config = self._db_config or {}
+            output_dir = (
+                self._output_dir
+                or self._cancel_cleanup_output_dir
+                or config.get("output_dir")
+            )
+            resume_from_checkpoint = config.get("resume_from_checkpoint")
         if not output_dir:
             from .worker import _output_dir_from_resume_checkpoint
 
-            output_dir = _output_dir_from_resume_checkpoint(
-                config.get("resume_from_checkpoint")
-            )
+            output_dir = _output_dir_from_resume_checkpoint(resume_from_checkpoint)
         return str(output_dir) if output_dir else None
 
     def get_training_status(self, theme: str = "light") -> Tuple:
@@ -1895,6 +1988,47 @@ class TrainingBackend:
             "expected_job_id": job_id,
         }
 
+    def _handle_resource_provenance_event(self, event: dict[str, Any]) -> None:
+        from .provenance import normalize_worker_provenance_event
+
+        with self._lock:
+            if not self.current_job_id or self._db_config is None:
+                return
+            run_id = self.current_job_id
+            current_config = dict(self._db_config)
+
+        updates = normalize_worker_provenance_event(event, current_config)
+        with self._lock:
+            if self.current_job_id != run_id or self._db_config is None:
+                return
+            self._db_config.update(updates)
+            if self._last_full_config is not None:
+                self._last_full_config.update(updates)
+            config_json = _json.dumps(_sanitize_db_config(self._db_config))
+            db_run_created = self._db_run_created
+
+        if not db_run_created:
+            return
+        for attempt in range(_DB_FINALIZE_RETRIES):
+            try:
+                from storage.studio_db import update_run_config_json
+
+                if not update_run_config_json(run_id, config_json):
+                    logger.warning(
+                        "Training provenance was not persisted because run %s is no longer active",
+                        run_id,
+                    )
+                return
+            except Exception:
+                if attempt + 1 < _DB_FINALIZE_RETRIES:
+                    time.sleep(_DB_FINALIZE_RETRY_S)
+                    continue
+                logger.warning(
+                    "Failed to persist training resource provenance for run %s",
+                    run_id,
+                    exc_info = True,
+                )
+
     def _handle_event(self, event: dict) -> None:
         """Apply a subprocess event to local state.
 
@@ -1904,6 +2038,10 @@ class TrainingBackend:
         etype = event.get("type")
         db_action: Optional[str] = None
         db_action_kwargs: dict = {}
+
+        if etype == "resource_provenance":
+            self._handle_resource_provenance_event(event)
+            return
 
         # Model-load lifecycle + stall recovery (no DB metrics); handled first.
         if etype == "model_load_started":

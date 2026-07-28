@@ -17,6 +17,7 @@ export interface TrainingReadiness {
   hasDataset: boolean;
   isIncompatible: boolean;
   datasetUnverified: boolean;
+  modelError: string | null;
   configValidation: StartValidationResult;
 }
 
@@ -33,6 +34,7 @@ function stableReadiness(next: TrainingReadiness): Readonly<TrainingReadiness> {
     readinessCache.hasDataset === next.hasDataset &&
     readinessCache.isIncompatible === next.isIncompatible &&
     readinessCache.datasetUnverified === next.datasetUnverified &&
+    readinessCache.modelError === next.modelError &&
     readinessCache.configValidation.ok === next.configValidation.ok &&
     readinessCache.configValidation.message === next.configValidation.message
   ) {
@@ -57,6 +59,7 @@ function selectTrainingReadiness(
         ? validateS3Source(state).ok
         : !!state.dataset;
   const isLoadingModel = state.isLoadingModelDefaults || state.isCheckingVision;
+  const modelError = state.modelDefaultsError;
   const isModelCapabilitiesSettled = hasModel && !isLoadingModel;
   const isIncompatible =
     isModelCapabilitiesSettled &&
@@ -74,6 +77,7 @@ function selectTrainingReadiness(
     hasModel &&
     hasDataset &&
     !isLoadingModel &&
+    !modelError &&
     !state.isCheckingDataset &&
     !isIncompatible &&
     configValidation.ok;
@@ -86,6 +90,7 @@ function selectTrainingReadiness(
     hasDataset,
     isIncompatible,
     datasetUnverified,
+    modelError,
     configValidation,
   });
   readinessStateCache = state;

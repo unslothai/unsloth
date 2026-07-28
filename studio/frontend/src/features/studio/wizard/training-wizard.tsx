@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -22,38 +21,27 @@ import {
 import {
   TRAINING_METHOD_META,
   TRAINING_METHOD_ORDER,
-  parseYamlConfig,
-  serializeConfigToYaml,
-  useTrainingActions,
   useTrainingConfigStore,
-  useTrainingReadiness,
 } from "@/features/training";
 import { useT } from "@/i18n";
-import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import type { DatasetSource, TrainingMethod } from "@/types/training";
+import type { TrainingMethod } from "@/types/training";
 import {
-  Archive04Icon,
   BrainIcon,
-  CleanIcon,
-  CloudUploadIcon,
   Database02Icon,
   FloppyDiskIcon,
-  Rocket01Icon,
   Settings05Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   type CSSProperties,
-  type ChangeEvent,
   type ReactNode,
   useCallback,
-  useRef,
   useState,
 } from "react";
-import { useShallow } from "zustand/react/shallow";
 import { DatasetPanel } from "../sections/dataset-section";
 import { ParamsSection } from "../sections/params-section";
+import { ConfigActions } from "./config-actions";
 
 function SectionBox({
   title,
@@ -301,314 +289,6 @@ function ModelPanel() {
       <SetupField label={t("studio.wizard.hfTokenLabel")}>
         <HfTokenIndicator showLabel={true} />
       </SetupField>
-    </div>
-  );
-}
-
-function resolveStartTrainingError(input: {
-  t: ReturnType<typeof useT>;
-  startError: string | null | undefined;
-  isIncompatible: boolean;
-  isAudioModel: boolean;
-  isDatasetAudio: boolean | null | undefined;
-  datasetUnverified: boolean;
-  hasModel: boolean;
-  hasDataset: boolean;
-  datasetSource: DatasetSource;
-  configValidation: { ok: boolean; message?: string | null };
-}): string | null {
-  const {
-    t,
-    startError,
-    isIncompatible,
-    isAudioModel,
-    isDatasetAudio,
-    datasetUnverified,
-    hasModel,
-    hasDataset,
-    datasetSource,
-    configValidation,
-  } = input;
-  if (startError) {
-    return startError;
-  }
-  if (isIncompatible) {
-    return !isAudioModel && isDatasetAudio === true
-      ? t("studio.training.audioIncompatible")
-      : t("studio.training.visionIncompatible");
-  }
-  if (datasetUnverified) {
-    return t("studio.training.datasetUnverified");
-  }
-  if (!hasModel) {
-    return null;
-  }
-  if (!hasDataset) {
-    if (
-      datasetSource === "s3" &&
-      !configValidation.ok &&
-      configValidation.message
-    ) {
-      return configValidation.message;
-    }
-    return null;
-  }
-  if (!configValidation.ok && configValidation.message) {
-    return configValidation.message;
-  }
-  return null;
-}
-
-function resolveStartTrainingButtonLabel({
-  t,
-  isStarting,
-  isLoadingModel,
-  isCheckingDataset,
-  hasModel,
-  hasDataset,
-}: {
-  t: ReturnType<typeof useT>;
-  isStarting: boolean;
-  isLoadingModel: boolean;
-  isCheckingDataset: boolean;
-  hasModel: boolean;
-  hasDataset: boolean;
-}): string {
-  if (isStarting) {
-    return t("studio.training.starting");
-  }
-  if (isLoadingModel) {
-    return t("studio.training.loadingModel");
-  }
-  if (isCheckingDataset) {
-    return t("studio.training.checkingDataset");
-  }
-  if (!(hasModel || hasDataset)) {
-    return t("studio.training.chooseModelAndDataset");
-  }
-  if (!hasModel) {
-    return t("studio.training.chooseModel");
-  }
-  return hasDataset
-    ? t("studio.training.startTraining")
-    : t("studio.training.chooseDataset");
-}
-
-export function StartTrainingCta() {
-  const t = useT();
-  const { isAudioModel, isDatasetAudio, datasetSource } =
-    useTrainingConfigStore(
-      useShallow((s) => ({
-        isAudioModel: s.isAudioModel,
-        isDatasetAudio: s.isDatasetAudio,
-        datasetSource: s.datasetSource,
-      })),
-    );
-  const {
-    isReady,
-    isLoadingModel,
-    isCheckingDataset,
-    isIncompatible,
-    datasetUnverified,
-    hasModel,
-    hasDataset,
-    configValidation,
-  } = useTrainingReadiness();
-  const { isStarting, startError, startTrainingRun } = useTrainingActions();
-
-  const disabled = isStarting || !isReady;
-
-  const buttonLabel = resolveStartTrainingButtonLabel({
-    t,
-    isStarting,
-    isLoadingModel,
-    isCheckingDataset,
-    hasModel,
-    hasDataset,
-  });
-
-  const errorMessage = resolveStartTrainingError({
-    t,
-    startError,
-    isIncompatible,
-    isAudioModel,
-    isDatasetAudio,
-    datasetUnverified,
-    hasModel,
-    hasDataset,
-    datasetSource,
-    configValidation,
-  });
-  const isDatasetWarning = !(startError || isIncompatible) && datasetUnverified;
-
-  return (
-    <div className="flex flex-col gap-2">
-      <Button
-        data-tour="studio-start"
-        size="lg"
-        className={cn(
-          "h-11 w-full justify-center rounded-xl text-ui-13p5 font-semibold tracking-tight",
-          "bg-primary text-primary-foreground shadow-sm",
-          "hover:bg-primary/90",
-          "disabled:bg-foreground/[0.08] disabled:text-muted-foreground disabled:shadow-none dark:disabled:bg-white/[0.06]",
-          "transition-colors duration-200",
-        )}
-        onClick={() => {
-          startTrainingRun().catch(() => undefined);
-        }}
-        disabled={disabled}
-      >
-        <HugeiconsIcon
-          icon={Rocket01Icon}
-          strokeWidth={1.75}
-          className="size-4"
-        />
-        {buttonLabel}
-      </Button>
-      {errorMessage && (
-        <p
-          className={cn(
-            "text-ui-11p5 leading-relaxed",
-            isDatasetWarning ? "text-status-warning" : "text-destructive",
-          )}
-        >
-          {errorMessage}
-        </p>
-      )}
-    </div>
-  );
-}
-
-function ConfigActions() {
-  const t = useT();
-  const selectedModel = useTrainingConfigStore((s) => s.selectedModel);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const handleFileUpload = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) {
-      return;
-    }
-    e.target.value = "";
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const config = parseYamlConfig(reader.result as string);
-        useTrainingConfigStore.getState().applyConfigPatch(config);
-        toast.success(t("studio.training.configLoaded"), {
-          description: file.name,
-        });
-      } catch (err) {
-        toast.error(t("studio.training.failedToLoadConfig"), {
-          description:
-            err instanceof Error
-              ? err.message
-              : t("studio.training.invalidYamlFile"),
-        });
-      }
-    };
-    reader.onerror = () => {
-      toast.error(t("studio.training.failedToReadFile"));
-    };
-    reader.readAsText(file);
-  };
-
-  const handleSaveConfig = () => {
-    const state = useTrainingConfigStore.getState();
-    const includeVisionFields =
-      state.isVisionModel && state.isDatasetImage !== false;
-    const selectedModelLower = (state.selectedModel ?? "").toLowerCase();
-    const isDeepseekOcr =
-      selectedModelLower.includes("deepseek") &&
-      selectedModelLower.includes("ocr");
-    const yamlStr = serializeConfigToYaml(
-      state,
-      includeVisionFields,
-      includeVisionFields && !isDeepseekOcr,
-    );
-    const blob = new Blob([yamlStr], { type: "text/yaml" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-
-    const model = (state.selectedModel ?? "model").split("/").pop();
-    const method = state.trainingMethod ?? "qlora";
-    const dataset = (state.dataset ?? "dataset").split("/").pop();
-    const timestamp = new Date()
-      .toISOString()
-      .replace(/[:T]/g, "-")
-      .slice(0, 19);
-    a.download = `${model}_${method}_${dataset}_${timestamp}.yaml`;
-
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleResetConfig = () => {
-    useTrainingConfigStore.getState().resetToModelDefaults();
-    toast.success(t("studio.training.parametersReset"));
-  };
-
-  return (
-    <div className="flex flex-wrap gap-2">
-      <Tooltip>
-        <TooltipTrigger asChild={true}>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-9 cursor-pointer rounded-lg"
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
-            {t("studio.wizard.loadYaml")}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>
-          {t("studio.training.uploadConfigTooltip")}
-        </TooltipContent>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger asChild={true}>
-          <Button
-            data-tour="studio-save"
-            variant="outline"
-            size="sm"
-            className="h-9 cursor-pointer rounded-lg"
-            onClick={handleSaveConfig}
-          >
-            <HugeiconsIcon icon={Archive04Icon} className="size-3.5" />
-            {t("studio.wizard.saveYaml")}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>
-          {t("studio.training.saveConfigTooltip")}
-        </TooltipContent>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger asChild={true}>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-9 cursor-pointer rounded-lg"
-            onClick={handleResetConfig}
-            disabled={!selectedModel}
-          >
-            <HugeiconsIcon icon={CleanIcon} className="size-3.5" />
-            {t("studio.wizard.resetDefaults")}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>
-          {t("studio.training.resetConfigTooltip")}
-        </TooltipContent>
-      </Tooltip>
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".yaml,.yml"
-        className="hidden"
-        onChange={handleFileUpload}
-      />
     </div>
   );
 }

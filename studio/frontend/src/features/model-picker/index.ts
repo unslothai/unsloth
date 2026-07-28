@@ -16,9 +16,7 @@ export {
   snapToStep,
 } from "./components/numeric-value-input";
 export { SidebarModelConfig } from "./components/sidebar-model-config";
-export {
-  useActiveModelConfig,
-} from "./hooks/use-active-model-config";
+export { useActiveModelConfig } from "./hooks/use-active-model-config";
 export type {
   DeletedModelRef,
   ExternalModelOption,
@@ -38,7 +36,5 @@ export {
   type PerModelConfig,
   resolveInitialConfig,
 } from "./model-config/per-model-config";
-export {
-  TrainModelSelector,
-} from "./components/train-model-selector";
+export { TrainModelSelector } from "./components/train-model-selector";
 export { TRAIN_PICKER_TRIGGER_CLASS } from "./components/train-picker-trigger";

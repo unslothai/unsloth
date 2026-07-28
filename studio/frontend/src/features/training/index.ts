@@ -72,8 +72,8 @@ export { validateTrainingModelCandidate } from "./lib/freeform-model-validation"
 export { isLocalTrainingModelSelection } from "./lib/model-selection";
 export { isUntrainableModelFormat } from "./lib/model-support";
 export {
+  inferTrainingModelTypeFromFlags,
   type ModelTypeCapabilityFlags,
-  resolvePickerInferredModelType,
   trainingModelTypeFlagsFromMetadata,
 } from "./lib/model-type-inference";
 export {

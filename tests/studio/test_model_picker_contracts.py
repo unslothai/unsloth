@@ -599,3 +599,398 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     # The torch fallback keeps its physical-only gate and the XPU ban.
     assert 'data?.device_backend !== "xpu" &&' in src
     assert 'physicalIndex: pinnableBackend && d.index_kind === "physical",' in src
+
+
+def test_training_picker_pagination_preserves_scanned_progress():
+    adapter = _read("components/resource-picker/use-picker-hub-pagination.ts")
+    assert "const canFetch = enabled && hasMore;" in adapter
+    assert "return false;" in adapter
+    assert "return fetchMore();" in adapter
+    assert "signal: scannedCount" in adapter
+    for needle in ("enabled: canFetch", "isFetching", "resetKey", "resultCount"):
+        assert needle in adapter
+
+    for rel in (
+        "features/model-picker/components/train-model-selector.tsx",
+        "features/dataset-picker/components/dataset-selector.tsx",
+    ):
+        src = _read(rel)
+        assert "usePickerHubPagination({" in src
+        assert "scannedCount: scannedHfCount" in src
+        assert "hasMore: hasMoreHf" in src
+        assert "isFetching: isLoadingHf || isLoadingHfMore" in src
+        assert "resetKey: picker.debouncedHubQuery" in src
+        assert "resultCount: hfResults.length" in src
+        assert "hubPagination.fetchMore" in src
+        assert "hubPagination.signal" in src
+        assert "hubPagination.options" in src
+        assert "useLatestRef" not in src
+
+
+def test_seamless_training_model_picker_has_no_hidden_task_filter():
+    src = _read("features/model-picker/components/train-model-selector.tsx")
+    search_options = src.split("useHubModelSearch(", 1)[1].split("});", 1)[0]
+    assert "MODEL_TYPE_TO_HF_TASKS" not in src
+    assert re.search(r"\btask\b", search_options) is None
+
+
+def test_cached_training_rows_select_canonical_repo_identity():
+    src = _read(
+        "features/model-picker/components/train-model-picker-view-model.ts"
+    )
+    cached = src.split("function toCachedTrainModelDeviceItem", 1)[1]
+    cached = cached.split("function toLocalTrainModelDeviceItem", 1)[0]
+    assert "id: row.repoId" in cached
+    assert "localPath: row.cachePath ?? null" in cached
+
+    local = src.split("function toLocalTrainModelDeviceItem", 1)[1]
+    local = local.split("function hubTrainingModelCandidate", 1)[0]
+    assert 'row.source === "hf_cache" ? row.repoId?.trim() : null' in local
+    assert "id: cachedRepoId || row.loadId" in local
+    assert 'knownCached: row.source === "hf_cache"' in local
+    assert "localPath: row.path" in local
+
+    selector = _read("features/model-picker/components/train-model-selector.tsx")
+    assert "toCachedTrainModelDeviceItem(" in selector
+    assert ".map(toLocalTrainModelDeviceItem)" in selector
+
+
+def test_training_picker_controls_keep_visible_keyboard_focus():
+    focus = _read("components/resource-picker/picker-focus.ts")
+    assert "focus-visible:ring-2" in focus
+    assert "focus-visible:ring-ring" in focus
+    assert "focus-visible:ring-offset-2" in focus
+    assert "focus-visible:ring-offset-background" in focus
+    assert "focus-visible:ring-inset" in focus
+
+    trigger = _read("features/model-picker/components/train-picker-trigger.ts")
+    dataset = _read("features/dataset-picker/components/dataset-selector.tsx")
+    options = _read("components/resource-picker/selectable-picker-item.tsx")
+    token = _read("features/hub/components/hf-token-indicator.tsx")
+    dataset_controls = _read(
+        "features/studio/sections/dataset-panel-controls.tsx"
+    )
+    dataset_section = _read("features/studio/sections/dataset-section.tsx")
+    assert "PICKER_FOCUS_VISIBLE_CLASS" in trigger
+    assert "PICKER_FOCUS_VISIBLE_CLASS" in dataset
+    assert "PICKER_OPTION_FOCUS_VISIBLE_CLASS" in options
+    assert "PICKER_FOCUS_VISIBLE_CLASS" in token
+    assert "PICKER_FOCUS_VISIBLE_CLASS" in dataset_controls
+    assert "PICKER_FOCUS_VISIBLE_CLASS" in dataset_section
+    assert dataset_controls.count("aria-label={t(") >= 4
+    assert 't("studio.dataset.streamingInfoAriaLabel")' in dataset_controls
+    assert "focus-visible:ring-0" not in trigger
+    assert "focus-visible:ring-0" not in dataset
+    assert "focus-visible:ring-0" not in token
+
+    hub_css = _read("features/hub/hub.css")
+    focus_rule = hub_css.split(".field-soft:focus-visible", 1)[1]
+    focus_rule = focus_rule.split("}", 1)[0]
+    assert "box-shadow: none !important" not in focus_rule
+
+
+def test_streaming_dataset_omits_full_download_notice():
+    src = _read("features/training/hooks/use-training-resource-notices.ts")
+    resolver = src.split("function resolveDatasetNotice", 1)[1]
+    resolver = resolver.split("export function useTrainingResourceNotices", 1)[0]
+    assert re.search(r"if \(streaming\) \{\s*return null;\s*\}", resolver)
+    assert "completeSet: streaming ?" not in resolver
+    assert "partialSet: streaming ?" not in resolver
+
+
+def test_local_dataset_picker_uses_cross_platform_path_identity():
+    selector = _read("features/dataset-picker/components/dataset-selector.tsx")
+    for needle in (
+        "cacheLocalPathMatchesSelection(item.path, query)",
+        "cacheLocalPathMatchesSelection(item.path, uploadedFile)",
+    ):
+        assert needle in selector
+    assert "item.path === query" not in selector
+    assert "item.path === uploadedFile" not in selector
+
+    lists = _read(
+        "features/dataset-picker/components/dataset-selector-lists.tsx"
+    )
+    assert "export type DatasetDeviceItem" in lists
+    assert "export function DatasetDeviceList" in lists
+    assert "export function DatasetHubList" in lists
+    assert "cacheLocalPathMatchesSelection(selectedLocalPath, item.path)" in lists
+    assert "selectedLocalPath === item.path" not in lists
+    assert "function DeviceList" not in selector
+    assert "function HubList" not in selector
+
+    section = _read("features/studio/sections/dataset-section.tsx")
+    assert "cacheLocalPathMatchesSelection(item.path, uploadedFile)" in section
+    assert "item.path === uploadedFile" not in section
+
+
+def test_local_dataset_keyboard_commit_uses_canonical_path_identity():
+    shell = _read("components/resource-picker/picker-shell.tsx")
+    selector = _read("features/dataset-picker/components/dataset-selector.tsx")
+    model_selector = _read(
+        "features/model-picker/components/train-model-selector.tsx"
+    )
+    model_view_model = _read(
+        "features/model-picker/components/train-model-picker-view-model.ts"
+    )
+
+    assert "onExactQueryCommit?: (query: string) => boolean;" in shell
+    assert "if (onExactQueryCommit?.(activeQuery))" in shell
+    assert shell.index("if (onExactQueryCommit?.(activeQuery))") < shell.index(
+        "const exactMatch = scrollRef.current"
+    )
+    assert "values.includes(query)" in shell
+
+    exact_commit = selector.split("const commitExactQuery = useCallback", 1)[1]
+    exact_commit = exact_commit.split("const selectedLocalDatasetTitle", 1)[0]
+    assert 'if (tab === "hub")' in exact_commit
+    assert "hubResourceIdsEqual(candidate.id, query)" in exact_commit
+    assert "findExactLocalDataset(query, deviceItems)" in exact_commit
+    assert "selectLocalDataset(item.path)" in exact_commit
+    assert "onExactQueryCommit={commitExactQuery}" in selector
+
+    model_exact_commit = model_selector.split(
+        "function commitExactQuery", 1
+    )[1]
+    model_exact_commit = model_exact_commit.split(
+        "const display = selectedModel", 1
+    )[0]
+    assert 'if (tab === "hub")' in model_exact_commit
+    assert "findCanonicalHubResourceId(query, hubResultIds)" in model_exact_commit
+    assert (
+        "findExactTrainModelDeviceItem(query, trainableLocalModels)"
+        in model_exact_commit
+    )
+    assert "pickDeviceModel(model)" in model_exact_commit
+    device_picker = model_selector.split("function pickDeviceModel", 1)[1]
+    device_picker = device_picker.split("function commitExactQuery", 1)[0]
+    assert "knownCached: model.knownCached" in device_picker
+    assert "localPath: model.localPath" in device_picker
+    assert "modelFormat: model.modelFormat" in device_picker
+    assert "onExactQueryCommit={commitExactQuery}" in model_selector
+    assert "cacheLocalPathMatchesSelection(item.path, query)" in model_view_model
+
+
+def test_non_explicit_picker_tab_infers_both_connectivity_directions():
+    source = _read("components/resource-picker/use-picker-state.ts")
+    resolver = source.split("function resolvePickerTab", 1)[1]
+    resolver = resolver.split("export function usePickerState", 1)[0]
+    compact = " ".join(resolver.split())
+
+    assert (
+        "const inferredTab = hasExplicitTabPreference ? selectedTab : "
+        "shouldUseDeviceTab ? PICKER_TAB.device : PICKER_TAB.hub;" in compact
+    )
+    assert "return lockedInferredTab ?? inferredTab;" in compact
+
+
+def test_s3_round_trip_restores_source_qualified_browse_dataset_selection():
+    types = _read("features/training/types/config.ts")
+    browse_type = types.split("export type BrowseDatasetSelection =", 1)[1]
+    browse_type = browse_type.split("export type DatasetManualMapping", 1)[0]
+    assert 'source: "huggingface";' in browse_type
+    assert "dataset: string | null;" in browse_type
+    assert "knownCached: boolean;" in browse_type
+    assert "localPath: string | null;" in browse_type
+    assert 'source: "upload";' in browse_type
+    assert "uploadedFile: string | null;" in browse_type
+
+    store = _read("features/training/stores/training-config-store.ts")
+    hf_selection = store.split("const selectHfDatasetInternal", 1)[1]
+    hf_selection = hf_selection.split("const selectLocalDatasetInternal", 1)[0]
+    assert "createHfBrowseDatasetSelection(" in hf_selection
+    assert "datasetKnownCached: browseDatasetSelection.knownCached" in hf_selection
+    assert "datasetLocalPath: browseDatasetSelection.localPath" in hf_selection
+
+    upload_selection = store.split("const selectLocalDatasetInternal", 1)[1]
+    upload_selection = upload_selection.split("const selectS3SourceInternal", 1)[0]
+    assert "createUploadBrowseDatasetSelection(uploadedFile)" in upload_selection
+
+    s3_selection = store.split("const selectS3SourceInternal", 1)[1]
+    s3_selection = s3_selection.split(
+        "const restoreBrowseDatasetSourceInternal", 1
+    )[0]
+    for needle in (
+        'datasetSource: "s3",',
+        "browseDatasetSelection,",
+        "dataset: null,",
+        "uploadedFile: null,",
+        "datasetKnownCached: false,",
+        "datasetLocalPath: null,",
+    ):
+        assert needle in s3_selection
+
+    restore = store.split("const restoreBrowseDatasetSourceInternal", 1)[1]
+    restore = restore.split("const selectModelInternal", 1)[0]
+    assert 'selection.source === "upload"' in restore
+    assert "selectLocalDatasetInternal(selection.uploadedFile)" in restore
+    assert "selectHfDatasetInternal(selection.dataset" in restore
+    assert "knownCached: selection.knownCached" in restore
+    assert "localPath: selection.localPath" in restore
+
+    assert "version: 14," in store
+    migration = store.split("if (version < 14)", 1)[1]
+    migration = migration.split("return s as unknown as TrainingConfigStore", 1)[0]
+    assert "createUploadBrowseDatasetSelection(uploadedFile)" in migration
+    assert "createHfBrowseDatasetSelection(dataset" in migration
+
+    toggle = _read("features/studio/sections/dataset-panel-controls.tsx")
+    assert "restoreBrowseDatasetSource();" in toggle
+    assert "selectLocalDataset(uploadedFile)" not in toggle
+    assert "selectHfDataset(dataset)" not in toggle
+
+
+def test_s3_training_payload_excludes_remembered_browse_sources():
+    mapper = " ".join(_read("features/training/api/mappers.ts").split())
+    assert (
+        'const s3 = config.datasetSource === "s3" ? config.s3Config : null;'
+        in mapper
+    )
+    assert (
+        'const hfDataset = config.datasetSource === "huggingface" '
+        "? config.dataset : null;" in mapper
+    )
+    assert (
+        'const localDatasets = config.datasetSource === "upload" && '
+        "config.uploadedFile ? [config.uploadedFile] : [];" in mapper
+    )
+    assert (
+        "dataset_known_cached: hfDataset && !config.datasetStreaming "
+        "? config.datasetKnownCached : false," in mapper
+    )
+    assert (
+        "dataset_local_path: hfDataset && !config.datasetStreaming "
+        "? config.datasetLocalPath : null," in mapper
+    )
+    assert (
+        'config.datasetSource === "upload" && config.uploadedEvalFile '
+        "? [config.uploadedEvalFile] : []" in mapper
+    )
+    assert "browseDatasetSelection" not in mapper
+
+
+def test_dataset_hub_list_retains_the_active_hf_selection():
+    selector = _read("features/dataset-picker/components/dataset-selector.tsx")
+    hub_items = selector.split("const hubItems = useMemo", 1)[1]
+    hub_items = hub_items.split("const hubPagination", 1)[0]
+    assert 'datasetSource !== "huggingface"' in hub_items
+    assert (
+        "hfResults.some((item) => hubResourceIdsEqual(item.id, dataset))"
+        in hub_items
+    )
+    assert "return [...hfResults, { id: dataset }];" in hub_items
+    assert "hasExactDatasetMatch(" in selector
+    assert re.search(
+        r"hasExactDatasetMatch\(\s*activeQuery,\s*tab,\s*hubItems,",
+        selector,
+    )
+    assert "<DatasetHubList" in selector
+    assert "items={hubItems}" in selector
+
+
+def test_filtered_hub_pages_keep_the_pagination_sentinel_mounted():
+    for rel, export_name, empty_collection in (
+        (
+            "features/dataset-picker/components/dataset-selector-lists.tsx",
+            "DatasetHubList",
+            "items",
+        ),
+        (
+            "features/model-picker/components/train-model-picker-lists.tsx",
+            "TrainModelHubList",
+            "ids",
+        ),
+    ):
+        source = _read(rel)
+        hub_list = source.split(f"export function {export_name}", 1)[1]
+        assert f"if ({empty_collection}.length === 0)" in hub_list
+        assert "if (!hasQuery)" in hub_list
+        assert "<PickerSearchError" in hub_list
+        assert "compact={true}" in hub_list
+        assert re.search(r"<div ref=\{sentinelRef\} className=\"h-px\" />", hub_list)
+        assert not re.search(
+            rf"if \({empty_collection}\.length === 0\).*?"
+            r"if \(hasQuery\)\s*\{\s*return null;",
+            hub_list,
+            re.S,
+        )
+
+
+def test_infinite_scroll_retries_an_intersecting_filtered_page():
+    source = _read("features/hub/hooks/use-hub-infinite-scroll.ts")
+    assert "const PREFETCH_MARGIN_PX = 200;" in source
+    assert "function isSentinelWithinPrefetchRange(" in source
+    assert "root.getBoundingClientRect()" in source
+    assert "sentinel.getBoundingClientRect()" in source
+    assert (
+        "lastRequestedSignalRef.current !== null &&\n"
+        "            signal <= lastRequestedSignalRef.current"
+        in source
+    )
+    assert "lastRequestedSignalRef.current = signalRef.current;" in source
+    assert "lastRequestedSignalRef.current = null;" in source
+    assert "isFetching," in source
+    assert "signal," in source
+
+
+def test_infinite_scroll_observes_a_late_mounted_sentinel():
+    source = _read("features/hub/hooks/use-hub-infinite-scroll.ts")
+    assert "const [sentinelNode, setSentinelNode]" in source
+    assert "const sentinelRef = useCallback(" in source
+    assert "observer.observe(sentinelNode);" in source
+    assert "if (!root) {" in source
+    assert "if (!sentinelNode) {" in source
+    assert "}, [enabled, requestAutomaticPage, sentinelNode]);" in source
+    assert "sentinelNode,\n    setManualFetchAvailable," in source
+
+
+def test_train_hub_selections_preserve_canonical_identity():
+    helper = _read("components/resource-picker/hub-resource-id.ts")
+    model_selector = _read(
+        "features/model-picker/components/train-model-selector.tsx"
+    )
+    model_view = _read(
+        "features/model-picker/components/train-model-picker-view-model.ts"
+    )
+    dataset_selector = _read(
+        "features/dataset-picker/components/dataset-selector.tsx"
+    )
+
+    assert "first?.trim().toLowerCase()" in helper
+    assert "second?.trim().toLowerCase()" in helper
+    assert "findCanonicalHubResourceId(query, hubIds)" in model_view
+    assert "findCanonicalHubResourceId(query, hubResultIds)" in model_selector
+    assert "hubTrainingModelCandidate(canonicalId," in model_selector
+    assert "pick(\n      canonicalId," in model_selector
+    assert "const canonicalId = cached?.repoId ?? id.trim();" in dataset_selector
+    assert "hubResourceIdsEqual(candidate.id, query)" in dataset_selector
+
+
+def test_new_model_selection_replaces_the_previous_model_type():
+    inference = _read("features/training/lib/model-type-inference.ts")
+    selector = _read(
+        "features/model-picker/components/train-model-selector.tsx"
+    )
+
+    assert "export function inferTrainingModelTypeFromFlags" in inference
+    assert "resolvePickerInferredModelType" not in inference
+    assert "inferTrainingModelTypeFromFlags(inferredFlags)" in selector
+    assert "modelType: s.modelType" not in selector
+
+
+def test_picker_shell_handles_ime_focus_and_short_viewports():
+    shell = _read("components/resource-picker/picker-shell.tsx")
+
+    assert "function isImeCompositionKey(" in shell
+    assert "event.nativeEvent.isComposing" in shell
+    assert "event.keyCode === 229" in shell
+    assert shell.count("isImeCompositionKey(") >= 3
+    assert "onCompositionStart" in shell
+    assert "onCompositionEnd" in shell
+    assert 'aria-label={t("picker.searchAriaLabel", { noun })}' in shell
+    assert "max-h-(--radix-popover-content-available-height)" in shell
+    assert '"mt-2.5 flex min-h-0 flex-1 flex-col gap-2"' in shell
+    assert '"min-h-0 max-h-[320px] flex-1 overflow-y-auto' in shell
+    assert "function switchToDevice()" in shell
+    assert "window.requestAnimationFrame" in shell
+    assert "onSwitchDevice={switchToDevice}" in shell

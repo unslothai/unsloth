@@ -1103,6 +1103,22 @@ def update_run_output_dir(id: str, output_dir: Optional[str]) -> None:
         conn.close()
 
 
+def update_run_config_json(id: str, config_json: str) -> bool:
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            UPDATE training_runs SET config_json = ?
+            WHERE id = ? AND status = 'running'
+            """,
+            (config_json, id),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    finally:
+        conn.close()
+
+
 def mark_run_cancel_requested(id: str) -> bool:
     """Clear resume/export state only while the exact run is still active."""
     conn = get_connection()

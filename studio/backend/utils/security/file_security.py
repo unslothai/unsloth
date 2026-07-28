@@ -114,11 +114,13 @@ def _file_suffix(path: str) -> str:
     return "." + base.rsplit(".", 1)[1].lower() if "." in base else ""
 
 
-def _hf_cache_snapshot_ref(local_path: str) -> Optional[tuple]:
-    """``(repo_id, revision)`` for an HF-cache snapshot path, else None. An inactive Studio
-    cache loads by its snapshot path but keeps the ``models--org--repo/snapshots/<rev>``
-    layout, so the gate recovers its provenance and scans that exact commit instead of
-    exempting it (an older cached commit can hold a pickle since dropped from the branch)."""
+def _hf_cache_snapshot_ref(local_path: str) -> Optional[tuple[str, str, Path]]:
+    """Return provenance for an HF-cache snapshot path, else ``None``.
+
+    An inactive Studio cache loads by its snapshot path but keeps the
+    ``models--org--repo/snapshots/<rev>`` layout, so the gate recovers its provenance
+    and scans that exact commit instead of exempting it.
+    """
     try:
         path = Path(local_path).resolve(strict = False)
     except (OSError, ValueError):
@@ -132,7 +134,8 @@ def _hf_cache_snapshot_ref(local_path: str) -> Optional[tuple]:
         repo_id = encoded.removeprefix("models--").replace("--", "/")
         if not repo_id:
             return None
-        return repo_id, path.relative_to(parent).parts[0]  # <rev> dir under snapshots/
+        revision = path.relative_to(parent).parts[0]
+        return repo_id, revision, parent / revision
     return None
 
 
@@ -446,19 +449,41 @@ def _cached_pickle_weight_files(snapshot: Path) -> list:
     return blocked
 
 
-def _evaluate_local_only(model_name: str) -> FileSecurityDecision:
+def _evaluate_local_only(
+    model_name: str,
+    snapshot_path: Optional[Path] = None,
+) -> FileSecurityDecision:
     """Offline security gate. The Hub scan is unreachable, so inspect the local cache and fail
     CLOSED on an unscanned pickle weight with no inert safetensors alternative, rather than
     failing open or hanging. Safetensors/gguf-only cache loads; nothing cached -> allowed."""
-    from utils.utils import hf_cache_snapshot_dir
+    if snapshot_path is None:
+        from utils.utils import hf_cache_snapshot_dir
 
-    try:
-        snapshot = hf_cache_snapshot_dir(model_name)
-    except Exception:
-        logger.warning("Offline gate: could not resolve the cache for '%s'; blocking.", model_name)
-        return FileSecurityDecision(
-            model_name, True, reason = "offline; could not inspect the local cache"
-        )
+        try:
+            snapshot = hf_cache_snapshot_dir(model_name)
+        except Exception:
+            logger.warning(
+                "Offline gate: could not resolve the cache for '%s'; blocking.",
+                model_name,
+            )
+            return FileSecurityDecision(
+                model_name, True, reason = "offline; could not inspect the local cache"
+            )
+    else:
+        try:
+            snapshot = snapshot_path.resolve(strict = True)
+            if not snapshot.is_dir():
+                raise OSError("snapshot is not a directory")
+        except (OSError, RuntimeError, ValueError):
+            logger.warning(
+                "Offline gate: could not resolve selected snapshot for '%s'; blocking.",
+                model_name,
+            )
+            return FileSecurityDecision(
+                model_name,
+                True,
+                reason = "offline; could not inspect the selected model snapshot",
+            )
 
     if snapshot is None:
         return FileSecurityDecision(model_name, False, reason = "offline; nothing cached to load")
@@ -521,20 +546,21 @@ def evaluate_file_security(
     # encodes a repo id + commit: scan that exact commit so an inactive-cache load can't
     # dodge the gate. A remote ref is scanned even if named "*.gguf" (name can't dodge it).
     snapshot_revision = None
+    selected_snapshot = None
     try:
         from utils.paths import is_local_path
         if is_local_path(model_name):
             cache_ref = _hf_cache_snapshot_ref(model_name)
             if cache_ref is None:
                 return FileSecurityDecision(model_name, False, reason = "local path; no Hub scan")
-            model_name, snapshot_revision = cache_ref
+            model_name, snapshot_revision, selected_snapshot = cache_ref
     except Exception:
         # Cannot classify the path -> do not block on that account.
         return FileSecurityDecision(model_name, False, reason = "path check failed; not blocked")
 
     # Offline: inspect the local cache and fail closed rather than hang on model_info or fail open.
     if local_only_load:
-        return _evaluate_local_only(model_name)
+        return _evaluate_local_only(model_name, selected_snapshot)
 
     status = _fetch_security_status(model_name, hf_token, revision = snapshot_revision)
     if not isinstance(status, dict):

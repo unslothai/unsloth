@@ -14,7 +14,7 @@ import {
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { RefObject } from "react";
+import type { Ref } from "react";
 import { useLayoutEffect, useMemo, useState } from "react";
 import {
   inventoryRowMatches,
@@ -118,7 +118,7 @@ export function DiscoverList({
   scrollElement: HTMLDivElement | null;
   scrollMargin?: number;
   suppressEmptyState?: boolean;
-  sentinelRef: RefObject<HTMLDivElement | null>;
+  sentinelRef: Ref<HTMLDivElement>;
   searchError: string | null;
   online: boolean;
   isDataset: boolean;

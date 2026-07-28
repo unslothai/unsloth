@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * listing; callers with a manual continuation UI can lower it.
  */
 const DEFAULT_MAX_AUTO_FILL_FETCHES = 40;
+const PREFETCH_MARGIN_PX = 200;
 
 export interface InfiniteScrollOptions {
   enabled?: boolean;
@@ -30,8 +31,20 @@ function hasScrollableOverflow(root: HTMLElement): boolean {
   return root.scrollHeight > root.clientHeight + 4;
 }
 
+function isSentinelWithinPrefetchRange(
+  root: HTMLElement,
+  sentinel: HTMLElement,
+): boolean {
+  const rootBounds = root.getBoundingClientRect();
+  const sentinelBounds = sentinel.getBoundingClientRect();
+  return (
+    sentinelBounds.bottom >= rootBounds.top - PREFETCH_MARGIN_PX &&
+    sentinelBounds.top <= rootBounds.bottom + PREFETCH_MARGIN_PX
+  );
+}
+
 export function useHubInfiniteScroll(
-  fetchMore: () => boolean | void,
+  fetchMore: () => boolean | undefined,
   signal: number,
   options: InfiniteScrollOptions = {},
 ) {
@@ -45,12 +58,16 @@ export function useHubInfiniteScroll(
   const isFetching = options.isFetching ?? false;
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const sentinelRef = useRef<HTMLDivElement>(null);
+  const [sentinelNode, setSentinelNode] = useState<HTMLDivElement | null>(null);
+  const sentinelRef = useCallback((node: HTMLDivElement | null) => {
+    setSentinelNode((current) => (current === node ? current : node));
+  }, []);
 
   const fetchMoreRef = useRef(fetchMore);
   const onFetchIntentRef = useRef(onFetchIntent);
   const enabledRef = useRef(enabled);
   const isFetchingRef = useRef(isFetching);
+  const signalRef = useRef(signal);
   useEffect(() => {
     fetchMoreRef.current = fetchMore;
   }, [fetchMore]);
@@ -63,8 +80,12 @@ export function useHubInfiniteScroll(
   useEffect(() => {
     isFetchingRef.current = isFetching;
   }, [isFetching]);
+  useEffect(() => {
+    signalRef.current = signal;
+  }, [signal]);
 
   const autoFireCountRef = useRef(0);
+  const lastRequestedSignalRef = useRef<number | null>(null);
   const prevSignalRef = useRef(signal);
   const prevResultCountRef = useRef(resultCount);
   const resetKeyRef = useRef(resetKey);
@@ -91,13 +112,34 @@ export function useHubInfiniteScroll(
   const requestFetchMore = useCallback(() => {
     const accepted = fetchMoreRef.current() !== false;
     if (accepted) {
+      lastRequestedSignalRef.current = signalRef.current;
       onFetchIntentRef.current?.();
     }
     return accepted;
   }, []);
 
+  const requestAutomaticPage = useCallback(() => {
+    if (manualFetchAvailableRef.current || isFetchingRef.current) {
+      return;
+    }
+    if (autoFireCountRef.current >= maxAutoFillFetches) {
+      setManualFetchAvailable(manualFetchAfterAutoFill);
+      return;
+    }
+    if (requestFetchMore()) {
+      autoFireCountRef.current += 1;
+    }
+  }, [
+    manualFetchAfterAutoFill,
+    maxAutoFillFetches,
+    requestFetchMore,
+    setManualFetchAvailable,
+  ]);
+
   const fetchMoreManually = useCallback(() => {
-    if (!enabledRef.current || isFetchingRef.current) return;
+    if (!enabledRef.current || isFetchingRef.current) {
+      return;
+    }
     if (requestFetchMore()) {
       setManualFetchAvailable(false);
     }
@@ -115,48 +157,36 @@ export function useHubInfiniteScroll(
   // Fires when the stable sentinel scrolls into view. Omits `signal` on purpose:
   // rebuilding per batch could drop an intersection. Refills fall to the auto-fire effect.
   useEffect(() => {
-    if (!enabled) return;
-    const sentinel = sentinelRef.current;
-    if (!sentinel) return;
+    if (!enabled) {
+      return;
+    }
+    if (!sentinelNode) {
+      return;
+    }
 
     const observer = new IntersectionObserver(
       (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            const root = scrollRef.current;
-            if (
-              !root ||
-              isFetchingRef.current ||
-              manualFetchAvailableRef.current ||
-              !hasScrollableOverflow(root)
-            ) {
-              continue;
-            }
-            if (autoFireCountRef.current >= maxAutoFillFetches) {
-              setManualFetchAvailable(manualFetchAfterAutoFill);
-              continue;
-            }
-            if (requestFetchMore()) {
-              autoFireCountRef.current += 1;
-            }
-          }
+        if (!entries.some((entry) => entry.isIntersecting)) {
+          return;
         }
+        const root = scrollRef.current;
+        if (!root) {
+          return;
+        }
+        if (!hasScrollableOverflow(root)) {
+          return;
+        }
+        requestAutomaticPage();
       },
       {
         threshold: 0,
         root: scrollRef.current,
-        rootMargin: "200px 0px",
+        rootMargin: `${PREFETCH_MARGIN_PX}px 0px`,
       },
     );
-    observer.observe(sentinel);
+    observer.observe(sentinelNode);
     return () => observer.disconnect();
-  }, [
-    enabled,
-    manualFetchAfterAutoFill,
-    maxAutoFillFetches,
-    requestFetchMore,
-    setManualFetchAvailable,
-  ]);
+  }, [enabled, requestAutomaticPage, sentinelNode]);
 
   // Auto-fire fallback: keep requesting batches while the container doesn't yet
   // overflow (initial empty state or aggressive filters). Driven only off
@@ -177,6 +207,7 @@ export function useHubInfiniteScroll(
       resetKey !== resetKeyRef.current
     ) {
       autoFireCountRef.current = 0;
+      lastRequestedSignalRef.current = null;
       setManualFetchAvailable(false);
     } else if (resultCount > prevResultCountRef.current) {
       autoFireCountRef.current = 0;
@@ -188,54 +219,60 @@ export function useHubInfiniteScroll(
     resetKeyRef.current = resetKey;
 
     const root = scrollRef.current;
-    if (!root) return;
+    if (!root) {
+      return;
+    }
+    if (!sentinelNode) {
+      return;
+    }
 
     const tryFire = () => {
-      const sentinel = sentinelRef.current;
-      if (!sentinel?.isConnected) return;
-      if (manualFetchAvailableRef.current) return;
-      // Once content overflows, the IntersectionObserver takes over - stop polling.
-      if (hasScrollableOverflow(root)) {
+      if (!sentinelNode.isConnected || manualFetchAvailableRef.current) {
+        return;
+      }
+      if (
+        hasScrollableOverflow(root) &&
+        (!isSentinelWithinPrefetchRange(root, sentinelNode) ||
+          (lastRequestedSignalRef.current !== null &&
+            signal <= lastRequestedSignalRef.current))
+      ) {
         setManualFetchAvailable(false);
         return;
       }
-      if (isFetchingRef.current) return;
-      if (autoFireCountRef.current >= maxAutoFillFetches) {
-        setManualFetchAvailable(manualFetchAfterAutoFill);
-        return;
-      }
-      if (requestFetchMore()) {
-        setManualFetchAvailable(false);
-        autoFireCountRef.current += 1;
-      }
+      requestAutomaticPage();
     };
 
     let frame: number | null = null;
     const schedule = () => {
-      if (frame !== null) return;
+      if (frame !== null) {
+        return;
+      }
       frame = requestAnimationFrame(() => {
         frame = null;
         tryFire();
       });
     };
 
-    schedule();
+    if (!isFetching) {
+      schedule();
+    }
 
     const ro = new ResizeObserver(schedule);
     ro.observe(root);
 
     return () => {
-      if (frame !== null) cancelAnimationFrame(frame);
+      if (frame !== null) {
+        cancelAnimationFrame(frame);
+      }
       ro.disconnect();
     };
   }, [
     enabled,
     isFetching,
-    manualFetchAfterAutoFill,
-    maxAutoFillFetches,
     resetKey,
-    requestFetchMore,
+    requestAutomaticPage,
     resultCount,
+    sentinelNode,
     setManualFetchAvailable,
     signal,
   ]);

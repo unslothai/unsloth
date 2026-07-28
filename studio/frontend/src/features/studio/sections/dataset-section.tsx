@@ -1,33 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { PICKER_FOCUS_VISIBLE_CLASS } from "@/components/resource-picker/picker-focus";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
 import { DatasetSelector } from "@/features/dataset-picker";
 import {
   bumpInventoryVersion,
   hfApiToken,
-  looksLikeLocalPath,
   useHfTokenStore,
 } from "@/features/hub";
 import {
@@ -40,21 +21,19 @@ import {
 import {
   HfDatasetSubsetSplitSelectors,
   type LocalDatasetInfo,
-  hasSeparateStreamingEvalSplit,
+  cacheLocalPathMatchesSelection,
   listLocalDatasets,
   uploadTrainingDataset,
   useDatasetPreviewDialogStore,
   useTrainingConfigStore,
 } from "@/features/training";
 import { translate, useT } from "@/i18n";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
   CloudUploadIcon,
   FileAttachmentIcon,
-  InformationCircleIcon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -62,6 +41,7 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   type ChangeEvent,
   type DragEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -69,6 +49,18 @@ import {
   useState,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
+import {
+  DatasetAdvancedSettings,
+  DatasetSourceToggle,
+} from "./dataset-panel-controls";
+import {
+  deriveLocalDatasetName,
+  formatUpdatedDate,
+  getDatasetStreamingBlockers,
+  getFileExtension,
+  isLikelyLocalDatasetRef,
+  shouldClearMissingLocalSelection,
+} from "./dataset-panel-helpers";
 import { DocumentUploadRedirectDialog } from "./document-upload-redirect-dialog";
 import { S3ConfigForm } from "./s3-config-form";
 
@@ -93,48 +85,7 @@ const DOCUMENT_REDIRECT_EXTENSIONS = new Set([".pdf", ".docx", ".txt"]);
 const OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY =
   "data-recipes:open-learning-recipes";
 
-function getFileExtension(fileName: string) {
-  const extensionStart = fileName.lastIndexOf(".");
-  return extensionStart >= 0
-    ? fileName.slice(extensionStart).toLowerCase()
-    : "";
-}
-
-function isLikelyLocalDatasetRef(value: string) {
-  return (
-    value.startsWith("/") ||
-    value.startsWith("./") ||
-    value.startsWith("../") ||
-    value.includes("\\") ||
-    /\.(jsonl|json|csv|parquet)$/i.test(value)
-  );
-}
-
-function deriveLocalDatasetName(path: string): string {
-  const normalized = path.replaceAll("\\", "/");
-  const parts = normalized.split("/").filter(Boolean);
-  const parquetIndex = parts.lastIndexOf("parquet-files");
-  if (parquetIndex > 0) return parts[parquetIndex - 1];
-  const basename = parts[parts.length - 1] ?? path;
-  // Strip UUID prefix from uploaded files (format: {32hex}_{original})
-  const uuidPrefixMatch = basename.match(/^[a-f0-9]{32}_(.+)$/);
-  if (uuidPrefixMatch) return uuidPrefixMatch[1];
-  return basename;
-}
-
-function formatUpdatedDate(timestamp: number | null): string {
-  if (typeof timestamp !== "number") return "--";
-  return new Date(timestamp * 1000).toLocaleDateString();
-}
-
-function normalizeSliceInput(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  if (!/^\d+$/.test(trimmed)) return null;
-  return trimmed;
-}
-
-function FieldLabel({ children }: { children: React.ReactNode }) {
+function FieldLabel({ children }: { children: ReactNode }) {
   return (
     <span className="text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
       {children}
@@ -151,6 +102,7 @@ export function DatasetPanel() {
     selectHfDataset,
     selectLocalDataset,
     selectS3Source,
+    restoreBrowseDatasetSource,
     datasetFormat,
     setDatasetFormat,
     datasetSubset,
@@ -184,6 +136,7 @@ export function DatasetPanel() {
       selectHfDataset: s.selectHfDataset,
       selectLocalDataset: s.selectLocalDataset,
       selectS3Source: s.selectS3Source,
+      restoreBrowseDatasetSource: s.restoreBrowseDatasetSource,
       datasetFormat: s.datasetFormat,
       setDatasetFormat: s.setDatasetFormat,
       datasetSubset: s.datasetSubset,
@@ -215,67 +168,29 @@ export function DatasetPanel() {
 
   const hfToken = useHfTokenStore((s) => s.token);
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
-
-  // Streaming is only supported for Hugging Face text datasets. Rather than
-  // hiding the toggle when a constraint isn't met, keep it visible but disabled
-  // and list the exact unmet requirement(s) in its tooltip — a control that
-  // silently disappears is confusing. Downstream preprocessing
-  // (convert_to_vlm_format, audio collators) needs random access and would
-  // crash on an IterableDataset, hence the constraints below.
-  const streamingBlockers: string[] = [];
-  if (datasetSource !== "huggingface")
-    streamingBlockers.push(
-      "Use a Hugging Face dataset (not a local upload or S3 source).",
-    );
-  if (maxSteps <= 0)
-    streamingBlockers.push(
-      "Set Max Steps > 0 — streaming datasets have no known length.",
-    );
-  if (trainOnCompletions)
-    streamingBlockers.push('Turn off "Assistant completions only".');
-  if (
-    !hasSeparateStreamingEvalSplit({
-      evalSteps,
-      datasetSplit,
-      datasetEvalSplit,
-    })
-  )
-    streamingBlockers.push(
-      "Pick a separate eval split — evaluation is on but no distinct eval split is set.",
-    );
-  if (isVisionModel)
-    streamingBlockers.push("Vision models don't support streaming.");
-  if (isAudioModel)
-    streamingBlockers.push("Audio models don't support streaming.");
-  if (isEmbeddingModel)
-    streamingBlockers.push(
-      "Embedding models don't support streaming (training needs the full dataset).",
-    );
-  if (isDatasetImage)
-    streamingBlockers.push(
-      "This dataset looks like images, which can't stream.",
-    );
-  if (isDatasetAudio)
-    streamingBlockers.push(
-      "This dataset looks like audio, which can't stream.",
-    );
-  if (platformDeviceType === "mac")
-    streamingBlockers.push(
-      "Streaming isn't supported on Apple Silicon (MLX) yet.",
-    );
+  const streamingBlockers = getDatasetStreamingBlockers({
+    datasetEvalSplit,
+    datasetSource,
+    datasetSplit,
+    evalSteps,
+    isAppleSilicon: platformDeviceType === "mac",
+    isAudioModel,
+    isDatasetAudio,
+    isDatasetImage,
+    isEmbeddingModel,
+    isVisionModel,
+    maxSteps,
+    trainOnCompletions,
+  });
 
   const isStreamingSupported = streamingBlockers.length === 0;
 
-  // If streaming was previously enabled but the config became incompatible
-  // (model switched to vision, dataset detected as image, etc.), clear it so
-  // the backend never receives a stale flag.
   useEffect(() => {
     if (datasetStreaming && !isStreamingSupported) {
       setDatasetStreaming(false);
     }
   }, [datasetStreaming, isStreamingSupported, setDatasetStreaming]);
 
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [localDatasets, setLocalDatasets] = useState<LocalDatasetInfo[]>([]);
   const [hasLoadedLocalDatasets, setHasLoadedLocalDatasets] = useState(false);
   const [localLoading, setLocalLoading] = useState(false);
@@ -332,19 +247,26 @@ export function DatasetPanel() {
 
   const selectedLocalDataset = useMemo(() => {
     if (!uploadedFile) return null;
-    return localDatasets.find((item) => item.path === uploadedFile) ?? null;
+    return (
+      localDatasets.find((item) =>
+        cacheLocalPathMatchesSelection(item.path, uploadedFile),
+      ) ?? null
+    );
   }, [localDatasets, uploadedFile]);
 
   useEffect(() => {
-    if (!hasLoadedLocalDatasets) return;
-    if (localLoading) return;
-    if (localError) return;
-    if (datasetSource !== "upload") return;
-    if (!uploadedFile) return;
-    if (selectedLocalDataset) return;
-    if (looksLikeLocalPath(uploadedFile)) return;
-    if (/\.(jsonl|json|csv|parquet|arrow)$/i.test(uploadedFile)) return;
-    selectLocalDataset(null);
+    if (
+      shouldClearMissingLocalSelection({
+        datasetSource,
+        hasLoadedLocalDatasets,
+        hasSelectedLocalDataset: selectedLocalDataset !== null,
+        localError,
+        localLoading,
+        uploadedFile,
+      })
+    ) {
+      selectLocalDataset(null);
+    }
   }, [
     datasetSource,
     hasLoadedLocalDatasets,
@@ -357,9 +279,9 @@ export function DatasetPanel() {
 
   useEffect(() => {
     if (datasetSource === "s3" && isMultimodalModel) {
-      selectHfDataset(dataset);
+      restoreBrowseDatasetSource();
     }
-  }, [dataset, datasetSource, isMultimodalModel, selectHfDataset]);
+  }, [datasetSource, isMultimodalModel, restoreBrowseDatasetSource]);
 
   const activeSourceTab = datasetSource === "upload" ? "local" : "huggingface";
   const isHfDatasetSelected =
@@ -555,75 +477,12 @@ export function DatasetPanel() {
 
   return (
     <div className="flex min-w-0 flex-col gap-4">
-      {(() => {
-        const sourceTabs: {
-          value: "huggingface" | "upload" | "s3";
-          label: string;
-        }[] = [
-          { value: "huggingface", label: t("studio.wizard.sourceBrowse") },
-          ...(isMultimodalModel
-            ? []
-            : [{ value: "s3" as const, label: "Amazon S3" }]),
-        ];
-        if (sourceTabs.length < 2) return null;
-        const activeIndex = Math.max(
-          0,
-          sourceTabs.findIndex((item) =>
-            item.value === "huggingface"
-              ? datasetSource !== "s3"
-              : datasetSource === "s3",
-          ),
-        );
-        return (
-          <fieldset
-            aria-label={t("studio.dataset.sourceAriaLabel")}
-            className="hub-tab-toggle relative m-0 inline-flex h-9 min-w-0 w-full items-center rounded-full border-0 p-0"
-          >
-            <span
-              aria-hidden="true"
-              className="hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 rounded-full transition-transform duration-200 ease-out"
-              style={{
-                width: `${100 / sourceTabs.length}%`,
-                transform: `translateX(${activeIndex * 100}%)`,
-              }}
-            />
-            {sourceTabs.map((item) => {
-              const checked =
-                item.value === "s3"
-                  ? datasetSource === "s3"
-                  : datasetSource !== "s3";
-              return (
-                <button
-                  key={item.value}
-                  type="button"
-                  aria-pressed={checked}
-                  onClick={() => {
-                    if (item.value === "s3") {
-                      if (isMultimodalModel || datasetSource === "s3") return;
-                      selectS3Source();
-                      return;
-                    }
-                    if (datasetSource !== "s3") return;
-                    if (uploadedFile) {
-                      selectLocalDataset(uploadedFile);
-                    } else {
-                      selectHfDataset(dataset);
-                    }
-                  }}
-                  className={cn(
-                    "relative z-10 inline-flex h-9 flex-1 cursor-pointer items-center justify-center rounded-full px-3 text-ui-12p5 font-medium transition-colors",
-                    checked
-                      ? "text-foreground"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {item.label}
-                </button>
-              );
-            })}
-          </fieldset>
-        );
-      })()}
+      <DatasetSourceToggle
+        datasetSource={datasetSource}
+        isMultimodalModel={isMultimodalModel}
+        restoreBrowseDatasetSource={restoreBrowseDatasetSource}
+        selectS3Source={selectS3Source}
+      />
 
       {datasetSource === "s3" && <S3ConfigForm />}
 
@@ -646,6 +505,7 @@ export function DatasetPanel() {
                 "group relative flex h-9 w-full select-none items-center justify-center gap-2 rounded-[12px] border border-dashed px-3 text-center transition-colors",
                 "border-foreground/15 dark:border-white/15",
                 "hover:border-foreground/30 hover:bg-foreground/[0.02] dark:hover:border-white/30 dark:hover:bg-white/[0.025]",
+                PICKER_FOCUS_VISIBLE_CLASS,
                 isDatasetDragOver &&
                   "border-foreground/45 bg-foreground/[0.04] dark:border-white/40 dark:bg-white/[0.05]",
                 isUploading && "cursor-progress opacity-80",
@@ -775,6 +635,9 @@ export function DatasetPanel() {
               <Button
                 variant="ghost"
                 size="sm"
+                aria-label={`${t("studio.dataset.clear")} ${t(
+                  "studio.dataset.evalDataset",
+                )}`}
                 className="h-6 w-6 shrink-0 cursor-pointer p-0"
                 onClick={() => setUploadedEvalFile(null)}
               >
@@ -865,185 +728,18 @@ export function DatasetPanel() {
         </div>
       )}
 
-      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-        <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
-          <HugeiconsIcon
-            icon={ChevronDownStandardIcon}
-            className={`size-3.5 transition-transform ${advancedOpen ? "rotate-180" : ""}`}
-          />
-          {t("studio.dataset.advanced")}
-        </CollapsibleTrigger>
-        <CollapsibleContent className="mt-3 data-[state=open]:overflow-visible">
-          <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-2">
-              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                {t("studio.dataset.targetFormat")}
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    <button
-                      type="button"
-                      className="text-foreground/70 hover:text-foreground"
-                    >
-                      <HugeiconsIcon
-                        icon={InformationCircleIcon}
-                        className="size-3"
-                      />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {t("studio.dataset.targetFormatTooltip")}{" "}
-                    <a
-                      href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-primary underline"
-                    >
-                      {t("studio.params.readMore")}
-                    </a>
-                  </TooltipContent>
-                </Tooltip>
-              </span>
-              <Select
-                value={datasetFormat}
-                onValueChange={(v) =>
-                  setDatasetFormat(v as typeof datasetFormat)
-                }
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="auto">
-                    {t("studio.dataset.auto")}
-                  </SelectItem>
-                  <SelectItem value="alpaca">Alpaca</SelectItem>
-                  <SelectItem value="chatml">ChatML</SelectItem>
-                  <SelectItem value="sharegpt">ShareGPT</SelectItem>
-                  <SelectItem value="raw">
-                    {t("studio.dataset.rawText")}
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex items-center gap-2">
-              <Checkbox
-                id="datasetStreaming"
-                checked={datasetStreaming}
-                disabled={!isStreamingSupported}
-                onCheckedChange={(v) => setDatasetStreaming(!!v)}
-              />
-              <label
-                htmlFor="datasetStreaming"
-                className={`text-xs text-muted-foreground ${
-                  isStreamingSupported
-                    ? "cursor-pointer"
-                    : "cursor-not-allowed opacity-60"
-                }`}
-              >
-                Enable streaming
-              </label>
-              <Tooltip>
-                <TooltipTrigger asChild={true}>
-                  <button
-                    type="button"
-                    className="text-foreground/70 hover:text-foreground"
-                  >
-                    <HugeiconsIcon
-                      icon={InformationCircleIcon}
-                      className="size-3"
-                    />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {isStreamingSupported ? (
-                    <span>
-                      Stream Hugging Face text datasets instead of downloading
-                      them.
-                    </span>
-                  ) : (
-                    <div className="max-w-xs">
-                      <p className="font-medium">
-                        Streaming unavailable. To enable:
-                      </p>
-                      <ul className="mt-1 list-disc space-y-0.5 pl-4">
-                        {streamingBlockers.map((reason) => (
-                          <li key={reason}>{reason}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </TooltipContent>
-              </Tooltip>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1.5">
-                <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  {t("studio.dataset.trainSplitStart")}
-                  <Tooltip>
-                    <TooltipTrigger asChild={true}>
-                      <button
-                        type="button"
-                        className="text-foreground/70 hover:text-foreground"
-                      >
-                        <HugeiconsIcon
-                          icon={InformationCircleIcon}
-                          className="size-3"
-                        />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {t("studio.dataset.trainSplitStartTooltip")}
-                    </TooltipContent>
-                  </Tooltip>
-                </span>
-                <Input
-                  type="number"
-                  inputMode="numeric"
-                  min={0}
-                  step={1}
-                  placeholder="0"
-                  value={datasetSliceStart ?? ""}
-                  onChange={(e) =>
-                    setDatasetSliceStart(normalizeSliceInput(e.target.value))
-                  }
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  {t("studio.dataset.trainSplitEnd")}
-                  <Tooltip>
-                    <TooltipTrigger asChild={true}>
-                      <button
-                        type="button"
-                        className="text-foreground/70 hover:text-foreground"
-                      >
-                        <HugeiconsIcon
-                          icon={InformationCircleIcon}
-                          className="size-3"
-                        />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {t("studio.dataset.trainSplitEndTooltip")}
-                    </TooltipContent>
-                  </Tooltip>
-                </span>
-                <Input
-                  type="number"
-                  inputMode="numeric"
-                  min={0}
-                  step={1}
-                  placeholder={t("studio.dataset.endPlaceholder")}
-                  value={datasetSliceEnd ?? ""}
-                  onChange={(e) =>
-                    setDatasetSliceEnd(normalizeSliceInput(e.target.value))
-                  }
-                />
-              </div>
-            </div>
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
+      <DatasetAdvancedSettings
+        datasetFormat={datasetFormat}
+        datasetSliceEnd={datasetSliceEnd}
+        datasetSliceStart={datasetSliceStart}
+        datasetStreaming={datasetStreaming}
+        isStreamingSupported={isStreamingSupported}
+        setDatasetFormat={setDatasetFormat}
+        setDatasetSliceEnd={setDatasetSliceEnd}
+        setDatasetSliceStart={setDatasetSliceStart}
+        setDatasetStreaming={setDatasetStreaming}
+        streamingBlockers={streamingBlockers}
+      />
 
       <input
         ref={fileInputRef}

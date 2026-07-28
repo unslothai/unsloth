@@ -10,7 +10,7 @@ export interface ModelTypeCapabilityFlags {
   isVision?: boolean | null;
 }
 
-function inferTrainingModelTypeFromFlags({
+export function inferTrainingModelTypeFromFlags({
   isEmbedding,
   isAudio,
   isVision,
@@ -109,27 +109,4 @@ export function trainingModelTypeFlagsFromMetadata(
     isAudio: capabilities.isAudio,
     isVision: capabilities.isVision,
   };
-}
-
-export function resolvePickerInferredModelType(
-  current: ModelType | null,
-  flags: ModelTypeCapabilityFlags,
-): ModelType {
-  if (current === "vision" && flags.isVision) {
-    return current;
-  }
-  if (current === "audio" && flags.isAudio) {
-    return current;
-  }
-  if (current === "embeddings" && flags.isEmbedding) {
-    return current;
-  }
-  const inferred = inferTrainingModelTypeFromFlags(flags);
-  if (
-    inferred === "text" &&
-    (current === "vision" || current === "audio" || current === "embeddings")
-  ) {
-    return current;
-  }
-  return inferred;
 }

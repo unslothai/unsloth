@@ -15,6 +15,16 @@ export const ptBR = {
     searchAriaLabel: "Buscar {noun}",
     rateLimitedTitle: "Limite de requisições do Hugging Face atingido",
     rateLimitedBody: "Aguarde um momento e tente pesquisar {noun} novamente.",
+    hfToken: {
+      label: "Token do HF",
+      saved: "Salvo",
+      add: "Adicionar",
+      savedAriaLabel: "Token do Hugging Face salvo",
+      addAriaLabel: "Definir token do Hugging Face",
+      savedHint: "Token salvo. O acesso será verificado quando ele for usado.",
+      addHint:
+        "Defina um token para acessar repositórios privados e com acesso restrito.",
+    },
   },
   common: {
     cancel: "Cancelar",
@@ -77,7 +87,8 @@ export const ptBR = {
       },
       deleteRun: {
         title: "Excluir execução de treino",
-        description: 'Tem certeza de que deseja excluir esta execução "{name}"?',
+        description:
+          'Tem certeza de que deseja excluir esta execução "{name}"?',
       },
       renameChat: {
         title: "Renomear chat",
@@ -89,7 +100,8 @@ export const ptBR = {
       },
     },
     toast: {
-      cannotDeleteRunningRun: "Não é possível excluir uma execução de treino em andamento",
+      cannotDeleteRunningRun:
+        "Não é possível excluir uma execução de treino em andamento",
       failedToDeleteChat: "Falha ao excluir o chat",
       failedToDeleteRun: "Falha ao excluir a execução",
       failedToRenameChat: "Falha ao renomear o chat",
@@ -140,8 +152,7 @@ export const ptBR = {
           "A senha atual deve ter no mínimo {minLength} caracteres.",
         newTooShort: "A nova senha deve ter no mínimo {minLength} caracteres.",
         mismatch: "As senhas não coincidem.",
-        samePassword:
-          "A nova senha deve ser diferente da senha atual.",
+        samePassword: "A nova senha deve ser diferente da senha atual.",
         update: "Atualizar senha",
         updating: "Atualizando...",
         updated: "Senha atualizada.",
@@ -173,17 +184,22 @@ export const ptBR = {
           "Ative Trocar de modelo por requisição para que um modelo descarregado seja recarregado no próximo uso.",
         idleActiveViaEnv:
           "O descarregamento automático por inatividade está ativo por meio da variável de ambiente UNSLOTH_MODEL_IDLE_TTL.",
-        loadError: "Falha ao carregar as configurações de troca automática de modelo.",
-        saveError: "Falha ao salvar as configurações de troca automática de modelo.",
-        idleError: "Insira 0 para manter o modelo carregado, ou pelo menos 60 segundos.",
+        loadError:
+          "Falha ao carregar as configurações de troca automática de modelo.",
+        saveError:
+          "Falha ao salvar as configurações de troca automática de modelo.",
+        idleError:
+          "Insira 0 para manter o modelo carregado, ou pelo menos 60 segundos.",
       },
       previewSharing: {
         sectionTitle: "Compartilhamento de pré-visualização",
         enableLabel: "Links públicos de pré-visualização",
         enableDescription:
           "Permite que qualquer pessoa com um link assinado converse com um modelo concluído, sem necessidade de login. Desative para tirar a superfície de pré-visualização pública do ar; os links compartilhados param de funcionar.",
-        loadError: "Falha ao carregar as configurações de compartilhamento de pré-visualização.",
-        saveError: "Falha ao salvar as configurações de compartilhamento de pré-visualização.",
+        loadError:
+          "Falha ao carregar as configurações de compartilhamento de pré-visualização.",
+        saveError:
+          "Falha ao salvar as configurações de compartilhamento de pré-visualização.",
         revokeLabel: "Revogar todos os links de pré-visualização",
         revokeDescription:
           "Rotaciona o segredo de assinatura para que todos os links que você compartilhou parem de funcionar. Links copiados recentemente continuam funcionando.",
@@ -210,8 +226,7 @@ export const ptBR = {
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Limite de upload do dataset de treino",
-        maxUploadSizeDescription:
-          "O padrão é {defaultSize} MB.",
+        maxUploadSizeDescription: "O padrão é {defaultSize} MB.",
       },
       rag: {
         sectionTitle: "Documentos e RAG",
@@ -220,7 +235,8 @@ export const ptBR = {
           "Modelo do Hugging Face ou caminho local usado para indexar e buscar seus documentos. O padrão é {defaultModel}.",
         reindexWarning:
           "Afeta apenas documentos recém-indexados. Reenvie os documentos existentes após alterar o modelo.",
-        emptyError: "Insira um id de modelo do Hugging Face ou um caminho local.",
+        emptyError:
+          "Insira um id de modelo do Hugging Face ou um caminho local.",
         loadError: "Falha ao carregar a configuração do modelo de embedding.",
         saveError: "Falha ao salvar o modelo de embedding.",
         saved: "Modelo de embedding salvo.",
@@ -230,8 +246,7 @@ export const ptBR = {
       storage: {
         sectionTitle: "Armazenamento",
         modelsFolder: "Pasta de modelos",
-        modelsFolderDescription:
-          "Onde os modelos baixados são armazenados.",
+        modelsFolderDescription: "Onde os modelos baixados são armazenados.",
         openAction: "Abrir",
         copyAction: "Copiar caminho",
         copied: "Caminho copiado",
@@ -334,14 +349,16 @@ export const ptBR = {
         importFont: {
           upload: "Enviar",
           scanFolder: "Selecionar pasta",
-          alreadyAvailable: "Esta fonte já está disponível, então a cópia existente será usada.",
+          alreadyAvailable:
+            "Esta fonte já está disponível, então a cópia existente será usada.",
           folderNoFonts: "Nenhum arquivo de fonte encontrado nessa pasta.",
           remove: "Remover",
           errorInvalidType:
             "Tipo de arquivo não suportado. Use .woff2, .woff, .ttf ou .otf.",
           errorTooLarge: "O arquivo de fonte é muito grande (máx. 1,5 MB).",
           errorLimit: "Você pode importar até 3 fontes.",
-          errorStorageFull: "Sem espaço de armazenamento local para esta fonte. Remova uma fonte importada primeiro.",
+          errorStorageFull:
+            "Sem espaço de armazenamento local para esta fonte. Remova uma fonte importada primeiro.",
           errorFailed: "Não foi possível carregar este arquivo de fonte.",
         },
         uiFontSize: {
@@ -395,7 +412,8 @@ export const ptBR = {
     },
     resources: {
       title: "Sistema",
-      description: "Monitore o hardware e o armazenamento deste servidor Unsloth.",
+      description:
+        "Monitore o hardware e o armazenamento deste servidor Unsloth.",
       liveUpdates: "Atualizações ao vivo",
       floatingWindow: "Janela flutuante",
       disableOverlay: "Desativar sobreposição",
@@ -412,7 +430,8 @@ export const ptBR = {
       },
       gpu: {
         title: "Dispositivos GPU",
-        noGpu: "Nenhuma GPU visível detectada. Os recursos somente CPU aparecem acima.",
+        noGpu:
+          "Nenhuma GPU visível detectada. Os recursos somente CPU aparecem acima.",
         unknownDevice: "GPU desconhecida",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -486,7 +505,8 @@ export const ptBR = {
       clearHistoryDescription: "Exclui o histórico de chat deste dispositivo.",
       clearAction: "Limpar",
       clearAllChats: "Limpar todos os chats",
-      clearAllChatsDescription: "Exclui permanentemente todos os chats deste dispositivo.",
+      clearAllChatsDescription:
+        "Exclui permanentemente todos os chats deste dispositivo.",
       noChatsToClear: "Nenhum chat para limpar.",
       clearOneChatDescription:
         "Exclui permanentemente o único chat deste dispositivo.",
@@ -510,7 +530,8 @@ export const ptBR = {
         "{clearedCount} chats limpos; {remainingCount} chats restantes. Por favor, tente novamente.",
       oneChatClearedRemain:
         "1 chat limpo; {remainingCount} chats restantes. Por favor, tente novamente.",
-      oneChatClearedRemainOne: "1 chat limpo; 1 chat restante. Por favor, tente novamente.",
+      oneChatClearedRemainOne:
+        "1 chat limpo; 1 chat restante. Por favor, tente novamente.",
       storageClearFailedOne:
         "Falha ao limpar o armazenamento; 1 chat pode ter restado. Por favor, tente novamente.",
       storageClearFailed:
@@ -523,8 +544,7 @@ export const ptBR = {
     },
     apiKeys: {
       title: "API",
-      description:
-        "Acesse o Unsloth por meio da API compatível com OpenAI.",
+      description: "Acesse o Unsloth por meio da API compatível com OpenAI.",
       readDocs: "Leia a documentação da API",
       noAccess: "Nenhum acesso à API ainda.",
       accessTokens: "Tokens de acesso",
@@ -561,7 +581,8 @@ export const ptBR = {
       codingAgents: "Agentes de código",
       codingAgentsHint:
         "Inicie um agente de código conectado a este servidor. Ele usa o modelo carregado; um servidor local gera uma chave de API automaticamente, um remoto a inclui no comando.",
-      codingAgentsSwap: "Troque claude por codex, openclaw, opencode, hermes ou pi.",
+      codingAgentsSwap:
+        "Troque claude por codex, openclaw, opencode, hermes ou pi.",
       codingAgentDetected: "Instalado nesta máquina",
       codingAgentsDetectedHint: "Detectado nesta máquina: {agents}.",
       relativeNever: "nunca",
@@ -607,8 +628,7 @@ export const ptBR = {
         sectionTitle: "Licença",
         studioLabel: "Unsloth Studio",
         studioLicense: "AGPL-3.0",
-        studioDescription:
-          "Código aberto sob a licença GNU AGPL v3.0.",
+        studioDescription: "Código aberto sob a licença GNU AGPL v3.0.",
         libraryLabel: "Unsloth Core",
         libraryLicense: "Apache-2.0",
         libraryDescription: "Licenciado sob Apache 2.0.",
@@ -632,7 +652,8 @@ export const ptBR = {
         installCommandWindows: "Comando de instalação para Windows",
         localInstallDetected:
           "Instalação local detectada. Atualize a partir do seu repositório original para evitar substituí-lo pelo PyPI.",
-        pullThenUpdate: "Puxe as últimas alterações (git pull) e depois execute o instalador local:",
+        pullThenUpdate:
+          "Puxe as últimas alterações (git pull) e depois execute o instalador local:",
         gitPullCommand: "comando git pull",
         localInstallerCommand: "comando do instalador local",
         sourceInstallDetected:
@@ -700,6 +721,7 @@ export const ptBR = {
       noGpu: "Nenhuma GPU detectada",
       hfToken: "Token HF",
       connected: "Conectado",
+      saved: "Salvo",
       notSet: "Não definido",
       files: "Arquivos",
       model: "Modelo",
@@ -740,7 +762,8 @@ export const ptBR = {
       noun: "modelos",
       selectModel: "Selecionar modelo",
       hubPlaceholder: "Busque ou cole um id do Hugging Face...",
-      devicePlaceholder: "Busque modelos locais ou cole o caminho de uma pasta...",
+      devicePlaceholder:
+        "Busque modelos locais ou cole o caminho de uma pasta...",
       useAsHubModel: "Usar como modelo do Hugging Face",
       useAsLocalPath: "Usar como caminho local",
       hfCacheLabel: "Cache do HF",
@@ -759,9 +782,11 @@ export const ptBR = {
       cantUseModel: "Não é possível usar o modelo para treinamento",
       reasonEmptyId: "Insira um id de modelo ou um caminho de modelo local.",
       reasonGguf: "Modelos GGUF não podem ser usados para treinamento.",
-      reasonAdapter: "Saídas de adaptador não podem ser usadas como modelos base de treinamento.",
+      reasonAdapter:
+        "Saídas de adaptador não podem ser usadas como modelos base de treinamento.",
       reasonNotTrainable: "Este modelo no dispositivo não pode ser treinado.",
-      reasonUnsupportedFormat: "Este formato de modelo não é suportado para treinamento.",
+      reasonUnsupportedFormat:
+        "Este formato de modelo não é suportado para treinamento.",
       vramNeeds: "Precisa de ~{est}GB de VRAM (GPU: {total}GB)",
       vramTight: "~{est}GB de VRAM (limite na {total}GB)",
       vramApprox: "~{est}GB de VRAM",
@@ -841,6 +866,7 @@ export const ptBR = {
       targetFormat: "Formato de Destino",
       targetFormatTooltip:
         "Formato dos seus dados de treinamento. A detecção automática funciona para a maioria dos datasets.",
+      streamingInfoAriaLabel: "Informações sobre streaming do dataset",
       auto: "Auto",
       rawText: "Texto Bruto",
       trainSplitStart: "Início da Divisão de Treino",
@@ -869,25 +895,29 @@ export const ptBR = {
       subset: "Subconjunto (Subset)",
       s3: {
         title: "Configuração do S3",
-        description: "Carregue datasets em .parquet, .json, .jsonl ou .csv do Amazon S3",
+        description:
+          "Carregue datasets em .parquet, .json, .jsonl ou .csv do Amazon S3",
         bucket: "Nome do Bucket",
         bucketPlaceholder: "meu-bucket-de-dados-de-treino",
         region: "Região da AWS",
         regionPlaceholder: "us-east-1",
         prefix: "Prefixo do Caminho",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip: "Caminho opcional dentro do bucket para os arquivos do seu dataset",
+        prefixTooltip:
+          "Caminho opcional dentro do bucket para os arquivos do seu dataset",
         accessKeyId: "ID da Chave de Acesso",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "Chave de Acesso Secreta",
         secretAccessKeyPlaceholder: "Sua chave de acesso secreta da AWS",
         useIamRole: "Usar Função IAM",
-        useIamRoleTooltip: "Usa credenciais de função IAM em vez de chaves de acesso (recomendado para EC2/SageMaker)",
+        useIamRoleTooltip:
+          "Usa credenciais de função IAM em vez de chaves de acesso (recomendado para EC2/SageMaker)",
         testConnection: "Testar Conexão",
         connectionSuccess: "Conectado com sucesso ao bucket S3",
         connectionFailed: "Falha ao conectar ao bucket S3",
         comingSoon: "Integração com S3 em breve",
-        comingSoonDescription: "O carregamento de datasets do S3 requer o boto3. Este recurso está em desenvolvimento.",
+        comingSoonDescription:
+          "O carregamento de datasets do S3 requer o boto3. Este recurso está em desenvolvimento.",
       },
     },
     params: {
@@ -914,9 +944,11 @@ export const ptBR = {
       maxStepsDescription:
         "Limita o treinamento a um número fixo de passos do otimizador.",
       contextLength: "Comprimento do Contexto",
-      contextLengthTooltip: "Número máximo de tokens por amostra de treinamento.",
+      contextLengthTooltip:
+        "Número máximo de tokens por amostra de treinamento.",
       customContextLength: "Insira um valor personalizado",
-      contextLengthDescription: "Comprimento máximo de sequência para amostras de treino",
+      contextLengthDescription:
+        "Comprimento máximo de sequência para amostras de treino",
       learningRate: "Taxa de Aprendizado (Learning Rate)",
       learningRateTooltip:
         "Tamanho do passo para atualizações de peso. Valores menores treinam mais lentamente, mas com mais estabilidade.",
@@ -931,7 +963,8 @@ export const ptBR = {
       rankTooltip:
         "Dimensão das matrizes de baixo rank. Maior = mais capacidade.",
       alpha: "Alpha",
-      alphaTooltip: "Fator de escala para atualizações LoRA. Geralmente o dobro do rank.",
+      alphaTooltip:
+        "Fator de escala para atualizações LoRA. Geralmente o dobro do rank.",
       dropout: "Dropout",
       dropoutTooltip:
         "Probabilidade de dropout para as camadas LoRA para reduzir o overfitting.",
@@ -967,9 +1000,11 @@ export const ptBR = {
         cosine: "Cosine",
       },
       batchSize: "Tamanho do Lote (Batch Size)",
-      batchSizeTooltip: "Amostras processadas por passo. Maior consome mais VRAM.",
+      batchSizeTooltip:
+        "Amostras processadas por passo. Maior consome mais VRAM.",
       gradAccum: "Acúmulo de Gradiente",
-      gradAccumTooltip: "Simula tamanhos de lote maiores sem gastar VRAM extra.",
+      gradAccumTooltip:
+        "Simula tamanhos de lote maiores sem gastar VRAM extra.",
       weightDecay: "Decaimento de Peso",
       weightDecayTooltip: "Regularização L2 para evitar overfitting.",
       warmupSteps: "Passos de Aquecimento (Warmup)",
@@ -978,7 +1013,8 @@ export const ptBR = {
       scheduleEpochsTooltip:
         "Número de passagens completas pelo dataset. Defina 0 para rodar por passos máximos.",
       saveSteps: "Passos para Salvar",
-      saveStepsTooltip: "Salva um checkpoint a cada N passos. 0 para desativar.",
+      saveStepsTooltip:
+        "Salva um checkpoint a cada N passos. 0 para desativar.",
       evalSteps: "Passos de Validação",
       evalStepsTooltip:
         "Fração dos passos totais de treino entre as validações (0-1). Defina como 0 para desativar. Ex: 0.01 = valida a cada 1% dos passos.",
@@ -1001,6 +1037,8 @@ export const ptBR = {
       chooseModel: "Escolha um modelo",
       chooseDataset: "Escolha um dataset",
       chooseModelAndDataset: "Escolha o modelo e o dataset",
+      modelUnverified:
+        "Não foi possível verificar as configurações deste modelo. Verifique sua conexão ou o token do Hugging Face e tente novamente.",
       datasetUnverified:
         "Não foi possível verificar se o dataset é compatível com este modelo. Verifique sua conexão ou o token do Hugging Face — a verificação será refeita ao iniciar o treino.",
       upload: "Upload",
@@ -1013,6 +1051,7 @@ export const ptBR = {
       failedToLoadConfig: "Falha ao carregar a configuração",
       invalidYamlFile: "Arquivo YAML inválido",
       failedToReadFile: "Falha ao ler o arquivo",
+      failedToSaveConfig: "Falha ao salvar a configuração",
       parametersReset: "Parâmetros redefinidos para os padrões do modelo",
       audioIncompatible:
         "Este modelo não suporta áudio. Mude para um modelo compatível com áudio ou escolha um dataset sem áudio.",
@@ -1023,7 +1062,8 @@ export const ptBR = {
       continueAction: "Continuar Treinamento",
       cancelAction: "Cancelar Treinamento",
       stopTitle: "Interromper Treinamento",
-      stopDescription: "Escolha como você deseja interromper a execução de treino atual.",
+      stopDescription:
+        "Escolha como você deseja interromper a execução de treino atual.",
       stopAction: "Interromper",
       stopping: "Interrompendo...",
       stopAndSave: "Interromper e Salvar",
@@ -1052,7 +1092,8 @@ export const ptBR = {
       emptyDescription:
         "Nenhuma execução de treino ainda. Inicie sua primeira execução na aba Configurar.",
       loadError: "Falha ao carregar as execuções de treino",
-      deleteError: "Falha ao excluir a execução de treino. Por favor, tente novamente.",
+      deleteError:
+        "Falha ao excluir a execução de treino. Por favor, tente novamente.",
       retry: "Tentar novamente",
       loadMore: "Carregar mais",
       loading: "Carregando...",
@@ -1097,13 +1138,15 @@ export const ptBR = {
         "Ajuste a apresentação do gráfico enquanto o treinamento continua rodando.",
       openSettings: "Abrir configurações do gráfico",
       viewWindow: "Janela de visualização",
-      viewWindowDescription: "Mostra apenas os passos mais recentes ou o histórico completo.",
+      viewWindowDescription:
+        "Mostra apenas os passos mais recentes ou o histórico completo.",
       window: "Janela",
       all: "Tudo",
       trainingLoss: "Loss de Treinamento",
       trainingLossDescription: "Controle as sobreposições e a suavização EMA.",
       smoothing: "Suavização",
-      smoothingDescription: "Mova para a direita para mais suavização. `0` = bruto.",
+      smoothingDescription:
+        "Mova para a direita para mais suavização. `0` = bruto.",
       showRawLoss: "Mostrar loss bruta",
       showSmoothedLoss: "Mostrar loss suavizada",
       showAverageLine: "Mostrar linha média",
@@ -1126,9 +1169,11 @@ export const ptBR = {
       gradientNorm: "Norma do Gradiente",
       step: "Passo {step}",
       averageValue: "média {value}",
-      waitingForFirstEvaluationStep: "Aguardando o primeiro passo de validação...",
+      waitingForFirstEvaluationStep:
+        "Aguardando o primeiro passo de validação...",
       evaluationNotConfigured: "Validação não configurada",
-      evalChartWillAppear: "O gráfico aparecerá assim que o eval_steps for alcançado",
+      evalChartWillAppear:
+        "O gráfico aparecerá assim que o eval_steps for alcançado",
       setEvalDatasetAndSteps:
         "Defina o dataset de validação e eval_steps para acompanhar a loss de validação",
     },
@@ -1192,7 +1237,8 @@ export const ptBR = {
       terminalStart: "> treinamento do unsloth iniciado...",
       preparingResources: "> Preparando modelo e dataset...",
       gettingReady: "> Estamos deixando tudo pronto para a sua execução...",
-      waitingForFirstStep: "> {message} | aguardando o primeiro passo... ({step})",
+      waitingForFirstStep:
+        "> {message} | aguardando o primeiro passo... ({step})",
       resumingTraining: "Retomando treinamento...",
       startingTraining: "iniciando treinamento...",
       dataset: "Dataset",

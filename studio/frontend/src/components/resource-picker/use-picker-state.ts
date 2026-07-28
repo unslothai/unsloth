@@ -35,10 +35,11 @@ function resolvePickerTab({
   selectedTab: PickerTab;
 }): PickerTab {
   const shouldUseDeviceTab = !online || (!isLoadingDevice && hasDeviceItems);
-  const inferredTab =
-    shouldUseDeviceTab && !hasExplicitTabPreference
+  const inferredTab = hasExplicitTabPreference
+    ? selectedTab
+    : shouldUseDeviceTab
       ? PICKER_TAB.device
-      : selectedTab;
+      : PICKER_TAB.hub;
   return lockedInferredTab ?? inferredTab;
 }
 

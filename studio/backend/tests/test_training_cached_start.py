@@ -3,6 +3,8 @@
 
 import asyncio
 import importlib.util
+import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -50,6 +52,10 @@ def _refusing_backend() -> SimpleNamespace:
 
 def _start(route, request):
     return asyncio.run(route.start_training(request, current_subject = "test-user"))
+
+
+async def _inline_to_thread(function, *args, **kwargs):
+    return function(*args, **kwargs)
 
 
 @pytest.mark.parametrize(
@@ -239,6 +245,8 @@ def test_route_forwards_cache_reference_fields():
     with (
         patch.object(route, "get_training_backend", return_value = backend),
         patch.object(route, "load_model_defaults", return_value = {}),
+        patch.object(route.asyncio, "to_thread", _inline_to_thread),
+        patch("utils.transformers_version.latest_tier_active_for", return_value = False),
         patch(
             "core.inference.get_inference_backend",
             return_value = type("InferenceBackend", (), {"active_model_name": None})(),
@@ -256,6 +264,237 @@ def test_route_forwards_cache_reference_fields():
     assert captured["model_format"] == "safetensors"
     assert captured["dataset_known_cached"] is True
     assert captured["dataset_local_path"] == "/tmp/hf-cache/datasets--org--dataset"
+    assert captured["require_exact_resume_resources"] is False
+
+
+def test_training_request_does_not_accept_client_strict_resume_flag():
+    request = _request(require_exact_resume_resources = True)
+
+    assert not hasattr(request, "require_exact_resume_resources")
+
+
+def test_resume_route_uses_source_run_resource_pins(tmp_path):
+    route = _load_route_module("training_route_resume_resource_provenance")
+    model_root = tmp_path / "models--unsloth--test"
+    old_model = model_root / "snapshots" / "commit-old"
+    new_model = model_root / "snapshots" / "commit-new"
+    for snapshot in (old_model, new_model):
+        snapshot.mkdir(parents = True)
+        (snapshot / "config.json").write_text(
+            json.dumps({"quantization_config": {"load_in_4bit": True}})
+        )
+        (snapshot / "model.safetensors").write_bytes(b"x")
+    dataset_root = tmp_path / "datasets--org--dataset"
+    old_dataset = dataset_root / "snapshots" / "commit-old"
+    new_dataset = dataset_root / "snapshots" / "commit-new"
+    for snapshot in (old_dataset, new_dataset):
+        snapshot.mkdir(parents = True)
+        (snapshot / "train.parquet").write_bytes(b"x")
+
+    source_config = {
+        "model_name": "unsloth/test",
+        "training_type": "LoRA/QLoRA",
+        "hf_dataset": "org/dataset",
+        "format_type": "alpaca",
+        "model_known_cached": True,
+        "model_local_path": str(model_root),
+        "model_format": "safetensors",
+        "model_snapshot_path": str(old_model),
+        "dataset_known_cached": True,
+        "dataset_local_path": str(dataset_root),
+        "dataset_snapshot_path": str(old_dataset),
+        "load_in_4bit": True,
+        "resource_provenance": {
+            "version": 1,
+            "status": "complete",
+            "model_status": "attested",
+            "dataset_status": "attested",
+            "reasons": [],
+        },
+    }
+    resume_run = {
+        "id": "source-run",
+        "model_name": "unsloth/test",
+        "config_json": json.dumps(source_config),
+    }
+    request = _request(
+        resume_from_checkpoint = "/outputs/source-run",
+        model_snapshot_path = str(new_model),
+        dataset_snapshot_path = str(new_dataset),
+    )
+    captured: dict = {}
+    tier_targets: list[str] = []
+    backend = SimpleNamespace(
+        current_job_id = None,
+        is_training_active = lambda: False,
+        start_training = lambda **kwargs: captured.update(kwargs) or True,
+    )
+
+    with (
+        patch.object(route, "get_training_backend", return_value = backend),
+        patch.object(route, "normalize_resume_output_dir", return_value = "/outputs/source-run"),
+        patch.object(route, "get_resumable_run_by_output_dir", return_value = resume_run),
+        patch.object(route, "can_resume_run", return_value = True),
+        patch.object(
+            route,
+            "get_resume_checkpoint_path",
+            return_value = "/outputs/source-run/checkpoint-5",
+        ),
+        patch.object(route, "load_model_defaults", return_value = {}),
+        patch.object(route.asyncio, "to_thread", _inline_to_thread),
+        patch(
+            "utils.transformers_version.latest_tier_active_for",
+            side_effect = lambda target, _token: tier_targets.append(target) or False,
+        ),
+        patch(
+            "core.inference.get_inference_backend",
+            return_value = type("InferenceBackend", (), {"active_model_name": None})(),
+        ),
+        patch(
+            "core.export.get_export_backend",
+            return_value = type(
+                "ExportBackend",
+                (),
+                {
+                    "current_checkpoint": None,
+                    "is_export_active": lambda self: False,
+                },
+            )(),
+        ),
+    ):
+        response = _start(route, request)
+
+    assert response.status == "queued"
+    assert captured["model_snapshot_path"] == str(old_model)
+    assert captured["dataset_snapshot_path"] == str(old_dataset)
+    assert captured["model_local_path"] == str(model_root)
+    assert captured["dataset_local_path"] == str(dataset_root)
+    assert captured["require_exact_resume_resources"] is True
+    assert tier_targets == [str(old_model.resolve())]
+
+
+@pytest.mark.parametrize(
+    ("request_overrides", "detail"),
+    [
+        ({"model_name": "other/model"}, "selected model"),
+        ({"hf_dataset": "other/dataset"}, "selected dataset"),
+        ({"training_type": "Full Finetuning"}, "training type"),
+    ],
+)
+def test_resume_resource_provenance_rejects_identity_changes(request_overrides, detail):
+    route = _load_route_module(f"training_route_resume_identity_{detail.replace(' ', '_')}")
+    request = _request(**request_overrides)
+    resume_run = {
+        "model_name": "unsloth/test",
+        "config_json": {
+            "model_name": "unsloth/test",
+            "training_type": "LoRA/QLoRA",
+            "hf_dataset": "org/dataset",
+        },
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        route._apply_resume_resource_provenance(request, resume_run)
+
+    assert exc_info.value.status_code == 409
+    assert detail in exc_info.value.detail
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        None,
+        {"version": 1, "status": "pending"},
+        {"version": 1, "status": "incomplete"},
+    ],
+)
+def test_unattested_resume_config_cannot_inject_cache_pins(marker):
+    route = _load_route_module("training_route_resume_legacy_cache_pins")
+    request = _request(
+        hf_dataset = None,
+        model_known_cached = True,
+        model_local_path = "/cache/models--unsloth--test",
+        model_snapshot_path = "/cache/models--unsloth--test/snapshots/client",
+        dataset_known_cached = True,
+        dataset_local_path = "/cache/datasets--org--dataset",
+        dataset_snapshot_path = "/cache/datasets--org--dataset/snapshots/client",
+        local_datasets = ["/client/data.jsonl"],
+        local_eval_datasets = ["/client/eval.jsonl"],
+        s3_config = {
+            "bucket": "client-bucket",
+            "access_key_id": "client-key",
+            "secret_access_key": "client-secret",
+        },
+    )
+    source_config = {
+        "model_name": "unsloth/test",
+        "training_type": "LoRA/QLoRA",
+        "hf_dataset": "",
+        "require_exact_resume_resources": True,
+    }
+    if marker is not None:
+        source_config["resource_provenance"] = marker
+    resume_run = {
+        "model_name": "unsloth/test",
+        "config_json": source_config,
+    }
+
+    route._apply_resume_resource_provenance(request, resume_run)
+
+    assert request.model_known_cached is False
+    assert request.model_local_path is None
+    assert request.model_snapshot_path is None
+    assert request.dataset_known_cached is False
+    assert request.dataset_local_path is None
+    assert request.dataset_snapshot_path is None
+    assert request.local_datasets == []
+    assert request.local_eval_datasets == []
+    assert request.s3_config is None
+
+    from core.training.provenance import resource_provenance_is_complete
+
+    assert resource_provenance_is_complete(source_config) is False
+
+
+def test_foreign_absolute_resume_paths_are_rejected_on_native_host():
+    from core.training.resume import (
+        artifacts_present,
+        get_resume_checkpoint_path,
+        normalize_resume_output_dir,
+    )
+
+    foreign = (
+        "/var/lib/unsloth/outputs/run"
+        if os.name == "nt"
+        else r"C:\Users\alice\.unsloth\studio\outputs\run"
+    )
+
+    with pytest.raises(ValueError, match = "different operating system"):
+        normalize_resume_output_dir(foreign)
+    assert get_resume_checkpoint_path(foreign) is None
+    assert artifacts_present(foreign) is False
+
+
+def test_resume_symlink_loop_paths_fail_closed(monkeypatch, tmp_path):
+    from core.training.resume import (
+        artifacts_present,
+        get_resume_checkpoint_path,
+        normalize_resume_output_dir,
+    )
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    loop = outputs / "loop"
+    try:
+        loop.symlink_to(loop, target_is_directory = True)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"symlinks unavailable: {error}")
+
+    assert artifacts_present(str(loop)) is False
+    assert get_resume_checkpoint_path(str(loop)) is None
+    with pytest.raises(ValueError):
+        normalize_resume_output_dir(str(loop))
 
 
 def test_training_backend_forwards_cache_reference_config():
@@ -313,6 +552,10 @@ def test_training_backend_forwards_cache_reference_config():
     assert "cache_pin_warnings" not in backend._db_config
     assert backend._db_config["model_snapshot_path"] is None
     assert backend._db_config["dataset_snapshot_path"] is None
+    assert backend._db_config["resource_provenance"] == {
+        "version": 1,
+        "status": "pending",
+    }
 
 
 def _dataset_repo_with_ref(root: Path, repo_id: str, commit: str = "rev") -> Path:
@@ -354,6 +597,37 @@ def test_apply_cache_pins_fresh_start_resolves_snapshots(tmp_path):
     assert config["model_snapshot_path"] == str(model_snap.resolve())
     assert config["dataset_snapshot_path"] == str(dataset_snap.resolve())
     assert config["cache_pin_warnings"] == []
+
+
+def test_training_model_load_target_uses_verified_inactive_snapshot(tmp_path):
+    from core.training.training import resolve_training_model_load_target
+
+    model_snap = _model_repo_with_ref(tmp_path, "unsloth/test", "commit-old")
+
+    assert resolve_training_model_load_target(
+        {
+            "model_name": "unsloth/test",
+            "model_known_cached": True,
+            "model_local_path": str(model_snap),
+            "load_in_4bit": False,
+        }
+    ) == str(model_snap.resolve())
+
+
+def test_training_model_load_target_rejects_evicted_strict_resume_pin(tmp_path):
+    from core.training.provenance import ExactResumeResourcesUnavailable
+    from core.training.training import resolve_training_model_load_target
+
+    with pytest.raises(ExactResumeResourcesUnavailable, match = "model snapshot"):
+        resolve_training_model_load_target(
+            {
+                "model_name": "unsloth/test",
+                "model_snapshot_path": str(tmp_path / "evicted"),
+                "resume_from_checkpoint": "/outputs/run/checkpoint-5",
+                "require_exact_resume_resources": True,
+                "load_in_4bit": True,
+            }
+        )
 
 
 def test_apply_cache_pins_fresh_ignores_client_pins(tmp_path):
@@ -420,6 +694,31 @@ def test_apply_cache_pins_resume_evicted_pin_warns(tmp_path):
     assert any("no longer on" in w for w in config["cache_pin_warnings"])
 
 
+def test_apply_cache_pins_attested_resume_rejects_evicted_dataset(tmp_path):
+    from core.training.provenance import ExactResumeResourcesUnavailable
+    from core.training.training import _apply_cache_pins
+
+    model = tmp_path / "models--unsloth--test" / "snapshots" / "model-rev"
+    model.mkdir(parents = True)
+    (model / "config.json").write_text("{}")
+    (model / "model.safetensors").write_bytes(b"x")
+    dataset = tmp_path / "datasets--org--dataset" / "snapshots" / "dataset-rev"
+    dataset.mkdir(parents = True)
+
+    config = {
+        "model_name": "unsloth/test",
+        "model_snapshot_path": str(model),
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": str(dataset),
+        "resume_from_checkpoint": "/outputs/run/checkpoint-5",
+        "load_in_4bit": False,
+        "require_exact_resume_resources": True,
+    }
+
+    with pytest.raises(ExactResumeResourcesUnavailable, match = "dataset snapshot"):
+        _apply_cache_pins(config)
+
+
 def test_apply_cache_pins_resume_pin_rejects_foreign(tmp_path):
     from core.training.training import _apply_cache_pins
 
@@ -463,7 +762,7 @@ def test_worker_security_scans_exact_model_load_target():
     from core.training import worker
 
     snapshot = "/cache/models--org--model/snapshots/deadbeef"
-    scanned: list[str] = []
+    scanned: list[tuple[str, bool]] = []
     decision = SimpleNamespace(blocked = False)
 
     with (
@@ -477,17 +776,59 @@ def test_worker_security_scans_exact_model_load_target():
         ),
         patch(
             "utils.security.evaluate_file_security",
-            side_effect = lambda target, **kwargs: scanned.append(target) or decision,
+            side_effect = lambda target, **kwargs: scanned.append(
+                (target, kwargs["local_only_load"])
+            )
+            or decision,
         ),
     ):
         result = worker._model_load_security_error(
-            {"model_name": "org/model", "trust_remote_code": False},
+            {
+                "model_name": "org/model",
+                "model_snapshot_path": snapshot,
+                "trust_remote_code": False,
+            },
             snapshot,
             None,
         )
 
     assert result is None
-    assert scanned == [snapshot]
+    assert scanned == [(snapshot, True)]
+
+
+def test_worker_remote_retry_security_scan_is_not_local_only():
+    from core.training import worker
+
+    snapshot = "/cache/models--org--model/snapshots/deadbeef"
+    scanned: list[tuple[str, bool]] = []
+    decision = SimpleNamespace(blocked = False)
+
+    with (
+        patch(
+            "utils.models.model_config.get_base_model_from_lora_identifier",
+            return_value = None,
+        ),
+        patch("utils.security.security_load_subdirs", return_value = ()),
+        patch(
+            "utils.security.evaluate_file_security",
+            side_effect = lambda target, **kwargs: scanned.append(
+                (target, kwargs["local_only_load"])
+            )
+            or decision,
+        ),
+    ):
+        result = worker._model_load_security_error(
+            {
+                "model_name": "org/model",
+                "model_snapshot_path": snapshot,
+                "trust_remote_code": False,
+            },
+            "org/model",
+            None,
+        )
+
+    assert result is None
+    assert scanned == [("org/model", False)]
 
 
 def test_worker_security_consent_uses_exact_target_and_base():
@@ -552,6 +893,26 @@ def test_worker_resolves_cached_model_snapshot():
         )
         == "unsloth/test"
     )
+
+
+def test_worker_4bit_tier_check_uses_model_load_target():
+    from core.training import worker
+
+    snapshot = "/cache/models--org--model/snapshots/deadbeef"
+    checked: list[tuple[str, str | None]] = []
+
+    with patch(
+        "utils.transformers_version.latest_tier_active_for",
+        side_effect = lambda target, token: checked.append((target, token)) or True,
+    ):
+        enabled = worker._effective_training_load_in_4bit(
+            {"load_in_4bit": True},
+            snapshot,
+            "hf_test",
+        )
+
+    assert enabled is False
+    assert checked == [(snapshot, "hf_test")]
 
 
 def test_worker_cached_dataset_load_requires_verified_path():
@@ -628,6 +989,7 @@ def test_worker_cached_eval_failure_reloads_remote_pair():
     assert cached_calls == ["train", "validation"]
     assert remote_calls == ["train", "validation"]
     assert any("reloading train and eval" in status for status in statuses)
+    assert config["_dataset_loaded_from_exact_snapshot"] is False
 
 
 def test_worker_model_retry_refreshes_tokenizer_before_dataset():
@@ -690,6 +1052,145 @@ def test_worker_bootstrap_drops_vanished_pins_and_emits_warnings(tmp_path):
         and event.get("message") == "cached model missing; downloading"
         for event in events
     )
+
+
+def test_worker_bootstrap_rejects_vanished_strict_resume_pins(tmp_path):
+    from core.training import worker
+
+    events: list[dict] = []
+    queue = SimpleNamespace(put = events.append)
+    config = {
+        "model_name": "unsloth/test",
+        "hf_dataset": "org/dataset",
+        "model_snapshot_path": str(tmp_path / "gone-model"),
+        "dataset_snapshot_path": str(tmp_path / "gone-dataset"),
+        "load_in_4bit": False,
+        "require_exact_resume_resources": True,
+    }
+
+    assert worker._verify_config_pins(config, queue) is False
+    assert events == [
+        {
+            "type": "error",
+            "error": "The exact model snapshot for this run is no longer available.",
+            "stack": "",
+            "ts": events[0]["ts"],
+        }
+    ]
+
+
+def test_strict_resume_disables_cache_artifact_fallback():
+    from core.training import worker
+
+    error = FileNotFoundError("evicted")
+
+    assert worker._cache_artifact_fallback_allowed({}, error) is True
+    assert (
+        worker._cache_artifact_fallback_allowed(
+            {"require_exact_resume_resources": True},
+            error,
+        )
+        is False
+    )
+
+
+def test_strict_resume_cached_dataset_failure_never_loads_remote():
+    from core.training import worker
+
+    config = {
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": "/cache/exact",
+        "train_split": "train",
+        "require_exact_resume_resources": True,
+    }
+
+    with patch.object(
+        worker,
+        "_load_cached_dataset_for_config",
+        side_effect = FileNotFoundError("evicted"),
+    ):
+        with pytest.raises(FileNotFoundError, match = "evicted"):
+            worker._load_hf_train_and_eval_datasets(
+                config,
+                None,
+                lambda *_args, **_kwargs: pytest.fail("remote load must not run"),
+                lambda _message: None,
+            )
+
+
+def test_strict_resume_cached_dataset_none_never_loads_remote():
+    from core.training import worker
+
+    config = {
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": "/cache/exact",
+        "train_split": "train",
+        "require_exact_resume_resources": True,
+    }
+
+    with patch.object(
+        worker,
+        "_load_cached_dataset_for_config",
+        return_value = None,
+    ):
+        with pytest.raises(FileNotFoundError, match = "exact cached dataset split 'train'"):
+            worker._load_hf_train_and_eval_datasets(
+                config,
+                None,
+                lambda *_args, **_kwargs: pytest.fail("remote load must not run"),
+                lambda _message: None,
+            )
+
+
+def test_strict_resume_cached_eval_none_never_loads_remote():
+    from core.training import worker
+
+    config = {
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": "/cache/exact",
+        "train_split": "train",
+        "eval_split": "validation",
+        "require_exact_resume_resources": True,
+    }
+
+    with patch.object(
+        worker,
+        "_load_cached_dataset_for_config",
+        side_effect = [object(), None],
+    ):
+        with pytest.raises(
+            FileNotFoundError,
+            match = "exact cached dataset split 'validation'",
+        ):
+            worker._load_hf_train_and_eval_datasets(
+                config,
+                None,
+                lambda *_args, **_kwargs: pytest.fail("remote load must not run"),
+                lambda _message: None,
+            )
+
+
+def test_strict_resume_embedding_cached_dataset_none_never_loads_remote():
+    from core.training import worker
+
+    config = {
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": "/cache/exact",
+        "train_split": "train",
+        "require_exact_resume_resources": True,
+    }
+
+    with patch.object(
+        worker,
+        "_load_cached_dataset_for_config",
+        return_value = None,
+    ):
+        with pytest.raises(FileNotFoundError, match = "exact cached dataset split 'train'"):
+            worker._load_embedding_hf_dataset(
+                config,
+                lambda *_args, **_kwargs: pytest.fail("remote load must not run"),
+                lambda _message: None,
+            )
 
 
 @pytest.mark.parametrize(

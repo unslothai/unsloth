@@ -4,6 +4,7 @@
 import asyncio
 import importlib.util
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,14 @@ def _load_resume_module():
 
 training_history = _load_training_history_module()
 resume = _load_resume_module()
+
+
+@pytest.fixture(autouse = True)
+def _run_thread_offloads_inline(monkeypatch):
+    async def inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(training_history.asyncio, "to_thread", inline)
 
 
 def _run_row(**overrides) -> dict:
@@ -180,6 +189,28 @@ def test_delete_refuses_dirs_outside_outputs_root(monkeypatch, tmp_path):
     assert exc_info.value.status_code == 409
     assert deleted_runs == []
     assert foreign_dir.exists()
+
+
+def test_canonical_output_dir_rejects_foreign_absolute_paths(
+    monkeypatch,
+    tmp_path,
+):
+    windows_path = r"C:\Users\alice\Unsloth\outputs\run-1"
+    foreign_path = (
+        windows_path
+        if not Path(windows_path).is_absolute()
+        else "/home/alice/.unsloth/outputs/run-1"
+    )
+    assert not Path(foreign_path).is_absolute()
+
+    monkeypatch.setattr(
+        training_history,
+        "resolve_output_dir",
+        lambda _value: pytest.fail("foreign absolute path must be rejected first"),
+    )
+    monkeypatch.setattr(training_history, "outputs_root", lambda: tmp_path / "outputs")
+
+    assert training_history._canonical_output_dir(foreign_path) is None
 
 
 def test_delete_with_missing_dir_still_deletes_row(monkeypatch, tmp_path):
@@ -339,6 +370,18 @@ def test_same_output_dir_canonicalizes_legacy_parent_segments(monkeypatch, tmp_p
     assert training_history._same_output_dir(str(run_dir), legacy_alias) is True
 
 
+def test_output_dir_overlap_detects_ancestors(monkeypatch, tmp_path):
+    outputs = tmp_path / "outputs"
+    run_dir = outputs / "run-1"
+    checkpoint = run_dir / "checkpoint-5"
+    checkpoint.mkdir(parents = True)
+    monkeypatch.setattr(training_history, "outputs_root", lambda: outputs)
+    monkeypatch.setattr(training_history, "resolve_output_dir", lambda value: Path(value))
+
+    assert training_history._output_dirs_overlap(str(run_dir), str(checkpoint)) is True
+    assert training_history._output_dirs_overlap(str(checkpoint), str(run_dir)) is True
+
+
 def test_delete_artifacts_kept_when_finished_sibling_shares_dir(monkeypatch, tmp_path):
     outputs = tmp_path / "outputs"
     run_dir = outputs / "run-1"
@@ -451,7 +494,7 @@ def test_delete_artifacts_uses_thread_offload(monkeypatch, tmp_path):
 
     async def fake_to_thread(function, *args):
         calls.append((function, args))
-        return True
+        return "deleted"
 
     monkeypatch.setattr(training_history.asyncio, "to_thread", fake_to_thread)
     monkeypatch.setattr(training_history, "_delete_run_output_dir", lambda *args: True)
@@ -465,6 +508,119 @@ def test_delete_artifacts_uses_thread_offload(monkeypatch, tmp_path):
     assert response.artifacts_deleted is True
     assert deleted_runs == ["run-1"]
     assert len(calls) == 1
+
+
+def test_guarded_delete_prevents_resume_from_spawning_after_artifacts_are_removed(
+    monkeypatch,
+    tmp_path,
+):
+    from core.training.training import TrainingBackend
+
+    outputs = tmp_path / "outputs"
+    run_dir = outputs / "run-1"
+    run_dir.mkdir(parents = True)
+    (run_dir / "adapter_model.safetensors").write_bytes(b"x")
+    monkeypatch.setattr(training_history, "outputs_root", lambda: outputs)
+    monkeypatch.setattr(training_history, "resolve_output_dir", lambda value: Path(value))
+    monkeypatch.setattr(training_history, "_active_training_output_dir", lambda: None)
+    monkeypatch.setattr(training_history, "list_other_run_output_dirs", lambda run_id: [])
+
+    delete_started = threading.Event()
+    allow_delete = threading.Event()
+    internal_start_called = threading.Event()
+    original_delete = training_history._delete_run_output_dir
+
+    def blocking_delete(run_id, output_dir):
+        delete_started.set()
+        assert allow_delete.wait(timeout = 2)
+        return original_delete(run_id, output_dir)
+
+    monkeypatch.setattr(training_history, "_delete_run_output_dir", blocking_delete)
+    monkeypatch.setattr(
+        "core.training.resume.get_resume_checkpoint_path",
+        lambda path: str(path) if Path(path).exists() else None,
+    )
+
+    backend = TrainingBackend()
+    monkeypatch.setattr(
+        backend,
+        "_start_training_with_lifecycle_reserved",
+        lambda *args, **kwargs: internal_start_called.set() or True,
+    )
+    outcomes: dict[str, object] = {}
+
+    delete_thread = threading.Thread(
+        target = lambda: outcomes.update(
+            delete = training_history._delete_run_output_dir_guarded(
+                "run-1",
+                str(run_dir),
+            )
+        )
+    )
+    delete_thread.start()
+    assert delete_started.wait(timeout = 2)
+
+    start_thread = threading.Thread(
+        target = lambda: outcomes.update(
+            start = backend.start_training(
+                "resume-job",
+                model_name = "unsloth/test",
+                resume_from_checkpoint = str(run_dir),
+            )
+        )
+    )
+    start_thread.start()
+    assert internal_start_called.wait(timeout = 0.1) is False
+
+    allow_delete.set()
+    delete_thread.join(timeout = 2)
+    start_thread.join(timeout = 2)
+
+    assert outcomes["delete"] == "deleted"
+    assert outcomes["start"] is False
+    assert internal_start_called.is_set() is False
+    assert run_dir.exists() is False
+
+
+def test_guarded_delete_rechecks_shared_output_after_waiting_for_lifecycle(
+    monkeypatch,
+    tmp_path,
+):
+    from core.training.lifecycle import training_lifecycle_guard
+
+    outputs = tmp_path / "outputs"
+    run_dir = outputs / "run-1"
+    run_dir.mkdir(parents = True)
+    (run_dir / "adapter_model.safetensors").write_bytes(b"x")
+    monkeypatch.setattr(training_history, "outputs_root", lambda: outputs)
+    monkeypatch.setattr(training_history, "resolve_output_dir", lambda value: Path(value))
+    monkeypatch.setattr(training_history, "_active_training_output_dir", lambda: None)
+
+    sibling_paths: list[str] = []
+    monkeypatch.setattr(
+        training_history,
+        "list_other_run_output_dirs",
+        lambda run_id: list(sibling_paths),
+    )
+    delete_attempted = threading.Event()
+    outcome: list[str] = []
+
+    def guarded_delete():
+        delete_attempted.set()
+        outcome.append(
+            training_history._delete_run_output_dir_guarded("run-1", str(run_dir))
+        )
+
+    with training_lifecycle_guard():
+        delete_thread = threading.Thread(target = guarded_delete)
+        delete_thread.start()
+        assert delete_attempted.wait(timeout = 2)
+        sibling_paths.append(str(run_dir))
+
+    delete_thread.join(timeout = 2)
+
+    assert outcome == ["shared"]
+    assert run_dir.exists() is True
 
 
 def test_shared_guard_compares_canonical_paths(monkeypatch, tmp_path):

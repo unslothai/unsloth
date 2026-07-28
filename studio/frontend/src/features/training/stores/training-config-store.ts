@@ -27,6 +27,8 @@ import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
 import { validateS3Source } from "../lib/validation";
 import type {
+  BrowseDatasetSelection,
+  DatasetCacheReferenceOptions,
   ModelCacheReferenceOptions,
   TrainingConfigState,
   TrainingConfigStore,
@@ -69,6 +71,27 @@ function emptyManualMapping(): TrainingConfigState["datasetManualMapping"] {
   return {};
 }
 
+function createHfBrowseDatasetSelection(
+  dataset: string | null,
+  options?: DatasetCacheReferenceOptions,
+): Extract<BrowseDatasetSelection, { source: "huggingface" }> {
+  return {
+    source: "huggingface",
+    dataset,
+    knownCached: dataset ? (options?.knownCached ?? false) : false,
+    localPath: dataset ? (options?.localPath ?? null) : null,
+  };
+}
+
+function createUploadBrowseDatasetSelection(
+  uploadedFile: string | null,
+): Extract<BrowseDatasetSelection, { source: "upload" }> {
+  return {
+    source: "upload",
+    uploadedFile,
+  };
+}
+
 const initialState: TrainingConfigState = {
   currentStep: MIN_STEP,
   modelType: null,
@@ -79,6 +102,7 @@ const initialState: TrainingConfigState = {
   projectName: "",
   trainingMethod: "qlora",
   datasetSource: "huggingface",
+  browseDatasetSelection: createHfBrowseDatasetSelection(null),
   datasetFormat: "auto",
   dataset: null,
   datasetKnownCached: false,
@@ -589,7 +613,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 current.datasetSource === "huggingface" &&
                 current.dataset === datasetName
               ) {
-                set({ datasetKnownCached: false, datasetLocalPath: null });
+                set({
+                  datasetKnownCached: false,
+                  datasetLocalPath: null,
+                  browseDatasetSelection:
+                    createHfBrowseDatasetSelection(datasetName),
+                });
                 runDatasetCheck(datasetName, split, {
                   preferLocalCache: false,
                 });
@@ -622,6 +651,84 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         isCheckingDataset: false,
         datasetCheckFailed: false,
       });
+
+      const selectHfDatasetInternal = (
+        dataset: string | null,
+        options?: DatasetCacheReferenceOptions,
+      ) => {
+        _datasetCheckController?.abort();
+        _datasetCheckController = null;
+        _trainOnCompletionsManuallySet = false;
+        const browseDatasetSelection = createHfBrowseDatasetSelection(
+          dataset,
+          options,
+        );
+        set({
+          datasetSource: "huggingface",
+          browseDatasetSelection,
+          dataset,
+          uploadedFile: null,
+          ...resetDatasetState(),
+          datasetKnownCached: browseDatasetSelection.knownCached,
+          datasetLocalPath: browseDatasetSelection.localPath,
+        });
+      };
+
+      const selectLocalDatasetInternal = (uploadedFile: string | null) => {
+        _datasetCheckController?.abort();
+        _datasetCheckController = null;
+        _trainOnCompletionsManuallySet = false;
+        set({
+          datasetSource: "upload",
+          browseDatasetSelection:
+            createUploadBrowseDatasetSelection(uploadedFile),
+          dataset: null,
+          uploadedFile,
+          ...resetDatasetState(),
+          datasetKnownCached: false,
+          datasetLocalPath: null,
+        });
+        if (uploadedFile) {
+          runDatasetCheck(uploadedFile, "train");
+        }
+      };
+
+      const selectS3SourceInternal = () => {
+        _datasetCheckController?.abort();
+        _datasetCheckController = null;
+        _trainOnCompletionsManuallySet = false;
+        const state = get();
+        const browseDatasetSelection =
+          state.datasetSource === "s3"
+            ? state.browseDatasetSelection
+            : state.datasetSource === "upload"
+              ? createUploadBrowseDatasetSelection(state.uploadedFile)
+              : createHfBrowseDatasetSelection(state.dataset, {
+                  knownCached: state.datasetKnownCached,
+                  localPath: state.datasetLocalPath,
+                });
+        set({
+          datasetSource: "s3",
+          browseDatasetSelection,
+          dataset: null,
+          uploadedFile: null,
+          ...resetDatasetState(),
+          datasetKnownCached: false,
+          datasetLocalPath: null,
+        });
+      };
+
+      const restoreBrowseDatasetSourceInternal = () => {
+        const selection = get().browseDatasetSelection;
+        if (selection.source === "upload") {
+          selectLocalDatasetInternal(selection.uploadedFile);
+          return;
+        }
+        selectHfDatasetInternal(selection.dataset, {
+          knownCached: selection.knownCached,
+          localPath: selection.localPath,
+        });
+      };
 
       const selectModelInternal = (
         selectedModel: string | null,
@@ -760,7 +867,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           ) {
             return;
           }
-          set({ datasetKnownCached: false, datasetLocalPath: null });
+          set({
+            datasetKnownCached: false,
+            datasetLocalPath: null,
+            browseDatasetSelection: createHfBrowseDatasetSelection(dataset),
+          });
           runDatasetCheck(dataset, get().datasetSplit || "train", {
             preferLocalCache: false,
           });
@@ -773,7 +884,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           ) {
             return;
           }
-          set({ datasetKnownCached: true, datasetLocalPath: localPath });
+          set({
+            datasetKnownCached: true,
+            datasetLocalPath: localPath,
+            browseDatasetSelection: createHfBrowseDatasetSelection(dataset, {
+              knownCached: true,
+              localPath,
+            }),
+          });
         },
         ensureModelDefaultsLoaded: () => {
           const state = get();
@@ -793,50 +911,32 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             ),
           );
         },
-        setDatasetSource: (datasetSource) => set({ datasetSource }),
-        selectHfDataset: (dataset, options) => {
-          _datasetCheckController?.abort();
-          _datasetCheckController = null;
-          _trainOnCompletionsManuallySet = false;
-          set({
-            datasetSource: "huggingface",
-            dataset,
-            uploadedFile: null,
-            ...resetDatasetState(),
-            datasetKnownCached: dataset
-              ? (options?.knownCached ?? false)
-              : false,
-            datasetLocalPath: dataset ? (options?.localPath ?? null) : null,
-          });
-        },
-        selectLocalDataset: (uploadedFile) => {
-          _datasetCheckController?.abort();
-          _datasetCheckController = null;
-          _trainOnCompletionsManuallySet = false;
-          set({
-            datasetSource: "upload",
-            dataset: null,
-            uploadedFile,
-            ...resetDatasetState(),
-            datasetKnownCached: false,
-            datasetLocalPath: null,
-          });
-          if (uploadedFile) {
-            runDatasetCheck(uploadedFile, "train");
+        setDatasetSource: (datasetSource) => {
+          const state = get();
+          if (datasetSource === state.datasetSource) return;
+          if (datasetSource === "s3") {
+            selectS3SourceInternal();
+            return;
           }
+          if (
+            state.datasetSource === "s3" &&
+            state.browseDatasetSelection.source === datasetSource
+          ) {
+            restoreBrowseDatasetSourceInternal();
+            return;
+          }
+          if (datasetSource === "upload") {
+            selectLocalDatasetInternal(null);
+            return;
+          }
+          selectHfDatasetInternal(null);
         },
-        selectS3Source: () => {
-          _datasetCheckController?.abort();
-          _datasetCheckController = null;
-          _trainOnCompletionsManuallySet = false;
-          set({
-            datasetSource: "s3",
-            dataset: null,
-            uploadedFile: null,
-            ...resetDatasetState(),
-            datasetKnownCached: false,
-            datasetLocalPath: null,
-          });
+        selectHfDataset: selectHfDatasetInternal,
+        selectLocalDataset: selectLocalDatasetInternal,
+        selectS3Source: selectS3SourceInternal,
+        restoreBrowseDatasetSource: () => {
+          if (get().datasetSource !== "s3") return;
+          restoreBrowseDatasetSourceInternal();
         },
         setDatasetFormat: (datasetFormat) =>
           set((state) => {
@@ -861,10 +961,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _datasetCheckController?.abort();
           _datasetCheckController = null;
           _trainOnCompletionsManuallySet = false;
-          set({
+          set((state) => ({
             dataset,
             datasetKnownCached: false,
             datasetLocalPath: null,
+            browseDatasetSelection:
+              state.datasetSource === "huggingface"
+                ? createHfBrowseDatasetSelection(dataset)
+                : state.browseDatasetSelection,
             datasetSubset: null,
             datasetSplit: null,
             datasetEvalSplit: null,
@@ -875,7 +979,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isDatasetAudio: false,
             isCheckingDataset: false,
             datasetCheckFailed: false,
-          });
+          }));
         },
         setDatasetSubset: (datasetSubset) => {
           _datasetCheckController?.abort();
@@ -1005,10 +1109,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _datasetCheckController?.abort();
           _datasetCheckController = null;
           _trainOnCompletionsManuallySet = false;
-          set({
+          set((state) => ({
             uploadedFile,
             datasetKnownCached: false,
             datasetLocalPath: null,
+            browseDatasetSelection:
+              state.datasetSource === "upload"
+                ? createUploadBrowseDatasetSelection(uploadedFile)
+                : state.browseDatasetSelection,
             datasetCheckFailed: false,
             datasetSubset: null,
             datasetSplit: null,
@@ -1020,7 +1128,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isDatasetImage: null,
             isDatasetAudio: false,
             isCheckingDataset: false,
-          });
+          }));
         },
         setUploadedEvalFile: (uploadedEvalFile) =>
           set({
@@ -1131,7 +1239,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
     {
       name: "unsloth_training_config_v1",
-      version: 13,
+      version: 14,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
@@ -1198,6 +1306,21 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           s.modelFormat ??= null;
           s.datasetKnownCached ??= false;
           s.datasetLocalPath ??= null;
+        }
+        if (version < 14) {
+          const dataset = typeof s.dataset === "string" ? s.dataset : null;
+          const uploadedFile =
+            typeof s.uploadedFile === "string" ? s.uploadedFile : null;
+          s.browseDatasetSelection =
+            s.datasetSource === "upload"
+              ? createUploadBrowseDatasetSelection(uploadedFile)
+              : createHfBrowseDatasetSelection(dataset, {
+                  knownCached: s.datasetKnownCached === true,
+                  localPath:
+                    typeof s.datasetLocalPath === "string"
+                      ? s.datasetLocalPath
+                      : null,
+                });
         }
         return s as unknown as TrainingConfigStore;
       },
