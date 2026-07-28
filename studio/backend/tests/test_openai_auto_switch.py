@@ -23,9 +23,8 @@ from utils import openai_auto_switch_settings as settings
 def _clean_resolver_index():
     """Drop the scan cache around every test.
 
-    The /v1 admission hook warms the index in the background, so without this a
-    test that exercises the hook can publish its own fixture's scan and, inside the
-    TTL, hand it to the next test that expects a fresh one.
+    The /v1 admission hook warms the index in the background, so a test exercising it
+    can publish its fixture's scan and, inside the TTL, hand it to the next test.
     """
     resolver.invalidate_index()
     yield
@@ -1607,22 +1606,28 @@ def test_load_route_holds_lifecycle_gate(monkeypatch):
 
 
 def test_model_replacements_recheck_sidecar_swap_before_either_backend_is_unloaded():
-    # Both replacement directions drain active inference, then recheck whether a
-    # sidecar install reserved the lifecycle gate during that wait. Exact-model
-    # reuse exits earlier, so an already-loaded model never waits on unrelated inference.
+    # Both replacement directions drain, then recheck whether a sidecar install reserved the
+    # gate meanwhile. That recheck is the last thing that can reject the load, so the
+    # destructive cancel must follow it. Exact-model reuse exits earlier and never waits.
     import inspect
 
     src = inspect.getsource(inference_route._load_model_impl)
+    already_loaded = src.index('status = "already_loaded"')
+    standard_branch = src.index("# ── Standard path")
+
     gguf_wait = src.index("await _wait_for_model_switch_idle", src.index("if config.is_gguf:"))
     gguf_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", gguf_wait)
+    gguf_cancel = src.index("on_reload_confirmed(cancel = True)", gguf_wait)
     unload_unsloth = src.index("unsloth_backend.unload_model", gguf_wait)
-    standard_wait = src.index("await _wait_for_model_switch_idle", gguf_wait + 1)
-    standard_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", standard_wait)
-    unload_gguf = src.index("llama_backend.unload_model()", standard_wait)
-    already_loaded = src.index('status = "already_loaded"')
 
-    assert already_loaded < gguf_wait < gguf_sidecar_check < unload_unsloth
-    assert standard_wait < standard_sidecar_check < unload_gguf
+    standard_wait = src.index("await _wait_for_model_switch_idle", standard_branch)
+    standard_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", standard_wait)
+    standard_cancel = src.index("on_reload_confirmed(cancel = True)", standard_wait)
+    unload_gguf = src.index("llama_backend.unload_model()", standard_wait)
+
+    assert already_loaded < gguf_wait < gguf_sidecar_check < gguf_cancel < unload_unsloth
+    assert standard_branch < standard_wait < standard_sidecar_check
+    assert standard_sidecar_check < standard_cancel < unload_gguf
 
 
 def test_switch_waiter_deregisters_before_swap_gate_release():
@@ -4781,11 +4786,10 @@ def test_removal_of_a_path_still_only_touches_the_exact_key(monkeypatch):
 
 
 def test_a_tag_that_names_no_quant_resolves_to_the_repo(monkeypatch):
-    # A downloaded but unloaded GGUF asked for as org/model:latest missed the
-    # resolver, so the switch path could not load it: with auto-download on it
-    # probed the Hub and 404d on a quant that was never a quant, and with it off it
-    # refused without switching. A real quant that is not on disk must still miss,
-    # or a swap would serve the wrong weights under the right name.
+    # A downloaded but unloaded GGUF asked for as org/model:latest missed the resolver,
+    # so the switch could not load it (404ing on a quant that was never a quant with
+    # auto-download on, refusing with it off). A real quant that is not on disk must
+    # still miss, or a swap would serve the wrong weights under the right name.
     from core.inference.local_model_resolver import _LocalGgufEntry
 
     import time
@@ -4808,9 +4812,9 @@ def test_a_tag_that_names_no_quant_resolves_to_the_repo(monkeypatch):
 
 
 def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
-    # Only the API auto-download watcher invalidated, so a GGUF fetched in the Hub
-    # UI stayed absent to the cache-only request path and the request was answered
-    # by the resident model instead. Every worker exits through here.
+    # Only the API auto-download watcher invalidated, so a GGUF fetched in the Hub UI
+    # stayed absent to the cache-only request path and the resident model answered.
+    # Every worker exits through here.
     import logging
 
     from hub.services import download_lifecycle
@@ -4857,9 +4861,9 @@ def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
 
 
 def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
-    # The request path reads this cache without scanning, so emptying it leaves it
-    # with no evidence about any local model until the rebuild lands. Only a
-    # completed download invalidates, and that only adds, so the entries stay true.
+    # The request path reads this cache without scanning, so emptying it leaves no
+    # evidence until the rebuild lands. Only a completed download invalidates, and
+    # that only adds, so the entries stay true.
     import time
 
     entry = resolver._LocalGgufEntry("org/old", "/srv/models/org--old", ("Q4_K_M",))
@@ -4875,9 +4879,8 @@ def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
 
 def test_a_bare_local_id_takes_the_quant_a_plain_load_would(monkeypatch, tmp_path):
     # list_local_gguf_variants orders by descending size, so the head is the biggest
-    # quant. Resolving a bare id to that could evict a working model and then OOM
-    # starting an F16 on a box sized for the Q4 sitting right next to it, and
-    # /v1/models advertised the same head for pinning.
+    # quant. Resolving a bare id to that could evict a working model and then OOM on an
+    # F16 next to a fitting Q4, and /v1/models advertised the same head for pinning.
     from core.inference.local_model_resolver import _local_gguf_entry
 
     for name, size in (("model-F16.gguf", 900), ("model-Q4_K_M.gguf", 100)):
@@ -4898,9 +4901,8 @@ def test_local_and_remote_agree_on_the_preferred_quant():
 
 
 def test_a_just_downloaded_model_is_evidence_before_the_scan_indexes_it(monkeypatch):
-    # Retaining the old index covers what was already known, but nothing covers the
-    # model that just landed until the next scan finishes. A bare request for it in
-    # that window was answered by the unrelated resident model.
+    # The retained index covers what was known, but nothing covers the model that just
+    # landed until the next scan: a bare request for it was answered by the resident one.
     import logging
 
     from hub.services import download_lifecycle
@@ -4947,10 +4949,9 @@ def test_a_just_downloaded_model_is_evidence_before_the_scan_indexes_it(monkeypa
 
 
 def test_a_finished_dataset_is_not_recorded_as_a_local_model(monkeypatch):
-    # finalize_worker_exit is shared with dataset downloads. Noting one as a local
-    # model would refuse a bare /v1 request naming that id while another model is
-    # resident, instead of letting a foreign id fall through, and would kick off a
-    # multi-directory model scan for nothing.
+    # finalize_worker_exit is shared with dataset downloads. Noting one as a local model
+    # would refuse a bare /v1 request naming that id instead of letting a foreign id
+    # fall through, and would kick off a multi-directory scan for nothing.
     import logging
     import time
 
@@ -4994,9 +4995,8 @@ def test_a_finished_dataset_is_not_recorded_as_a_local_model(monkeypatch):
 
 def test_two_local_paths_differing_only_in_case_are_not_the_same_model(monkeypatch):
     # _loaded_satisfies lowercased the request and every backend identifier, so on a
-    # case-sensitive filesystem /srv/models/foo.gguf counted as satisfied by a
-    # resident /srv/models/Foo.gguf and returned before the case-preserving compare
-    # further down ever ran. A repo alias must stay case-insensitive.
+    # case-sensitive filesystem /srv/models/foo.gguf read as satisfied by a resident
+    # /srv/models/Foo.gguf. A repo alias must still stay case-insensitive.
     import os
 
     loaded = _FakeBackend(loaded_id = "/srv/models/Foo.gguf")

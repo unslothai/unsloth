@@ -37,6 +37,8 @@ export const ar = {
     navigation: {
       newChat: "محادثة جديدة",
       returnToChat: "العودة إلى المحادثة",
+      returnToChats: "العودة إلى {count} محادثات",
+      chatGenerating: "جارٍ الإنشاء",
       compare: "مقارنة",
       search: "بحث",
       hub: "مركز النماذج",

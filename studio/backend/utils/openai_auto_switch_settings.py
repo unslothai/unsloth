@@ -7,10 +7,9 @@ All off by default so existing API behavior is unchanged:
 - ``openai_api_auto_switch_model``: when on, a ``/v1`` request whose ``model``
   names a downloaded local GGUF different from the loaded one transparently
   loads it before serving (llama-swap-style). Unknown names pass through.
-- ``openai_api_auto_download_model``: when on (and auto-switch is too), a
-  ``/v1`` request naming a GGUF repo that is *not* downloaded starts a
-  background download instead of failing. Gated on auto-switch, which is what
-  serves the model once it lands.
+- ``openai_api_auto_download_model``: when on, a ``/v1`` request naming an
+  undownloaded GGUF repo starts a background download instead of failing.
+  Gated on auto-switch, which is what serves the model once it lands.
 - ``openai_api_auto_unload_idle_seconds``: when > 0, the loaded GGUF is
   unloaded after this many idle seconds to free VRAM. Enabled values have a
   60s floor (0 stays "off"): a tiny TTL tears the model down between turns of
@@ -102,11 +101,8 @@ def get_openai_auto_switch_enabled() -> bool:
 
 
 def get_stored_openai_auto_download_enabled() -> bool:
-    """The persisted auto-download flag, independent of auto-switch.
-
-    The settings UI reads this so toggling auto-switch off displays and
-    round-trips the saved value rather than erasing it.
-    """
+    """The persisted auto-download flag, independent of auto-switch, so the UI
+    round-trips the saved value across an auto-switch toggle instead of erasing it."""
     parsed = _coerce_bool(_cached_setting(OPENAI_AUTO_DOWNLOAD_SETTING_KEY, None))
     return parsed if parsed is not None else DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED
 
@@ -114,8 +110,8 @@ def get_stored_openai_auto_download_enabled() -> bool:
 def get_openai_auto_download_enabled() -> bool:
     """Whether a /v1 request may download a GGUF repo it names but doesn't have.
 
-    Gated on auto-switch: auto-switch is what loads the model once it lands, so
-    downloading without it would fetch gigabytes nothing can then serve.
+    Gated on auto-switch: that is what loads the model once it lands, so without
+    it we would fetch gigabytes nothing can serve.
     """
     return get_stored_openai_auto_download_enabled() and get_openai_auto_switch_enabled()
 
