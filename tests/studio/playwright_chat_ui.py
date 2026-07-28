@@ -309,7 +309,11 @@ def exercise_floating_monitor_geometry(page):
         )
         return monitor_box("drag")
 
-    def resize_monitor_to(x, y, grip_inset = 8):
+    def resize_monitor_to(
+        x,
+        y,
+        grip_inset = 8,
+    ):
         before = monitor_box("resize")
         pointer_drag(
             before["x"] + before["width"] - grip_inset,
@@ -327,10 +331,8 @@ def exercise_floating_monitor_geometry(page):
         return (
             box["x"] >= inset - tolerance
             and box["y"] >= inset - tolerance
-            and box["x"] + box["width"]
-            <= surface["width"] - inset + tolerance
-            and box["y"] + box["height"]
-            <= surface["height"] - inset + tolerance
+            and box["x"] + box["width"] <= surface["width"] - inset + tolerance
+            and box["y"] + box["height"] <= surface["height"] - inset + tolerance
         )
 
     initial_box = monitor_box("initial placement")
@@ -363,16 +365,12 @@ def exercise_floating_monitor_geometry(page):
         viewport["height"] - inset,
         "content growth bottom inset",
     )
-    monitor.get_by_test_id("floating-monitor-growth-probe").evaluate(
-        "node => node.remove()"
-    )
+    monitor.get_by_test_id("floating-monitor-growth-probe").evaluate("node => node.remove()")
     initial_box = wait_for_box(
         "content shrink",
         lambda box: (
             abs(box["height"] - initial_box["height"]) <= tolerance
-            and abs(
-                box["y"] + box["height"] - viewport["height"] + inset
-            ) <= tolerance
+            and abs(box["y"] + box["height"] - viewport["height"] + inset) <= tolerance
         ),
     )
 
