@@ -1141,9 +1141,9 @@ def test_the_park_budget_leaves_the_executor_room_to_work():
     for capacity in range(0, workers + 8):
         budget = llama_admission._max_parked(capacity)
         assert budget >= 0, f"negative budget at capacity {capacity}"
-        assert budget == 0 or capacity + budget <= workers - reserve, (
-            f"capacity {capacity} plus {budget} parks leaves the executor short"
-        )
+        assert (
+            budget == 0 or capacity + budget <= workers - reserve
+        ), f"capacity {capacity} plus {budget} parks leaves the executor short"
 
 
 def test_the_stream_retries_a_park_that_was_refused():
@@ -1159,13 +1159,15 @@ def test_the_stream_retries_a_park_that_was_refused():
     with open(route, encoding = "utf-8") as handle:
         tree = ast.parse(handle.read())
     helpers = [
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "_park_admission"
     ]
     assert len(helpers) == 1, f"expected one _park_admission, found {len(helpers)}"
 
     guards = [
-        node for node in ast.walk(helpers[0])
+        node
+        for node in ast.walk(helpers[0])
         if isinstance(node, ast.If)
         and isinstance(node.test, ast.UnaryOp)
         and isinstance(node.test.op, ast.Not)
@@ -1174,6 +1176,6 @@ def test_the_stream_retries_a_park_that_was_refused():
         and getattr(node.test.operand.func.value, "id", None) == "lease"
     ]
     assert len(guards) == 1, "lease.park()'s answer is ignored"
-    assert all(isinstance(stmt, ast.Return) for stmt in guards[0].body), (
-        "a refused park must leave _parked alone, so a later approval retries it"
-    )
+    assert all(
+        isinstance(stmt, ast.Return) for stmt in guards[0].body
+    ), "a refused park must leave _parked alone, so a later approval retries it"
