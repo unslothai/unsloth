@@ -31,6 +31,14 @@ on:
       - 'studio/src-tauri/src/preflight.rs'
       - 'studio/src-tauri/src/preflight/**'
       - 'unsloth_cli/commands/studio.py'
+      # Every leg installs the checkout with `--local`, so this file decides the
+      # `unsloth` console script and the core dependencies the probe leans on:
+      # `-h` and `desktop-capabilities` only survive a torn install because
+      # typer/click/rich are declared here. Moving one of those to an extra
+      # changes what every interrupted venv looks like, and no other install
+      # workflow interrupts the installer, so such a PR would otherwise merge
+      # without a single leg running.
+      - 'pyproject.toml'
       # studio_install_ok and verify-install, the two decisions the probe asserts
       # on, are implemented here rather than in commands/studio.py, so a change
       # that made install_state() accept a missing manifest would otherwise merge
@@ -156,6 +164,11 @@ jobs:
         # skipping the re-run left three non-experimental legs asserting nothing but
         # that a marker appeared. The bug's second half is that `install.sh` sees a
         # "current" version and no-ops over a broken venv.
+        #
+        # HEALTHY means the backend boots AND desktop-capabilities reports the
+        # install complete, so a leg killed after "studio deps" but before the
+        # manifest is written last (install_python_stack.py:3255) -- data-designer --
+        # arrives here rather than skipping the one assertion that matters for it.
         if: always() && steps.probe.outputs.verdict != 'HEALTHY'
         run: |
           set -o pipefail

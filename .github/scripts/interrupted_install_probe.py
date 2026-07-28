@@ -21,7 +21,8 @@ probes `unsloth -h` (preflight/managed.rs:419) and `studio desktop-capabilities`
 ManagedReady with can_auto_repair=false and the backend dies on `import structlog`.
 
 Verdicts:
-  HEALTHY      the backend boots -- the interruption did no lasting harm
+  HEALTHY      the backend boots AND desktop-capabilities reports the install
+               complete -- i.e. preflight would report ManagedReady and be right
   REPAIRABLE   the backend is broken AND a probe the DESKTOP consumes reports it,
                so the app can offer a repair
   FALSE_READY  the backend is broken and every probe says ready -> THE BUG
@@ -43,18 +44,26 @@ import urllib.request
 from pathlib import Path
 
 
-def run(cmd: list[str], timeout: int = 120) -> tuple[int, str]:
+def run(cmd: list[str], timeout: int = 120) -> tuple[int, str, str]:
+    """Returns (rc, stdout, stderr). Kept SEPARATE: preflight/managed.rs pipes stdout
+    and sends stderr to /dev/null (managed.rs:358), so anything the probe folds into
+    stdout is text the desktop never sees."""
     try:
         p = subprocess.run(cmd, capture_output = True, text = True, timeout = timeout)
-        return p.returncode, (p.stdout or "") + (p.stderr or "")
+        return p.returncode, p.stdout or "", p.stderr or ""
     except (subprocess.TimeoutExpired, OSError) as e:
-        return 127, f"{type(e).__name__}: {e}"
+        return 127, "", f"{type(e).__name__}: {e}"
+
+
+def merged(rc_out_err: tuple[int, str, str]) -> str:
+    """Both streams, for artefact logs only -- never for parsing."""
+    return rc_out_err[1] + rc_out_err[2]
 
 
 def has_subcommand(bin_path: str, args: list[str]) -> bool:
     """Whether the CLI understands a subcommand at all. Older builds do not have the
     newer verify commands, and 'absent' must not be confused with 'reported failure'."""
-    rc, _ = run([bin_path, *args, "--help"], timeout = 60)
+    rc, _, _ = run([bin_path, *args, "--help"], timeout = 60)
     return rc == 0
 
 
@@ -86,26 +95,47 @@ def main(argv: list[str]) -> int:
         print(f"[probe] {k:28} = {v}")
 
     # ── the two probes Tauri preflight actually runs ─────────────────────────
-    rc, log = run([binp, "-h"], timeout = 180)
-    (out / "cli-h.log").write_text(log, encoding = "utf-8", errors = "replace")
-    say("cli_h_ok", rc == 0)
+    r = run([binp, "-h"], timeout = 180)
+    (out / "cli-h.log").write_text(merged(r), encoding = "utf-8", errors = "replace")
+    say("cli_h_ok", r[0] == 0)
 
-    rc, caps_raw = run([binp, "studio", "desktop-capabilities", "--json"], timeout = 180)
-    (out / "desktop-capabilities.json").write_text(caps_raw, encoding = "utf-8", errors = "replace")
-    say("capabilities_ok", rc == 0)
+    caps_rc, caps_out, caps_err = run([binp, "studio", "desktop-capabilities", "--json"], timeout = 180)
+    (out / "desktop-capabilities.json").write_text(caps_out, encoding = "utf-8", errors = "replace")
+    (out / "desktop-capabilities.stderr.log").write_text(caps_err, encoding = "utf-8", errors = "replace")
+    say("capabilities_ok", caps_rc == 0)
 
+    # Parse EXACTLY as the desktop does: managed.rs:414 hands the whole stdout buffer
+    # to serde_json, which rejects any leading or trailing non-JSON, and stderr was
+    # already discarded at managed.rs:358. Folding stderr in and then scanning to the
+    # first brace made one warning line on stderr enough for json.loads to raise on
+    # the trailing text, leaving studio_install_ok "absent" and reporting FALSE_READY
+    # over an install the real app parses, sees as incomplete, and offers to repair.
+    #
     # studio_install_ok is added by the install-manifest work; absent on older trees,
-    # which is different from present-and-false.
+    # which is different from present-and-false. A payload that does not parse at all
+    # is neither: the desktop gets None back and reports Stale
+    # ("desktop_capability_probe_failed", managed.rs:521), so it is repair evidence.
     install_ok: object = "absent"
     try:
-        # The CLI may print a banner before the JSON, so start at the first brace.
-        brace = caps_raw.find("{")
-        if brace >= 0:
-            v = json.loads(caps_raw[brace:]).get("studio_install_ok")
+        parsed = json.loads(caps_out)
+        if isinstance(parsed, dict):
+            v = parsed.get("studio_install_ok")
             install_ok = "absent" if v is None else bool(v)
-    except (json.JSONDecodeError, AttributeError):
-        pass
+        else:
+            install_ok = "unparseable"
+    except json.JSONDecodeError:
+        install_ok = "unparseable"
     say("capabilities.studio_install_ok", install_ok)
+
+    # The desktop's own conclusion: Ready only when the payload parses AND
+    # studio_install_ok is true (managed.rs:445). "absent" stays undecided so an
+    # older tree, which cannot answer, is judged on the backend alone.
+    caps_ready: object = "absent"
+    if caps_rc != 0 or install_ok is False or install_ok == "unparseable":
+        caps_ready = False
+    elif install_ok is True:
+        caps_ready = True
+    say("desktop_would_call_install_ok", caps_ready)
 
     # ── the deeper probes the fix PRs add ────────────────────────────────────
     # RECORDED, but NOT repair evidence: preflight/managed.rs runs only `-h` and
@@ -121,9 +151,9 @@ def main(argv: list[str]) -> int:
         if not has_subcommand(binp, args):
             say(label, "absent")
             continue
-        rc, log = run([binp, *args], timeout = 300)
-        (out / f"{label}.log").write_text(log, encoding = "utf-8", errors = "replace")
-        say(label, "ok" if rc == 0 else "failed")
+        r = run([binp, *args], timeout = 300)
+        (out / f"{label}.log").write_text(merged(r), encoding = "utf-8", errors = "replace")
+        say(label, "ok" if r[0] == 0 else "failed")
 
     # The in-progress marker #7490 writes before spawning the installer. RECORDED ONLY,
     # never used as repair evidence: both interrupt drivers seed it before every install
@@ -187,16 +217,33 @@ def main(argv: list[str]) -> int:
             return
         if os.name == "posix":
             import signal
+            # start_new_session made this child its own group leader, so pgid == pid.
+            # Read it BEFORE the reap: once the leader is waited on, os.getpgid()
+            # raises and the escalation would target nothing.
+            try:
+                pgid = os.getpgid(proc.pid)
+            except OSError:
+                pgid = proc.pid
             for sig in (signal.SIGTERM, signal.SIGKILL):
                 try:
-                    os.killpg(os.getpgid(proc.pid), sig)
-                except (ProcessLookupError, PermissionError, OSError):
+                    os.killpg(pgid, sig)
+                except OSError:
                     pass
                 try:
                     proc.wait(timeout = 10)
-                    return
+                    break
                 except subprocess.TimeoutExpired:
                     continue
+            # Unconditional, and to the GROUP -- the same escalation
+            # interrupt-install.sh:94 makes, for the same reason. The leader exits
+            # promptly on SIGTERM while a uvicorn worker does not, so returning as
+            # soon as proc.wait() succeeded skipped the SIGKILL entirely and left
+            # that worker holding the port and the venv open while the repair step
+            # reinstalled underneath it. Signalling an empty group is a no-op.
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except OSError:
+                pass
         else:
             # On win32 the CLI re-spawns the server as a CHILD and waits on it
             # (unsloth_cli/commands/studio.py:1543); CREATE_NEW_PROCESS_GROUP does not
@@ -226,12 +273,18 @@ def main(argv: list[str]) -> int:
         say("backend_error", missing)
 
     # ── verdict ──────────────────────────────────────────────────────────────
-    if backend_ok:
+    # A booting backend is not enough to call the install finished. The manifest is
+    # written LAST (install_python_stack.py:3255), so a kill after "studio deps" but
+    # before it -- the data-designer leg -- leaves a venv whose backend boots while
+    # desktop-capabilities still says studio_install_ok=false, and preflight reports
+    # Stale (managed.rs:445) rather than Ready. Calling that HEALTHY skipped the
+    # re-run step, so the leg asserted nothing beyond a marker appearing and never
+    # exercised the fast path that is supposed to clear an incomplete install.
+    if backend_ok and caps_ready is not False:
         verdict = "HEALTHY"
     elif (
-        facts.get("capabilities.studio_install_ok") is False
+        caps_ready is False
         or not facts.get("cli_h_ok")
-        or not facts.get("capabilities_ok")
     ):
         verdict = "REPAIRABLE"
     else:
@@ -250,7 +303,7 @@ def main(argv: list[str]) -> int:
         )
         return 1
     if verdict == "REPAIRABLE":
-        print("[probe] broken install is detectable -> the desktop app can auto-repair")
+        print("[probe] incomplete install is detectable -> the desktop app can auto-repair")
     return 0
 
 
