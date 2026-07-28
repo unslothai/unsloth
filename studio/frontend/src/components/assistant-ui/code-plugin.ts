@@ -53,6 +53,9 @@ const normalizeLanguage = (language: string): BundledLanguage => {
 // unstyled, re-tokenizing in full at most every REFRESH_MS.
 const MIN_INCREMENTAL_CHARS = 2000;
 const REFRESH_MS = 250;
+// One slot per fence in flight. A message can hold several large fences, and
+// Streamdown revisits all of them on every render.
+const MAX_SLOTS_PER_KEY = 8;
 
 type TokenLine = HighlightResult["tokens"][number];
 type Dispatch = {
@@ -60,15 +63,15 @@ type Dispatch = {
   language: BundledLanguage;
   callback?: (result: HighlightResult) => void;
 };
-type CacheEntry = {
-  /** Code the cached tokens were produced from. */
+type Slot = {
+  /** Code that produced `result`. Only ever set together with it. */
   code: string;
   result: HighlightResult | null;
-  /** When inner.highlight() was last dispatched for this key. */
-  dispatchedAt: number;
-  /** Trailing re-tokenize that closes out a run of reused results. */
+  /** Code of the dispatch awaiting a callback. */
+  inFlight: string | null;
+  lastDispatchAt: number;
   trailing: ReturnType<typeof setTimeout> | null;
-  latest: Dispatch | null;
+  pending: Dispatch | null;
 };
 
 // Unstyled line: no colour fields, so it renders in the default foreground
@@ -80,15 +83,26 @@ export function createCodePlugin(
   options: CodePluginOptions = {},
 ): CodeHighlighterPlugin {
   const inner = createShikiCodePlugin(options);
-  const cache = new Map<string, CacheEntry>();
+  const slotsByKey = new Map<string, Slot[]>();
 
-  const dispatch = (entry: CacheEntry, { opts, language, callback }: Dispatch) => {
-    entry.code = opts.code;
-    entry.dispatchedAt = Date.now();
-    return inner.highlight({ ...opts, language }, (result) => {
-      // Ignore stale results from a superseded dispatch.
-      if (entry.code === opts.code) entry.result = result;
-      callback?.(result);
+  const clearTrailing = (slot: Slot) => {
+    if (slot.trailing !== null) clearTimeout(slot.trailing);
+    slot.trailing = null;
+    slot.pending = null;
+  };
+
+  const dispatch = (slot: Slot, d: Dispatch) => {
+    slot.inFlight = d.opts.code;
+    slot.lastDispatchAt = Date.now();
+    return inner.highlight({ ...d.opts, language: d.language }, (result) => {
+      // Adopt only the dispatch still in flight, and move code/result together
+      // so a reuse can never slice one against the other.
+      if (slot.inFlight === d.opts.code) {
+        slot.code = d.opts.code;
+        slot.result = result;
+        slot.inFlight = null;
+      }
+      d.callback?.(result);
     });
   };
 
@@ -106,44 +120,58 @@ export function createCodePlugin(
       }
 
       const key = `${language} ${JSON.stringify(opts.themes)}`;
-      let entry = cache.get(key);
-      if (!entry) {
-        entry = { code: "", result: null, dispatchedAt: 0, trailing: null, latest: null };
-        cache.set(key, entry);
-      }
-      const now = Date.now();
-      const elapsed = now - entry.dispatchedAt;
-      // Kept lines are byte-identical to the cached run (strict prefix), so
-      // their tokens are still correct; only the tail is unstyled.
-      const canReuse =
-        entry.result != null &&
-        opts.code.length > entry.code.length &&
-        opts.code.startsWith(entry.code) &&
-        elapsed < REFRESH_MS;
-
-      if (!canReuse) {
-        return dispatch(entry, { opts, language, callback });
+      let slots = slotsByKey.get(key);
+      if (!slots) {
+        slots = [];
+        slotsByKey.set(key, slots);
       }
 
-      // Always close out a reused run, so the block cannot be left showing an
-      // unstyled tail if this turns out to be the final render.
-      entry.latest = { opts, language, callback };
-      if (entry.trailing === null) {
-        const wait = Math.max(0, REFRESH_MS - elapsed);
-        entry.trailing = setTimeout(() => {
-          const e = entry as CacheEntry;
-          e.trailing = null;
-          const pending = e.latest;
-          e.latest = null;
-          if (pending) dispatch(e, pending);
-        }, wait);
+      // Match this fence to its own slot by longest prefix, so sibling fences
+      // do not evict each other.
+      let slot: Slot | null = null;
+      let bestLength = -1;
+      for (const candidate of slots) {
+        const anchor = candidate.code || candidate.inFlight || "";
+        if (!anchor || !opts.code.startsWith(anchor)) continue;
+        if (anchor.length > bestLength) {
+          slot = candidate;
+          bestLength = anchor.length;
+        }
+      }
+      if (!slot) {
+        slot = { code: "", result: null, inFlight: null, lastDispatchAt: 0, trailing: null, pending: null };
+        slots.unshift(slot);
+        for (const dropped of slots.splice(MAX_SLOTS_PER_KEY)) clearTrailing(dropped);
       }
 
-      const previous = entry.result as HighlightResult;
+      // Finished fence re-rendered unchanged: serve it, never re-tokenize.
+      if (slot.result && slot.code === opts.code) return slot.result;
+
+      const elapsed = Date.now() - slot.lastDispatchAt;
+      const grew = slot.result !== null && opts.code.length > slot.code.length;
+      if (!grew || elapsed >= REFRESH_MS) {
+        clearTrailing(slot);
+        return dispatch(slot, { opts, language, callback });
+      }
+
+      // Always close out a reused run, so the fence cannot be left showing an
+      // unstyled tail if this turns out to be its final render.
+      slot.pending = { opts, language, callback };
+      if (slot.trailing === null) {
+        const target = slot;
+        target.trailing = setTimeout(() => {
+          target.trailing = null;
+          const next = target.pending;
+          target.pending = null;
+          if (next) dispatch(target, next);
+        }, Math.max(0, REFRESH_MS - elapsed));
+      }
+
+      const previous = slot.result as HighlightResult;
       // Drop the cached final line: it may have been cut mid-token.
       const keptLines = previous.tokens.slice(
         0,
-        Math.max(0, entry.code.split("\n").length - 1),
+        Math.max(0, slot.code.split("\n").length - 1),
       );
       const tail = opts.code.split("\n").slice(keptLines.length);
       return { ...previous, tokens: [...keptLines, ...tail.map(plainLine)] };
