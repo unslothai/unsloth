@@ -786,3 +786,41 @@ def test_override_writes_are_ordered_per_model():
     assert "previous .catch(() => {}) .then(() => sendModelOverride(" in src
     # Only the last writer clears the slot, or a queue still building loses order.
     assert "if (writesByKey.get(key) === write) { writesByKey.delete(key); }" in src
+
+
+def test_backfill_skips_future_schema_local_records():
+    """loadPerModelConfig refuses to apply a record written by a newer Studio and
+    eviction refuses to drop one, because this client cannot interpret that
+    schema. The enumeration the backfill uses had no such guard, so it would
+    persist this client's partial reading server-side and an API-triggered load
+    would then apply settings the same client will not apply locally.
+    """
+    src = " ".join(
+        _read("features/model-picker/model-config/per-model-config.ts").split()
+    )
+    listing = src[src.index("export function listPerModelConfigs()") :]
+    assert "storedConfigVersion(raw) > STORAGE_SCHEMA_VERSION" in listing[:900]
+
+
+def test_detail_settings_need_a_resolved_quant():
+    """The on-device card passes a null variant while its own lookup is pending
+    or after it failed. Opening the editor then saves a bare-model config, which
+    the picker never finds because it matches variants exactly, while the API's
+    bare-key fallback would apply it. openModelSettings already refuses; this
+    entry point has to refuse the same way."""
+    src = " ".join(_read("features/hub/hub-page.tsx").split())
+    guard = "if ( !ggufVariant && selectedModel.isGguf && selectedModel.requiresVariant )"
+    assert guard in src
+    assert src.count("Couldn't determine which quant to configure.") == 2
+
+
+def test_a_failed_detail_fetch_is_retried():
+    """A terminal row's updated_at never advances and selectedIsMissing stays
+    true, so a fetch that failed had nothing left to re-run the effect and the
+    payload stayed unavailable until another row was selected. The retry is
+    bounded because the usual failure is an entry aged out of the ring buffer,
+    which never arrives however often it is asked for."""
+    src = " ".join(_read("features/api-monitor/api-monitor-page.tsx").split())
+    assert "const DETAIL_FETCH_ATTEMPTS = 3;" in src
+    assert "const detailInFlight = selectedId_ != null && loadingDetails.has(selectedId_);" in src
+    assert "if (attemptsRef.current.count >= DETAIL_FETCH_ATTEMPTS) { return; }" in src

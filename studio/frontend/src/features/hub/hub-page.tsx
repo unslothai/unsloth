@@ -1365,6 +1365,22 @@ export function ModelsPage() {
   const openSelectedModelSettings = useCallback(
     (ggufVariant: string | null) => {
       if (!selectedModel) return;
+      // The card passes null while its own variant lookup is pending or after it
+      // failed, so this needs the same guard openModelSettings applies: a model
+      // that needs a quant cannot be configured without one, because the picker
+      // matches variants exactly and would never find the saved config while the
+      // API falls back to the bare key and would apply it.
+      if (
+        !ggufVariant &&
+        selectedModel.isGguf &&
+        selectedModel.requiresVariant
+      ) {
+        toast.error("Couldn't determine which quant to configure.", {
+          description:
+            "Settings for this model are per quant. Check the connection or the model's cache, then try again.",
+        });
+        return;
+      }
       // Share the sequence with openModelSettings: a row's variant lookup may
       // still be pending, and it must not land on top of this one.
       settingsOpenSeq.current += 1;

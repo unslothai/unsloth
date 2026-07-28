@@ -690,6 +690,13 @@ export function listPerModelConfigs(): {
     if (!modelId) {
       continue;
     }
+    // Never report a future-schema record. loadPerModelConfig refuses to apply
+    // one and eviction refuses to drop one, so handing it to the backfill would
+    // persist this client's partial reading of it server-side and let an
+    // API-triggered load apply settings the same client will not apply locally.
+    if (storedConfigVersion(raw) > STORAGE_SCHEMA_VERSION) {
+      continue;
+    }
     const variant = ggufVariantFromStorageKey(key);
     out.push({
       modelId,

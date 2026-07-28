@@ -50,6 +50,9 @@ import {
 
 const API_INFERENCE_PREFIX_RE = /^\/api\/inference/;
 const V1_PREFIX_RE = /^\/v1\//;
+// Tries per revision for a detail payload. Bounded because the usual failure
+// is an entry that has aged out of the ring buffer and never comes back.
+const DETAIL_FETCH_ATTEMPTS = 3;
 
 const STATUS_FILTERS: { value: MonitorStatusFilter; label: string }[] = [
   { value: "all", label: "All requests" },
@@ -550,9 +553,16 @@ export function ApiMonitorPage(): ReactElement {
   const selectedUpdatedAt = selected?.updated_at ?? null;
   const selectedIsMissing = selectedId_ != null && details[selectedId_] == null;
   const lastFetchedRef = useRef<string | null>(null);
+  const attemptsRef = useRef<{ revision: string; count: number }>({
+    revision: "",
+    count: 0,
+  });
   const [retryTick, setRetryTick] = useState(0);
+  // Flips as a fetch settles, successfully or not, which is what lets a failed
+  // one be noticed at all.
+  const detailInFlight = selectedId_ != null && loadingDetails.has(selectedId_);
   useEffect(() => {
-    if (selectedId_ == null) {
+    if (selectedId_ == null || detailInFlight) {
       return;
     }
     // `updated_at` advances per poll while streaming and settles when terminal.
@@ -561,6 +571,19 @@ export function ApiMonitorPage(): ReactElement {
     if (!selectedIsMissing && lastFetchedRef.current === revision) {
       return;
     }
+    // A terminal row's revision never advances, so a fetch that failed had
+    // nothing left to re-run this effect and the payload stayed unavailable
+    // until the user picked another row. `loadingDetails` changing as the failed
+    // fetch settles is the trigger; the count bounds it, because the usual
+    // failure is an entry that aged out of the ring buffer and will never
+    // arrive however often it is asked for.
+    if (attemptsRef.current.revision !== revision) {
+      attemptsRef.current = { revision, count: 0 };
+    }
+    if (attemptsRef.current.count >= DETAIL_FETCH_ATTEMPTS) {
+      return;
+    }
+    attemptsRef.current.count += 1;
     // Only remember the revision when a fetch really started; the in-flight
     // guard can refuse, and recording it anyway skips that revision for good.
     if (requestDetail(selectedId_)) {
@@ -579,6 +602,7 @@ export function ApiMonitorPage(): ReactElement {
     selectedIsMissing,
     requestDetail,
     retryTick,
+    detailInFlight,
   ]);
 
   // The desktop webview's origin is tauri://, not the API server, and the
