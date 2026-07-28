@@ -819,18 +819,20 @@ def test_parallel_slots_are_never_recorded_for_a_diffusion_load():
     assert "loadedNParallel: committedSlots," in composer
 
 
-def test_hydration_restores_a_remembered_slot_override_on_a_fresh_store():
-    """The control is deliberately never seeded from the status echo, so after a
-    browser reload a model running on its remembered override shows a BLANK
-    slot control. `ModelConfigPage.resolveInitial` prefers the live store over
-    storage for the active model, so the blank is what the form edits: the next
-    Apply sends `n_parallel: null` (reloading at the server default) and a Save
-    writes the blank over the remembered count.
+def test_hydration_restores_a_remembered_slot_override():
+    """The control is deliberately never seeded from the status echo, so a model
+    running on its remembered override shows a BLANK slot control after a
+    browser reload, and again after status moves the tab to another GGUF.
+    `ModelConfigPage.resolveInitial` prefers the live store over storage for the
+    active model, so the blank is what the form edits: the next Apply sends
+    `n_parallel: null` (reloading at the server default) and a Save writes the
+    blank over the remembered count.
 
-    The seed is deliberately narrow. It reads storage only while the store is
-    still unseeded, so a poll cannot re-pin a control the user just blanked, and
-    it adopts the value only when the server is already running that exact
-    count, which proves it belongs to this model rather than fabricating a pin.
+    The seed is deliberately narrow. It reads storage only on a fresh store or a
+    model change, never on a steady-state poll, so it cannot re-pin a control
+    the user just blanked, and it adopts the value only when the server is
+    already running that exact count, which proves it belongs to this model
+    rather than fabricating a pin.
     """
     src = _read("features/chat/lib/apply-inference-status-to-store.ts")
     status = " ".join(src.split())
@@ -838,15 +840,21 @@ def test_hydration_restores_a_remembered_slot_override_on_a_fresh_store():
         "resolveInitialConfig(checkpointId, status.gguf_variant ?? null)" in status
     ), "the remembered override comes from per-model storage, not the echo"
     assert (
-        "status.is_gguf && prevState.loadedNParallel === null && prevState.nParallel === null"
-        in status
-    ), "storage is read only on a fresh store, or a poll would fight a live edit"
+        "const slotsUnseeded = prevState.loadedNParallel === null && "
+        "prevState.nParallel === null;" in status
+    )
+    assert (
+        "status.is_gguf && (slotsUnseeded || slotsModelChanged)" in status
+    ), "storage is read on a fresh store or a model change, never on a steady poll"
+    assert (
+        "...(seedLoadParams && (slotsUnseeded || slotsModelChanged) &&" in status
+    ), "the seed fires in both cases the clear leaves the control blank"
     assert (
         "rememberedNParallel != null && rememberedNParallel === "
         "status.requested_parallel_slots && { nParallel: rememberedNParallel, }" in status
     )
-    # A fresh mount trips the model-change clear too, so the seed only survives
-    # by being spread after it.
+    # Both cases trip the model-change clear, so the seed only survives by
+    # being spread after it.
     assert src.index("slotsModelChanged && { nParallel: null }") < src.index(
         "nParallel: rememberedNParallel,"
     )

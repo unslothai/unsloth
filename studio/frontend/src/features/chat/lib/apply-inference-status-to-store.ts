@@ -213,12 +213,13 @@ export function applyActiveModelStatusToStore(
   // in for the check: a new model can report the old one's count.
   const slotsModelChanged =
     hydratingExistingModel && !options.readoptingSameModel;
-  // This model's remembered override, read only on a fresh store so the poll
-  // does not touch storage every tick.
+  // This model's remembered override, read only on a fresh store or a model
+  // change: a steady-state poll must neither touch storage every tick nor
+  // re-pin a control the user just blanked.
+  const slotsUnseeded =
+    prevState.loadedNParallel === null && prevState.nParallel === null;
   const remembered =
-    status.is_gguf &&
-    prevState.loadedNParallel === null &&
-    prevState.nParallel === null
+    status.is_gguf && (slotsUnseeded || slotsModelChanged)
       ? resolveInitialConfig(checkpointId, status.gguf_variant ?? null)
       : null;
   const rememberedNParallel = remembered?.remembered
@@ -366,14 +367,13 @@ export function applyActiveModelStatusToStore(
     // performLoad's cross-model reset does, or the previous model's count
     // follows onto the new one. The baseline above still carries the rollback.
     ...(seedLoadParams && slotsModelChanged && { nParallel: null }),
-    // AFTER that clear, which a first hydration also trips: a browser reload
-    // would otherwise leave the control blank while the model runs on a
+    // AFTER that clear, which both a first hydration and a model change trip:
+    // either would otherwise leave the control blank while the model runs on a
     // remembered override, so the form shows blank and the next Apply reloads
     // at the server default, saving the blank over the override. Adopted only
     // when the running count matches, which proves it is this model's own.
     ...(seedLoadParams &&
-      prevState.loadedNParallel === null &&
-      prevState.nParallel === null &&
+      (slotsUnseeded || slotsModelChanged) &&
       rememberedNParallel != null &&
       rememberedNParallel === status.requested_parallel_slots && {
         nParallel: rememberedNParallel,
