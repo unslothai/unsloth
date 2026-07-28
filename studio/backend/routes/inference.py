@@ -5321,6 +5321,9 @@ async def _load_model_impl(
         event = "load",
         model = _lifecycle_model_label(request.model_path, request.gguf_variant),
         running = True,
+        # Auto-switch loads run before the endpoint opens its request row, so a
+        # load that fails there leaves this as the only trace of API traffic.
+        via_api_key = _request_used_api_key(fastapi_request),
     )
 
     native_grant_backed = False

@@ -517,3 +517,28 @@ def test_hidden_shared_ids_do_not_outlive_their_entries():
     for i in range(5):
         monitor.record_lifecycle(event = "unload", model = f"org/M{i}")
     assert not monitor._hidden_shared.get("alice")
+
+
+def test_an_api_triggered_lifecycle_row_carries_the_attribution():
+    """The overlay opens on API-key traffic only. An auto-switch or auto-download
+    that is refused never reaches api_monitor.start, so the lifecycle row is the
+    whole trace of that request; without the attribution the monitor stayed shut
+    on exactly the failures it exists to surface."""
+    monitor = ApiMonitor(max_entries = 5)
+
+    api_load = monitor.record_lifecycle(
+        event = "load", model = "org/Repo-GGUF", running = True, via_api_key = True
+    )
+    monitor.record_lifecycle(event = "unload", model = "org/Repo-GGUF", reason = "idle")
+
+    rows = {e["id"]: e for e in monitor.snapshot()}
+    assert rows[api_load]["via_api_key"] is True
+    # A background unload is not API traffic and must not pop the overlay.
+    idle = [e for e in rows.values() if e["event"] == "unload"]
+    assert idle and all(e["via_api_key"] is False for e in idle)
+
+    # The failure path keeps it: failing the row must not drop the attribution.
+    monitor.fail(api_load, error = "auto-switch refused")
+    after = {e["id"]: e for e in monitor.snapshot()}
+    assert after[api_load]["via_api_key"] is True
+    assert after[api_load]["status"] == "error"

@@ -173,6 +173,7 @@ class ApiMonitor:
         model: str,
         reason: Optional[str] = None,
         running: bool = False,
+        via_api_key: bool = False,
     ) -> str:
         """Record a model load/unload alongside the request traffic that caused it.
 
@@ -199,6 +200,11 @@ class ApiMonitor:
             event = event,
             reason = reason,
             shared = True,
+            # The overlay opens on API-key traffic only. A switch or download that
+            # is refused never reaches api_monitor.start, so this row is the whole
+            # trace of it, and without the attribution the monitor stayed shut on
+            # exactly the failures it exists to surface.
+            via_api_key = via_api_key,
         )
         with self._lock:
             self._entries.appendleft(entry)
