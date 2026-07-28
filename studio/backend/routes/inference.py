@@ -4790,10 +4790,7 @@ def _guard_chat_load_against_training(
     binary = LlamaCppBackend._find_llama_server_binary() if is_gguf else None
     is_vulkan_backend = bool(
         is_gguf
-        and (
-            gpu_ids_are_vulkan_ordinals
-            or (binary and LlamaCppBackend._is_vulkan_backend(binary))
-        )
+        and (gpu_ids_are_vulkan_ordinals or (binary and LlamaCppBackend._is_vulkan_backend(binary)))
     )
 
     required_override_gb = (

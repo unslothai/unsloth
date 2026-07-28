@@ -117,7 +117,7 @@ export async function classify(ctx: any) {{
 """
 
 
-_STALE_TOKEN = "hf_staleTokenFromAnEarlierSession";
+_STALE_TOKEN = "hf_staleTokenFromAnEarlierSession"
 
 
 def _harness() -> str:

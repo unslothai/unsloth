@@ -93,7 +93,9 @@ def test_autoload_staged_metadata_probe_prepares_the_hf_token():
     assert "if (!preparedToken.proceed) {" in autoload
     assert "hf_token: preparedToken.token," in autoload
     # The raw, unprepared token must not reach fetchGgufStagedMetadata directly.
-    between = autoload[metadata_idx : autoload.index("\n", autoload.index("hf_token:", metadata_idx))]
+    between = autoload[
+        metadata_idx : autoload.index("\n", autoload.index("hf_token:", metadata_idx))
+    ]
     assert "hf_token: hfToken" not in between
 
 
@@ -798,10 +800,7 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     # devices already being non-empty, or a confirmed-Vulkan host whose probe is
     # still cold/transiently empty would fall through to the code below and
     # expose torch/CUDA physical IDs the Vulkan backend cannot use.
-    assert (
-        "const inference = data?.inference_gpu; "
-        'if (inference?.backend === "vulkan") {' in src
-    )
+    assert "const inference = data?.inference_gpu; " 'if (inference?.backend === "vulkan") {' in src
     # A confirmed-Vulkan backend with no enumerated devices yet must return no
     # devices, not fall through to the torch/CUDA inventory below.
     assert "if (!(inference.devices ?? []).length) return [];" in src
