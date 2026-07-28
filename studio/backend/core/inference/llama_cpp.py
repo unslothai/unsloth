@@ -347,10 +347,15 @@ _MAX_TOOL_CALLS_PER_TURN = 8
 # ("I need to call"), the plain modals take a bare infinitive ("I must call") --
 # folding "should"/"must" into the need|have|ought group would demand
 # "I should to call".
+# Sentence-initial only. An announced action is its own sentence ("I must call
+# web_search now"); the same words mid-sentence are ordinary prose that happens
+# to name a tool ("The API I should invoke is foo() because ..."), and dropping
+# that loses a real answer.
 _FORCED_PLAN_INTENT = re.compile(
-    r"(?:\bi\s+(?:(?:need|have|ought)\s+to|should|must)|^need\s+to|^going\s+to)"
+    r"(?:(?:^|[.!?]\s+)\s*i\s+(?:(?:need|have|ought)\s+to|should|must)"
+    r"|^need\s+to|^going\s+to)"
     r"\s+(?:\w+\s+){0,2}?(?:call|use|run|search|fetch|render|invoke|query)\b",
-    re.I,
+    re.I | re.M,
 )
 _FINAL_ANSWER_SIGNAL = re.compile(
     r"\b(?:final\s+answer|answer\s*:|here\s+is|here's|in\s+summary|result\s*:)\b",

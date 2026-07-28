@@ -2251,6 +2251,33 @@ def test_reprompt_names_only_active_tools_not_hardcoded():
     assert "python" not in reprompt["content"]
 
 
+def test_reprompt_stops_when_the_retry_restates_the_stall():
+    """A nudge answered with the same text has not worked; do not spend the budget."""
+
+    captured: list[list] = []
+    stall = "I'll search for that now."
+
+    def fake_single_turn(messages, active_tools = None):
+        captured.append(list(messages))
+        yield stall  # same forward-looking intent every time
+
+    exec_fn = FakeExecuteTool([])
+    _events = _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = fake_single_turn,
+            messages = [{"role": "user", "content": "find X"}],
+            tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+            execute_tool = exec_fn,
+            auto_heal_tool_calls = True,
+            nudge_tool_calls = True,
+            max_tool_iterations = 3,
+        )
+    )
+
+    # One nudge, then the repeat guard stops it: two generations, not MAX_ACT_REPROMPTS + 1.
+    assert len(captured) == 2, captured
+
+
 def test_reprompt_suppressed_when_auto_heal_disabled():
     # With Auto-Heal off the safetensors nudge must stay silent for backend parity
     # with the GGUF loop, so only the single initial generation runs.
@@ -4204,9 +4231,12 @@ class TestPlanWithoutActionReprompt:
         # final answer and no further turn is generated.
         from core.inference.tool_call_parser import MAX_ACT_REPROMPTS
 
-        stall = "Let me look into it first."
+        # Distinct stalls: identical ones are stopped by the repeat guard after the
+        # first nudge (covered separately), which would never reach the cap.
+        stalls = [f"Let me look into detail {i} first." for i in range(MAX_ACT_REPROMPTS)]
+        stall = stalls[-1]
         turns = [["I'll search the web for that."]]
-        turns += [[stall]] * MAX_ACT_REPROMPTS
+        turns += [[s] for s in stalls]
         turns += [["SHOULD NOT APPEAR"]]
 
         generations = {"count": 0}
