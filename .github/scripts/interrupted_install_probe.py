@@ -118,7 +118,11 @@ def main(argv: list[str]) -> int:
         (out / f"{label}.log").write_text(log, encoding = "utf-8", errors = "replace")
         say(label, "ok" if rc == 0 else "failed")
 
-    # The in-progress marker #7490 writes before spawning the installer.
+    # The in-progress marker #7490 writes before spawning the installer. RECORDED ONLY,
+    # never used as repair evidence: both interrupt drivers seed it before every install
+    # and deliberately never clear it, so it is true on every leg by construction. Using
+    # it in the verdict below would make REPAIRABLE unconditional and FALSE_READY -- the
+    # single outcome this workflow exists to catch -- unreachable.
     home = Path(os.environ.get("UNSLOTH_STUDIO_HOME") or (Path.home() / ".unsloth" / "studio"))
     say("install_in_progress_marker", (home / ".desktop-install-in-progress").exists())
 
@@ -198,7 +202,6 @@ def main(argv: list[str]) -> int:
         facts.get("verify_install") == "failed"
         or facts.get("desktop_runtime_check") == "failed"
         or facts.get("capabilities.studio_install_ok") is False
-        or facts.get("install_in_progress_marker") is True
         or not facts.get("cli_h_ok")
         or not facts.get("capabilities_ok")
     ):

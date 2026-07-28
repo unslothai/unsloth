@@ -31,8 +31,12 @@ on:
       - 'studio/src-tauri/src/preflight.rs'
       - 'studio/src-tauri/src/preflight/**'
       - 'unsloth_cli/commands/studio.py'
-      - '.github/scripts/interrupt*-install*'
-      - '.github/scripts/interrupted-install-probe.sh'
+      # `*` never matches `/`, and it is a literal `-install` that follows, so
+      # `interrupt*-install*` matches interrupt-install.sh / .ps1 but NOT the
+      # underscored probe. List the probe explicitly rather than rely on a glob.
+      - '.github/scripts/interrupt-install.sh'
+      - '.github/scripts/interrupt-install.ps1'
+      - '.github/scripts/interrupted_install_probe.py'
       - '.github/workflows/interrupted-install-ci.yml'
   workflow_dispatch:
 
@@ -141,19 +145,22 @@ jobs:
           rc=0
           bash install.sh --tauri --local < /dev/null 2>&1 | tee logs/repair.log || rc=$?
           echo "repair exit: $rc"
-          if grep -qiE "up to date|already current" logs/repair.log \
-             && ! grep -qiE "forcing dependency pass|incomplete|repair" logs/repair.log; then
-            echo "::error::re-run reported the venv up to date without repairing it"
-            exit 1
-          fi
           BIN="$HOME/.unsloth/studio/unsloth_studio/bin/unsloth"
           [ -x "$BIN" ] || BIN="$HOME/.unsloth/studio/bin/unsloth"
           python3 .github/scripts/interrupted_install_probe.py "$BIN" --out probe-after || true
           v="$(python3 -c "import json;print(json.load(open('probe-after/verdict.json'))['verdict'])")"
-          if [ "$v" != "HEALTHY" ]; then
-            echo "::error::after a full re-run the backend still does not boot (verdict=$v)"
-            exit 1
+          # A booting backend IS the repair, whatever the log narrated. Judging by
+          # log text instead failed a leg whose venv was fine: the only match was
+          # the frontend build printing "up to date".
+          if [ "$v" = "HEALTHY" ]; then
+            echo "re-run repaired the install (verdict=HEALTHY)"
+            exit 0
           fi
+          echo "::error::after a full re-run the backend still does not boot (verdict=$v)"
+          if grep -qiE "(venv|dependenc|python stack)[^|]*(up to date|already current)" logs/repair.log; then
+            echo "::error::and the re-run treated the venv as current instead of repairing it"
+          fi
+          exit 1
 
       - name: Upload logs
         if: always()
@@ -171,18 +178,21 @@ jobs:
   interrupt-windows:
     name: windows kill@${{ matrix.label }}
     env:
-      # install.ps1 has no equivalent of install.sh's --tauri guard, so the
-      # workspace-scoped root still works here.
+      # These legs run install.ps1 WITHOUT --tauri (install.ps1:189-215 rejects a custom
+      # root under --tauri exactly like install.sh:100-147), so the workspace-scoped
+      # root is usable here.
       UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
     runs-on: windows-latest
     timeout-minutes: 60
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {label: studio-deps, marker: 'studio deps'}
-          - {label: torch, marker: 'Installing PyTorch'}
+          # install.ps1 parses `--no-torch` (install.ps1:121); `-SkipTorch` matches no
+          # case in that switch and is silently dropped. The torch leg must NOT skip
+          # torch, or its marker never appears.
+          - {label: studio-deps, marker: 'studio deps', installArgs: '--no-torch --local'}
+          - {label: torch, marker: 'Installing PyTorch', installArgs: '--local'}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -194,13 +204,32 @@ jobs:
         run: |
           pwsh -NoProfile -File .github/scripts/interrupt-install.ps1 `
             -Marker '${{ matrix.marker }}' -LogPath logs/install.log `
-            -InstallArgs '-SkipTorch --local' -KillAtSeconds 1500
+            -InstallArgs '${{ matrix.installArgs }}' -KillAtSeconds 1500
+
+      - name: The kill must have landed where it was aimed
+        shell: pwsh
+        run: |
+          $vals = @{}
+          foreach ($line in (Get-Content logs/interrupt.env)) {
+            $kv = $line -split '=', 2
+            if ($kv.Count -eq 2) { $vals[$kv[0]] = $kv[1] }
+          }
+          Write-Host "reason=$($vals['interrupt_reason']) killed=$($vals['interrupt_killed']) exit=$($vals['installer_exit'])"
+          if ($vals['interrupt_reason'] -ne 'marker-hit') {
+            Write-Host "::error::installer never reached '${{ matrix.marker }}' (reason=$($vals['interrupt_reason']))."
+            Write-Host '::error::This leg proves nothing: without this check it passes via the'
+            Write-Host '::error::probe NO_CLI safe path, exactly as the POSIX legs once did.'
+            Get-Content logs/install.log -Tail 30 -ErrorAction SilentlyContinue
+            exit 1
+          }
 
       - name: What state is the install in?
+        id: probe
         shell: pwsh
         run: |
           $bin = Join-Path $env:UNSLOTH_STUDIO_HOME 'unsloth_studio\Scripts\unsloth.exe'
           if (-not (Test-Path $bin)) {
+            "verdict=NO_CLI" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             Write-Host '[probe] no unsloth CLI -> preflight reports NotInstalled (safe)'
             exit 0
           }
@@ -210,6 +239,36 @@ jobs:
           # desktop-runtime-check -- it would have failed the very PRs that add them,
           # no matter how well they worked.
           python .github/scripts/interrupted_install_probe.py $bin --out probe
+          $rc = $LASTEXITCODE
+          $v = (Get-Content probe/verdict.json -Raw | ConvertFrom-Json).verdict
+          "verdict=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          exit $rc
+
+      - name: A re-run must repair, not short-circuit
+        # Same assertion the POSIX legs make. Without it a Windows leg proves only that
+        # the break was DETECTED, never that install.ps1's version fast path does not
+        # short-circuit over it -- which is the half of the bug that strands the user.
+        if: always() && steps.probe.outputs.verdict != 'NO_CLI' && steps.probe.outputs.verdict != 'HEALTHY'
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -NonInteractive -File install.ps1 ${{ matrix.installArgs }} *>&1 |
+            Tee-Object -FilePath logs/repair.log
+          $bin = Join-Path $env:UNSLOTH_STUDIO_HOME 'unsloth_studio\Scripts\unsloth.exe'
+          python .github/scripts/interrupted_install_probe.py $bin --out probe-after
+          $v = (Get-Content probe-after/verdict.json -Raw | ConvertFrom-Json).verdict
+          # A booting backend IS the repair, whatever the log narrated. Judging by
+          # log text instead failed a POSIX leg whose venv was fine: the only match
+          # was the frontend build printing "up to date".
+          if ($v -eq 'HEALTHY') {
+            Write-Host 're-run repaired the install (verdict=HEALTHY)'
+            exit 0
+          }
+          Write-Host "::error::after a full re-run the backend still does not boot (verdict=$v)"
+          $log = Get-Content logs/repair.log -Raw -ErrorAction SilentlyContinue
+          if ($log -match '(?i)(venv|dependenc|python stack)[^|]*(up to date|already current)') {
+            Write-Host '::error::and the re-run treated the venv as current instead of repairing it'
+          }
+          exit 1
 
       - name: Upload logs
         if: always()
@@ -219,5 +278,6 @@ jobs:
           path: |
             logs/
             probe/
+            probe-after/
           retention-days: 7
           if-no-files-found: warn
