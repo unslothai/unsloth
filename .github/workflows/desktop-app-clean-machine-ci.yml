@@ -305,6 +305,34 @@ jobs:
           echo "BIN=$BIN" >> "$GITHUB_ENV"
           echo "binary: $BIN"
 
+      - name: Run the bundled installer, the path first launch takes
+        run: |
+          set -o pipefail
+          # The launch step below only proves the process stayed alive: on a fresh
+          # home preflight reports not_installed and the app sits on the install
+          # screen waiting for a click (use-tauri-backend.ts:252-254,
+          # startup-screen.tsx:388-389), so a bundle whose embedded install.sh is
+          # missing or broken passed both Linux rows. tauri.conf.json:56-59 ships
+          # install.sh as a bundle resource, so find it where the bundle put it and
+          # run it as install.rs does.
+          if [ "${{ matrix.kind }}" = "deb" ]; then
+            SH="$(dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -E '/install\.sh$' | head -1)"
+          else
+            (cd dl && "$(ls *.AppImage | head -1)" --appimage-extract >/dev/null)
+            SH="$(find dl/squashfs-root -name install.sh -type f | head -1)"
+          fi
+          [ -n "$SH" ] && [ -f "$SH" ] || { echo "::error::the bundle ships no install.sh resource"; exit 1; }
+          echo "bundled installer: $SH"
+          # --tauri rejects a custom studio home (install.sh:102-114), so drop the
+          # workspace-scoped override, and close stdin as install.rs does.
+          env -u UNSLOTH_STUDIO_HOME \
+            bash "$SH" --tauri < /dev/null 2>&1 | tee logs/bundled-install.log
+          PY="$HOME/.unsloth/studio/unsloth_studio/bin/python"
+          [ -x "$PY" ] || { echo "::error::bundled installer left no venv at $PY"; exit 1; }
+          "$PY" -V
+          # install.rs passes only --tauri, so torch is part of first launch.
+          "$PY" -c "import torch; print('torch', torch.__version__)"
+
       - name: Launch under Xvfb and prove it stays up
         run: |
           # Linux is the one platform where a hosted runner can give the app a real

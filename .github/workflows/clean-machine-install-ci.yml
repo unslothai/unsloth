@@ -183,8 +183,14 @@ jobs:
         run: |
           set -a; . ./clean-machine.env; set +a
           checks="nobuild"
+          # `absent` ran only BEFORE the install, so an installer that quietly
+          # selected the CLT or installed a compiler left the leg green while every
+          # later source build could succeed -- the exact behaviour the assert script
+          # says `absent` guards the whole run against. Re-run it after the install.
+          [ "${{ matrix.mode }}" = "mask" ] && checks="$checks absent"
           [ "${{ matrix.mode }}" = "trace" ] && checks="$checks notools"
-          bash .github/scripts/clean-machine-assert.sh $checks
+          UNSLOTH_CLEAN_ALLOW_WORKING='${{ matrix.allow_working }}' \
+            bash .github/scripts/clean-machine-assert.sh $checks
 
       - name: Assert llama.cpp loads
         if: steps.install.outcome == 'success'
@@ -438,7 +444,16 @@ jobs:
           # Piped, same shape as `curl ... | sh`, so an early exit still exposes the
           # broken pipe, but the script under test is this ref not production's.
           wsl -d unsloth-ci -u root -- sh -c 'cd /root && cat install.sh | sh' 2>&1 | Tee-Object -FilePath logs/wsl-install.log
-          Write-Host "installer exit: $LASTEXITCODE"
+          $installRc = $LASTEXITCODE
+          Write-Host "installer exit: $installRc"
+          # Printing the code discarded it. The CLI check in the next step does not
+          # compensate: install.sh links the `unsloth` shim (4174-4182) BEFORE it
+          # reports a failing studio/setup.sh (4219-4230), so a late setup failure
+          # leaves a shim whose --version succeeds and the whole job looked green.
+          if ($installRc -ne 0) {
+            Write-Host "::error::WSL installer exited $installRc"
+            exit $installRc
+          }
 
       - name: Did it detect WSL, and did it end up usable?
         if: always()
@@ -607,6 +622,18 @@ jobs:
             $f = Get-Command $t -ErrorAction SilentlyContinue
             Write-Host ("{0,-8} {1}" -f $t, $(if ($f) { $f.Source } else { 'ABSENT' }))
             if ($f -and $t -ne 'py') { $leaked += "$t -> $($f.Source)" }
+          }
+          # The launcher binary may stay, but an interpreter it can still START is a
+          # leak: Find-CompatiblePython (install.ps1:1130-1153) probes `py` first, so
+          # any version registered outside the two renamed toolcache directories gets
+          # reused and Python bootstrap never runs. Exempting `py` without running it
+          # left that unchecked.
+          if (Get-Command py -ErrorAction SilentlyContinue) {
+            Write-Host "py -0p:"; & py -0p 2>&1 | ForEach-Object { Write-Host "  $_" }
+            foreach ($v in '-3.11', '-3.12', '-3.13') {
+              $out = & py $v -c "import sys; print(sys.executable)" 2>&1
+              if ($LASTEXITCODE -eq 0) { $leaked += "py $v -> $out" }
+            }
           }
           # Printing alone could not fail, and the leg was green while not clean: run
           # 30365014702 logged `python ABSENT` then `Python 3.13 already installed` /
