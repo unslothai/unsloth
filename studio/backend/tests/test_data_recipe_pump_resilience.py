@@ -203,9 +203,9 @@ def test_pump_survives_handler_exception_and_still_finalizes(monkeypatch):
     pump = threading.Thread(target = m._pump_loop, daemon = True)
     pump.start()
     try:
-        assert _wait_until(lambda: handled == ["log", "progress"]), (
-            "pump must keep processing events after a handler raises"
-        )
+        assert _wait_until(
+            lambda: handled == ["log", "progress"]
+        ), "pump must keep processing events after a handler raises"
         assert pump.is_alive()
     finally:
         m._proc._alive = False  # worker exits -> pump should finalize and stop
