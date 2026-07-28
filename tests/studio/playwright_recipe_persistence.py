@@ -95,9 +95,9 @@ def login(username: str, password: str) -> dict:
     )
     assert payload.get("access_token"), f"login for {username!r} returned no access token"
     assert payload.get("refresh_token"), f"login for {username!r} returned no refresh token"
-    assert not payload.get("must_change_password"), (
-        f"account {username!r} still requires a password change"
-    )
+    assert not payload.get(
+        "must_change_password"
+    ), f"account {username!r} still requires a password change"
     return payload
 
 
