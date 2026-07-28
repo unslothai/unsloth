@@ -30,6 +30,9 @@ from typing import Dict, List, Optional, Tuple
 MANIFEST_NAME = "unsloth_install_manifest.json"
 MANIFEST_SCHEMA = 1
 
+# Canonical truthy set for UNSLOTH_NO_TORCH, matching install.ps1 / install.sh.
+NO_TORCH_TRUTHY: Tuple[str, ...] = ("1", "true", "yes", "on")
+
 # Fingerprinted into the manifest, relative to studio/backend/requirements/.
 # Editing one (a --local install) invalidates it and forces a dependency pass.
 TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
@@ -116,6 +119,7 @@ def write_manifest(
     req_root: Optional[Path] = None,
     steps_total: int = 0,
     package_name: str = "unsloth",
+    no_torch: Optional[bool] = None,
 ) -> Optional[Path]:
     """Record a completed install. Never raises: no manifest reads as incomplete,
     which is the safe answer."""
@@ -130,6 +134,14 @@ def write_manifest(
         "steps_total": steps_total,
         "requirement_files": requirement_digests(req_root),
     }
+    # Additive, so MANIFEST_SCHEMA does not move and every existing manifest stays
+    # valid. Absent means "unknown", which is NOT False: only a manifest written by
+    # a build that knew about the key can answer, and callers fall back to their own
+    # detection otherwise. Recorded because install.ps1 / install.sh export
+    # UNSLOTH_NO_TORCH for their own run only -- a later `unsloth studio update`
+    # exports nothing and would otherwise reinstall torch into a GGUF-only venv.
+    if no_torch is not None:
+        payload["no_torch"] = bool(no_torch)
     path = manifest_path(root)
     try:
         tmp = path.with_suffix(".json.tmp")
@@ -143,13 +155,37 @@ def write_manifest(
 def read_manifest(root: Optional[Path] = None) -> Optional[dict]:
     try:
         raw = manifest_path(root).read_text(encoding = "utf-8")
-    except OSError:
+    # UnicodeDecodeError is a ValueError, not an OSError: a manifest re-saved as
+    # ANSI by an editor (the payload embeds the user profile path, so non-ASCII
+    # names show up there) or truncated mid-write must read as "no manifest", not
+    # raise. install_python_stack.py resolves no-torch mode through here at import,
+    # so anything escaping aborts the whole install.
+    except (OSError, ValueError):
         return None
     try:
         data = json.loads(raw)
     except ValueError:
         return None
     return data if isinstance(data, dict) else None
+
+
+def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
+    """The mode this venv was installed with, or None when unknown.
+
+    None means the manifest is missing, unreadable, or predates the key. Callers
+    must fall back to their own detection on None and never to False, so an older
+    install is not silently switched out of no-torch mode.
+    """
+    manifest = read_manifest(root)
+    if manifest is None:
+        return None
+    value = manifest.get("no_torch")
+    if isinstance(value, bool):
+        return value
+    # Tolerate a hand-edited manifest that used a string.
+    if isinstance(value, str):
+        return value.strip().lower() in NO_TORCH_TRUTHY
+    return None
 
 
 def _parse_requirement_line(line: str) -> Optional[Tuple[str, str, str]]:

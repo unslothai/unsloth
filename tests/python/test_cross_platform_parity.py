@@ -818,3 +818,36 @@ class TestPipNoIndexScrubParity:
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert "'PIP_NO_INDEX'" in text
         assert "'PIP_INDEX_URL'" in text
+
+
+class TestNoTorchPersistenceParity:
+    """No-torch mode must outlive the process that requested it.
+
+    install.sh / install.ps1 export UNSLOTH_NO_TORCH for their own run only.
+    `unsloth studio update` exports nothing, so both the PowerShell setup and the
+    shared Python stack have to recover the mode from the install manifest, or an
+    update reinstalls PyTorch into a GGUF-only venv. On Windows it is worse than
+    cosmetic: setup.ps1 reads the missing torch as a stale venv and tries to delete
+    the venv it is itself running out of, which fails on a locked python.exe."""
+
+    def test_the_stack_records_the_mode_it_installed(self):
+        text = STACK_PY.read_text(encoding = "utf-8")
+        assert "no_torch = NO_TORCH" in text
+        assert "install_manifest.recorded_no_torch()" in text
+
+    def test_setup_ps1_recovers_the_mode_when_no_env_var_is_exported(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "function Get-PersistedNoTorch" in text
+        # setup.ps1 drops the manifest before running install_python_stack.py, so
+        # the resolved answer has to be handed down through the environment.
+        assert text.index("Get-PersistedNoTorch -VenvPath $VenvDir") < text.index(
+            '$env:UNSLOTH_NO_TORCH = if ($NoTorchMode) { "true" } else { "false" }'
+        )
+
+    def test_both_sides_accept_the_same_spellings(self):
+        # install.ps1 / install.sh accept 1|true|yes|on; the two consumers must not
+        # be narrower, or a value one layer honours another silently ignores.
+        assert "'^\\s*(?i:true|1|yes|on)\\s*$'" in SETUP_PS1.read_text(encoding = "utf-8")
+        manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
+        assert 'NO_TORCH_TRUTHY: Tuple[str, ...] = ("1", "true", "yes", "on")' in manifest
+        assert "install_manifest.NO_TORCH_TRUTHY" in STACK_PY.read_text(encoding = "utf-8")

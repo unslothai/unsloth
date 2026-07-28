@@ -2215,13 +2215,28 @@ def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
 def _infer_no_torch() -> bool:
     """Determine whether to run in no-torch (GGUF-only) mode.
 
-    Checks UNSLOTH_NO_TORCH first. When unset, falls back to platform
-    detection so Intel Macs use GGUF-only mode even when invoked from
-    ``unsloth studio update`` (which does not inject the env var).
+    Precedence: UNSLOTH_NO_TORCH (install.sh / install.ps1 export it, "false"
+    included, so an explicit value always wins) -> the mode recorded in this
+    venv's install manifest -> platform detection, so Intel Macs use GGUF-only
+    mode even when invoked from ``unsloth studio update``.
+
+    The manifest tier is what keeps ``unsloth studio update`` in no-torch mode:
+    it injects no env var, so without it every update reinstalls torch into a
+    GGUF-only venv. Note setup.ps1 resolves the mode itself and re-exports
+    UNSLOTH_NO_TORCH, because it drops the manifest before invoking this script.
+
+    An empty value counts as unset: PowerShell cannot represent a set-but-empty
+    variable (assigning "" deletes it), so the two must mean the same thing here.
+
+    Evaluated at import, which is before install_python_stack() drops the
+    manifest. Do not defer this call into main().
     """
     env = os.environ.get("UNSLOTH_NO_TORCH")
-    if env is not None:
-        return env.strip().lower() in ("1", "true")
+    if env is not None and env.strip():
+        return env.strip().lower() in install_manifest.NO_TORCH_TRUTHY
+    recorded = install_manifest.recorded_no_torch()
+    if recorded is not None:
+        return recorded
     return IS_MAC_INTEL
 
 
@@ -3256,6 +3271,7 @@ def install_python_stack() -> int:
             req_root = REQ_ROOT,
             steps_total = _TOTAL,
             package_name = package_name,
+            no_torch = NO_TORCH,
         )
         is None
     ):

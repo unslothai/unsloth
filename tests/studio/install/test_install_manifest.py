@@ -201,3 +201,49 @@ def test_unwritable_root_degrades_to_incomplete(tmp_path, req_root):
     assert im.write_manifest(root = missing_root, req_root = req_root) is None
     state = im.verify_install(root = missing_root, req_root = req_root, package_name = "pytest")
     assert state["ok"] is False
+
+
+def test_no_torch_mode_round_trips_through_the_manifest(install_root, req_root):
+    # `unsloth studio update` injects no UNSLOTH_NO_TORCH, so the venv has to
+    # remember how it was built or the update reinstalls torch into a GGUF-only
+    # environment (and on Windows deletes the venv it is running out of).
+    for recorded in (True, False):
+        im.write_manifest(
+            root = install_root,
+            req_root = req_root,
+            package_name = "pytest",
+            no_torch = recorded,
+        )
+        assert im.recorded_no_torch(root = install_root) is recorded
+        assert (
+            json.loads((install_root / im.MANIFEST_NAME).read_text(encoding = "utf-8"))["no_torch"]
+            is recorded
+        )
+
+
+def test_manifest_without_the_no_torch_key_reads_as_unknown(install_root, req_root):
+    # Manifests written before the key existed must keep verifying, and must
+    # report None rather than False so callers fall back to their own detection
+    # instead of silently switching an install out of no-torch mode.
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    payload = json.loads((install_root / im.MANIFEST_NAME).read_text(encoding = "utf-8"))
+    assert "no_torch" not in payload
+
+    assert im.recorded_no_torch(root = install_root) is None
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
+    assert state["manifest_ok"] is True
+
+
+def test_recorded_no_torch_tolerates_a_hand_edited_manifest(install_root, req_root):
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    path = install_root / im.MANIFEST_NAME
+    payload = json.loads(path.read_text(encoding = "utf-8"))
+
+    for value, expected in (("true", True), ("ON", True), ("0", False), (123, None)):
+        payload["no_torch"] = value
+        path.write_text(json.dumps(payload), encoding = "utf-8")
+        assert im.recorded_no_torch(root = install_root) is expected
+
+
+def test_recorded_no_torch_reports_unknown_without_a_manifest(install_root):
+    assert im.recorded_no_torch(root = install_root) is None

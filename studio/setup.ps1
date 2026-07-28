@@ -2704,13 +2704,44 @@ function Mark-StudioOwned {
     } catch {}
 }
 
+# The mode this venv was installed with, from install_python_stack.py's manifest.
+# install.ps1 exports UNSLOTH_NO_TORCH for its own run only, so a later
+# `unsloth studio update` (which exports nothing) has no other way to know. A
+# manifest written before the key existed, or none at all, reads as "install
+# torch" -- the pre-existing behavior.
+function Get-PersistedNoTorch {
+    param([Parameter(Mandatory = $true)][string]$VenvPath)
+    $manifestPath = Join-Path $VenvPath "unsloth_install_manifest.json"
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return $false }
+    try {
+        $payload = Get-Content -LiteralPath $manifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
+    } catch {
+        return $false
+    }
+    if ($null -eq $payload) { return $false }
+    return ("$($payload.no_torch)" -match '^\s*(?i:true|1|yes|on)\s*$')
+}
+
 # Stale-venv detection: if the venv exists but its torch flavor no longer
 # matches the current machine, repair according to invocation context.
 # - install.ps1 sets UNSLOTH_INSTALL_ROLLBACK_MANAGED=1 so setup can delegate
 #   to the installer-level rollback that restores the previous environment.
 # - direct `unsloth studio update` keeps the pre-existing self-repair behavior.
 # In no-torch mode, a missing torch package is expected.
-$NoTorchMode = $env:UNSLOTH_NO_TORCH -match '^(?i:true|1|yes|on)$'
+$NoTorchMode = $env:UNSLOTH_NO_TORCH -match '^\s*(?i:true|1|yes|on)\s*$'
+# No env var at all means `unsloth studio update` / `studio setup` / setup.bat,
+# none of which export one. Without the manifest fallback the check below reads a
+# GGUF-only venv's missing torch as a stale venv and tries to delete the venv this
+# script is itself running out of, which fails on a locked python.exe.
+if (-not $NoTorchMode -and [string]::IsNullOrWhiteSpace($env:UNSLOTH_NO_TORCH)) {
+    $NoTorchMode = Get-PersistedNoTorch -VenvPath $VenvDir
+    if ($NoTorchMode) {
+        substep "no-torch install detected -- keeping this environment GGUF-only." "Yellow"
+    }
+}
+# install_python_stack.py drops the manifest before its dependency pass, so it
+# cannot repeat the lookup above; hand it the resolved answer. This also collapses
+# every accepted spelling to one value both sides parse identically.
 $env:UNSLOTH_NO_TORCH = if ($NoTorchMode) { "true" } else { "false" }
 $InstallerManagedSetup = $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -match '^(?i:true|1|yes)$'
 if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode) {
