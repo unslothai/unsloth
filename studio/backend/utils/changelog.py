@@ -234,10 +234,15 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             visible, in_comment = _strip_comments(line, in_comment)
             # Nor is anything inside a raw HTML block such as <pre>.
             visible, in_raw_html = _strip_raw_html(visible, in_raw_html)
+            # Taken before the block opener is hidden: like a fence opener, it
+            # renders as nothing but its indentation still closes a list item it
+            # sits to the left of. Blanking it first made the tracker read the
+            # whole block as blank, so the item stayed open and a release
+            # heading below it was suppressed as nested content.
+            structural = visible
             if visible and in_raw_html is None and _opens_html_block(visible, after_paragraph):
                 in_html_block = True
                 visible = ""
-            structural = visible
         # A `##` inside a fenced block is sample markdown, not a real heading.
         match = _HEADING_PATTERN.match(visible) if visible else None
         # `1.0` over a line of dashes is the same heading written setext style.
@@ -738,13 +743,19 @@ def _quote_content(line: str) -> str:
 def _may_be_lazy(line: str) -> bool:
     """Whether `line` can continue a paragraph it is indented out of.
 
-    Only plain text can: a heading, a fence, a break or an underline starts a
-    block of its own, which closes the item instead."""
+    Only plain text can: a heading, a fence, a break, an underline or an HTML
+    block starts a block of its own, which closes the item instead."""
     return (
         _PARAGRAPH_TEXT.match(line) is not None
         and _NOT_PARAGRAPH.match(line) is None
         and _SETEXT_UNDERLINE.match(line) is None
         and _FENCE_PATTERN.match(line) is None
+        # Types 1 to 6 interrupt a paragraph, so a `<div>` to the left of an
+        # open item closes it. Reading it as lazy text kept the item open and
+        # suppressed a release heading below the block as nested content.
+        # Type 7 cannot interrupt, and after_paragraph is the only case this
+        # helper is asked about, so it is deliberately not included here.
+        and not _opens_html_block(line, True)
     )
 
 

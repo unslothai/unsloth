@@ -1316,3 +1316,19 @@ def test_preview_collects_labels_only_from_real_definitions():
     assert "let labelFence: string | null = null;" in prescan
     assert "if (line.indent >= INDENTED_CODE_INDENT) { continue; }" in prescan
     assert "closesDeepFence(labelFence, line)" in prescan
+
+
+def test_an_html_block_to_the_left_of_a_list_item_closes_it(changelog_module):
+    """Types 1 to 6 interrupt a paragraph, so an unindented <div> after "- item"
+    closes the item and a following one-to-three-space-indented "## 2.0" is a
+    real document heading. It was read as a lazy paragraph continuation, so the
+    item stayed open and the release below the block was swallowed."""
+    text = "## 3.0\n\n- item\n<div>\nhidden\n</div>\n\n  ## 2.0\n\n- two\n\n## 1.0\n\n- one\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["3.0", "2.0", "1.0"]
+    # Without the block the heading really is nested in the item, so it stays
+    # suppressed: this is not a blanket "indented headings count" change.
+    nested = "## 3.0\n\n- item\n\n  ## 2.0\n\n- two\n\n## 1.0\n\n- one\n"
+    assert [e.version for e in changelog_module.parse_changelog(nested)] == ["3.0", "1.0"]
+    # Ordinary lazy continuation is untouched.
+    lazy = "## 3.0\n\n- item\ncontinued\n\n  ## 2.0\n\n## 1.0\n\n- one\n"
+    assert [e.version for e in changelog_module.parse_changelog(lazy)] == ["3.0", "1.0"]
