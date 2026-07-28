@@ -76,6 +76,24 @@ from core.inference.llama_cpp import _CTX_FIT_VRAM_FRACTION, LlamaCppBackend
 # Helpers
 
 
+def _runtime_kv_cells(
+    n_ctx: int,
+    *,
+    slots: int = 1,
+    unified: bool = True,
+) -> int:
+    """Total KV cells allocated by llama.cpp across all streams."""
+    slots = max(1, slots)
+    padded_ctx = ((n_ctx + 255) // 256) * 256
+    streams = 1 if unified else slots
+    cells_per_stream = (
+        padded_ctx
+        if unified
+        else ((max(1, padded_ctx // slots) + 255) // 256) * 256
+    )
+    return cells_per_stream * streams
+
+
 def _runtime_swa_cells(
     n_ctx: int,
     sliding_window: int,
@@ -86,17 +104,13 @@ def _runtime_swa_cells(
 ) -> tuple[int, int]:
     """Return total non-SWA and compact-SWA cells allocated by llama.cpp."""
     slots = max(1, slots)
-    padded_ctx = ((n_ctx + 255) // 256) * 256
     streams = 1 if unified else slots
-    cells_per_stream = (
-        padded_ctx
-        if unified
-        else ((max(1, padded_ctx // slots) + 255) // 256) * 256
-    )
+    base_cells = _runtime_kv_cells(n_ctx, slots = slots, unified = unified)
+    cells_per_stream = base_cells // streams
     swa_limit = sliding_window * (slots if unified else 1) + n_ubatch
     swa_cells_per_stream = min(cells_per_stream, swa_limit)
     swa_cells_per_stream = ((swa_cells_per_stream + 255) // 256) * 256
-    return cells_per_stream * streams, swa_cells_per_stream * streams
+    return base_cells, swa_cells_per_stream * streams
 
 
 def _make_gguf_bytes(arch: str, kv_pairs: dict) -> bytes:
@@ -812,7 +826,7 @@ class TestMLAEstimation:
         b = self._mla_backend()
         result = b._estimate_kv_cache_bytes(1000, "f16")
         # n_layers * ctx * 1 * key_len(576) * 2
-        expected = 61 * 1000 * 1 * 576 * 2
+        expected = 61 * _runtime_kv_cells(1000) * 1 * 576 * 2
         assert result == expected
 
     def test_mla_fallback_when_no_key_length(self):
@@ -820,14 +834,14 @@ class TestMLAEstimation:
         b = self._mla_backend(_kv_key_length = None)
         # default _key_length_mla=192, so rope_dim=192
         result = b._estimate_kv_cache_bytes(1000, "f16")
-        expected = 61 * 1000 * 1 * (512 + 192) * 2  # 704
+        expected = 61 * _runtime_kv_cells(1000) * 1 * (512 + 192) * 2  # 704
         assert result == expected
 
     def test_mla_fallback_no_key_length_mla(self):
         """No key_length and no key_length_mla: fall back to +64."""
         b = self._mla_backend(_kv_key_length = None, _key_length_mla = None)
         result = b._estimate_kv_cache_bytes(1000, "f16")
-        expected = 61 * 1000 * 1 * (512 + 64) * 2  # 576
+        expected = 61 * _runtime_kv_cells(1000) * 1 * (512 + 64) * 2  # 576
         assert result == expected
 
     def test_mla_defaults_n_kv_to_1_when_heads_absent(self):
@@ -835,7 +849,7 @@ class TestMLAEstimation:
         b = self._mla_backend(_n_kv_heads = None)  # n_heads=128 still set
         result = b._estimate_kv_cache_bytes(1000, "f16")
         # Uses n_kv_mla=1, NOT n_heads=128
-        expected = 61 * 1000 * 1 * 576 * 2
+        expected = 61 * _runtime_kv_cells(1000) * 1 * 576 * 2
         assert result == expected
 
     def test_mla_q4_quantization(self):
@@ -844,7 +858,9 @@ class TestMLAEstimation:
         result_q4 = b._estimate_kv_cache_bytes(1000, "q4_0")
         assert result_q4 < result_f16
         # q4_0 bpe = 0.5625, f16 bpe = 2.0
-        assert result_q4 == int(61 * 1000 * 1 * 576 * 0.5625)
+        assert result_q4 == int(
+            61 * _runtime_kv_cells(1000) * 1 * 576 * 0.5625
+        )
 
 
 # D. Path 2: Hybrid Mamba Estimation
@@ -1111,8 +1127,7 @@ class TestPathPriority:
         b._full_attention_interval = 4
         b._sliding_window = 1024  # Would trigger SWA
 
-        # MLA: 61 * 1000 * 1 * 576 * 2
-        expected_mla = int(61 * 1000 * 1 * 576 * 2)
+        expected_mla = int(61 * _runtime_kv_cells(1000) * 1 * 576 * 2)
         assert b._estimate_kv_cache_bytes(1000, "f16") == expected_mla
 
     def test_hybrid_over_swa(self):
@@ -1129,7 +1144,9 @@ class TestPathPriority:
         b._sliding_window = 1024  # Would trigger SWA
 
         n_attn = 64 // 4
-        expected_hybrid = int(n_attn * 1000 * 4 * (256 + 256) * 2)
+        expected_hybrid = int(
+            n_attn * _runtime_kv_cells(1000) * 4 * (256 + 256) * 2
+        )
         assert b._estimate_kv_cache_bytes(1000, "f16") == expected_hybrid
 
     def test_all_paths_produce_different_values(self):
@@ -1217,7 +1234,9 @@ class TestQuantization:
         b._kv_key_length = 64
         b._kv_value_length = 64
         result = b._estimate_kv_cache_bytes(1000, cache_type)
-        expected = int(10 * 1000 * 1 * (64 + 64) * expected_bpe)
+        expected = int(
+            10 * _runtime_kv_cells(1000) * 1 * (64 + 64) * expected_bpe
+        )
         assert result == expected
 
 
@@ -1232,12 +1251,24 @@ class TestEdgeCases:
         b._n_layers = 32
         b._kv_key_length = 128
         assert b._estimate_kv_cache_bytes(0, "f16") == 0
+        assert (
+            b._estimate_kv_cache_bytes(
+                0, "f16", n_parallel = 3, kv_unified = False
+            )
+            == 0
+        )
 
     def test_negative_context(self):
         b = LlamaCppBackend()
         b._n_layers = 32
         b._kv_key_length = 128
         assert b._estimate_kv_cache_bytes(-1, "f16") == 0
+        assert (
+            b._estimate_kv_cache_bytes(
+                -1, "f16", n_parallel = 3, kv_unified = False
+            )
+            == 0
+        )
 
     def test_context_of_one(self):
         b = LlamaCppBackend()
@@ -1246,7 +1277,7 @@ class TestEdgeCases:
         b._kv_key_length = 64
         b._kv_value_length = 64
         result = b._estimate_kv_cache_bytes(1, "f16")
-        assert result == int(10 * 1 * 1 * (64 + 64) * 2)
+        assert result == int(10 * _runtime_kv_cells(1) * 1 * (64 + 64) * 2)
 
     def test_very_large_context(self):
         """1M context should not overflow or crash."""
@@ -1267,7 +1298,7 @@ class TestEdgeCases:
         b._kv_key_length = 64
         b._kv_value_length = 64
         result = b._estimate_kv_cache_bytes(100, "f16")
-        expected = int(10 * 100 * 8 * (64 + 64) * 2)
+        expected = int(10 * _runtime_kv_cells(100) * 8 * (64 + 64) * 2)
         assert result == expected
 
     def test_both_heads_none_falls_to_one(self):
@@ -1278,7 +1309,7 @@ class TestEdgeCases:
         b._kv_key_length = 64
         b._kv_value_length = 64
         result = b._estimate_kv_cache_bytes(100, "f16")
-        expected = int(10 * 100 * 1 * (64 + 64) * 2)
+        expected = int(10 * _runtime_kv_cells(100) * 1 * (64 + 64) * 2)
         assert result == expected
 
 
@@ -1644,7 +1675,7 @@ class TestParallelSWAScaling:
             setattr(b, k, v)
         return b
 
-    # ── non-SWA paths: constant ────────────────────────────────────
+    # ── non-SWA paths: constant when stream divisions are aligned ──
 
     def test_pure_gqa_constant_across_parallel(self):
         b = self._gqa_backend()
@@ -1690,6 +1721,41 @@ class TestParallelSWAScaling:
         baseline = b._estimate_kv_cache_bytes(8192, "f16")
         for slots in (1, 2, 4, 8):
             assert b._estimate_kv_cache_bytes(8192, "f16", n_parallel = slots) == baseline
+
+    def test_non_swa_paths_follow_unaligned_stream_padding(self):
+        mla = LlamaCppBackend()
+        mla._n_layers = 60
+        mla._n_kv_heads = 1
+        mla._kv_lora_rank = 512
+        mla._key_length_mla = 64
+        mla._kv_key_length = 576
+
+        hybrid = LlamaCppBackend()
+        hybrid._n_layers = 64
+        hybrid._n_kv_heads = 16
+        hybrid._n_heads = 32
+        hybrid._embedding_length = 4096
+        hybrid._kv_key_length = 128
+        hybrid._kv_value_length = 128
+        hybrid._ssm_inner_size = 4096
+        hybrid._full_attention_interval = 4
+
+        legacy = LlamaCppBackend()
+        legacy._n_layers = 32
+        legacy._n_kv_heads = 8
+        legacy._n_heads = 8
+        legacy._embedding_length = 4096
+
+        for backend in (self._gqa_backend(), mla, hybrid, legacy):
+            bytes_per_cell = backend._estimate_kv_cache_bytes(256, "f16") // 256
+            unified = backend._estimate_kv_cache_bytes(
+                5000, "f16", n_parallel = 3, kv_unified = True
+            )
+            separate = backend._estimate_kv_cache_bytes(
+                5000, "f16", n_parallel = 3, kv_unified = False
+            )
+            assert unified == 5120 * bytes_per_cell
+            assert separate == 5376 * bytes_per_cell
 
     # ── SWA paths: scale only the SWA portion ──────────────────────
 

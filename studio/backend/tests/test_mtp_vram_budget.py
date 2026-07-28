@@ -178,6 +178,18 @@ class TestEmbeddedDraftKv:
         two = _make_backend(nextn = 2)._mtp_draft_kv_bytes(65536)
         assert two == pytest.approx(2 * one)
 
+    def test_unaligned_context_follows_runtime_stream_padding(self):
+        b = _make_backend()
+        bytes_per_cell = b._mtp_draft_kv_bytes(256) // 256
+        unified = b._mtp_draft_kv_bytes(
+            5000, n_parallel = 3, kv_unified = True
+        )
+        separate = b._mtp_draft_kv_bytes(
+            5000, n_parallel = 3, kv_unified = False
+        )
+        assert unified == 5120 * bytes_per_cell
+        assert separate == 5376 * bytes_per_cell
+
     def test_embedded_draft_kv_floored_at_f16(self):
         # The embedded MTP head is one layer, so llama.cpp's quantized-KV
         # overhead is not amortized: a quantized draft KV fits LESS context than

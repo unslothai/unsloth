@@ -1509,6 +1509,25 @@ def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
     }.get((cache_type or "f16").strip().lower(), 2.0)
 
 
+def _kv_cache_cell_layout(
+    n_ctx: int,
+    n_parallel: int,
+    kv_unified: bool,
+) -> tuple[int, int, int]:
+    """Return llama.cpp's slot count, stream count, and cells per stream."""
+    slots = max(1, n_parallel)
+    padded_ctx = ((n_ctx + 255) // 256) * 256
+    streams = 1 if kv_unified else slots
+    if padded_ctx <= 0:
+        return slots, streams, 0
+    cells_per_stream = (
+        padded_ctx
+        if kv_unified
+        else ((padded_ctx // slots + 255) // 256) * 256
+    )
+    return slots, streams, cells_per_stream
+
+
 def _env_main_cache_type_for_budget(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
     """Heavier of the inherited LLAMA_ARG_CACHE_TYPE_K/_V env types when it
     exceeds the f16 default, else None. Unsloth emits --cache-type only for the
@@ -4142,7 +4161,7 @@ class LlamaCppBackend:
 
         Server-flag knobs (mirror llama-server's CLI):
           swa_full        -- --swa-full: SWA layers cache full n_ctx (path 3->4).
-          n_parallel      -- --parallel slots: non-SWA constant, SWA scale linearly.
+          n_parallel      -- --parallel slots: controls per-slot stream padding.
           kv_unified      -- --kv-unified: one shared stream vs one per slot.
           n_ubatch        -- --ubatch-size: SWA cache's processing headroom.
           ctx_checkpoints -- --ctx-checkpoints: N SWA snapshots per slot.
@@ -4162,7 +4181,10 @@ class LlamaCppBackend:
         # Bytes per element depends on KV cache quantization
         bpe = _kv_bytes_per_elem(cache_type_kv)
 
-        slots = max(1, n_parallel)
+        slots, streams, cells_per_stream = _kv_cache_cell_layout(
+            n_ctx, n_parallel, kv_unified
+        )
+        total_cells = cells_per_stream * streams
         ubatch = max(1, int(n_ubatch or self._DEFAULT_N_UBATCH))
 
         # Path 1: MLA (DeepSeek-V2/V3, GLM-4.7, GLM-5, Kimi-K2.5)
@@ -4174,7 +4196,7 @@ class LlamaCppBackend:
             n_kv_mla = self._n_kv_heads or 1
             rope_dim = self._key_length_mla or 64
             key_len = self._kv_key_length or (self._kv_lora_rank + rope_dim)
-            return int(n_layers_kv * n_ctx * n_kv_mla * key_len * bpe)
+            return int(n_layers_kv * total_cells * n_kv_mla * key_len * bpe)
 
         key_len = self._kv_key_length
         val_len = self._kv_value_length
@@ -4185,9 +4207,9 @@ class LlamaCppBackend:
             fai = self._full_attention_interval
             n_attn = -(-n_layers // fai) if fai > 0 else n_layers  # ceiling division
             if key_len is not None and val_len is not None:
-                return int(n_attn * n_ctx * n_kv * (key_len + val_len) * bpe)
+                return int(n_attn * total_cells * n_kv * (key_len + val_len) * bpe)
             head_dim = self._legacy_head_dim()
-            return int(n_attn * n_ctx * n_kv * 2 * head_dim * bpe)
+            return int(n_attn * total_cells * n_kv * 2 * head_dim * bpe)
 
         # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...). Pattern
         # from the resolver; if absent, falls through to the legacy 1/4-global
@@ -4203,15 +4225,8 @@ class LlamaCppBackend:
             and val_len is not None
         ):
             swa = self._sliding_window
-            streams = 1 if kv_unified else slots
-            padded_ctx = ((n_ctx + 255) // 256) * 256
-            cells_per_stream = (
-                padded_ctx
-                if kv_unified
-                else ((max(1, padded_ctx // slots) + 255) // 256) * 256
-            )
             if swa_full:
-                swa_cells_total = cells_per_stream * streams
+                swa_cells_total = total_cells
             else:
                 swa_limit = swa * (slots if kv_unified else 1) + ubatch
                 swa_cells_per_stream = min(cells_per_stream, swa_limit)
@@ -4245,14 +4260,14 @@ class LlamaCppBackend:
                             )
                     else:
                         global_bytes += (
-                            cells_per_stream * streams * layer_n_kv * (key_len + val_len) * bpe
+                            total_cells * layer_n_kv * (key_len + val_len) * bpe
                         )
                 return int(global_bytes + swa_bytes + slots * checkpoint_extra_per_slot)
             n_global = max(1, n_layers_kv // 4)
             n_swa = n_layers_kv - n_global
             kv_per_token = n_kv * (key_len + val_len) * bpe
             kv_per_token_swa = n_kv * (key_len_swa + val_len_swa) * bpe
-            global_bytes = n_global * cells_per_stream * streams * kv_per_token
+            global_bytes = n_global * total_cells * kv_per_token
             swa_bytes = n_swa * swa_cells_total * kv_per_token_swa
             checkpoint_extra_per_slot = (
                 ctx_checkpoints * n_swa * swa * kv_per_token_swa
@@ -4263,11 +4278,11 @@ class LlamaCppBackend:
 
         # Path 4: Standard GQA with explicit key/value dimensions
         if key_len is not None and val_len is not None:
-            return int(n_layers_kv * n_ctx * n_kv * (key_len + val_len) * bpe)
+            return int(n_layers_kv * total_cells * n_kv * (key_len + val_len) * bpe)
 
         # Path 5: Legacy fallback (old GGUFs without explicit dimensions)
         head_dim = self._legacy_head_dim()
-        return int(2 * n_kv * head_dim * n_layers_kv * n_ctx * bpe)
+        return int(2 * n_kv * head_dim * n_layers_kv * total_cells * bpe)
 
     def _draft_backend_for(self, drafter_path: str) -> Optional["LlamaCppBackend"]:
         """Lightweight backend with a drafter GGUF's metadata, to size its own KV
@@ -4361,7 +4376,16 @@ class LlamaCppBackend:
         f16_bpe = _kv_bytes_per_elem("f16")
         bpe_k = max(bpe_k, f16_bpe)
         bpe_v = max(bpe_v, f16_bpe)
-        return int(nextn * n_kv * (k_len * bpe_k + v_len * bpe_v) * n_ctx)
+        _, streams, cells_per_stream = _kv_cache_cell_layout(
+            n_ctx, n_parallel, kv_unified
+        )
+        return int(
+            nextn
+            * n_kv
+            * (k_len * bpe_k + v_len * bpe_v)
+            * cells_per_stream
+            * streams
+        )
 
     def _estimate_mtp_overhead_bytes(
         self,
@@ -6188,27 +6212,21 @@ class LlamaCppBackend:
                     # Weights + buffers exceed the pool -> floor; the load then
                     # falls back to layer split.
                     return ctx_floor
-                if mtp_overhead_fn is not None:
-                    # kv(ctx)+mtp(ctx)+compute(ctx) is not single-linear, so binary search.
-                    def _consumer(c: int) -> int:
-                        return _kv_at(c) + _mtp_at(c) + _cc_ctx(c)
 
-                    if _consumer(ctx) <= kv_budget_b:
-                        return ctx
-                    lo, hi, best = ctx_floor, ctx, ctx_floor
-                    while lo <= hi:
-                        mid = (lo + hi) // 2
-                        if _consumer(mid) <= kv_budget_b:
-                            best = mid
-                            lo = mid + 1
-                        else:
-                            hi = mid - 1
-                    return best
-                kv_at = _kv_at(ctx)
-                total_at = kv_at + _cc_ctx(ctx)  # both ~linear through the origin
-                if total_at <= kv_budget_b:
+                def _consumer(c: int) -> int:
+                    return _kv_at(c) + _mtp_at(c) + _cc_ctx(c)
+
+                if _consumer(ctx) <= kv_budget_b:
                     return ctx
-                return max(ctx_floor, int(ctx * kv_budget_b / total_at))
+                lo, hi, best = ctx_floor, ctx, ctx_floor
+                while lo <= hi:
+                    mid = (lo + hi) // 2
+                    if _consumer(mid) <= kv_budget_b:
+                        best = mid
+                        lo = mid + 1
+                    else:
+                        hi = mid - 1
+                return best
             # KV size unknown -> can't prove a safe cap; floor.
             return min(4096, ctx) if ctx > 0 else 4096
 
