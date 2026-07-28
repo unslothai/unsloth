@@ -13,6 +13,10 @@
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import {
+  normalizeGgufVariantIdentity,
+  normalizeModelIdentity,
+} from "../model-config/model-identity";
 import type { PerModelConfig } from "../model-config/per-model-config";
 
 const OVERRIDES_URL = "/api/settings/openai-auto-switch/overrides";
@@ -136,7 +140,14 @@ export async function putModelOverride(
   ggufVariant: string | null | undefined,
   config: PerModelConfig | null,
 ): Promise<void> {
-  const key = modelOverrideKey(modelId, ggufVariant);
+  // Keyed by the folded identity, not the literal spelling: the backfill sends
+  // a legacy casing while a UI save sends the normalized one, and the backend
+  // resolves both to the same row, so raw strings would open two queues for one
+  // model and let them race again.
+  const key = modelOverrideKey(
+    normalizeModelIdentity(modelId),
+    normalizeGgufVariantIdentity(ggufVariant),
+  );
   // Chain on the settled tail: a failed write must not cancel the next one.
   const previous = writesByKey.get(key) ?? Promise.resolve();
   const write = previous

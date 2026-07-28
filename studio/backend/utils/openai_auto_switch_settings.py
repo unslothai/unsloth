@@ -518,15 +518,28 @@ def split_quant_suffix(value: str) -> Optional[tuple[str, str]]:
     splitting it would graft /models/foo's launch flags onto a different model.
     """
     from core.inference.llama_cpp import _GGUF_KNOWN_QUANT_RE
+    from hub.utils.gguf import extract_quant_label
 
     head, sep, tail = value.rpartition(":")
     if not sep or not head or not tail:
         return None
-    if len(tail) > _MAX_QUANT_SUFFIX_LEN or "/" in tail or "\\" in tail:
+    if "/" in tail or "\\" in tail:
         return None
-    if _GGUF_KNOWN_QUANT_RE.fullmatch(_BPW_SUFFIX.sub("", tail)) is None:
+    if len(tail) <= _MAX_QUANT_SUFFIX_LEN and _GGUF_KNOWN_QUANT_RE.fullmatch(
+        _BPW_SUFFIX.sub("", tail)
+    ):
+        return head, tail
+    # A .gguf whose filename holds no recognizable quant token is still labelled
+    # by the scanner, which falls back to the stem, so keys like
+    # "/models/CustomModel.gguf:custommodel" exist. Storage lowercases that
+    # label while the scanner probes with the filename's own casing, so the
+    # comparison is case-insensitive. Requiring the suffix to be exactly that
+    # label is what keeps an ordinary colon out: "/models/foo:bar.gguf" splits
+    # to a head that is not a .gguf at all.
+    if not head.lower().endswith(".gguf"):
         return None
-    return head, tail
+    filename = head.replace("\\", "/").rsplit("/", 1)[-1]
+    return (head, tail) if tail.casefold() == extract_quant_label(filename).casefold() else None
 
 
 def _fold_posix_path_variant(value: str) -> str:

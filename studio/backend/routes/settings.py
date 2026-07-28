@@ -355,32 +355,14 @@ def get_openai_auto_switch_overrides(
 
 def _bare_model_id(model_id: str) -> Optional[str]:
     """``repo`` for a ``repo:QUANT`` key, or None when there is no quant suffix."""
-    from hub.utils.gguf import extract_quant_label
     from utils.openai_auto_switch_settings import split_quant_suffix
 
-    head, sep, tail = model_id.rpartition(":")
-    if not sep or not head or not tail:
-        return None
     # Must actually look like a quant, not just like a short path segment. The
     # label may carry a bits-per-weight modifier ("IQ4_XS-3.53bpw"), which keeps
-    # two files at the same base quant distinct, so that form counts too.
-    if split_quant_suffix(model_id) is not None:
-        return head
-    # A .gguf with no recognizable quant token is still labelled by the scanner,
-    # which falls back to the filename stem, so the UI stores keys like
-    # "/models/custom.gguf:custom". Refusing those dropped the bare entry's
-    # legacy flags on the first save, and auto-switch then prefers the qualified
-    # entry, so nothing could restore them. Requiring the suffix to be exactly
-    # the label the scanner derives for this filename is what keeps an arbitrary
-    # colon-containing POSIX path out: "/models/foo:bar.gguf" splits to a head
-    # that is not a .gguf at all.
-    # Split on both separators rather than os.path.basename: a "C:\..." key is
-    # written on Windows but may be read back by a backend that is not, and
-    # there a backslash is an ordinary filename character.
-    filename = head.replace("\\", "/").rsplit("/", 1)[-1]
-    if head.lower().endswith(".gguf") and tail == extract_quant_label(filename):
-        return head
-    return None
+    # two files at the same base quant distinct, and a .gguf with no recognized
+    # token is labelled by its stem, so both forms count.
+    split = split_quant_suffix(model_id)
+    return split[0] if split is not None else None
 
 
 @router.put("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)

@@ -775,7 +775,10 @@ def test_override_writes_are_ordered_per_model():
     src = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
     assert "const writesByKey = new Map<string, Promise<void>>();" in src
     # Keyed by the same override key the server stores under.
-    assert "const key = modelOverrideKey(modelId, ggufVariant);" in src
+    # Folded, not literal: the backfill uses a legacy casing while a UI save
+    # uses the normalized one, and the backend resolves both to one row, so
+    # raw strings would open two queues for one model and race again.
+    assert "const key = modelOverrideKey( normalizeModelIdentity(modelId), normalizeGgufVariantIdentity(ggufVariant), );" in src
     # Chained on the settled tail, so one failed write cannot cancel the next.
     assert "previous .catch(() => {}) .then(() => sendModelOverride(" in src
     # Only the last writer clears the slot, or a queue still building loses order.

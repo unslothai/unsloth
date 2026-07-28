@@ -4745,6 +4745,19 @@ def test_a_posix_path_variant_folds_while_the_path_does_not(monkeypatch):
     assert settings.get_model_override("/models/foo:Q4_K_M") == {}
 
 
+def test_an_unknown_gguf_label_is_reachable_in_either_casing(monkeypatch):
+    # A .gguf with no recognizable quant token is labelled by its stem, and v2
+    # storage lowercases that label while the scanner probes with the filename's
+    # own casing. Folding only recognized quant labels left the migrated entry
+    # unreachable for exactly the files that need the fallback.
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("/models/CustomModel.gguf:custommodel", max_seq_length = 8192)
+    got = settings.get_model_override("/models/CustomModel.gguf:CustomModel")
+    assert got["max_seq_length"] == 8192
+    # The path itself is still case-sensitive on POSIX.
+    assert settings.get_model_override("/models/custommodel.gguf:CustomModel") == {}
+
+
 def test_a_posix_colon_filename_is_not_folded_as_a_variant(monkeypatch):
     # "/models/foo:Bar.gguf" is one filename, not path + quant, so folding its
     # tail would let it reach a different file's settings.
