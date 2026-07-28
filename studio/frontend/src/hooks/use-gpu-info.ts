@@ -153,6 +153,13 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
   // applicator speaks; a Vulkan pick does not use them.
   const inference = data?.inference_gpu;
   if (inference?.backend === "vulkan") {
+    // The installed inference backend is confirmed Vulkan, so even an empty
+    // device list (probe still cold, or transiently failed) must NOT fall
+    // through to the torch/CUDA inventory below: those physical IDs are
+    // meaningless to a Vulkan llama-server, and the backend rejects every
+    // explicit diffusion pin outright while is_vulkan_build is true. Report no
+    // pinnable/diffusionPinnable devices until the probe succeeds.
+    if (!(inference.devices ?? []).length) return [];
     const picksAccepted = inference.gguf_gpu_ids_supported !== false;
     return (inference.devices ?? [])
       .filter((d) => typeof d.index === "number")

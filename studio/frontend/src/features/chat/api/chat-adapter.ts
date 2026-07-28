@@ -1573,6 +1573,11 @@ async function autoLoadSmallestModel(): Promise<{
     }
     let isDiffusion = false;
     if (candidate.kind === "gguf" && config.selectedGpuIds != null) {
+      // Prepare the token before this probe, exactly as validateModel/loadModel
+      // (and the interactive performLoad path) do: the Hub 401s an invalid
+      // Authorization header even for a public repo, so sending the raw stored
+      // token here would abort this candidate before the existing anonymous/
+      // replacement-token recovery flow could run.
       const preparedToken = await prepareHfTokenForUse(hfToken);
       if (!preparedToken.proceed) {
         throw new Error("Model load cancelled.");

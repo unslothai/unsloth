@@ -791,6 +791,9 @@ def test_vulkan_inference_devices_are_the_pickable_set():
         "const inference = data?.inference_gpu; "
         'if (inference?.backend === "vulkan") {' in src
     )
+    # A confirmed-Vulkan backend with no enumerated devices yet must return no
+    # devices, not fall through to the torch/CUDA inventory below.
+    assert "if (!(inference.devices ?? []).length) return [];" in src
     # Pinnable on the ggml ordinal space, gated on the backend's own support flag.
     assert "const picksAccepted = inference.gguf_gpu_ids_supported !== false;" in src
     assert 'pinnable: picksAccepted && d.index_kind === "vulkan",' in src

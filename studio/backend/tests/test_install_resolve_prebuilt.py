@@ -1362,6 +1362,18 @@ def test_hip_backend_env_opts_out_of_vulkan(monkeypatch, backend):
     assert ilp.force_vulkan_requested() is False
 
 
+def test_hip_backend_env_suppresses_auto_vulkan_fallback_on_unsupported_gfx(monkeypatch):
+    # An explicit HIP choice keeps HIP on an unsupported gfx target instead of
+    # silently substituting Vulkan.
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "hip")
+    host = _windows_amd_host(rocm_gfx_target = "gfx803", rocm_gfx_targets = ["gfx803"])
+    routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert routed is host
+    assert repo == FORK
+    assert persist is None
+
+
 def test_route_to_vulkan_prebuilt_hidden_physical_nvidia_amd_not_rerouted():
     # Vulkan ignores CUDA_VISIBLE_DEVICES, so a CUDA-masked NVIDIA card next to a legacy
     # AMD gfx must not auto-route: Vulkan could grab the reserved NVIDIA GPU.
