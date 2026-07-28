@@ -1232,6 +1232,14 @@ export function SharedComposer({
               effectiveCustomContextLength,
             )
           : null;
+        // Slots this compare load committed. The diffusion runner ignores
+        // --parallel (the backend echoes null slots for it), so recording the
+        // click-time count would mint a phantom override a saved preset then
+        // carries onto a text GGUF.
+        const committedSlots =
+          targetIsGguf && !(resp.is_diffusion ?? false)
+            ? (ownConfig.nParallel ?? null)
+            : null;
         useChatRuntimeStore.setState({
           supportsReasoning: resp.supports_reasoning ?? false,
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,
@@ -1241,9 +1249,9 @@ export function SharedComposer({
           kvCacheDtype: resp.cache_type_kv ?? null,
           loadedKvCacheDtype: resp.cache_type_kv ?? null,
           // Click-time value, not the resolved backend echo (see the single-
-          // model load path); non-GGUF loads never send slots.
-          nParallel: targetIsGguf ? (ownConfig.nParallel ?? null) : null,
-          loadedNParallel: targetIsGguf ? (ownConfig.nParallel ?? null) : null,
+          // model load path).
+          nParallel: committedSlots,
+          loadedNParallel: committedSlots,
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
           defaultChatTemplate: resp.chat_template ?? null,

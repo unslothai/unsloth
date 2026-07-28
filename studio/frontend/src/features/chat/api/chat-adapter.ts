@@ -1693,6 +1693,13 @@ async function autoLoadSmallestModel(): Promise<{
         effectiveGpuLayers,
         config.customContextLength ?? null,
       );
+      // Slots this auto-load committed. The diffusion runner ignores --parallel
+      // (the backend echoes null slots for it), so recording a remembered count
+      // there would mint a phantom override a saved preset then carries onto a
+      // text GGUF.
+      const committedSlots = (loadResp.is_diffusion ?? false)
+        ? null
+        : (config.nParallel ?? null);
       useChatRuntimeStore.setState({
         ggufContextLength: loadResp.context_length ?? 131072,
         ggufMaxContextLength:
@@ -1708,8 +1715,8 @@ async function autoLoadSmallestModel(): Promise<{
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         // Click-time value, not the resolved backend echo (see performLoad).
-        nParallel: config.nParallel ?? null,
-        loadedNParallel: config.nParallel ?? null,
+        nParallel: committedSlots,
+        loadedNParallel: committedSlots,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         ...loadedGpuMemoryFields(loadResp),

@@ -1054,6 +1054,16 @@ export function useChatModelRuntime() {
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
             );
+            // Slots the load actually committed. Non-GGUF loads never send
+            // them, and the diffusion runner ignores --parallel (the backend
+            // echoes null slots for it), so recording the click-time count on
+            // either would mint a phantom override -- one a saved preset then
+            // carries onto a text GGUF as a real count the user never chose.
+            const committedSlots =
+              (loadResponse.is_gguf ?? false) &&
+              !(loadResponse.is_diffusion ?? false)
+                ? (loadNParallel ?? null)
+                : null;
             const nativeCtx = loadResponse.is_gguf
               ? (loadResponse.context_length ?? 131072)
               : null;
@@ -1131,12 +1141,9 @@ export function useChatModelRuntime() {
               loadedSpecDraftNMax: loadResponse.spec_draft_n_max ?? null,
               // Keep the click-time value, not the backend echo: the echo is
               // the resolved count, and adopting it would pin a blank "follow
-              // the server default" control to an explicit number. Non-GGUF
-              // loads never send slots, so their baseline clears.
-              nParallel: (loadResponse.is_gguf ?? false) ? (loadNParallel ?? null) : null,
-              loadedNParallel: (loadResponse.is_gguf ?? false)
-                ? (loadNParallel ?? null)
-                : null,
+              // the server default" control to an explicit number.
+              nParallel: committedSlots,
+              loadedNParallel: committedSlots,
               customContextLength: keepCustomCtx,
               loadedCustomContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
