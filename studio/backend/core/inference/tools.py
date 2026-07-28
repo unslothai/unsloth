@@ -593,8 +593,15 @@ _SED_STREAM_PROGRAM_SOURCES = frozenset({"-", "/dev/stdin", "/dev/fd/0"})
 def _sed_program_source_is_stream(value: str) -> bool:
     """Whether an `-f` operand reads the script from a stream this scan cannot
     follow. A named file stays out: `sed -f prog.sed input` is unreadable in a
-    different way and is documented residue rather than something to fail on."""
-    return value in _SED_STREAM_PROGRAM_SOURCES or value.startswith("/dev/fd/")
+    different way and is documented residue rather than something to fail on.
+
+    A process substitution counts: bash runs the inner command and hands sed a
+    generated `/dev/fd/N`, so `sed -f <(printf 'e rm -f victim') input` really
+    runs rm. The lexer splits that operand at the `(`, leaving only the `<` or
+    `>` behind, which is why the bare characters are here too."""
+    if value in _SED_STREAM_PROGRAM_SOURCES or value.startswith("/dev/fd/"):
+        return True
+    return value[:1] in "<>"
 
 
 def _end_program_source(programs: "list[str]", exec_disabled: bool) -> None:
@@ -793,7 +800,11 @@ def _sed_invocation(
     # Complete when a separator closed the invocation, or when the window
     # already covered every remaining argument.
     scan_overflowed = not hit_separator and len(tokens) > start + 1 + limit
-    return joined, scan_overflowed or stream_program or glob_program
+    # A still-pending -f value means the invocation ended before its operand was
+    # read at all -- a process substitution ends it at the `(` -- so the program
+    # is unknown rather than absent.
+    joined = [piece.replace(_ANSI_C_NEWLINE_MARK, "\n") for piece in joined]
+    return joined, scan_overflowed or stream_program or glob_program or value_pending == "f"
 
 
 def _sed_text(text: str) -> str:
@@ -979,14 +990,33 @@ def _assignment_bindings(
     at_command = True  # an assignment here is a prefix, not an argument
     depth = 0  # inside ( ... ), where an assignment does not escape
     conditional = False  # after && / || : the assignment may never run
+    function_body = 0  # inside f() { ... }, which bash has not run yet
+    saw_parens = False  # the `()` of a function definition just went past
     for index, token in enumerate(tokens):
+        if token == "{" and saw_parens:
+            function_body += 1
+            saw_parens = False
+            continue
+        if token == "}" and function_body:
+            function_body -= 1
+            at_command = True
+            continue
         if _looks_like_separator(token) and index not in quoted:
             # Nothing followed the run, so it changed the shell's own state.
             bindings.extend(pending)
             pending = []
+            saw_parens = set(token) <= {"(", ")"} and ")" in token
             depth = max(0, depth + token.count("(") - token.count(")"))
             conditional = "&&" in token or "||" in token
             at_command = True
+            continue
+        if function_body and _ASSIGNMENT_RE.match(token):
+            # A body bash has not run yet, and may never run. Recording it as
+            # the current value let `p='1e rm -f victim'; f() { p='1,3p'; };
+            # sed "$p" input` read as safe while rm really runs. Clearing the
+            # name instead is right whether or not the function is ever called.
+            name = token.partition("=")[0]
+            pending.append((index, name, None))
             continue
         if at_command and _ASSIGNMENT_RE.match(token):
             if depth == 0:
@@ -1056,6 +1086,12 @@ def _sed_program_variants(program: str, env: "dict[str, str]") -> "list[str]":
     return variants
 
 
+def _expansion_key(text: str) -> str:
+    """One expansion, keyed so the raw-command spelling and the post-lex one
+    compare equal. Only the escaping differs between them, so it is dropped."""
+    return text.replace("\\", "")
+
+
 def _sed_program_unresolved(variants: "list[str]", live: "set[str]") -> bool:
     """Whether NO spelling of the sed program is one this scan actually READ,
     because every one still holds an expansion bash would rewrite.
@@ -1078,8 +1114,18 @@ def _sed_program_unresolved(variants: "list[str]", live: "set[str]") -> bool:
     """
     if not live:
         return False
+    # shlex removes the escaping as it splits, so the SAME expansion is spelled
+    # one way in the raw command and another in the token: the live set held
+    # ``printf \\"1e rm -f victim\\"`` where the variant held ``printf "1e rm -f
+    # victim"``, an exact comparison missed, and a program bash really generates
+    # read as one already read. Both sides are keyed without their backslashes,
+    # which can only ever make a spelling MATCH, so the error is fail-closed.
+    keys = {_expansion_key(found) for found in live}
     return not any(
-        all(found not in live for found in _shell_expansions(variant, quoted = False))
+        all(
+            _expansion_key(found) not in keys
+            for found in _shell_expansions(variant, quoted = False)
+        )
         for variant in variants
     )
 
@@ -1262,6 +1308,8 @@ def _exec_scan_layout(
     forwarding = False  # a find/fd command word is in scope
     in_action = False  # inside its `-exec CMD ...` action
     at_command = True  # the next ordinary word is one the shell RUNS
+    wrapper = ""  # a command prefix (env/timeout/sudo) awaiting that word
+    skip_operand = False  # ...and its option's value stands in between
     index = 0
     while index < len(tokens):
         token = tokens[index]
@@ -1276,6 +1324,8 @@ def _exec_scan_layout(
             stops.add(here)
             forwarding = in_action = False
             at_command = True
+            wrapper = ""
+            skip_operand = False
             continue
         if in_action and (
             token in _FIND_EXEC_SEMICOLONS or (token == "+" and here and tokens[here - 1] == "{}")
@@ -1297,9 +1347,24 @@ def _exec_scan_layout(
             exec_flags.add(here)
             in_action = True
             continue
+        if at_command and token in _SHELL_KEYWORDS_AS_SEP:
+            continue  # `then find ...` / `do find ...`: still a command position
+        if skip_operand:
+            skip_operand = False  # a wrapper option's value (env -u NAME)
+            continue
         if token.startswith("-") or _ASSIGNMENT_RE.match(token):
-            continue  # an option or an assignment prefix, never a command word
-        if at_command and _forwards_exec_flags(os.path.basename(token.strip(";&|()`{}")).lower()):
+            # A wrapper option whose value is a SEPARATE token precedes that
+            # value and not the wrapped command, so `env -u FOO find ...` keeps
+            # looking for find rather than stopping at FOO.
+            skip_operand = token in _WRAPPER_VALUE_FLAGS_BY_CMD.get(wrapper, frozenset())
+            continue
+        if wrapper and token.lstrip("-").isdigit():
+            continue  # `timeout 5 find ...`: the wrapper's own operand
+        base = os.path.basename(token.strip(";&|()`{}")).lower()
+        if at_command and base in _COMMAND_PREFIXES:
+            wrapper = base
+            continue
+        if at_command and _forwards_exec_flags(base):
             # Only a find/fd the shell really RUNS forwards its exec flags. Any
             # token spelled `fd` or `find` used to turn one on, so a `-x` or an
             # `-exec` in the text AFTER it was read as an exec flag and the
@@ -1307,7 +1372,8 @@ def _exec_scan_layout(
             # `grep fd -x rm file` and `printf '%s' find -exec sed '1e rm' {} +`
             # all came back with rm, refusing entirely harmless lines.
             forwarding = True
-        at_command = at_command and os.path.basename(token).lower() in _COMMAND_PREFIXES
+        at_command = False
+        wrapper = ""
     return frozenset(exec_flags), frozenset(stops), frozenset(redirects)
 
 
@@ -1445,7 +1511,12 @@ def _find_blocked_commands(command: str) -> set[str]:
             # it in argument position and the blocklist came back empty.
             continue
         # A keyword only separates where a COMMAND may start (see below).
-        if _looks_like_separator(token) or (token in _SHELL_KEYWORDS_AS_SEP and expect_command):
+        # A quoted operator is DATA the command receives, not a separator, so it
+        # leaves command position alone: `printf '%s' '|&' rm` and
+        # `grep '|&' rm file` run nothing and must not be refused.
+        if (_looks_like_separator(token) and token_index not in quoted_separators) or (
+            token in _SHELL_KEYWORDS_AS_SEP and expect_command
+        ):
             expect_command = True
             prefix_pending = False
             prefix_command = ""
@@ -2775,6 +2846,11 @@ def _expand_param_defaults(command: str) -> str:
 # that tokenize the decoded text neutralize these first, otherwise
 # `printf '%s' $'a\\nrm -rf x'` reads as two commands and the printf is refused.
 _ANSI_C_SEPARATOR_RE = re.compile(r"[\s;&|()<>`]")
+# A newline revealed by ANSI-C decoding, and the mark standing in for it. Any
+# character shlex leaves inside a quoted word serves, as long as the boundary
+# regex in _find_blocked_commands does not read it as the start of a command.
+_ANSI_C_NEWLINE_MARK = "\x03"
+_ANSI_C_NEWLINE_RE = re.compile(r"[\n\r]")
 
 
 def _folded_str_literal(node) -> "str | None":
@@ -2811,7 +2887,25 @@ def _decode_ansi_c(command: str, *, keep_one_word: bool = False) -> str:
             text = bytes(m.group(1), "utf-8").decode("unicode_escape")
         except (UnicodeDecodeError, ValueError):
             return m.group(0)
-        return _ANSI_C_SEPARATOR_RE.sub("_", text) if keep_one_word else text
+        if not keep_one_word:
+            return text
+        if "'" not in text and _ANSI_C_NEWLINE_MARK not in text:
+            # Re-quote instead of flattening. bash gives the command ONE word
+            # however much whitespace the decoding revealed, and quoting says
+            # exactly that while keeping the text intact -- which matters
+            # because a sed program ends its COMMENT at a newline, and both the
+            # spaces and the `#` around it carry meaning:
+            # `sed -n $'# harmless\ne rm -f victim' input` read as one inert
+            # comment line while rm really ran.
+            #
+            # The newline itself stands as a mark rather than as itself. It is
+            # DATA for the command bash starts, not a place a new one begins,
+            # and the boundary regex below would otherwise read it as one --
+            # `printf '%s' $'hello\nrm -rf x'` runs nothing and must not be
+            # refused. _sed_invocation puts it back for the programs it returns,
+            # which is the one place its meaning matters.
+            return "'" + _ANSI_C_NEWLINE_RE.sub(_ANSI_C_NEWLINE_MARK, text) + "'"
+        return _ANSI_C_SEPARATOR_RE.sub("_", text)
 
     return _ANSI_C_RE.sub(dec, command)
 

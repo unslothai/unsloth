@@ -13,7 +13,7 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
-from core.inference.tools import _check_code_safety
+from core.inference.tools import _check_code_safety, is_high_risk_tool_call
 
 
 def _ok(code: str):
@@ -978,6 +978,62 @@ class TestBashBlocklistPosition:
         assert self._find()("sed 's/a*/b/' f") == set()
         assert self._find()("sed -n '1,3p' *.txt") == set()
         assert self._find()("sed -i 's/x*/y/g' src/*.py") == set()
+
+    def test_ansi_c_newline_still_ends_a_sed_comment(self):
+        # ANSI-C decoding used to flatten the word's whitespace, and a sed
+        # program ends its COMMENT at exactly the newline that flattening
+        # destroyed: `sed -n $'# harmless\\ne touch MARKER' input` really runs
+        # the payload while the screen read one inert comment line.
+        assert "rm" in self._find()("sed -n $'# harmless\\ne rm -f victim' input")
+        assert self._find()("sed -n $'1,3p' input") == set()
+        # ...and the newline is still DATA rather than a place a command starts,
+        # so an ANSI-C word passed to another command runs nothing.
+        assert self._find()("printf '%s' $'hello\\nrm -rf x\\n'") == set()
+
+    def test_assignment_inside_a_function_body_does_not_persist(self):
+        # bash has not run the body, and may never run it, so the assignment in
+        # it is not the current value: `p='1e rm -f victim'; f() { p='1,3p'; };
+        # sed "$p" input` really runs rm. The name is cleared rather than
+        # guessed at, which is right whether or not the function is called.
+        payload = "p='1e rm -f victim'"
+        assert is_high_risk_tool_call(
+            "terminal", {"command": f"""{payload}; f() {{ p='1,3p'; }}; sed "$p" input"""}
+        )
+        # A plain later assignment outside any body still wins.
+        assert self._find()(f"""{payload}; p='1,3p'; sed "$p" input""") == set()
+
+    def test_exec_forwarding_survives_keywords_and_wrappers(self):
+        # Scoping the exec-flag scan to a command word must not lose command
+        # position at a shell keyword or across a wrapper's own operands.
+        assert "rm" in self._find()("if true; then find . -exec rm -rf victim {} +; fi")
+        assert "rm" in self._find()("for f in x; do find . -exec rm -rf victim {} +; done")
+        assert "rm" in self._find()("env -u FOO find . -exec rm -rf victim {} +")
+        assert "rm" in self._find()("timeout 5 find . -exec rm -rf victim {} +")
+        assert "rm" in self._find()("nice -n 5 find . -exec rm -rf victim {} +")
+
+    def test_quoted_operator_is_data_not_a_command_boundary(self):
+        # A quoted operator reaches the command as an argument, so the word
+        # behind it is not at command position: these lines run nothing.
+        assert self._find()("printf '%s' '|&' rm") == set()
+        assert self._find()("grep '|&' rm file") == set()
+        assert self._find()("printf '%s' ';;' curl") == set()
+        assert self._find()("printf '%s' ';' rm") == set()
+        # A BARE one still separates.
+        assert "rm" in self._find()("echo hi |& rm -rf victim")
+        assert "rm" in self._find()("echo hi; rm -rf victim")
+
+    def test_live_expansion_matched_after_the_lexer_unescapes_it(self):
+        # shlex removes the escaping as it splits, so the same expansion is
+        # spelled one way in the raw command and another in the token. An exact
+        # comparison missed, and a program bash really generates read as one
+        # already read: `sed "\\`printf \\"1e rm -f victim\\"\\`" input` executes.
+        assert is_high_risk_tool_call(
+            "terminal", {"command": 'sed "`printf \\"1e rm -f victim\\"`" input'}
+        )
+        # An escaped expansion is data the program merely quotes, and stays out.
+        assert not is_high_risk_tool_call(
+            "terminal", {"command": 'sed "s/\\$(CC)/gcc/" Makefile'}
+        )
 
     def test_fd_exec_flags_reach_the_child_command(self):
         # fd runs its `-x` / `-X` / `--exec` / `--exec-batch` child directly,

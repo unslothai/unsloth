@@ -1240,6 +1240,22 @@ def test_terminal_classifier(command, unsafe):
         ("sed 's/a*/b/' f", False),
         ("sed -n '1,3p' *.txt", False),
         ("sed -i 's/x*/y/g' src/*.py", False),
+        # --- prompt: ANSI-C decoding keeps the newline a sed comment ends at,
+        # and the spaces and `#` around it, so the payload behind one is read ---
+        ("sed -n $'# harmless\\ne rm -f victim' input", True),
+        ("sed -n $'1,3p' input", False),
+        # --- prompt: an assignment inside a function body bash has not run is
+        # not the current value, so the name is cleared rather than guessed ---
+        ("""p='1e rm -f victim'; f() { p='1,3p'; }; sed "$p" input""", True),
+        # --- prompt: an -f taking a process substitution is a generated
+        # /dev/fd/N script, which is unread rather than absent ---
+        ("sed -f <(printf 'e rm -f victim') input", True),
+        ("sed --file=<(printf 'e rm -f victim') input", True),
+        # --- prompt: shlex removes the escaping, so a live expansion has to be
+        # matched in the same representation the token carries ---
+        ('sed "`printf \\"1e rm -f victim\\"`" input', True),
+        # --- run: an escaped expansion is data the program merely quotes ---
+        ('sed "s/\\$(CC)/gcc/" Makefile', False),
         # --- prompt: fd runs its -x / -X / --exec / --exec-batch child
         # directly, the same way find runs an -exec one ---
         ("fd -x sed '1e rm -f victim' {}", True),
