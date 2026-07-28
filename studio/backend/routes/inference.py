@@ -576,9 +576,9 @@ def _clip_long_contents(messages: list, target_est: int) -> int:
 
     def _reasoning_candidates():
         return [
-            m for m in messages
-            if m.get("role") == "assistant"
-            and isinstance(m.get("reasoning_content"), str)
+            m
+            for m in messages
+            if m.get("role") == "assistant" and isinstance(m.get("reasoning_content"), str)
         ]
 
     clipped = 0
