@@ -37,6 +37,8 @@ export const zhCN = {
     navigation: {
       newChat: "新聊天",
       returnToChat: "返回聊天",
+      returnToChats: "返回 {count} 个聊天",
+      chatGenerating: "生成中",
       compare: "对比",
       search: "搜索",
       hub: "模型中心",

@@ -5051,3 +5051,27 @@ class TestFalseAlarmMarkerProse:
         assert [c[0] for c in exec_fn.calls] == ["web_search", "python"]
         assistant = next(m for m in convs[1] if m["role"] == "assistant")
         assert '"python"' not in (assistant.get("content") or "")
+
+
+def test_both_tool_loops_say_they_are_waiting_for_approval():
+    """A gated call must not report "Running" in either loop.
+
+    The GGUF loop was fixed first and the safetensors one was missed, so the
+    badge counted up "Running ..." against a prompt nobody had answered yet.
+    Asserted on the source so the two paths cannot drift apart again.
+    """
+    import ast
+    import os
+
+    backend = os.path.join(os.path.dirname(__file__), "..")
+    for name in ("core/inference/safetensors_agentic.py", "core/inference/llama_cpp.py"):
+        with open(os.path.join(backend, name), encoding = "utf-8") as f:
+            tree = ast.parse(f.read())
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "awaiting_approval_status"
+        ]
+        assert calls, f"{name} still announces a gated tool call as running"

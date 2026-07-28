@@ -37,6 +37,8 @@ export const ru = {
     navigation: {
       newChat: "Новый чат",
       returnToChat: "Вернуться к чату",
+      returnToChats: "Вернуться к {count} чатам",
+      chatGenerating: "Генерация",
       compare: "Сравнить",
       search: "Поиск",
       hub: "Хаб моделей",
