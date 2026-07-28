@@ -1446,6 +1446,14 @@ export function ModelsPage() {
   // can show the live launch config. A GGUF loaded from an inactive HF cache or
   // straight off disk loads by path but is reported by its clean public id, so the
   // row's path and its settings identity both have to be offered as aliases.
+  // A loose .gguf is one file, so its path already names the quant and its
+  // settings deliberately carry no variant. The loader still derives one from the
+  // filename and /status reports it, so requiring the two to agree would never
+  // hold and the page would withhold the live config from the resident file.
+  const settingsTargetIsStandaloneFile =
+    settingsTarget !== null &&
+    settingsTarget.ggufVariant == null &&
+    settingsTarget.id.toLowerCase().endsWith(".gguf");
   const settingsTargetIsResident =
     settingsTarget !== null &&
     residentModelIdMatches(
@@ -1453,7 +1461,8 @@ export function ModelsPage() {
       settingsTarget.id,
       settingsTarget.configId,
     ) &&
-    ggufVariantsMatch(activeGgufVariant, settingsTarget.ggufVariant);
+    (settingsTargetIsStandaloneFile ||
+      ggufVariantsMatch(activeGgufVariant, settingsTarget.ggufVariant));
   const handleSearchHub = useCallback(
     (next: string) => {
       const trimmed = next.trim();

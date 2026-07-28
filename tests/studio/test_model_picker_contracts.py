@@ -1047,3 +1047,24 @@ def test_a_standalone_gguf_has_one_settings_key():
     # The rule this mirrors: a variant is derived only for a single scanned file.
     assert "extract_quant_label(gguf_files[0].name)" in common
     assert "if scan_path.is_file() and len(gguf_files) == 1" in common
+
+
+def test_a_standalone_gguf_is_resident_despite_its_derived_quant():
+    """A loose .gguf keys its settings by the bare path with no variant, but the
+    loader derives one from the filename (llama_cpp sets _hf_variant from
+    _extract_quant_label) and /status reports it, so an equality between the two
+    could never hold and the settings page withheld the live launch config from
+    the very file that was loaded."""
+    hub = " ".join(_read("features/hub/hub-page.tsx").split())
+    assert "const settingsTargetIsStandaloneFile =" in hub
+    assert 'settingsTarget.id.toLowerCase().endsWith(".gguf")' in hub
+    assert (
+        "(settingsTargetIsStandaloneFile || ggufVariantsMatch(activeGgufVariant, settingsTarget.ggufVariant))"
+        in hub
+    )
+    backend = (
+        WORKDIR / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
+    ).read_text(encoding = "utf-8")
+    assert "self._hf_variant = _extract_quant_label(gguf_path)" in backend, (
+        "the derived label this accounts for"
+    )
