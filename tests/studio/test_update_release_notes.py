@@ -233,9 +233,7 @@ def test_repo_root_changelog_is_preferred_over_the_build_snapshot(changelog_modu
     # reasons that have nothing to do with the ordering under test.
     paths = [Path(p).resolve() for p in changelog_module._local_changelog_candidates()]
     root = paths.index((REPO / changelog_module.CHANGELOG_FILENAME).resolve())
-    packaged = paths.index(
-        (REPO / "studio" / changelog_module.CHANGELOG_FILENAME).resolve()
-    )
+    packaged = paths.index((REPO / "studio" / changelog_module.CHANGELOG_FILENAME).resolve())
     assert root < packaged
     build = (REPO / "build.sh").read_text(encoding = "utf-8")
     assert "rm -f studio/CHANGELOG.md" in build, "snapshot must not linger after a build"
