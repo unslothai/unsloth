@@ -1292,10 +1292,10 @@ def test_preview_heading_and_quote_markers_follow_the_backend_rule():
     marker takes at most three leading spaces for the same reason every other
     marker here does: accepting any run let an indented code sample containing
     "> - sample output" shed its indentation and be shown as the summary."""
-    src = PREVIEW.read_text(encoding = "utf-8")
+    src = PREVIEW.read_text(encoding="utf-8")
     assert "const HEADING = /^#{1,6}[ \\t]+/;" in src
     assert "const HEADING_LINE = /^ {0,3}#{1,6}(?:[ \\t]|$)/;" in src
     assert "const BLOCKQUOTE = /^ {0,3}>[ \\t]?/;" in src
     # The backend rule this mirrors.
-    backend = (BACKEND / "utils" / "changelog.py").read_text(encoding = "utf-8")
+    backend = (BACKEND / "utils" / "changelog.py").read_text(encoding="utf-8")
     assert "^ {0,3}##[ \\t]+" in backend
