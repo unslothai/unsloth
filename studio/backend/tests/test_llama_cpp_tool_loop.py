@@ -1623,7 +1623,6 @@ def test_post_tool_reprompt_budget_is_one(monkeypatch):
 
 def test_forced_turn_suppression_covers_obligation_phrasing():
     from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
-
     for stall in (
         "I need to use render_html now",
         "Need to call web_search",
