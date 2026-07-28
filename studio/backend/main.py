@@ -1075,7 +1075,9 @@ async def liveness_check():
         "status": "alive",
         "service": "Unsloth UI Backend",
         "desktop_protocol_version": 1,
-        "desktop_manageability_version": 1,
+        # Lockstep with DESKTOP_MANAGEABILITY_VERSION in
+        # studio/src-tauri/src/preflight/version.rs and `desktop-capabilities`.
+        "desktop_manageability_version": 2,
         "supports_desktop_auth": True,
         "supports_desktop_backend_ownership": True,
         "studio_root_id": _studio_root_id(),
@@ -1098,7 +1100,8 @@ async def health_check(request: Request):
         "service": "Unsloth UI Backend",
         "chat_only": _hw_module.CHAT_ONLY,
         "desktop_protocol_version": 1,
-        "desktop_manageability_version": 1,
+        # Lockstep: see the note in /api/liveness above.
+        "desktop_manageability_version": 2,
         "supports_desktop_auth": True,
         "supports_desktop_backend_ownership": True,
         # Opaque per-install id; launchers reject sibling Studios on the same port.
@@ -1249,16 +1252,18 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             )
             enriched_devices.append(enriched_dev)
 
-        # Whether GGUF loads accept an explicit gpu_ids pick: /load and
-        # /validate 400 picks on XPU hosts (no visibility mask speaks torch-xpu
-        # ordinals) and on Vulkan-only builds (--device pins ggml's own
-        # ordinals), so the picker must not offer them.
+        # Whether GGUF loads accept an explicit gpu_ids pick. /load and /validate
+        # 400 picks on XPU hosts, where no visibility mask speaks torch-xpu
+        # ordinals. A Vulkan build IS pinnable: its picks are ggml ordinals, the
+        # same space `--device Vulkan<i>` uses, so check it first and let it
+        # through even on an XPU host (the XPU ban is about torch ordinals).
+        is_vulkan_build = False
         try:
             from core.inference.llama_cpp import LlamaCppBackend
             from utils.hardware import DeviceType, get_device
-            gpu_ids_supported = (
-                get_device() != DeviceType.XPU and not LlamaCppBackend._is_vulkan_backend()
-            )
+
+            is_vulkan_build = LlamaCppBackend._is_vulkan_backend()
+            gpu_ids_supported = is_vulkan_build or get_device() != DeviceType.XPU
         except Exception as e:
             logger.debug(f"Could not resolve gpu_ids support: {e}")
             gpu_ids_supported = True
@@ -1284,7 +1289,9 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             inference_gpu_info = (
                 {
                     **vulkan_info,
-                    "gguf_gpu_ids_supported": False,
+                    # Pinnable only once the probe actually enumerated devices:
+                    # without ordinals the frontend has nothing valid to offer.
+                    "gguf_gpu_ids_supported": bool(vulkan_info.get("devices")),
                 }
                 if vulkan_info is not None
                 else gpu_info

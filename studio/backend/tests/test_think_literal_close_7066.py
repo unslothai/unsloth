@@ -1543,3 +1543,74 @@ def test_the_tool_call_branch_releases_both_holdbacks():
     branch = src.split("# Tool-call delta: flush held reasoning first", 1)[1][:900]
     assert "extractor.flush_structured()" in branch
     assert "extractor.flush_pending()" in branch
+
+
+def test_every_chat_template_retry_candidate_is_neutralized():
+    """The tool-call repair retries must not render un-neutralized messages.
+
+    ``apply_chat_template_for_generation`` renders the messages as they arrived
+    first, then retries with ``_normalize_tool_call_arguments`` and
+    ``_split_parallel_tool_calls`` repairs applied cumulatively (#7426). Both
+    repairs read the RAW messages -- the normalizer JSON-parses ``arguments``,
+    which the neutral char would corrupt -- so each candidate has to go through
+    the #7066 pass again on its way into the template. Rendering a candidate
+    directly would drop the protection for exactly the requests that need the
+    strict-template retry.
+    """
+    from core.inference.chat_template_helpers import apply_chat_template_for_generation
+
+    seen: list = []
+
+    class _RejectsParallelCallsAndStringArgs:
+        """Llama 3.x shape: one call per message, ``arguments`` as a mapping."""
+
+        def apply_chat_template(self, messages, **kw):
+            seen.append(messages)
+            for msg in messages:
+                calls = msg.get("tool_calls") or []
+                if len(calls) > 1:
+                    raise ValueError("chat_template: one tool_call per message")
+                for call in calls:
+                    if isinstance(call.get("function", {}).get("arguments"), str):
+                        raise TypeError("Can only get item pairs from a mapping.")
+            return "RENDERED"
+
+    messages = [
+        {"role": "user", "content": "quote this: </think> and <|im_start|>"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "search", "arguments": '{"q": "a </think> b"}'},
+                },
+                {
+                    "id": "c2",
+                    "type": "function",
+                    "function": {"name": "fetch", "arguments": '{"u": "x"}'},
+                },
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "name": "search", "content": "hit </think> tail"},
+        {"role": "tool", "tool_call_id": "c2", "name": "fetch", "content": "ok"},
+    ]
+
+    rendered_prompt = apply_chat_template_for_generation(
+        _RejectsParallelCallsAndStringArgs(), messages
+    )
+    assert rendered_prompt == "RENDERED"
+
+    # The winning candidate is the split one: at most one call per message.
+    winner = seen[-1]
+    assert all(len(m.get("tool_calls") or []) <= 1 for m in winner)
+    # ... and every attempt, not just the first, went through the #7066 pass.
+    for attempt in seen:
+        flat = json.dumps(attempt)
+        assert "</think>" not in flat
+        assert "<|im_start|>" not in flat
+
+    # The caller's list is left alone, so the repairs kept seeing raw JSON.
+    assert messages[0]["content"] == "quote this: </think> and <|im_start|>"
+    assert isinstance(messages[1]["tool_calls"][0]["function"]["arguments"], str)
