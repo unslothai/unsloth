@@ -13,14 +13,19 @@ rename <eos> away and then skip setting eos_token to the replacement, leaving
 eos_token pointing at a token no longer in the vocab. So those keep forcing the
 mapping, with a warning.
 
-The eos mapping itself needs a real fast tokenizer, so this pulls the resolution
-statements out of the shipped source with ast and checks the decision directly,
-in the same spirit as tests/test_gemma4_chat_template.py which extracts the
-templates from the same file rather than importing unsloth.
+Importing unsloth needs a GPU, so both halves pull the shipped statements out of
+the source with ast, in the same spirit as tests/test_gemma4_chat_template.py
+which extracts the templates from the same file rather than importing unsloth.
+The first half runs the resolution statements over fake tokenizers and checks the
+decision. The second half runs the vocab surgery those decisions gate over a real
+fast tokenizer built in memory, and checks the vocabulary and the eos metadata
+before and after, since the decision is only interesting for what it does to them.
 """
 
 import ast
 import os
+import sys
+import types
 
 CHAT_TEMPLATES_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -145,3 +150,145 @@ def test_shipped_templates_still_have_the_shape_the_guard_keys_on():
                 continue
     mapping, stop_word = namespace["gemma_chatml_eos_token"]
     assert mapping["<eos>"] == stop_word == "<|im_end|>"
+
+
+# The resolved flag only matters for what the vocab surgery below it then does, so run
+# that surgery against a real fast tokenizer and look at the vocabulary and the eos
+# metadata directly. Built in memory from a word-level model: no download, no GPU, and
+# no sentencepiece, but a genuine tokenizers backend rather than a stand-in.
+
+GEMMA_CHATML_MAPPING = {"<start_of_turn>": "<|im_start|>", "<eos>": "<|im_end|>"}
+STOP_WORD = "<|im_end|>"
+VOCAB = {
+    "<unk>": 0,
+    "<bos>": 1,
+    "<eos>": 2,
+    "<pad>": 3,
+    "<start_of_turn>": 4,
+    "<end_of_turn>": 5,
+    "hello": 6,
+    "world": 7,
+}
+
+
+def _vocab_surgery_block():
+    """The `if not is_fast_tokenizer: ... elif token_mapping ... elif map_eos_token ...` chain."""
+    tree = ast.parse(_source())
+    func = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "get_chat_template"
+    )
+    blocks = [
+        node
+        for node in ast.walk(func)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.UnaryOp)
+        and isinstance(node.test.op, ast.Not)
+        and getattr(node.test.operand, "id", None) == "is_fast_tokenizer"
+    ]
+    assert len(blocks) == 1, "could not find the fast-tokenizer vocab surgery in get_chat_template"
+    return blocks[0]
+
+
+def _tiny_fast_tokenizer():
+    from tokenizers import Tokenizer, models, pre_tokenizers
+    from transformers import PreTrainedTokenizerFast
+
+    backend = Tokenizer(models.WordLevel(dict(VOCAB), unk_token = "<unk>"))
+    backend.pre_tokenizer = pre_tokenizers.Whitespace()
+    return PreTrainedTokenizerFast(
+        tokenizer_object = backend,
+        bos_token = "<bos>",
+        eos_token = "<eos>",
+        pad_token = "<pad>",
+        unk_token = "<unk>",
+    )
+
+
+def _map_tokens(monkeypatch, map_eos_token, token_mapping):
+    """Run the shipped surgery over a fresh tiny tokenizer and hand back the result."""
+    # The block ends in `from .tokenizer_utils import fix_sentencepiece_tokenizer`, and
+    # that import would drag in the GPU-bound unsloth package. The function mirrors the
+    # rename into a tokenizer.model file and returns new_tokenizer untouched when there
+    # is none, which is this tokenizer's case, so stand in for it with that identity and
+    # leave it to its own tests under tests/saving/.
+    package = types.ModuleType("_unsloth_map_eos_stub")
+    package.__path__ = []
+    tokenizer_utils = types.ModuleType("_unsloth_map_eos_stub.tokenizer_utils")
+    tokenizer_utils.fix_sentencepiece_tokenizer = (
+        lambda old_tokenizer, new_tokenizer, mapping, **kwargs: new_tokenizer
+    )
+    monkeypatch.setitem(sys.modules, package.__name__, package)
+    monkeypatch.setitem(sys.modules, tokenizer_utils.__name__, tokenizer_utils)
+
+    namespace = {
+        "__name__": package.__name__ + ".chat_templates",
+        "__package__": package.__name__,
+        "is_fast_tokenizer": True,
+        "tokenizer": _tiny_fast_tokenizer(),
+        "token_mapping": token_mapping,
+        "stop_word": STOP_WORD,
+        "map_eos_token": map_eos_token,
+        "logger": _FakeLogger(),
+    }
+    module = ast.Module(body = [_vocab_surgery_block()], type_ignores = [])
+    exec(compile(module, CHAT_TEMPLATES_PATH, "exec"), namespace)
+    return namespace["tokenizer"]
+
+
+def test_forced_mapping_renames_eos_in_the_vocab_and_takes_eos_token_with_it(monkeypatch):
+    # gemma_chatml shape, with the flag the guard forces back on.
+    tokenizer = _map_tokens(monkeypatch, map_eos_token = True, token_mapping = GEMMA_CHATML_MAPPING)
+    vocab = tokenizer.get_vocab()
+
+    assert "<eos>" not in vocab, "the rename must remove the old piece"
+    assert vocab[STOP_WORD] == VOCAB["<eos>"], "the stop word takes over the <eos> id"
+    assert vocab["<|im_start|>"] == VOCAB["<start_of_turn>"]
+    assert len(vocab) == len(VOCAB), "renaming pieces must not grow the vocab"
+
+    assert tokenizer.eos_token == STOP_WORD
+    assert tokenizer.eos_token_id == vocab[STOP_WORD]
+    assert tokenizer(STOP_WORD, add_special_tokens = False)["input_ids"] == [vocab[STOP_WORD]]
+
+
+def test_honoring_the_opt_out_here_would_leave_the_tokenizer_without_an_eos(monkeypatch):
+    """Why the guard refuses the opt-out for this shape, rather than an argument about it."""
+    tokenizer = _map_tokens(monkeypatch, map_eos_token = False, token_mapping = GEMMA_CHATML_MAPPING)
+    vocab = tokenizer.get_vocab()
+
+    assert "<eos>" not in vocab, "map_eos_token does not gate the rename, only the eos metadata"
+    assert vocab[STOP_WORD] == VOCAB["<eos>"]
+
+    assert tokenizer.eos_token is None or tokenizer.eos_token not in vocab, (
+        f"eos_token = {tokenizer.eos_token!r} now survives the rename, so honouring the "
+        f"opt-out here is no longer harmful and the guard should be revisited"
+    )
+
+
+def test_opt_out_on_the_plain_stop_word_path_leaves_the_tokenizer_untouched(monkeypatch):
+    # chatml / gemma / gemma2: no token_mapping, so the opt-out skips the surgery outright.
+    tokenizer = _map_tokens(monkeypatch, map_eos_token = False, token_mapping = None)
+    vocab = tokenizer.get_vocab()
+
+    assert vocab == VOCAB
+    assert STOP_WORD not in vocab
+    assert tokenizer.eos_token == "<eos>"
+    assert tokenizer.eos_token_id == VOCAB["<eos>"]
+
+
+def test_mapping_on_the_plain_stop_word_path_still_swaps_eos_for_the_stop_word(monkeypatch):
+    # The default, map_eos_token = True, must keep doing the swap on that same path.
+    tokenizer = _map_tokens(monkeypatch, map_eos_token = True, token_mapping = None)
+    vocab = tokenizer.get_vocab()
+
+    assert "<eos>" not in vocab
+    assert vocab[STOP_WORD] == VOCAB["<eos>"]
+    assert tokenizer.eos_token == STOP_WORD
+    assert tokenizer.eos_token_id == vocab[STOP_WORD]
+    # The other three specials are re-passed by hand on this path, so pin that they survive.
+    assert (tokenizer.bos_token, tokenizer.pad_token, tokenizer.unk_token) == (
+        "<bos>",
+        "<pad>",
+        "<unk>",
+    )
