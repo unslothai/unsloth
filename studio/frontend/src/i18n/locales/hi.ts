@@ -37,6 +37,8 @@ export const hi = {
     navigation: {
       newChat: "नई चैट",
       returnToChat: "चैट पर लौटें",
+      returnToChats: "{count} चैट पर लौटें",
+      chatGenerating: "जनरेट हो रहा है",
       compare: "तुलना करें",
       search: "खोजें",
       hub: "मॉडल हब",

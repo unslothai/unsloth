@@ -15,6 +15,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { WebUpdateBanner } from "@/components/web/update-banner";
 import { fetchDeviceType } from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
+import { DeepLinkHandler } from "@/features/deep-links";
 import { DownloadManagerPanel } from "@/features/hub/download-manager";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import {
@@ -255,7 +256,7 @@ const MAC_NATIVE_CHROME_STYLE = {
   "--studio-non-chat-content-top-inset": "34px",
   "--studio-hidden-route-top-inset": "34px",
   "--studio-chat-header-height": "44px",
-  "--studio-chat-header-padding-top": "8px",
+  "--studio-chat-header-padding-top": "7px",
   "--studio-chat-control-height": "33px",
   "--studio-chat-header-right-inset": "0px",
 } as CSSProperties;
@@ -395,9 +396,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     );
   }
 
-  const showApp = status === "running";
-  const desktopBooting = status === "running" && !desktopAuthReady;
-  const showInteractiveApp = showApp && desktopAuthReady;
+  const showApp = status === "running" && desktopAuthReady;
   const startupStatus = status === "running" ? "starting" : status;
   const startupProgressDetail = progressDetail;
   const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
@@ -409,28 +408,12 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       <TauriUpdateLayer isExternalServer={isExternalServer}>
         <LlamaUpdateBanner
           positioned={false}
-          enabled={showInteractiveApp && !hidesTitlebarSidebar}
+          enabled={!hidesTitlebarSidebar}
         />
-        {showInteractiveApp ? (
-          <DownloadManagerPanel positioned={false} />
-        ) : null}
+        <DownloadManagerPanel positioned={false} />
       </TauriUpdateLayer>
-      {showInteractiveApp ? <NativeIntentDrain /> : null}
-      {showInteractiveApp ? children : null}
-      {desktopBooting ? (
-        <div className="pointer-events-none fixed inset-x-0 bottom-5 z-[9999] flex justify-center px-4">
-          <div className="absolute inset-x-4 bottom-16 mx-auto flex max-w-[520px] flex-col items-center gap-2 rounded-2xl border border-border/70 bg-background/95 px-6 py-5 text-center shadow-xl">
-            <div className="font-medium text-sm">Preparing Unsloth</div>
-            <div className="text-muted-foreground text-xs">
-              The local backend is ready. Signing in to your desktop session
-              before loading chats.
-            </div>
-          </div>
-          <div className="rounded-full border border-border/70 bg-background/95 px-4 py-2 text-xs text-muted-foreground shadow-lg">
-            Signing in to desktop session...
-          </div>
-        </div>
-      ) : null}
+      <NativeIntentDrain />
+      {children}
     </>
   ) : (
     <StartupScreen
@@ -518,6 +501,7 @@ export function AppProvider({ children }: AppProviderProps) {
     <MotionConfig reducedMotion={REDUCED_MOTION_MAP[reduceMotion]}>
       <TooltipProvider>
         <AppearanceCustomizationEffect />
+        <DeepLinkHandler />
         <TauriWrapper>{children}</TauriWrapper>
         <Toaster
           position="top-right"

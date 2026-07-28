@@ -6,6 +6,7 @@
 import atexit
 import base64
 import contextlib
+import errno
 import json
 import os
 import re
@@ -102,6 +103,8 @@ _CODEX_SUBAGENT_MCP_SERVER = "unsloth_local_agent"
 _CODEX_SUBAGENT_MCP_TOOL = "spawn_local_agent"
 _CODEX_SUBAGENT_CONFIG_ENV = "UNSLOTH_CODEX_SUBAGENT_CONFIG"
 _CODEX_PARENT_OVERLAY_MANIFEST = ".unsloth-parent-overlay.json"
+_CODEX_EPHEMERAL_STALE_SECONDS = 24 * 60 * 60
+_CODEX_EPHEMERAL_HEARTBEAT_SECONDS = 60
 _CODEX_SUBAGENT_TOOL_DESCRIPTION = (
     f"{_SUBAGENT_DESCRIPTION} Use this tool instead of the built-in spawn_agent tool for those "
     "requests. Other subagent requests may use the built-in tools normally."
@@ -224,6 +227,16 @@ _TOOL_CALL_NUDGING_OPTION = typer.Option(
     rich_help_panel = _PANEL_SERVER,
     help = "Retry once with a nudge when a non-streaming passthrough tool call can't be healed. "
     "On by default; when the flag is omitted an inherited UNSLOTH_TOOL_CALL_NUDGE is kept.",
+)
+_REASONING_OPTION = typer.Option(
+    None,
+    "--reasoning",
+    rich_help_panel = _PANEL_SERVER,
+    help = (
+        "llama-server reasoning mode for an auto-started coding-agent server. "
+        "Defaults to off so tool calls stay in the structured tool channel; use "
+        "'auto' or 'on' to opt back into model reasoning."
+    ),
 )
 # Sampling overrides pin a value on the auto-started server (winning over the client and the
 # per-model recommendation). Default unset -> the model's recommended sampling is used.
@@ -479,6 +492,7 @@ class ServerOptions(NamedTuple):
     enable_tools: bool = False
     tool_call_healing: Optional[bool] = None
     tool_call_nudging: Optional[bool] = None
+    reasoning: Optional[Literal["on", "off", "auto"]] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     top_k: Optional[int] = None
@@ -1020,6 +1034,10 @@ def _start_studio_server(
     # Own session/process group so a mid-session Ctrl+C (cancel a turn) doesn't reach the
     # server. It survives a successful agent session; torn down on startup/launch failure.
     child_env = os.environ.copy()
+    # Current llama-server versions read this documented env equivalent of --reasoning.
+    # Older managed versions ignore an unknown env variable instead of failing startup on
+    # an unknown passthrough CLI flag. An omitted start option still defaults to off.
+    child_env["LLAMA_ARG_REASONING"] = server.reasoning or "off"
     # Pass the marker via env so an older launcher ignores it instead of treating an
     # unknown CLI flag as a llama-server arg; new launchers preserve it across re-exec.
     child_env[_START_API_KEY_MARKER_ENV] = "1"
@@ -1157,6 +1175,14 @@ def _require_studio(
                 f"({', '.join(_pinned)}) apply only when this command starts the server, so the "
                 "running server keeps its current sampling. Stop it with `unsloth studio stop` "
                 "and re-run to apply them.",
+                err = True,
+            )
+        if server_options.reasoning is not None:
+            typer.echo(
+                f"Warning: an Unsloth server is already running at {base}; "
+                f"--reasoning {server_options.reasoning} applies only when this command starts "
+                "the server, so the running server keeps its current reasoning mode. Stop it "
+                "with `unsloth studio stop` and re-run to apply the override.",
                 err = True,
             )
         return base, None
@@ -2657,6 +2683,147 @@ def _agents_config_root() -> Path:
     return auth_root() / "agents"
 
 
+def _ephemeral_session_parent(agent: str) -> Optional[Path]:
+    """Return a non-system-temp parent when an agent needs one."""
+    if os.name != "nt" or agent != "codex":
+        return None
+    # Codex creates a deeply nested curated-plugin checkout below CODEX_HOME.
+    # A normal %TEMP%\unsloth-codex-* home can exceed legacy Windows path
+    # limits during startup, and Codex also refuses to create its PATH helpers
+    # below the system temp directory. Keep the throwaway home short but still
+    # private to the current user; _session_config removes it on exit.
+    root = Path.home() / ".unsloth" / ".tmp"
+    root.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    return root
+
+
+def _ephemeral_session_prefix(agent: str, parent: Optional[Path]) -> str:
+    """Return the platform-specific prefix for an ephemeral agent home."""
+    return "u-codex-" if agent == "codex" and parent is not None else f"unsloth-{agent}-"
+
+
+@contextlib.contextmanager
+def _locked_file(path: Path, blocking: bool = True):
+    """Yield whether an advisory lock was acquired for the first byte of path."""
+    handle = path.open("a+b")
+    acquired = False
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            while True:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    acquired = True
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                        raise
+                    if not blocking:
+                        break
+                    # LK_LOCK gives up after roughly ten seconds. Poll LK_NBLCK
+                    # instead so a large stale plugin checkout cannot make a
+                    # concurrent launch fail just because cleanup takes longer.
+                    time.sleep(0.05)
+        else:
+            import fcntl
+            mode = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+            try:
+                fcntl.flock(handle.fileno(), mode)
+                acquired = True
+            except BlockingIOError:
+                acquired = False
+        yield acquired
+    finally:
+        if acquired:
+            if os.name == "nt":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def _reclaim_stale_ephemeral_sessions(parent: Path) -> None:
+    """Remove abandoned short Codex homes while preserving locked live sessions."""
+    for path in parent.glob("u-codex-*"):
+        if not path.is_dir():
+            continue
+        active_lock = path / ".active.lock"
+        try:
+            modified = active_lock.stat().st_mtime if active_lock.exists() else path.stat().st_mtime
+        except FileNotFoundError:
+            continue
+        # The wrapper owns the advisory lock, not the Codex child. If only the
+        # wrapper is killed, its child may still be using CODEX_HOME; give that
+        # process a full day to finish before treating the unlocked home as stale.
+        if time.time() - modified < _CODEX_EPHEMERAL_STALE_SECONDS:
+            continue
+        try:
+            with _locked_file(active_lock, blocking = False) as stale:
+                pass
+        except FileNotFoundError:
+            # A normally exiting session may have removed itself after the glob.
+            continue
+        if stale:
+            shutil.rmtree(path, ignore_errors = True)
+
+
+def _refresh_ephemeral_session_marker(path: Path, stop: threading.Event) -> None:
+    """Keep the stale grace period relative to wrapper death, not session start."""
+    while not stop.wait(_CODEX_EPHEMERAL_HEARTBEAT_SECONDS):
+        with contextlib.suppress(OSError):
+            os.utime(path, None)
+
+
+@contextlib.contextmanager
+def _short_ephemeral_session(parent: Path):
+    """Create a short Codex home whose lock makes crash cleanup concurrency-safe."""
+    path = None
+    active_lock = contextlib.ExitStack()
+    heartbeat_stop = None
+    heartbeat = None
+    try:
+        with _locked_file(parent / ".cleanup.lock") as cleanup_lock:
+            if not cleanup_lock:  # The blocking acquisition should always succeed.
+                raise RuntimeError(f"Could not lock ephemeral session root: {parent}")
+            _reclaim_stale_ephemeral_sessions(parent)
+            path = Path(tempfile.mkdtemp(prefix = "u-codex-", dir = parent))
+            locked = active_lock.enter_context(_locked_file(path / ".active.lock"))
+            if not locked:
+                raise RuntimeError(f"Could not lock ephemeral session home: {path}")
+            heartbeat_stop = threading.Event()
+            heartbeat = threading.Thread(
+                target = _refresh_ephemeral_session_marker,
+                args = (path / ".active.lock", heartbeat_stop),
+                name = "unsloth-codex-home-heartbeat",
+                daemon = True,
+            )
+            heartbeat.start()
+        yield path
+    finally:
+        if heartbeat_stop is not None:
+            heartbeat_stop.set()
+        if heartbeat is not None:
+            heartbeat.join(timeout = 1)
+        try:
+            with _locked_file(parent / ".cleanup.lock") as cleanup_lock:
+                if not cleanup_lock:  # The blocking acquisition should always succeed.
+                    raise RuntimeError(f"Could not lock ephemeral session root: {parent}")
+                # Release the live marker only after deletion is serialized with
+                # startup scavenging, so no scanner can race this rmtree.
+                active_lock.close()
+                if path is not None:
+                    shutil.rmtree(path, ignore_errors = True)
+        finally:
+            active_lock.close()
+
+
 @contextlib.contextmanager
 def _session_config(
     agent: str,
@@ -2672,11 +2839,16 @@ def _session_config(
     resumed next time. Either way the user's real ~/.<agent> config is left untouched.
     """
     if launch and not persist:
-        path = Path(tempfile.mkdtemp(prefix = f"unsloth-{agent}-"))
-        try:
-            yield path
-        finally:
-            shutil.rmtree(path, ignore_errors = True)
+        parent = _ephemeral_session_parent(agent)
+        if parent is not None:
+            with _short_ephemeral_session(parent) as path:
+                yield path
+        else:
+            path = Path(tempfile.mkdtemp(prefix = _ephemeral_session_prefix(agent, parent)))
+            try:
+                yield path
+            finally:
+                shutil.rmtree(path, ignore_errors = True)
     else:
         # Never wipe this dir: a previously printed recipe may still be running
         # an agent whose sessions/state live here, and every config writer
@@ -3048,6 +3220,7 @@ def claude(
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -3072,6 +3245,7 @@ def claude(
             enable_tools = enable_tools,
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
+            reasoning = reasoning,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -3166,6 +3340,7 @@ def codex(
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -3190,6 +3365,7 @@ def codex(
             enable_tools = enable_tools,
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
+            reasoning = reasoning,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -3265,6 +3441,7 @@ def openclaw(
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -3289,6 +3466,7 @@ def openclaw(
             enable_tools = enable_tools,
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
+            reasoning = reasoning,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -3346,6 +3524,7 @@ def opencode(
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -3370,6 +3549,7 @@ def opencode(
             enable_tools = enable_tools,
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
+            reasoning = reasoning,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -3507,6 +3687,7 @@ def hermes(
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -3533,6 +3714,7 @@ def hermes(
             enable_tools = enable_tools,
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
+            reasoning = reasoning,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -3564,6 +3746,7 @@ def pi(
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
     temperature: Optional[float] = _TEMPERATURE_OPTION,
     top_p: Optional[float] = _TOP_P_OPTION,
     top_k: Optional[int] = _TOP_K_OPTION,
@@ -3588,6 +3771,7 @@ def pi(
             enable_tools = enable_tools,
             tool_call_healing = tool_call_healing,
             tool_call_nudging = tool_call_nudging,
+            reasoning = reasoning,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,

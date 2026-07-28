@@ -37,6 +37,8 @@ export const ko = {
     navigation: {
       newChat: "새 채팅",
       returnToChat: "채팅으로 돌아가기",
+      returnToChats: "채팅 {count}개로 돌아가기",
+      chatGenerating: "생성 중",
       compare: "비교",
       search: "검색",
       hub: "모델 허브",

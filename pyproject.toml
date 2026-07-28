@@ -30,6 +30,12 @@ dependencies = [
     "pydantic",
     "pyyaml",
     "nest-asyncio",
+    # Every CLI command imports studio.backend.*, which reaches structlog at
+    # module level. The rest of the server stack lives in the studio extra.
+    "structlog>=24.1.0",
+    # unsloth_cli/__init__.py reaches click via commands/start.py, so every
+    # command needs it. typer supplied it until 0.27 dropped the dependency.
+    "click>=8.0",
 ]
 
 [project.scripts]
@@ -68,6 +74,33 @@ include = ["unsloth*", "unsloth_cli*", "studio", "studio.backend*"]
 exclude = ["images*", "tests*", "*.node_modules", "*.node_modules.*"]
 
 [project.optional-dependencies]
+# Studio's server stack, mirroring studio/backend/requirements/studio.txt.
+# test_studio_extra_matches_requirements.py catches drift.
+studio = [
+    "typer",
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "packaging",
+    "matplotlib==3.10.9",
+    "pandas",
+    "nest_asyncio",
+    "datasets==4.3.0",
+    "pyjwt",
+    "huggingface-hub==0.36.2",
+    "structlog>=24.1.0",
+    "diceware",
+    "ddgs",
+    "cryptography>=42.0.0",
+    "boto3>=1.34.0",
+    "httpx>=0.27.0",
+    "fastmcp>=3.0.2",
+    "sqlite-vec==0.1.9",
+    "pymupdf==1.27.2.3",
+    "pymupdf4llm==0.3.4",
+    "python-docx==1.2.0",
+]
+
 triton = [
     "triton>=3.0.0 ; ('linux' in sys_platform)",
     "triton-windows ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
