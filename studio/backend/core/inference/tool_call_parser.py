@@ -166,9 +166,8 @@ RAG_SEARCH_CAP_NUDGE = (
 
 
 # ── Plan-without-action re-prompt (shared by the GGUF and safetensors loops) ──
-# Verbs that name work this turn rather than advice to the user. Deliberately
-# narrow: "install", "add", "open" and friends belong to instructions we must
-# not re-prompt.
+# Verbs naming work this turn. Narrow on purpose: "install"/"add"/"open" belong to
+# advice for the user, which must not be re-prompted.
 _ACTION_VERB = (
     r"(?:search|check|look|find|fetch|get|call|use|run|query|invoke|analy[sz]e"
     r"|review|inspect|read|gather|examine|retrieve|browse|consult|verify"
@@ -183,12 +182,9 @@ INTENT_SIGNAL = re.compile(
     # "let me know" hands control back rather than announcing an action.
     r"\b(?:let me|allow me)\b(?!\s+(?:not|never|know)\b)"
     r"|"
-    # Step/plan framing: "First, I ...", "The first step is to ...", "Step 1:",
-    # "Here's my plan". "first" must open a sentence ("The first line is blank."
-    # is prose) and be followed by a plan: a pronoun, "my/our plan", or an
-    # investigative verb. Anything else reads as prose ("First place went to
-    # Alice", "First, the answer is 42") or as advice to the user rather than
-    # an action this turn ("First, install the package").
+    # Step/plan framing. "first" must open a sentence and be followed by a plan
+    # (pronoun, "my/our plan", or an action verb); otherwise it is prose ("The
+    # first line is blank.", "First place went to Alice") or advice to the user.
     r"(?:^|[.!?]\s+)\s*(?:the\s+)?first\s+step\b"
     r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+(?:my|our)\s+(?:plan|approach|step)\b"
     r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+(?:i|we|let['’]?s|let us)\b"
@@ -224,9 +220,8 @@ def _normalize_for_repeat(text: str) -> str:
     words = []
     for word in text.lower().split():
         stripped = word.rstrip(_REPEAT_TRAIL_PUNCT).lstrip(_REPEAT_LEAD_PUNCT)
-        # A token made only of marks carries its own meaning, so keep it rather
-        # than drop it: "the value is 5" and "the value is < 5" are not the same
-        # answer, and discarding the "<" threw the corrected one away.
+        # Keep marks-only tokens: "value is 5" and "value is < 5" differ, and
+        # dropping the "<" threw the corrected attempt away.
         words.append(stripped or word)
     return " ".join(words)
 
@@ -244,16 +239,15 @@ def is_reprompt_repeat(text: str, previous: str) -> bool:
     tb = [word for word in b.split() if word not in _REPEAT_FILLER]
     if len(ta) < 4 or len(tb) < 4:
         return False  # too short for overlap to mean anything
-    # Compared as an ordered sequence of content words, not a similarity ratio:
-    # any ratio is length-dependent, so one corrected token in a 50-word plan
-    # still scored 0.98 and read as a repeat. Order matters too, since "cats not
-    # dogs" and "dogs not cats" share every word.
+    # Ordered content-word sequence, not a similarity ratio: any ratio is length
+    # dependent (one corrected token in a 50-word plan still scored 0.98), and order
+    # matters since "cats not dogs" and "dogs not cats" share every word.
     return ta == tb
 
 
-# Stricter sibling of ``is_reprompt_repeat``: exact equality, because this decides
-# whether to throw the turn away. A retry that appends the answer to the plan would
-# clear the fuzzy bar, and deletions matter ("is not supported" -> "is supported").
+# Stricter sibling of ``is_reprompt_repeat``: exact equality, since this discards the
+# turn. An appended answer would clear the fuzzy bar, and deletions flip meaning
+# ("is not supported" -> "is supported").
 def is_reprompt_restatement(text: str, previous: str) -> bool:
     if not previous:
         return False

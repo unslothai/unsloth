@@ -341,15 +341,12 @@ _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
 # loop). Structured delta.tool_calls are grammar-bounded by llama-server; text
 # parsed from content is not, so one runaway turn could fan out unbounded.
 _MAX_TOOL_CALLS_PER_TURN = 8
-# Obligation phrasing INTENT_SIGNAL leaves alone ("I need to call ...", "I must
-# call ..."), paired with an action verb. Notes from tuning:
-#  - Sentence-anchored: an announced action is its own sentence; mid-sentence the
-#    same words are prose that happens to name a tool ("The API I should invoke
-#    is foo() because ..."), and suppressing that loses a real answer.
-#  - "should"/"must" sit outside the need|have|ought group because they take a
-#    bare infinitive ("I should call", not "I should to call").
-#  - "invoke"/"query" stay out of the verb list: they read as technical prose far
-#    more often than as a stall.
+# Obligation phrasing INTENT_SIGNAL leaves alone ("I need to call ..."), paired with
+# an action verb. Sentence-anchored: mid-sentence the same words are prose that names
+# a tool ("The API I should invoke is foo() because ..."), and suppressing that loses
+# a real answer. "should"/"must" sit outside the need|have|ought group because they
+# take a bare infinitive. "invoke"/"query" stay out of the verb list: they read as
+# technical prose far more often than as a stall.
 _FORCED_PLAN_INTENT = re.compile(
     r"(?:^|[.!?]\s+)\s*"
     r"(?:i\s+(?:(?:need|have|ought)\s+to|should|must)|need\s+to|going\s+to|must|should)"
@@ -464,10 +461,9 @@ def _should_suppress_forced_no_tool_output(text: str, previous: str = "") -> boo
         return True
     if not _is_short_intent_without_action(stripped):
         return False
-    # INTENT_SIGNAL also fires on lead-ins to a real answer ("Now I have the
-    # results. The capital is Tokyo."), so a bare intent match is a stall only
-    # when the retry adds nothing to what we nudged. No ``previous`` keeps the
-    # standalone "is this a stall?" contract.
+    # INTENT_SIGNAL also fires on lead-ins to a real answer ("Now I have the results.
+    # The capital is Tokyo."), so a bare intent match is a stall only when the retry
+    # adds nothing. No ``previous`` keeps the standalone "is this a stall?" contract.
     return not previous or _is_reprompt_restatement(stripped, previous)
 
 
@@ -11903,12 +11899,10 @@ class LlamaCppBackend:
                     )
                     if not _safety_tc:
                         # ── Re-prompt on plan-without-action ──
-                        # If the model described its intent (forward-looking
-                        # language) without calling a tool, nudge it to act.
-                        # Fires up to _MAX_REPROMPTS times, only on short
-                        # responses with intent signals -- "4" or "Hello!"
-                        # won't trigger it. Use content if available, else
-                        # fall back to reasoning text (reasoning-only stalls).
+                        # Intent described without a tool call: nudge it to act. Up
+                        # to _MAX_REPROMPTS times, only on short responses with intent
+                        # signals -- "4" or "Hello!" won't trigger it. Uses content,
+                        # else reasoning text (reasoning-only stalls).
                         _stripped = content_accum.strip()
                         if not _stripped:
                             _stripped = reasoning_accum.strip()
@@ -11918,12 +11912,10 @@ class LlamaCppBackend:
                             r"(?i)\brender[_\s-]?html\b",
                             _stripped,
                         )
-                        # A stall after a tool ran still deserves a nudge, but
-                        # each retry re-runs tools, so allow only one. RAG
-                        # autoinject retrieves before the controller exists and
-                        # never lands in history, so _auto is what keeps a
-                        # doc-grounded turn from being read as pre-tool (mirrors
-                        # the safetensors loop's rag_autoinjected).
+                        # A post-tool stall still deserves a nudge, but each retry
+                        # re-runs tools, so allow only one. RAG autoinject never lands
+                        # in history, so _auto keeps a doc-grounded turn from reading
+                        # as pre-tool (mirrors safetensors rag_autoinjected).
                         _already_acted = bool(_auto) or any(
                             record.executed for record in tool_controller.history
                         )
@@ -12301,10 +12293,9 @@ class LlamaCppBackend:
                             _kb_search_count += 1
                     completion = tool_controller.record_result(decision, result)
                     resolved_provisional_tool_call_ids.add(decision.tool_call_id)
-                    # A real execution opens the post-tool phase. The pre-tool stall
-                    # text must not carry over, or the same sentence said before and
-                    # after the search reads as a repeat and swallows the one
-                    # post-tool nudge.
+                    # A real execution opens the post-tool phase; carrying the pre-tool
+                    # stall text over would read the same sentence as a repeat and
+                    # swallow the one post-tool nudge.
                     _last_reprompt_text = ""
                     # A tool ran this turn, so it counts against the caller's budget.
                     _turn_executed_real_tool = True

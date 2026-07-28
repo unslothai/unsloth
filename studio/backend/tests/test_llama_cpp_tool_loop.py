@@ -1758,7 +1758,7 @@ def test_forced_turn_intent_lead_in_needs_a_restatement_to_be_dropped():
     stall = "I will summarize the results now"
     answer = "Now I have the search results. The capital of Japan is Tokyo."
 
-    # Restating what we nudged, adding nothing, is still a stall.
+    # Restating the nudged text is still a stall.
     assert suppress(stall, stall)
     assert suppress("Understood. " + stall, "Understood, " + stall)
     # Progress past the nudged text keeps the answer, lead-in and all.
@@ -2370,8 +2370,7 @@ def test_rag_autoinject_counts_as_a_prior_tool_execution(monkeypatch):
         )
     )
 
-    # Initial turn plus a single retry: counting the autoinject as pre-tool would
-    # spend the full _MAX_REPROMPTS budget.
+    # Initial turn plus one retry; read as pre-tool it would spend the full budget.
     assert len(payloads) == 2, payloads
     nudges = [
         message

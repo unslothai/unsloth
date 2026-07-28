@@ -3693,7 +3693,7 @@ class TestGGUFSafetensorsHealingParity:
             # Ordinal prose, not a plan.
             "First place went to Alice",
             "First class is available",
-            # Advice to the user about their next move, not work for this turn.
+            # Advice to the user, not work for this turn.
             "First, install the package.",
         ):
             assert not shared_re.search(plain), f"wrongly fired on {plain!r}"
@@ -3708,16 +3708,16 @@ class TestGGUFSafetensorsHealingParity:
         assert gguf_cap == sf_cap == shared_cap
 
     def test_reprompt_repeat_keeps_punctuation_bearing_terms(self):
-        # Stripping every non-word character collapsed "C++" and "C#" to "c", so two
-        # different plans compared equal and the retry lost its nudge.
+        # Stripping all non-word chars collapsed "C++" and "C#" to "c", so different
+        # plans compared equal and the retry lost its nudge.
         from core.inference.tool_call_parser import is_reprompt_repeat
         assert not is_reprompt_repeat("I will search for C#.", "I will search for C++.")
         # A leading mark is part of the term too.
         assert not is_reprompt_repeat("I will search for .NET", "I will search for NET")
 
     def test_reprompt_repeat_respects_word_order(self):
-        # Set overlap scores a reordered query as identical, and no threshold can
-        # tell those apart, so the comparison is sequence-based.
+        # Set overlap scores a reordered query as identical, so the comparison is
+        # sequence-based.
         from core.inference.tool_call_parser import is_reprompt_repeat
 
         assert not is_reprompt_repeat(
@@ -3729,8 +3729,8 @@ class TestGGUFSafetensorsHealingParity:
         assert is_reprompt_repeat("I will search for C++!", "I will search for C++.")
 
     def test_reprompt_repeat_keeps_a_changed_query_token(self):
-        # One corrected token in a long plan is a new attempt, not a repeat; at the
-        # old 0.85 bar it scored ~0.87 and cost the model its remaining nudge.
+        # One corrected token in a long plan is a new attempt; at the old 0.85 bar it
+        # scored ~0.87 and cost the model its remaining nudge.
         from core.inference.tool_call_parser import is_reprompt_repeat
 
         before = "I will search the web for the latest CUDA version 12.4 driver release notes"
@@ -3739,8 +3739,8 @@ class TestGGUFSafetensorsHealingParity:
         assert is_reprompt_repeat(before, before)
 
     def test_reprompt_repeat_keeps_standalone_operator_tokens(self):
-        # A token made only of marks stripped down to nothing and vanished, so a
-        # bounded correction compared equal to the unbounded original.
+        # A marks-only token stripped to nothing, so a bounded correction compared
+        # equal to the unbounded original.
         from core.inference.tool_call_parser import is_reprompt_repeat, is_reprompt_restatement
 
         loose = "Now I think the value is 5"
@@ -3749,8 +3749,8 @@ class TestGGUFSafetensorsHealingParity:
         assert not is_reprompt_restatement(bounded, loose)
 
     def test_reprompt_repeat_keeps_a_changed_token_in_a_long_plan(self):
-        # Every similarity ratio is length-dependent: one changed token scored
-        # 0.98 across 54 tokens, so long corrected plans lost their nudge.
+        # Every similarity ratio is length-dependent: one changed token scored 0.98
+        # across 54 tokens, so long corrected plans lost their nudge.
         from core.inference.tool_call_parser import is_reprompt_repeat
 
         words = [f"token{index}" for index in range(54)]
@@ -4309,8 +4309,7 @@ class TestPlanWithoutActionReprompt:
         # final answer and no further turn is generated.
         from core.inference.tool_call_parser import MAX_ACT_REPROMPTS
 
-        # Distinct stalls: identical ones stop at the repeat guard (covered
-        # separately) and would never reach the cap.
+        # Distinct stalls: identical ones stop at the repeat guard, never reaching the cap.
         stalls = [f"Let me look into detail {i} first." for i in range(MAX_ACT_REPROMPTS)]
         stall = stalls[-1]
         turns = [["I'll search the web for that."]]
