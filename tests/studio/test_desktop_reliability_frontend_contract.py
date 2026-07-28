@@ -229,14 +229,8 @@ def test_visible_mac_sidebar_header_is_a_drag_region():
 def test_collapsed_native_mac_chat_header_clears_traffic_lights():
     source = CHAT_PAGE.read_text(encoding = "utf-8")
 
-    assert (
-        "const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);"
-        in source
-    )
-    assert (
-        '"[--studio-content-top-inset:var(--studio-mac-titlebar-height,34px)]"'
-        in source
-    )
+    assert "const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);" in source
+    assert '"[--studio-content-top-inset:var(--studio-mac-titlebar-height,34px)]"' in source
     assert "usesNativeMacTitlebar &&" in source
     assert "!isMobile &&" in source
     assert "!pinned &&" in source
