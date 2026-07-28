@@ -24,8 +24,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 SECURITY_AUDIT = REPO_ROOT / ".github" / "workflows" / "security-audit.yml"
 
-# bnb <= 0.49.2 NaNs at decode shape on every AMD GPU; the ROCm 4-bit GEMV
-# fix (bnb PR #1887) first ships in 0.50.0.
+# 4-bit decode is unreliable on ROCm before 0.50.0, the first PyPI release
+# carrying the full path (bnb #1887, #1979, #2012).
 BNB_MIN = Version("0.50.0")
 
 
@@ -66,7 +66,7 @@ class TestHuggingfaceNoTorchIsTorchFree:
 
 
 class TestAmdBitsandbytesFloor:
-    """Guards the NaN-at-decode range out of the AMD install path."""
+    """Keeps the pre-0.50.0 ROCm range out of the AMD install path."""
 
     def test_every_marker_line_excludes_the_broken_range(self):
         specs = [s for s in _extras()["amd"] if _project_name(s) == "bitsandbytes"]
@@ -75,7 +75,7 @@ class TestAmdBitsandbytesFloor:
             requirement = spec.split(";", 1)[0].strip()
             allowed = SpecifierSet(requirement[len("bitsandbytes"):].strip())
             assert not allowed.contains(Version("0.49.2")), (
-                f"{requirement} still admits bnb 0.49.2, which NaNs at decode shape on AMD"
+                f"{requirement} still admits bnb 0.49.2, which predates the ROCm 4-bit fixes"
             )
             assert allowed.contains(BNB_MIN), f"{requirement} excludes the fixed release {BNB_MIN}"
 
