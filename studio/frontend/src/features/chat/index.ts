@@ -91,6 +91,7 @@ export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export { listStoredChatThreads } from "./utils/chat-history-storage";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
+export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export { ArtifactCard } from "./artifacts/artifact-card";
 export { ResearchMessage } from "./components/research-message";
 export {

@@ -31,8 +31,20 @@ from .llama import (
     LlamaLinearScalingRotaryEmbedding,
 )
 from .mistral import *
-from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
-from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+
+# Without bnb, peft stops exporting its 4bit LoRA layer too. Both names only feed
+# isinstance checks, so placeholders nothing can match are exact stand-ins.
+try:
+    from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+    from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+except Exception:
+
+    class Bnb_Linear4bit:
+        pass
+
+    class Peft_Linear4bit:
+        pass
+
 
 try:
     from transformers.models.granite.modeling_granite import (
