@@ -2032,9 +2032,7 @@ def _ensure_rocm_torch() -> None:
             )
             if not _bnb_installed:
                 _fallback_note = (
-                    ", which carries the ROCm 4-bit fix"
-                    if _bnb_rocm_arch_has_binary()
-                    else ""
+                    ", which carries the ROCm 4-bit fix" if _bnb_rocm_arch_has_binary() else ""
                 )
                 print(
                     _red(
