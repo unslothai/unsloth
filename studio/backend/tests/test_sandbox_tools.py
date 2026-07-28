@@ -1033,6 +1033,47 @@ class TestBashBlocklistPosition:
         # An escaped expansion is data the program merely quotes, and stays out.
         assert not is_high_risk_tool_call("terminal", {"command": 'sed "s/\\$(CC)/gcc/" Makefile'})
 
+    def test_find_placeholder_is_not_a_sed_program(self):
+        # find rewrites `{}` with the pathname it found before the child starts,
+        # so it is not a program that was read: with a file named
+        # `1e rm -f victim`, `printf 'input' | find '1e rm -f victim' -exec
+        # xargs sed {} +` really runs rm.
+        assert "sed" in self._find()("printf 'input\\n' | find '1e rm -f victim' -exec xargs sed {} +")
+        assert "sed" in self._find()("find . -exec sed {} +")
+        # A `{}` among the FILE operands is the ordinary idiom and is untouched.
+        assert self._find()("find . -exec sed -n '1,3p' {} +") == set()
+        assert self._find()("find . -exec sed -i 's/a/b/' {} +") == set()
+
+    def test_quoted_redirection_operand_is_data(self):
+        # The shell performs a redirection and removes it, but a QUOTED one is a
+        # word it hands the command: with an empty file named `>prog`,
+        # `sed -f '>prog' -e '1e rm -f victim' input` takes it as the script
+        # FILE and really runs the payload behind it.
+        assert "sed" in self._find()("sed -f '>prog' -e '1e rm -f victim' input")
+        # A bare one is still a redirection, target quoting and all.
+        assert "rm" in self._find()("sed > out.txt '1e rm -f victim' input")
+        assert "rm" in self._find()("sed 2>'/dev/null' '1e rm -f victim' input")
+        # ...and a quoted operand that merely starts with one runs silently.
+        assert self._find()("sed -n '1,3p' '>notes'") == set()
+
+    def test_ansi_c_apostrophe_keeps_the_program_intact(self):
+        # An apostrophe in the decoded word used to send it down the flattening
+        # path, which destroys the newline a sed comment ends at:
+        # `sed -n $'# it\\'s harmless\\ne rm -f victim' input` really runs rm.
+        assert "rm" in self._find()("sed -n $'# it\\'s harmless\\ne rm -f victim' input")
+        assert self._find()("printf '%s' $'it\\'s fine\\nrm -rf x'") == set()
+
+    def test_fd_attached_and_end_of_option_exec_flags(self):
+        # fd takes the command attached to the short option, and only the exact
+        # spellings opened an action: `fd '^victim$' . -xrm` deletes the match
+        # for real (checked on fdfind 9.0.0).
+        assert "rm" in self._find()("fd '^victim$' /tmp/work -xrm")
+        assert "rm" in self._find()("fd '^victim$' . -Xrm")
+        # ...while nothing behind a bare `--` is an option at all, so a pattern
+        # named `-x` merely lists the file it matches.
+        assert self._find()("fd -- -x rm") == set()
+        assert "rm" in self._find()("fd -x rm -rf x")
+
     def test_fd_exec_flags_reach_the_child_command(self):
         # fd runs its `-x` / `-X` / `--exec` / `--exec-batch` child directly,
         # exactly as find runs an `-exec` one, but only find's own spellings

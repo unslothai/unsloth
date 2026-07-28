@@ -1256,6 +1256,30 @@ def test_terminal_classifier(command, unsafe):
         ('sed "`printf \\"1e rm -f victim\\"`" input', True),
         # --- run: an escaped expansion is data the program merely quotes ---
         ('sed "s/\\$(CC)/gcc/" Makefile', False),
+        # --- prompt: find rewrites `{}` before the child starts, so it is not
+        # a program that was read ---
+        ("printf 'input\\n' | find '1e rm -f victim' -exec xargs sed {} +", True),
+        ("find . -exec sed {} +", True),
+        # --- run: a `{}` among the FILE operands is the ordinary idiom ---
+        ("find . -exec sed -n '1,3p' {} +", False),
+        ("find . -exec sed -i 's/a/b/' {} +", False),
+        # --- prompt: a QUOTED redirection is a word the command receives ---
+        ("sed -f '>prog' -e '1e rm -f victim' input", True),
+        ("sed 2>'/dev/null' '1e rm -f victim' input", True),
+        # --- run: an operand that merely starts with one ---
+        ("sed -n '1,3p' '>notes'", False),
+        # --- prompt: an apostrophe no longer sends the ANSI-C word down the
+        # flattening path that destroys the newline ending a sed comment ---
+        ("sed -n $'# it\\'s harmless\\ne rm -f victim' input", True),
+        # --- prompt: fd takes the command attached to its SHORT exec option ---
+        ("fd '^victim$' /tmp/work -xrm", True),
+        ("fd '^victim$' . -Xrm", True),
+        # --- run: nothing behind a bare `--` is an option, so a pattern named
+        # `-x` merely lists the file it matches ---
+        ("fd -- -x rm", False),
+        # --- run: an expansion another command performs is not this program's,
+        # so a single-quoted one that only spells the same thing stays silent ---
+        ("""echo "$p"; sed 's/$p/x/' f""", False),
         # --- prompt: fd runs its -x / -X / --exec / --exec-batch child
         # directly, the same way find runs an -exec one ---
         ("fd -x sed '1e rm -f victim' {}", True),
