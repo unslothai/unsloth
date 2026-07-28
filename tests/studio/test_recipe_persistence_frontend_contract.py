@@ -72,6 +72,11 @@ def test_recipe_playwright_does_not_import_jwt_dependent_auth_package():
     )
 
 
+def test_recipe_playwright_clears_the_durable_migration_claim():
+    source = PLAYWRIGHT_RECIPE.read_text(encoding = "utf-8")
+    assert 'indexedDB.deleteDatabase("unsloth-user-assets-migration-claims")' in source
+
+
 def test_completed_execution_clears_a_stale_transport_error():
     assert 'incoming.status === "completed"' in EXECUTIONS_DB
     assert "? null\n        : preferString(current.error, incoming.error)" in EXECUTIONS_DB

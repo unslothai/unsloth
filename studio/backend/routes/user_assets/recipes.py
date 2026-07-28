@@ -211,6 +211,10 @@ def upsert_recipe_execution(
                 )
                 if existing is None or existing.get("artifact_path") != payload.artifact_path:
                     metadata.pop("artifact_path", None)
+                elif "jobId" in existing:
+                    metadata["jobId"] = existing["jobId"]
+                else:
+                    metadata.pop("jobId", None)
             else:
                 raise_validation(
                     UserAssetValidationError(
@@ -233,7 +237,9 @@ def upsert_recipe_execution(
     if record is None:
         raise_not_found()
     if payload.artifact_path is not None and record.get("artifact_path") == payload.artifact_path:
-        manager.release_completed_artifact_path(
-            payload.jobId or "", current_subject, payload.artifact_path
-        )
+        record_job_id = record.get("jobId")
+        if isinstance(record_job_id, str) and record_job_id:
+            manager.release_completed_artifact_path(
+                record_job_id, current_subject, payload.artifact_path
+            )
     return record

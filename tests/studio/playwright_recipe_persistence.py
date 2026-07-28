@@ -143,7 +143,15 @@ def delete_legacy_database(page: Page) -> None:
 
 
 def clear_legacy_import_claim(page: Page) -> None:
-    page.evaluate("localStorage.removeItem('user-assets:recipe-indexeddb-v1:owner')")
+    page.evaluate(
+        """() => new Promise((resolve, reject) => {
+            localStorage.removeItem("user-assets:recipe-indexeddb-v1:owner");
+            const request = indexedDB.deleteDatabase("unsloth-user-assets-migration-claims");
+            request.onsuccess = () => resolve(null);
+            request.onerror = () => reject(request.error);
+            request.onblocked = () => reject(new Error("migration claim delete was blocked"));
+        })"""
+    )
 
 
 def put_legacy_recipe(page: Page, name: str) -> None:

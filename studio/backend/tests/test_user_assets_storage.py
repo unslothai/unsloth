@@ -329,6 +329,31 @@ def test_completed_execution_preserves_previously_verified_artifact(monkeypatch)
     assert enriched["artifact_path"] == artifact_path
     assert enriched["rows"] == 2
 
+    spoofed = user_assets_recipes.upsert_recipe_execution(
+        "r1",
+        "e1",
+        ExecutionUpsertRequest(
+            **execution(
+                artifact_path = artifact_path,
+                jobId = "unverified-job",
+                kind = "full",
+                run_name = "Finished run",
+                recipeSignature = "signature",
+                rows = 3,
+                datasetTotal = 3,
+                completed_columns = [],
+                revision = enriched["revision"],
+            )
+        ),
+        "owner",
+    )
+
+    assert spoofed["artifact_path"] == artifact_path
+    assert spoofed["jobId"] == "completed-job"
+    assert (
+        user_assets_db.get_completed_recipe_execution_by_job_id("owner", "unverified-job") is None
+    )
+
 
 def test_recipe_update_preserves_omitted_learning_linkage_and_can_clear_it():
     inserted = user_assets_db.create_recipe(
