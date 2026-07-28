@@ -74,6 +74,20 @@ $script:NvccPath = $null
 $script:CudaToolkitRoot = $null
 $script:CudaArch = $null
 
+function Exit-SetupFailure {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [int]$Code = 1
+    )
+    if ($Code -eq 0) { $Code = 1 }
+    if (@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) {
+        $singleLine = ($Message -replace '[\r\n]+', ' ').Trim()
+        [Console]::Out.WriteLine("[TAURI:ERROR] $singleLine")
+        [Console]::Out.Flush()
+    }
+    exit $Code
+}
+
 # Detect if running from pip install (no frontend/ dir in studio)
 $FrontendDir = Join-Path $ScriptDir "frontend"
 $OxcValidatorDir = Join-Path $ScriptDir "backend\core\data_recipe\oxc-validator"
@@ -851,7 +865,7 @@ function Ensure-BuildToolsForLlamaSourceBuild {
         Write-Host "        Manual install:" -ForegroundColor Red
         Write-Host '        1. winget install Microsoft.VisualStudio.2022.BuildTools --source winget' -ForegroundColor Yellow
         Write-Host '        2. Open Visual Studio Installer -> Modify -> check "Desktop development with C++"' -ForegroundColor Yellow
-        exit 1
+        Exit-SetupFailure "Visual Studio Build Tools are required for the llama.cpp source build"
     }
 }
 
@@ -1652,7 +1666,7 @@ if (-not $HasGit) {
     if (-not $HasGit) {
         Write-Host "[ERROR] Git is required but could not be installed automatically." -ForegroundColor Red
         Write-Host "        Install Git from https://git-scm.com/download/win and re-run." -ForegroundColor Red
-        exit 1
+        Exit-SetupFailure "Git is required but could not be installed automatically"
     }
     step "git" "$(git --version)"
 } else {
@@ -1821,7 +1835,7 @@ if (-not $NvccPath -and $IncompatibleToolkit) {
     Write-Host "========================================================================" -ForegroundColor Red
     Write-Host "[ERROR] CUDA source build cannot use the installed toolkit with this driver." -ForegroundColor Red
     Write-Host "========================================================================" -ForegroundColor Red
-    exit 1
+    Exit-SetupFailure "The installed CUDA toolkit is incompatible with the current driver"
 }
 
 # -- No toolkit at all: install via winget (only when a source build needs it) --
@@ -1893,7 +1907,7 @@ if (-not $NvccPath) {
     } else {
         Write-Host "        Install CUDA Toolkit from https://developer.nvidia.com/cuda-downloads" -ForegroundColor Yellow
     }
-    exit 1
+    Exit-SetupFailure "A compatible CUDA Toolkit could not be found or installed"
 }
 
 # -- Set CUDA env vars so cmake AND MSBuild can find the toolkit --
@@ -2043,7 +2057,7 @@ if (-not $IsPipInstall) {
         if (-not (Test-Path -LiteralPath $NodeOverride -PathType Container)) {
             Write-Host "ERROR: UNSLOTH_STUDIO_HOME/STUDIO_HOME=$NodeOverride does not exist." -ForegroundColor Red
             Write-Host "       Run install.ps1 to create the install root before 'unsloth studio update'." -ForegroundColor Red
-            exit 1
+            Exit-SetupFailure "UNSLOTH_STUDIO_HOME/STUDIO_HOME=$NodeOverride does not exist"
         }
         $NodeParent = (Resolve-Path -LiteralPath $NodeOverride).Path
         # An override pointing at the legacy default maps to the legacy sibling
@@ -2227,7 +2241,7 @@ if ($PythonOk) {
     if (-not $HasPython) {
         Write-Host "[ERROR] Python could not be installed automatically." -ForegroundColor Red
         Write-Host "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
-        exit 1
+        Exit-SetupFailure "Python could not be installed automatically"
     }
     step "python" "$(python --version 2>&1)"
     $PythonOk = $true
@@ -2237,7 +2251,7 @@ if ($PythonOk) {
     Write-Host "[ERROR] No supported Python (3.11-3.13) found on this system." -ForegroundColor Red
     Write-Host "        py.exe could not locate -3.11/-3.12/-3.13 and `python` on PATH is unsupported." -ForegroundColor Yellow
     Write-Host "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
-    exit 1
+    Exit-SetupFailure "No supported Python 3.11-3.13 was found"
 }
 
 # Add user-scheme Python Scripts dir to PATH (nt_user only, no venv fallback).
@@ -2319,7 +2333,7 @@ if ($NeedNodeForSetup) {
             if (-not (Test-Path -LiteralPath $nodeOwnedMarker) -and -not (Test-Path -LiteralPath $nodeMeta)) {
                 Write-Host "[ERROR] $NodeDir already exists and is not an Unsloth-owned Node install." -ForegroundColor Red
                 Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
-                exit 1
+                Exit-SetupFailure "$NodeDir is not an Unsloth-owned Node install"
             }
         }
         substep "installing isolated Node (system Node/npm left untouched)..."
@@ -2331,12 +2345,12 @@ if ($NeedNodeForSetup) {
         if ($nodeExit -eq 3) {
             Write-Host $nodeOut -ForegroundColor DarkGray
             step "node" "install blocked by another active Unsloth install" "Red"
-            exit 3
+            Exit-SetupFailure "Node install is blocked by another active Unsloth install" 3
         } elseif ($nodeExit -ne 0) {
             Write-Host $nodeOut -ForegroundColor DarkGray
             Write-Host "[ERROR] Could not install an isolated Node automatically." -ForegroundColor Red
             Write-Host "        Install Node >= 20.19 (with npm >= 11) from https://nodejs.org/ and re-run, or check your network." -ForegroundColor Yellow
-            exit 1
+            Exit-SetupFailure "Could not install an isolated Node runtime"
         }
         if ($NodeOverride -and (Test-Path -LiteralPath $NodeDir -PathType Container)) {
             New-Item -ItemType File -Force -Path (Join-Path $NodeDir ".unsloth-studio-owned") -ErrorAction SilentlyContinue | Out-Null
@@ -2456,7 +2470,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
             Write-Host "[ERROR] npm install failed (exit code $npmExit)" -ForegroundColor Red
             Write-Host "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
             Show-NpmRegistryHint
-            exit 1
+            Exit-SetupFailure "Frontend dependency installation failed (exit code $npmExit)"
         }
     }
 
@@ -2467,7 +2481,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         $ErrorActionPreference = $prevEAP_npm
         foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
         Write-Host "[ERROR] npm run build failed (exit code $buildExit)" -ForegroundColor Red
-        exit 1
+        Exit-SetupFailure "Frontend build failed (exit code $buildExit)"
     }
     Pop-Location
     $ErrorActionPreference = $prevEAP_npm
@@ -2498,7 +2512,7 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
         $ErrorActionPreference = $prevEAP_oxc
         Write-Host "[ERROR] OXC validator npm install failed (exit code $oxcInstallExit)" -ForegroundColor Red
         Show-NpmRegistryHint
-        exit 1
+        Exit-SetupFailure "OXC validator dependency installation failed (exit code $oxcInstallExit)"
     }
     Pop-Location
     $ErrorActionPreference = $prevEAP_oxc
@@ -2597,7 +2611,7 @@ if (-not $PythonCmd) {
     Write-Host "[ERROR] No standalone Python 3.11-3.13 found (conda Python is not supported)." -ForegroundColor Red
     Write-Host "        Install Python from https://python.org/downloads/ or via:" -ForegroundColor Yellow
     Write-Host "        winget install -e --id Python.Python.3.12" -ForegroundColor Yellow
-    exit 1
+    Exit-SetupFailure "No standalone Python 3.11-3.13 was found"
 }
 
 substep "Python found: $PythonCmd"
@@ -2630,12 +2644,12 @@ if ($_studioOverride) {
             Remove-Item -LiteralPath $_setupWriteProbe -Force -ErrorAction SilentlyContinue
         } catch {
             Write-Host "ERROR: $_studioOverrideVar=$StudioHome is not writable." -ForegroundColor Red
-            exit 1
+            Exit-SetupFailure "$_studioOverrideVar=$StudioHome is not writable"
         }
     } else {
         Write-Host "ERROR: $_studioOverrideVar=$_studioOverride does not exist." -ForegroundColor Red
         Write-Host "       Run install.ps1 to create the install root before 'unsloth studio update'." -ForegroundColor Red
-        exit 1
+        Exit-SetupFailure "$_studioOverrideVar=$_studioOverride does not exist"
     }
 } else {
     $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
@@ -2679,7 +2693,7 @@ function Assert-StudioOwnedOrAbsent {
         }
         Write-Host "[ERROR] $Path already exists and is not marked as an Unsloth-owned $Label." -ForegroundColor Red
         Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
-        exit 1
+        Exit-SetupFailure "$Label path is not an Unsloth-owned install: $Path"
     }
 }
 function Mark-StudioOwned {
@@ -2815,7 +2829,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             substep "Stale venv detected ($reason)." "Yellow"
             Write-Host "   [ERROR] The existing Unsloth environment needs repair." -ForegroundColor Red
             Write-Host "           Re-run install.ps1 so it can replace the environment safely with rollback." -ForegroundColor Yellow
-            exit 1
+            Exit-SetupFailure "The existing Unsloth environment needs repair"
         }
         substep "Stale venv detected ($reason) -- rebuilding..." "Yellow"
         # why: mirror install.ps1 env-mode guard so an update against a custom
@@ -2829,14 +2843,14 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         ) {
             Write-Host "[ERROR] $VenvDir already exists but does not look like an Unsloth Studio install." -ForegroundColor Red
             Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
-            exit 1
+            Exit-SetupFailure "$VenvDir is not an Unsloth Studio environment"
         }
         try {
             Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction Stop
         } catch {
             Write-Host "   [ERROR] Could not remove stale venv: $($_.Exception.Message)" -ForegroundColor Red
             Write-Host "           Close any running Unsloth/Python processes and re-run setup." -ForegroundColor Red
-            exit 1
+            Exit-SetupFailure "Could not remove the stale environment at $VenvDir"
         }
     }
 }
@@ -2845,7 +2859,7 @@ if (-not (Test-Path -LiteralPath $VenvDir)) {
     Write-Host "[ERROR] Virtual environment not found at $VenvDir" -ForegroundColor Red
     Write-Host "        Run install.ps1 first to create the environment:" -ForegroundColor Yellow
     Write-Host "        irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
-    exit 1
+    Exit-SetupFailure "Virtual environment not found at $VenvDir"
 } else {
     substep "reusing existing virtual environment at $VenvDir"
     $_venvPyExe = Join-Path $VenvDir "Scripts\python.exe"
@@ -3258,7 +3272,7 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     if ($torchInstallExit -ne 0) {
         Write-Host "[FAILED] PyTorch install failed (exit code $torchInstallExit)" -ForegroundColor Red
         Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
-        exit 1
+        Exit-SetupFailure "PyTorch installation failed (exit code $torchInstallExit)"
     }
 } elseif (-not $ROCmIndexUrl) {
     substep "installing PyTorch with CUDA support ($CuTag)..."
@@ -3290,7 +3304,7 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     if ($torchInstallExit -ne 0) {
         Write-Host "[FAILED] PyTorch CUDA install failed (exit code $torchInstallExit)" -ForegroundColor Red
         Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
-        exit 1
+        Exit-SetupFailure "PyTorch CUDA installation failed (exit code $torchInstallExit)"
     }
 
     # Install Triton for Windows (enables torch.compile -- without it training can hang)
@@ -3326,7 +3340,7 @@ $ErrorActionPreference = $prevEAP
 if ($stackExit -ne 0) {
     Write-Host "[FAILED] Python dependency installation failed (exit code $stackExit)" -ForegroundColor Red
     Write-Host "   Re-run the installer or check the error above for details." -ForegroundColor Red
-    exit 1
+    Exit-SetupFailure "Python dependency installation failed (exit code $stackExit)"
 }
 
 } else {
@@ -3404,7 +3418,7 @@ foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.8.0", "hf_xet==1.4
         Write-Host "[FAIL] Could not install $pkg into .venv_t5_530/" -ForegroundColor Red
         Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
         $ErrorActionPreference = $prevEAP_t5
-        exit 1
+        Exit-SetupFailure "Could not install $pkg into .venv_t5_530"
     }
 }
 if ($script:UnslothVerbose) {
@@ -3439,7 +3453,7 @@ foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4
         Write-Host "[FAIL] Could not install $pkg into .venv_t5_550/" -ForegroundColor Red
         Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
         $ErrorActionPreference = $prevEAP_t5
-        exit 1
+        Exit-SetupFailure "Could not install $pkg into .venv_t5_550"
     }
 }
 if ($script:UnslothVerbose) {
@@ -3474,7 +3488,7 @@ foreach ($pkg in @("transformers==5.10.2", "huggingface_hub==1.8.0", "hf_xet==1.
         Write-Host "[FAIL] Could not install $pkg into .venv_t5_510/" -ForegroundColor Red
         Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
         $ErrorActionPreference = $prevEAP_t5
-        exit 1
+        Exit-SetupFailure "Could not install $pkg into .venv_t5_510"
     }
 }
 if ($script:UnslothVerbose) {
@@ -3589,7 +3603,7 @@ if (-not $LlamaPr -and $LlamaPrForce -and $LlamaPrForce -match '^\d+$' -and [int
 if ($LlamaPr) {
     if ($LlamaPr -notmatch '^\d+$' -or [int]$LlamaPr -le 0) {
         Write-Host "[ERROR] UNSLOTH_LLAMA_PR=$LlamaPr is not a valid PR number" -ForegroundColor Red
-        exit 1
+        Exit-SetupFailure "UNSLOTH_LLAMA_PR=$LlamaPr is not a valid PR number"
     }
     step "llama.cpp" "UNSLOTH_LLAMA_PR=$LlamaPr -- will build from PR head" "Yellow"
     $ResolvedLlamaTag = "pr-$LlamaPr"
@@ -3605,7 +3619,7 @@ $LocalLlamaCppSrc = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR
 if ($LocalLlamaCppSrc) {
     if (-not (Test-Path -LiteralPath $LocalLlamaCppSrc -PathType Container)) {
         step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $LocalLlamaCppSrc" "Red"
-        exit 1
+        Exit-SetupFailure "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $LocalLlamaCppSrc"
     }
     $ResolvedLocal = (Resolve-Path -LiteralPath $LocalLlamaCppSrc).Path
     # Reusing a local dir disables both the prebuilt download and the source
@@ -3636,7 +3650,7 @@ if ($LocalLlamaCppSrc) {
         # and leave Unsloth with no usable binary.
         if (-not $LocalLlamaServerFound) {
             step "llama.cpp" "no llama-server.exe under $ResolvedLocal (looked for .\llama-server.exe, .\build\bin and .\build\bin\Release) -- build llama.cpp there first, or drop --with-llama-cpp-dir" "Red"
-            exit 1
+            Exit-SetupFailure "No llama-server.exe was found under $ResolvedLocal"
         }
         # If the target is already a junction/symlink (e.g. a previous
         # --with-llama-cpp-dir run), delete only the link via DirectoryInfo.Delete().
@@ -3662,7 +3676,7 @@ if ($LocalLlamaCppSrc) {
             if (Test-Path -LiteralPath $LlamaCppDir) {
                 step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
                 substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
-                exit 3
+                Exit-SetupFailure "llama.cpp install is blocked by an active llama.cpp process" 3
             }
         }
         cmd /c "mklink /J `"$LlamaCppDir`" `"$ResolvedLocal`"" 2>&1 | Out-Null
@@ -3804,7 +3818,7 @@ if ($LocalLlamaCppLinked) {
                 substep "Existing install was restored" "Yellow"
             }
             substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
-            exit 3
+            Exit-SetupFailure "llama.cpp install is blocked by an active llama.cpp process" 3
         } elseif ($prebuiltExit -eq 4) {
             step "llama.cpp" "not enough disk space to install llama.cpp" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
@@ -4067,7 +4081,7 @@ if ($LocalLlamaCppLinked) {
                 } else {
                     Write-Host "[ERROR] CMake 4.2+ is required to build llama.cpp with the Visual Studio 2026 generator, and no older Visual Studio toolchain was found to fall back to." -ForegroundColor Red
                     Write-Host "        Upgrade CMake from https://cmake.org/download/ and re-run, or use a prebuilt llama.cpp bundle." -ForegroundColor Red
-                    exit 1
+                    Exit-SetupFailure "CMake cannot drive the Visual Studio 2026 generator"
                 }
             }
         }
@@ -4574,5 +4588,5 @@ Write-Host ""
 # failure. Direct 'unsloth studio update' does not set SKIP_STUDIO_BASE,
 # so it keeps degraded installs successful.
 if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
-    exit 1
+    Exit-SetupFailure "llama.cpp setup did not produce a usable server"
 }
