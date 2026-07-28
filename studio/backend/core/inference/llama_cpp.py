@@ -1886,7 +1886,8 @@ def _extra_args_device(
     args = [str(a) for a in extra_args] if extra_args else []
     value: Optional[str] = None
     for i, raw in enumerate(args):
-        flag, eq, inline = raw.partition("=")
+        flag = _flag_name(raw)
+        _, eq, inline = raw.partition("=")
         if flag in flags:
             value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
     return value

@@ -679,9 +679,11 @@ class TestExtraArgsMtpDetection:
             # A real GPU device escapes the gpu_ids pin -> return the offending value.
             (["--spec-draft-device", "CUDA1"], "CUDA1"),
             (["--device-draft", "Vulkan2"], "Vulkan2"),
+            (["--spec_draft_device", "Vulkan1"], "Vulkan1"),
             (["-devd", "CUDA0,CPU"], "CUDA0,CPU"),  # any GPU in the list conflicts
             # inline flag=value form.
             (["--spec-draft-device=Vulkan3"], "Vulkan3"),
+            (["--device_draft=Vulkan4"], "Vulkan4"),
             # last-wins: only the final draft-device value counts.
             (["--spec-draft-device", "CUDA1", "--spec-draft-device", "cpu"], None),
             (["--spec-draft-device", "cpu", "--spec-draft-device", "CUDA1"], "CUDA1"),

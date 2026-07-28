@@ -1313,6 +1313,17 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
             gpu_ids_are_vulkan_ordinals = False,
         )
 
+    def test_vulkan_gpu_ids_reject_underscore_draft_device_alias(self):
+        with self.assertRaises(HTTPException) as exc:
+            self.route._reject_draft_device_with_gpu_ids(
+                [0],
+                ["--spec_draft_device", "Vulkan1"],
+                gpu_ids_are_vulkan_ordinals = True,
+            )
+
+        self.assertEqual(exc.exception.status_code, 400)
+        self.assertIn("Vulkan1", exc.exception.detail)
+
     def test_refusal_409_and_no_unload(self):
         import contextlib
         from unittest.mock import MagicMock
