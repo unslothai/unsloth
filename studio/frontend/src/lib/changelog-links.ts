@@ -36,6 +36,24 @@ const INDENTED_CODE = /^(?: {4}|\t)/;
 // CommonMark type 1 HTML blocks show their contents verbatim.
 const RAW_HTML_OPEN = /^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)/i;
 const RAW_HTML_CLOSE = /<\/(pre|script|style|textarea)\s*>/i;
+// Type 6 and 7 blocks are literal too, and run to the next blank line rather
+// than to a closing tag, so `<details>` only holds Markdown once a blank line
+// has closed the block. Type 7 (any other complete tag alone on a line) cannot
+// interrupt a paragraph. The backend parser and the collapsed preview already
+// read these notes this way, so a link inside one is text in all three.
+const HTML_BLOCK_OPEN = /^ {0,3}<\/?([a-zA-Z][a-zA-Z0-9-]*)(?=[\s/>]|$)/;
+const HTML_ATTRIBUTE =
+  "(?:\\s+[a-zA-Z_:][a-zA-Z0-9_.:-]*(?:\\s*=\\s*(?:[^\\s\"'=<>`]+|'[^']*'|\"[^\"]*\"))?)";
+const HTML_TAG_ONLY_LINE = new RegExp(
+  `^ {0,3}(?:<[a-zA-Z][a-zA-Z0-9-]*${HTML_ATTRIBUTE}*\\s*/?>|</[a-zA-Z][a-zA-Z0-9-]*\\s*>)\\s*$`,
+);
+const HTML_BLOCK_TAGS = new Set(
+  `address article aside base basefont blockquote body caption center col colgroup
+   dd details dialog dir div dl dt fieldset figcaption figure footer form frame
+   frameset h1 h2 h3 h4 h5 h6 head header hr html iframe legend li link main menu
+   menuitem nav noframes ol optgroup option p param search section summary table
+   tbody td tfoot th thead title tr track ul`.split(/\s+/),
+);
 // Lines that are blocks in their own right, so no paragraph is open after.
 const BLOCK_LINE =
   /^ {0,3}(?:#{1,6}([ \t]|$)|(?:\*[ \t]*){3,}$|(?:-[ \t]*){3,}$|(?:_[ \t]*){3,}$|>|=+[ \t]*$)/;
@@ -43,6 +61,15 @@ const LINE_ENDINGS = /\r\n?/g;
 // A scheme, a protocol-relative host, or a fragment: already absolute enough.
 // `//` needs a host after it, so `///docs` stays a repository path.
 const ABSOLUTE = /^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|\/\/[^/]|#)/;
+
+/** True if `line` starts a CommonMark type 6 or type 7 HTML block. */
+function opensHtmlBlock(line: string, afterParagraph: boolean): boolean {
+  const named = HTML_BLOCK_OPEN.exec(line);
+  if (named && HTML_BLOCK_TAGS.has((named[1] ?? "").toLowerCase())) {
+    return true;
+  }
+  return !afterParagraph && HTML_TAG_ONLY_LINE.test(line);
+}
 
 /** A reference label as CommonMark compares them. */
 function label(text: string): string {
@@ -158,12 +185,21 @@ function classify(lines: string[]): Classified {
   const masked: string[] = [];
   let openFence: string | null = null;
   let inRawHtml = false;
+  let inHtmlBlock = false;
   let inCode = false;
   let afterParagraph = false;
 
   lines.forEach((line, index) => {
     if (inRawHtml) {
       inRawHtml = !RAW_HTML_CLOSE.test(line);
+      masked.push(" ".repeat(line.length));
+      afterParagraph = false;
+      return;
+    }
+    if (inHtmlBlock) {
+      // A blank line is the only thing that ends a type 6 or 7 block, so a
+      // fence inside one is not a fence and a link inside one is not a link.
+      inHtmlBlock = !!line.trim();
       masked.push(" ".repeat(line.length));
       afterParagraph = false;
       return;
@@ -199,6 +235,12 @@ function classify(lines: string[]): Classified {
     }
     if (RAW_HTML_OPEN.test(line)) {
       inRawHtml = !RAW_HTML_CLOSE.test(line.replace(RAW_HTML_OPEN, ""));
+      masked.push(" ".repeat(line.length));
+      afterParagraph = false;
+      return;
+    }
+    if (line.trim() && opensHtmlBlock(line, afterParagraph)) {
+      inHtmlBlock = true;
       masked.push(" ".repeat(line.length));
       afterParagraph = false;
       return;

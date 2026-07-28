@@ -1207,6 +1207,24 @@ def test_a_lowercase_declaration_is_not_a_raw_block(changelog_module):
     assert "<![A-Z]" in PREVIEW.read_text(encoding = "utf-8")
 
 
+def test_link_resolver_reads_html_containers_the_way_the_others_do():
+    """A `<details>` or `<div>` with no blank line inside is a type 6 block, so
+    its contents render literally. Rewriting a link there mutates text the
+    reader sees verbatim, and a fence inside such a block was being taken for a
+    real fence, which stopped every link below it from resolving at all. The
+    backend parser and the collapsed preview already apply the type 6 and 7
+    rules, so the resolver has to share them or the three disagree on the same
+    notes."""
+    links = LINKS.read_text(encoding = "utf-8")
+    for source in (PREVIEW, LINKS):
+        text = source.read_text(encoding = "utf-8")
+        assert "HTML_BLOCK_TAGS" in text and "HTML_TAG_ONLY_LINE" in text
+    # A blank line, not the closing tag, is what ends the block.
+    assert "inHtmlBlock = !!line.trim()" in links
+    # Type 7 cannot interrupt a paragraph, so prose above it keeps its links.
+    assert "return !afterParagraph && HTML_TAG_ONLY_LINE.test(line);" in links
+
+
 def test_an_escaped_mark_makes_an_image_a_link():
     """`\\![alt](path)` renders as a link, so it resolves to the file's page on
     GitHub rather than to the raw-content host."""
