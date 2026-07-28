@@ -910,11 +910,14 @@ class TestInstallPythonStackFiltering:
         ):
             assert ips._infer_no_torch() is False
 
-        # Unset on Intel Mac -> True (platform fallback)
+        # Unset on Intel Mac -> True (platform fallback). Pin the manifest tier to
+        # "unknown" first, or this reads the manifest of whatever venv pytest runs
+        # in and the result depends on the developer's machine.
         env = os.environ.copy()
         env.pop("UNSLOTH_NO_TORCH", None)
         with (
             mock.patch.dict(os.environ, env, clear = True),
+            mock.patch.object(ips.install_manifest, "recorded_no_torch", lambda *a, **k: None),
             mock.patch.object(ips, "IS_MAC_INTEL", True),
         ):
             assert ips._infer_no_torch() is True

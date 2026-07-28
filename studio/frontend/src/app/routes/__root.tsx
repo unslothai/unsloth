@@ -12,6 +12,7 @@ import {
 import {
   ChatPage,
   clearNewChatDraft,
+  StopRunningChatsDialog,
   useChatRuntimeStore,
   type ChatSearch,
 } from "@/features/chat";
@@ -227,6 +228,8 @@ function RootLayout() {
       <HfTokenWarningDialog />
       <RemoteCodeConsentDialog />
       <TransformersUpgradeDialog />
+      {/* At the root, not under /chat: a swap can start from the Hub too. */}
+      <StopRunningChatsDialog />
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
           <Suspense fallback={<RouteFallback />}>
