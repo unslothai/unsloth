@@ -703,7 +703,6 @@ def _generate_reset_password() -> str:
     """Readable 4-word passphrase; the user has to type this one back in."""
     try:
         import diceware
-
         return diceware.get_passphrase(
             options = diceware.handle_options(args = ["-n", "4", "-d", "", "-c"])
         )
@@ -2928,9 +2927,7 @@ def reset_password():
 
     try:
         _ensure_cli_default_admin(conn)
-        _cli_update_password(
-            conn, DEFAULT_ADMIN_USERNAME, new_password, revoke_api_keys = True
-        )
+        _cli_update_password(conn, DEFAULT_ADMIN_USERNAME, new_password, revoke_api_keys = True)
     except (OSError, sqlite3.Error) as exc:
         typer.echo(f"Error: could not reset the password ({exc}).", err = True)
         raise typer.Exit(1)

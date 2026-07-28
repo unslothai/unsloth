@@ -1409,5 +1409,3 @@ def test_studio_default_password_applies_on_headless_wildcard_no_tunnel(monkeypa
     assert after["must_change_password"] == 0
     assert after["password_hash"] != before["password_hash"]
     assert "--password" not in _exec_argv(events)
-
-
