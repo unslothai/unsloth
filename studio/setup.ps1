@@ -891,9 +891,9 @@ function Test-VCRedistInstalled {
 #
 # A RUNTIME redistributable, not the MSVC compiler: prebuilt llama-server and torch
 # link against it, so unlike CMake and VS Build Tools (detection-only) it must be
-# present, or torch fails to import on a missing VCRUNTIME140.dll. winget is absent
-# on LTSC/Server/managed images, where this silently did nothing while the install
-# still reported success, so fall back to the official direct download.
+# present or torch fails to import on a missing VCRUNTIME140.dll. winget is absent on
+# LTSC/Server/managed images, where this silently did nothing yet still reported
+# success, so fall back to the official direct download.
 function Ensure-VCRedist {
     if (Test-VCRedistInstalled) { step "vcredist" "present"; return }
     Write-Host "Microsoft Visual C++ Redistributable (2015-2022) is missing; the prebuilt llama.cpp and PyTorch need it. Installing the runtime..." -ForegroundColor Yellow
@@ -904,8 +904,8 @@ function Ensure-VCRedist {
         } catch { substep "VCRedist install failed: $($_.Exception.Message)" "Yellow" }
     }
     if (-not (Test-VCRedistInstalled)) {
-        # Microsoft's evergreen link for the current 2015-2022 runtime.
-        # /quiet /norestart so it never blocks or reboots an unattended install.
+        # Microsoft's evergreen link for the current 2015-2022 runtime. /quiet
+        # /norestart so it never blocks or reboots an unattended install.
         $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
         $url = "https://aka.ms/vs/17/release/vc_redist.$arch.exe"
         $dst = Join-Path ([System.IO.Path]::GetTempPath()) "vc_redist.$arch.exe"
@@ -1683,7 +1683,7 @@ if ($LongPathsEnabled) {
 # holds on the consumer path: the unsloth-zoo git+https URL is STUDIO_LOCAL_INSTALL
 # only, node is a pinned prebuilt that never touches system npm, and the frontend
 # lockfile has no VCS deps. That blocked clean Windows boxes without winget over an
-# unused tool, the same over-requirement macOS had with the Xcode CLT.
+# unused tool, the same over-requirement as the macOS Xcode CLT gate.
 $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 if (-not $HasGit) {
     $gitNeeded = ($env:STUDIO_LOCAL_INSTALL -eq '1')
@@ -3302,10 +3302,10 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
         $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
         $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
     }
-    # Windows on ARM publishes torch and torchvision win_arm64 wheels but no
-    # torchaudio, so a bare trio aborts here even though install.ps1 already dropped
-    # it upstream. Same interpreter-based test, since the PowerShell host's
-    # PROCESSOR_ARCHITECTURE is not what uv resolves for.
+    # Windows on ARM has torch and torchvision win_arm64 wheels but no torchaudio, so
+    # a bare trio aborts here even though install.ps1 already dropped it upstream. Same
+    # interpreter test, since the host's PROCESSOR_ARCHITECTURE is not what uv resolves
+    # for.
     $_setupPlatform = ""
     try {
         $_setupPlatform = (& python -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()

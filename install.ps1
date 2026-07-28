@@ -2438,17 +2438,15 @@ exit 0
             }
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
-            # Windows on ARM: torchaudio only. Counted against
-            # download.pytorch.org/whl/cpu: torch 42 win_arm64 wheels, torchvision 60,
-            # torchaudio 0 (PyTorch has shipped Arm-native Windows builds since April
-            # 2025). Aborting the whole install here would block a platform that mostly
-            # works, so drop the one unsatisfiable pin instead.
+            # Windows on ARM lacks only torchaudio. On download.pytorch.org/whl/cpu:
+            # torch has 42 win_arm64 wheels, torchvision 60, torchaudio 0. Aborting
+            # would block a platform that mostly works, so drop the one unsatisfiable
+            # pin instead.
             #
-            # Ask the interpreter uv will resolve for, not the PowerShell host: an x64
+            # Ask the interpreter uv resolves for, not the PowerShell host: an x64
             # CPython under emulation gets working win_amd64 wheels on an ARM64 box, and
             # powershell.exe inherits PROCESSOR_ARCHITECTURE from its parent. An
-            # unreadable platform falls through to the normal path rather than changing
-            # a resolution that may well be satisfiable.
+            # unreadable platform falls through to the normal, possibly satisfiable path.
             $VenvPlatform = ""
             try {
                 $VenvPlatform = (& $VenvPython -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()

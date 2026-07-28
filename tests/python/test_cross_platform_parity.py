@@ -454,8 +454,8 @@ class TestKnown211SetParity:
             "$_pinCuLeaf" not in text
         ), "install.ps1 must bound companions on every index (no cu-family exemption)"
         # The bounded companions must actually be passed to the install command.
-        # The specs are built into a list and splatted now, so the guard checks both
-        # halves: the bounded list is constructed, and it reaches the install command.
+        # The specs are built into a list and splatted, so check both halves: the
+        # bounded list is constructed, and it reaches the install command.
         assert (
             '$_torchSpecs = @("torch>=2.4,<2.11.0", $_pinVisionSpec, $_pinAudioSpec)' in text
         ), "install.ps1 custom-pin install must build the bounded spec list"
