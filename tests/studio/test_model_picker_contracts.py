@@ -718,9 +718,9 @@ def test_monitor_stats_exclude_model_lifecycle_rows():
     assert "total: requests," in src
     assert "total: entries.length" not in src
 
-    backend = (
-        WORKDIR / "studio" / "backend" / "core" / "inference" / "api_monitor.py"
-    ).read_text(encoding = "utf-8")
+    backend = (WORKDIR / "studio" / "backend" / "core" / "inference" / "api_monitor.py").read_text(
+        encoding = "utf-8"
+    )
     assert 'entry.kind != "lifecycle"' in backend, "the rule this mirrors"
 
 
