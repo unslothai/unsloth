@@ -2977,6 +2977,26 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
             substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..." "Cyan"
             $SkipPythonDeps = $false
         }
+        # An interrupted install leaves $_PkgName current while studio.txt
+        # never finished, so the compare above says "up to date" and update --
+        # plus the desktop Repair button -- no-ops on a venv that cannot boot.
+        $_studioInstallIncomplete = $false
+        try {
+            & python -c "
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+except Exception:
+    sys.exit(0)  # older tree without the manifest helper: leave the fast path alone
+sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
+" "$PSScriptRoot" 2>$null
+            if ($LASTEXITCODE -ne 0) { $_studioInstallIncomplete = $true }
+        } catch {}
+        if ($_studioInstallIncomplete) {
+            substep "studio install incomplete -- forcing dependency pass to repair..." "Cyan"
+            $SkipPythonDeps = $false
+        }
         # ...but not if an AMD GPU is present and installed PyTorch is CPU-only
         # (host predates ROCm-wheel support, or GPU added later): the fast "up to
         # date" path would leave the user on CPU torch with Train/Export disabled.
@@ -3022,6 +3042,28 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
 if ($script:PinChangedForceReinstall) { $SkipPythonDeps = $false }
 
 if (-not $SkipPythonDeps) {
+
+# install_python_stack.py drops the manifest before its own dependency pass, but
+# pip, torch and triton are replaced first here. Drop it now so a run killed in
+# those leaves the venv marked half-built, not behind a marker that verifies.
+$_ManifestDropped = $true
+try {
+    & python -c "
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+except Exception:
+    sys.exit(0)  # older tree without the manifest helper
+sys.exit(0 if install_manifest.remove_manifest() else 1)
+" "$PSScriptRoot" 2>$null
+    if ($LASTEXITCODE -ne 0) { $_ManifestDropped = $false }
+} catch { $_ManifestDropped = $false }
+if (-not $_ManifestDropped) {
+    Write-Host "[ERROR] Could not remove the stale unsloth_install_manifest.json." -ForegroundColor Red
+    Write-Host "        Refusing to install behind a marker that still reports this venv as complete." -ForegroundColor Red
+    exit 1
+}
 
 if ($script:UnslothVerbose) {
     Fast-Install --upgrade pip
