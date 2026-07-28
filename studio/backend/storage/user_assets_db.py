@@ -27,6 +27,7 @@ from core.user_assets_validation import (
     MAX_EXECUTION_JSON_BYTES,
     MAX_ID_CHARS,
     MAX_RECIPE_JSON_BYTES,
+    MAX_TIMESTAMP_MS,
 )
 from storage import studio_db
 
@@ -35,6 +36,7 @@ DEFAULT_EXECUTION_PAGE_LIMIT = 100
 MAX_EXECUTION_PAGE_LIMIT = 100
 DEFAULT_RECIPE_PAGE_LIMIT = 100
 MAX_RECIPE_PAGE_LIMIT = 100
+MAX_CURSOR_CHARS = 2048
 
 
 class UserAssetStorageError(RuntimeError):
@@ -181,20 +183,21 @@ def _encode_recipe_cursor(updated_at: int, asset_id: str) -> str:
     payload = json.dumps(
         {"v": 1, "updatedAt": updated_at, "id": asset_id},
         separators = (",", ":"),
-    ).encode("ascii")
+        ensure_ascii = False,
+    ).encode("utf-8")
     return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
 def _decode_recipe_cursor(cursor: str) -> tuple[int, str]:
     try:
-        if not isinstance(cursor, str) or not cursor or len(cursor) > 512:
+        if not isinstance(cursor, str) or not cursor or len(cursor) > MAX_CURSOR_CHARS:
             raise ValueError
         decoded = base64.b64decode(
             cursor + "=" * (-len(cursor) % 4),
             altchars = b"-_",
             validate = True,
         )
-        value = json.loads(decoded.decode("ascii"))
+        value = json.loads(decoded.decode("utf-8"))
         if not isinstance(value, dict) or value.get("v") != 1:
             raise ValueError
         updated_at = validate_timestamp(value.get("updatedAt"), "cursor updatedAt")
@@ -363,7 +366,7 @@ def update_recipe(
                 learning_recipe_id = CASE WHEN ? THEN ? ELSE learning_recipe_id END,
                 learning_recipe_title = CASE WHEN ? THEN ? ELSE learning_recipe_title END,
                 revision = revision + 1,
-                updated_at = MAX(updated_at + 1, created_at, ?)
+                updated_at = MIN(MAX(updated_at + 1, created_at, ?), ?)
             WHERE owner_subject = ? AND id = ? AND deleted_at IS NULL AND revision = ?
             """,
             (
@@ -374,6 +377,7 @@ def update_recipe(
                 has_learning_title,
                 learning_title,
                 now,
+                MAX_TIMESTAMP_MS,
                 owner,
                 asset_id,
                 expected_revision,
@@ -430,11 +434,11 @@ def delete_recipe(owner_subject: str, recipe_id: str, expected_revision: int) ->
             """
             UPDATE data_recipes
             SET revision = revision + 1,
-                updated_at = MAX(updated_at + 1, created_at, ?),
-                deleted_at = MAX(updated_at + 1, created_at, ?)
+                updated_at = MIN(MAX(updated_at + 1, created_at, ?), ?),
+                deleted_at = MIN(MAX(updated_at + 1, created_at, ?), ?)
             WHERE owner_subject = ? AND id = ?
             """,
-            (now, now, owner, asset_id),
+            (now, MAX_TIMESTAMP_MS, now, MAX_TIMESTAMP_MS, owner, asset_id),
         )
         conn.commit()
         return True
@@ -450,14 +454,14 @@ def _encode_execution_cursor(created_at: int, asset_id: str) -> str:
     payload = json.dumps(
         {"v": 1, "createdAt": created_at, "id": asset_id},
         separators = (",", ":"),
-        ensure_ascii = True,
-    ).encode("ascii")
+        ensure_ascii = False,
+    ).encode("utf-8")
     return base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
 
 
 def _decode_execution_cursor(cursor: str) -> tuple[int, str]:
     try:
-        if not isinstance(cursor, str) or not cursor or len(cursor) > 512:
+        if not isinstance(cursor, str) or not cursor or len(cursor) > MAX_CURSOR_CHARS:
             raise ValueError
         padding = "=" * (-len(cursor) % 4)
         decoded = base64.b64decode(
@@ -465,7 +469,7 @@ def _decode_execution_cursor(cursor: str) -> tuple[int, str]:
             altchars = b"-_",
             validate = True,
         )
-        value = json.loads(decoded.decode("ascii"))
+        value = json.loads(decoded.decode("utf-8"))
         if not isinstance(value, dict) or value.get("v") != 1:
             raise ValueError
         created_at = validate_timestamp(value.get("createdAt"), "cursor createdAt")
@@ -693,13 +697,14 @@ def upsert_recipe_execution(
                 """
                 UPDATE data_recipe_executions
                 SET metadata_json = ?, revision = revision + 1,
-                    updated_at = MAX(updated_at + 1, created_at, ?),
+                    updated_at = MIN(MAX(updated_at + 1, created_at, ?), ?),
                     finished_at = ?
                 WHERE owner_subject = ? AND id = ? AND revision = ?
                 """,
                 (
                     metadata_json,
                     now,
+                    MAX_TIMESTAMP_MS,
                     finished_at,
                     owner,
                     asset_id,

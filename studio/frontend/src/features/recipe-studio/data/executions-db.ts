@@ -370,9 +370,9 @@ function reconcileIncoming(
     // Terminal state rejects stale nonterminal updates and preserves enrichment.
     if (!incomingTerminal) return null;
     if (incomingEvent < currentEvent) return null;
-    const useIncomingState = incomingEvent > currentEvent;
-    if (!useIncomingState && incoming.status !== current.status) return null;
-    return mergeTerminalSnapshots(incoming, current, useIncomingState);
+    if (incomingEvent === currentEvent && incoming.status !== current.status)
+      return null;
+    return mergeTerminalSnapshots(incoming, current, true);
   }
   if (incomingEvent < currentEvent) return null;
   const forwardPolledTransition =

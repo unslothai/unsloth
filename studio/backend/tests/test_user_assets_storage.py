@@ -3,7 +3,7 @@
 
 import pytest
 
-from core.user_assets_validation import UserAssetValidationError
+from core.user_assets_validation import MAX_TIMESTAMP_MS, UserAssetValidationError
 from models.user_assets import ExecutionUpsertRequest, RecipeUpdateRequest
 from models.data_recipe import PublishDatasetRequest
 from routes.data_recipe import jobs as data_recipe_jobs
@@ -65,6 +65,26 @@ def test_recipe_summaries_are_payload_free_and_paginated():
     assert second["nextCursor"] is None
 
 
+def test_unicode_ids_generate_reusable_bounded_cursors():
+    ids = ["a", "界" * 128, "🙂" * 128]
+    for asset_id in ids:
+        user_assets_db.create_recipe("owner", recipe(asset_id))
+
+    first = user_assets_db.list_recipe_summaries("owner", limit = 2)
+    assert 0 < len(first["nextCursor"]) <= user_assets_db.MAX_CURSOR_CHARS
+    second = user_assets_db.list_recipe_summaries("owner", cursor = first["nextCursor"], limit = 2)
+
+    assert len(first["recipes"]) == 2
+    assert len(second["recipes"]) == 1
+    for encode, decode in (
+        (user_assets_db._encode_recipe_cursor, user_assets_db._decode_recipe_cursor),
+        (user_assets_db._encode_execution_cursor, user_assets_db._decode_execution_cursor),
+    ):
+        cursor = encode(123, "🙂" * 128)
+        assert len(cursor) <= user_assets_db.MAX_CURSOR_CHARS
+        assert decode(cursor) == (123, "🙂" * 128)
+
+
 def test_execution_timestamps_remain_monotonic_across_clock_rollback(monkeypatch):
     user_assets_db.create_recipe("owner", recipe())
     future = 1_900_000_000_000
@@ -85,6 +105,58 @@ def test_execution_timestamps_remain_monotonic_across_clock_rollback(monkeypatch
         user_assets_db.upsert_recipe_execution(
             "owner", "r1", "bad", execution("bad", createdAt = 100, finishedAt = 99)
         )
+
+
+def test_monotonic_updates_stay_within_the_timestamp_limit():
+    imported = user_assets_db.import_legacy_assets(
+        "owner",
+        "recipe-indexeddb-v1",
+        [
+            {
+                **recipe(),
+                "createdAt": MAX_TIMESTAMP_MS,
+                "updatedAt": MAX_TIMESTAMP_MS,
+            }
+        ],
+        [execution(createdAt = MAX_TIMESTAMP_MS, finishedAt = MAX_TIMESTAMP_MS)],
+    )
+    assert imported["recipes"][0]["outcome"] == "imported"
+    assert imported["executions"][0]["outcome"] == "imported"
+
+    updated = user_assets_db.update_recipe("owner", "r1", recipe(), expected_revision = 1)
+    updated_execution = user_assets_db.upsert_recipe_execution(
+        "owner",
+        "r1",
+        "e1",
+        execution(createdAt = MAX_TIMESTAMP_MS, finishedAt = MAX_TIMESTAMP_MS),
+        expected_revision = 1,
+    )
+
+    assert updated["updatedAt"] == MAX_TIMESTAMP_MS
+    assert updated_execution["updatedAt"] == MAX_TIMESTAMP_MS
+    assert (
+        user_assets_db.list_recipe_summaries("owner")["recipes"][0]["updatedAt"] == MAX_TIMESTAMP_MS
+    )
+
+
+def test_execution_upsert_omits_absent_optional_metadata(monkeypatch):
+    user_assets_db.create_recipe("owner", recipe())
+    monkeypatch.setattr(
+        user_assets_recipes,
+        "get_job_manager",
+        lambda: object(),
+    )
+
+    saved = user_assets_recipes.upsert_recipe_execution(
+        "r1",
+        "e1",
+        ExecutionUpsertRequest(createdAt = 1),
+        "owner",
+    )
+
+    assert saved["createdAt"] == 1
+    assert "kind" not in saved
+    assert "status" not in saved
 
 
 def test_execution_artifact_reference_is_owner_scoped_and_durable():

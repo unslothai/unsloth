@@ -42,7 +42,11 @@ def _recipe_input(payload: RecipeCreateRequest | RecipeUpdateRequest) -> dict:
 
 @router.get("/recipes", response_model = RecipeListResponse)
 def list_recipes(
-    cursor: str | None = Query(default = None, min_length = 1, max_length = 512),
+    cursor: str | None = Query(
+        default = None,
+        min_length = 1,
+        max_length = user_assets_db.MAX_CURSOR_CHARS,
+    ),
     limit: int = Query(default = 100, ge = 1, le = 100),
     current_subject: str = Depends(get_current_subject),
 ):
@@ -129,7 +133,11 @@ def delete_recipe(
 )
 def list_recipe_executions(
     recipe_id: str,
-    cursor: str | None = Query(default = None, min_length = 1, max_length = 512),
+    cursor: str | None = Query(
+        default = None,
+        min_length = 1,
+        max_length = user_assets_db.MAX_CURSOR_CHARS,
+    ),
     limit: int = Query(default = 100, ge = 1, le = 100),
     current_subject: str = Depends(get_current_subject),
 ):
@@ -185,6 +193,7 @@ def upsert_recipe_execution(
     metadata = payload.model_dump(
         exclude = {"id", "recipeId", "revision", "updatedAt"},
         exclude_none = False,
+        exclude_unset = True,
     )
     manager = get_job_manager()
     if payload.artifact_path is not None:

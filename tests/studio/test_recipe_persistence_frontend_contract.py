@@ -97,6 +97,11 @@ def test_equal_event_snapshots_preserve_current_nonterminal_scalars():
     assert "mergeTerminalSnapshots(incoming, current, useIncomingState)" in EXECUTIONS_DB
 
 
+def test_same_event_terminal_snapshots_accept_later_enrichment():
+    assert "incomingEvent === currentEvent && incoming.status !== current.status" in EXECUTIONS_DB
+    assert "mergeTerminalSnapshots(incoming, current, true)" in EXECUTIONS_DB
+
+
 def test_user_asset_reads_capture_the_starting_auth_subject():
     assert "options.expectedSubjectKey ?? getAuthSubjectKey()" in USER_ASSETS_API
     assert "{ expectedSubjectKey }," in USER_ASSETS_API
