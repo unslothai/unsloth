@@ -241,6 +241,24 @@ def test_kfd_fails_closed_when_a_node_is_unreadable(monkeypatch, tmp_path):
     assert hw._rocm_kfd_gpu_pci_ids() == []
 
 
+def test_kfd_fails_closed_when_a_node_does_not_decode(monkeypatch, tmp_path):
+    # Pinning the read to utf-8 turns an undecodable byte into
+    # UnicodeDecodeError, which is a ValueError and so slips past `except
+    # OSError`. It would then escape a helper that documents failing closed,
+    # and every later HIP ordinal would shift.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    paths = _fake_kfd(
+        tmp_path,
+        monkeypatch,
+        [
+            (1, 304, (0x03 << 8) | 0, 0, _AMD),
+            (2, 304, (0x41 << 8) | 0, 0, _AMD),
+        ],
+    )
+    (Path(paths[0]) / "properties").write_bytes(b"simd_count 304\nvendor_id \x80\xff\n")
+    assert hw._rocm_kfd_gpu_pci_ids() == []
+
+
 def test_kfd_absent_yields_no_device_order(monkeypatch):
     monkeypatch.setattr(hw.glob, "glob", lambda pattern: [])
     assert hw._rocm_kfd_gpu_pci_ids() == []
