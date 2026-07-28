@@ -31,6 +31,12 @@ on:
       - 'studio/src-tauri/src/preflight.rs'
       - 'studio/src-tauri/src/preflight/**'
       - 'unsloth_cli/commands/studio.py'
+      # studio_install_ok and verify-install, the two decisions the probe asserts
+      # on, are implemented here rather than in commands/studio.py, so a change
+      # that made install_state() accept a missing manifest would otherwise merge
+      # without a single leg running.
+      - 'unsloth_cli/_studio_deps.py'
+      - 'studio/install_manifest.py'
       # `*` never matches `/`, and it is a literal `-install` that follows, so
       # `interrupt*-install*` matches interrupt-install.sh / .ps1 but NOT the
       # underscored probe. List the probe explicitly rather than rely on a glob.

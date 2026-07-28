@@ -65,8 +65,11 @@ for ($i = 0; $i -lt $KillAtSeconds; $i++) {
   if ($Marker) {
     $hit = Select-String -Path $LogPath -Pattern $Marker -SimpleMatch:$false -ErrorAction SilentlyContinue
     if ($hit) {
-      $reason = 'marker-hit'
       Start-Sleep -Seconds $KillAfterMarkerSeconds
+      # The installer can finish inside the delay; recording marker-hit before it
+      # let a COMPLETED install satisfy the landing assertion and probe HEALTHY.
+      if ($proc.HasExited) { $reason = 'exited-during-marker-delay'; break }
+      $reason = 'marker-hit'
       $killed = $true
       break
     }

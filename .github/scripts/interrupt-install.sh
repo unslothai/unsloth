@@ -56,10 +56,18 @@ for i in $(seq 1 "$KILL_AT_SECONDS"); do
     break
   fi
   if [ -n "$MARKER" ] && grep -qE "$MARKER" "$LOG" 2>/dev/null; then
-    reason="marker-hit"
     # Let it get a beat into the step, so the kill lands mid-work rather than on the
     # boundary where the step has not started touching the venv yet.
     sleep "${KILL_AFTER_MARKER_SECONDS:-3}"
+    # ...but a late step whose work is already cached can FINISH inside that beat.
+    # Recording marker-hit before the sleep handed the landing assertion a COMPLETED
+    # install: the signal reached no process, the probe read HEALTHY, and the leg
+    # passed green having interrupted nothing. Set the reason after, not before.
+    if ! kill -0 "$PID" 2>/dev/null; then
+      reason="exited-during-marker-delay"
+      break
+    fi
+    reason="marker-hit"
     killed=true
     break
   fi
