@@ -642,7 +642,9 @@ def test_requested_gpu_pick_survives_fit_narrowing_and_namespace_changes():
     assert 'savedIndexKind === undefined ? "physical" : savedIndexKind' in gpu_selection
     assert "expectedIndexKind !== null" in gpu_selection
     assert "expectedIndexKind !== currentIndexKind" in gpu_selection
-    assert "Namespace knowledge is authoritative even while membership is unavailable" in gpu_selection
+    assert (
+        "Namespace knowledge is authoritative even while membership is unavailable" in gpu_selection
+    )
     gpu_info = _read("hooks/use-gpu-info.ts")
     assert "cachedPinnableGpuContext" in gpu_info
     assert 'unavailableVulkan ? "vulkan" : undefined' in gpu_info
