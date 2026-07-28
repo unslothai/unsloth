@@ -318,7 +318,9 @@ jobs:
           if [ "${{ matrix.kind }}" = "deb" ]; then
             SH="$(dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -E '/install\.sh$' | head -1)"
           else
-            (cd dl && "$(ls *.AppImage | head -1)" --appimage-extract >/dev/null)
+            # ls returns a bare filename here, and a command word with no slash is
+            # resolved through PATH, not the cwd, so this needs the ./ prefix.
+            (cd dl && "./$(ls *.AppImage | head -1)" --appimage-extract >/dev/null)
             SH="$(find dl/squashfs-root -name install.sh -type f | head -1)"
           fi
           [ -n "$SH" ] && [ -f "$SH" ] || { echo "::error::the bundle ships no install.sh resource"; exit 1; }
@@ -362,7 +364,18 @@ jobs:
             [ -f "$f" ] || continue
             echo "=== $f ==="; cp "$f" logs/ 2>/dev/null || true; tail -60 "$f"
             grep -E "disposition=|can_auto_repair=|ModuleNotFoundError" "$f" || true
+            found=1
+            if grep -qE "desktop_preflight completed disposition=" "$f"; then disposition=1; fi
           done
+          # Same acceptance criterion the macOS rows already enforce. Everything
+          # above is `|| true` and the loop skips a missing log outright, so
+          # without these two lines the step could not fail. setup_logging
+          # (src-tauri/src/main.rs:50-67) opens tauri.log unconditionally at
+          # process start, so no log at all means the binary never got that far,
+          # and the launch step only proves the process stayed alive: an app that
+          # hangs before preflight completes would otherwise pass both Linux rows.
+          [ "${found:-0}" = "1" ] || { echo "::error::the app wrote no tauri.log; it never reached setup_logging"; exit 1; }
+          [ "${disposition:-0}" = "1" ] || { echo "::error::tauri.log records no desktop_preflight disposition; the app never completed preflight"; exit 1; }
 
       - name: Upload logs
         if: always()
