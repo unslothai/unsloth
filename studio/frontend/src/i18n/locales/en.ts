@@ -34,6 +34,8 @@ export const en = {
     navigation: {
       newChat: "New chat",
       returnToChat: "Return to Chat",
+      returnToChats: "Return to {count} Chats",
+      chatGenerating: "Generating",
       compare: "Compare",
       search: "Search",
       hub: "Model hub",
@@ -163,7 +165,8 @@ export const en = {
       },
       dictionary: {
         sectionTitle: "Dictation dictionary",
-        sectionDescription: "Set how dictation spells specific words or phrases",
+        sectionDescription:
+          "Set how dictation spells specific words or phrases",
         manageLabel: "Custom spellings",
         manage: "Manage",
         backToVoice: "Back to Voice",
@@ -283,20 +286,21 @@ export const en = {
         sectionTitle: "Model auto-switch (OpenAI API)",
         enable: "Switch model by request",
         enableDescription:
-          "When an OpenAI-compatible request names a different downloaded GGUF, load it before serving. Off by default; unknown names keep serving the loaded model.",
+          "Load a downloaded GGUF named in an API request before serving. Off by default.",
+        autoDownload: "Download missing models",
+        autoDownloadDescription:
+          "Fetch a GGUF named in an API request that is not downloaded yet. Anyone with an API key can then use disk and bandwidth.",
         idleUnload: "Idle auto-unload",
         idleUnloadDescription:
-          "Unload the model after this many idle seconds to free VRAM; the next request reloads it. 0 keeps it loaded. Minimum 60 seconds.",
-        idleNeedsEnable:
-          "Turn on Switch model by request so an unloaded model reloads on next use.",
-        idleActiveViaEnv:
-          "Idle auto-unload is active via the UNSLOTH_MODEL_IDLE_TTL environment variable.",
+          "Free VRAM after this many idle seconds. 0 keeps it loaded, minimum 60.",
+        idleNeedsEnable: "Turn on Switch model by request first.",
+        idleActiveViaEnv: "Active via UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Failed to load model auto-switch settings.",
         saveError: "Failed to save model auto-switch settings.",
         idleError: "Enter 0 to keep the model loaded, or at least 60 seconds.",
         keepKv: "Keep chat context across idle unload",
         keepKvDescription:
-          "Save the model's KV cache to disk before an idle unload and restore it on reload, so resumed chats skip re-reading their history. Chat context is written to disk (up to 10 GB) until it is restored or cleaned up.",
+          "Save the KV cache before an idle unload so resumed chats skip re-reading history. Up to 10 GB on disk.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",
@@ -467,7 +471,8 @@ export const en = {
             "Unsupported file type. Use .woff2, .woff, .ttf, or .otf.",
           errorTooLarge: "Font file is too large (max 1.5 MB).",
           errorLimit: "You can import up to 3 fonts.",
-          errorStorageFull: "Not enough local storage for this font. Remove an imported font first.",
+          errorStorageFull:
+            "Not enough local storage for this font. Remove an imported font first.",
           errorFailed: "Could not load this font file.",
         },
         uiFontSize: {
@@ -582,16 +587,47 @@ export const en = {
       },
     },
     agents: {
-      title: "Agents (unsloth start)",
+      title: "Agents",
       description:
-        "Connect coding agents like Claude Code and Codex to a model running locally in Unsloth.",
+        "Connect coding agents like Claude Code and Codex to a model running locally in Unsloth with unsloth start.",
       intro:
-        "connects Claude Code, Codex, Hermes, OpenClaw, OpenCode, Pi and other agents to a model served locally by Unsloth, fully offline on your own hardware. It runs a OpenAI-compatible server for the agent and never touches your agent's config files.",
+        "connects Claude Code, Codex, Hermes, OpenClaw, OpenCode, Pi and other agents to a model served locally by Unsloth, fully offline on your own hardware. It runs an OpenAI-compatible server for the agent and never touches your agent's config files.",
       readDocs: "Read the docs",
       copy: "Copy",
       copied: "Copied",
+      commandBuilder: "Command builder",
+      agent: "Coding agent",
+      model: "Model",
+      searchModels: "Search GGUF models...",
+      noModels: "No matching GGUF models.",
+      showingModels:
+        "Showing {shown} of {total} matches. Keep typing to narrow the list.",
+      quantization: "Quantization",
+      loadingQuantizations: "Loading quantizations...",
+      noQuantizations: "No separate quantization",
+      recommended: "Recommended",
+      downloaded: "Downloaded",
+      quantizationLoadError:
+        "Couldn't load all quantizations. The command will use the available model value.",
+      generatedCommand: "Generated command",
+      docs: "Docs",
+      agentDocs: "Open {agent} setup docs",
+      copyGeneratedCommand: "Copy generated command",
+      modelNote:
+        "Codex requires a GGUF model served by llama-server. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth Studio.",
+      subagent: {
+        title: "Use a local model as a subagent",
+        description:
+          "Keep {agent} on its current model and delegate selected tasks to this local Unsloth model.",
+        setupCommand: "Setup command",
+        copySetupCommand: "Copy subagent setup command",
+        usagePrompt: "Then in {agent}, type:",
+        copyUsagePrompt: "Copy subagent usage prompt",
+        defaultPrompt: "Spawn a local agent to implement this function.",
+        opencodePrompt: "@unsloth find the cause of this test failure",
+      },
       quickstart: {
-        title: "Quickstart",
+        title: "Build a command",
         description:
           "Launch an agent against the model currently loaded in Studio. Load a model first, then swap claude for any supported agent below.",
         noneDetected: "No supported agent CLIs were found on your PATH.",
@@ -623,6 +659,8 @@ export const en = {
         serve: "Enable or disable the automatic local server.",
         launch: "Launch the agent, or just print the command and environment.",
         persist: "Keep Unsloth-managed agent storage between runs.",
+        asSubagent:
+          "Keep the parent on its current model and register Unsloth as a local subagent (Claude Code, Codex, OpenCode, and Pi).",
         apiKey: "Provide your Unsloth API key (or set UNSLOTH_API_KEY).",
         yolo: "Skip approval prompts. Use only in trusted environments.",
       },
@@ -783,6 +821,8 @@ export const en = {
       copyAccessToken: "Copy access token",
       copyNow: "Copy now - this won't be shown again.",
       usageExamples: "Usage examples",
+      usageNoModel:
+        "Load or download a model to see runnable examples. This server has no model to name yet.",
       usageTools: "Tools",
       exampleCurlTools: "curl + tools",
       examplePythonTools: "Python + tools",

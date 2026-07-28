@@ -26,6 +26,7 @@ is_managed_flag = _lsa.is_managed_flag
 parse_cache_override = _lsa.parse_cache_override
 parse_cache_override_per_axis = _lsa.parse_cache_override_per_axis
 parse_ctx_override = _lsa.parse_ctx_override
+parse_gpu_layers_override = _lsa.parse_gpu_layers_override
 parse_split_mode_override = _lsa.parse_split_mode_override
 resolve_cache_type_kv = _lsa.resolve_cache_type_kv
 resolve_tensor_parallel = _lsa.resolve_tensor_parallel
@@ -109,6 +110,11 @@ def test_empty_list_returns_empty_list():
 
 def test_value_with_equals_form_passes_through():
     assert validate_extra_args(["--top-k=20"]) == ["--top-k=20"]
+
+
+def test_managed_long_flag_underscore_alias_is_rejected():
+    with pytest.raises(ValueError, match = "slot-save-path"):
+        validate_extra_args(["--slot_save_path", "/tmp/slots"])
 
 
 def test_non_flag_token_passes_through():
@@ -446,6 +452,45 @@ def test_parse_ctx_override_rejects_malformed_values(args):
 def test_validate_extra_args_rejects_malformed_ctx_override():
     with pytest.raises(ValueError, match = "ctx-size"):
         validate_extra_args(["--ctx-size", "abc"])
+
+
+# ── parse_gpu_layers_override ────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (None, None),
+        ([], None),
+        (["--top-k", "20"], None),
+        (["--gpu-layers", "20"], 20),
+        (["--gpu-layers=20"], 20),
+        (["--n-gpu-layers", "0"], 0),
+        (["-ngl", "-1"], -1),
+        (["-ngl", "12", "--gpu-layers", "20"], 20),
+    ],
+)
+def test_parse_gpu_layers_override(args, expected):
+    assert parse_gpu_layers_override(args) == expected
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--gpu-layers"],
+        ["--gpu-layers", "--top-k"],
+        ["--gpu-layers", "abc"],
+        ["--gpu-layers=-2"],
+    ],
+)
+def test_parse_gpu_layers_override_rejects_malformed_values(args):
+    with pytest.raises(ValueError, match = "gpu-layers|GPU layers"):
+        parse_gpu_layers_override(args)
+
+
+def test_validate_extra_args_rejects_malformed_gpu_layers_override():
+    with pytest.raises(ValueError, match = "GPU layers"):
+        validate_extra_args(["-ngl", "abc"])
 
 
 # ── parse_cache_override ─────────────────────────────────────────────

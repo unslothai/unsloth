@@ -53,8 +53,7 @@ CASES: list[Case] = [
     ),
     Case(
         "C3",
-        "removing katex is safe: streamdown/math, mermaid, "
-        "rehype-katex all keep it at top level",
+        "removing katex is safe: streamdown/math, mermaid, rehype-katex all keep it at top level",
         ["katex"],
         "PASS",
         [],
@@ -69,8 +68,7 @@ CASES: list[Case] = [
     ),
     Case(
         "C6",
-        "removing @radix-ui/react-slot is safe: pulled by "
-        "radix-ui umbrella + @assistant-ui/react",
+        "removing @radix-ui/react-slot is safe: pulled by radix-ui umbrella + @assistant-ui/react",
         ["@radix-ui/react-slot"],
         "PASS",
         [],
@@ -852,7 +850,7 @@ ADV_CASES: list[AdvCase] = [
         "A12",
         "JSDoc @import of removed pkg should FAIL",
         "adv12.ts",
-        '/** @type {import("__adv_only_pkg_l__").Foo} */\n' "const x = null;\n",
+        '/** @type {import("__adv_only_pkg_l__").Foo} */\nconst x = null;\n',
         "__adv_only_pkg_l__",
         "FAIL",
         ["__adv_only_pkg_l__"],
@@ -1047,7 +1045,7 @@ PKG_FIELD_CASES: list[PkgFieldCase] = [
 
 
 def run_pkg_field_cases() -> int:
-    head_pkg = json.loads(HEAD_PKG.read_text())
+    head_pkg = json.loads(HEAD_PKG.read_text(encoding = "utf-8"))
     passed = 0
     for pc in PKG_FIELD_CASES:
         synth_head = json.loads(json.dumps(head_pkg))
@@ -1110,13 +1108,13 @@ def run_pkg_field_cases() -> int:
 
 def run_adversarial_cases() -> int:
     ADVERSARIAL_TMP_DIR.mkdir(parents = True, exist_ok = True)
-    head_pkg = json.loads(HEAD_PKG.read_text())
+    head_pkg = json.loads(HEAD_PKG.read_text(encoding = "utf-8"))
     passed = 0
     for ac in ADV_CASES:
         # Drop the synthetic file.
         fpath = ADVERSARIAL_TMP_DIR / ac.filename
         try:
-            fpath.write_text(ac.content)
+            fpath.write_text(ac.content, encoding = "utf-8")
             # Base adds the target pkg; real head lacks it, so the script
             # treats it as removed and scans the repo (now with our file).
             synth_base = json.loads(json.dumps(head_pkg))
@@ -1259,7 +1257,7 @@ ENUM_CASES: list[EnumCase] = [
 
 
 def run_enum_cases() -> int:
-    head_pkg = json.loads(HEAD_PKG.read_text())
+    head_pkg = json.loads(HEAD_PKG.read_text(encoding = "utf-8"))
     passed = 0
     ADVERSARIAL_TMP_DIR.mkdir(parents = True, exist_ok = True)
     for ec in ENUM_CASES:
@@ -1508,7 +1506,7 @@ def run_wrapper_cases() -> int:
 
 
 def main() -> int:
-    head_pkg = json.loads(HEAD_PKG.read_text())
+    head_pkg = json.loads(HEAD_PKG.read_text(encoding = "utf-8"))
     print(f"Running {len(CASES)} edge cases against {SCRIPT.relative_to(REPO)}")
     print()
     results: list[tuple[Case, bool, str]] = []

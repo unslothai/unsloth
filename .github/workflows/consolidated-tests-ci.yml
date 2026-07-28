@@ -7,7 +7,7 @@
 #
 # Why a separate workflow:
 #   - studio-backend-ci.yml's "Repo tests (CPU)" job already auto-discovers
-#     tests/ minus tests/qlora, tests/saving, tests/utils, tests/sh. The 16
+#     tests/ minus tests/qlora, tests/saving, tests/utils, tests/sh. The 17
 #     Bucket-A tests below live inside those --ignore dirs (CPU-runnable but
 #     historically excluded with their GPU siblings); pulling them out into
 #     a sibling job keeps the existing 760-passed baseline stable while we
@@ -274,6 +274,7 @@ jobs:
             tests/saving/test_export_dispatch.py \
             tests/saving/test_imatrix_export.py \
             tests/saving/test_gguf_single_pass_export.py \
+            tests/saving/test_offline_gguf_vlm_tokenizer_7481.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py
@@ -365,6 +366,7 @@ jobs:
             tests/saving/test_export_dispatch.py \
             tests/saving/test_imatrix_export.py \
             tests/saving/test_gguf_single_pass_export.py \
+            tests/saving/test_offline_gguf_vlm_tokenizer_7481.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py \
@@ -2130,7 +2132,7 @@ jobs:
           pip show unsloth_zoo
           echo "::endgroup::"
           echo "Consolidated job done. Coverage:"
-          echo "  - 16 unsloth Bucket-A tests under tests/saving/ + tests/utils/"
+          echo "  - 17 unsloth Bucket-A tests under tests/saving/ + tests/utils/"
           echo "  - unsloth_zoo @ ${UNSLOTH_ZOO_REF} pytest tests/ (5 GPU cases deselected)"
           echo "  - unsloth_zoo.compiler.test_apply_fused_lm_head"
 
