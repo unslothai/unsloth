@@ -27,6 +27,7 @@ per-request hot path; writes invalidate the cache.
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from typing import Any, Optional
@@ -470,6 +471,37 @@ def _looks_like_filesystem_path(model_id: str) -> bool:
     return len(model_id) >= 3 and model_id[1] == ":" and model_id[2] in ("\\", "/")
 
 
+# The three path shapes whose filesystem is case-insensitive, matching the rule
+# the browser applies in features/hub/lib/model-identity.ts. Kept in step with
+# it: the browser folds these before storing, so the two sides have to agree on
+# which paths fold or a stored key becomes unreachable.
+_WINDOWS_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
+_WSL_DRIVE_PATH = re.compile(r"^/mnt/[A-Za-z](?:/|$)")
+
+
+def _fold_case_insensitive_path(model_id: str) -> Optional[str]:
+    """``model_id`` folded for comparison, or None when the path is case-sensitive.
+
+    A Windows drive path, a UNC share and a WSL drive path all name one file
+    whatever the casing, and the separator is interchangeable on Windows. A
+    POSIX path is not: folding "/models/Foo.gguf" onto "/models/foo.gguf" would
+    replay another model's context and GPU pin.
+    """
+    slashed = model_id.replace("\\", "/")
+    if _WINDOWS_DRIVE_PATH.match(model_id):
+        minimum = 3
+    elif slashed.startswith("//"):
+        minimum = 2
+    elif _WSL_DRIVE_PATH.match(slashed):
+        minimum = 6
+    else:
+        return None
+    trimmed = slashed
+    while len(trimmed) > minimum and trimmed.endswith("/"):
+        trimmed = trimmed[:-1]
+    return trimmed.casefold()
+
+
 def get_model_overrides() -> dict[str, dict]:
     """Per-model launch configs keyed by model id (see normalize_model_override)."""
     raw = _cached_setting(MODEL_OVERRIDES_SETTING_KEY, None)
@@ -504,16 +536,30 @@ def resolve_model_override_key(model_id: str) -> Optional[str]:
         return model_id
     if not isinstance(model_id, str):
         return None
-    # Only repo-style ids fold. A POSIX path is case-sensitive and names a
-    # different file, so matching "/models/Foo.gguf" against an entry saved for
-    # "/models/foo.gguf" would replay another model's context and GPU pin.
+    # A POSIX path is case-sensitive and names a different file, so matching
+    # "/models/Foo.gguf" against an entry saved for "/models/foo.gguf" would
+    # replay another model's context and GPU pin. A Windows drive path, a UNC
+    # share and a WSL drive path are not case-sensitive, and the browser folds
+    # exactly those before storing, so refusing to fold them here would leave
+    # every migrated Windows entry unreachable until the user saved it again.
     if _looks_like_filesystem_path(model_id):
-        return None
-    folded = model_id.casefold()
+        folded = _fold_case_insensitive_path(model_id)
+        if folded is None:
+            return None
+
+        def fold(key: str) -> Optional[str]:
+            return _fold_case_insensitive_path(key)
+    else:
+        folded = model_id.casefold()
+
+        def fold(key: str) -> Optional[str]:
+            # A path never folds onto a repo id: the shapes cannot collide.
+            return None if _looks_like_filesystem_path(key) else key.casefold()
+
     matches = [
         key
         for key, value in overrides.items()
-        if isinstance(key, str) and key.casefold() == folded and isinstance(value, dict)
+        if isinstance(key, str) and fold(key) == folded and isinstance(value, dict)
     ]
     return matches[0] if len(matches) == 1 else None
 

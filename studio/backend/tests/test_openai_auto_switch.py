@@ -4604,10 +4604,41 @@ def test_case_fallback_never_applies_to_a_posix_path(monkeypatch):
     assert settings.get_model_override("/models/foo.gguf")["max_seq_length"] == 8192
 
 
-def test_case_fallback_never_applies_to_a_windows_path(monkeypatch):
+def test_case_fallback_does_apply_to_a_windows_path(monkeypatch):
+    # NTFS is case-insensitive, so these name one file, and the browser folds
+    # drive paths before storing. Treating them as two models would leave every
+    # migrated Windows entry unreachable until the user saved it again, which is
+    # the opposite of the POSIX rule and for the opposite reason. The separator
+    # is interchangeable there too.
     _mock_override_store(monkeypatch)
-    settings.set_model_override(r"C:\models\foo.gguf", max_seq_length = 8192)
-    assert settings.get_model_override(r"C:\models\FOO.gguf") == {}
+    settings.set_model_override(r"c:\models\foo.gguf", max_seq_length = 8192)
+    assert settings.get_model_override(r"C:\models\FOO.gguf")["max_seq_length"] == 8192
+    assert settings.get_model_override("C:/Models/Foo.gguf")["max_seq_length"] == 8192
+
+
+def test_case_fallback_applies_to_unc_and_wsl_drive_paths(monkeypatch):
+    _mock_override_store(monkeypatch)
+    settings.set_model_override(r"\\server\share\foo.gguf", max_seq_length = 4096)
+    settings.set_model_override("/mnt/c/models/bar.gguf", max_seq_length = 2048)
+    assert settings.get_model_override(r"\\Server\Share\FOO.gguf")["max_seq_length"] == 4096
+    assert settings.get_model_override("/mnt/C/Models/Bar.gguf")["max_seq_length"] == 2048
+
+
+def test_a_plain_posix_path_under_mnt_stays_case_sensitive(monkeypatch):
+    # Only /mnt/<letter> is a WSL drive mount. /mnt/data is an ordinary Linux
+    # mount point and stays case-sensitive like any other POSIX path.
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("/mnt/data/models/foo.gguf", max_seq_length = 8192)
+    assert settings.get_model_override("/mnt/data/models/Foo.gguf") == {}
+
+
+def test_an_ambiguous_windows_case_fallback_still_matches_nothing(monkeypatch):
+    # Two stored keys folding to one leaves no single answer, so the load takes
+    # defaults rather than guessing between them.
+    _mock_override_store(monkeypatch)
+    settings.set_model_override(r"c:\models\foo.gguf", max_seq_length = 1024)
+    settings.set_model_override("C:/models/FOO.gguf", max_seq_length = 8192)
+    assert settings.get_model_override(r"C:\Models\Foo.gguf") == {}
 
 
 def test_case_fallback_still_covers_repo_ids(monkeypatch):
