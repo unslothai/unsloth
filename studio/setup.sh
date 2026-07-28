@@ -37,7 +37,7 @@ fi
 #                             Only use "master" temporarily when the latest release
 #                             is missing support for a new model architecture.
 #
-#   UNSLOTH_LLAMA_BACKEND : "auto" (default), "cpu", "vulkan", "hip", or
+#   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "vulkan", "hip", or
 #                           "rocm". "cpu" forces the CPU-only prebuilt. "vulkan"
 #                           selects Vulkan even when CUDA or ROCm is detected.
 #                           "hip"/"rocm" keeps the detected HIP backend and opts
@@ -1274,7 +1274,7 @@ _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
 _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
-_source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
+_source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
 _source_legacy_force_vulkan="$(printf '%s' "${UNSLOTH_FORCE_VULKAN:-}" | awk '{$1=$1; print tolower($0)}')"
 _explicit_vulkan_source_build=false
 if [ "$_HOST_SYSTEM" != "Darwin" ]; then
@@ -1474,7 +1474,7 @@ else
     case "$_llama_backend" in
         cpu)
             if [ "$_HOST_SYSTEM" = "Darwin" ]; then
-                step "llama.cpp" "UNSLOTH_LLAMA_BACKEND=cpu has no effect on macOS (universal build; use -ngl 0 at runtime for CPU-only)" "$C_WARN" >&2
+                step "llama.cpp" "UNSLOTH_LLAMA_CPP_BACKEND=cpu has no effect on macOS (universal build; use -ngl 0 at runtime for CPU-only)" "$C_WARN" >&2
             else
                 _PREBUILT_CMD+=(--force-cpu)
             fi
@@ -1489,7 +1489,7 @@ else
             fi
             ;;
         ""|auto|hip|rocm) ;;
-        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_BACKEND='$_llama_backend' (expected 'auto', 'cpu', 'vulkan', 'hip', or 'rocm')" "$C_WARN" >&2 ;;
+        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$_llama_backend' (expected 'auto', 'cpu', 'vulkan', 'hip', or 'rocm')" "$C_WARN" >&2 ;;
     esac
     if [ "$_HOST_SYSTEM" != "Darwin" ]; then
         case "$_llama_backend" in

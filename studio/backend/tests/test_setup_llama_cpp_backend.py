@@ -27,7 +27,7 @@ _SKIP_NO_PWSH = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "pwsh 
 def _backend_block() -> str:
     text = _SETUP_SH.read_text(encoding = "utf-8")
     m = re.search(r"_llama_backend=.*?esac", text, re.DOTALL)
-    assert m, "UNSLOTH_LLAMA_BACKEND block not found in setup.sh"
+    assert m, "UNSLOTH_LLAMA_CPP_BACKEND block not found in setup.sh"
     return m.group(0)
 
 
@@ -38,13 +38,13 @@ def _run(value: str | None, system: str = "Linux") -> tuple[list[str], str]:
     env = {
         k: v
         for k, v in os.environ.items()
-        if k not in ("UNSLOTH_LLAMA_BACKEND", "UNSLOTH_FORCE_VULKAN")
+        if k not in ("UNSLOTH_LLAMA_CPP_BACKEND", "UNSLOTH_FORCE_VULKAN")
     }
     if value is not None:
-        env["UNSLOTH_LLAMA_BACKEND"] = value
+        env["UNSLOTH_LLAMA_CPP_BACKEND"] = value
     harness = (
         f'set -u\n_PREBUILT_CMD=()\nC_WARN=""\nC_OK=""\n_HOST_SYSTEM="{system}"\n'
-        '_source_backend_choice="$(printf \'%s\' "${UNSLOTH_LLAMA_BACKEND:-auto}" '
+        '_source_backend_choice="$(printf \'%s\' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" '
         "| awk '{$1=$1; print tolower($0)}')\"\n"
         '_source_legacy_force_vulkan="$(printf \'%s\' "${UNSLOTH_FORCE_VULKAN:-}" '
         "| awk '{$1=$1; print tolower($0)}')\"\n"
@@ -231,10 +231,10 @@ def test_llama_backend_source_choice_in_setup_sh(
     env = {
         k: v
         for k, v in os.environ.items()
-        if k not in ("UNSLOTH_LLAMA_BACKEND", "UNSLOTH_FORCE_VULKAN")
+        if k not in ("UNSLOTH_LLAMA_CPP_BACKEND", "UNSLOTH_FORCE_VULKAN")
     }
     if backend is not None:
-        env["UNSLOTH_LLAMA_BACKEND"] = backend
+        env["UNSLOTH_LLAMA_CPP_BACKEND"] = backend
     if force_vulkan is not None:
         env["UNSLOTH_FORCE_VULKAN"] = force_vulkan
     harness = (
@@ -268,17 +268,17 @@ def _ps1_search(pattern: str, flags = 0) -> str:
 )
 def test_llama_backend_source_choice_in_setup_ps1(backend, force_vulkan, expected_explicit):
     normalize = _ps1_search(
-        r'\$sourceLlamaBackend = "\$\(\$env:UNSLOTH_LLAMA_BACKEND\)".*?'
+        r'\$sourceLlamaBackend = "\$\(\$env:UNSLOTH_LLAMA_CPP_BACKEND\)".*?'
         r"\$explicitVulkanSourceBuild = \(.*?\n\)\n",
         re.DOTALL,
     )
     env = {
         k: v
         for k, v in os.environ.items()
-        if k not in ("UNSLOTH_LLAMA_BACKEND", "UNSLOTH_FORCE_VULKAN")
+        if k not in ("UNSLOTH_LLAMA_CPP_BACKEND", "UNSLOTH_FORCE_VULKAN")
     }
     if backend is not None:
-        env["UNSLOTH_LLAMA_BACKEND"] = backend
+        env["UNSLOTH_LLAMA_CPP_BACKEND"] = backend
     if force_vulkan is not None:
         env["UNSLOTH_FORCE_VULKAN"] = force_vulkan
     out = subprocess.run(
@@ -301,7 +301,7 @@ def _run_ps1(value: str | None) -> str:
     # The override is normalized (assign + warn) at the top of the prebuilt block and
     # applied to $prebuiltArgs lower down; compose both real snippets.
     normalize = _ps1_search(
-        r"\$llamaBackend = \$sourceLlamaBackend.*?Ignoring UNSLOTH_LLAMA_BACKEND.*?\n\s*\}",
+        r"\$llamaBackend = \$sourceLlamaBackend.*?Ignoring UNSLOTH_LLAMA_CPP_BACKEND.*?\n\s*\}",
         re.DOTALL,
     )
     apply_flag = _ps1_search(
@@ -310,13 +310,13 @@ def _run_ps1(value: str | None) -> str:
     env = {
         k: v
         for k, v in os.environ.items()
-        if k not in ("UNSLOTH_LLAMA_BACKEND", "UNSLOTH_FORCE_VULKAN")
+        if k not in ("UNSLOTH_LLAMA_CPP_BACKEND", "UNSLOTH_FORCE_VULKAN")
     }
     if value is not None:
-        env["UNSLOTH_LLAMA_BACKEND"] = value
+        env["UNSLOTH_LLAMA_CPP_BACKEND"] = value
     harness = (
         "$prebuiltArgs = @()\n"
-        '$sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_BACKEND)".Trim().ToLowerInvariant()\n'
+        '$sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()\n'
         '$sourceLegacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()\n'
         f'{normalize}\n{apply_flag}\n"ARGS:" + ($prebuiltArgs -join ",")'
     )

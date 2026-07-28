@@ -33,7 +33,7 @@ $PackageDir = Split-Path -Parent $ScriptDir
 # errors. Only use "master" temporarily when the latest release is missing
 # support for a new model architecture.
 #
-# UNSLOTH_LLAMA_BACKEND : "auto" (default), "cpu", "vulkan", "hip", or
+# UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "vulkan", "hip", or
 # "rocm". "cpu" forces the CPU-only prebuilt. "vulkan" selects Vulkan even
 # when CUDA or ROCm is detected. "hip"/"rocm" opts out of automatic Vulkan.
 $DefaultLlamaPrForce = ""
@@ -3601,7 +3601,7 @@ $ResolvedSourceUrl = $LlamaSource
 $ResolvedSourceRef = $RequestedLlamaTag
 $ResolvedSourceRefKind = "tag"
 $ResolvedLlamaTag = $RequestedLlamaTag
-$sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_BACKEND)".Trim().ToLowerInvariant()
+$sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
 $sourceLegacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()
 $explicitVulkanSourceBuild = (
     -not $IsMacOS -and
@@ -3861,14 +3861,14 @@ if ($LocalLlamaCppLinked) {
             if ($IsMacOS) {
                 Write-Host "[WARN] Vulkan has no effect on macOS; the universal build uses Metal" -ForegroundColor Yellow
             } elseif ($windowsArm64) {
-                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_LLAMA_BACKEND or compile llama.cpp from source."
+                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_LLAMA_CPP_BACKEND or compile llama.cpp from source."
             } else {
                 $prebuiltArgs += @("--llama-backend", "vulkan")
                 $explicitVulkanBackend = $true
                 Write-Host "  llama.cpp      Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" -ForegroundColor Cyan
             }
         } elseif ($llamaBackend -and $llamaBackend -notin @("auto", "hip", "rocm")) {
-            Write-Host "[WARN] Ignoring UNSLOTH_LLAMA_BACKEND='$llamaBackend' (expected 'auto', 'cpu', 'vulkan', 'hip', or 'rocm')" -ForegroundColor Yellow
+            Write-Host "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$llamaBackend' (expected 'auto', 'cpu', 'vulkan', 'hip', or 'rocm')" -ForegroundColor Yellow
         }
         if (
             -not $IsMacOS -and
