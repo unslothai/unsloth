@@ -123,6 +123,25 @@ jobs:
           UNSLOTH_CLEAN_ALLOW_WORKING='${{ matrix.allow_working }}' \
             bash .github/scripts/clean-machine-assert.sh absent
 
+      - name: Verify the trace actually records
+        if: matrix.mode == 'trace'
+        run: |
+          # `notools` reads an absence, so a shim dir that never reached PATH is
+          # indistinguishable from an installer that touched nothing, and the one leg
+          # carrying that assertion would pass no matter what the installer did.
+          # Prove the wrapper records before trusting an empty file. macOS never
+          # probes git off the --local path, so this must be an explicit call.
+          set -a; . ./clean-machine.env; set +a
+          [ -n "$UNSLOTH_TOOL_TRACE" ] || { echo "::error::trace mode set no UNSLOTH_TOOL_TRACE"; exit 1; }
+          git --version >/dev/null 2>&1 || true
+          if ! grep -q "^git[[:space:]]" "$UNSLOTH_TOOL_TRACE"; then
+            echo "::error::the trace wrapper did not record a git call, so notools proves nothing"
+            echo "PATH=$PATH"; command -v git; cat "$UNSLOTH_TOOL_TRACE" || true
+            exit 1
+          fi
+          echo "trace wrapper records; clearing the self-test entry"
+          : > "$UNSLOTH_TOOL_TRACE"
+
       - name: Install
         id: install
         env:
