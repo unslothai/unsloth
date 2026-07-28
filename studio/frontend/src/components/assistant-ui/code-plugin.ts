@@ -55,13 +55,26 @@ const MIN_INCREMENTAL_CHARS = 2000;
 const REFRESH_MS = 250;
 
 type TokenLine = HighlightResult["tokens"][number];
+type Dispatch = {
+  opts: HighlightOptions;
+  language: BundledLanguage;
+  callback?: (result: HighlightResult) => void;
+};
 type CacheEntry = {
   /** Code the cached tokens were produced from. */
   code: string;
   result: HighlightResult | null;
   /** When inner.highlight() was last dispatched for this key. */
   dispatchedAt: number;
+  /** Trailing re-tokenize that closes out a run of reused results. */
+  trailing: ReturnType<typeof setTimeout> | null;
+  latest: Dispatch | null;
 };
+
+// Unstyled line: no colour fields, so it renders in the default foreground
+// rather than inheriting a neighbouring token's colour.
+const plainLine = (text: string): TokenLine =>
+  [{ content: text, offset: 0 }] as unknown as TokenLine;
 
 export function createCodePlugin(
   options: CodePluginOptions = {},
@@ -69,9 +82,15 @@ export function createCodePlugin(
   const inner = createShikiCodePlugin(options);
   const cache = new Map<string, CacheEntry>();
 
-  // Copies an existing token so dual-theme `variants` stay well-formed.
-  const plainLine = (text: string, template?: TokenLine[number]): TokenLine =>
-    [{ ...(template ?? {}), content: text, offset: 0 }] as TokenLine;
+  const dispatch = (entry: CacheEntry, { opts, language, callback }: Dispatch) => {
+    entry.code = opts.code;
+    entry.dispatchedAt = Date.now();
+    return inner.highlight({ ...opts, language }, (result) => {
+      // Ignore stale results from a superseded dispatch.
+      if (entry.code === opts.code) entry.result = result;
+      callback?.(result);
+    });
+  };
 
   return {
     ...inner,
@@ -87,48 +106,47 @@ export function createCodePlugin(
       }
 
       const key = `${language} ${JSON.stringify(opts.themes)}`;
-      const cached = cache.get(key);
+      let entry = cache.get(key);
+      if (!entry) {
+        entry = { code: "", result: null, dispatchedAt: 0, trailing: null, latest: null };
+        cache.set(key, entry);
+      }
       const now = Date.now();
-      const grewFrom =
-        cached?.result != null &&
-        opts.code.length > cached.code.length &&
-        opts.code.startsWith(cached.code)
-          ? cached
-          : null;
+      const elapsed = now - entry.dispatchedAt;
+      // Kept lines are byte-identical to the cached run (strict prefix), so
+      // their tokens are still correct; only the tail is unstyled.
+      const canReuse =
+        entry.result != null &&
+        opts.code.length > entry.code.length &&
+        opts.code.startsWith(entry.code) &&
+        elapsed < REFRESH_MS;
 
-      // Shiki returns null synchronously and resolves via callback, so
-      // throttling the dispatch is what removes the per-frame work.
-      if (grewFrom && now - grewFrom.dispatchedAt < REFRESH_MS) {
-        const previous = grewFrom.result as HighlightResult;
-        // Drop the cached final line: it may have been cut mid-token.
-        const keptLines = previous.tokens.slice(
-          0,
-          Math.max(0, grewFrom.code.split("\n").length - 1),
-        );
-        const template = previous.tokens[0]?.[0];
-        const tail = opts.code.split("\n").slice(keptLines.length);
-        return {
-          ...previous,
-          tokens: [
-            ...keptLines,
-            ...tail.map((line) => plainLine(line, template)),
-          ],
-        };
+      if (!canReuse) {
+        return dispatch(entry, { opts, language, callback });
       }
 
-      cache.set(key, {
-        code: opts.code,
-        result: cached?.result ?? null,
-        dispatchedAt: now,
-      });
-      return inner.highlight({ ...opts, language }, (result) => {
-        const entry = cache.get(key);
-        // Ignore stale results from a superseded dispatch.
-        if (entry && entry.code === opts.code) {
-          entry.result = result;
-        }
-        callback?.(result);
-      });
+      // Always close out a reused run, so the block cannot be left showing an
+      // unstyled tail if this turns out to be the final render.
+      entry.latest = { opts, language, callback };
+      if (entry.trailing === null) {
+        const wait = Math.max(0, REFRESH_MS - elapsed);
+        entry.trailing = setTimeout(() => {
+          const e = entry as CacheEntry;
+          e.trailing = null;
+          const pending = e.latest;
+          e.latest = null;
+          if (pending) dispatch(e, pending);
+        }, wait);
+      }
+
+      const previous = entry.result as HighlightResult;
+      // Drop the cached final line: it may have been cut mid-token.
+      const keptLines = previous.tokens.slice(
+        0,
+        Math.max(0, entry.code.split("\n").length - 1),
+      );
+      const tail = opts.code.split("\n").slice(keptLines.length);
+      return { ...previous, tokens: [...keptLines, ...tail.map(plainLine)] };
     },
   };
 }
