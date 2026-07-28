@@ -1913,16 +1913,16 @@ def get_chat_template(
 
         assert(type(stop_word) is str)
 
-        # A token_mapping that renames the tokenizer's own eos piece is how the stop word
-        # comes to exist at all: gemma_chatml and gemma2_chatml build <|im_end|> by renaming
-        # <eos>, so that rename is structural, not a preference. Honouring an opt-out here
-        # would rename the piece anyway and then leave eos_token pointing at a token that is
-        # no longer in the vocab, which is worse than ignoring the argument. Keep forcing it
-        # for that shape only, and say so rather than doing it silently.
-        if not map_eos_token and token_mapping is not None and tokenizer.eos_token in token_mapping:
+        # gemma_chatml and gemma2_chatml build <|im_end|> by renaming <eos>, and that rename
+        # runs whether or not the caller opts out, while the rebuilt tokenizer only carries
+        # eos_token = stop_word when the mapping is on: honouring the opt-out here lets the
+        # tokenizer class default re-add <eos> as a fresh id past the end of the embeddings.
+        # Key on the mapping, not on tokenizer.eos_token, or a Gemma checkpoint whose
+        # eos_token is <end_of_turn> (gemma-3-270m-it, gemma-3-1b-it) slips through.
+        if not map_eos_token and yes_map_eos_token and token_mapping is not None:
             logger.warning_once(
-                f"Unsloth: {type_chat_template} builds {stop_word} by renaming "\
-                f"{tokenizer.eos_token}, so map_eos_token = False cannot be honored here."
+                f"Unsloth: {type_chat_template} builds {stop_word} by renaming existing "\
+                f"tokens, so map_eos_token = False cannot be honored here."
             )
             map_eos_token = True
 

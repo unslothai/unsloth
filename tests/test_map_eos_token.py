@@ -5,13 +5,13 @@ the string-template path it was overwritten by the template's own flag, so an
 explicit map_eos_token = False was silently ignored for every template that sets
 yes_map_eos_token = True (chatml, gemma, gemma_chatml, gemma2, gemma2_chatml).
 
-Honouring the opt-out is only coherent when the stop word already exists in the
-vocab. gemma_chatml and gemma2_chatml instead *create* their stop word by renaming
-the tokenizer's own eos piece (`{"<eos>": "<|im_end|>"}`), and that rename happens
-whether or not the caller opts out. Letting the opt-out through for those two would
-rename <eos> away and then skip setting eos_token to the replacement, leaving
-eos_token pointing at a token no longer in the vocab. So those keep forcing the
-mapping, with a warning.
+Honouring the opt-out is only coherent when the template does not rewrite the vocab
+to build its stop word. gemma_chatml and gemma2_chatml *create* their stop word by
+renaming the tokenizer's own eos piece (`{"<eos>": "<|im_end|>"}`), and that rename
+happens whether or not the caller opts out, while the rebuilt tokenizer only carries
+eos_token = stop_word when the mapping is on. Letting the opt-out through for those
+two renames <eos> away and then lets the tokenizer class default re-add it as a new
+out-of-range id. So those keep forcing the mapping, with a warning.
 
 Importing unsloth needs a GPU, so both halves pull the shipped statements out of
 the source with ast, in the same spirit as tests/test_gemma4_chat_template.py
@@ -109,9 +109,11 @@ def test_other_map_eos_token_combinations_are_unchanged():
     assert _resolve(map_eos_token = False, yes_map_eos_token = False)[0] is False
 
 
-def test_opt_out_is_refused_when_the_mapping_renames_the_eos_piece():
+def test_opt_out_is_refused_when_the_template_rewrites_the_vocab():
     # gemma_chatml / gemma2_chatml: <|im_end|> only exists because <eos> is renamed to it,
-    # so the opt-out cannot be honored without leaving eos_token dangling.
+    # so the opt-out cannot be honored without leaving eos_token dangling. This pins the
+    # common shape, where eos_token is the renamed piece; the next test pins the checkpoints
+    # where it is not, which is the case keying on tokenizer.eos_token used to miss.
     resolved, messages = _resolve(
         map_eos_token = False,
         yes_map_eos_token = True,
@@ -122,13 +124,41 @@ def test_opt_out_is_refused_when_the_mapping_renames_the_eos_piece():
     assert messages, "forcing the mapping back on must not be silent"
 
 
-def test_opt_out_still_honored_when_the_mapping_leaves_eos_alone():
-    # A token_mapping that does not touch the tokenizer's eos piece has no such
-    # constraint, so the caller's choice stands.
+def test_opt_out_is_refused_when_eos_token_is_not_the_renamed_piece():
+    # gemma-3-270m-it and gemma-3-1b-it ship eos_token = "<end_of_turn>", not "<eos>", yet
+    # gemma_chatml still renames <eos> away to build <|im_end|>. Keying the guard on
+    # tokenizer.eos_token misses these and rebuilds the tokenizer with no eos_token, so
+    # the class default re-adds the just-removed <eos> as a fresh id past the embeddings.
     resolved, messages = _resolve(
         map_eos_token = False,
         yes_map_eos_token = True,
-        token_mapping = {"<start_of_turn>": "<|im_start|>"},
+        token_mapping = {"<start_of_turn>": "<|im_start|>", "<eos>": "<|im_end|>"},
+        eos_token = "<end_of_turn>",
+    )
+    assert resolved is True
+    assert messages, "forcing the mapping back on must not be silent"
+
+
+def test_a_template_veto_still_wins_over_the_refusal():
+    # The refusal only overrides the caller. A template that does not want eos mapping at
+    # all keeps map_eos_token = False even if it carries a token_mapping.
+    resolved, messages = _resolve(
+        map_eos_token = True,
+        yes_map_eos_token = False,
+        token_mapping = {"<start_of_turn>": "<|im_start|>", "<eos>": "<|im_end|>"},
+        eos_token = "<eos>",
+    )
+    assert resolved is False
+    assert not messages
+
+
+def test_opt_out_still_honored_when_the_template_leaves_the_vocab_alone():
+    # chatml / gemma / gemma2 carry no token_mapping, so nothing is half-applied when the
+    # mapping is skipped and the caller's choice stands.
+    resolved, messages = _resolve(
+        map_eos_token = False,
+        yes_map_eos_token = True,
+        token_mapping = None,
         eos_token = "<eos>",
     )
     assert resolved is False
@@ -136,7 +166,7 @@ def test_opt_out_still_honored_when_the_mapping_leaves_eos_alone():
 
 
 def test_shipped_templates_still_have_the_shape_the_guard_keys_on():
-    """The guard matches on `tokenizer.eos_token in token_mapping`, not on template names.
+    """The guard matches on the template carrying a token_mapping, not on template names.
 
     If gemma_chatml ever stopped renaming <eos>, the guard would quietly stop firing and
     the opt-out would start building the broken tokenizer again, so pin the shape here.
