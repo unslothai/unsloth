@@ -22,6 +22,16 @@ RECIPES_DB = (
 LEGACY_IMPORT = (
     ROOT / "studio" / "frontend" / "src" / "features" / "user-assets" / "legacy-import.tsx"
 ).read_text(encoding = "utf-8")
+EDIT_RECIPE_PAGE = (
+    ROOT
+    / "studio"
+    / "frontend"
+    / "src"
+    / "features"
+    / "data-recipes"
+    / "pages"
+    / "edit-recipe-page.tsx"
+).read_text(encoding = "utf-8")
 PLAYWRIGHT_RECIPE = ROOT / "tests" / "studio" / "playwright_recipe_persistence.py"
 
 
@@ -56,3 +66,8 @@ def test_legacy_import_has_an_indexeddb_claim_when_web_locks_are_unavailable():
     assert "return claimLegacyBrowserDataWithIndexedDb(owner)" in LEGACY_IMPORT
     assert "database.transaction(" in LEGACY_IMPORT
     assert '"readwrite"' in LEGACY_IMPORT
+
+
+def test_recipe_editor_waits_for_authoritative_record_before_rendering():
+    assert "getCachedRecipe" not in EDIT_RECIPE_PAGE
+    assert 'status: "loading"' in EDIT_RECIPE_PAGE

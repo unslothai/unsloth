@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import sys
+from pathlib import Path
+
 import pytest
 
 from core.user_assets_validation import (
@@ -10,6 +13,16 @@ from core.user_assets_validation import (
     validate_recipe_payload,
     validate_timestamp,
 )
+
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def test_persistence_policy_is_declared_as_studio_package_data():
+    tomllib = pytest.importorskip("tomllib" if sys.version_info >= (3, 11) else "tomli")
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding = "utf-8"))
+    studio_files = project["tool"]["setuptools"]["package-data"]["studio"]
+    assert "user_assets_persistence_policy.json" in studio_files
 
 
 def test_timestamp_rejects_values_outside_the_javascript_date_range():

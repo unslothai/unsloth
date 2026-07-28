@@ -189,13 +189,19 @@ def test_completed_execution_persists_when_replaced_job_cannot_verify_artifact(m
 def test_completed_execution_preserves_previously_verified_artifact(monkeypatch):
     user_assets_db.create_recipe("owner", recipe())
     artifact_path = "recipes/recipe_r1"
+    released = []
     monkeypatch.setattr(
         user_assets_recipes,
         "get_job_manager",
         lambda: type(
             "CompletedJobManager",
             (),
-            {"get_owned_completed_artifact_path": lambda *_args: artifact_path},
+            {
+                "get_owned_completed_artifact_path": lambda *_args: artifact_path,
+                "release_completed_artifact_path": (
+                    lambda _self, job_id, owner, path: released.append((job_id, owner, path))
+                ),
+            },
         )(),
     )
     saved = user_assets_recipes.upsert_recipe_execution(
@@ -215,6 +221,7 @@ def test_completed_execution_preserves_previously_verified_artifact(monkeypatch)
         ),
         "owner",
     )
+    assert released == [("completed-job", "owner", artifact_path)]
 
     monkeypatch.setattr(
         user_assets_recipes,
@@ -222,7 +229,10 @@ def test_completed_execution_preserves_previously_verified_artifact(monkeypatch)
         lambda: type(
             "ReplacedJobManager",
             (),
-            {"get_owned_completed_artifact_path": lambda *_args: None},
+            {
+                "get_owned_completed_artifact_path": lambda *_args: None,
+                "release_completed_artifact_path": lambda *_args: None,
+            },
         )(),
     )
     enriched = user_assets_recipes.upsert_recipe_execution(

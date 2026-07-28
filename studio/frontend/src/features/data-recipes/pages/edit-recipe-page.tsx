@@ -2,31 +2,18 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { getAuthSubjectKey, subscribeAuthSubject } from "@/features/auth";
 import {
-  getAuthSubjectKey,
-  subscribeAuthSubject,
-} from "@/features/auth";
-import {
+  type RecipePayload,
   RecipeStudioPage,
   readLegacyRecipeExecutions,
-  type RecipePayload,
 } from "@/features/recipe-studio";
 import { importLegacyUserAssetsFromIndexedDb } from "@/features/user-assets";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
-import {
-  useCallback,
-  useEffect,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { readLegacyRecipes } from "../data/legacy-recipes-db";
-import {
-  getCachedRecipe,
-  getRecipe,
-  primeRecipeCache,
-  saveRecipe,
-} from "../data/recipes-db";
+import { getRecipe, primeRecipeCache, saveRecipe } from "../data/recipes-db";
 import type { RecipeRecord } from "../types";
 
 type EditRecipePageProps = {
@@ -37,13 +24,12 @@ type LoadState = {
   subject: string;
   recipeId: string;
   reloadVersion: number;
-} &
-  (
-    | { status: "loading" }
-    | { status: "missing" }
-    | { status: "error"; error: Error }
-    | { status: "ready"; record: RecipeRecord }
-  );
+} & (
+  | { status: "loading" }
+  | { status: "missing" }
+  | { status: "error"; error: Error }
+  | { status: "ready"; record: RecipeRecord }
+);
 
 function RecipeLoadState({
   title,
@@ -78,7 +64,9 @@ function RecipeLoadState({
   );
 }
 
-export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement {
+export function EditRecipePage({
+  recipeId,
+}: EditRecipePageProps): ReactElement {
   const navigate = useNavigate();
   const subject = useSyncExternalStore(
     subscribeAuthSubject,
@@ -86,19 +74,12 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
     getAuthSubjectKey,
   );
   const [reloadVersion, setReloadVersion] = useState(0);
-  const [loadState, setLoadState] = useState<LoadState>(() => {
-    const cachedRecipe = getCachedRecipe(recipeId);
-    if (cachedRecipe) {
-      return {
-        status: "ready",
-        subject,
-        recipeId,
-        reloadVersion,
-        record: cachedRecipe,
-      };
-    }
-    return { status: "loading", subject, recipeId, reloadVersion };
-  });
+  const [loadState, setLoadState] = useState<LoadState>(() => ({
+    status: "loading",
+    subject,
+    recipeId,
+    reloadVersion,
+  }));
 
   useEffect(() => {
     let active = true;
@@ -176,7 +157,9 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
         loadState.recipeId !== recipeId ||
         loadState.reloadVersion !== reloadVersion
       ) {
-        throw new Error("Recipe persistence account changed. Please try again.");
+        throw new Error(
+          "Recipe persistence account changed. Please try again.",
+        );
       }
       const record = await saveRecipe({
         id: input.id ?? recipeId,

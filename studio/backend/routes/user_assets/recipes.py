@@ -186,8 +186,9 @@ def upsert_recipe_execution(
         exclude = {"id", "recipeId", "revision", "updatedAt"},
         exclude_none = False,
     )
+    manager = get_job_manager()
     if payload.artifact_path is not None:
-        verified_artifact_path = get_job_manager().get_owned_completed_artifact_path(
+        verified_artifact_path = manager.get_owned_completed_artifact_path(
             payload.jobId or "", current_subject
         )
         if verified_artifact_path != payload.artifact_path:
@@ -222,4 +223,8 @@ def upsert_recipe_execution(
         raise_storage(error)
     if record is None:
         raise_not_found()
+    if payload.artifact_path is not None and record.get("artifact_path") == payload.artifact_path:
+        manager.release_completed_artifact_path(
+            payload.jobId or "", current_subject, payload.artifact_path
+        )
     return record

@@ -68,6 +68,7 @@ def _manager_with_active_job():
     m._proc = _FakeProc(alive = True)
     m._mp_q = _ScriptedQueue([])
     m._pump_thread = None
+    m._completed_artifacts = {}
     return m
 
 
@@ -140,6 +141,28 @@ def test_dead_worker_blocks_replacement_until_queued_completion_is_finalized():
     assert not subscription.closed
 
 
+def test_completed_artifact_survives_job_replacement_until_persisted():
+    manager = _manager_with_active_job()
+    completed_job = manager._job
+    manager._handle_event(
+        completed_job,
+        {
+            "type": "job.completed",
+            "artifact_path": "data-recipe-artifact",
+            "execution_type": "full",
+        },
+    )
+    manager._job = Job(job_id = "job-new", owner_subject = "owner-b")
+
+    assert (
+        manager.get_owned_completed_artifact_path("job-test", "owner-a") == "data-recipe-artifact"
+    )
+    assert manager.get_owned_completed_artifact_path("job-test", "owner-b") is None
+
+    manager.release_completed_artifact_path("job-test", "owner-a", "data-recipe-artifact")
+    assert manager.get_owned_completed_artifact_path("job-test", "owner-a") is None
+
+
 def test_replaced_dead_generation_still_retires_its_workflow_key(monkeypatch):
     manager = _manager_with_active_job()
     old_job = manager._job
@@ -180,9 +203,9 @@ def test_pump_survives_handler_exception_and_still_finalizes(monkeypatch):
     pump = threading.Thread(target = m._pump_loop, daemon = True)
     pump.start()
     try:
-        assert _wait_until(
-            lambda: handled == ["log", "progress"]
-        ), "pump must keep processing events after a handler raises"
+        assert _wait_until(lambda: handled == ["log", "progress"]), (
+            "pump must keep processing events after a handler raises"
+        )
         assert pump.is_alive()
     finally:
         m._proc._alive = False  # worker exits -> pump should finalize and stop

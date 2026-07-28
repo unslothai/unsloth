@@ -137,7 +137,7 @@ class Subscription:
             event_id = self._next_id
         body = json.dumps(event, separators = (",", ":"), ensure_ascii = False)
         event_type = event.get("type") or "message"
-        return (f"id: {event_id}\n" f"event: {event_type}\n" f"data: {body}\n\n").encode("utf-8")
+        return (f"id: {event_id}\nevent: {event_type}\ndata: {body}\n\n").encode("utf-8")
 
 
 @dataclass(frozen = True)
@@ -159,6 +159,7 @@ class JobManager:
         self._subs: list[Subscription] = []
         self._pump_thread: threading.Thread | None = None
         self._seq: int = 0
+        self._completed_artifacts: dict[tuple[str, str], str] = {}
 
     def _has_blocking_job_locked(self) -> bool:
         """Check process-global admission while holding ``_lock``."""
@@ -396,16 +397,25 @@ class JobManager:
             return self._job.analysis
 
     def get_owned_completed_artifact_path(self, job_id: str, owner_subject: str) -> str | None:
-        """Return an artifact only while its owning completed job is authoritative."""
+        """Return a completed artifact until its owner persists the terminal snapshot."""
         with self._lock:
             if (
-                self._job is None
-                or self._job.job_id != job_id
-                or self._job.owner_subject != owner_subject
-                or self._job.status != "completed"
+                self._job is not None
+                and self._job.job_id == job_id
+                and self._job.owner_subject == owner_subject
+                and self._job.status == "completed"
             ):
-                return None
-            return self._job.artifact_path
+                return self._job.artifact_path
+            return self._completed_artifacts.get((owner_subject, job_id))
+
+    def release_completed_artifact_path(
+        self, job_id: str, owner_subject: str, artifact_path: str
+    ) -> None:
+        """Release a handoff only after the same artifact is durably persisted."""
+        with self._lock:
+            key = (owner_subject, job_id)
+            if self._completed_artifacts.get(key) == artifact_path:
+                self._completed_artifacts.pop(key, None)
 
     def get_dataset(
         self,
@@ -798,6 +808,10 @@ class JobManager:
                 self._job.execution_type = event.get("execution_type")
                 self._job.dataset = event.get("dataset")
                 self._job.processor_artifacts = event.get("processor_artifacts")
+                if isinstance(self._job.artifact_path, str) and self._job.artifact_path:
+                    self._completed_artifacts[(self._job.owner_subject, self._job.job_id)] = (
+                        self._job.artifact_path
+                    )
                 if self._job.progress.total and self._job.progress.total > 0:
                     self._job.progress.done = self._job.progress.total
                     self._job.progress.percent = 100.0
