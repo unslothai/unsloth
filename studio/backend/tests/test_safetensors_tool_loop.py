@@ -3706,7 +3706,6 @@ class TestGGUFSafetensorsHealingParity:
         # Stripping every non-word character collapsed "C++" and "C#" to "c", so two
         # different plans compared equal and the retry lost its nudge.
         from core.inference.tool_call_parser import is_reprompt_repeat
-
         assert not is_reprompt_repeat("I will search for C#.", "I will search for C++.")
         # A leading mark is part of the term too.
         assert not is_reprompt_repeat("I will search for .NET", "I will search for NET")
