@@ -1688,6 +1688,23 @@ def test_repeat_guard_resets_after_a_tool_runs(monkeypatch):
     assert content_texts[-1] == "Final answer: the square is red."
 
 
+def test_restatement_keeps_deletions_that_change_the_answer():
+    """A dropped word can invert the meaning, so a subset is not a restatement."""
+
+    from core.inference.tool_call_parser import is_reprompt_restatement
+    from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
+
+    previous = "Now I think the feature is not supported in version 1."
+    corrected = "Now I think the feature is supported in version 1."
+    assert not is_reprompt_restatement(corrected, previous)
+    assert not suppress(corrected, previous)
+
+    stall = "I'll search for that now."
+    assert is_reprompt_restatement(stall, stall)
+    assert is_reprompt_restatement("Understood. " + stall, "Understood, " + stall)
+    assert not is_reprompt_restatement(stall + " Tokyo.", stall)
+
+
 def test_forced_turn_suppression_covers_obligation_phrasing():
     from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
     for stall in (

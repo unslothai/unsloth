@@ -3654,6 +3654,9 @@ class TestGGUFSafetensorsHealingParity:
             "First, I will explore",
             "First, let's search the web",
             "First, let us search the web",
+            # Imperative plans carry no pronoun; an action verb is enough.
+            "First, search the web for the latest release notes.",
+            "First, check the documentation.",
             "Here's my plan",
             "Now I need to call web_search",
             # The "let me know" exemption is scoped to "let me", not every
@@ -3677,6 +3680,7 @@ class TestGGUFSafetensorsHealingParity:
             # Hands control back rather than announcing an action.
             "Let me know if you need anything else.",
             "First, the answer is 42",
+            "First, the result is 3.",
         ):
             assert not shared_re.search(plain), f"wrongly fired on {plain!r}"
             assert not shared_fn(plain), f"helper wrongly fired on {plain!r}"

@@ -175,9 +175,13 @@ INTENT_SIGNAL = re.compile(
     # "let me know" hands control back rather than announcing an action.
     r"\b(?:let me|allow me)\b(?!\s+(?:not|never|know)\b)"
     r"|"
-    # Step/plan framing: "First, I ...", "Step 1:", "Here's my plan". "first"
-    # needs first person so "First, the answer is 42" isn't read as a stall.
-    r"\b(?:first,?\s+(?:i|we|let['\u2019]?s|let us)\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
+    # Step/plan framing: "First, I ...", "First, search ...", "Step 1:", "Here's
+    # my plan". "first" needs either first person or an action verb, so the
+    # imperative "First, search the web" still counts while "First, the answer
+    # is 42" does not.
+    r"\b(?:first,?\s+(?:i|we|let['\u2019]?s|let us)\b"
+    r"|first,?\s+(?:call|use|run|search|fetch|render|invoke|query|check|look|find|get)\b"
+    r"|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
     r"|"
     r"\b(?:now i|next i)\b"
     r")"
@@ -216,17 +220,17 @@ def is_reprompt_repeat(text: str, previous: str) -> bool:
     return len(wa & wb) / len(wa | wb) >= REPROMPT_REPEAT_SIMILARITY
 
 
-# Stricter sibling of ``is_reprompt_repeat``: nothing at all was added. Near-repeat
-# is the right test for "stop nudging, it isn't working", but not for "throw the
-# turn away" -- a retry that restates the plan and appends the answer ("... for
-# you: Tokyo.") clears the similarity bar, and dropping it loses the answer.
+# Stricter sibling of ``is_reprompt_repeat``: the retry said the same thing again,
+# word for word. Near-repeat is the right test for "stop nudging, it isn't working",
+# but not for "throw the turn away" -- a retry that keeps the plan and appends the
+# answer ("... for you: Tokyo.") clears the similarity bar, and dropping it loses
+# the answer. Order and deletions are kept: a single dropped word can invert the
+# meaning ("is not supported" -> "is supported"), which a set comparison misses.
 def is_reprompt_restatement(text: str, previous: str) -> bool:
     if not previous:
         return False
     a, b = _normalize_for_repeat(text), _normalize_for_repeat(previous)
-    if not a or not b:
-        return False
-    return set(a.split()) <= set(b.split())
+    return bool(a) and a == b
 
 
 def reprompt_to_act_message(tool_hint: str) -> str:
