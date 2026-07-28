@@ -126,12 +126,82 @@ def test_a_cli_tool_policy_does_not_pull_a_passthrough_request_back():
     )
 
 
+def _tools_priced_by_the_counter(**payload_fields):
+    """Run /chat/count_tokens against a stub backend and report the tool catalog
+    it handed to the tokenizer."""
+    import asyncio
+
+    inference = _route()
+    from models.inference import ChatCountTokensRequest
+
+    seen = []
+
+    class _CountingBackend(_Backend):
+        is_loaded = True
+        model_identifier = "m"
+
+        def count_chat_tokens(self, messages, system = None, tools = None, strict = False):
+            seen.append(tools)
+            return 7
+
+    backend = _CountingBackend()
+    original = inference.get_llama_cpp_backend
+    inference.get_llama_cpp_backend = lambda: backend
+    try:
+        asyncio.run(
+            inference.chat_count_tokens(
+                ChatCountTokensRequest(model = "m", **payload_fields),
+                current_subject = "tester",
+            )
+        )
+    finally:
+        inference.get_llama_cpp_backend = original
+    return seen[0]
+
+
+def test_a_withdrawn_tool_catalog_is_not_priced():
+    """``tool_choice: "none"`` withdraws the caller's catalog from the completion:
+    with no tool history the request leaves the passthrough, and the normal GGUF
+    path calls ``generate_chat_completion``, which takes no tools at all. Handing
+    the catalog to /apply-template then prices schemas nothing renders (#7453).
+    """
+    catalog = [
+        {"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}
+    ]
+    plain = [{"role": "user", "content": "hi"}]
+
+    assert _tools_priced_by_the_counter(messages = plain, tools = catalog, tool_choice = "none") is None
+
+    # The passthrough is the one route that does forward the catalog verbatim, so
+    # it must keep counting it -- tool history satisfies the contract on its own.
+    assert (
+        _tools_priced_by_the_counter(messages = TOOL_HISTORY, tools = catalog, tool_choice = "none")
+        == catalog
+    )
+    assert _tools_priced_by_the_counter(messages = plain, tools = catalog) == catalog
+
+    # response_format takes a withdrawn catalog to the passthrough too, and there
+    # _build_openai_passthrough_body still drops it, so the count must drop it as well.
+    assert (
+        _tools_priced_by_the_counter(
+            messages = plain,
+            tools = catalog,
+            tool_choice = "none",
+            response_format = {"type": "json_object"},
+        )
+        is None
+    )
+
+
 def test_the_counter_and_the_completion_ask_the_same_helper():
     """Two copies of this rule drift, and the drift is invisible: the count just
     quietly describes a different request."""
     src = (BACKEND / "routes/inference.py").read_text(encoding = "utf-8")
     calls = re.findall(r"(?<!def )_takes_tool_passthrough\(payload, llama_backend\)", src)
     assert len(calls) == 2, calls
+    # Same for which client tools reach the wire: the passthrough body and the counter.
+    tool_rule = re.findall(r"(?<!def )_passthrough_client_tools\(payload\)", src)
+    assert len(tool_rule) == 2, tool_rule
 
 
 def test_an_unowned_runtime_getter_is_declined():

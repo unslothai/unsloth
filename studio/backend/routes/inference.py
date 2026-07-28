@@ -2198,6 +2198,22 @@ def _takes_tool_passthrough(payload, llama_backend) -> bool:
     return _extract_response_format(payload) is not None
 
 
+def _passthrough_client_tools(payload):
+    """The caller's own tool catalog exactly as the passthrough puts it on the wire.
+
+    ``tool_choice: "none"`` withdraws the catalog, but only when no tool history
+    needs those schemas to replay. llama-server renders whatever ``tools`` reaches
+    ``/apply-template`` regardless of tool_choice (it goes straight into the Jinja
+    context), so the counter has to apply this same rule or it prices a catalog the
+    completion never sends.
+    """
+    if getattr(payload, "tool_choice", None) == "none" and not _has_openai_tool_history(
+        payload.messages
+    ):
+        return None
+    return payload.tools or None
+
+
 def _permission_mode_confirm(payload) -> bool:
     """Effective confirm-gate intent for Unsloth's own local tool loop.
 
@@ -13656,7 +13672,14 @@ async def chat_count_tokens(
     # Normalize system turns as the completion path does, so this renders as the next request.
     _system_prompt, _, _ = _extract_content_parts(payload.messages)
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
-    openai_tools = payload.tools or None
+    # The passthrough is the one route that puts the caller's own catalog on the wire, and
+    # only under the rule _passthrough_client_tools states. Every other route renders tools
+    # solely from the selection below, which reassigns openai_tools, and
+    # generate_chat_completion takes no tools argument at all -- so a catalog surviving here
+    # prices schemas the completion never sends. tool_choice "none" is how that happens on
+    # well-formed input: it withdraws the catalog from the completion and disables the
+    # selection, leaving payload.tools as the only thing /apply-template still renders.
+    openai_tools = _passthrough_client_tools(payload) if _takes_passthrough else None
     model_name = _llama_public_model_id(llama_backend, payload.model)
 
     from state.tool_policy import get_tool_policy as _get_tool_policy_ct
@@ -15720,9 +15743,7 @@ def _build_openai_passthrough_body(
     system_prompt, _, _ = _extract_content_parts(payload.messages)
     messages = _set_or_prepend_system_message(messages, system_prompt)
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
-    tools = payload.tools
-    if payload.tool_choice == "none" and not _has_openai_tool_history(payload.messages):
-        tools = None
+    tools = _passthrough_client_tools(payload)
     # Forward per-request reasoning fields (enable_thinking / reasoning_effort /
     # preserve_thinking) via chat_template_kwargs so the Jinja template renders
     # in the caller's mode, gated on the active template's capabilities exactly
