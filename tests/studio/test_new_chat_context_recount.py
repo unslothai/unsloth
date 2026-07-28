@@ -80,7 +80,7 @@ def _refresh_module_body() -> str:
     """Everything in refresh-context-usage.ts after its import block, verbatim."""
     text = _read(REFRESH)
     marker = 'from "./chat-history-storage";'
-    return text[text.index(marker) + len(marker):]
+    return text[text.index(marker) + len(marker) :]
 
 
 def _new_chat_effect_body() -> str:
@@ -98,15 +98,9 @@ def _new_chat_effect_body() -> str:
 def _store_reducers() -> str:
     """setActiveThreadId / setContextUsage / setThreadContextUsage, verbatim."""
     text = _read(STORE)
-    active = _slice_between(
-        text, "setActiveThreadId: (activeThreadId) =>", "setActiveProjectId:"
-    )
-    usage = _slice_between(
-        text, "setContextUsage: (contextUsage) =>", "setThreadContextUsage:"
-    )
-    thread_usage = _slice_between(
-        text, "setThreadContextUsage: (threadId, usage) =>", "}));"
-    )
+    active = _slice_between(text, "setActiveThreadId: (activeThreadId) =>", "setActiveProjectId:")
+    usage = _slice_between(text, "setContextUsage: (contextUsage) =>", "setThreadContextUsage:")
+    thread_usage = _slice_between(text, "setThreadContextUsage: (threadId, usage) =>", "}));")
     return "  " + active.strip() + "\n  " + usage.strip() + "\n  " + thread_usage.strip()
 
 
@@ -311,9 +305,9 @@ def test_new_chat_recounts_against_a_resident_model():
     assert out["switched"] == 1, "the effect must still switch to a fresh local thread"
     assert out["activeThreadId"] is None
     assert out["counts"] == 1, "the empty New Chat view must ask the backend for a count"
-    assert out["contextUsage"] is not None, (
-        "the bar stays hidden on a New Chat opened against an already-loaded GGUF"
-    )
+    assert (
+        out["contextUsage"] is not None
+    ), "the bar stays hidden on a New Chat opened against an already-loaded GGUF"
     assert out["contextUsage"]["totalTokens"] == 12
     assert out["contextUsage"]["completionTokens"] == 0
 
