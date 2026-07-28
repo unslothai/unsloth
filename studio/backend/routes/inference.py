@@ -729,6 +729,15 @@ _OPENAI_PASSTHROUGH_TERMINAL_GRACE_S = 2.0
 _SSE_DONE_LINE = "data: [DONE]"
 
 
+def _sse_chunk_ends_the_stream(chunk) -> bool:
+    """True for the chunk carrying the trailing ``data: [DONE]`` sentinel.
+
+    Delta chunks are one JSON line ending in ``}``, so only the two terminal
+    emitters match: the normal end of stream and ``_openai_stream_error_sse``.
+    """
+    return isinstance(chunk, str) and chunk.rstrip().endswith(_SSE_DONE_LINE)
+
+
 def _openai_passthrough_sse_line_terminal_state(raw_line: str) -> Optional[str]:
     """Classify OpenAI-compatible chat stream terminal markers.
 
@@ -2440,10 +2449,17 @@ async def _await_cancel_or_disconnect_then_close_client(
         return
 
 
-async def _stop_local_disconnect_cancel_watcher(watcher) -> None:
+async def _stop_local_disconnect_cancel_watcher(watcher, timeout_s: float = 5.0) -> None:
+    # Bounded: this runs in the stream's finally, so awaiting the watcher
+    # outright would let a wedged poll loop hold the response open forever.
+    # asyncio.wait never cancels its argument and never re-raises. Abandoning
+    # the watcher is safe -- it owns no resources.
     watcher.cancel()
+    done, _pending = await asyncio.wait({watcher}, timeout = timeout_s)
+    if not done:
+        return
     try:
-        await watcher
+        watcher.result()
     except (asyncio.CancelledError, Exception):
         pass
 
@@ -9697,6 +9713,8 @@ async def openai_chat_completions(
                         try:
                             async for chunk in iterator:
                                 yield chunk
+                                if lease is not None and _sse_chunk_ends_the_stream(chunk):
+                                    lease.release()
                         except asyncio.CancelledError:
                             stream_cancelled = True
                             raise
@@ -10231,6 +10249,15 @@ async def openai_chat_completions(
                     try:
                         async for chunk in iterator:
                             yield chunk
+                            # Decoding is over at [DONE]: llama-server released
+                            # its slot, and the sync generator's httpx client is
+                            # already closed. The finally below only runs once
+                            # the ASGI body is torn down, so keeping the slot
+                            # until then starves the next request on any wedged
+                            # teardown. release() is idempotent, so the finally
+                            # stays the backstop.
+                            if lease is not None and _sse_chunk_ends_the_stream(chunk):
+                                lease.release()
                     except asyncio.CancelledError:
                         stream_cancelled = True
                         raise
