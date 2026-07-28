@@ -829,16 +829,14 @@ def test_ollama_models_are_not_advertised_as_api_loadable():
     the auto-switch index and no OpenAI request can resolve it. target.isGguf is
     still true for one, so gating on that alone mirrored settings the API can
     never apply and told the user the opposite."""
-    types_src = " ".join(
-        _read("features/model-picker/components/model-selector/types.ts").split()
-    )
+    types_src = " ".join(_read("features/model-picker/components/model-selector/types.ts").split())
     assert "apiLoadable?: boolean;" in types_src
     hub = " ".join(_read("features/hub/hub-page.tsx").split())
-    assert 'row.source !== LOCAL_MODEL_SOURCE.OLLAMA' in hub
-    assert 'apiLoadable:' in hub
+    assert "row.source !== LOCAL_MODEL_SOURCE.OLLAMA" in hub
+    assert "apiLoadable:" in hub
     backend = (
         WORKDIR / "studio" / "backend" / "core" / "inference" / "local_model_resolver.py"
     ).read_text(encoding = "utf-8")
-    assert "Ollama's\n    scanner is skipped" in backend or "scanner is skipped" in backend, (
-        "the rule this mirrors"
-    )
+    assert (
+        "Ollama's\n    scanner is skipped" in backend or "scanner is skipped" in backend
+    ), "the rule this mirrors"
