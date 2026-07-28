@@ -148,8 +148,7 @@ def test_bitsandbytes_guard_clears_8bit_as_well_as_4bit():
         for node in ast.walk(tree)
         if isinstance(node, ast.If)
         and any(
-            isinstance(n, ast.Name) and n.id == "ALLOW_BITSANDBYTES"
-            for n in ast.walk(node.test)
+            isinstance(n, ast.Name) and n.id == "ALLOW_BITSANDBYTES" for n in ast.walk(node.test)
         )
     ]
     assert len(guards) == 2, f"expected both loader guards, found {len(guards)}"
@@ -163,6 +162,7 @@ def test_bitsandbytes_guard_clears_8bit_as_well_as_4bit():
             and isinstance(stmt.value, ast.Constant)
             and stmt.value.value is False
         }
-        assert {"load_in_4bit", "load_in_8bit"} <= cleared, (
-            f"guard at line {guard.lineno} clears only {sorted(cleared)}"
-        )
+        assert {
+            "load_in_4bit",
+            "load_in_8bit",
+        } <= cleared, f"guard at line {guard.lineno} clears only {sorted(cleared)}"
