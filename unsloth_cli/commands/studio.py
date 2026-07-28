@@ -2453,6 +2453,17 @@ def _pid_file_entries() -> "list[tuple[int, list[Path]]]":
     return list(by_pid.items())
 
 
+def _pid_is_studio_server(pid: int) -> bool:
+    """Guard against PID reuse: a stale record must not get an unrelated process
+    killed. Unknowable without psutil, so trust the record there."""
+    try:
+        import psutil
+        cmdline = " ".join(psutil.Process(pid).cmdline()).lower()
+    except Exception:
+        return True
+    return "run.py" in cmdline or "unsloth" in cmdline
+
+
 def _signal_stop(pid: int) -> "str | None":
     """SIGTERM (or taskkill) the pid. Returns an error string, or None on success."""
     import signal as _signal
@@ -2483,7 +2494,7 @@ def stop():
 
     signalled, failed = [], []
     for pid, paths in entries:
-        if not _pid_alive(pid):
+        if not _pid_alive(pid) or not _pid_is_studio_server(pid):
             for path in paths:
                 path.unlink(missing_ok = True)
             continue
