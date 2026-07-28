@@ -420,9 +420,7 @@ def get_remote_changelog(refresh: bool = False) -> ChangelogSource:
 
         ttl = CHANGELOG_SUCCESS_TTL_SECONDS if source.text else CHANGELOG_FAILURE_TTL_SECONDS
         with _cache_condition:
-            _remote_cache = _ChangelogCacheEntry(
-                source = source, expires_at = time.monotonic() + ttl
-            )
+            _remote_cache = _ChangelogCacheEntry(source = source, expires_at = time.monotonic() + ttl)
         return source
     finally:
         # Releasing the single-flight flag only on the Exception path would
