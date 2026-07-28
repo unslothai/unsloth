@@ -353,9 +353,12 @@ _FORCED_PLAN_INTENT = re.compile(
     r"\s+(?:\w+\s+){0,2}?(?:call|use|run|search|fetch|render)\b",
     re.I | re.M,
 )
+# "the answer is not in the context" announces a *missing* answer, so the negated
+# forms are excluded or the plan behind them would ship as the final response.
 _FINAL_ANSWER_SIGNAL = re.compile(
-    r"\b(?:final\s+answer|answer\s*:|(?:the\s+)?answer\s+is|here\s+is|here's"
-    r"|in\s+summary|to\s+summari[sz]e|result\s*:)\b",
+    r"\b(?:final\s+answer|answer\s*:|here\s+is|here's|in\s+summary"
+    r"|to\s+summari[sz]e|result\s*:"
+    r"|(?:the\s+)?answer\s+is(?!\s+(?:not|unavailable|unknown|unclear|missing)\b))\b",
     re.I,
 )
 # A plan that pivots ("I should call web_search, but Tokyo is the capital") has an

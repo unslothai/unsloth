@@ -211,8 +211,9 @@ def is_short_intent_without_action(text: str) -> bool:
 _REPEAT_TRAIL_PUNCT = ".,;:!?\"'`()[]{}<>‘’“”"
 _REPEAT_LEAD_PUNCT = "\"'`([{‘“"
 # Wording that can drift between two attempts without the attempt changing.
+# Articles stay out: "The Who" and "Who" are different search targets.
 _REPEAT_FILLER = frozenset(
-    {"a", "an", "the", "now", "then", "just", "so", "ok", "okay", "please", "also", "again"}
+    {"now", "then", "just", "so", "ok", "okay", "please", "also", "again"}
 )
 
 

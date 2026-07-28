@@ -1724,6 +1724,9 @@ def test_forced_turn_suppression_covers_obligation_phrasing():
         # Subjectless modals, not just subjectless semi-modals.
         "Must call web_search now.",
         "Should search the web now.",
+        # A missing answer is not a final answer: the plan behind it is still a stall.
+        "I should call web_search because the answer is not in the provided context",
+        "I must run the search since the answer is unknown so far",
     ):
         assert suppress(stall), f"leaked {stall!r}"
 
