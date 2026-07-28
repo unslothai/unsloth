@@ -16,9 +16,7 @@ cuda_available = torch.cuda.is_available()
 xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
 dev = "cuda" if cuda_available else "xpu" if xpu_available else "cpu"
 
-pytestmark = pytest.mark.skipif(
-    not (cuda_available or xpu_available), reason = "needs CUDA or XPU"
-)
+pytestmark = pytest.mark.skipif(not (cuda_available or xpu_available), reason = "needs CUDA or XPU")
 
 
 def _reference(X, weight, scale, block):

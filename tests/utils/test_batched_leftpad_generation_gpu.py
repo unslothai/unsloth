@@ -19,9 +19,7 @@ device = "cuda" if cuda_available else "xpu" if xpu_available else "cpu"
 # XPU currently diverges here, so run it non-strict rather than hiding the gap
 # behind a CUDA-only guard: the xfail turns green the moment XPU is fixed.
 pytestmark = [
-    pytest.mark.skipif(
-        not (cuda_available or xpu_available), reason = "requires a CUDA or XPU GPU"
-    ),
+    pytest.mark.skipif(not (cuda_available or xpu_available), reason = "requires a CUDA or XPU GPU"),
     pytest.mark.xfail(
         xpu_available and not cuda_available,
         reason = "batched left-padded generation diverges on XPU",
