@@ -1548,6 +1548,26 @@ async function autoLoadSmallestModel(): Promise<{
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
   const skippedAutoLoadCandidates = new Set<string>();
+  // Why the last attempted load failed, set only when /api/inference/load
+  // itself rejected, so enumeration hiccups (variant listing, validate) keep
+  // their existing fall-through behaviour. Boxed because a plain `let` assigned
+  // only inside a nested function narrows to `null` under control-flow
+  // analysis, which would make every read below a `never`.
+  const loadFailure: { current: { label: string; detail: string } | null } = {
+    current: null,
+  };
+
+  function noteLoadFailure(label: string, error: unknown): void {
+    const detail =
+      error instanceof Error && error.message.trim() ? error.message.trim() : "";
+    loadFailure.current = {
+      label,
+      // Older backends (and non-Error throws) carry no detail; still name the
+      // model that failed rather than silently fetching a different one.
+      detail:
+        detail || "The server did not report a reason. Check the Studio logs.",
+    };
+  }
 
   async function canAutoLoad(payload: {
     model_path: string;
@@ -1593,6 +1613,9 @@ async function autoLoadSmallestModel(): Promise<{
     }
     const currentStore = useChatRuntimeStore.getState();
     const modelPath = candidate.loadId ?? candidate.id;
+    const failureLabel = candidate.ggufVariant
+      ? `${candidate.id} (${candidate.ggufVariant})`
+      : candidate.id;
     const { config } = resolveInitialConfig(candidate.id, candidate.ggufVariant);
     const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
       modelId: candidate.id,
@@ -1689,6 +1712,12 @@ async function autoLoadSmallestModel(): Promise<{
             gpu_ids: effectiveGpuIds ?? undefined,
           }
         : {}),
+    }).catch((error: unknown) => {
+      // The sweep's parameterless catches discard this error, which is what let
+      // a genuine load failure fall through to the "no downloaded models" Hub
+      // download. Rethrowing keeps the awaited type and their control flow.
+      noteLoadFailure(failureLabel, error);
+      throw error;
     });
     // Only persist the global preference when the value came from the global
     // settings. A per-model config's choice must stay load-local, or autoloading
@@ -1958,8 +1987,19 @@ async function autoLoadSmallestModel(): Promise<{
 
     // Cap also gates the default download, so total /api/inference/load
     // budget across cached + fallback is MAX_AUTO_LOAD_ATTEMPTS, not +1.
-    if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
+    // A cached model that was tried and failed stops here too: the user has
+    // models on disk, so the reason is the useful answer and pulling an
+    // unrelated default off the Hub is not. A device with nothing cached never
+    // sets loadFailure and still falls through to the download below.
+    if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS || loadFailure.current) {
       toast.dismiss(toastId);
+      if (loadFailure.current) {
+        toast.error(`Could not load ${loadFailure.current.label}`, {
+          description: loadFailure.current.detail,
+          duration: 10000,
+          closeButton: true,
+        });
+      }
       return {
         loaded: false,
         blockedByTrustRemoteCode:
