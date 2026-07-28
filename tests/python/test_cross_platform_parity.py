@@ -866,11 +866,10 @@ class TestNoTorchPersistenceParity:
 
 class TestAmdBnbFloorParity:
     """bitsandbytes <= 0.49.2 NaNs at 4-bit decode shape on every AMD GPU; the ROCm
-    4-bit GEMV fix (bnb #1887) first ships on PyPI in 0.50.0. The `amd` extra, the
-    install.sh PyPI fallback and the Studio stack fallback are three separate ways a
-    supported AMD flow resolves bitsandbytes, so all three must carry the same floor
-    -- otherwise the pre-release wheel path being unreachable silently reinstates the
-    broken range."""
+    4-bit GEMV fix (bnb #1887) first ships on PyPI in 0.50.0. The `amd` extra,
+    install.sh and the Studio stack resolve bitsandbytes independently, so all three
+    must carry the same floor or an unreachable pre-release wheel silently reinstates
+    the broken range."""
 
     FLOOR = "0.50.0"
     PYPROJECT = REPO_ROOT / "pyproject.toml"
@@ -908,8 +907,8 @@ class TestAmdBnbFloorParity:
                     )
 
     def test_fallback_is_not_reported_as_broken(self):
-        """The fallback now installs the first fixed release, so neither installer may
-        still tell the user it leaves 4-bit decode broken on ROCm."""
+        """The fallback now installs the first fixed release, so neither installer
+        may still call 4-bit decode broken on ROCm."""
         for path in (INSTALL_SH, STACK_PY):
             text = path.read_text(encoding = "utf-8")
             assert (

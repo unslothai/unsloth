@@ -426,9 +426,8 @@ _GFX_TO_AMD_INDEX_ARCH: dict[str, str] = {
 }
 
 # bitsandbytes continuous-release_main wheels with the ROCm 4-bit GEMV fix
-# (bnb PR #1887, post-0.49.2). bnb <= 0.49.2 NaNs at decode shape on every
-# AMD GPU. PyPI 0.50.0 (2026-07-24) is the first release carrying that fix, so
-# _BNB_ROCM_PYPI_FALLBACK below is a safe floor when these URLs are unreachable.
+# (bnb #1887, post-0.49.2). bnb <= 0.49.2 NaNs at decode shape on every AMD GPU;
+# PyPI 0.50.0 is the first release with the fix, so the fallback below is safe.
 _BNB_ROCM_PRERELEASE_URLS: dict[str, str] = {
     "x86_64": (
         "https://github.com/bitsandbytes-foundation/bitsandbytes/releases/"
@@ -1247,14 +1246,10 @@ _rocm_windows_torch_installed: bool = False
 def _install_bnb_windows_rocm() -> bool:
     """Install the AMD Windows BNB prerelease wheel. Returns True on success.
 
-    The continuous-release wheel is intentionally mismatched: the filename
-    encodes 1.33.7.preview (parsed as 1.33.7rc0 by PEP 440) while the wheel
-    metadata reports 0.50.x.dev0. uv rejects this filename/metadata mismatch,
-    and bypassing it with UV_SKIP_WHEEL_FILENAME_CHECK still leaves uv mangling
-    the bitsandbytes install. Per the AMD install guide
-    (https://unsloth.ai/docs/get-started/install/amd/amd-hackathon) the wheel
-    must be installed with plain pip, not uv, so we force pip (force_pip=True);
-    plain pip performs no wheel filename/metadata check.
+    The wheel's filename version (1.33.7.preview, PEP 440 1.33.7rc0) does not
+    match its metadata (0.50.x.dev0). uv rejects the mismatch and still mangles
+    the install under UV_SKIP_WHEEL_FILENAME_CHECK, so force plain pip, which
+    performs no such check.
     """
     _bnb_win_url = _BNB_ROCM_PRERELEASE_URLS.get("win_amd64")
     if _bnb_win_url is None:
