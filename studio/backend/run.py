@@ -689,6 +689,29 @@ def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
     return None
 
 
+def _get_pids_on_port(port: int) -> "list[tuple[int, str]]":
+    """Every listener on *port*. A port can have one per bind address, and
+    checking only the first makes the own-Studio decision arbitrary."""
+    try:
+        import psutil
+    except ImportError:
+        return []
+    found: "dict[int, str]" = {}
+    try:
+        for conn in psutil.net_connections(kind = "tcp"):
+            if conn.status != "LISTEN" or conn.laddr.port != port or conn.pid is None:
+                continue
+            if conn.pid in found:
+                continue
+            try:
+                found[conn.pid] = psutil.Process(conn.pid).name()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                found[conn.pid] = "<unknown>"
+    except (psutil.AccessDenied, OSError) as e:
+        logger.debug("Failed to scan network connections for port %s: %s", port, e)
+    return list(found.items())
+
+
 def _is_port_free(host: str, port: int) -> bool:
     """Check if a port is available for binding.
 
@@ -745,9 +768,9 @@ def _find_free_port(
         if _is_port_free(host, candidate):
             return candidate
         if avoid_own_studio:
-            blocker = _get_pid_on_port(candidate)
-            if _blocker_is_own_studio(blocker):
-                _abort_already_running(blocker[0], candidate)
+            own = _blocker_is_own_studio(_get_pids_on_port(candidate))
+            if own is not None:
+                _abort_already_running(own, candidate)
     raise RuntimeError(f"Could not find a free port in range {start}-{start + max_attempts - 1}")
 
 
@@ -779,43 +802,75 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _pid_is_studio_backend(pid: int) -> bool:
-    """Guard against PID reuse: a stale record must not block an unrelated process."""
+def _process_create_time(pid: int) -> "float | None":
+    try:
+        import psutil
+        return psutil.Process(pid).create_time()
+    except Exception:
+        return None
+
+
+def _read_pid_record(path: Path) -> "tuple[int, float | None] | None":
+    """Parse ``pid`` / optional ``create_time`` from a PID file."""
+    try:
+        lines = path.read_text(encoding = "utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not lines or not lines[0].strip().isdigit():
+        return None
+    created = None
+    if len(lines) > 1:
+        try:
+            created = float(lines[1].strip())
+        except ValueError:
+            created = None
+    return int(lines[0].strip()), created
+
+
+def _pid_is_studio_backend(pid: int, created: "float | None" = None) -> bool:
+    """Guard against PID reuse.
+
+    Start time is the reliable signal; the cmdline check only covers legacy
+    records that predate it, and must not match `unsloth train` or a stray run.py.
+    """
+    if created is not None:
+        actual = _process_create_time(pid)
+        # Unknowable without psutil: trust the record rather than guess.
+        return actual is None or abs(actual - created) < 1.0
     try:
         import psutil
         cmdline = " ".join(psutil.Process(pid).cmdline()).lower()
     except Exception:
         return True
-    return "run.py" in cmdline or "unsloth" in cmdline
+    return "run.py" in cmdline and "studio" in cmdline
 
 
-def _blocker_is_own_studio(blocker: "tuple[int, str] | None") -> bool:
-    """True when the process holding the port is a server we recorded."""
-    if not blocker:
-        return False
-    return blocker[0] in _recorded_studio_pids() and _pid_is_studio_backend(blocker[0])
+def _blocker_is_own_studio(blockers: "list[tuple[int, str]]") -> "int | None":
+    """PID of one of our recorded servers holding the port, if any."""
+    recorded = _recorded_studio_records()
+    for pid, _name in blockers:
+        if pid in recorded and _pid_is_studio_backend(pid, recorded[pid]):
+            return pid
+    return None
 
 
-def _recorded_studio_pids() -> "set[int]":
-    """Live PIDs recorded under this STUDIO_HOME; prunes dead records."""
-    pids: "set[int]" = set()
+def _recorded_studio_records() -> "dict[int, float | None]":
+    """Live {pid: create_time} recorded under this STUDIO_HOME; prunes dead records."""
+    records: "dict[int, float | None]" = {}
     try:
         paths = list(_studio_root().glob(PID_FILE_GLOB)) + [_PID_FILE]
     except OSError:
-        return pids
+        return records
     for path in paths:
-        try:
-            text = path.read_text(encoding = "utf-8").strip()
-        except (OSError, UnicodeDecodeError):
+        record = _read_pid_record(path)
+        if record is None:
             continue
-        if not text.isdigit():
-            continue
-        pid = int(text)
+        pid, created = record
         if _pid_alive(pid):
-            pids.add(pid)
+            records.setdefault(pid, created)
         elif path != _PID_FILE:
             path.unlink(missing_ok = True)
-    return pids
+    return records
 
 
 def _abort_already_running(pid: int, port: int) -> "NoReturn":
@@ -861,8 +916,12 @@ def _write_pid_file(port: int):
     path = _pid_file_for_port(port)
     try:
         path.parent.mkdir(parents = True, exist_ok = True)
-        path.write_text(str(os.getpid()), encoding = "utf-8")
-        # An older CLI's `stop` only reads this one.
+        # Start time pins the record to this process, so a reused PID is not
+        # mistaken for it later.
+        created = _process_create_time(os.getpid())
+        body = str(os.getpid()) if created is None else f"{os.getpid()}\n{created!r}"
+        path.write_text(body, encoding = "utf-8")
+        # An older CLI's `stop` only reads this one, and expects a bare PID.
         _PID_FILE.write_text(str(os.getpid()), encoding = "utf-8")
     except OSError:
         return
@@ -874,11 +933,12 @@ def _remove_pid_file():
     if _OWN_PID_FILE is None:
         return
     for path in (_OWN_PID_FILE, _PID_FILE):
-        try:
-            if path.is_file() and path.read_text(encoding = "utf-8").strip() == str(os.getpid()):
+        record = _read_pid_record(path) if path.is_file() else None
+        if record is not None and record[0] == os.getpid():
+            try:
                 path.unlink(missing_ok = True)
-        except (OSError, UnicodeDecodeError):
-            pass
+            except OSError:
+                pass
 
 
 def _graceful_shutdown(server = None):
@@ -1625,8 +1685,9 @@ def run_server(
         original_port = port
         blocker = _get_pid_on_port(port)
         # Falling back past our own server is what creates the orphan.
-        if _blocker_is_own_studio(blocker):
-            _abort_already_running(blocker[0], port)
+        own = _blocker_is_own_studio(_get_pids_on_port(port))
+        if own is not None:
+            _abort_already_running(own, port)
         port = _find_free_port(host, port + 1, avoid_own_studio = True)
         if not silent:
             print("")

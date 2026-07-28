@@ -27,6 +27,10 @@ def _studio():
     return _studio_mod
 
 
+# Captured before _install stubs it, for the tests that exercise it.
+_REAL_IS_STUDIO_SERVER = _studio()._pid_is_studio_server
+
+
 def _install(
     monkeypatch,
     tmp_path,
@@ -44,7 +48,7 @@ def _install(
     killed = killed if killed is not None else []
 
     monkeypatch.setattr(studio_mod, "_pid_alive", lambda pid: pid in live)
-    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid: True)
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created = None: True)
 
     def fake_kill(pid, _sig):
         killed.append(pid)
@@ -100,7 +104,7 @@ def test_stop_signals_each_server_once(monkeypatch, tmp_path):
     monkeypatch.setattr(studio_mod, "_PID_FILE", tmp_path / "studio.pid")
     monkeypatch.setattr(studio_mod.time, "sleep", lambda _s: None)
     monkeypatch.setattr(studio_mod, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid: True)
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created = None: True)
     killed = []
     monkeypatch.setattr(studio_mod.os, "kill", lambda pid, _sig: killed.append(pid))
     monkeypatch.setattr(sys, "platform", "linux")
@@ -130,7 +134,7 @@ def test_stop_does_not_signal_a_reused_pid(monkeypatch, tmp_path):
     # Crash leaves a per-port file behind, the OS hands that PID to something
     # else: stop must drop the record, not SIGTERM an unrelated process.
     studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550})
-    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid: False)
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created = None: False)
     _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
 
     result = _run_stop(studio_mod)
@@ -149,6 +153,8 @@ def test_pid_identity_check_trusts_the_record_without_psutil(monkeypatch):
 
 
 def test_pid_identity_check_matches_a_studio_command_line(monkeypatch):
+    # Legacy records carry no start time, so fall back to the command line -- but
+    # `unsloth train` and a stray run.py must not match.
     studio_mod = _studio()
 
     class _FakeProcess:
@@ -158,12 +164,55 @@ def test_pid_identity_check_matches_a_studio_command_line(monkeypatch):
         def cmdline(self):
             if self.pid == 8550:
                 return ["/venv/bin/python", "/pkg/studio/backend/run.py", "--port", "8901"]
-            return ["/usr/bin/postgres", "-D", "/var/lib/pg"]
+            return ["/venv/bin/python", "-m", "unsloth", "train", "run.py"]
+
+        def create_time(self):
+            return 111.5
 
     monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process = _FakeProcess))
 
     assert studio_mod._pid_is_studio_server(8550) is True
     assert studio_mod._pid_is_studio_server(9999) is False
+
+
+def test_pid_identity_check_uses_the_recorded_start_time(monkeypatch):
+    studio_mod = _studio()
+
+    class _FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def create_time(self):
+            return 111.5
+
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process = _FakeProcess))
+
+    assert studio_mod._pid_is_studio_server(8550, created = 111.5) is True
+    assert studio_mod._pid_is_studio_server(8550, created = 999.0) is False
+
+
+def test_stop_drops_a_record_whose_start_time_no_longer_matches(monkeypatch, tmp_path):
+    # The PID was reused: same number, different process.
+    studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550})
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", _REAL_IS_STUDIO_SERVER)
+
+    class _FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def create_time(self):
+            return 999.0
+
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process = _FakeProcess))
+    (tmp_path / "studio-8901-8550.pid").write_text("8550\n111.5", encoding = "utf-8")
+
+    result = _run_stop(studio_mod)
+
+    assert result.exit_code == 0, result.output
+    assert killed == []
+    assert not (tmp_path / "studio-8901-8550.pid").exists()
+    # Dropped for the start-time mismatch, not because the record looked corrupt.
+    assert "invalid pid file" not in result.output.lower()
 
 
 def test_stop_reads_the_legacy_single_pid_file(monkeypatch, tmp_path):
@@ -205,7 +254,7 @@ def test_stop_does_not_claim_a_stop_while_a_server_is_still_alive(monkeypatch, t
     monkeypatch.setattr(studio_mod, "_PID_FILE", tmp_path / "studio.pid")
     monkeypatch.setattr(studio_mod.time, "sleep", lambda _s: None)
     monkeypatch.setattr(studio_mod, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid: True)
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created = None: True)
     monkeypatch.setattr(studio_mod.os, "kill", lambda pid, sig: None)
     monkeypatch.setattr(sys, "platform", "linux")
     _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
@@ -225,7 +274,7 @@ def test_stop_continues_after_one_server_fails_to_stop(monkeypatch, tmp_path):
     monkeypatch.setattr(studio_mod.time, "sleep", lambda _s: None)
     live = {8550, 8600}
     monkeypatch.setattr(studio_mod, "_pid_alive", lambda pid: pid in live)
-    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid: True)
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created = None: True)
 
     def fake_kill(pid, _sig):
         if pid == 8550:

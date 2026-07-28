@@ -2424,14 +2424,31 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _pid_file_entries() -> "list[tuple[int, list[Path]]]":
-    """(pid, files) per recorded server, including the legacy studio.pid.
+def _read_pid_record(path: Path) -> "tuple[int, float | None] | None":
+    """Parse ``pid`` / optional ``create_time`` from a PID file."""
+    try:
+        lines = path.read_text(encoding = "utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not lines or not lines[0].strip().isdigit():
+        return None
+    created = None
+    if len(lines) > 1:
+        try:
+            created = float(lines[1].strip())
+        except ValueError:
+            created = None
+    return int(lines[0].strip()), created
+
+
+def _pid_file_entries() -> "list[tuple[int, float | None, list[Path]]]":
+    """(pid, create_time, files) per recorded server, including the legacy studio.pid.
 
     Grouped by PID: a server writes both its per-port file and studio.pid, and
     signalling twice would hit the SIG_DFL the first SIGTERM installs, hard-killing
     it mid-shutdown.
     """
-    by_pid: "dict[int, list[Path]]" = {}
+    by_pid: "dict[int, tuple[float | None, list[Path]]]" = {}
     try:
         paths = sorted(STUDIO_HOME.glob(PID_FILE_GLOB)) + [_PID_FILE]
     except OSError:
@@ -2441,27 +2458,34 @@ def _pid_file_entries() -> "list[tuple[int, list[Path]]]":
         if path in seen or not path.is_file():
             continue
         seen.add(path)
-        try:
-            text = path.read_text(encoding = "utf-8").strip()
-        except (OSError, UnicodeDecodeError):
-            continue
-        if text.isdigit():
-            by_pid.setdefault(int(text), []).append(path)
-        else:
-            typer.echo(f"Ignoring invalid PID file {path.name}: {text}")
+        record = _read_pid_record(path)
+        if record is None:
+            typer.echo(f"Ignoring invalid PID file {path.name}")
             path.unlink(missing_ok = True)
-    return list(by_pid.items())
+            continue
+        pid, created = record
+        known_created, files = by_pid.setdefault(pid, (created, []))
+        files.append(path)
+        if known_created is None and created is not None:
+            by_pid[pid] = (created, files)
+    return [(pid, created, files) for pid, (created, files) in by_pid.items()]
 
 
-def _pid_is_studio_server(pid: int) -> bool:
+def _pid_is_studio_server(pid: int, created: "float | None" = None) -> bool:
     """Guard against PID reuse: a stale record must not get an unrelated process
-    killed. Unknowable without psutil, so trust the record there."""
+    killed. Start time pins it exactly; the cmdline check only covers legacy
+    records, and must not match `unsloth train` or a stray run.py."""
     try:
         import psutil
-        cmdline = " ".join(psutil.Process(pid).cmdline()).lower()
+
+        proc = psutil.Process(pid)
+        if created is not None:
+            return abs(proc.create_time() - created) < 1.0
+        cmdline = " ".join(proc.cmdline()).lower()
     except Exception:
+        # Unknowable without psutil: trust the record rather than never stopping.
         return True
-    return "run.py" in cmdline or "unsloth" in cmdline
+    return "run.py" in cmdline and "studio" in cmdline
 
 
 def _signal_stop(pid: int) -> "str | None":
@@ -2493,8 +2517,8 @@ def stop():
         raise typer.Exit(0)
 
     signalled, failed = [], []
-    for pid, paths in entries:
-        if not _pid_alive(pid) or not _pid_is_studio_server(pid):
+    for pid, created, paths in entries:
+        if not _pid_alive(pid) or not _pid_is_studio_server(pid, created):
             for path in paths:
                 path.unlink(missing_ok = True)
             continue
