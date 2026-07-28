@@ -755,9 +755,24 @@ export function ModelConfigPage({
       return;
     }
     let cancelled = false;
+    const settleWithoutMetadata = () => {
+      if (!cancelled) {
+        setFetchedStagedDims({
+          key: contextFetchKey,
+          contextLength: null,
+          layerCount: null,
+          moeLayerCount: null,
+          isDiffusion: undefined,
+        });
+      }
+    };
     void (async () => {
       const preparedToken = await prepareHfTokenForUse(hfToken || null);
-      if (cancelled || !preparedToken.proceed) {
+      if (cancelled) {
+        return;
+      }
+      if (!preparedToken.proceed) {
+        settleWithoutMetadata();
         return;
       }
       const dims = await fetchGgufStagedMetadata({
@@ -770,15 +785,7 @@ export function ModelConfigPage({
         setFetchedStagedDims({ key: contextFetchKey, ...dims });
       }
     })().catch(() => {
-      if (!cancelled) {
-        setFetchedStagedDims({
-          key: contextFetchKey,
-          contextLength: null,
-          layerCount: null,
-          moeLayerCount: null,
-          isDiffusion: undefined,
-        });
-      }
+      settleWithoutMetadata();
     });
     return () => {
       cancelled = true;

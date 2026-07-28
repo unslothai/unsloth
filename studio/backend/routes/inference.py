@@ -4656,11 +4656,16 @@ async def _resolve_gguf_gpu_ids_for_request(
     device = get_device()
     lacks_gpu_lib = getattr(llama_backend, "_backend_lacks_gpu_lib", None)
 
-    if confirmed_diffusion and device != DeviceType.CUDA:
+    # ROCm is deliberately DeviceType.CUDA internally because it uses
+    # torch.cuda.*. Only the API label changes to "rocm", so this accepts both
+    # CUDA and ROCm physical IDs while rejecting device namespaces the
+    # diffusion runner cannot apply.
+    diffusion_physical_ids_supported = device == DeviceType.CUDA
+    if confirmed_diffusion and not diffusion_physical_ids_supported:
         raise HTTPException(
             status_code = 400,
             detail = (
-                "GPU selection (gpu_ids) for DiffusionGemma requires CUDA. "
+                "GPU selection (gpu_ids) for DiffusionGemma requires CUDA or ROCm. "
                 "Omit gpu_ids on this host."
             ),
         )

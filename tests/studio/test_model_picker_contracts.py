@@ -668,8 +668,9 @@ def test_requested_gpu_pick_survives_fit_narrowing_and_namespace_changes():
     assert "requestedGpuIdsFromResponse(resp)" in store
     gpu_selection = _read("hooks/gpu-selection.ts")
     assert 'savedIndexKind === undefined ? "physical" : savedIndexKind' in gpu_selection
-    assert "expectedIndexKind !== null" in gpu_selection
+    assert "currentIndexKind !== undefined" in gpu_selection
     assert "expectedIndexKind !== currentIndexKind" in gpu_selection
+    assert "A null namespace is only safe while discovery is also unresolved" in gpu_selection
     assert (
         "Namespace knowledge is authoritative even while membership is unavailable" in gpu_selection
     )
@@ -718,7 +719,10 @@ def test_model_config_prepares_hf_token_before_gguf_metadata_preflight():
     prepare = effect.index("prepareHfTokenForUse(hfToken || null)")
     metadata = effect.index("fetchGgufStagedMetadata({", prepare)
     assert prepare < metadata
-    assert "if (cancelled || !preparedToken.proceed)" in effect
+    assert "if (!preparedToken.proceed)" in effect
+    cancel = effect.index("if (!preparedToken.proceed)")
+    assert "settleWithoutMetadata();" in effect[cancel:metadata]
+    assert effect.count("settleWithoutMetadata();") == 2
     assert "hf_token: preparedToken.token" in effect
     assert "hf_token: hfToken" not in effect
 

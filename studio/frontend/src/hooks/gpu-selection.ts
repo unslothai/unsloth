@@ -101,9 +101,9 @@ export function reconcileGpuSelection(
     savedIndexKind === undefined ? "physical" : savedIndexKind;
   // Namespace knowledge is authoritative even while membership is unavailable.
   // This is what prevents a saved CUDA/ROCm ID from becoming Vulkan<i>.
+  // A null namespace is only safe while discovery is also unresolved.
   if (
     currentIndexKind !== undefined &&
-    expectedIndexKind !== null &&
     expectedIndexKind !== currentIndexKind
   ) {
     return { ids: null, indexKind: null };

@@ -45,7 +45,7 @@ test("preserves every namespace while the device cache is genuinely cold", () =>
   });
 });
 
-test("known unavailable Vulkan clears physical picks but preserves compatible state", () => {
+test("known unavailable Vulkan clears picks without a compatible namespace", () => {
   const context = resolveGpuSelectionContext([], false, "vulkan");
   assert.deepEqual(context, {
     devices: [],
@@ -61,7 +61,7 @@ test("known unavailable Vulkan clears physical picks but preserves compatible st
     indexKind: null,
   });
   assert.deepEqual(reconcile(null, context.indexKind, context.ids), {
-    ids,
+    ids: null,
     indexKind: null,
   });
   assert.deepEqual(reconcile("vulkan", context.indexKind, context.ids), {
@@ -87,8 +87,12 @@ test("known Vulkan suppresses every DiffusionGemma pin while unavailable", () =>
 
 test("recovered inventories filter matching picks and reject mismatched namespaces", () => {
   assert.deepEqual(reconcile(null, "vulkan", [1]), {
-    ids: [1],
-    indexKind: "vulkan",
+    ids: null,
+    indexKind: null,
+  });
+  assert.deepEqual(reconcile(null, "physical", [0, 1]), {
+    ids: null,
+    indexKind: null,
   });
   assert.deepEqual(reconcile("vulkan", "vulkan", [0]), {
     ids: [0],

@@ -1167,6 +1167,47 @@ class TestRouteErrors(unittest.TestCase):
         self.assertEqual(resolved, [0, 1])
         self.assertTrue(uses_vulkan_ordinals)
 
+    def test_diffusion_gpu_ids_accept_rocm_physical_path(self):
+        import utils.hardware as hardware_pkg
+        import utils.hardware.hardware as hardware_mod
+
+        inference_route = _load_route_module(
+            "inference_route_module_for_diffusion_rocm_path_test",
+            "routes/inference.py",
+        )
+        config = SimpleNamespace(is_gguf = True)
+        fake_backend = SimpleNamespace(
+            is_vulkan_build = lambda: False,
+            _backend_lacks_gpu_lib = lambda *a, **k: False,
+        )
+
+        with (
+            patch.object(hardware_mod, "IS_ROCM", True),
+            patch.object(hardware_pkg, "get_device", return_value = DeviceType.CUDA),
+            patch.object(
+                hardware_mod,
+                "resolve_requested_gpu_ids",
+                return_value = [0, 1],
+            ),
+            patch.object(
+                inference_route,
+                "get_llama_cpp_backend",
+                return_value = fake_backend,
+            ),
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+        ):
+            self.assertEqual(hardware_mod._backend_label(DeviceType.CUDA), "rocm")
+            resolved, uses_vulkan_ordinals = asyncio.run(
+                inference_route._resolve_gguf_gpu_ids_for_request(
+                    config,
+                    [1, 0],
+                    diffusion_kind = True,
+                )
+            )
+
+        self.assertEqual(resolved, [0, 1])
+        self.assertFalse(uses_vulkan_ordinals)
+
     def test_inference_route_validates_gpu_ids_for_gguf(self):
         import utils.hardware.hardware as hardware_mod
         import utils.hardware as hardware_pkg
