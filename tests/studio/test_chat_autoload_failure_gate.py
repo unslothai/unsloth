@@ -212,7 +212,7 @@ def _require_node():
         pytest.skip("node --experimental-strip-types not available")
 
 
-def _build_harness():
+def _build_harness(run_dir: Path):
     """Slice autoLoadSmallestModel and its helpers verbatim out of the adapter."""
     lines = ADAPTER.read_text(encoding = "utf-8").splitlines()
     start = next(
@@ -232,8 +232,7 @@ def _build_harness():
     ), "could not locate the auto-load region in chat-adapter.ts"
     body = "\n".join(lines[start:end])
     assert "async function autoLoadSmallestModel" in body
-    TEMP.mkdir(parents = True, exist_ok = True)
-    (TEMP / "harness.ts").write_text(
+    (run_dir / "harness.ts").write_text(
         "// @ts-nocheck\n" + PREAMBLE + "\n" + body + "\nexport { autoLoadSmallestModel };\n",
         encoding = "utf-8",
     )
@@ -241,12 +240,16 @@ def _build_harness():
 
 def _run(scenario_expr: str) -> dict:
     _require_node()
-    _build_harness()
+    # Its own directory per invocation, harness included: sharing either file
+    # lets a concurrent runner read one that another is mid-rewrite.
+    TEMP.mkdir(parents = True, exist_ok = True)
+    run_dir = Path(tempfile.mkdtemp(prefix = "run", dir = TEMP))
+    _build_harness(run_dir)
     script = (
         textwrap.dedent(
             """
         // @ts-nocheck
-        import { autoLoadSmallestModel, setScenario, EVENTS } from "../harness.ts";
+        import { autoLoadSmallestModel, setScenario, EVENTS } from "./harness.ts";
         """
         )
         + SCENARIO_HELPERS
@@ -258,9 +261,6 @@ def _run(scenario_expr: str) -> dict:
         """
         )
     )
-    # Its own directory per invocation: a shared run.mts would let concurrent
-    # runners (pytest-xdist, or two suites at once) execute each other's script.
-    run_dir = Path(tempfile.mkdtemp(prefix = "run", dir = TEMP))
     (run_dir / "run.mts").write_text(script, encoding = "utf-8")
     completed = subprocess.run(
         ["node", "--experimental-strip-types", "--no-warnings", "run.mts"],

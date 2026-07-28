@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import stat
+import time
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,7 @@ def _build_repo(
     extra_refs: dict[str, str] | None = None,
     incomplete: bool = False,
     name: str = "models--Org--Model",
+    settled: bool = True,
 ) -> Path:
     """A cache repo holding one snapshot at ``SNAPSHOT``, shaped like HF's."""
     repo_dir = cache_root / name
@@ -46,6 +48,12 @@ def _build_repo(
         (refs / name).write_text(commit, encoding = "utf-8")
     if incomplete:
         (blobs / "d0d0d0d0.incomplete").write_bytes(b"partial")
+    if settled:
+        # The sweep leaves a just-written ref alone, so age these past that
+        # window to exercise the pruning rather than the settle guard.
+        old = time.time() - 3600
+        for entry in refs.rglob("*"):
+            os.utime(entry, (old, old))
     return repo_dir
 
 
@@ -131,3 +139,14 @@ def test_unwritable_refs_dir_degrades_instead_of_raising(tmp_path, monkeypatch):
         assert _ref_names(repo_dir) == ["main"]
     finally:
         refs_dir.chmod(stat.S_IRWXU)
+
+
+def test_a_just_written_ref_survives_the_sweep(tmp_path, monkeypatch):
+    """snapshot_download writes refs/<revision> before fetching the first file,
+    so there is a window with a live ref, no snapshot and no .incomplete blob.
+    Unlinking there strands the finished snapshot with no branch mapping and
+    breaks later local_files_only loads by revision."""
+    repo_dir = _build_repo(tmp_path, ref = UPSTREAM_HEAD, settled = False)
+
+    assert inventory_scan._prune_dangling_hf_cache_refs(tmp_path) == 0
+    assert _ref_names(repo_dir) == ["main"]

@@ -46,6 +46,9 @@ from hub.utils.hf_cache_state import (
 # this TTL only bounds staleness from out-of-band edits while skipping re-walks
 # on rapid UI navigation.
 _HF_CACHE_SCANS_TTL_SECONDS = 15.0
+# How long a dangling ref must have sat before the sweep will unlink it, so a
+# download that has written its ref but not yet its first blob keeps it.
+_REF_SETTLE_SECONDS = 60.0
 _GGUF_SPLIT_RE = re.compile(r"-(\d{3,})-of-(\d{3,})(?=\.gguf$)", re.IGNORECASE)
 _hf_cache_scans_lock = threading.Lock()
 
@@ -164,6 +167,15 @@ def _prune_dangling_hf_cache_refs(cache_root: Path) -> int:
             continue
         for ref in ref_files:
             try:
+                # snapshot_download writes refs/<revision> before it fetches the
+                # first file, so a starting download has a live ref with neither
+                # a snapshot nor an .incomplete blob yet. Leave anything recent
+                # alone: a ref stranded by a re-upload persists, so skipping it
+                # for one sweep only defers the repair to the next one, while
+                # unlinking mid-download would strand the finished snapshot with
+                # no branch mapping and break later loads by revision.
+                if time.time() - ref.stat().st_mtime < _REF_SETTLE_SECONDS:
+                    continue
                 commit = ref.read_text(encoding = "utf-8").strip()
             except (OSError, UnicodeDecodeError):
                 continue
