@@ -35,3 +35,14 @@ def test_windows_direct_torch_installs_are_skipped_in_no_torch_mode():
     # The shared dependency pass installs the dedicated no-torch runtime and
     # therefore must remain outside the direct torch/Triton guard.
     assert 'python "$PSScriptRoot\\install_python_stack.py"' not in guarded
+
+
+def test_no_torch_value_is_normalized_before_shared_dependency_install():
+    source = SETUP_PS1.read_text(encoding = "utf-8")
+    parsed = source.index("$NoTorchMode = $env:UNSLOTH_NO_TORCH -match")
+    normalized = source.index(
+        '$env:UNSLOTH_NO_TORCH = if ($NoTorchMode) { "true" } else { "false" }'
+    )
+    stack_install = source.index('python "$PSScriptRoot\\install_python_stack.py"')
+
+    assert parsed < normalized < stack_install
