@@ -189,7 +189,7 @@ _ANTHROPIC_SCHEMA_CLIENT_TOOL_PARAMETERS = {
         "properties": {
             "command": {
                 "type": "string",
-                "enum": ["view", "str_replace", "create", "insert", "undo_edit"],
+                "enum": ["view", "str_replace", "create", "insert"],
             },
             "path": {"type": "string"},
             "view_range": {
@@ -284,6 +284,24 @@ def anthropic_schema_client_tool_kind(tool) -> Optional[str]:
     return None
 
 
+def _anthropic_schema_client_tool_parameters(td: dict, kind: str) -> dict:
+    parameters = _ANTHROPIC_SCHEMA_CLIENT_TOOL_PARAMETERS[kind]
+    if kind != "text_editor":
+        return parameters
+
+    version = td["type"].rpartition("_")[2]
+    commands = list(parameters["properties"]["command"]["enum"])
+    if version < "20250429":
+        commands.append("undo_edit")
+    return {
+        **parameters,
+        "properties": {
+            **parameters["properties"],
+            "command": {**parameters["properties"]["command"], "enum": commands},
+        },
+    }
+
+
 def anthropic_tools_to_openai(tools: list) -> list[dict]:
     """Convert Anthropic client tools to OpenAI function-tool format."""
     result = []
@@ -293,7 +311,7 @@ def anthropic_tools_to_openai(tools: list) -> list[dict]:
         input_schema = td.get("input_schema")
         schema_client_kind = anthropic_schema_client_tool_kind(td)
         if schema_client_kind is not None:
-            input_schema = _ANTHROPIC_SCHEMA_CLIENT_TOOL_PARAMETERS[schema_client_kind]
+            input_schema = _anthropic_schema_client_tool_parameters(td, schema_client_kind)
         if not name or input_schema is None:
             continue
         result.append(

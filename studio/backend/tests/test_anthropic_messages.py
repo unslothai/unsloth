@@ -645,6 +645,23 @@ class TestAnthropicToolsToOpenAI:
         assert result["function"]["name"] == name
         assert result["function"]["parameters"]["type"] == "object"
 
+    @pytest.mark.parametrize(
+        ("type_", "supports_undo"),
+        [
+            ("text_editor_20241022", True),
+            ("text_editor_20250124", True),
+            ("text_editor_20250429", False),
+            ("text_editor_20250728", False),
+        ],
+    )
+    def test_text_editor_commands_follow_tool_version(self, type_, supports_undo):
+        [result] = anthropic_tools_to_openai(
+            [{"type": type_, "name": "str_replace_based_edit_tool"}]
+        )
+
+        commands = result["function"]["parameters"]["properties"]["command"]["enum"]
+        assert ("undo_edit" in commands) is supports_undo
+
     def test_server_tool_selection_merges_enabled_tools_extension(self):
         all_tools = [
             {"type": "function", "function": {"name": "web_search"}},
