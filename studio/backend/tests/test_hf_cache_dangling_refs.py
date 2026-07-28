@@ -7,13 +7,18 @@
 commit with no ``snapshots/<commit>/`` directory and omits it from ``.repos``,
 so the model stays visible in the model picker (a plain directory walk) while
 disappearing from every Hub inventory endpoint that feeds chat auto-load.
+
+The repair is read-only: the hidden repo is rebuilt from the same directories
+huggingface_hub reads and the ref file is left exactly as it is, because
+``_cache_commit_hash_for_specific_revision`` writes refs with an unlocked
+in-place ``write_text``, so no external process can delete one race-free.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import stat
-import time
 from pathlib import Path
 
 import pytest
@@ -27,33 +32,30 @@ UPSTREAM_HEAD = "b" * 40
 def _build_repo(
     cache_root: Path,
     *,
-    ref: str,
+    ref: str | None = UPSTREAM_HEAD,
     extra_refs: dict[str, str] | None = None,
-    incomplete: bool = False,
     name: str = "models--Org--Model",
-    settled: bool = True,
+    payload: bytes = b"\0" * 11,
+    snapshots: tuple[str, ...] = (SNAPSHOT,),
 ) -> Path:
-    """A cache repo holding one snapshot at ``SNAPSHOT``, shaped like HF's."""
+    """A cache repo shaped like HF's, using regular files rather than symlinks.
+
+    ``_scan_cached_repo`` resolves each snapshot entry to its blob, and a
+    regular file resolves to itself, so this exercises the real scanner while
+    staying runnable on Windows without the symlink privilege.
+    """
     repo_dir = cache_root / name
-    blobs = repo_dir / "blobs"
-    snapshot = repo_dir / "snapshots" / SNAPSHOT
     refs = repo_dir / "refs"
-    for directory in (blobs, snapshot, refs):
-        directory.mkdir(parents = True, exist_ok = True)
-    blob = blobs / ("c" * 40)
-    blob.write_bytes(b"\0")
-    os.symlink(os.path.relpath(blob, snapshot), snapshot / "Q4_K_M.gguf")
-    (refs / "main").write_text(ref, encoding = "utf-8")
-    for name, commit in (extra_refs or {}).items():
-        (refs / name).write_text(commit, encoding = "utf-8")
-    if incomplete:
-        (blobs / "d0d0d0d0.incomplete").write_bytes(b"partial")
-    if settled:
-        # The sweep leaves a just-written ref alone, so age these past that
-        # window to exercise the pruning rather than the settle guard.
-        old = time.time() - 3600
-        for entry in refs.rglob("*"):
-            os.utime(entry, (old, old))
+    refs.mkdir(parents = True, exist_ok = True)
+    (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
+    for commit in snapshots:
+        snapshot = repo_dir / "snapshots" / commit
+        snapshot.mkdir(parents = True, exist_ok = True)
+        (snapshot / "model.safetensors").write_bytes(payload)
+    if ref is not None:
+        (refs / "main").write_text(ref, encoding = "utf-8")
+    for ref_name, commit in (extra_refs or {}).items():
+        (refs / ref_name).write_text(commit, encoding = "utf-8")
     return repo_dir
 
 
@@ -61,21 +63,90 @@ def _ref_names(repo_dir: Path) -> list[str]:
     return sorted(entry.name for entry in (repo_dir / "refs").rglob("*") if entry.is_file())
 
 
-def _scanned_repo_ids(cache_root: Path, monkeypatch) -> list[str]:
+def _scan(cache_root: Path, monkeypatch) -> list:
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [cache_root])
-    return [
-        repo.repo_id for scan in inventory_scan._compute_all_hf_cache_scans() for repo in scan.repos
-    ]
+    return inventory_scan._compute_all_hf_cache_scans()
+
+
+def _scanned_repo_ids(cache_root: Path, monkeypatch) -> list[str]:
+    return sorted(repo.repo_id for scan in _scan(cache_root, monkeypatch) for repo in scan.repos)
+
+
+def _only_repo(cache_root: Path, monkeypatch):
+    repos = [repo for scan in _scan(cache_root, monkeypatch) for repo in scan.repos]
+    assert [repo.repo_id for repo in repos] == ["Org/Model"], "repo hidden from the scan"
+    return repos[0]
+
+
+# --- the #7374 symptom -------------------------------------------------------
+
+
+def test_huggingface_hub_really_hides_a_repo_behind_a_dangling_ref(tmp_path):
+    """Baseline for the bug: the snapshot is intact, yet the repo is dropped."""
+    from huggingface_hub import scan_cache_dir
+
+    repo_dir = _build_repo(tmp_path)
+
+    raw = scan_cache_dir(cache_dir = str(tmp_path))
+
+    assert [repo.repo_id for repo in raw.repos] == []
+    assert raw.warnings
+    assert (repo_dir / "snapshots" / SNAPSHOT / "model.safetensors").is_file()
 
 
 def test_dangling_ref_no_longer_hides_an_intact_repo(tmp_path, monkeypatch):
-    repo_dir = _build_repo(tmp_path, ref = UPSTREAM_HEAD)
+    repo_dir = _build_repo(tmp_path)
 
-    assert _scanned_repo_ids(tmp_path, monkeypatch) == ["Org/Model"]
-    assert _ref_names(repo_dir) == []
+    repo = _only_repo(tmp_path, monkeypatch)
+
+    assert repo.repo_id == "Org/Model"
+    assert repo.repo_type == "model"
+    # routes/models.py does repo_path.parent, so this must stay a real Path.
+    assert isinstance(repo.repo_path, Path) and repo.repo_path == repo_dir
+    assert repo.size_on_disk == 11
+    # The recovered revision keeps the identity the snapshot is loadable by.
+    revision = next(iter(repo.revisions))
+    assert revision.commit_hash == SNAPSHOT
+    assert revision.snapshot_path == repo_dir / "snapshots" / SNAPSHOT
+    assert {f.file_name for f in revision.files} == {"model.safetensors"}
+    # The dangling ref resolves to nothing, so it maps to no revision...
+    assert revision.refs == frozenset()
+    # ...and, crucially, is still on disk: the repair never writes to the cache.
+    assert _ref_names(repo_dir) == ["main"]
+    assert (repo_dir / "refs" / "main").read_text(encoding = "utf-8") == UPSTREAM_HEAD
 
 
-def test_healthy_cache_is_neither_pruned_nor_rescanned(tmp_path, monkeypatch):
+def test_recovery_reads_a_multi_file_multi_revision_repo(tmp_path, monkeypatch):
+    other = "c" * 40
+    repo_dir = _build_repo(tmp_path, snapshots = (SNAPSHOT, other))
+    (repo_dir / "snapshots" / SNAPSHOT / "nested").mkdir()
+    (repo_dir / "snapshots" / SNAPSHOT / "nested" / "extra.json").write_bytes(b"{}")
+
+    repo = _only_repo(tmp_path, monkeypatch)
+
+    assert {rev.commit_hash for rev in repo.revisions} == {SNAPSHOT, other}
+    files = {f.file_path for rev in repo.revisions for f in rev.files}
+    assert repo_dir / "snapshots" / SNAPSHOT / "nested" / "extra.json" in files
+    # _resolve_cached_model_path relativises file_path against snapshot_path.
+    for rev in repo.revisions:
+        for f in rev.files:
+            assert f.file_path.relative_to(rev.snapshot_path)
+
+
+def test_a_still_resolvable_ref_keeps_its_revision_mapping(tmp_path, monkeypatch):
+    """One good ref plus one stale ref: hub drops the repo, we keep the mapping."""
+    repo_dir = _build_repo(tmp_path, ref = SNAPSHOT, extra_refs = {"stale": UPSTREAM_HEAD})
+
+    repo = _only_repo(tmp_path, monkeypatch)
+
+    assert next(iter(repo.revisions)).refs == frozenset({"main"})
+    assert _ref_names(repo_dir) == ["main", "stale"]
+
+
+# --- the repair must not widen past the leftover-refs assertion --------------
+
+
+def test_a_healthy_cache_is_returned_untouched(tmp_path, monkeypatch):
     import huggingface_hub
 
     repo_dir = _build_repo(tmp_path, ref = SNAPSHOT, extra_refs = {"v1.0": SNAPSHOT})
@@ -93,60 +164,175 @@ def test_healthy_cache_is_neither_pruned_nor_rescanned(tmp_path, monkeypatch):
     assert _ref_names(repo_dir) == ["main", "v1.0"]
 
 
-def test_in_flight_download_keeps_its_dangling_ref(tmp_path, monkeypatch):
-    """A download writes its ref before the snapshot lands, so it owns it."""
-    repo_dir = _build_repo(tmp_path, ref = UPSTREAM_HEAD, incomplete = True)
+def test_a_download_that_has_only_written_its_ref_is_not_invented(tmp_path, monkeypatch):
+    """snapshot_download writes refs/<revision> before fetching the first file.
+
+    There is no snapshot to recover yet, so nothing must be reported as
+    downloaded -- that would be the very "already have it" lie #7374 is about.
+    """
+    repo_dir = tmp_path / "models--Org--Model"
+    (repo_dir / "snapshots").mkdir(parents = True)
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text(UPSTREAM_HEAD, encoding = "utf-8")
 
     assert _scanned_repo_ids(tmp_path, monkeypatch) == []
     assert _ref_names(repo_dir) == ["main"]
 
 
-def test_only_the_dangling_ref_of_a_mixed_repo_is_pruned(tmp_path, monkeypatch):
-    repo_dir = _build_repo(tmp_path, ref = SNAPSHOT, extra_refs = {"stale": UPSTREAM_HEAD})
+def test_a_repo_corrupted_beyond_a_dangling_ref_stays_omitted(tmp_path, monkeypatch):
+    """A broken snapshot symlink is corruption hub rejects for its own reasons."""
+    repo_dir = _build_repo(tmp_path)
+    broken = repo_dir / "snapshots" / SNAPSHOT / "weights.bin"
+    try:
+        os.symlink(repo_dir / "blobs" / "missing", broken)
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks unavailable (Windows without developer mode)")
 
-    assert _scanned_repo_ids(tmp_path, monkeypatch) == ["Org/Model"]
-    assert _ref_names(repo_dir) == ["main"]
+    assert _scanned_repo_ids(tmp_path, monkeypatch) == []
 
 
-def test_an_unreadable_repo_does_not_abort_the_prune_sweep(tmp_path):
-    """is_dir() propagates a permission error instead of returning False, so an
-    unguarded probe would escape to the caller's whole-scan except and drop
-    every model in the cache. The sweep must skip that repo and carry on.
+def test_an_unrelated_repo_is_never_disturbed(tmp_path, monkeypatch):
+    hidden = _build_repo(tmp_path)
+    healthy = _build_repo(tmp_path, ref = SNAPSHOT, name = "models--Org--Healthy")
 
-    Scoped to the sweep because scan_cache_dir itself already raises on an
+    assert _scanned_repo_ids(tmp_path, monkeypatch) == ["Org/Healthy", "Org/Model"]
+    assert _ref_names(hidden) == ["main"]
+    assert _ref_names(healthy) == ["main"]
+
+
+def test_an_unreadable_repo_does_not_abort_the_recovery(tmp_path):
+    """One unreadable repo must not stop the others being recovered.
+
+    Scoped to the recovery pass because scan_cache_dir itself raises on an
     unreadable repo dir, which is upstream of this code and unchanged here.
     """
-    dangling = _build_repo(tmp_path, ref = UPSTREAM_HEAD)
+    from huggingface_hub import HFCacheInfo
+
+    hidden = _build_repo(tmp_path)
     locked = _build_repo(tmp_path, ref = SNAPSHOT, name = "models--Org--Locked")
     locked.chmod(0)
     if os.access(locked / "refs", os.R_OK):
         pytest.skip("filesystem does not enforce directory permissions")
     try:
-        assert inventory_scan._prune_dangling_hf_cache_refs(tmp_path) == 1
-        assert _ref_names(dangling) == []
+        scan = HFCacheInfo(size_on_disk = 0, repos = frozenset(), warnings = [])
+        merged = inventory_scan._with_repos_hidden_by_dangling_refs(scan, tmp_path)
+        assert sorted(repo.repo_id for repo in merged.repos) == ["Org/Model"]
+        assert _ref_names(hidden) == ["main"]
     finally:
         locked.chmod(stat.S_IRWXU)
 
 
-def test_unwritable_refs_dir_degrades_instead_of_raising(tmp_path, monkeypatch):
-    repo_dir = _build_repo(tmp_path, ref = UPSTREAM_HEAD)
-    refs_dir = repo_dir / "refs"
-    refs_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)
-    if os.access(refs_dir, os.W_OK):
-        pytest.skip("filesystem does not enforce directory write permissions")
+def test_a_non_repo_directory_is_ignored(tmp_path, monkeypatch):
+    _build_repo(tmp_path)
+    (tmp_path / ".locks").mkdir()
+    (tmp_path / "notarepo").mkdir()
+    (tmp_path / "spaces--Org--Thing").mkdir()
+
+    assert _scanned_repo_ids(tmp_path, monkeypatch) == ["Org/Model"]
+
+
+def test_a_scan_object_without_warnings_still_reaches_the_caller(tmp_path, monkeypatch):
+    """The gate must read .warnings defensively: an AttributeError here lands in
+    the per-root ``except Exception`` and silently blanks the whole cache."""
+    from types import SimpleNamespace
+
+    import huggingface_hub
+
+    monkeypatch.setattr(
+        huggingface_hub,
+        "scan_cache_dir",
+        lambda cache_dir = None: SimpleNamespace(cache_dir = cache_dir),
+    )
+
+    assert len(_scan(tmp_path, monkeypatch)) == 1
+
+
+# --- version robustness ------------------------------------------------------
+
+
+def test_recovered_entries_match_the_huggingface_hub_field_surface():
+    """The recovered entries are duck-typed rather than built with hub's own
+    constructors, so nothing breaks when a field is added or removed upstream.
+    This is the tripwire that says the surfaces have drifted."""
+    from huggingface_hub import CachedFileInfo, CachedRepoInfo, CachedRevisionInfo
+
+    pairs = (
+        (inventory_scan._RecoveredFileInfo, CachedFileInfo),
+        (inventory_scan._RecoveredRevisionInfo, CachedRevisionInfo),
+        (inventory_scan._RecoveredRepoInfo, CachedRepoInfo),
+    )
+    for ours, theirs in pairs:
+        missing = {f.name for f in dataclasses.fields(theirs)} - {
+            f.name for f in dataclasses.fields(ours)
+        }
+        assert not missing, f"{ours.__name__} is missing {sorted(missing)}"
+
+
+def test_a_recovered_repo_survives_delete_revisions(tmp_path, monkeypatch):
+    """Deleting a recovered model routes through HFCacheInfo.delete_revisions,
+    which keys a dict by repo and takes a set difference over .revisions."""
+    repo_dir = _build_repo(tmp_path)
+    scan = _scan(tmp_path, monkeypatch)[0]
+
+    strategy = scan.delete_revisions(SNAPSHOT)
+
+    assert strategy.repos == frozenset({repo_dir})
+    assert strategy.expected_freed_size == 11
+
+
+# --- load identity for a recovered snapshot ----------------------------------
+
+
+def _autoload_rows(cache_root: Path, monkeypatch) -> list[dict]:
+    """What chat auto-load sees: GET /api/hub/cached-models."""
+    from hub.services.models import cache_inventory
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [cache_root])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = cache_root),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
     try:
-        assert _scanned_repo_ids(tmp_path, monkeypatch) == []
-        assert _ref_names(repo_dir) == ["main"]
+        return cache_inventory._scan_cached_models()
     finally:
-        refs_dir.chmod(stat.S_IRWXU)
+        inventory_scan.invalidate_hf_cache_scans()
 
 
-def test_a_just_written_ref_survives_the_sweep(tmp_path, monkeypatch):
-    """snapshot_download writes refs/<revision> before fetching the first file,
-    so there is a window with a live ref, no snapshot and no .incomplete blob.
-    Unlinking there strands the finished snapshot with no branch mapping and
-    breaks later local_files_only loads by revision."""
-    repo_dir = _build_repo(tmp_path, ref = UPSTREAM_HEAD, settled = False)
+def test_auto_load_sees_a_model_hidden_behind_a_dangling_ref(tmp_path, monkeypatch):
+    """The #7374 symptom end to end: the snapshot is on disk and the picker
+    lists it, but auto-load's inventory reported nothing downloaded and the app
+    fell through to a fresh download."""
+    repo_dir = _build_repo(tmp_path)
+    snapshot = repo_dir / "snapshots" / SNAPSHOT
+    (snapshot / "config.json").write_text("{}", encoding = "utf-8")
 
-    assert inventory_scan._prune_dangling_hf_cache_refs(tmp_path) == 0
-    assert _ref_names(repo_dir) == ["main"]
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    # Recovered rows must carry the snapshot as their load identity: refs/main
+    # dangles, so from_pretrained("Org/Model") would fail offline and download
+    # the current upstream HEAD online instead of using what is already here.
+    assert rows[0]["load_id"] == str(snapshot)
+    assert rows[0]["active_cache"] is True
+
+
+def test_a_resolvable_repo_still_loads_by_repo_id(tmp_path, monkeypatch):
+    repo_dir = _build_repo(tmp_path, ref = SNAPSHOT)
+    (repo_dir / "snapshots" / SNAPSHOT / "config.json").write_text("{}", encoding = "utf-8")
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    assert rows[0]["load_id"] == "Org/Model"
+
+
+def test_default_ref_resolves_only_when_main_names_a_snapshot(tmp_path):
+    dangling = _build_repo(tmp_path, name = "models--Org--Dangling")
+    resolved = _build_repo(tmp_path, ref = SNAPSHOT, name = "models--Org--Resolved")
+    detached = _build_repo(tmp_path, ref = None, name = "models--Org--Detached")
+
+    assert inventory_scan.default_ref_resolves_on_disk(dangling) is False
+    assert inventory_scan.default_ref_resolves_on_disk(resolved) is True
+    assert inventory_scan.default_ref_resolves_on_disk(detached) is False

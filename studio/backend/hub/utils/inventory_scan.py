@@ -17,7 +17,7 @@ import hashlib
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -46,9 +46,6 @@ from hub.utils.hf_cache_state import (
 # this TTL only bounds staleness from out-of-band edits while skipping re-walks
 # on rapid UI navigation.
 _HF_CACHE_SCANS_TTL_SECONDS = 15.0
-# How long a dangling ref must have sat before the sweep will unlink it, so a
-# download that has written its ref but not yet its first blob keeps it.
-_REF_SETTLE_SECONDS = 60.0
 _GGUF_SPLIT_RE = re.compile(r"-(\d{3,})-of-(\d{3,})(?=\.gguf$)", re.IGNORECASE)
 _hf_cache_scans_lock = threading.Lock()
 
@@ -128,67 +125,242 @@ def all_hf_cache_scans() -> list:
             flight.event.set()
 
 
-def _prune_dangling_hf_cache_refs(cache_root: Path) -> int:
-    """Drop ``refs/<branch>`` files naming a commit with no snapshot on disk.
+# huggingface_hub skips these when walking refs/ and snapshots/; mirrored so a
+# stray OS helper file is not mistaken for cache corruption.
+_CACHE_ENTRIES_TO_IGNORE = frozenset({".DS_Store"})
+_HF_REPO_TYPES = frozenset({"model", "dataset", "space"})
 
-    ``scan_cache_dir`` raises CorruptedCacheException for such a repo and omits
-    it from ``.repos``, so an otherwise intact download disappears from the Hub
-    inventory while the model-picker's directory walk still lists it. Studio
-    creates this state itself: a metadata probe that 404s writes ``.no_exist/``
-    plus ``refs/main`` at the live upstream HEAD without materialising that
-    snapshot, so any repo re-uploaded since it was downloaded goes invisible.
 
-    Removing the ref is lossless -- it already resolves to nothing, and
-    huggingface_hub rewrites it on the next download. Returns the number of
-    refs removed.
-    """
+# Recovered entries deliberately mirror huggingface_hub's CachedFileInfo /
+# CachedRevisionInfo / CachedRepoInfo field-for-field, but are constructed here
+# rather than imported so a field added or removed upstream cannot break the
+# call. test_hf_cache_dangling_refs asserts the surfaces stay in step. Frozen
+# (so hashable) because HFCacheInfo.delete_revisions() keys a dict by repo and
+# takes a set difference over ``revisions``.
+@dataclass(frozen = True)
+class _RecoveredFileInfo:
+    file_name: str
+    file_path: Path
+    size_on_disk: int
+    blob_path: Path
+    blob_last_accessed: float
+    blob_last_modified: float
+
+
+@dataclass(frozen = True)
+class _RecoveredRevisionInfo:
+    commit_hash: str
+    snapshot_path: Path
+    size_on_disk: int
+    files: frozenset
+    refs: frozenset
+    last_modified: float
+
+
+@dataclass(frozen = True)
+class _RecoveredRepoInfo:
+    repo_id: str
+    repo_type: str
+    repo_path: Path
+    size_on_disk: int
+    nb_files: int
+    revisions: frozenset
+    last_accessed: float
+    last_modified: float
+
+    @property
+    def refs(self) -> dict:
+        return {ref: rev for rev in self.revisions for ref in rev.refs}
+
+
+def _hf_repo_identity(repo_dir_name: str) -> Optional[tuple[str, str]]:
+    """``models--Org--Model`` -> ``("model", "Org/Model")``, as huggingface_hub parses it."""
+    if "--" not in repo_dir_name:
+        return None
+    repo_type, _, repo_id = repo_dir_name.partition("--")
+    repo_type = repo_type[:-1]
+    if repo_type not in _HF_REPO_TYPES or not repo_id:
+        return None
+    return repo_type, repo_id.replace("--", "/")
+
+
+def _read_refs_by_commit(refs_dir: Path) -> Optional[dict[str, set[str]]]:
+    """Map commit hash -> ref names under ``refs/``. None if unreadable."""
+    refs_by_commit: dict[str, set[str]] = {}
+    if not refs_dir.exists():
+        return refs_by_commit
+    if refs_dir.is_file():
+        return None
     try:
-        repo_dirs = [
-            entry for entry in cache_root.iterdir() if entry.is_dir() and "--" in entry.name
-        ]
+        entries = sorted(refs_dir.rglob("*"))
     except OSError:
-        return 0
-    removed = 0
-    for repo_dir in repo_dirs:
-        refs_dir = repo_dir / "refs"
-        snapshots_dir = repo_dir / "snapshots"
-        # is_dir() propagates a permission error rather than returning False, so
-        # it belongs inside the guard: one unreadable repo must not abort the
-        # sweep and drop the whole scan, which is the failure this repairs.
+        return None
+    for ref_path in entries:
         try:
-            if not refs_dir.is_dir():
+            if ref_path.is_dir() or ref_path.name in _CACHE_ENTRIES_TO_IGNORE:
                 continue
-            # A running download writes its ref before materialising the
-            # snapshot, so its ref is legitimately dangling while it transfers.
-            if repo_cache_dir_has_incomplete_blobs(repo_dir):
-                continue
-            ref_files = [entry for entry in refs_dir.rglob("*") if entry.is_file()]
-        except OSError:
+            commit = ref_path.read_text(encoding = "utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+        # PurePath keeps the separator platform-native; huggingface_hub stores
+        # ref names the same way, so no manual posix normalisation here.
+        refs_by_commit.setdefault(commit, set()).add(str(ref_path.relative_to(refs_dir)))
+    return refs_by_commit
+
+
+def _recover_repo_hidden_by_dangling_refs(repo_dir: Path) -> Optional[_RecoveredRepoInfo]:
+    """Rebuild the scan entry for a repo dropped *solely* over leftover refs.
+
+    ``_scan_cached_repo`` assembles every revision successfully and only then
+    raises ``CorruptedCacheException`` because a ``refs/<branch>`` file names a
+    commit with no ``snapshots/<commit>/`` dir, so ``scan_cache_dir`` omits an
+    entirely intact repo from ``.repos``. Studio creates that state itself: a
+    metadata probe that 404s writes ``refs/main`` at the live upstream HEAD
+    without materialising that snapshot, so any repo re-uploaded since it was
+    downloaded goes invisible to every inventory endpoint while the model
+    picker's plain directory walk still lists it.
+
+    This reads the same directories huggingface_hub reads and writes nothing:
+    the ref file that upstream's assertion trips over is left exactly as it is.
+    Returns None whenever anything *other* than leftover refs would have failed
+    the upstream scan, so a genuinely corrupt repo stays omitted as before.
+    """
+    identity = _hf_repo_identity(repo_dir.name)
+    if identity is None:
+        return None
+    repo_type, repo_id = identity
+    snapshots_dir = repo_dir / "snapshots"
+    refs_by_commit = _read_refs_by_commit(repo_dir / "refs")
+    if refs_by_commit is None:
+        return None
+    try:
+        if not snapshots_dir.is_dir():
+            return None
+        snapshot_entries = sorted(snapshots_dir.iterdir())
+    except OSError:
+        return None
+
+    blob_stats: dict[Path, object] = {}
+    revisions: set[_RecoveredRevisionInfo] = set()
+    dangling = dict(refs_by_commit)
+    for snapshot in snapshot_entries:
+        if snapshot.name in _CACHE_ENTRIES_TO_IGNORE:
             continue
-        for ref in ref_files:
+        try:
+            if not snapshot.is_dir():
+                # Upstream treats a file here as corruption; defer to it.
+                return None
+            entries = sorted(snapshot.rglob("*"))
+        except OSError:
+            return None
+        files: set[_RecoveredFileInfo] = set()
+        for entry in entries:
             try:
-                # snapshot_download writes refs/<revision> before it fetches the
-                # first file, so a starting download has a live ref with neither
-                # a snapshot nor an .incomplete blob yet. Leave anything recent
-                # alone: a ref stranded by a re-upload persists, so skipping it
-                # for one sweep only defers the repair to the next one, while
-                # unlinking mid-download would strand the finished snapshot with
-                # no branch mapping and break later loads by revision.
-                if time.time() - ref.stat().st_mtime < _REF_SETTLE_SECONDS:
+                if entry.is_dir():
                     continue
-                commit = ref.read_text(encoding = "utf-8").strip()
-            except (OSError, UnicodeDecodeError):
+                blob_path = entry.resolve()
+                stat = blob_stats.get(blob_path) or blob_path.stat()
+            except OSError:
+                # Broken symlink / unreadable blob: upstream raises here too.
+                return None
+            blob_stats[blob_path] = stat
+            files.add(
+                _RecoveredFileInfo(
+                    file_name = entry.name,
+                    file_path = entry,
+                    size_on_disk = stat.st_size,
+                    blob_path = blob_path,
+                    blob_last_accessed = stat.st_atime,
+                    blob_last_modified = stat.st_mtime,
+                )
+            )
+        try:
+            last_modified = (
+                max(f.blob_last_modified for f in files) if files else snapshot.stat().st_mtime
+            )
+        except OSError:
+            return None
+        revisions.add(
+            _RecoveredRevisionInfo(
+                commit_hash = snapshot.name,
+                snapshot_path = snapshot,
+                size_on_disk = sum(blob_stats[blob].st_size for blob in {f.blob_path for f in files}),
+                files = frozenset(files),
+                refs = frozenset(dangling.pop(snapshot.name, set())),
+                last_modified = last_modified,
+            )
+        )
+    # A download writes refs/<revision> before fetching its first file, so a
+    # repo with no snapshot yet is not downloaded and must not be reported as
+    # such -- that is the "already have it" lie this whole fix is about.
+    if not revisions:
+        return None
+    # Every ref resolved, so upstream did not drop this repo over leftover refs
+    # and either already returned it or failed for a reason we must not paper over.
+    if not dangling:
+        return None
+    try:
+        repo_stats = repo_dir.stat()
+    except OSError:
+        return None
+    return _RecoveredRepoInfo(
+        repo_id = repo_id,
+        repo_type = repo_type,
+        repo_path = repo_dir,
+        size_on_disk = sum(stat.st_size for stat in blob_stats.values()),
+        nb_files = len(blob_stats),
+        revisions = frozenset(revisions),
+        last_accessed = (
+            max((stat.st_atime for stat in blob_stats.values()), default = repo_stats.st_atime)
+        ),
+        last_modified = (
+            max((stat.st_mtime for stat in blob_stats.values()), default = repo_stats.st_mtime)
+        ),
+    )
+
+
+def _with_repos_hidden_by_dangling_refs(scan, cache_root: Path):
+    """Add back the repos ``scan_cache_dir`` dropped over a dangling ref."""
+    try:
+        repo_dirs = sorted(entry for entry in cache_root.iterdir() if "--" in entry.name)
+    except OSError:
+        return scan
+    known = getattr(scan, "repos", ())
+    scanned: set[str] = set()
+    for repo in known:
+        try:
+            scanned.add(str(Path(repo.repo_path).resolve(strict = False)))
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            continue
+    recovered: list[_RecoveredRepoInfo] = []
+    for repo_dir in repo_dirs:
+        try:
+            if str(repo_dir.resolve(strict = False)) in scanned:
                 continue
-            if not commit or (snapshots_dir / commit).is_dir():
-                continue
-            try:
-                ref.unlink()
-            except OSError as exc:
-                logger.debug("Could not prune dangling HF ref %s: %s", ref, exc)
-                continue
-            logger.info("Pruned dangling HF cache ref %s -> %s (no snapshot on disk)", ref, commit)
-            removed += 1
-    return removed
+            entry = _recover_repo_hidden_by_dangling_refs(repo_dir)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if entry is None:
+            continue
+        logger.info(
+            "Recovered HF cache repo %s hidden by a dangling ref (%d revision(s) on disk)",
+            entry.repo_id,
+            len(entry.revisions),
+        )
+        recovered.append(entry)
+    if not recovered:
+        return scan
+    try:
+        return replace(
+            scan,
+            repos = frozenset(known) | frozenset(recovered),
+            size_on_disk = getattr(scan, "size_on_disk", 0)
+            + sum(entry.size_on_disk for entry in recovered),
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        # A scan shape we cannot rebuild is left untouched rather than dropped.
+        logger.debug("Could not attach recovered HF cache repos: %s", exc)
+        return scan
 
 
 def _compute_all_hf_cache_scans() -> list:
@@ -199,13 +371,37 @@ def _compute_all_hf_cache_scans() -> list:
         try:
             scan = scan_cache_dir(cache_dir = str(cache_root))
             # Only a warned-about scan can be hiding a repo, so a healthy cache
-            # is never walked twice and never written to.
-            if scan.warnings and _prune_dangling_hf_cache_refs(cache_root):
-                scan = scan_cache_dir(cache_dir = str(cache_root))
+            # is never walked twice. getattr: a scan object without .warnings
+            # must not take the whole cache root down with it.
+            if getattr(scan, "warnings", None):
+                scan = _with_repos_hidden_by_dangling_refs(scan, cache_root)
             scans.append(scan)
         except Exception as exc:
             logger.warning("Could not scan HF cache %s: %s", cache_root, exc)
     return scans
+
+
+def default_ref_resolves_on_disk(repo_dir: Path) -> bool:
+    """Whether ``refs/main`` names a snapshot that exists in *repo_dir*.
+
+    When it does not, ``from_pretrained(repo_id)`` has nothing to resolve: an
+    offline load fails outright and an online one silently fetches the current
+    upstream HEAD instead of the snapshot already on disk. Callers use this to
+    hand out the snapshot path as the load identity instead of the repo id.
+    """
+    ref_path = repo_dir / "refs" / "main"
+    try:
+        # No strip: huggingface_hub matches the raw ref contents against the
+        # snapshot dir name, so a ref with stray whitespace resolves nowhere.
+        commit = ref_path.read_text(encoding = "utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    if not commit:
+        return False
+    try:
+        return (repo_dir / "snapshots" / commit).is_dir()
+    except (OSError, ValueError):
+        return False
 
 
 def token_fingerprint(hf_token: Optional[str]) -> str:

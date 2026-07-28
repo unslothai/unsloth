@@ -285,6 +285,16 @@ def _cache_inventory_fields(
         except (OSError, RuntimeError, ValueError):
             active_cache = False
             load_id = str(snapshot_path or repo_path)
+    if (
+        load_id == repo_id
+        and snapshot_path is not None
+        and repo_path is not None
+        and not hf_cache_scan.default_ref_resolves_on_disk(repo_path)
+    ):
+        # No usable refs/main: from_pretrained(repo_id) would fail offline and
+        # would fetch the current upstream HEAD online, ignoring the snapshot
+        # already on disk. Point the load straight at that snapshot instead.
+        load_id = str(snapshot_path)
     return {
         "inventory_id": _local_inventory_id("cache", model_format, repo_id),
         "load_id": load_id,
