@@ -47,11 +47,12 @@ fn save_filter(file_name: &str) -> (&'static str, Vec<&'static str>) {
         Some("csv") => ("CSV", vec!["csv"]),
         Some("md") | Some("markdown") => ("Markdown", vec!["md", "markdown"]),
         Some("html") | Some("htm") => ("HTML", vec!["html", "htm"]),
+        Some("py") => ("Python", vec!["py"]),
         Some("zip") => ("ZIP archive", vec!["zip"]),
         _ => (
             "Export files",
             vec![
-                "json", "jsonl", "ndjson", "csv", "md", "markdown", "html", "htm", "zip",
+                "json", "jsonl", "ndjson", "csv", "md", "markdown", "html", "htm", "py", "zip",
             ],
         ),
     }
@@ -259,6 +260,12 @@ mod tests {
     fn html_canvas_exports_use_an_html_save_filter() {
         assert_eq!(save_filter("canvas.html"), ("HTML", vec!["html", "htm"]));
         assert_eq!(save_filter("canvas.HTM"), ("HTML", vec!["html", "htm"]));
+    }
+
+    #[test]
+    fn python_scripts_use_a_python_save_filter() {
+        assert_eq!(save_filter("script.py"), ("Python", vec!["py"]));
+        assert_eq!(save_filter("script.PY"), ("Python", vec!["py"]));
     }
 
     #[test]

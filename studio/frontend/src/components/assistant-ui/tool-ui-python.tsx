@@ -4,6 +4,8 @@
 "use client";
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { toast } from "@/lib/toast";
 import { getAuthToken } from "@/features/auth/session";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
@@ -83,27 +85,14 @@ function CopyBtn({ text }: { text: string }) {
   );
 }
 
-/** Save the script as a .py file via a client-side Blob. */
-function DownloadBtn({ code, name = "script.py" }: { code: string; name?: string }) {
-  const download = useCallback(() => {
-    if (typeof document === "undefined") {
-      return;
-    }
-    try {
-      const blob = new Blob([code], { type: "text/x-python" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = name;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      // Revoke next tick, after the click consumes the URL.
-      setTimeout(() => URL.revokeObjectURL(url), 0);
-    } catch {
-      // Best-effort: never break the transcript over a download.
-    }
-  }, [code, name]);
+function DownloadBtn({ code }: { code: string }) {
+  const download = () => {
+    void downloadFile(code, "script.py", "text/x-python").catch((error) => {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Could not save Python script.");
+      }
+    });
+  };
 
   return (
     <button
