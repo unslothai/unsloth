@@ -5644,7 +5644,7 @@ def sync_marker_llama_backend(install_dir: Path, llama_backend: str | None) -> N
     """Sync the persisted llama.cpp backend when the bundle is reused unchanged."""
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
     try:
-        marker = json.loads(marker_path.read_text())
+        marker = json.loads(marker_path.read_text(encoding = "utf-8"))
     except (OSError, ValueError):
         return
     if not isinstance(marker, dict) or marker.get("llama_backend") == llama_backend:
@@ -5653,7 +5653,7 @@ def sync_marker_llama_backend(install_dir: Path, llama_backend: str | None) -> N
         marker.pop("llama_backend", None)
     else:
         marker["llama_backend"] = llama_backend
-    marker_path.write_text(json.dumps(marker, indent = 2) + "\n")
+    marker_path.write_text(json.dumps(marker, indent = 2) + "\n", encoding = "utf-8")
     log(f"existing install reused; recorded llama_backend={llama_backend!r} from this run")
 
 
