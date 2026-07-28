@@ -170,6 +170,18 @@ def test_native_clipboard_bridge_is_bounded_and_registered():
     assert "native_clipboard::read_native_clipboard_png" in tauri_main
 
 
+def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
+    source = APP_PROVIDER.read_text(encoding = "utf-8")
+
+    assert 'const showApp = status === "running" && desktopAuthReady;' in source
+    assert "Preparing Unsloth" not in source
+    assert "Signing in to desktop session" not in source
+    assert "desktopBooting" not in source
+    assert "showInteractiveApp" not in source
+    assert "<NativeIntentDrain />" in source
+    assert "{children}" in source
+
+
 def test_full_app_layout_uses_its_own_initialized_marker():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
 
