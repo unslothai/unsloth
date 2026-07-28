@@ -364,7 +364,7 @@ jobs:
       # This leg is continue-on-error like the nonroot one, so without the same check
       # a bootstrap outage or an unrelated early exit would be tolerated exactly like
       # the intentional diagnostic.
-      - name: Assert the Fedora failure is the unsupported-package-manager one
+      - name: Assert the Fedora outcome is a known one
         if: always() && matrix.label == 'fedora41'
         run: |
           if [ "${{ steps.install_root.outcome }}" = "success" ]; then
@@ -373,8 +373,30 @@ jobs:
           fi
           [ -f logs/install.log ] || { echo "::error::fedora leg produced no install log"; exit 1; }
           tail -40 logs/install.log
+          # install.sh comes from this ref, so which of the two accepted outcomes
+          # applies depends on which dependency gate this ref carries.
+          if grep -q "using prebuilt llama.cpp (missing:" logs/install.log; then
+            # The gate no longer hard-stops on a non-apt distro: it warns that the
+            # optional build tools are absent and carries on. Reaching this warning is
+            # what proves the Linux gate did not stop the install.
+            # Past that point the only accepted failure is release lag: install.sh is
+            # taken from this ref but unsloth is installed from PyPI, and the released
+            # studio/install_python_stack.py has no "skip the triton kernels when git
+            # is missing" guard, so it still fetches the git+https triton_kernels
+            # requirement on a machine that has no git. Once a release carries that
+            # guard this whole step retires to a plain success assertion.
+            if ! grep -q "Installing triton kernels (pip) failed" logs/install.log; then
+              echo "::error::fedora got past the dependency warning then failed for a new reason, not the known triton/git release lag"
+              exit 1
+            fi
+            echo "::warning::fedora fails only on triton_kernels (git+https) from the released unsloth; drop this step once a release ships the no-git skip"
+            exit 0
+          fi
+          # This ref still hard-exits on a non-apt package manager. Pin that message so
+          # a bootstrap outage or an unrelated early exit is not tolerated as if it
+          # were the intentional diagnostic.
           if ! grep -qiE "Automatic system package installation is supported on apt-based|Fedora/RHEL: sudo dnf install" logs/install.log; then
-            echo "::error::fedora leg failed for a reason other than the unsupported package manager"
+            echo "::error::fedora leg failed neither at the unsupported-package-manager gate nor at the known triton/git release lag"
             exit 1
           fi
 
@@ -648,11 +670,27 @@ jobs:
           # reused and Python bootstrap never runs. Exempting `py` without running it
           # left that unchecked.
           if (Get-Command py -ErrorAction SilentlyContinue) {
-            Write-Host "py -0p:"; & py -0p 2>&1 | ForEach-Object { Write-Host "  $_" }
+            # -0p prints the launcher's REGISTRY view. The mask step renames the
+            # toolcache directory on disk but cannot rewrite those registry entries,
+            # so -0p keeps naming paths that no longer exist. It is context for a
+            # failure, never evidence of one -- only a probe that starts counts.
+            Write-Host "py -0p (stale registry entries; masked paths no longer exist on disk):"
+            & py -0p 2>&1 | ForEach-Object { Write-Host "  $_" }
             foreach ($v in '-3.11', '-3.12', '-3.13') {
               $out = & py $v -c "import sys; print(sys.executable)" 2>&1
-              if ($LASTEXITCODE -eq 0) { $leaked += "py $v -> $out" }
+              $rc = $LASTEXITCODE
+              # Print every probe: when this check next fails it must say why.
+              Write-Host ("py {0} -> exit {1}: {2}" -f $v, $rc, (($out | Out-String).Trim() -replace '\r?\n', ' / '))
+              if ($rc -eq 0) { $leaked += "py $v -> $out" }
             }
+            # A probe that FAILS is the outcome we want, but it leaves $LASTEXITCODE
+            # non-zero, and Get-Command/Write-Host are cmdlets that never reset it.
+            # The runner appends
+            #   if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) { exit $LASTEXITCODE }
+            # to every pwsh step (actions/runner#351), so all three Windows legs
+            # exited 1 with no ::error:: printed, on machines that were in fact clean
+            # -- and never reached the Install step at all.
+            $global:LASTEXITCODE = 0
           }
           # Printing alone could not fail, and the leg was green while not clean: run
           # 30365014702 logged `python ABSENT` then `Python 3.13 already installed` /
@@ -677,6 +715,10 @@ jobs:
           foreach ($scope in 'Machine','User') {
             Write-Host ("{0} PATH after scrub: {1}" -f $scope, [System.Environment]::GetEnvironmentVariable('Path', $scope))
           }
+          # Every failure above exits 1 explicitly, so reaching here means the machine
+          # is clean. Be explicit rather than leaving the runner's appended
+          # `exit $LASTEXITCODE` to decide.
+          exit 0
 
       - name: Install
         id: install
