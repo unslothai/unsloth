@@ -5,6 +5,8 @@ import pytest
 
 from core.user_assets_validation import UserAssetValidationError
 from models.user_assets import ExecutionUpsertRequest, RecipeUpdateRequest
+from models.data_recipe import PublishDatasetRequest
+from routes.data_recipe import jobs as data_recipe_jobs
 from routes.user_assets import recipes as user_assets_recipes
 from routes.user_assets.recipes import _recipe_input
 from storage import studio_db, user_assets_db
@@ -85,6 +87,53 @@ def test_execution_artifact_reference_is_owner_scoped_and_durable():
         == "recipes/recipe_r1"
     )
     assert user_assets_db.get_recipe_execution("owner-b", "r1", "e1") is None
+
+
+def test_persisted_completed_execution_remains_publishable_after_job_replacement(monkeypatch):
+    artifact_path = "recipes/recipe_r1"
+    user_assets_db.create_recipe("owner", recipe())
+    user_assets_db.upsert_recipe_execution(
+        "owner",
+        "r1",
+        "e1",
+        execution(
+            artifact_path = artifact_path,
+            jobId = "completed-job",
+            kind = "full",
+        ),
+    )
+    monkeypatch.setattr(
+        data_recipe_jobs,
+        "get_job_manager",
+        lambda: type("ReplacedJobManager", (), {"get_status": lambda *_args: None})(),
+    )
+    published = {}
+
+    def fake_publish_recipe_dataset(**kwargs):
+        published.update(kwargs)
+        return "https://huggingface.co/datasets/owner/dataset"
+
+    monkeypatch.setattr(data_recipe_jobs, "publish_recipe_dataset", fake_publish_recipe_dataset)
+
+    status = data_recipe_jobs.job_status("completed-job", "owner")
+    result = data_recipe_jobs.publish_job_dataset(
+        "completed-job",
+        PublishDatasetRequest(repo_id = "owner/dataset", description = "Dataset"),
+        "owner",
+    )
+
+    assert status == {
+        "job_id": "completed-job",
+        "status": "completed",
+        "execution_type": "full",
+        "artifact_path": artifact_path,
+    }
+    assert result["success"] is True
+    assert published["artifact_path"] == artifact_path
+    assert (
+        user_assets_db.get_completed_recipe_execution_by_job_id("other-owner", "completed-job")
+        is None
+    )
 
 
 def test_completed_execution_persists_when_replaced_job_cannot_verify_artifact(monkeypatch):

@@ -41,3 +41,8 @@ def test_recipe_playwright_does_not_import_jwt_dependent_auth_package():
     assert not any(
         isinstance(node, ast.ImportFrom) and node.module == "auth" for node in ast.walk(tree)
     )
+
+
+def test_completed_execution_clears_a_stale_transport_error():
+    assert 'incoming.status === "completed"' in EXECUTIONS_DB
+    assert "? null\n        : preferString(current.error, incoming.error)" in EXECUTIONS_DB

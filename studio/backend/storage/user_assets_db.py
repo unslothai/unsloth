@@ -484,6 +484,36 @@ def get_recipe_execution(
         conn.close()
 
 
+def get_completed_recipe_execution_by_job_id(
+    owner_subject: str, job_id: str
+) -> dict[str, Any] | None:
+    """Return an owner's persisted publishable execution for a completed job."""
+    owner = _require_owner(owner_subject)
+    asset_job_id = validate_id(job_id, "job id")
+    conn = studio_db.get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT execution.* FROM data_recipe_executions AS execution
+            JOIN data_recipes AS recipe
+              ON recipe.owner_subject = execution.owner_subject
+             AND recipe.id = execution.recipe_id
+            WHERE execution.owner_subject = ? AND recipe.deleted_at IS NULL
+              AND json_extract(execution.metadata_json, '$.jobId') = ?
+              AND json_extract(execution.metadata_json, '$.status') = 'completed'
+              AND json_extract(execution.metadata_json, '$.kind') = 'full'
+              AND json_type(execution.metadata_json, '$.artifact_path') = 'text'
+              AND trim(json_extract(execution.metadata_json, '$.artifact_path')) != ''
+            ORDER BY execution.updated_at DESC
+            LIMIT 1
+            """,
+            (owner, asset_job_id),
+        ).fetchone()
+        return _execution_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
 def upsert_recipe_execution(
     owner_subject: str,
     recipe_id: str,

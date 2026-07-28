@@ -264,11 +264,7 @@ function mergeJsonValue(
     for (const [key, value] of Object.entries(
       incoming as Record<string, unknown>,
     )) {
-      merged[key] = mergeJsonValue(
-        merged[key],
-        value,
-        preferIncomingScalars,
-      );
+      merged[key] = mergeJsonValue(merged[key], value, preferIncomingScalars);
     }
     return merged;
   }
@@ -344,7 +340,10 @@ function mergeTerminalSnapshots(
       incoming.analysis,
       useIncomingState,
     ),
-    error: preferString(current.error, incoming.error),
+    error:
+      incoming.status === "completed"
+        ? null
+        : preferString(current.error, incoming.error),
     createdAt: Math.min(current.createdAt, incoming.createdAt),
     finishedAt:
       current.finishedAt === null

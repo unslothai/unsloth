@@ -33,6 +33,7 @@ from models.data_recipe import (
     PublishDatasetResponse,
     RecipePayload,
 )
+from storage import user_assets_db
 from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
 logger = get_logger(__name__)
@@ -475,12 +476,26 @@ def _revoke_internal_api_key_safe(key_id: int) -> None:
         pass
 
 
+def _persisted_completed_job_status(job_id: str, owner_subject: str) -> dict[str, Any] | None:
+    execution = user_assets_db.get_completed_recipe_execution_by_job_id(owner_subject, job_id)
+    if execution is None:
+        return None
+    return {
+        "job_id": job_id,
+        "status": "completed",
+        "execution_type": "full",
+        "artifact_path": execution["artifact_path"],
+    }
+
+
 @router.get("/jobs/{job_id}/status")
 def job_status(job_id: str, current_subject: str = Depends(get_current_subject)):
     mgr = get_job_manager()
     state = mgr.get_status(job_id, current_subject)
     if state is None:
-        raise HTTPException(status_code = 404, detail = "job not found")
+        state = _persisted_completed_job_status(job_id, current_subject)
+        if state is None:
+            raise HTTPException(status_code = 404, detail = "job not found")
     return state
 
 
@@ -553,14 +568,21 @@ def publish_job_dataset(
 
     mgr = get_job_manager()
     status = mgr.get_status(job_id, current_subject)
-    if status is None:
-        raise HTTPException(status_code = 404, detail = "job not found")
-    if status.get("status") != "completed" or status.get("execution_type") != "full":
+    if status is not None and (
+        status.get("status") != "completed" or status.get("execution_type") != "full"
+    ):
         raise HTTPException(
             status_code = 409,
             detail = "Only completed full runs can be published.",
         )
-    status_artifact = status.get("artifact_path")
+    persisted_status = (
+        _persisted_completed_job_status(job_id, current_subject) if status is None else None
+    )
+    if status is None and persisted_status is None:
+        raise HTTPException(status_code = 404, detail = "job not found")
+    resolved_status = status if status is not None else persisted_status
+    assert resolved_status is not None
+    status_artifact = resolved_status.get("artifact_path")
     artifact_path = (
         status_artifact.strip()
         if isinstance(status_artifact, str) and status_artifact.strip()
