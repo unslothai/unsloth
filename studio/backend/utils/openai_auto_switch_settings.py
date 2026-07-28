@@ -502,6 +502,47 @@ def _fold_case_insensitive_path(model_id: str) -> Optional[str]:
     return trimmed.casefold()
 
 
+# A quant label may carry a bits-per-weight modifier, because two files at the
+# same base quant are kept distinct by it ("IQ4_XS-3.53bpw"). The two label
+# helpers disagree on whether to keep it, so anything reading a stored key has
+# to accept both forms.
+_BPW_SUFFIX = re.compile(r"-[0-9]+(?:\.[0-9]+)?bpw$", re.IGNORECASE)
+_MAX_QUANT_SUFFIX_LEN = 64
+
+
+def split_quant_suffix(value: str) -> Optional[tuple[str, str]]:
+    """``(head, quant)`` for a ``head:QUANT`` key, or None when there is none.
+
+    The suffix has to be a real quant label, so an ordinary colon inside a POSIX
+    filename is left alone: "/models/foo:bar.gguf" is one valid filename, and
+    splitting it would graft /models/foo's launch flags onto a different model.
+    """
+    from core.inference.llama_cpp import _GGUF_KNOWN_QUANT_RE
+
+    head, sep, tail = value.rpartition(":")
+    if not sep or not head or not tail:
+        return None
+    if len(tail) > _MAX_QUANT_SUFFIX_LEN or "/" in tail or "\\" in tail:
+        return None
+    if _GGUF_KNOWN_QUANT_RE.fullmatch(_BPW_SUFFIX.sub("", tail)) is None:
+        return None
+    return head, tail
+
+
+def _fold_posix_path_variant(value: str) -> str:
+    """A POSIX path id with only its quant suffix folded.
+
+    The browser lowercases the variant but keeps the path casing, so a stored
+    "/models/Foo:q4_k_m" has to be reachable from "/models/Foo:Q4_K_M" without
+    also making "/models/Foo.gguf" reachable from "/models/foo.gguf".
+    """
+    split = split_quant_suffix(value)
+    if split is None:
+        return value
+    head, quant = split
+    return f"{head}:{quant.casefold()}"
+
+
 def get_model_overrides() -> dict[str, dict]:
     """Per-model launch configs keyed by model id (see normalize_model_override)."""
     raw = _cached_setting(MODEL_OVERRIDES_SETTING_KEY, None)
@@ -544,11 +585,22 @@ def resolve_model_override_key(model_id: str) -> Optional[str]:
     # every migrated Windows entry unreachable until the user saved it again.
     if _looks_like_filesystem_path(model_id):
         folded = _fold_case_insensitive_path(model_id)
-        if folded is None:
-            return None
+        if folded is not None:
 
-        def fold(key: str) -> Optional[str]:
-            return _fold_case_insensitive_path(key)
+            def fold(key: str) -> Optional[str]:
+                return _fold_case_insensitive_path(key)
+        else:
+            # POSIX: the path itself stays case-sensitive, but the browser
+            # lowercases the quant suffix while keeping the path casing, so a
+            # migrated "/models/Foo:q4_k_m" has to stay reachable from the
+            # scanner's "/models/Foo:Q4_K_M".
+            folded = _fold_posix_path_variant(model_id)
+
+            def fold(key: str) -> Optional[str]:
+                # A path only ever folds onto another path.
+                if not _looks_like_filesystem_path(key):
+                    return None
+                return None if _fold_case_insensitive_path(key) else _fold_posix_path_variant(key)
     else:
         folded = model_id.casefold()
 

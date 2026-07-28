@@ -4697,6 +4697,44 @@ def test_unknown_quant_label_on_a_gguf_still_carries_flags_over(monkeypatch):
     assert resp.overrides["/models/custom.gguf:custom"]["llama_extra_args"] == ["--flash-attn"]
 
 
+def test_bpw_qualified_variants_still_carry_flags_over(monkeypatch):
+    # utils/models/model_config.py keeps a bits-per-weight modifier on the label
+    # so two files at the same base quant stay distinct, and that form reaches
+    # the override keys. The known-quant pattern does not accept it, so the bare
+    # entry was missed and the first qualified save dropped its launch flags.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("unsloth/Repo-GGUF", llama_extra_args = ["--flash-attn"])
+    resp = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(
+            model_id = "unsloth/Repo-GGUF:IQ4_XS-3.53bpw", max_seq_length = 4096
+        ),
+        "tester",
+    )
+    assert resp.overrides["unsloth/Repo-GGUF:IQ4_XS-3.53bpw"]["llama_extra_args"] == [
+        "--flash-attn"
+    ]
+
+
+def test_a_posix_path_variant_folds_while_the_path_does_not(monkeypatch):
+    # The browser lowercases the quant but keeps POSIX path casing, so the
+    # migrated key is "/models/Foo:q4_k_m" while the scanner asks for
+    # "/models/Foo:Q4_K_M". The path itself must still be case-sensitive.
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("/models/Foo:q4_k_m", max_seq_length = 8192)
+    assert settings.get_model_override("/models/Foo:Q4_K_M")["max_seq_length"] == 8192
+    assert settings.get_model_override("/models/foo:Q4_K_M") == {}
+
+
+def test_a_posix_colon_filename_is_not_folded_as_a_variant(monkeypatch):
+    # "/models/foo:Bar.gguf" is one filename, not path + quant, so folding its
+    # tail would let it reach a different file's settings.
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("/models/foo:bar.gguf", max_seq_length = 8192)
+    assert settings.get_model_override("/models/foo:Bar.gguf") == {}
+
+
 def test_a_suffix_the_scanner_would_not_derive_carries_nothing_over(monkeypatch):
     # Only the exact label the scanner derives for this filename is accepted, so
     # an unrelated colon suffix cannot reach into another model's flags.

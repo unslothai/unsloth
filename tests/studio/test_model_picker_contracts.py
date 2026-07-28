@@ -733,3 +733,16 @@ def test_api_reach_copy_is_limited_to_gguf_models():
     src = " ".join(_read("features/hub/catalog/hub-model-settings-view.tsx").split())
     assert "{target.isGguf ?" in src
     assert "Saved settings apply everywhere Studio loads this model." in src
+
+
+def test_backfill_includes_a_standalone_gguf_with_no_variant():
+    """A standalone .gguf picked directly has no quant to choose between, so it
+    is stored with a null variant. The quant filter classified it like
+    safetensors and skipped it, and since the done flag is set on the same pass
+    those settings stayed browser-only permanently while API auto-switch, which
+    does resolve that model, kept loading it with defaults.
+    """
+    src = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
+    assert 'entry.modelId.toLowerCase().endsWith(".gguf")' in src
+    # Still excluded for safetensors, which auto-switch does not resolve.
+    assert "entry.ggufVariant != null ||" in src

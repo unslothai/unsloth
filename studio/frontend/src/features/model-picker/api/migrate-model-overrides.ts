@@ -75,8 +75,13 @@ export async function backfillModelOverrides(): Promise<void> {
   const local = listPerModelConfigs().filter(
     // A quant means it is a GGUF, which is the only thing API auto-switch
     // resolves. Backfilling a safetensors config would claim an API behaviour
-    // that does not exist.
-    (entry) => entry.ggufVariant != null && !isDefaultConfig(entry.config),
+    // that does not exist. A standalone .gguf picked directly carries no quant
+    // to select between, so it is stored with a null variant and would fail
+    // that test despite being exactly what auto-switch does resolve; the flag
+    // is then set and its settings stay browser-only for good.
+    (entry) =>
+      (entry.ggufVariant != null || entry.modelId.toLowerCase().endsWith(".gguf")) &&
+      !isDefaultConfig(entry.config),
   );
   if (local.length === 0) {
     markRan();

@@ -355,16 +355,17 @@ def get_openai_auto_switch_overrides(
 
 def _bare_model_id(model_id: str) -> Optional[str]:
     """``repo`` for a ``repo:QUANT`` key, or None when there is no quant suffix."""
-    from core.inference.llama_cpp import _GGUF_KNOWN_QUANT_RE
     from hub.utils.gguf import extract_quant_label
+    from utils.openai_auto_switch_settings import split_quant_suffix
 
     head, sep, tail = model_id.rpartition(":")
     if not sep or not head or not tail:
         return None
-    if "/" not in tail and "\\" not in tail and len(tail) <= _MAX_VARIANT_SUFFIX_LEN:
-        # Must actually look like a quant, not just like a short path segment.
-        if _GGUF_KNOWN_QUANT_RE.fullmatch(tail) is not None:
-            return head
+    # Must actually look like a quant, not just like a short path segment. The
+    # label may carry a bits-per-weight modifier ("IQ4_XS-3.53bpw"), which keeps
+    # two files at the same base quant distinct, so that form counts too.
+    if split_quant_suffix(model_id) is not None:
+        return head
     # A .gguf with no recognizable quant token is still labelled by the scanner,
     # which falls back to the filename stem, so the UI stores keys like
     # "/models/custom.gguf:custom". Refusing those dropped the bare entry's
