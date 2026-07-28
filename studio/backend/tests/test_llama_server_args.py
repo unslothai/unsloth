@@ -77,8 +77,7 @@ validate_extra_args = _lsa.validate_extra_args
         ["--reasoning-format", "deepseek"],
         ["-rea", "auto"],
         # Soft-managed: user flags last-wins over Unsloth's auto-set version.
-        # --parallel / -np / --n-parallel are hard-denied (KV-cache + slot count
-        # would desync); use the Parallel Slots run setting instead.
+        # --parallel / -np / --n-parallel are hard-denied; use Parallel Slots.
         ["-c", "131072"],
         ["--ctx-size", "8192"],
         ["--flash-attn", "off"],
@@ -202,8 +201,7 @@ def test_denylist_rejects_all_aliases(denied):
     "args,offending",
     [
         # Pass-through --parallel would last-wins-override the real slot count
-        # while the KV-cache fit and slot bookkeeping stay at the resolved value
-        # (LoadRequest.n_parallel, else the typer default): plan vs. process.
+        # while the KV-cache fit and slot bookkeeping stay at the resolved value.
         (["--parallel", "8"], "--parallel"),
         (["--parallel=8"], "--parallel"),
         (["--n-parallel", "16"], "--n-parallel"),

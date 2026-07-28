@@ -969,8 +969,7 @@ type ChatRuntimeStore = {
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
   /** User --parallel slots override for GGUF loads (null = server default).
-   *  Deliberately NOT re-seeded from backend echoes: the echo is the resolved
-   *  count and would silently pin a blank control. */
+   *  Never re-seeded from an echo: the resolved count would pin a blank control. */
   nParallel: number | null;
   /** Slots the last successful load sent (null = default); the rollback
    *  re-sends it so a failed switch can't lose the override. */

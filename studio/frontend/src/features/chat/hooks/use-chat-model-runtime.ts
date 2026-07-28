@@ -673,7 +673,7 @@ export function useChatModelRuntime() {
             typeof selection !== "string" ? selection.config : undefined;
           // The outgoing model's slot INTENT, read before the staged config
           // overwrites it: blank means "follow the server default", which the
-          // resolved rollback baseline cannot express.
+          // resolved baseline cannot express.
           const previousNParallel = useChatRuntimeStore.getState().nParallel;
           if (pendingLoadConfig) {
             applyPerModelConfigToRuntime(pendingLoadConfig);
@@ -1058,10 +1058,9 @@ export function useChatModelRuntime() {
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
             );
-            // Slots the load actually committed. Non-GGUF loads never send them
-            // and the diffusion runner ignores --parallel, so recording the
-            // click-time count on either would mint a phantom override that a
-            // saved preset then carries onto a text GGUF.
+            // Slots the load actually committed. Non-GGUF never sends them and
+            // diffusion ignores --parallel, so a click-time count on either
+            // would mint a phantom override a saved preset carries onto a GGUF.
             const committedSlots =
               (loadResponse.is_gguf ?? false) &&
               !(loadResponse.is_diffusion ?? false)

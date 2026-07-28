@@ -3297,9 +3297,9 @@ def _is_explicit_tensor_drop(request: LoadRequest) -> bool:
 def _parallel_slot_echo(llama_backend: LlamaCppBackend) -> dict:
     """requested/effective parallel-slot fields for /load and /status echoes.
 
-    The diffusion runner ignores ``--parallel`` (its load never commits a slot
-    count), so echoing its reset placeholder 1 would fabricate an "invoked
-    with 1 slot" -- report None there, like the non-GGUF paths."""
+    The diffusion runner ignores ``--parallel`` and never commits a count, so it
+    reports None like the non-GGUF paths; echoing the reset placeholder 1 would
+    fabricate an "invoked with 1 slot"."""
     if llama_backend.is_diffusion:
         return {"requested_parallel_slots": None, "parallel_slots": None}
     return {
@@ -3323,16 +3323,14 @@ def _request_matches_loaded_settings(
     holds rather than the raw request field. Defaults to the request field for
     callers that do not resolve a bundled override.
 
-    ``requested_parallel_slots`` is the resolved slot count the load would be
-    invoked with (per-load ``n_parallel``, else the server-wide default);
-    None skips the comparison for callers that do not resolve it."""
+    ``requested_parallel_slots`` is the resolved count the load would use
+    (per-load ``n_parallel``, else the server-wide default); None skips it."""
     # Compare requested n_ctx (not effective) so VRAM-cap doesn't mask an
     # Auto-vs-explicit slider flip.
     if request.max_seq_length != llama_backend.requested_n_ctx:
         return False
     # Requested-vs-requested for the same reason: the fitter may launch fewer
-    # slots than invoked. The diffusion runner ignores --parallel, so a slots
-    # change must not reload it.
+    # slots. Diffusion ignores --parallel, so a change there must not reload.
     if (
         requested_parallel_slots is not None
         and not llama_backend.is_diffusion
@@ -4758,10 +4756,9 @@ def _guard_chat_load_against_training(
             cpu_only = LlamaCppBackend._effective_gpu_count() == 0,
         )
 
-    # Size with the slot count that will actually launch, or a load that fits
-    # gets a 409: the diffusion runner never receives --parallel, and load_model
-    # clamps a multi-slot request to 1 on an llama-server without --kv-unified.
-    # An unclassified GGUF keeps the requested count, which is the safe side.
+    # Size with the count that will actually launch, or a load that fits gets a
+    # 409: diffusion never receives --parallel, and load_model clamps to 1 on an
+    # llama-server without --kv-unified. An unclassified GGUF keeps the ask.
     if is_gguf and n_parallel > 1:
         if diffusion_kind is True:
             n_parallel = 1
@@ -5317,9 +5314,8 @@ async def _load_model_impl(
 
         # Resolve the slot count once (per-load field, else the server-wide
         # --parallel default) so the dedupe, the training guard and the load
-        # kwargs all size against the value the launch will use. app.state stays
-        # untouched as the launch intent / admission fallback, and is read via
-        # getattr because direct callers pass a request without an app.
+        # kwargs all size against what launches. app.state stays the launch
+        # intent / admission fallback; getattr because direct callers have no app.
         _app_state = getattr(getattr(fastapi_request, "app", None), "state", None)
         _n_parallel = (
             request.n_parallel

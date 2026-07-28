@@ -3,20 +3,12 @@
 
 """Backend contract for the per-load parallel-slots knob.
 
-The web UI threads a single optional ``n_parallel`` (llama-server
-``--parallel``) from the run-settings form through LoadRequest; omitted, the
-server-wide launch default (``run.py --parallel``) applies. These tests pin:
-
-  * the pydantic request/response/status contract (default None, bounds shared
-    with llama_server_args.PARALLEL_MIN/MAX and their run.py / CLI mirrors),
-  * the backend ``requested_parallel_slots`` property and its lifecycle
-    (committed from the pre-reduction pending kwargs, reset with the
-    effective count),
-  * the ``_already_in_target_state`` requested-vs-requested reload branch and
-    its diffusion skip, and
-  * the route wiring: one resolution point feeding the training guard, the
-    load kwargs, the reload dedupe, and the /load, /validate and /status
-    echoes.
+An optional ``n_parallel`` (llama-server ``--parallel``) rides on LoadRequest;
+omitted, the server-wide launch default (``run.py --parallel``) applies. These
+tests pin the pydantic contract and the shared PARALLEL_MIN/MAX mirrors, the
+``requested_parallel_slots`` lifecycle, the ``_already_in_target_state``
+requested-vs-requested reload branch with its diffusion skip, and the route
+wiring behind the /load, /validate and /status echoes.
 """
 
 from __future__ import annotations
@@ -215,8 +207,8 @@ def test_unload_resets_requested_parallel_slots(backend):
 
 
 def test_load_model_commits_requested_from_pending_kwargs():
-    # The local n_parallel may be reduced before the healthy commit, so the
-    # requested value must come from the pre-reduction pending snapshot.
+    # n_parallel may be reduced before the commit, so the requested value must
+    # come from the pre-reduction pending snapshot.
     src = inspect.getsource(LlamaCppBackend.load_model)
     commit = src.find(
         'self._requested_n_parallel = max(1, int(_pending_load_kwargs["n_parallel"]))'
@@ -298,7 +290,7 @@ def _route_source() -> str:
 
 def _load_impl_source() -> str:
     """Body of _load_model_impl only, so positional assertions can't be
-    satisfied by a later function further down the module."""
+    satisfied by a later function in the module."""
     src = _route_source()
     body = src[src.index("async def _load_model_impl") :]
     return body[: body.index("\n@router.")]
@@ -395,9 +387,8 @@ def test_clamp_sits_between_the_echo_and_the_fit():
 
 def _write_swa_gguf(path: Path) -> str:
     """Smallest DiffusionGemma-shaped header the KV estimator can size: the
-    canvas marker that routes it to the diffusion runner, plus the sliding-window
-    dims that make llama.cpp's SWA cache slot-scaled (it allocates
-    ``n_swa * n_seq_max + n_ubatch`` cells, or one such cache per stream)."""
+    canvas marker routing it to the diffusion runner, plus the sliding-window
+    dims that make llama.cpp's SWA cache slot-scaled."""
 
     def _kv_str(key: str, value: str) -> bytes:
         kb, vb = key.encode(), value.encode()

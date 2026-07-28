@@ -2421,11 +2421,9 @@ class LlamaCppBackend:
 
     @property
     def requested_parallel_slots(self) -> int:
-        """--parallel count the last load was invoked with (before any
-        fit-time slot reduction). Used by the route's reload dedupe to compare
-        requested-vs-requested, mirroring requested_n_ctx: comparing against
-        the effective count would reload forever whenever the fitter reduced
-        the slots."""
+        """--parallel the last load asked for, before any fit-time reduction.
+        The reload dedupe compares requested-vs-requested (like requested_n_ctx);
+        the effective count would reload forever after a fitter reduction."""
         try:
             slots = int(getattr(self, "_requested_n_parallel", 1))
         except (TypeError, ValueError):

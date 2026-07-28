@@ -1232,9 +1232,8 @@ export function SharedComposer({
               effectiveCustomContextLength,
             )
           : null;
-        // Slots this compare load committed. The diffusion runner ignores
-        // --parallel, so recording the click-time count would mint a phantom
-        // override that a saved preset then carries onto a text GGUF.
+        // Slots this compare load committed. Diffusion ignores --parallel, so a
+        // count there would mint a phantom override a preset carries onto a GGUF.
         const committedSlots =
           targetIsGguf && !(resp.is_diffusion ?? false)
             ? (ownConfig.nParallel ?? null)

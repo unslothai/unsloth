@@ -1638,8 +1638,7 @@ async function autoLoadSmallestModel(): Promise<{
             gpu_layers: effectiveGpuLayers,
             n_cpu_moe: effectiveNCpuMoe,
             gpu_ids: effectiveGpuIds ?? undefined,
-            // Per-model too: without this the auto-load reverts a remembered
-            // override to the server default.
+            // Per-model too, or the auto-load reverts a remembered override.
             n_parallel: config.nParallel ?? null,
           }
         : {}),
@@ -1693,9 +1692,8 @@ async function autoLoadSmallestModel(): Promise<{
         effectiveGpuLayers,
         config.customContextLength ?? null,
       );
-      // Slots this auto-load committed. The diffusion runner ignores --parallel,
-      // so recording a count there would mint a phantom override that a saved
-      // preset then carries onto a text GGUF.
+      // Slots this auto-load committed. Diffusion ignores --parallel, so a count
+      // there would mint a phantom override a saved preset carries onto a GGUF.
       const committedSlots = (loadResp.is_diffusion ?? false)
         ? null
         : (config.nParallel ?? null);
@@ -1741,8 +1739,8 @@ async function autoLoadSmallestModel(): Promise<{
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
-        // Slots are GGUF-only and this branch never sends them, so clear both:
-        // a staged override would be saved for a model it cannot reach.
+        // GGUF-only and never sent here: a staged override would be saved for
+        // a model that cannot use it.
         nParallel: null,
         loadedNParallel: null,
         tensorParallel: loadResp.tensor_parallel ?? false,
@@ -2018,9 +2016,8 @@ async function autoLoadSmallestModel(): Promise<{
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
-        // The request above omits n_parallel, so clear both: a staged override
-        // left from a preset would read as applied and make the next Apply
-        // reload at a count this load never sent.
+        // The request above omits n_parallel: a staged override left from a
+        // preset would read as applied and be re-sent by the next Apply.
         nParallel: null,
         loadedNParallel: null,
         tensorParallel: loadResp.tensor_parallel ?? false,

@@ -17,10 +17,9 @@ import os
 from typing import Iterable, Mapping, Optional
 
 # Valid llama-server --parallel range, shared with LoadRequest.n_parallel.
-# Deliberately mirrored by callers that cannot import this module: run.py and
-# unsloth_cli/commands/studio.py as _PARALLEL_MIN/MAX, and the web UI as
-# N_PARALLEL_MIN/MAX in model-picker/model-config/per-model-config.ts.
-# tests/test_parallel_slots_per_load.py pins all of them to these values.
+# Mirrored by callers that cannot import this: run.py and unsloth_cli/commands/
+# studio.py (_PARALLEL_MIN/MAX), per-model-config.ts (N_PARALLEL_MIN/MAX);
+# test_parallel_slots_per_load.py pins them together.
 PARALLEL_MIN = 1
 PARALLEL_MAX = 64
 
@@ -28,8 +27,7 @@ PARALLEL_MAX = 64
 # Extend the matching group when llama.cpp adds a new alias.
 _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # Parallel slots: owned by typer --parallel and LoadRequest.n_parallel; a
-    # pass-through would desync the committed slot bookkeeping (admission
-    # capacity, KV-cache fit) from llama-server.
+    # pass-through would desync the slot bookkeeping from llama-server.
     frozenset({"-np", "--parallel", "--n-parallel"}),
     # Model identity: Unsloth resolves it from LoadRequest; a second -m would
     # load a different model than Unsloth thinks it loaded.

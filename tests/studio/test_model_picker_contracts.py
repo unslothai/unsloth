@@ -632,10 +632,10 @@ def test_legacy_migration_is_idempotent_and_non_destructive():
 
 
 def test_parallel_slots_setting_wired_end_to_end():
-    """The per-load Parallel Slots knob (llama-server --parallel) must flow
-    from the run-settings form through persistence, both /load builders, the
-    validate preflight, and the cross-model reset; losing any hop silently
-    reverts the model to the server-wide slot default."""
+    """The per-load Parallel Slots knob (llama-server --parallel) must flow from
+    the run-settings form through persistence, every /load builder, the validate
+    preflight and the cross-model reset; a lost hop silently reverts the model to
+    the server-wide slot default."""
     config = _read("features/model-picker/model-config/per-model-config.ts")
     # Persisted per model, clamped on every read/write, and null (= server
     # default) counts as default so blank configs are not stored.
@@ -680,13 +680,11 @@ def test_parallel_slots_setting_wired_end_to_end():
 
 def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
     """`nParallel` is the editable control ("blank = follow the server default")
-    and `loadedNParallel` the rollback baseline. Every success path that does
-    NOT send a slot count must therefore blank the control, or a value staged
-    for some other model shows as applied, is persisted into that model's
-    per-model config (`isDefaultConfig` keys on nParallel, so a phantom count
-    turns a Save-nothing click into a stored override) and is re-sent by the
-    next Apply. Three paths were missing the clear; each assertion below is the
-    only thing pinning one of them."""
+    and `loadedNParallel` the rollback baseline. A success path that sends no
+    slot count must blank the control, or a value staged for another model shows
+    as applied, is persisted into this model's config (`isDefaultConfig` keys on
+    nParallel) and is re-sent by the next Apply. Each assertion below is the only
+    thing pinning one such path."""
     status = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
     # A model/variant swap underneath this tab must reset the control like
     # performLoad's cross-model reset, or model A's count follows onto model B.
@@ -722,11 +720,10 @@ def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
 
 
 def test_hydration_clears_the_slot_baseline_for_a_slotless_model():
-    """The baseline is what a failed-switch rollback re-sends and what preset
-    capture reads, so a model that cannot have slots must not inherit the
-    previous GGUF's count. /status omits the echo for non-GGUF and sends an
-    explicit null for the diffusion runner; an absent field on a GGUF is an
-    older backend and must NOT wipe the baseline."""
+    """The baseline is what a rollback re-sends and what preset capture reads, so
+    a model that cannot have slots must not inherit the previous GGUF's count.
+    /status omits the echo for non-GGUF and sends an explicit null for diffusion;
+    an absent field on a GGUF is an older backend and must NOT wipe it."""
     src = _read("features/chat/lib/apply-inference-status-to-store.ts")
     assert (
         "(status.is_gguf === false || status.requested_parallel_slots === null) && {" in src
@@ -740,21 +737,15 @@ def test_hydration_clears_the_slot_baseline_for_a_slotless_model():
 def test_hydration_keeps_the_slot_control_when_readopting_the_running_model():
     """`hydratingExistingModel` is true whenever the incoming status disagrees
     with what this tab last recorded, which includes RE-ADOPTING a model the tab
-    never lost. The deterministic case is the resident-adopt branch: with an
-    external provider selected, picking the still-resident local model takes
-    that branch, which deliberately restores the model's own per-model config
-    and only then hydrates, passing the EXTERNAL id as `previousCheckpoint` --
-    so `hydratingExistingModel` is unconditionally true with no load in flight.
-    An ungated clear there wipes the slot count the line just above it restored,
-    and wipes only that knob, because every sibling re-adopts the status echo
-    (idempotent) while this one clears (destructive). The blank then persists
-    into `savePerModelConfig`, so a Save the user reads as a no-op erases their
-    remembered override and the next Apply reloads at the server default.
+    never lost: the resident-adopt branch restores the model's own per-model
+    config and only then hydrates, passing the EXTERNAL id as
+    `previousCheckpoint`. An ungated clear there wipes the slot count that branch
+    just restored, and the blank persists into `savePerModelConfig`, so a Save
+    the user reads as a no-op erases their remembered override.
 
     Only that branch knows the model is unchanged, so it says so explicitly.
-    Slot counts cannot stand in for the check: the echo is "the per-load
-    n_parallel, else the server-wide default", so a genuine A->B swap where B
-    loaded at the default can echo exactly A's explicit count."""
+    Slot counts cannot stand in: the echo falls back to the server-wide default,
+    so a genuine A->B swap can echo exactly A's explicit count."""
     status = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
     assert (
         "const slotsModelChanged = hydratingExistingModel && !options.readoptingSameModel;"
@@ -788,16 +779,13 @@ def test_hydration_keeps_the_slot_control_when_readopting_the_running_model():
 
 def test_parallel_slots_are_never_recorded_for_a_diffusion_load():
     """A DiffusionGemma GGUF answers ``is_gguf: true``, but its runner ignores
-    ``--parallel``: the backend's ``_parallel_slot_echo`` deliberately reports
-    null slots for it so nothing fabricates an "invoked with N slots". The three
-    load success paths must gate on the response's ``is_diffusion`` too, or they
-    record a click-time count the load never committed.
+    ``--parallel``, so ``_parallel_slot_echo`` reports null slots for it. The
+    three load success paths must gate on ``is_diffusion`` too, or they record a
+    click-time count the load never committed.
 
-    That phantom does not stay put. ``capturePresetLoadConfig`` snapshots
-    ``nParallel`` with no model or capability gate, and a preset carries no
-    model identity at all, so applying it while a TEXT GGUF is active and
-    reloading (which the apply path's own toast instructs) sends the count as a
-    real ``n_parallel``. The gate below is the only thing stopping that.
+    That phantom does not stay put: ``capturePresetLoadConfig`` snapshots
+    ``nParallel`` with no model gate and a preset carries no model identity, so
+    applying it over a TEXT GGUF sends the count as a real ``n_parallel``.
     """
     runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
     # One gated local feeds the control and the baseline, so they cannot drift.
@@ -820,19 +808,16 @@ def test_parallel_slots_are_never_recorded_for_a_diffusion_load():
 
 
 def test_hydration_restores_a_remembered_slot_override():
-    """The control is deliberately never seeded from the status echo, so a model
-    running on its remembered override shows a BLANK slot control after a
-    browser reload, and again after status moves the tab to another GGUF.
-    `ModelConfigPage.resolveInitial` prefers the live store over storage for the
-    active model, so the blank is what the form edits: the next Apply sends
-    `n_parallel: null` (reloading at the server default) and a Save writes the
-    blank over the remembered count.
+    """The control is never seeded from the status echo, so a model running on a
+    remembered override shows a BLANK slot control after a browser reload or a
+    tab move to another GGUF. `ModelConfigPage.resolveInitial` prefers the live
+    store for the active model, so that blank is what the form edits: the next
+    Apply reloads at the server default and a Save writes the blank over the
+    remembered count.
 
-    The seed is deliberately narrow. It reads storage only on a fresh store or a
-    model change, never on a steady-state poll, so it cannot re-pin a control
-    the user just blanked, and it adopts the value only when the server is
-    already running that exact count, which proves it belongs to this model
-    rather than fabricating a pin.
+    The seed is deliberately narrow: storage is read only on a fresh store or a
+    model change, never on a steady poll, and the value is adopted only when the
+    server already runs that exact count, which proves it is this model's own.
     """
     src = _read("features/chat/lib/apply-inference-status-to-store.ts")
     status = " ".join(src.split())
@@ -862,15 +847,14 @@ def test_hydration_restores_a_remembered_slot_override():
 
 def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count():
     """`loadedNParallel` holds a RESOLVED count even for a load that sent no
-    slots (hydration seeds it from the echo, which falls back to the server-wide
-    default), so it is the right value to re-send when recreating the previous
-    server and the wrong one to put back in the control: it turns "follow the
-    server default" into an explicit override that a later Save or preset
-    capture then pins. The outer catch only repairs that for a staged config
-    (`selection.previousConfig`), so a plain string pick keeps the phantom.
+    slots (the echo falls back to the server-wide default), so it is the right
+    value to re-send when recreating the previous server and the wrong one to put
+    back in the control: it turns "follow the server default" into an explicit
+    override that a later Save or preset capture pins. The outer catch only
+    repairs that for a staged config, so a plain string pick keeps the phantom.
 
-    Read the control BEFORE the staged config overwrites it, which is also the
-    only point where it still describes the OUTGOING model."""
+    The control is read BEFORE the staged config overwrites it, the only point
+    where it still describes the OUTGOING model."""
     runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
     assert "const previousNParallel = useChatRuntimeStore.getState().nParallel;" in runtime
     assert runtime.index("const previousNParallel") < runtime.index(
