@@ -2555,6 +2555,34 @@ def _wsl_shim_env(command: list, env: dict, unset_env: tuple) -> tuple[dict, tup
     return env, (*wsl_env_bridge, "PWD/p")
 
 
+def _resolved_launch_command(executable: str, arguments: list) -> list:
+    """Return an argv that preserves arguments through Windows npm shims."""
+    if os.name == "nt" and Path(executable).suffix.lower() in {".cmd", ".bat"}:
+        # cmd.exe treats CR/LF inside `%*` as command separators, and Windows
+        # PowerShell's native-command bridge also rewrites embedded quotes. npm's
+        # generated shim names its real entry point explicitly, so bypass the shell
+        # and let subprocess apply Windows argv quoting directly.
+        with contextlib.suppress(OSError, UnicodeError):
+            shim = Path(executable)
+            contents = shim.read_text(encoding = "utf-8")
+            matches = re.findall(r'"%dp0%[\\/](?P<target>[^"]+)"\s+%\*', contents)
+            for relative in reversed(matches):
+                if not relative.replace("/", "\\").lower().startswith("node_modules\\"):
+                    continue
+                target = shim.parent / Path(relative)
+                if not target.is_file():
+                    continue
+                suffix = target.suffix.lower()
+                if suffix in {".exe", ".com"}:
+                    return [str(target), *arguments]
+                if suffix in {".js", ".cjs", ".mjs"}:
+                    bundled_node = shim.parent / "node.exe"
+                    node = str(bundled_node) if bundled_node.is_file() else shutil.which("node")
+                    if node:
+                        return [node, str(target), *arguments]
+    return [executable, *arguments]
+
+
 def _launch(
     command: list,
     env: dict,
@@ -2587,7 +2615,8 @@ def _launch(
     # Ctrl+C cancels a turn inside the agent; don't let it kill this wrapper.
     previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
-        code = subprocess.run([executable, *command[1:]], env = child_env).returncode
+        launch_command = _resolved_launch_command(executable, command[1:])
+        code = subprocess.run(launch_command, env = child_env).returncode
     finally:
         signal.signal(signal.SIGINT, previous)
     # Negative returncode means killed by signal N; shells expect 128+N.

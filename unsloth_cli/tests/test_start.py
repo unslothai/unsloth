@@ -1139,6 +1139,7 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
     assert captured["env"]["ANTHROPIC_BASE_URL"] == BASE
     assert captured["env"]["ANTHROPIC_MODEL"] == MODEL["id"]
     assert captured["env"]["PWD"] == str(tmp_path)
+
     assert "PWD/p" in captured["env"]["WSLENV"].split(":")
     for name in (
         "ANTHROPIC_AUTH_TOKEN",
@@ -1148,6 +1149,68 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
         "CLAUDE_CODE_OAUTH_TOKEN",
     ):
         assert name in captured["env"]["WSLENV"].split(":")
+
+
+@pytest.mark.skipif(os.name != "nt", reason = "Windows npm shim behavior")
+def test_launch_windows_npm_shim_preserves_multiline_argument(monkeypatch, tmp_path):
+    cmd = tmp_path / "fake-agent.cmd"
+    target = tmp_path / "node_modules" / "fake-agent" / "index.js"
+    target.parent.mkdir(parents = True)
+    target.write_text("", encoding = "utf-8")
+    cmd.write_text(
+        '@echo off\r\n"%_prog%" "%dp0%\\node_modules\\fake-agent\\index.js" %*\r\n',
+        encoding = "utf-8",
+    )
+    captured = {}
+
+    def which(name):
+        return str(cmd) if name == "fake-agent" else r"C:\Program Files\nodejs\node.exe"
+
+    def run(command, env):
+        captured["command"] = command
+        return SimpleNamespace(returncode = 0)
+
+    monkeypatch.setattr(start.shutil, "which", which)
+    monkeypatch.setattr(start.subprocess, "run", run)
+
+    code = start._launch(
+        ["fake-agent", 'first line\nsecond "quoted" line'],
+        {},
+        install_hint = "unused",
+    )
+
+    assert code == 0
+    assert captured["command"] == [
+        r"C:\Program Files\nodejs\node.exe",
+        str(target),
+        'first line\nsecond "quoted" line',
+    ]
+
+
+@pytest.mark.skipif(os.name != "nt", reason = "Windows npm shim behavior")
+def test_resolved_launch_command_uses_native_npm_entrypoint(tmp_path):
+    cmd = tmp_path / "fake-agent.cmd"
+    target = tmp_path / "node_modules" / "fake-agent" / "agent.exe"
+    target.parent.mkdir(parents = True)
+    target.write_bytes(b"")
+    cmd.write_text(
+        '@echo off\r\n"%dp0%\\node_modules\\fake-agent\\agent.exe" %*\r\n',
+        encoding = "utf-8",
+    )
+
+    assert start._resolved_launch_command(str(cmd), ["--flag", "two words"]) == [
+        str(target),
+        "--flag",
+        "two words",
+    ]
+
+
+@pytest.mark.skipif(os.name != "nt", reason = "Windows npm shim behavior")
+def test_resolved_launch_command_leaves_non_npm_batch_file_unchanged(tmp_path):
+    cmd = tmp_path / "custom-agent.cmd"
+    cmd.write_text('@echo off\r\n"%dp0%\\custom.exe" %*\r\n', encoding = "utf-8")
+
+    assert start._resolved_launch_command(str(cmd), ["--flag"]) == [str(cmd), "--flag"]
 
 
 @pytest.mark.skipif(
