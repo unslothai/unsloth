@@ -48,11 +48,13 @@ fn save_filter(file_name: &str) -> (&'static str, Vec<&'static str>) {
         Some("md") | Some("markdown") => ("Markdown", vec!["md", "markdown"]),
         Some("html") | Some("htm") => ("HTML", vec!["html", "htm"]),
         Some("py") => ("Python", vec!["py"]),
+        Some("sh") => ("Shell script", vec!["sh"]),
         Some("zip") => ("ZIP archive", vec!["zip"]),
         _ => (
             "Export files",
             vec![
-                "json", "jsonl", "ndjson", "csv", "md", "markdown", "html", "htm", "py", "zip",
+                "json", "jsonl", "ndjson", "csv", "md", "markdown", "html", "htm", "py", "sh",
+                "zip",
             ],
         ),
     }
@@ -266,6 +268,22 @@ mod tests {
     fn python_scripts_use_a_python_save_filter() {
         assert_eq!(save_filter("script.py"), ("Python", vec!["py"]));
         assert_eq!(save_filter("script.PY"), ("Python", vec!["py"]));
+    }
+
+    #[test]
+    fn shell_commands_use_a_shell_save_filter() {
+        // The terminal card downloads command.sh through the same cell.
+        assert_eq!(save_filter("command.sh"), ("Shell script", vec!["sh"]));
+        assert_eq!(save_filter("command.SH"), ("Shell script", vec!["sh"]));
+    }
+
+    #[test]
+    fn generic_fallback_covers_every_tool_download_name() {
+        let (name, extensions) = save_filter("no-extension");
+        assert_eq!(name, "Export files");
+        for wanted in ["py", "sh", "json", "jsonl", "csv", "md", "html", "zip"] {
+            assert!(extensions.contains(&wanted), "fallback lost {wanted}");
+        }
     }
 
     #[test]

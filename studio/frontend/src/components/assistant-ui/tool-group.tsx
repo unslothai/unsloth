@@ -10,7 +10,11 @@ import {
 } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { toolOutputKey, useToolPaneScope } from "@/features/chat";
+import {
+  toolOutputKey,
+  useToolPaneScope,
+  useUnresolvedToolPaneScope,
+} from "@/features/chat";
 import { ChevronDownIcon } from "lucide-react";
 import { Wrench01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -241,16 +245,23 @@ const ToolGroupImpl: FC<
   // Force the group open when any call is receiving tool_output events.
   const toolLiveOutput = useChatRuntimeStore((s) => s.toolLiveOutput);
   const paneScope = useToolPaneScope();
+  const unresolvedScope = useUnresolvedToolPaneScope();
   const hasLiveOutput = useAuiState(({ message }) =>
     message.parts
       .slice(startIndex, endIndex + 1)
       .some(
         (part) =>
           part.type === "tool-call" &&
-          Object.prototype.hasOwnProperty.call(
+          // Either scope: a first turn writes under the unresolved one for its whole
+          // life, even after the autosave assigns the id (see useToolOutputFor).
+          (Object.prototype.hasOwnProperty.call(
             toolLiveOutput,
             toolOutputKey(paneScope, part.toolCallId),
-          ),
+          ) ||
+            Object.prototype.hasOwnProperty.call(
+              toolLiveOutput,
+              toolOutputKey(unresolvedScope, part.toolCallId),
+            )),
       ),
   );
   // Keep the group open once a confirmation or live output forced it (so an
