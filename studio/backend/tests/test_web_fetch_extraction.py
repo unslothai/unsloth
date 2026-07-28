@@ -1355,8 +1355,8 @@ def test_header_kept_in_unscoped_conversion():
 
 
 def test_unclosed_header_in_truncated_scope_keeps_body():
-    # A capped fetch ends before </main>, so the segment is flushed, not closed, and
-    # must still carry its dropped prose or the body is lost.
+    # A capped fetch ends before </main>: the flushed segment must still carry its
+    # dropped prose or the body is lost.
     sections = "".join(
         f"<h2>Section {i} of the article</h2><p>{'Body prose here. ' * 10}</p>" for i in range(12)
     )
@@ -1434,8 +1434,7 @@ def test_unclosed_header_does_not_strip_a_short_article_it_adopted():
 
 
 def test_heading_inside_a_nested_buffer_is_kept_and_the_links_still_go():
-    # The heading is teed as it is emitted, so routing it through a blockquote
-    # neither loses the title nor forces the whole language list back in.
+    # Teeing keeps the title without forcing the language list back in.
     body = (
         "<main><header><blockquote><h1>Page Title</h1></blockquote><ul>%s</ul></header><p>%s</p></main>"
         % (

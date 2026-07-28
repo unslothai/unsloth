@@ -100,8 +100,7 @@ def _is_hidden_element(attr_dict: dict) -> bool:
 
 
 def _is_aria_heading(attr_dict: dict) -> bool:
-    """True for an accessible heading (``role="heading"``) built from a plain
-    element, which carries the page title just as an ``h1``-``h6`` does."""
+    """True for ``role="heading"``, which titles a page just as ``h1``-``h6`` does."""
     return (attr_dict.get("role") or "").strip().lower() == "heading"
 
 
@@ -190,14 +189,13 @@ _BLOCK_TAGS = frozenset(
 _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
-# A <header> is furniture only when almost entirely links (site nav, Wikipedia's
-# in-<main> language dropdown). Live link lists measure 0.94-1.00, content headers
-# (byline, date, standfirst) 0.13-0.90.
+# A <header> is furniture only when almost all links (nav, Wikipedia's language
+# dropdown): live link lists measure 0.94-1.00, content headers 0.13-0.90.
 _HEADER_LINK_DENSITY = 0.93
-# Size floor: below it the ratio is too noisy and the header too small to displace an
-# article. Live link lists start at 182 chars, link-dense content headers top out at 93.
+# Below this the ratio is too noisy: live link lists start at 182 chars, link-dense
+# content headers top out at 93.
 _HEADER_MIN_CHARS = 150
-# Short labels can carry huge hrefs, so judge rendered size too. Live content headers
+# Short labels can carry huge hrefs, so judge rendered size too: content headers
 # render to at most 363 chars, link lists to 1609 and up.
 _HEADER_MAX_RENDERED_CHARS = 800
 
@@ -222,11 +220,9 @@ class _HeaderFrame:
     def __init__(self, depth: int, in_cell: bool, in_pre: bool, bq_depth: int):
         self.depth = depth
         self.parts: list[str] = []
-        # A copy of the heading output, teed as it is emitted so a heading routed
-        # through a nested blockquote or table cell is still recoverable.
+        # Heading output, teed so a heading routed through a nested buffer survives.
         self.heading_parts: list[str] = []
-        # Side buffers already open here are ancestors, so their content belongs
-        # to this frame; ones opened later are nested and buffer normally.
+        # Side buffers open at this point enclose the frame; later ones are nested.
         self.outer_in_cell = in_cell
         self.outer_in_pre = in_pre
         self.outer_bq_depth = bq_depth
@@ -238,8 +234,8 @@ class _HeaderFrame:
     def render(self, closed_by_own_tag: bool) -> str:
         """The buffer, or only its headings when the header is link furniture.
 
-        Without a matching ``</header>`` the markup is malformed and the header may
-        have adopted the page body, so keep it whole."""
+        Without a matching ``</header>`` the header may have adopted the page
+        body, so keep it whole."""
         if not closed_by_own_tag:
             return "".join(self.parts)
         big_enough = (
@@ -290,16 +286,15 @@ class _MarkdownRenderer(HTMLParser):
         self._dropped_chars: int = 0
         self._seg_dropped_start: int = 0
         self.scope_dropped: list[int] = []
-        # Open-tag indices of elements acting as headings (h1-h6 or role=heading),
-        # unwound with _hidden_marks so an unclosed one cannot stick.
+        # Open-tag indices of headings, unwound with _hidden_marks.
         self._heading_marks: list[int] = []
 
         # Link state
         self._link_href: str | None = None
         self._link_text_parts: list[str] = []
         self._in_link: bool = False
-        # Text under the open <a>, credited as links only once </a> closes it: an
-        # <a> left open adopts body prose, which is not furniture.
+        # Text under the open <a>, credited only at </a>: an <a> left open adopts
+        # body prose, which is not furniture.
         self._link_header_chars: int = 0
 
         # List state
@@ -327,8 +322,8 @@ class _MarkdownRenderer(HTMLParser):
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
         """True when a side buffer opened *inside* *frame* still holds content.
 
-        Such a buffer emits into the frame when it closes; one that was already
-        open when the header started encloses it and must not capture it."""
+        Such a buffer emits into the frame when it closes; an enclosing one
+        (already open at ``<header>``) must not capture it."""
         return (
             self._in_link
             or (self._in_cell and not frame.outer_in_cell)
@@ -339,8 +334,8 @@ class _MarkdownRenderer(HTMLParser):
     def _emit(self, text: str) -> None:
         frame = self._header_stack[-1] if self._header_stack else None
         # Tee wherever the text is routed, so a heading inside a nested buffer is
-        # still captured. Link text arrives raw and again formatted by
-        # _finish_link, which runs with _in_link cleared, so only that form is teed.
+        # captured. Link text arrives twice (raw, then formatted by _finish_link with
+        # _in_link cleared), so the _in_link guard tees only the formatted form.
         if frame is not None and self._heading_marks and not self._in_link:
             frame.heading_parts.append(text)
         if frame is not None and not self._nested_buffer_open(frame):
@@ -515,8 +510,8 @@ class _MarkdownRenderer(HTMLParser):
     def _exit_tag(self, tag: str) -> bool:
         """Pop to the matching open tag; return True when the end tag should
         be rendered (False = it closed inside a hidden / out-of-scope region)."""
-        # A scope closing over an <a> the page left open would strand its text in the
-        # link buffer, so recover it before the segment is recorded.
+        # Recover an <a> the page left open before the segment is recorded, or its
+        # text is stranded in the link buffer.
         if self._in_link and self._scope_tags is not None and tag in self._scope_tags:
             self._finish_link()
         suppressed = bool(self._hidden_marks) or (
@@ -784,8 +779,7 @@ class _MarkdownRenderer(HTMLParser):
             else:
                 self._out.append("\n\n" + prefixed + "\n\n")
 
-        # An unclosed <header> adopts the page body under HTML5 parsing, so emit it
-        # unchanged rather than judging a whole article.
+        # An unclosed <header> adopts the page body, so emit it unchanged.
         self._flush_header_frames()
 
         # A scope left open by truncated HTML never reached _exit_tag, so its output
@@ -919,8 +913,8 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
     clearing the threshold together, and returning that one subtree keeps
     unrelated siblings (related cards, comment threads) out of the output.
 
-    Candidates are sized with their dropped header furniture added back, so
-    removing it never costs an article the size gate or a sibling comparison."""
+    Candidates are sized with their dropped header furniture added back, so the
+    strip never costs an article the size gate or a sibling comparison."""
     renderer = _new_renderer(source_html, frozenset({tag}), strip_header = True)
     dropped = renderer.scope_dropped
     best_len = 0
