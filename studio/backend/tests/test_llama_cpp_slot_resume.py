@@ -235,6 +235,13 @@ def test_fingerprint_tracks_unified_cache_mode(tmp_path):
     assert backend._slot_launch_fingerprint() != before
 
 
+def test_fingerprint_tracks_flash_attention_mode(tmp_path):
+    backend = _resume_backend(tmp_path)
+    before = backend._slot_launch_fingerprint()
+    backend._flash_attn_enabled = False
+    assert backend._slot_launch_fingerprint() != before
+
+
 def test_gguf_file_identity_covers_split_shards(tmp_path):
     backend = _resume_backend(tmp_path)
     first = tmp_path / "m-00001-of-00002.gguf"
@@ -458,11 +465,12 @@ def test_save_skipped_when_estimate_exceeds_cap(monkeypatch, tmp_path):
     assert backend.save_slots_for_resume() is None
 
 
-def test_save_estimate_uses_total_context_and_swa_full(monkeypatch, tmp_path):
+def test_save_estimate_uses_total_context_and_active_cache_settings(monkeypatch, tmp_path):
     backend = _resume_backend(tmp_path, n_slots = 4)
     backend._effective_context_length = 8192
     backend._kv_cache_context_total = 32768
     backend._swa_full = True
+    backend._flash_attn_enabled = False
     calls = []
 
     def estimate(ctx, cache_type, **kwargs):
@@ -488,6 +496,7 @@ def test_save_estimate_uses_total_context_and_swa_full(monkeypatch, tmp_path):
                     "swa_full": True,
                     "kv_unified": False,
                     "n_ubatch": 512,
+                    "flash_attn": False,
                 },
             )
         ]

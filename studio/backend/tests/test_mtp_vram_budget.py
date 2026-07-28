@@ -77,6 +77,7 @@ from core.inference.llama_cpp import (  # noqa: E402
     _effective_tensor_parallel,
     _env_main_cache_type_for_budget,
     _extra_args_main_cache_type_for_budget,
+    _flash_attn_enabled_from_args,
     _kv_bytes_per_elem,
     _tensor_parallel_matches_loaded,
 )
@@ -213,6 +214,18 @@ class TestEmbeddedDraftKv:
         k_only = b._mtp_draft_kv_bytes(131072, draft_cache_type_k = "q4_0")  # V defaults f16
         both_f16 = b._mtp_draft_kv_bytes(131072, draft_cache_type_k = "f16", draft_cache_type_v = "f16")
         assert both_q4 == k_only == both_f16  # floored at f16, never under-reserved
+
+    def test_flash_attn_off_uses_model_wide_v_width(self):
+        b = _make_backend(n_layers = 2)
+        b._n_kv_heads_by_layer = [4, 1]
+        b._sliding_window_pattern = [False, True]
+        b._kv_value_length_swa = 2048
+        ctx = 4096
+        expected_per_cell = 4 * 256 * 2 + 1 * 2048 * 2
+        assert b._mtp_draft_kv_bytes(
+            ctx,
+            flash_attn = False,
+        ) == ctx * expected_per_cell
 
     def test_none_when_dims_missing(self):
         assert _make_backend(nextn = 0)._mtp_draft_kv_bytes(65536) is None
@@ -760,6 +773,10 @@ class TestExtraArgsMtpDetection:
         [
             (["--ubatch-size", "1024"], 1024),
             (["-ub", "4096"], 2048),
+            (["--ubatch-size", "0"], 2048),
+            (["--batch-size", "256", "--ubatch-size", "0"], 256),
+            (["--batch-size", "-1"], 512),
+            (["--ubatch-size", "-1"], 2048),
             (["--ubatch-size=512"], 512),
             (["--ubatch_size=512"], 512),
             (["--batch-size", "256"], 256),
@@ -773,6 +790,30 @@ class TestExtraArgsMtpDetection:
     )
     def test_n_ubatch(self, args, expected):
         assert _extra_args_n_ubatch(args, env = {}) == expected
+
+    def test_n_ubatch_signed_values_cap_at_context(self):
+        assert (
+            _extra_args_n_ubatch(
+                ["--batch-size", "-1", "--ubatch-size", "-1"],
+                env = {},
+                n_ctx = 4096,
+            )
+            == 4096
+        )
+
+    @pytest.mark.parametrize(
+        "args,expected",
+        [
+            (None, True),
+            (["--flash-attn", "off"], False),
+            (["--flash-attn=off"], False),
+            (["--flash_attn", "off"], False),
+            (["-fa", "off", "--flash-attn", "auto"], True),
+            (["--flash-attn", "off", "-fa"], True),
+        ],
+    )
+    def test_flash_attn_last_value_wins(self, args, expected):
+        assert _flash_attn_enabled_from_args(args) is expected
 
     def test_n_ubatch_env_fallback(self):
         # Environment values apply first, then each command-line option overrides

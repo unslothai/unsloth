@@ -999,12 +999,14 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 swa_full = False,
                 kv_unified = False,
                 n_ubatch = None,
+                flash_attn = True,
             ):
                 seen["ctx"] = ctx
                 seen["n_parallel"] = n_parallel
                 seen["swa_full"] = swa_full
                 seen["kv_unified"] = kv_unified
                 seen["n_ubatch"] = n_ubatch
+                seen["flash_attn"] = flash_attn
                 return ctx * n_parallel * (1024**2)  # 1 MiB per ctx unit per slot
 
         with patch.object(self.route, "LlamaCppBackend", _FakeBackend):
@@ -1016,6 +1018,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             self.assertEqual(seen["ctx"], 131072)
             self.assertEqual(seen["n_parallel"], 1)  # default single slot
             self.assertFalse(seen["swa_full"])
+            self.assertFalse(seen["flash_attn"])
             # override below max_seq_length -> larger (max_seq_length) wins
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "1024"]), 4.0)
             self.assertEqual(seen["ctx"], 4096)

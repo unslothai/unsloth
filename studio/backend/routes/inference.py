@@ -4404,7 +4404,8 @@ def _estimate_gguf_kv_gb(
             n_parallel = max(1, n_parallel or 1),
             swa_full = _swa_full_from_args_or_env(llama_extra_args),
             kv_unified = _kv_unified_from_args(llama_extra_args, default = False),
-            n_ubatch = _extra_args_n_ubatch(llama_extra_args),
+            n_ubatch = _extra_args_n_ubatch(llama_extra_args, n_ctx = ctx),
+            flash_attn = False,
         )
         return kv / (1024**3)
     except Exception as e:

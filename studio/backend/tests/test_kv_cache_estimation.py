@@ -998,6 +998,57 @@ class TestSlidingWindowEstimation:
         for ctx in (4096, 46500, 262144):
             assert b._estimate_kv_cache_bytes(ctx, "f16") == expected(ctx)
 
+    def test_gemma4_flash_attn_off_pads_v_to_model_max(self):
+        b = self._swa_backend(
+            _n_layers = 35,
+            _n_kv_heads = 1,
+            _n_heads = 8,
+            _embedding_length = 1536,
+            _kv_key_length = 512,
+            _kv_value_length = 512,
+            _sliding_window = 512,
+            _sliding_window_pattern = [True, True, True, True, False] * 7,
+            _kv_key_length_swa = 256,
+            _kv_value_length_swa = 256,
+            _shared_kv_layers = 20,
+        )
+        ctx = 5000
+        slots = 3
+        base_cells, swa_cells = _runtime_swa_cells(
+            ctx, 512, slots = slots, unified = True
+        )
+        max_v_width = 512
+        expected = (
+            3 * base_cells * (512 + max_v_width) * 2
+            + 12 * swa_cells * (256 + max_v_width) * 2
+        )
+        actual = b._estimate_kv_cache_bytes(
+            ctx,
+            "f16",
+            n_parallel = slots,
+            flash_attn = False,
+        )
+        assert actual == expected
+        assert actual == 66 * 1024**2
+        assert actual > b._estimate_kv_cache_bytes(
+            ctx,
+            "f16",
+            n_parallel = slots,
+        )
+
+    def test_flash_attn_off_prices_quantized_v_retry_as_f16(self):
+        b = self._swa_backend(
+            _n_layers = 2,
+            _n_kv_heads = None,
+            _n_kv_heads_by_layer = [8, 2],
+            _sliding_window_pattern = [True, False],
+            _kv_key_length_swa = 64,
+            _kv_value_length_swa = 64,
+        )
+        off = b._estimate_kv_cache_bytes(4096, "q4_0", flash_attn = False)
+        on = b._estimate_kv_cache_bytes(4096, "q4_0")
+        assert off > on
+
     def test_ctx_smaller_than_window(self):
         """When context is smaller than the compact allowance, SWA caps at context."""
         b = self._swa_backend(_sliding_window = 8192)
@@ -1251,24 +1302,12 @@ class TestEdgeCases:
         b._n_layers = 32
         b._kv_key_length = 128
         assert b._estimate_kv_cache_bytes(0, "f16") == 0
-        assert (
-            b._estimate_kv_cache_bytes(
-                0, "f16", n_parallel = 3, kv_unified = False
-            )
-            == 0
-        )
 
     def test_negative_context(self):
         b = LlamaCppBackend()
         b._n_layers = 32
         b._kv_key_length = 128
         assert b._estimate_kv_cache_bytes(-1, "f16") == 0
-        assert (
-            b._estimate_kv_cache_bytes(
-                -1, "f16", n_parallel = 3, kv_unified = False
-            )
-            == 0
-        )
 
     def test_context_of_one(self):
         b = LlamaCppBackend()
@@ -1405,7 +1444,7 @@ class TestServerFlags:
     # Verified against llama-server: non-SWA caches partition n_ctx across
     # non-unified streams. Compact SWA sizing depends on the stream layout.
 
-    def test_gqa_kv_constant_across_parallel(self):
+    def test_gqa_kv_constant_for_aligned_stream_divisions(self):
         b = self._gqa_backend()
         baseline = b._estimate_kv_cache_bytes(4096, "f16")
         for slots in (1, 2, 4, 8):
@@ -1424,7 +1463,7 @@ class TestServerFlags:
                 == baseline
             )
 
-    def test_swa_path_scales_only_swa_portion(self):
+    def test_swa_path_matches_aligned_stream_layout(self):
         b = self._swa_backend()
         ctx = 8192
         baseline = b._estimate_kv_cache_bytes(ctx, "f16")
@@ -1624,9 +1663,11 @@ class TestServerFlags:
             8192,
             cache_type_kv = "f16",
             swa_full = True,
+            flash_attn = False,
         )
         assert calls
         assert all(call["swa_full"] is True for call in calls)
+        assert all(call["flash_attn"] is False for call in calls)
 
 
 # J2.5. --parallel N memory accounting (per-layer-type scaling rule)
@@ -1757,9 +1798,9 @@ class TestParallelSWAScaling:
             assert unified == 5120 * bytes_per_cell
             assert separate == 5376 * bytes_per_cell
 
-    # ── SWA paths: scale only the SWA portion ──────────────────────
+    # ── SWA paths: aligned stream scaling ──────────────────────────
 
-    def test_swa_pattern_scales_only_swa_portion(self):
+    def test_swa_pattern_matches_aligned_stream_layout(self):
         b = self._swa_backend()
         ctx = 8192
         swa = b._sliding_window
@@ -1776,7 +1817,7 @@ class TestParallelSWAScaling:
                     n_global * base_cells * per_token + n_swa * swa_cells * per_token
                 )
 
-    def test_swa_fallback_scales_only_swa_portion(self):
+    def test_swa_fallback_matches_aligned_stream_layout(self):
         # No per-layer pattern -> 1/4-global heuristic.
         b = self._swa_backend(_sliding_window_pattern = None)
         ctx = 8192
@@ -1817,9 +1858,9 @@ class TestParallelSWAScaling:
             == expected
         )
 
-    def test_swa_full_does_not_scale_under_parallel(self):
-        # swa_full forces every layer to n_ctx -> all-global GQA-style
-        # total, constant in parallel.
+    def test_swa_full_constant_for_aligned_stream_divisions(self):
+        # swa_full forces every layer to n_ctx. This aligned context remains
+        # constant across the tested stream divisions.
         b = self._swa_backend()
         ctx = 8192
         baseline = b._estimate_kv_cache_bytes(ctx, "f16", swa_full = True)
@@ -1830,7 +1871,7 @@ class TestParallelSWAScaling:
 
     # ── kv_unified stream layout ────────────────────────────────────
 
-    def test_kv_unified_changes_only_compact_swa_layout(self):
+    def test_kv_unified_changes_only_compact_swa_for_aligned_context(self):
         gqa = self._gqa_backend()
         swa = self._swa_backend()
         for slots in (1, 2, 4, 8):

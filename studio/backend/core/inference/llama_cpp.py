@@ -1509,6 +1509,10 @@ def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
     }.get((cache_type or "f16").strip().lower(), 2.0)
 
 
+def _pad_kv_cells(cells: int) -> int:
+    return ((cells + 255) // 256) * 256
+
+
 def _kv_cache_cell_layout(
     n_ctx: int,
     n_parallel: int,
@@ -1516,14 +1520,14 @@ def _kv_cache_cell_layout(
 ) -> tuple[int, int, int]:
     """Return llama.cpp's slot count, stream count, and cells per stream."""
     slots = max(1, n_parallel)
-    padded_ctx = ((n_ctx + 255) // 256) * 256
+    padded_ctx = _pad_kv_cells(n_ctx)
     streams = 1 if kv_unified else slots
     if padded_ctx <= 0:
         return slots, streams, 0
     cells_per_stream = (
         padded_ctx
         if kv_unified
-        else ((padded_ctx // slots + 255) // 256) * 256
+        else _pad_kv_cells(padded_ctx // slots)
     )
     return slots, streams, cells_per_stream
 
@@ -1651,6 +1655,27 @@ def _kv_unified_from_args(
             enabled = True
         elif flag in {"-no-kvu", "--no-kv-unified"}:
             enabled = False
+    return enabled
+
+
+def _flash_attn_enabled_from_args(
+    args: Optional[Iterable[str]],
+    default: bool = True,
+) -> bool:
+    """Resolve llama.cpp's last-wins flash-attention CLI setting."""
+    enabled = default
+    values = [str(arg) for arg in args] if args else []
+    for i, raw in enumerate(values):
+        if _flag_name(raw) not in {"-fa", "--flash-attn"}:
+            continue
+        _, eq, inline = raw.partition("=")
+        value = inline if eq else "on"
+        if not eq and i + 1 < len(values) and values[i + 1] in {"on", "off", "auto"}:
+            value = values[i + 1]
+        if value == "off":
+            enabled = False
+        elif value in {"on", "auto"}:
+            enabled = True
     return enabled
 
 
@@ -1822,9 +1847,11 @@ def _extra_args_draft_offloaded_to_cpu(
 
 
 def _extra_args_n_ubatch(
-    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    n_ctx: Optional[int] = None,
 ) -> Optional[int]:
-    """Effective ubatch after llama.cpp caps it at batch, or None at defaults."""
+    """Effective ubatch after llama.cpp normalizes it, or None at defaults."""
     values = {
         "batch": _DEFAULT_LLAMA_N_BATCH,
         "ubatch": _DEFAULT_LLAMA_N_UBATCH,
@@ -1862,7 +1889,19 @@ def _extra_args_n_ubatch(
             overridden = True
         except (TypeError, ValueError):
             continue
-    return min(values.values()) if overridden else None
+    if not overridden:
+        return None
+
+    # common_params stores signed values, then llama_context_params converts
+    # them to uint32_t. A zero ubatch means "use batch"; the context then caps
+    # ubatch at batch size.
+    batch = values["batch"] & 0xFFFFFFFF
+    raw_ubatch = values["ubatch"]
+    ubatch = batch if raw_ubatch == 0 else raw_ubatch & 0xFFFFFFFF
+    effective = min(batch, ubatch)
+    if n_ctx is not None and n_ctx > 0:
+        effective = min(effective, n_ctx)
+    return effective
 
 
 def _build_ngram_mod_flags(
@@ -2224,6 +2263,7 @@ class LlamaCppBackend:
         self._swa_full: bool = False
         self._kv_cache_unified: bool = False
         self._n_ubatch: int = self._DEFAULT_N_UBATCH
+        self._flash_attn_enabled: bool = True
         # Total KV allocation context across all slots. _effective_context_length
         # becomes the per-slot request limit after /props reconciliation.
         self._kv_cache_context_total: Optional[int] = None
@@ -4139,6 +4179,33 @@ class LlamaCppBackend:
         is non-None here."""
         return self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
 
+    def _max_kv_value_width(
+        self,
+        default_len: int,
+        swa_len: Optional[int] = None,
+    ) -> int:
+        """llama.cpp's hparams.n_embd_v_gqa_max() over every model layer."""
+        n_layers = self._n_layers or 1
+        n_kv = self._n_kv_heads or self._n_heads or 1
+        if self._sliding_window_pattern is None:
+            max_len = max(default_len, swa_len or default_len)
+            return max(
+                self._kv_heads_for_layer(layer_idx, n_kv) * max_len
+                for layer_idx in range(n_layers)
+            )
+        return max(
+            self._kv_heads_for_layer(layer_idx, n_kv)
+            * (
+                (swa_len or default_len)
+                if (
+                    layer_idx < len(self._sliding_window_pattern)
+                    and self._sliding_window_pattern[layer_idx]
+                )
+                else default_len
+            )
+            for layer_idx in range(n_layers)
+        )
+
     def _estimate_kv_cache_bytes(
         self,
         n_ctx: int,
@@ -4149,13 +4216,14 @@ class LlamaCppBackend:
         kv_unified: bool = True,
         n_ubatch: Optional[int] = None,
         ctx_checkpoints: int = 0,
+        flash_attn: bool = True,
     ) -> int:
         """Estimate KV cache VRAM for a given context length.
 
         5-path architecture-aware estimation:
           1. MLA      -- compressed KV latent + RoPE, K-only (no separate V)
           2. Hybrid   -- only attention layers need KV (Mamba layers don't)
-          3. SWA      -- sliding-window layers cache min(ctx, window) tokens
+          3. SWA      -- sliding-window layers use compact or full cache cells
           4. GQA      -- standard full KV with explicit key/value dimensions
           5. Legacy   -- fallback using embed // n_heads
 
@@ -4165,6 +4233,7 @@ class LlamaCppBackend:
           kv_unified      -- --kv-unified: one shared stream vs one per slot.
           n_ubatch        -- --ubatch-size: SWA cache's processing headroom.
           ctx_checkpoints -- --ctx-checkpoints: N SWA snapshots per slot.
+          flash_attn      -- False pads variable-width V tensors to the model max.
 
         Returns 0 if metadata is insufficient.
         """
@@ -4179,13 +4248,23 @@ class LlamaCppBackend:
         n_kv = self._n_kv_heads or self._n_heads or 1  # type: ignore[assignment]
 
         # Bytes per element depends on KV cache quantization
-        bpe = _kv_bytes_per_elem(cache_type_kv)
+        bpe_k = _kv_bytes_per_elem(cache_type_kv)
+        # The automatic FA-off retry rewrites an invalid quantized V cache to
+        # f16. Pricing that viable retry here avoids under-reserving it.
+        bpe_v = (
+            bpe_k
+            if flash_attn
+            else max(bpe_k, _kv_bytes_per_elem("f16"))
+        )
 
         slots, streams, cells_per_stream = _kv_cache_cell_layout(
             n_ctx, n_parallel, kv_unified
         )
         total_cells = cells_per_stream * streams
-        ubatch = max(1, int(n_ubatch or self._DEFAULT_N_UBATCH))
+        ubatch = max(
+            0,
+            int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch),
+        )
 
         # Path 1: MLA (DeepSeek-V2/V3, GLM-4.7, GLM-5, Kimi-K2.5)
         # One compressed KV latent per token/layer (shared across heads); V is
@@ -4196,7 +4275,7 @@ class LlamaCppBackend:
             n_kv_mla = self._n_kv_heads or 1
             rope_dim = self._key_length_mla or 64
             key_len = self._kv_key_length or (self._kv_lora_rank + rope_dim)
-            return int(n_layers_kv * total_cells * n_kv_mla * key_len * bpe)
+            return int(n_layers_kv * total_cells * n_kv_mla * key_len * bpe_k)
 
         key_len = self._kv_key_length
         val_len = self._kv_value_length
@@ -4207,9 +4286,18 @@ class LlamaCppBackend:
             fai = self._full_attention_interval
             n_attn = -(-n_layers // fai) if fai > 0 else n_layers  # ceiling division
             if key_len is not None and val_len is not None:
-                return int(n_attn * total_cells * n_kv * (key_len + val_len) * bpe)
+                v_width = (
+                    n_kv * val_len
+                    if flash_attn
+                    else self._max_kv_value_width(val_len)
+                )
+                return int(
+                    n_attn
+                    * total_cells
+                    * (n_kv * key_len * bpe_k + v_width * bpe_v)
+                )
             head_dim = self._legacy_head_dim()
-            return int(n_attn * total_cells * n_kv * 2 * head_dim * bpe)
+            return int(n_attn * total_cells * n_kv * 2 * head_dim * bpe_k)
 
         # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...). Pattern
         # from the resolver; if absent, falls through to the legacy 1/4-global
@@ -4230,12 +4318,17 @@ class LlamaCppBackend:
             else:
                 swa_limit = swa * (slots if kv_unified else 1) + ubatch
                 swa_cells_per_stream = min(cells_per_stream, swa_limit)
-                swa_cells_per_stream = ((swa_cells_per_stream + 255) // 256) * 256
+                swa_cells_per_stream = _pad_kv_cells(swa_cells_per_stream)
                 swa_cells_total = swa_cells_per_stream * streams
             key_len_swa = self._kv_key_length_swa or key_len
             val_len_swa = self._kv_value_length_swa or val_len
+            padded_v_width = (
+                None
+                if flash_attn
+                else self._max_kv_value_width(val_len, val_len_swa)
+            )
             if self._sliding_window_pattern is not None:
-                global_bytes = 0.0  # constant across slots
+                global_bytes = 0.0
                 swa_bytes = 0.0
                 checkpoint_extra_per_slot = 0.0
                 # Only layers that allocate their own KV; trailing shared layers
@@ -4246,27 +4339,30 @@ class LlamaCppBackend:
                         layer_idx < len(self._sliding_window_pattern)
                         and self._sliding_window_pattern[layer_idx]
                     )
+                    layer_key_bytes = layer_n_kv * (
+                        key_len_swa if is_swa else key_len
+                    ) * bpe_k
+                    layer_value_bytes = (
+                        layer_n_kv * (val_len_swa if is_swa else val_len)
+                        if padded_v_width is None
+                        else padded_v_width
+                    ) * bpe_v
+                    layer_kv_bytes = layer_key_bytes + layer_value_bytes
                     if is_swa:
-                        swa_bytes += (
-                            swa_cells_total * layer_n_kv * (key_len_swa + val_len_swa) * bpe
-                        )
+                        swa_bytes += swa_cells_total * layer_kv_bytes
                         if ctx_checkpoints > 0 and not swa_full:
                             checkpoint_extra_per_slot += (
-                                ctx_checkpoints
-                                * swa
-                                * layer_n_kv
-                                * (key_len_swa + val_len_swa)
-                                * bpe
+                                ctx_checkpoints * swa * layer_kv_bytes
                             )
                     else:
-                        global_bytes += (
-                            total_cells * layer_n_kv * (key_len + val_len) * bpe
-                        )
+                        global_bytes += total_cells * layer_kv_bytes
                 return int(global_bytes + swa_bytes + slots * checkpoint_extra_per_slot)
             n_global = max(1, n_layers_kv // 4)
             n_swa = n_layers_kv - n_global
-            kv_per_token = n_kv * (key_len + val_len) * bpe
-            kv_per_token_swa = n_kv * (key_len_swa + val_len_swa) * bpe
+            global_v_width = n_kv * val_len if padded_v_width is None else padded_v_width
+            swa_v_width = n_kv * val_len_swa if padded_v_width is None else padded_v_width
+            kv_per_token = n_kv * key_len * bpe_k + global_v_width * bpe_v
+            kv_per_token_swa = n_kv * key_len_swa * bpe_k + swa_v_width * bpe_v
             global_bytes = n_global * total_cells * kv_per_token
             swa_bytes = n_swa * swa_cells_total * kv_per_token_swa
             checkpoint_extra_per_slot = (
@@ -4278,11 +4374,19 @@ class LlamaCppBackend:
 
         # Path 4: Standard GQA with explicit key/value dimensions
         if key_len is not None and val_len is not None:
-            return int(n_layers_kv * total_cells * n_kv * (key_len + val_len) * bpe)
+            padded_v_width = (
+                None if flash_attn else self._max_kv_value_width(val_len)
+            )
+            bytes_per_cell = 0.0
+            for layer_idx in range(n_layers_kv):
+                layer_n_kv = self._kv_heads_for_layer(layer_idx, n_kv)
+                v_width = layer_n_kv * val_len if padded_v_width is None else padded_v_width
+                bytes_per_cell += layer_n_kv * key_len * bpe_k + v_width * bpe_v
+            return int(total_cells * bytes_per_cell)
 
         # Path 5: Legacy fallback (old GGUFs without explicit dimensions)
         head_dim = self._legacy_head_dim()
-        return int(2 * n_kv * head_dim * n_layers_kv * total_cells * bpe)
+        return int(2 * n_kv * head_dim * n_layers_kv * total_cells * bpe_k)
 
     def _draft_backend_for(self, drafter_path: str) -> Optional["LlamaCppBackend"]:
         """Lightweight backend with a drafter GGUF's metadata, to size its own KV
@@ -4333,6 +4437,7 @@ class LlamaCppBackend:
         swa_full: bool = False,
         kv_unified: bool = True,
         n_ubatch: Optional[int] = None,
+        flash_attn: bool = True,
     ) -> Optional[int]:
         """Draft KV cache bytes at n_ctx, sized from GGUF dims (K and V types are
         independent). Separate drafter (Gemma): its own KV via _estimate_kv_cache_bytes
@@ -4351,9 +4456,8 @@ class LlamaCppBackend:
             if getattr(db, "_architecture", None) == "gemma4-assistant":
                 return 0
             heavier = draft_cache_type_k if bpe_k >= bpe_v else draft_cache_type_v
-            # The drafter is served under the same --parallel slot count as the
-            # main model, so price its KV per slot too: a sliding-window drafter
-            # (Gemma) grows KV with slots and would otherwise be under-reserved.
+            # The drafter uses the main model's slot and stream layout, so its
+            # compact SWA and per-stream padding must follow the same settings.
             kv = db._estimate_kv_cache_bytes(
                 n_ctx,
                 heavier,
@@ -4361,6 +4465,7 @@ class LlamaCppBackend:
                 swa_full = swa_full,
                 kv_unified = kv_unified,
                 n_ubatch = n_ubatch,
+                flash_attn = flash_attn,
             )
             return kv if kv > 0 else None
         nextn = self._nextn_predict_layers or 0
@@ -4379,10 +4484,15 @@ class LlamaCppBackend:
         _, streams, cells_per_stream = _kv_cache_cell_layout(
             n_ctx, n_parallel, kv_unified
         )
+        v_width = n_kv * v_len
+        if not flash_attn:
+            v_width = self._max_kv_value_width(
+                v_len,
+                self._kv_value_length_swa,
+            )
         return int(
             nextn
-            * n_kv
-            * (k_len * bpe_k + v_len * bpe_v)
+            * (n_kv * k_len * bpe_k + v_width * bpe_v)
             * cells_per_stream
             * streams
         )
@@ -4401,6 +4511,7 @@ class LlamaCppBackend:
         swa_full: bool = False,
         kv_unified: bool = True,
         n_ubatch: Optional[int] = None,
+        flash_attn: bool = True,
     ) -> Optional[int]:
         """MTP draft reserve at ``n_ctx`` = draft KV (grows with ctx) + separate-
         drafter weights + (MTP + MLA only) a duplicated target KV context. The
@@ -4419,6 +4530,7 @@ class LlamaCppBackend:
             swa_full = swa_full,
             kv_unified = kv_unified,
             n_ubatch = n_ubatch,
+            flash_attn = flash_attn,
         )
         weights = max(0, draft_weights_bytes)
         # MLA models (GLM-5.x, DeepSeek, Kimi-K2) under MTP keep a *second* full copy
@@ -4441,6 +4553,7 @@ class LlamaCppBackend:
                 swa_full = swa_full,
                 kv_unified = kv_unified,
                 n_ubatch = n_ubatch,
+                flash_attn = flash_attn,
             )
         if draft_kv is None:
             # KV unsized (exotic/remote drafter): still reserve known weights + any
@@ -4509,7 +4622,10 @@ class LlamaCppBackend:
         n_embd = self._embedding_length or 0
         if n_vocab <= 0 or n_embd <= 0:
             return 0
-        ub = max(1, int(n_ubatch if n_ubatch else self._DEFAULT_N_UBATCH))
+        ub = max(
+            1,
+            int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch),
+        )
         par = max(1, int(n_parallel))
         out_buffer = n_vocab * ub * 4  # f32 output/logits buffer
         act_scratch = 4 * n_embd * ub * 4  # a few resident hidden-width buffers
@@ -4541,7 +4657,10 @@ class LlamaCppBackend:
         n_embd = self._embedding_length or 0
         if n_embd <= 0 or n_ctx <= 0:
             return 0
-        ub = max(1, int(n_ubatch if n_ubatch else self._DEFAULT_N_UBATCH))
+        ub = max(
+            1,
+            int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch),
+        )
         if getattr(self, "_architecture", None) == "deepseek4":
             # DSV4 indexer/CSA buffer (see constants): flat + linear, ub-scaled. Fires
             # for any KV type -- the indexer scratch is present even with an f16 cache.
@@ -4591,6 +4710,7 @@ class LlamaCppBackend:
         n_ubatch: Optional[int] = None,
         swa_full: bool = False,
         kv_unified: bool = True,
+        flash_attn: bool = True,
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count in [1, n_parallel) whose fully-on-GPU footprint fits,
         so Unsloth keeps the model on GPU (-ngl -1) instead of --fit on, which offloads layers
@@ -4616,6 +4736,7 @@ class LlamaCppBackend:
                     swa_full = swa_full,
                     kv_unified = kv_unified,
                     n_ubatch = n_ubatch,
+                    flash_attn = flash_attn,
                 )
             )
             gpu_indices, use_fit = self._select_gpus(
@@ -4643,6 +4764,7 @@ class LlamaCppBackend:
         kv_unified: bool = True,
         n_ubatch: Optional[int] = None,
         ctx_checkpoints: int = 0,
+        flash_attn: bool = True,
         kv_on_gpu: bool = True,
         mtp_engaged: bool = False,
         mtp_overhead_fn: Optional[Callable[[int], int]] = None,
@@ -4681,6 +4803,7 @@ class LlamaCppBackend:
             kv_unified = kv_unified,
             n_ubatch = n_ubatch,
             ctx_checkpoints = ctx_checkpoints,
+            flash_attn = flash_attn,
         )
 
         # byte-accurate mtp_overhead_fn supersedes the flat fraction (the fallback
@@ -5346,6 +5469,7 @@ class LlamaCppBackend:
         self._swa_full = False
         self._kv_cache_unified = False
         self._n_ubatch = self._DEFAULT_N_UBATCH
+        self._flash_attn_enabled = True
         self._kv_cache_context_total = None
         self._gpu_offload_active = True
         # Diffusion doesn't use the llama.cpp GPU-memory knobs; reset them to
@@ -6090,6 +6214,7 @@ class LlamaCppBackend:
         soft_overhead_bytes: int = 0,
         swa_full: bool = False,
         kv_unified: bool = True,
+        flash_attn: bool = True,
     ) -> tuple[int, int, list[int], Optional[list[int]]]:
         """Plan a ``--split-mode tensor`` load. Pure: no model or GPU needed.
 
@@ -6185,6 +6310,7 @@ class LlamaCppBackend:
                 swa_full = swa_full,
                 kv_unified = kv_unified,
                 n_ubatch = n_ubatch,
+                flash_attn = flash_attn,
             )
 
         # Context-linear compute buffer, summed over the split. Tensor mode
@@ -6874,11 +7000,21 @@ class LlamaCppBackend:
                 ctx_override = parse_ctx_override(extra_args)
                 requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
                 swa_full = _swa_full_from_args_or_env(extra_args)
-                _effective_ubatch = _extra_args_n_ubatch(extra_args)
+                _effective_ubatch = _extra_args_n_ubatch(
+                    extra_args,
+                    n_ctx = (
+                        requested_ctx
+                        if requested_ctx > 0
+                        else self._context_length
+                    ),
+                )
                 planned_kv_unified = _kv_unified_from_args(
                     extra_args,
                     default = n_parallel > 1 and server_caps.get("supports_kv_unified", False),
                 )
+                # A hard-crash recovery may relaunch this same plan with FA off.
+                # Size that larger cache up front so the recovery cannot OOM.
+                planned_flash_attn = False
                 cache_override = parse_cache_override(extra_args)
                 # Budget the heavier of asymmetric --cache-type-k/-v extras (they
                 # win per axis at launch, appended last); resolve_cache_type_kv only
@@ -7312,6 +7448,7 @@ class LlamaCppBackend:
                             swa_full = swa_full,
                             kv_unified = planned_kv_unified,
                             n_ubatch = _effective_ubatch,
+                            flash_attn = planned_flash_attn,
                         )
                         if (
                             self._estimate_mtp_overhead_bytes(
@@ -7326,6 +7463,7 @@ class LlamaCppBackend:
                                 swa_full = swa_full,
                                 kv_unified = planned_kv_unified,
                                 n_ubatch = _effective_ubatch,
+                                flash_attn = planned_flash_attn,
                             )
                             is not None
                         ):
@@ -7345,6 +7483,7 @@ class LlamaCppBackend:
                                 _swa_full: bool = swa_full,
                                 _kv_unified: bool = planned_kv_unified,
                                 _n_ubatch: Optional[int] = _effective_ubatch,
+                                _flash_attn: bool = planned_flash_attn,
                             ) -> int:
                                 v = self._estimate_mtp_overhead_bytes(
                                     ctx,
@@ -7358,6 +7497,7 @@ class LlamaCppBackend:
                                     swa_full = _swa_full,
                                     kv_unified = _kv_unified,
                                     n_ubatch = _n_ubatch,
+                                    flash_attn = _flash_attn,
                                 )
                                 return v if v is not None else 0
 
@@ -7372,6 +7512,7 @@ class LlamaCppBackend:
                             swa_full = swa_full,
                             kv_unified = planned_kv_unified,
                             n_ubatch = _effective_ubatch,
+                            flash_attn = planned_flash_attn,
                         )
 
                     def _cc_bytes(ctx: int, n_gpus: int = 1) -> int:
@@ -7614,6 +7755,7 @@ class LlamaCppBackend:
                             soft_overhead_bytes = _soft_overhead,
                             swa_full = swa_full,
                             kv_unified = planned_kv_unified,
+                            flash_attn = planned_flash_attn,
                         )
                         use_fit = False
                     elif gpus and self._can_estimate_kv() and effective_ctx > 0:
@@ -7650,6 +7792,7 @@ class LlamaCppBackend:
                                     n_parallel = n_parallel,
                                     kv_unified = planned_kv_unified,
                                     n_ubatch = _effective_ubatch,
+                                    flash_attn = planned_flash_attn,
                                     mtp_engaged = _mtp_reserves_gpu,
                                     mtp_overhead_fn = mtp_overhead_fn,
                                     compute_ctx_bytes_fn = _cc_sub,
@@ -7732,6 +7875,7 @@ class LlamaCppBackend:
                                     n_parallel = n_parallel,
                                     kv_unified = planned_kv_unified,
                                     n_ubatch = _effective_ubatch,
+                                    flash_attn = planned_flash_attn,
                                     mtp_engaged = _mtp_reserves_gpu,
                                     mtp_overhead_fn = mtp_overhead_fn,
                                     compute_ctx_bytes_fn = _cc_sub,
@@ -7816,6 +7960,7 @@ class LlamaCppBackend:
                                 n_parallel = n_parallel,
                                 kv_unified = planned_kv_unified,
                                 n_ubatch = _effective_ubatch,
+                                flash_attn = planned_flash_attn,
                                 mtp_engaged = _mtp_reserves_gpu,
                                 mtp_overhead_fn = mtp_overhead_fn,
                                 compute_ctx_bytes_fn = _cc_bytes,
@@ -7875,6 +8020,7 @@ class LlamaCppBackend:
                             _effective_ubatch,
                             swa_full = swa_full,
                             kv_unified = planned_kv_unified,
+                            flash_attn = planned_flash_attn,
                         )
                         if not _uf_slots:
                             logger.info(
@@ -8865,7 +9011,16 @@ class LlamaCppBackend:
                 self._swa_full = swa_full
                 self._kv_cache_unified = kv_cache_unified
                 self._n_ubatch = max(
-                    1, int(_effective_ubatch or self._DEFAULT_N_UBATCH)
+                    0,
+                    int(
+                        self._DEFAULT_N_UBATCH
+                        if _effective_ubatch is None
+                        else _effective_ubatch
+                    ),
+                )
+                self._flash_attn_enabled = (
+                    _flash_attn_enabled_from_args(_last_spawn_cmd)
+                    and self._architecture != "grok"
                 )
                 self._kv_cache_context_total = effective_ctx if effective_ctx > 0 else None
 
@@ -8875,6 +9030,11 @@ class LlamaCppBackend:
                 # before the spawn above always failed; the seeded value was the
                 # requested/native length.)
                 self._reconcile_effective_ctx_with_server()
+                if self._kv_cache_context_total is not None:
+                    self._n_ubatch = min(
+                        self._n_ubatch,
+                        self._kv_cache_context_total,
+                    )
 
                 # Commit caller intent only after _healthy=True so a failed start
                 # can't poison the next inheritance check. None keeps prior, []
@@ -9561,6 +9721,7 @@ class LlamaCppBackend:
             self._swa_full = False
             self._kv_cache_unified = False
             self._n_ubatch = self._DEFAULT_N_UBATCH
+            self._flash_attn_enabled = True
             self._kv_cache_context_total = None
             self._chat_template = None
             self._chat_template_override = None
@@ -10110,6 +10271,7 @@ class LlamaCppBackend:
             self._swa_full,
             self._kv_cache_unified,
             self._n_ubatch,
+            self._flash_attn_enabled,
         )
 
     def _gguf_file_identity(self, path) -> Optional[tuple]:
@@ -10218,6 +10380,7 @@ class LlamaCppBackend:
                 swa_full = self._swa_full,
                 kv_unified = self._kv_cache_unified,
                 n_ubatch = self._n_ubatch,
+                flash_attn = self._flash_attn_enabled,
             )
             # Skip before writing anything when the estimate alone blows the cap,
             # rather than fully writing a slot and discarding it afterwards.
