@@ -286,7 +286,9 @@ def test_llama_backend_source_choice_in_setup_ps1(backend, force_vulkan, expecte
             "pwsh",
             "-NoProfile",
             "-Command",
-            f'{normalize}\n"RESULT:$sourceLlamaBackend:$explicitVulkanSourceBuild"',
+            # Brace the name: PowerShell reads "$var:" as a scope qualifier and
+            # fails to parse, so the probe never ran on a host that has pwsh.
+            f'{normalize}\n"RESULT:${{sourceLlamaBackend}}:$explicitVulkanSourceBuild"',
         ],
         capture_output = True,
         text = True,
