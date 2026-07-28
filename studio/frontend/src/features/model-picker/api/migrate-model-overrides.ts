@@ -10,6 +10,7 @@
 import {
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
+  splitQuantSuffix,
 } from "../model-config/model-identity";
 import {
   isDefaultConfig,
@@ -47,17 +48,18 @@ function markRan(): void {
  * row was written, so an old install has keys like `Unsloth/Repo-GGUF:Q4_K_M` while
  * this browser only produces the folded form. The backend resolves both to one
  * model, so an exact lookup would report "not on the server" and let the backfill
- * overwrite it. Variants never contain a colon, so the last one splits the key; a
- * repo id folds and a POSIX path deliberately does not.
+ * overwrite it. The split is quant-aware like the backend's: a repo id folds and a
+ * POSIX path deliberately does not, and an ordinary colon inside a filename, or a
+ * Windows drive letter, is not a separator at all.
  */
 function normalizedOverrideKey(key: string): string {
-  const separator = key.lastIndexOf(":");
-  if (separator < 0) {
+  const split = splitQuantSuffix(key);
+  if (!split) {
     return modelOverrideKey(normalizeModelIdentity(key));
   }
   return modelOverrideKey(
-    normalizeModelIdentity(key.slice(0, separator)),
-    normalizeGgufVariantIdentity(key.slice(separator + 1)),
+    normalizeModelIdentity(split[0]),
+    normalizeGgufVariantIdentity(split[1]),
   );
 }
 

@@ -1414,6 +1414,9 @@ export function ModelsPage() {
         displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf,
         ggufVariant,
         isGguf: selectedModel.isGguf,
+        apiLoadable:
+          selectedModel.isGguf &&
+          selectedModel.localSource !== LOCAL_MODEL_SOURCE.OLLAMA,
         meta: {
           source: "local",
           isLora: selectedModel.modelFormat === "adapter",

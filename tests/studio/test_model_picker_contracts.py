@@ -699,7 +699,7 @@ def test_backfill_compares_server_keys_by_normalized_identity():
     assert "if (known.has(key)) { continue; }" in src
     # A variant never holds a colon, so the last one splits the key; the first would
     # cut the drive letter off every Windows path id.
-    assert 'key.lastIndexOf(":")' in src
+    assert "const split = splitQuantSuffix(key);" in src
     # Repo ids fold and POSIX paths do not, which is what these do.
     assert "normalizeModelIdentity(" in src and "normalizeGgufVariantIdentity(" in src
 
@@ -871,3 +871,46 @@ def test_cached_repo_settings_are_keyed_by_the_repo_id():
         WORKDIR / "studio" / "backend" / "hub" / "tests" / "test_model_services.py"
     ).read_text(encoding = "utf-8")
     assert 'fields["load_id"] == str(snapshot)' in backend, "the rule this mirrors"
+
+
+def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
+    """The backfill compared server keys under an identity taken by splitting on
+    the last colon, so a Windows drive letter and an ordinary colon inside a POSIX
+    filename were read as quant separators: `/models/foo:Bar.gguf` and
+    `/models/foo:bar.gguf` folded to one key, and whichever was already on the
+    server made the other look migrated."""
+    identity = " ".join(
+        _read("features/model-picker/model-config/model-identity.ts").split()
+    )
+    assert "export function splitQuantSuffix(" in identity
+    # The two rules that keep a path out: no separator in the tail, and a head
+    # that is not a .gguf cannot carry a free-form label.
+    assert 'if (tail.includes("/") || tail.includes("\\\\"))' in identity
+    assert 'head.toLowerCase().endsWith(".gguf") ? [head, tail] : null' in identity
+
+    migrate = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
+    assert "const split = splitQuantSuffix(key);" in migrate
+    assert 'key.lastIndexOf(":")' not in migrate, "the unconditional split is gone"
+
+    backend = (
+        WORKDIR / "studio" / "backend" / "utils" / "openai_auto_switch_settings.py"
+    ).read_text(encoding = "utf-8")
+    assert "def split_quant_suffix(" in backend, "the rule this mirrors"
+    assert "_BPW_SUFFIX" in backend and "bpw" in identity
+    # Both sides accept the same quant vocabulary. The regex itself lives with
+    # the loader that reads the filenames.
+    quants = (
+        WORKDIR / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
+    ).read_text(encoding = "utf-8")
+    for token in ("MXFP", "IQ", "TQ", "BF16", "F16", "F32"):
+        assert token in quants and token in identity, token
+
+
+def test_the_detail_card_also_gates_ollama_out_of_the_api_promise():
+    """Settings opens from two places in the Hub. The row menu gated Ollama out of
+    the server mirror and the "API loads use these" copy; the detail card did not,
+    so the same model made the same false promise from the other entry point."""
+    hub = " ".join(_read("features/hub/hub-page.tsx").split())
+    assert hub.count("LOCAL_MODEL_SOURCE.OLLAMA") == 2
+    assert "selectedModel.localSource !== LOCAL_MODEL_SOURCE.OLLAMA" in hub
+    assert 'row.source !== LOCAL_MODEL_SOURCE.OLLAMA' in hub
