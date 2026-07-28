@@ -110,7 +110,6 @@ def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
     assert "{children}" in source
 
 
-
 def test_full_app_layout_uses_its_own_initialized_marker():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
 
