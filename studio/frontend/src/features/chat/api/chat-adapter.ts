@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getAuthToken } from "@/features/auth";
+import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { resolveInitialConfig } from "@/features/model-picker";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
@@ -1570,16 +1571,25 @@ async function autoLoadSmallestModel(): Promise<{
       // the load with the picker hidden.
       await ensureGpuDeviceCache();
     }
-    const isDiffusion =
-      candidate.kind === "gguf" && config.selectedGpuIds != null
-        ? (
-            await fetchGgufStagedMetadata({
-              model_path: modelPath,
-              gguf_variant: candidate.ggufVariant,
-              hf_token: hfToken,
-            })
-          ).isDiffusion
-        : false;
+    let isDiffusion = false;
+    if (candidate.kind === "gguf" && config.selectedGpuIds != null) {
+      // Prepare the token before this probe, exactly as validateModel/loadModel
+      // (and the interactive performLoad path) do: the Hub 401s an invalid
+      // Authorization header even for a public repo, so sending the raw stored
+      // token here would abort this candidate before the existing anonymous/
+      // replacement-token recovery flow could run.
+      const preparedToken = await prepareHfTokenForUse(hfToken);
+      if (!preparedToken.proceed) {
+        throw new Error("Model load cancelled.");
+      }
+      isDiffusion = (
+        await fetchGgufStagedMetadata({
+          model_path: modelPath,
+          gguf_variant: candidate.ggufVariant,
+          hf_token: preparedToken.token,
+        })
+      ).isDiffusion;
+    }
     const effectiveGpuIds =
       config.selectedGpuIds !== undefined
         ? reconcilePersistedGpuIds(

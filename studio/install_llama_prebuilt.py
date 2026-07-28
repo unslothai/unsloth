@@ -6210,7 +6210,17 @@ def _normalized_llama_backend(value: str | None) -> str | None:
     if not value:
         return None
     backend = value.strip().lower()
-    return backend if backend in {"vulkan", "cpu"} else None
+    if backend in {"vulkan", "cpu"}:
+        return backend
+    if backend in {"hip", "rocm"}:
+        # Legacy pre-consolidation values: not new canonical UNSLOTH_LLAMA_CPP_BACKEND
+        # values (setup.sh/setup.ps1 only document auto/cpu/vulkan), but still an
+        # explicit non-Vulkan opt-out that force_vulkan_requested()/_route_to_vulkan_prebuilt()
+        # must treat as authoritative -- else an existing UNSLOTH_LLAMA_BACKEND=hip/rocm
+        # environment on an unsupported HIP arch reads as "no backend named" and silently
+        # gets routed to Vulkan (auto-fallback, or a stale UNSLOTH_FORCE_VULKAN=1).
+        return "hip"
+    return None
 
 
 def llama_backend_from_env() -> str | None:
