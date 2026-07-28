@@ -59,6 +59,13 @@ const cases = {
   unclosed_fence: "<think>unclosed ```python\\n</think>\\nthe answer",
   // Unclosed reasoning fence + a fenced code block in the ANSWER (#7334).
   answer_fence: "<think>draft ```</think>Answer: ```js\\nconst a = 1;\\n```\\ndone",
+  // A quoted mention pairs delimiter RUNS of EQUAL length, so a 1-backtick
+  // flank against a 3-backtick one is no span: that ``` opens the ANSWER's
+  // fence and the tag was the structural close (#7334).
+  unequal_runs: "<think>Use a code fence: `</think>```python\\nprint(1)\\n```",
+  // Well-formed markdown reaches an ODD raw backtick count through a
+  // nested-backtick code span, so raw parity alone must not decide (#7334).
+  nested_backtick_span: "<think>Use ``a ` b``</think>```python\\nprint(1)\\n```",
   literal_only: '<think>only a "</think>" mention, still thinking',
 };
 const parsed = {};
@@ -150,6 +157,8 @@ const RESUME_CASES = [
   cases.closed_fence_literal,
   cases.unclosed_fence,
   cases.answer_fence,
+  cases.unequal_runs,
+  cases.nested_backtick_span,
   cases.literal_only,
   "<think>a `</think>` b `</think>` c </think>done",
   "<think>```\\n</think>\\n```\\n```\\n</think>\\n```\\ntail</think>answer",
@@ -405,6 +414,26 @@ def test_parse_assistant_content_literal_close_semantics(tmp_path):
         {"type": "text", "text": "Answer: ```js\nconst a = 1;\n```\ndone"},
     ]
     assert closed["answer_fence"] is True
+
+    # Matching flanks are not enough: a quoted mention pairs delimiter RUNS of
+    # EQUAL length (CommonMark closes a code span with "a backtick string of
+    # equal length"), so a 1-backtick flank against the answer's 3-backtick
+    # fence is no span. Raw-character parity alone called it a mention and hid
+    # the entire visible answer in the thinking drawer (#7334).
+    assert parsed["unequal_runs"] == [
+        {"type": "reasoning", "text": "Use a code fence: `"},
+        {"type": "text", "text": "```python\nprint(1)\n```"},
+    ]
+    assert closed["unequal_runs"] is True
+
+    # Same rule, reached from well-formed markdown: ``a ` b`` is a legal
+    # nested-backtick code span whose 5 raw backticks make the parity odd, so
+    # parity on its own would have swallowed the answer here too (#7334).
+    assert parsed["nested_backtick_span"] == [
+        {"type": "reasoning", "text": "Use ``a ` b``"},
+        {"type": "text", "text": "```python\nprint(1)\n```"},
+    ]
+    assert closed["nested_backtick_span"] is True
 
 
 def test_mid_stream_unclosed_fence_decision_is_deferred(tmp_path):

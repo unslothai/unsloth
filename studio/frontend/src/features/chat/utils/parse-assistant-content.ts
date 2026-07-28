@@ -472,14 +472,34 @@ function findStructuralThinkClose(
         // whole visible answer in the drawer for '"</think>"The answer is 42.'
         // (#7334). Mirrors the backend's _quoted_close_opens_answer.
         const quoteAt = raw[closeEnd] === "\\" ? closeEnd + 1 : closeEnd;
-        // That deciding char is the one the next delta may still supply, and
-        // reading it as absent flips the verdict, so nothing may resume past
-        // this tag until it lands -- the tail update below included (#7334).
-        if (quoteAt + 1 >= raw.length) resumable = false;
+        // A quoted mention pairs delimiter RUNS of EQUAL length: CommonMark
+        // defines a code span as a backtick string closed by "a backtick string
+        // of equal length", so "`</think>```python" pairs a 1-run against a
+        // 3-run and is not a span at all -- that ``` opens the ANSWER's fence
+        // and the tag was the structural close. Without this, plain raw-char
+        // parity called it a mention and hid the entire answer in the drawer,
+        // the very failure this file exists to fix. Raw parity alone cannot
+        // decide it either: well-formed markdown reaches an ODD backtick count
+        // via a nested-backtick span (``a ` b``) or a closing fence longer than
+        // its opener, both legal per CommonMark (#7334).
+        let runBefore = 0;
+        for (let i = closeIndex - 1; i >= spanStart && raw[i] === before; i -= 1) {
+          runBefore += 1;
+        }
+        let runAfter = 0;
+        for (let i = quoteAt; i < raw.length && raw[i] === before; i += 1) {
+          runAfter += 1;
+        }
+        // The deciding char sits after the WHOLE trailing run, and both the run
+        // and that char are what the next delta may still supply, so reading
+        // either as absent flips the verdict and nothing may resume past this
+        // tag until they land -- the tail update below included (#7334).
+        if (quoteAt + runAfter >= raw.length) resumable = false;
         // The leading quote is literal only when it OPENS a span, i.e. an odd
         // count of that char since the reasoning start.
         literal =
-          !WORD_CHAR.test(codePointAt(raw, quoteAt + 1)) &&
+          runBefore === runAfter &&
+          !WORD_CHAR.test(codePointAt(raw, quoteAt + runAfter)) &&
           quoteCount(before, closeIndex) % 2 === 1;
       }
     }

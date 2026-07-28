@@ -11885,7 +11885,10 @@ def _should_hold_quoted_think_close(
     The char AFTER the closing quote is part of the flank as well, because it is
     what separates a prose mention from an answer that opens with a quote (see
     ``_quoted_close_opens_answer``), so a buffer ending on the closing quote is
-    still one char short of a decision.
+    still one char short of a decision. A buffer ending INSIDE that quote's run
+    is short too: the run's length is what pairs it against the leading one (see
+    ``_quoted_close_runs_differ``), and both it and the char past it decide the
+    verdict, so wait for the run to end (#7334).
     """
     if close_idx < 0:
         return False
@@ -11899,7 +11902,9 @@ def _should_hold_quoted_think_close(
     if buffer[end] == "\\" and end + 1 >= len(buffer):
         return True
     quote = end + 1 if buffer[end] == "\\" else end
-    return quote < len(buffer) and buffer[quote] == before and quote + 1 >= len(buffer)
+    if quote >= len(buffer) or buffer[quote] != before:
+        return False
+    return quote + _delim_run_after(buffer, quote, before) >= len(buffer)
 
 
 def _is_word_char(ch: str) -> bool:
@@ -11953,6 +11958,64 @@ def _count_quote_delimiters(
     return count
 
 
+def _delim_run_before(text: str, idx: int, ch: str, carry: int = 0) -> int:
+    """Length of the run of ``ch`` ending at ``text[idx - 1]``.
+
+    ``carry`` continues a run that started in already-consumed text, so the
+    streaming extractor gets the same answer as a whole-buffer scan (#7334).
+    """
+    i = idx
+    while i > 0 and text[i - 1] == ch:
+        i -= 1
+    run = idx - i
+    return run + carry if i == 0 else run
+
+
+def _delim_run_after(text: str, idx: int, ch: str) -> int:
+    """Length of the run of ``ch`` starting at ``text[idx]``."""
+    i = idx
+    end = len(text)
+    while i < end and text[i] == ch:
+        i += 1
+    return i - idx
+
+
+def _quoted_close_run(buffer: str, close_idx: int) -> tuple[int, int]:
+    """``(index of the quote after the tag, length of its run)``.
+
+    An escaping backslash between the tag and its quote is skipped, exactly as
+    the flank checks do. The run is what pairs against the leading one.
+    """
+    end = close_idx + len(_RESPONSES_THINK_CLOSE)
+    quote = end + 1 if end < len(buffer) and buffer[end] == "\\" else end
+    if quote >= len(buffer):
+        return quote, 0
+    return quote, _delim_run_after(buffer, quote, buffer[quote])
+
+
+def _quoted_close_runs_differ(
+    buffer: str, close_idx: int, before: str, lead_carry: int = 0
+) -> bool:
+    """True when the delimiter runs flanking ``</think>`` are not a matched pair.
+
+    A quoted mention pairs delimiter RUNS of EQUAL length: CommonMark defines a
+    code span as a backtick string closed by "a backtick string of equal
+    length", so ``` `</think>```python ``` pairs a 1-run against a 3-run and is
+    no span at all - that ``` opens the ANSWER's fence, which means the tag was
+    the structural close. Raw-character parity cannot see this on its own:
+    well-formed markdown reaches an ODD backtick count through a
+    nested-backtick span (``` ``a ` b`` ```) or through a closing fence longer
+    than its opener, both legal, and reading the tag as a mention then hid the
+    entire visible answer in the thinking drawer (#7334).
+
+    ``lead_carry`` continues a leading run that began in text the streaming
+    extractor has already folded into its counters.
+    """
+    lead = _delim_run_before(buffer, close_idx, before, lead_carry)
+    _, trail = _quoted_close_run(buffer, close_idx)
+    return lead != trail
+
+
 def _quoted_close_opens_answer(buffer: str, close_idx: int) -> bool:
     """True when the quote after ``</think>`` OPENS the answer, not a mention.
 
@@ -11962,11 +12025,12 @@ def _quoted_close_opens_answer(buffer: str, close_idx: int) -> bool:
     the ANSWER (``"</think>"The answer is 42.``), which means the tag was the
     structural close. Reading that as a mention put the whole visible answer
     inside the thinking drawer, so the user saw an empty reply (#7334).
+
+    The deciding char sits after the WHOLE trailing run, so ``` ``</think>``The
+    answer``` is judged on the ``T``, not on the second backtick.
     """
-    end = close_idx + len(_RESPONSES_THINK_CLOSE)
-    # Skip an escaping backslash, exactly as the flank checks below do.
-    quote = end + 1 if end < len(buffer) and buffer[end] == "\\" else end
-    return quote + 1 < len(buffer) and _is_word_char(buffer[quote + 1])
+    quote, run = _quoted_close_run(buffer, close_idx)
+    return quote + run < len(buffer) and _is_word_char(buffer[quote + run])
 
 
 def _is_literal_think_close(buffer: str, close_idx: int) -> bool:
@@ -11996,6 +12060,13 @@ def _is_literal_think_close(buffer: str, close_idx: int) -> bool:
     if before == after and before in "\"'`" and _quoted_close_opens_answer(buffer, close_idx):
         # The closing quote runs straight into a word, so it opens the ANSWER
         # instead of closing a mention: the tag was structural.
+        return False
+    if (
+        before == after
+        and before in "\"'`"
+        and _quoted_close_runs_differ(buffer, close_idx, before)
+    ):
+        # Mismatched delimiter RUN lengths are not a quoted mention either.
         return False
     if before == after and before in "\"'`":
         # A symmetric ESCAPED pair around the tag is a serialized quotation
@@ -12070,6 +12141,10 @@ class _ResponsesReasoningExtractor:
         # Last char of the consumed span, needed as ``before`` when a close tag
         # sits at buffer start (index 0) so its flank is the span's last char.
         self._span_last_char = ""
+        # Length of the run of ``_span_last_char`` ending the consumed span, so
+        # a leading delimiter run split across a delta boundary still pairs
+        # against the trailing one by length (#7334).
+        self._span_trailing_run = 0
         # Resume points for the two look-ahead scans behind a held close tag
         # ("does a ``` follow" / "does another close tag follow that ```").
         # While a tag is held at buffer[0] the buffer only grows at the tail, so
@@ -12108,6 +12183,13 @@ class _ResponsesReasoningExtractor:
         combined = "`" * self._fence_state + chunk
         self._fence_count += combined.count("```")
         self._fence_state = (len(combined) - len(combined.rstrip("`"))) % 3
+        # Trailing delimiter run, continued across the boundary when the whole
+        # chunk is that same char (#7334).
+        run = len(chunk) - len(chunk.rstrip(chunk[-1]))
+        if run == len(chunk) and self._span_last_char == chunk[-1]:
+            self._span_trailing_run += run
+        else:
+            self._span_trailing_run = run
         self._span_last_char = chunk[-1]
 
     def _rebase_scan_cursors(self, shift: int) -> None:
@@ -12193,6 +12275,13 @@ class _ResponsesReasoningExtractor:
             # The closing quote runs straight into a word, so it opens the
             # ANSWER instead of closing a mention: the tag was structural.
             return False
+        if before == after and before in "\"'`":
+            # Mismatched delimiter RUN lengths are not a quoted mention either
+            # (see _quoted_close_runs_differ). The leading run may have started
+            # in the consumed span, so carry its trailing run in.
+            carry = self._span_trailing_run if self._span_last_char == before else 0
+            if _quoted_close_runs_differ(buffer, close_idx, before, carry):
+                return False
         if after_escaped and before == after and before in "\"'`":
             # Symmetric escaped pair around the tag: a serialized quotation, so
             # literal even without an outer span (see _is_literal_think_close).

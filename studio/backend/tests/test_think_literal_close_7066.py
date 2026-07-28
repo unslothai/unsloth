@@ -205,6 +205,63 @@ def test_quote_closing_into_a_word_is_a_structural_close():
     assert "</think>" not in reasoning
 
 
+def test_unequal_delimiter_runs_are_a_structural_close():
+    """A quoted mention pairs delimiter RUNS of equal length (#7334).
+
+    CommonMark closes a code span with "a backtick string of equal length", so
+    ``` `</think>```python ``` pairs a 1-run against a 3-run and is no span at
+    all: that ``` opens the ANSWER's fence, which means the tag was the
+    structural close. Matching flanks plus raw-character parity called it a
+    mention and kept the WHOLE visible answer in the thinking drawer - the very
+    failure ``test_quote_closing_into_a_word_is_a_structural_close`` fixes for a
+    word-char answer, reappearing whenever the answer opens with punctuation.
+
+    Raw parity cannot decide it on its own either: well-formed markdown reaches
+    an ODD backtick count through a nested-backtick code span (``` ``a ` b`` ```)
+    or through a closing fence longer than its opener, both legal.
+    """
+    for text, want_reasoning, want_visible in [
+        (
+            "Use a code fence: `</think>```python\nprint(1)\n```",
+            "Use a code fence: `",
+            "```python\nprint(1)\n```",
+        ),
+        (
+            "Use ``a ` b``</think>```python\nprint(1)\n```",
+            "Use ``a ` b``",
+            "```python\nprint(1)\n```",
+        ),
+        (
+            "```py\nx=1\n````</think>```python\nprint(1)\n```",
+            "```py\nx=1\n````",
+            "```python\nprint(1)\n```",
+        ),
+    ]:
+        close_idx = text.index("</think>")
+        assert _think_close_is_literal_in_span(text, close_idx) is False, text
+        reasoning, visible = _extract_responses_reasoning(
+            text,
+            parse_think_markers = True,
+            reasoning_prefilled = True,
+        )
+        assert (reasoning, visible) == (want_reasoning, want_visible), text
+        # The run length is part of the verdict, so a delta ending inside it
+        # must not settle the tag early: every chunking has to agree.
+        for split in range(1, len(text)):
+            ex = _ResponsesReasoningExtractor(reasoning_prefilled = True)
+            got = [ex.feed(text[:split]), ex.feed(text[split:]), ex.finish()]
+            assert (
+                "".join(r for r, _ in got),
+                "".join(v for _, v in got),
+            ) == (want_reasoning, want_visible), (text, split)
+
+    # Equal runs still read as a mention when the leading one OPENS a span, so
+    # a genuine double-backtick quotation keeps the tag inside the drawer.
+    assert (
+        _think_close_is_literal_in_span("` and ``</think>`` after", len("` and ``")) is True
+    )
+
+
 def test_intra_word_apostrophe_does_not_flip_quote_parity():
     """A contraction is punctuation, not an opening quote (#7334).
 
