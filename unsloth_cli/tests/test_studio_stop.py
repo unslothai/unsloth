@@ -67,8 +67,8 @@ def _run_stop(studio_mod):
 
 def test_stop_kills_every_recorded_server(monkeypatch, tmp_path):
     studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550, 8600})
-    _write_pid(tmp_path, "studio-8901.pid", 8550)
-    _write_pid(tmp_path, "studio-8902.pid", 8600)
+    _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
+    _write_pid(tmp_path, "studio-8902-8600.pid", 8600)
 
     result = _run_stop(studio_mod)
 
@@ -80,8 +80,8 @@ def test_stop_kills_every_recorded_server(monkeypatch, tmp_path):
 def test_stop_does_not_leave_the_older_instance_running(monkeypatch, tmp_path):
     # The reported symptom: stop claimed success while instance A kept serving.
     studio_mod, live, _killed = _install(monkeypatch, tmp_path, alive = {8550, 8600})
-    _write_pid(tmp_path, "studio-8901.pid", 8550)
-    _write_pid(tmp_path, "studio-8902.pid", 8600)
+    _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
+    _write_pid(tmp_path, "studio-8902-8600.pid", 8600)
 
     result = _run_stop(studio_mod)
 
@@ -111,13 +111,13 @@ def test_stop_reports_nothing_running_without_pid_files(monkeypatch, tmp_path):
 
 def test_stop_cleans_stale_pid_files_without_claiming_a_stop(monkeypatch, tmp_path):
     studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = set())
-    _write_pid(tmp_path, "studio-8901.pid", 8550)
+    _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
 
     result = _run_stop(studio_mod)
 
     assert result.exit_code == 0, result.output
     assert killed == []
-    assert not (tmp_path / "studio-8901.pid").exists()
+    assert not (tmp_path / "studio-8901-8550.pid").exists()
     assert "stopped" not in result.output.lower()
 
 
@@ -130,14 +130,14 @@ def test_stop_does_not_claim_a_stop_while_a_server_is_still_alive(monkeypatch, t
     monkeypatch.setattr(studio_mod, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(studio_mod.os, "kill", lambda pid, sig: None)
     monkeypatch.setattr(sys, "platform", "linux")
-    _write_pid(tmp_path, "studio-8901.pid", 8550)
+    _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
 
     result = _run_stop(studio_mod)
 
     assert result.exit_code == 0, result.output
     assert "shutting down" in result.output.lower()
     assert "stopped" not in result.output.lower()
-    assert (tmp_path / "studio-8901.pid").exists()
+    assert (tmp_path / "studio-8901-8550.pid").exists()
 
 
 def test_stop_continues_after_one_server_fails_to_stop(monkeypatch, tmp_path):
@@ -155,8 +155,8 @@ def test_stop_continues_after_one_server_fails_to_stop(monkeypatch, tmp_path):
 
     monkeypatch.setattr(studio_mod.os, "kill", fake_kill)
     monkeypatch.setattr(sys, "platform", "linux")
-    _write_pid(tmp_path, "studio-8901.pid", 8550)
-    _write_pid(tmp_path, "studio-8902.pid", 8600)
+    _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
+    _write_pid(tmp_path, "studio-8902-8600.pid", 8600)
 
     result = _run_stop(studio_mod)
 
@@ -168,9 +168,9 @@ def test_stop_continues_after_one_server_fails_to_stop(monkeypatch, tmp_path):
 
 def test_stop_discards_a_corrupt_pid_file(monkeypatch, tmp_path):
     studio_mod, _live, _killed = _install(monkeypatch, tmp_path, alive = set())
-    (tmp_path / "studio-8901.pid").write_text("not-a-pid", encoding = "utf-8")
+    (tmp_path / "studio-8901-8550.pid").write_text("not-a-pid", encoding = "utf-8")
 
     result = _run_stop(studio_mod)
 
     assert result.exit_code == 0, result.output
-    assert not (tmp_path / "studio-8901.pid").exists()
+    assert not (tmp_path / "studio-8901-8550.pid").exists()

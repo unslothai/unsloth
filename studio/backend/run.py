@@ -733,12 +733,21 @@ def _find_free_port(
     host: str,
     start: int,
     max_attempts: int = 20,
+    avoid_own_studio: bool = False,
 ) -> int:
-    """Find a free port from `start`, trying up to max_attempts ports."""
+    """Find a free port from `start`, trying up to max_attempts ports.
+
+    ``avoid_own_studio`` aborts rather than skipping past one of our own servers
+    in the fallback range, which would start a duplicate on a later port.
+    """
     for offset in range(max_attempts):
         candidate = start + offset
         if _is_port_free(host, candidate):
             return candidate
+        if avoid_own_studio:
+            blocker = _get_pid_on_port(candidate)
+            if _blocker_is_own_studio(blocker):
+                _abort_already_running(blocker[0], candidate)
     raise RuntimeError(f"Could not find a free port in range {start}-{start + max_attempts - 1}")
 
 
@@ -750,16 +759,45 @@ PID_FILE_GLOB = "studio-*.pid"
 
 
 def _pid_file_for_port(port: int) -> Path:
-    return _studio_root() / f"studio-{port}.pid"
+    # PID in the name: 127.0.0.1 and ::1 can share a port, and one file per port
+    # would let the second bind overwrite the first.
+    return _studio_root() / f"studio-{port}-{os.getpid()}.pid"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        import psutil
+        return psutil.pid_exists(pid)
+    except ImportError:
+        pass
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _pid_is_studio_backend(pid: int) -> bool:
+    """Guard against PID reuse: a stale record must not block an unrelated process."""
+    try:
+        import psutil
+        cmdline = " ".join(psutil.Process(pid).cmdline()).lower()
+    except Exception:
+        return True
+    return "run.py" in cmdline or "unsloth" in cmdline
 
 
 def _blocker_is_own_studio(blocker: "tuple[int, str] | None") -> bool:
     """True when the process holding the port is a server we recorded."""
-    return bool(blocker) and blocker[0] in _recorded_studio_pids()
+    if not blocker:
+        return False
+    return blocker[0] in _recorded_studio_pids() and _pid_is_studio_backend(blocker[0])
 
 
 def _recorded_studio_pids() -> "set[int]":
-    """PIDs recorded under this STUDIO_HOME."""
+    """Live PIDs recorded under this STUDIO_HOME; prunes dead records."""
     pids: "set[int]" = set()
     try:
         paths = list(_studio_root().glob(PID_FILE_GLOB)) + [_PID_FILE]
@@ -770,9 +808,24 @@ def _recorded_studio_pids() -> "set[int]":
             text = path.read_text(encoding = "utf-8").strip()
         except (OSError, UnicodeDecodeError):
             continue
-        if text.isdigit():
-            pids.add(int(text))
+        if not text.isdigit():
+            continue
+        pid = int(text)
+        if _pid_alive(pid):
+            pids.add(pid)
+        elif path != _PID_FILE:
+            path.unlink(missing_ok = True)
     return pids
+
+
+def _abort_already_running(pid: int, port: int) -> "NoReturn":
+    print(
+        f"Error: Unsloth Studio is already running on port {port} (PID {pid}). Run "
+        "`unsloth studio stop` first, or start this one on a different --port.",
+        file = sys.stderr,
+        flush = True,
+    )
+    sys.exit(1)
 
 
 # Direct backend launches bypass the CLI's env re-export; do it here for
@@ -809,22 +862,23 @@ def _write_pid_file(port: int):
     try:
         path.parent.mkdir(parents = True, exist_ok = True)
         path.write_text(str(os.getpid()), encoding = "utf-8")
+        # An older CLI's `stop` only reads this one.
+        _PID_FILE.write_text(str(os.getpid()), encoding = "utf-8")
     except OSError:
         return
     _OWN_PID_FILE = path
 
 
 def _remove_pid_file():
-    """Remove the PID file if it belongs to this process."""
+    """Remove the PID files that belong to this process."""
     if _OWN_PID_FILE is None:
         return
-    try:
-        if _OWN_PID_FILE.is_file():
-            stored = _OWN_PID_FILE.read_text(encoding = "utf-8").strip()
-            if stored == str(os.getpid()):
-                _OWN_PID_FILE.unlink(missing_ok = True)
-    except (OSError, UnicodeDecodeError):
-        pass
+    for path in (_OWN_PID_FILE, _PID_FILE):
+        try:
+            if path.is_file() and path.read_text(encoding = "utf-8").strip() == str(os.getpid()):
+                path.unlink(missing_ok = True)
+        except (OSError, UnicodeDecodeError):
+            pass
 
 
 def _graceful_shutdown(server = None):
@@ -1572,15 +1626,8 @@ def run_server(
         blocker = _get_pid_on_port(port)
         # Falling back past our own server is what creates the orphan.
         if _blocker_is_own_studio(blocker):
-            print(
-                f"Error: Unsloth Studio is already running on port {port} "
-                f"(PID {blocker[0]}). Run `unsloth studio stop` first, or start this "
-                "one on a different --port.",
-                file = sys.stderr,
-                flush = True,
-            )
-            sys.exit(1)
-        port = _find_free_port(host, port + 1)
+            _abort_already_running(blocker[0], port)
+        port = _find_free_port(host, port + 1, avoid_own_studio = True)
         if not silent:
             print("")
             print("=" * 50)
