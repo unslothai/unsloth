@@ -86,14 +86,31 @@ if [ "$killed" = "true" ]; then
     kill -0 "$PID" 2>/dev/null || break
     sleep 1
   done
-  if kill -0 "$PID" 2>/dev/null; then
-    echo "[interrupt] group survived SIGTERM; SIGKILL"
-    kill -KILL -- -"$PID" 2>/dev/null || kill -KILL "$PID" 2>/dev/null || true
-  fi
+  # Unconditional, and to the GROUP. The leader can exit on SIGTERM while a uv or
+  # python descendant ignores it or is mid-shutdown; `kill -0 "$PID"` then reported
+  # the leader gone, this escalation was skipped, and `wait` reaped only the leader,
+  # leaving that descendant free to finish the dependency pass while the probe ran.
+  # Signalling an already-empty group is a no-op.
+  echo "[interrupt] SIGKILL to process group -$PID"
+  kill -KILL -- -"$PID" 2>/dev/null || kill -KILL "$PID" 2>/dev/null || true
 fi
 
 wait "$PID" 2>/dev/null
 rc=$?
+
+# Only after the reap: an unreaped leader is still a member of its own group, so
+# polling the group before `wait` would report it alive forever. Do not let the
+# probe start while an installer process is still running.
+if [ "$killed" = "true" ]; then
+  for _ in $(seq 1 "$KILL_GRACE"); do
+    kill -0 -- -"$PID" 2>/dev/null || break
+    kill -KILL -- -"$PID" 2>/dev/null || true
+    sleep 1
+  done
+  if kill -0 -- -"$PID" 2>/dev/null; then
+    echo "::warning::processes from installer group -$PID outlived SIGKILL"
+  fi
+fi
 echo "[interrupt] installer exit=$rc reason=$reason killed=$killed"
 echo "[interrupt] last log lines:"
 tail -15 "$LOG" || true

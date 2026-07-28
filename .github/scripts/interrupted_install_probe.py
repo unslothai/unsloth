@@ -135,9 +135,16 @@ def main(argv: list[str]) -> int:
         popen_kw["start_new_session"] = True
     else:
         popen_kw["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    # Straight to the artefact file, never a PIPE: nothing reads that pipe until after
+    # the polling loop, so a backend whose imports emit more than the OS pipe buffer
+    # (64 KiB on Linux and macOS, a single page by default on Windows) blocks on write
+    # BEFORE it binds the port. backend_ok, which this whole verdict pivots on, would
+    # then be false for a perfectly good install.
+    blog_path = out / "backend.log"
+    blog_fh = blog_path.open("w", encoding = "utf-8", errors = "replace")
     proc = subprocess.Popen(
         [binp, "studio", "--api-only", "-H", "127.0.0.1", "-p", str(port)],
-        stdout = subprocess.PIPE,
+        stdout = blog_fh,
         stderr = subprocess.STDOUT,
         text = True,
         **popen_kw,
@@ -180,12 +187,8 @@ def main(argv: list[str]) -> int:
                 proc.kill()
 
     reap()
-    try:
-        blog = proc.communicate(timeout = 30)[0] or ""
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        blog = proc.communicate()[0] or ""
-    (out / "backend.log").write_text(blog, encoding = "utf-8", errors = "replace")
+    blog_fh.close()
+    blog = blog_path.read_text(encoding = "utf-8", errors = "replace")
     say("backend_ok", backend_ok)
 
     missing = ""

@@ -37,6 +37,11 @@ on:
       # without a single leg running.
       - 'unsloth_cli/_studio_deps.py'
       - 'studio/install_manifest.py'
+      # The requirement files are the phases. studio.txt is where structlog is
+      # declared, the package whose absence IS the reported false-ready bug, and
+      # the single-env files drive the later steps, so moving a package between
+      # them changes what every interrupted state looks like.
+      - 'studio/backend/requirements/**'
       # `*` never matches `/`, and it is a literal `-install` that follows, so
       # `interrupt*-install*` matches interrupt-install.sh / .ps1 but NOT the
       # underscored probe. List the probe explicitly rather than rely on a glob.
