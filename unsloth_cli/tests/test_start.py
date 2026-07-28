@@ -10,6 +10,7 @@ import os
 import re
 import shlex
 import sys
+import time
 import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
@@ -1550,7 +1551,8 @@ def test_connect_codex_launch_uses_ephemeral_home(fake_studio, monkeypatch):
     assert result.exit_code == 0, result.output
     home = Path(captured["home"])
     assert captured["config_present"]  # config existed while codex ran
-    assert "unsloth-codex-" in home.name  # an ephemeral temp dir, not ~/.codex
+    parent = start._ephemeral_session_parent("codex")
+    assert home.name.startswith(start._ephemeral_session_prefix("codex", parent))
     assert not home.exists()  # cleaned up after the agent exits
 
 
@@ -4734,7 +4736,96 @@ def test_session_config_default_launch_is_ephemeral():
     # Default launch (no --persist) still uses a throwaway temp dir wiped on exit.
     with start._session_config("codex", launch = True) as home:
         assert home.exists()
-        assert "unsloth-codex-" in home.name
+        parent = start._ephemeral_session_parent("codex")
+        assert home.name.startswith(start._ephemeral_session_prefix("codex", parent))
+    assert not home.exists()
+
+
+def test_session_config_codex_uses_short_ephemeral_parent(monkeypatch, tmp_path):
+    # Windows Codex checks out its curated plugins under CODEX_HOME/.tmp/plugins.
+    # Put its throwaway home outside the longer system temp path so that checkout
+    # stays below legacy MAX_PATH and Codex does not reject temp-dir PATH helpers.
+    short_parent = tmp_path / "u"
+    short_parent.mkdir()
+    monkeypatch.setattr(
+        start,
+        "_ephemeral_session_parent",
+        lambda agent: short_parent if agent == "codex" else None,
+    )
+
+    with start._session_config("codex", launch = True) as home:
+        assert home.parent == short_parent
+        assert home.name.startswith("u-codex-")
+        assert home.exists()
+    assert not home.exists()
+
+
+def test_locked_file_windows_blocking_retries_until_acquired(monkeypatch, tmp_path):
+    attempts = []
+    sleeps = []
+
+    def locking(_fd, mode, _length):
+        if mode == 1:
+            attempts.append(mode)
+            if len(attempts) < 3:
+                raise PermissionError(start.errno.EACCES, "busy")
+
+    fake_msvcrt = SimpleNamespace(LK_NBLCK = 1, LK_UNLCK = 2, locking = locking)
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    _simulate_windows(monkeypatch)
+    monkeypatch.setattr(start.time, "sleep", sleeps.append)
+
+    with start._locked_file(tmp_path / "lock") as acquired:
+        assert acquired
+    assert len(attempts) == 3
+    assert sleeps == [0.05, 0.05]
+
+
+def test_session_config_reclaims_old_short_homes_but_keeps_recent_and_live(monkeypatch, tmp_path):
+    short_parent = tmp_path / "u"
+    short_parent.mkdir()
+    stale = short_parent / "u-codex-abandoned"
+    stale.mkdir()
+    (stale / ".active.lock").write_bytes(b"\0")
+    (stale / "plugin-checkout").write_text("left behind")
+    old = time.time() - start._CODEX_EPHEMERAL_STALE_SECONDS - 1
+    os.utime(stale / ".active.lock", (old, old))
+    recent = short_parent / "u-codex-surviving-child"
+    recent.mkdir()
+    (recent / ".active.lock").write_bytes(b"\0")
+    monkeypatch.setattr(
+        start,
+        "_ephemeral_session_parent",
+        lambda agent: short_parent if agent == "codex" else None,
+    )
+
+    with start._session_config("codex", launch = True) as first:
+        assert not stale.exists()
+        assert recent.exists()
+        with start._session_config("codex", launch = True) as second:
+            assert first.exists()
+            assert second.exists()
+            assert first != second
+        assert first.exists()
+        assert not second.exists()
+    assert not first.exists()
+
+
+def test_session_config_serializes_normal_short_home_deletion(monkeypatch, tmp_path):
+    short_parent = tmp_path / "u"
+    short_parent.mkdir()
+    monkeypatch.setattr(start, "_ephemeral_session_parent", lambda _agent: short_parent)
+    original_rmtree = start.shutil.rmtree
+
+    def checked_rmtree(path, *args, **kwargs):
+        if path.parent == short_parent and path.name.startswith("u-codex-"):
+            with start._locked_file(short_parent / ".cleanup.lock", blocking = False) as unlocked:
+                assert not unlocked
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(start.shutil, "rmtree", checked_rmtree)
+    with start._session_config("codex", launch = True) as home:
+        assert home.exists()
     assert not home.exists()
 
 
@@ -4782,7 +4873,8 @@ def test_default_launch_home_is_ephemeral(agent, fake_studio, tmp_path, monkeypa
     monkeypatch.setattr(start.shutil, "which", lambda _: f"/usr/local/bin/{agent}")
     captured = _capture_launch(monkeypatch, [agent])
     home = captured["env"][_RESUME_ENV_VAR[agent]]
-    assert f"unsloth-{agent}-" in home
+    parent = start._ephemeral_session_parent(agent)
+    assert start._ephemeral_session_prefix(agent, parent) in home
     assert str(tmp_path / "agents") not in home
 
 
