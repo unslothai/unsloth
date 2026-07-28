@@ -1413,7 +1413,9 @@ def test_entity_encoded_body_is_not_lost_to_an_unclosed_header():
     assert out.count("α") == 400
 
 
-def test_ancestor_end_tag_bounds_a_header_like_its_own_close():
+def test_header_closed_by_an_ancestor_is_kept_whole():
+    # Without a matching </header> the header may have adopted the body, and
+    # size cannot tell that apart, so malformed markup keeps everything.
     body = "<div><header><h1>Site</h1><ul>%s</ul></div><p>%s</p>" % (
         _interlanguage_list(300),
         "The real body prose. " * 20,
@@ -1421,4 +1423,61 @@ def test_ancestor_end_tag_bounds_a_header_like_its_own_close():
     out = html_to_markdown(f"<body>{body}</body>", main_content = True)
     assert "The real body prose." in out
     assert "# Site" in out
-    assert "Lang0" not in out
+    assert "Lang0" in out
+
+
+def test_unclosed_header_does_not_strip_a_short_article_it_adopted():
+    body = "<main><header><h1>T</h1><ul>%s</ul><p>%s</p></main>" % (
+        _interlanguage_list(300),
+        "Short real article. " * 4,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Short real article." in out
+
+
+def test_heading_inside_a_nested_buffer_is_not_lost():
+    body = (
+        "<main><header><blockquote><h1>Page Title</h1></blockquote><ul>%s</ul></header><p>%s</p></main>"
+        % (
+            _interlanguage_list(300),
+            "Article body. " * 30,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Page Title" in out
+    assert "Article body." in out
+
+
+def test_long_hrefs_count_toward_the_header_size_floor():
+    # Short labels, huge destinations: the rendered links are what displace it.
+    nav = "".join('<a href="https://e.com/p?%s=%d">L%d</a>' % ("q" * 1000, i, i) for i in range(30))
+    body = "<main><header>%s</header><p>%s</p></main>" % (nav, "Article body. " * 30)
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "L0" not in out
+    assert out.index("Article body.") < 16000
+
+
+def test_linked_heading_does_not_condemn_the_byline_beside_it():
+    body = (
+        "<article><header><h1><a href='/p'>%s</a></h1><p>By Jane Doe, July 2026</p></header><p>%s</p></article>"
+        % (
+            "A Very Long Linked Headline About Assorted Things In The World Today " * 5,
+            "Article body. " * 30,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "By Jane Doe" in out
+    assert "Very Long Linked" in out
+
+
+def test_anchor_without_href_is_prose_not_link_furniture():
+    body = (
+        "<article><header><h1>T</h1><a name='intro'>%s</a><p>Byline</p></header><p>%s</p></article>"
+        % (
+            "Introductory prose that renders as plain text. " * 8,
+            "Article body. " * 30,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Introductory prose" in out
+    assert "Byline" in out

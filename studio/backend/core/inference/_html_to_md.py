@@ -193,6 +193,10 @@ _HEADER_LINK_DENSITY = 0.93
 # noisy to trust, so it is left alone. Live link-list headers start at 182
 # chars; the largest link-dense header that carries real content is 93.
 _HEADER_MIN_CHARS = 150
+# A short label can carry a very long href, so a header whose rendered output
+# is this large displaces an article whatever its visible text measures. Live
+# content headers render to at most 363 chars, link lists to 1609 and up.
+_HEADER_MAX_RENDERED_CHARS = 800
 
 
 class _HeaderFrame:
@@ -202,7 +206,15 @@ class _HeaderFrame:
     when the whole subtree has been seen. A header that no end tag ever closes
     is emitted unchanged, which is what browsers render."""
 
-    __slots__ = ("depth", "parts", "heading_spans", "heading_start", "text_chars", "link_chars")
+    __slots__ = (
+        "depth",
+        "parts",
+        "heading_spans",
+        "heading_start",
+        "n_headings",
+        "text_chars",
+        "link_chars",
+    )
 
     def __init__(self, depth: int):
         self.depth = depth
@@ -210,15 +222,27 @@ class _HeaderFrame:
         # Index ranges into parts holding the headings, kept when the rest goes.
         self.heading_spans: list[tuple[int, int]] = []
         self.heading_start: int | None = None
+        self.n_headings: int = 0
+        # Heading text is excluded from both: it is never dropped, so it must not
+        # vote on dropping the rest. Only href anchors count as link furniture.
         self.text_chars: int = 0
         self.link_chars: int = 0
 
-    def render(self) -> str:
-        """The buffer, or only its headings when the header is link furniture."""
-        if (
+    def render(self, closed_by_own_tag: bool) -> str:
+        """The buffer, or only its headings when the header is link furniture.
+
+        Anything other than a matching ``</header>`` means the markup was
+        malformed and the header may have adopted the page body, so it is kept.
+        A heading buffered through a nested blockquote or table cell reaches
+        ``parts`` only when that buffer closes, leaving no usable span, so an
+        incomplete span set also keeps the whole buffer."""
+        if not closed_by_own_tag or len(self.heading_spans) != self.n_headings:
+            return "".join(self.parts)
+        big_enough = (
             self.text_chars >= _HEADER_MIN_CHARS
-            and self.link_chars >= _HEADER_LINK_DENSITY * self.text_chars
-        ):
+            or sum(len(part) for part in self.parts) >= _HEADER_MAX_RENDERED_CHARS
+        )
+        if big_enough and self.link_chars >= _HEADER_LINK_DENSITY * self.text_chars:
             return "".join("".join(self.parts[start:end]) for start, end in self.heading_spans)
         return "".join(self.parts)
 
@@ -258,6 +282,7 @@ class _MarkdownRenderer(HTMLParser):
         # Open <header> buffers, innermost last. Empty unless strip_header.
         self._strip_header = strip_header
         self._header_stack: list[_HeaderFrame] = []
+        self._in_heading: bool = False
 
         # Link state
         self._link_href: str | None = None
@@ -385,18 +410,25 @@ class _MarkdownRenderer(HTMLParser):
                 self._hidden_marks.pop()
             self._close_header_frames(close_at)
 
-    def _close_header_frames(self, depth: int) -> None:
+    def _close_header_frames(
+        self,
+        depth: int,
+        own_tag: bool = False,
+    ) -> None:
         """Judge and emit every buffered header at or below *depth*.
 
-        Any end tag that pops the header off the stack bounds it as conclusively
-        as ``</header>`` does, so an ancestor close judges it the same way."""
+        Only the innermost frame can be closed by its own ``</header>``; an
+        outer one popped by the same end tag was bounded by an ancestor."""
+        closed_by_own_tag = own_tag
         while self._header_stack and self._header_stack[-1].depth >= depth:
             frame = self._header_stack.pop()
             if self._header_stack:
                 # Roll the tally outward so an enclosing header is judged whole.
                 self._header_stack[-1].text_chars += frame.text_chars
                 self._header_stack[-1].link_chars += frame.link_chars
-            self._emit(frame.render())
+                self._header_stack[-1].n_headings += frame.n_headings
+            self._emit(frame.render(closed_by_own_tag))
+            closed_by_own_tag = False
 
     def _flush_header_frames(self) -> None:
         """Emit every open header unchanged, abandoning the strip."""
@@ -404,12 +436,16 @@ class _MarkdownRenderer(HTMLParser):
             self._emit("".join(self._header_stack.pop().parts))
 
     def _count_header_text(self, text: str) -> None:
-        """Tally visible text for the innermost header's link density."""
-        if not self._header_stack:
+        """Tally visible text for the innermost header's link density.
+
+        Heading text is skipped: ``render()`` never drops it, so counting it
+        would let a long linked heading condemn the byline beside it."""
+        if not self._header_stack or self._in_heading:
             return
         chars = len(text.strip())
         self._header_stack[-1].text_chars += chars
-        if self._in_link:
+        # An anchor with no usable href renders as prose, not as a link.
+        if self._in_link and self._link_href:
             self._link_header_chars += chars
 
     def _enter_tag(self, tag: str, attr_dict: dict) -> bool:
@@ -455,7 +491,7 @@ class _MarkdownRenderer(HTMLParser):
                     del self._open_tags[i:]
                     while self._hidden_marks and self._hidden_marks[-1] >= i:
                         self._hidden_marks.pop()
-                    self._close_header_frames(i)
+                    self._close_header_frames(i, own_tag = tag == "header")
                     break
         if self._scope_tags is not None and tag in self._scope_tags and self._scope_depth > 0:
             self._scope_depth -= 1
@@ -487,8 +523,10 @@ class _MarkdownRenderer(HTMLParser):
             return
 
         if tag in _HEADING_TAGS:
+            self._in_heading = True
             if self._header_stack and self._header_stack[-1].heading_start is None:
                 self._header_stack[-1].heading_start = len(self._header_stack[-1].parts)
+                self._header_stack[-1].n_headings += 1
             level = int(tag[1])
             self._emit("\n\n" + "#" * level + " ")
 
@@ -583,9 +621,12 @@ class _MarkdownRenderer(HTMLParser):
 
         if tag in _HEADING_TAGS:
             self._emit("\n\n")
+            self._in_heading = False
             frame = self._header_stack[-1] if self._header_stack else None
             if frame is not None and frame.heading_start is not None:
-                frame.heading_spans.append((frame.heading_start, len(frame.parts)))
+                # An empty span means the heading went into a nested buffer.
+                if len(frame.parts) > frame.heading_start:
+                    frame.heading_spans.append((frame.heading_start, len(frame.parts)))
                 frame.heading_start = None
 
         elif tag == "a":
