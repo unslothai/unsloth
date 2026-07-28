@@ -672,6 +672,10 @@ export function useChatModelRuntime() {
           let previousWasUnloaded = false;
           const pendingLoadConfig =
             typeof selection !== "string" ? selection.config : undefined;
+          // The outgoing model's slot INTENT, read before the staged config
+          // overwrites it: blank means "follow the server default", which the
+          // resolved baseline the rollback re-sends cannot express.
+          const previousNParallel = useChatRuntimeStore.getState().nParallel;
           if (pendingLoadConfig) {
             applyPerModelConfigToRuntime(pendingLoadConfig);
           }
@@ -1276,7 +1280,9 @@ export function useChatModelRuntime() {
                   // model's; the loaded baselines below come from its reload echo.
                   speculativeType: stateBeforeUnload.loadedSpeculativeType ?? null,
                   specDraftNMax: stateBeforeUnload.loadedSpecDraftNMax ?? null,
-                  nParallel: stateBeforeUnload.loadedNParallel ?? null,
+                  // Control keeps its blank-or-explicit intent; only the
+                  // baseline takes the resolved count the reload re-sent.
+                  nParallel: previousNParallel,
                   loadedNParallel: stateBeforeUnload.loadedNParallel ?? null,
                   loadedSpeculativeType: rollbackSpeculativeType,
                   loadedSpecDraftNMax:

@@ -830,6 +830,30 @@ def test_parallel_slots_are_never_recorded_for_a_diffusion_load():
     assert "loadedNParallel: committedSlots," in composer
 
 
+def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count():
+    """`loadedNParallel` holds a RESOLVED count even for a load that sent no
+    slots (hydration seeds it from the echo, which falls back to the server-wide
+    default), so it is the right value to re-send when recreating the previous
+    server and the wrong one to put back in the control: it turns "follow the
+    server default" into an explicit override that a later Save or preset
+    capture then pins. The outer catch only repairs that for a staged config
+    (`selection.previousConfig`), so a plain string pick keeps the phantom.
+
+    Read the control BEFORE the staged config overwrites it, which is also the
+    only point where it still describes the OUTGOING model."""
+    runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
+    assert "const previousNParallel = useChatRuntimeStore.getState().nParallel;" in runtime
+    assert runtime.index("const previousNParallel") < runtime.index(
+        "applyPerModelConfigToRuntime(pendingLoadConfig);"
+    ), "the intent must be captured before a staged config replaces it"
+    rollback = runtime.split("const rollbackSpeculativeType", 1)[1]
+    assert "nParallel: previousNParallel," in rollback
+    # The baseline and the reload payload still carry the resolved count, or the
+    # rollback recreates the previous model at a different slot count.
+    assert "loadedNParallel: stateBeforeUnload.loadedNParallel ?? null," in rollback
+    assert "n_parallel: stateBeforeUnload.loadedNParallel," in runtime
+
+
 def test_vulkan_inference_devices_are_the_pickable_set():
     """GGUF loads run through llama-server, so on a Vulkan build the picker must
     offer the inference inventory (ggml ordinals, the space `--device Vulkan<i>`
