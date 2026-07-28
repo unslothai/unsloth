@@ -183,11 +183,8 @@ INTENT_SIGNAL = re.compile(
 # times since #5620); safetensors and MLX inherit the same cap from here.
 MAX_ACT_REPROMPTS = 3
 REPROMPT_MAX_CHARS = 2000
-# Badge text for the chat composer while a re-prompted turn regenerates. The
-# retry is a whole hidden generation with its visible output suppressed, so
-# without this the UI sits blank and looks hung. The frontend matches this
-# string exactly (ToolStatusDisplay in components/assistant-ui/thread.tsx) to
-# swap the tool glyph for a spinner, so keep the two in sync.
+# Composer badge while a hidden re-prompted turn regenerates, else the UI looks
+# hung. Matched exactly by the frontend (utils/tool-status.ts); keep in sync.
 NUDGE_TOOL_CALLS_STATUS = "Nudging tool calls"
 
 

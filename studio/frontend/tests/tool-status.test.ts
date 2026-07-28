@@ -10,8 +10,8 @@ import {
 } from "../src/features/chat/utils/tool-status.ts";
 
 test("the nudge status is the exact string the backend sends", () => {
-  // core/inference/tool_call_parser.py: NUDGE_TOOL_CALLS_STATUS. The badge
-  // matches on the text itself, so a reword on either side must break here.
+  // Mirrors NUDGE_TOOL_CALLS_STATUS in core/inference/tool_call_parser.py, so a
+  // reword on either side must break here.
   assert.equal(NUDGE_TOOL_CALLS_STATUS, "Nudging tool calls");
   assert.equal(toolStatusKind(NUDGE_TOOL_CALLS_STATUS), "nudge");
 });

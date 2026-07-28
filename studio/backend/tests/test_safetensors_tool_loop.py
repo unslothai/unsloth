@@ -2233,15 +2233,13 @@ def test_reprompt_names_only_active_tools_not_hardcoded():
 
 
 def test_reprompt_is_announced_on_the_status_channel():
-    # The re-prompted turn regenerates with nothing visible in between, so the
-    # badge is the only sign the model is still working. The blank status must
-    # still come first -- the route resets its text cursor on that one alone.
+    # The re-prompted turn is hidden, so the badge is the only sign of life.
+    # Blank still comes first: the route resets its text cursor only on that.
     _captured, events = _reprompt_loop(auto_heal_tool_calls = True)
     statuses = [e["text"] for e in events if e["type"] == "status"]
     assert NUDGE_TOOL_CALLS_STATUS in statuses
     index = statuses.index(NUDGE_TOOL_CALLS_STATUS)
-    # index > 0 is load-bearing: at index 0 a bare statuses[index - 1] wraps to the
-    # terminal clear and the ordering assertion passes without proving anything.
+    # index > 0 matters: at 0, statuses[-1] wraps to the terminal clear.
     assert index > 0 and statuses[index - 1] == ""
     assert statuses[-1] == ""
 

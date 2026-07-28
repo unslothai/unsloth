@@ -2859,8 +2859,7 @@ const ToolStatusDisplay: FC = () => {
       <div
         className={cn(
           "flex items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary",
-          // The spinner is its own motion cue; pulsing the pill as well just
-          // fades it in and out mid-spin.
+          // The spinner is its own motion cue; pulsing too just fades it mid-spin.
           !isNudging && "animate-pulse",
         )}
       >

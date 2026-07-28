@@ -1033,10 +1033,9 @@ def run_safetensors_tool_loop(
                             "content": reprompt_to_act_message(tool_hint),
                         }
                     )
-                    # Empty status clears the badge and resets the route's
-                    # per-turn text cursor before the re-prompted turn streams;
-                    # the badge that follows tells the user the pause is a
-                    # re-prompt in flight rather than a stalled generation.
+                    # Empty status clears the badge and resets the route's per-turn
+                    # text cursor before the re-prompted turn streams; the badge
+                    # that follows shows the pause is a re-prompt, not a stall.
                     yield {"type": "status", "text": ""}
                     yield {"type": "status", "text": NUDGE_TOOL_CALLS_STATUS}
                     continue
