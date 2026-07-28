@@ -73,10 +73,10 @@ class TestAmdBitsandbytesFloor:
         assert specs, "the amd extra must pin bitsandbytes"
         for spec in specs:
             requirement = spec.split(";", 1)[0].strip()
-            allowed = SpecifierSet(requirement[len("bitsandbytes"):].strip())
-            assert not allowed.contains(Version("0.49.2")), (
-                f"{requirement} still admits bnb 0.49.2, which predates the ROCm 4-bit fixes"
-            )
+            allowed = SpecifierSet(requirement[len("bitsandbytes") :].strip())
+            assert not allowed.contains(
+                Version("0.49.2")
+            ), f"{requirement} still admits bnb 0.49.2, which predates the ROCm 4-bit fixes"
             assert allowed.contains(BNB_MIN), f"{requirement} excludes the fixed release {BNB_MIN}"
 
 
@@ -97,4 +97,6 @@ class TestSecurityAuditWorkflowStaysInSync:
         )
         assert referenced, "expected security-audit.yml to index at least one extra"
         missing = sorted(referenced - set(_extras()))
-        assert not missing, f"security-audit.yml indexes extras that pyproject.toml lacks: {missing}"
+        assert (
+            not missing
+        ), f"security-audit.yml indexes extras that pyproject.toml lacks: {missing}"
