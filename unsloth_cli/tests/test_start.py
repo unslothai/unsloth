@@ -1252,9 +1252,7 @@ def test_resolved_launch_command_handles_project_local_npm_shim(monkeypatch, tmp
     ]
 
 
-def test_resolved_launch_command_leaves_custom_npm_like_wrapper_unchanged(
-    monkeypatch, tmp_path
-):
+def test_resolved_launch_command_leaves_custom_npm_like_wrapper_unchanged(monkeypatch, tmp_path):
     _simulate_windows(monkeypatch)
     cmd = tmp_path / "custom-agent.cmd"
     target = tmp_path / "node_modules" / "fake-agent" / "index.js"

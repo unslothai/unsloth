@@ -2581,8 +2581,7 @@ _NPM_NODE_CMD_SHIM = re.compile(
     re.IGNORECASE,
 )
 _NPM_NATIVE_CMD_SHIM = re.compile(
-    re.escape(_NPM_CMD_SHIM_HEAD)
-    + r'"%dp0%\\(?P<target>[^"\r\n]+)"[ \t]+%\*',
+    re.escape(_NPM_CMD_SHIM_HEAD) + r'"%dp0%\\(?P<target>[^"\r\n]+)"[ \t]+%\*',
     re.IGNORECASE,
 )
 
