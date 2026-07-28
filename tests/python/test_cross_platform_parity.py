@@ -833,7 +833,7 @@ class TestAmdBnbFloorParity:
     def test_install_sh_pypi_fallback_floor(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
         assert (
-            f'"bitsandbytes>={self.FLOOR}"' in text
+            f'_BNB_ROCM_PYPI_FALLBACK="bitsandbytes>={self.FLOOR}"' in text
         ), f"install.sh _install_bnb_rocm PyPI fallback must floor at {self.FLOOR}"
 
     def test_stack_py_pypi_fallback_floor(self):
@@ -864,3 +864,15 @@ class TestAmdBnbFloorParity:
                     raise AssertionError(
                         f"{path.name} still floors bitsandbytes in the broken ROCm range: {line.strip()!r}"
                     )
+
+    def test_fallback_is_not_reported_as_broken(self):
+        """The fallback now installs the first fixed release, so neither installer may
+        still tell the user it leaves 4-bit decode broken on ROCm."""
+        for path in (INSTALL_SH, STACK_PY):
+            text = path.read_text(encoding = "utf-8")
+            assert (
+                "4-bit decode broken on ROCm" not in text
+            ), f"{path.name} still reports the repaired PyPI fallback as broken"
+            assert (
+                "4-bit decode will be broken on ROCm" not in text
+            ), f"{path.name} still reports the repaired PyPI fallback as broken"
