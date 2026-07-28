@@ -853,13 +853,23 @@ def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count(
     override that a later Save or preset capture pins. The outer catch only
     repairs that for a staged config, so a plain string pick keeps the phantom.
 
-    The control is read BEFORE the staged config overwrites it, the only point
-    where it still describes the OUTGOING model."""
+    The intent comes from the picker's own pre-switch snapshot when there is one:
+    chat-page pre-applies the TARGET's config before calling selectModel, so the
+    live control describes the outgoing model only for a bare pick."""
     runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
-    assert "const previousNParallel = useChatRuntimeStore.getState().nParallel;" in runtime
+    assert (
+        "const previousNParallel = typeof selection !== \"string\" && "
+        "selection.previousConfig ? (selection.previousConfig.nParallel ?? null) "
+        ": useChatRuntimeStore.getState().nParallel;" in runtime
+    )
     assert runtime.index("const previousNParallel") < runtime.index(
         "applyPerModelConfigToRuntime(pendingLoadConfig);"
-    ), "the intent must be captured before a staged config replaces it"
+    ), "a config staged on the selection must not replace it either"
+    picker = " ".join(_read("features/chat/chat-page.tsx").split())
+    assert (
+        "const previousConfig = currentRuntimePerModelConfig({ includeMaxSeqLength: true, }); "
+        "const hasAppliedConfig = applyModelLoadConfigToRuntime(" in picker
+    ), "the snapshot must be taken before the target's config is applied"
     rollback = runtime.split("const rollbackSpeculativeType", 1)[1]
     assert "nParallel: previousNParallel," in rollback
     # Baseline and reload payload keep the resolved count, or the rollback

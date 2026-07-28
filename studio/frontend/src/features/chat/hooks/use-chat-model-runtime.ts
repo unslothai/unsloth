@@ -671,10 +671,14 @@ export function useChatModelRuntime() {
           let previousWasUnloaded = false;
           const pendingLoadConfig =
             typeof selection !== "string" ? selection.config : undefined;
-          // The outgoing model's slot INTENT, read before the staged config
-          // overwrites it: blank means "follow the server default", which the
-          // resolved baseline cannot express.
-          const previousNParallel = useChatRuntimeStore.getState().nParallel;
+          // The outgoing model's slot INTENT (blank = follow the server
+          // default), which the resolved baseline cannot express. previousConfig
+          // is the snapshot the picker took before pre-applying the target's
+          // config, so the live control is only the outgoing one without it.
+          const previousNParallel =
+            typeof selection !== "string" && selection.previousConfig
+              ? (selection.previousConfig.nParallel ?? null)
+              : useChatRuntimeStore.getState().nParallel;
           if (pendingLoadConfig) {
             applyPerModelConfigToRuntime(pendingLoadConfig);
           }
