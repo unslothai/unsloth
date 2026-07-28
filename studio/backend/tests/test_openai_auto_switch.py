@@ -566,7 +566,13 @@ def test_idle_loop_deletes_saved_kv_when_unload_fails(monkeypatch, tmp_path):
 
     async def _drive():
         task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.01))
-        for _ in range(200):
+        # A wall-clock deadline, not an iteration count: Windows timers round a
+        # 10 ms sleep up to the ~15.6 ms scheduler tick, on both this loop and the
+        # one under test, so a fixed count of short sleeps gave the unload far
+        # less real time there than the number suggests and the test failed for
+        # being slow rather than wrong.
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
             await asyncio.sleep(0.01)
             if manifests and not saved.exists():
                 break
