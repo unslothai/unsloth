@@ -243,9 +243,10 @@ class _HeaderFrame:
         if not closed_by_own_tag:
             return "".join(self.parts)
         headings = "".join(self.heading_parts)
-        # Both sizes measure only the droppable part: a heading is kept either
-        # way, so a long one must not make the rest look big enough to drop.
-        droppable = sum(len(part) for part in self.parts) - len(headings)
+        # Both sizes measure only the droppable part, cleaned: a heading is kept
+        # either way, and raw tokens count blank lines that _cleanup collapses,
+        # so 500 empty <div>s must not make a tiny header look huge.
+        droppable = len(_cleanup("".join(self.parts))) - len(_cleanup(headings))
         big_enough = self.text_chars >= _HEADER_MIN_CHARS or droppable >= _HEADER_MAX_RENDERED_CHARS
         if big_enough and self.link_chars >= _HEADER_LINK_DENSITY * self.text_chars:
             # The closing tag's blank line is emitted after the heading mark is
@@ -471,7 +472,7 @@ class _MarkdownRenderer(HTMLParser):
                 self._header_stack[-1].link_chars += frame.link_chars
                 self._header_stack[-1].heading_parts.extend(frame.heading_parts)
             out = frame.render(closed_by_own_tag)
-            self._dropped_chars += sum(len(part) for part in frame.parts) - len(out)
+            self._dropped_chars += max(0, len(_cleanup("".join(frame.parts))) - len(_cleanup(out)))
             self._emit(out)
             closed_by_own_tag = False
 
@@ -481,6 +482,9 @@ class _MarkdownRenderer(HTMLParser):
         Their content is the header's, so it has to land in the frame before the
         strip is judged; otherwise it is emitted afterwards and escapes."""
         if self._in_link and self._link_seq != frame.outer_link_seq:
+            # The header boundary proves this anchor did not adopt the body, so
+            # its text is link furniture even though no </a> arrived.
+            frame.link_chars += self._link_header_chars
             self._finish_link()
         if self._in_inline_code:
             self._in_inline_code = False
@@ -508,10 +512,16 @@ class _MarkdownRenderer(HTMLParser):
         is skipped so a long linked heading cannot condemn the byline beside it."""
         if not self._header_stack or self._heading_marks:
             return
+        frame = self._header_stack[-1]
         chars = len(text.strip())
-        self._header_stack[-1].text_chars += chars
+        frame.text_chars += chars
         # An anchor with no usable href renders as prose, not as a link.
-        if self._in_link and self._link_href:
+        if not (self._in_link and self._link_href):
+            return
+        if self._link_seq == frame.outer_link_seq:
+            # An enclosing anchor closes after the header, too late to credit.
+            frame.link_chars += chars
+        else:
             self._link_header_chars += chars
 
     def _enter_tag(self, tag: str, attr_dict: dict) -> bool:
@@ -522,7 +532,7 @@ class _MarkdownRenderer(HTMLParser):
             self._open_tags.append(tag)
             if _is_hidden_element(attr_dict):
                 self._hidden_marks.append(len(self._open_tags) - 1)
-            if tag in _HEADING_TAGS or _is_aria_heading(attr_dict):
+            if tag in _HEADING_TAGS or tag == "hgroup" or _is_aria_heading(attr_dict):
                 self._heading_marks.append(len(self._open_tags) - 1)
             if self._strip_header and tag == "header" and not self._hidden_marks:
                 self._header_stack.append(
@@ -801,6 +811,11 @@ class _MarkdownRenderer(HTMLParser):
     # Flush pending buffers (handles truncated HTML from capped fetches)
     def flush_pending(self) -> None:
         """Flush open side-buffers into ``_out`` after close(), recovering truncated HTML."""
+        # Headers first: each frame finalizes the buffers opened inside it, then
+        # emits into whatever encloses it, so an enclosing link or cell must still
+        # be open here and is finalized below.
+        self._flush_header_frames()
+
         # Flush innermost buffers first so their content propagates outward.
         if self._in_link:
             self._finish_link()
@@ -817,10 +832,6 @@ class _MarkdownRenderer(HTMLParser):
             self._in_pre = False
             block = "```\n" + raw + "\n```"
             self._emit("\n\n" + block + "\n\n")
-
-        # Headers first: a buffer nested in one belongs to it, so flushing the
-        # buffer on its own would emit that content ahead of the header text.
-        self._flush_header_frames()
 
         # Flatten any open blockquote buffers (innermost first).
         while self._bq_stack:
@@ -973,7 +984,7 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
     best_render = ""
     for i, seg in enumerate(renderer.scope_segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg))
-        credit = dropped[i] if len(rendered) >= _MIN_RETAINED_CHARS else 0
+        credit = dropped[i] if _non_heading_chars(rendered) >= _MIN_RETAINED_CHARS else 0
         size = len(rendered) + credit
         if size > best_len:
             best_len = size
@@ -981,10 +992,15 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
     return best_len, best_render
 
 
-# Removed furniture only counts toward a candidate's size once it retained more
-# than a bare heading line, so a scope holding nothing else cannot qualify on
-# what was deleted from it.
+# Removed furniture only counts toward a candidate's size once the candidate
+# retained this much prose OUTSIDE its headings, so neither an empty scope nor a
+# stub carrying one long title can qualify on what was deleted from it.
 _MIN_RETAINED_CHARS = 50
+
+
+def _non_heading_chars(text: str) -> int:
+    """Length of *text* ignoring heading lines and blanks."""
+    return sum(len(line) for line in text.split("\n") if line.strip() and not line.startswith("#"))
 
 
 # A scoped conversion below this size is judged not to be the page's main

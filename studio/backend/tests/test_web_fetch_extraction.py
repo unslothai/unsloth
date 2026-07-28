@@ -1704,3 +1704,73 @@ def test_header_survives_every_buffer_combination(
     well_formed = close_header and close_nested and "pre" not in (wrapper, nested)
     if _GRID_HEADINGS[heading] and well_formed:
         assert out.count("Page Title") == 1, "title duplicated or lost"
+
+
+def test_a_stub_cannot_outrank_a_real_article_on_removed_navigation():
+    # A long title alone is not substantive retained content.
+    stub = "<article><header><h1>%s</h1><ul>%s</ul></header></article>" % (
+        "A Long Title That Exceeds Fifty Characters Easily Here",
+        _interlanguage_list(300),
+    )
+    real = "<article><p>%s</p></article>" % ("Genuine full article body text. " * 20)
+    out = html_to_markdown(f"<body>{stub}{real}</body>", main_content = True)
+    assert "Genuine full article body" in out
+
+
+def test_unclosed_link_in_a_closed_header_counts_as_furniture():
+    # The </header> proves the anchor did not adopt the body.
+    body = "<main><header><h1>T</h1><a href='/nav'>%s</header><p>%s</p></main>" % (
+        "Navigation label text. " * 20,
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Navigation label text." not in out
+    assert "Article body." in out
+
+
+def test_enclosing_anchor_text_counts_toward_header_density():
+    body = "<main><a href='/nav'><header>%s</header></a><p>%s</p></main>" % (
+        "".join(f"<span>Nav label {i}</span>" for i in range(40)),
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Nav label 0" not in out
+    assert "Article body." in out
+
+
+def test_hgroup_subtitle_survives_a_stripped_header():
+    body = (
+        "<main><header><hgroup><h1>Title</h1><p>Subtitle here</p></hgroup><ul>%s</ul></header><p>%s</p></main>"
+        % (
+            _interlanguage_list(300),
+            "Article body. " * 30,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Subtitle here" in out
+    assert "Lang0" not in out
+
+
+def test_truncated_header_flushes_into_its_enclosing_buffer():
+    # The header is inside the link/cell, so its text belongs there, in order.
+    assert html_to_markdown(
+        "<body><main><a href='/x'>before<header><h1>Title", main_content = True
+    ).startswith("[before")
+    assert html_to_markdown(
+        "<body><main><table><tr><td><header><h1>Title", main_content = True
+    ).startswith("|")
+
+
+def test_empty_blocks_do_not_inflate_the_header_size():
+    # _cleanup collapses them, so the size threshold must see the cleaned form.
+    body = (
+        "<article><header><h1>%s</h1>%s<a href='/x'>L</a></header></article>"
+        "<article><p>%s</p></article>"
+        % (
+            "A Fairly Long Heading Title Here" * 2,
+            "<div></div>" * 500,
+            "Genuine full article body text. " * 20,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Genuine full article body" in out
