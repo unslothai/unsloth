@@ -3855,6 +3855,7 @@ from .models.loader_utils import (
     _tokenizer_cache_dir,
     _tokenizer_wants_local_only,
 )
+
 # Imported lazily at the two call sites below: a zoo older than the one that made
 # its own bitsandbytes import optional would otherwise break `import unsloth` on a
 # host without bnb, which is the whole point of the guards above.
@@ -4239,7 +4240,6 @@ def unsloth_generic_save(
     else:
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
-
         merge_and_overwrite_lora(
             get_model_name,
             model = model,
