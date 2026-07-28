@@ -1,0 +1,135 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Measures where Studio's startup time goes, on each platform.
+#
+# Nothing measured this before. studio/backend/main.py logs "lifespan startup
+# completed in X ms" and main.py:418-479 deliberately pushes the llama.cpp probes
+# off the startup critical path, but no job ever recorded a number, so there was no
+# way to tell whether a change made launch slower. studio_test_kit polls /healthz in
+# a loop that throws the elapsed time away; its 180s default timeout was the only
+# written-down expectation.
+#
+# A first local run (Linux, warm cache, 18-core server) put `import main` at 5.7-6.6s
+# BEFORE the server can bind, dominated by eager module-level imports pulled in by
+# the routes package: torch ~1.9s self, unsloth_zoo ~0.8s, routes ~0.6s,
+# transformers ~0.5s. A laptop is slower. This workflow tracks that per OS so the
+# figure stops being folklore.
+#
+# Deliberately not a gate yet: --max-healthz-seconds exists in the script, but a
+# budget should be set from observed numbers rather than guessed.
+
+name: Startup profile
+
+on:
+  pull_request:
+    paths:
+      - 'studio/backend/main.py'
+      - 'studio/backend/run.py'
+      - 'studio/backend/routes/**'
+      - 'studio/src-tauri/src/preflight**'
+      - 'scripts/profile_startup.py'
+      - '.github/workflows/startup-profile-ci.yml'
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: 'launch repeats per OS (median reported)'
+        type: string
+        default: '3'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    name: startup ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+
+    env:
+      UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
+      # A wildcard bind makes run.py call ifconfig.me (timeout=3) and poll
+      # check-host.net (timeout=5 plus a retry loop) on the startup path. Loopback
+      # avoids that, so the numbers measure our code and not someone's DNS.
+      UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK: '1'
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Studio
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            pwsh -NoProfile -File ./install.ps1 2>&1 | tee logs/install.log
+          else
+            bash install.sh 2>&1 | tee logs/install.log
+          fi
+
+      - name: Profile startup
+        shell: bash
+        run: |
+          BIN="$UNSLOTH_STUDIO_HOME/unsloth_studio/bin/unsloth"
+          [ -x "$BIN" ] || BIN="$UNSLOTH_STUDIO_HOME/unsloth_studio/Scripts/unsloth.exe"
+          [ -x "$BIN" ] || BIN=""
+          # Profile imports with the INSTALLED interpreter, not the runner's system
+          # python: the venv is what actually starts at launch.
+          PY="$UNSLOTH_STUDIO_HOME/unsloth_studio/bin/python"
+          [ -x "$PY" ] || PY="$UNSLOTH_STUDIO_HOME/unsloth_studio/Scripts/python.exe"
+          [ -x "$PY" ] || PY="$(command -v python3 || command -v python)"
+          python3 scripts/profile_startup.py \
+            --python "$PY" \
+            ${BIN:+--bin "$BIN"} \
+            --repeats "${{ inputs.repeats || '3' }}" \
+            --json "startup-${{ matrix.os }}.json" 2>&1 | tee logs/profile.log
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          f="startup-${{ matrix.os }}.json"
+          [ -f "$f" ] || { echo "no profile produced"; exit 0; }
+          python3 - "$f" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          print(f"### {d['platform']} / {d['machine']} (py {d['python']}, {d['cpu_count']} cpu)\n")
+          imp = d.get("imports", {})
+          if imp.get("total_seconds"):
+              print(f"**`import main`: {imp['total_seconds']}s**\n")
+              print("| package | self ms |")
+              print("|---|---:|")
+              for k, v in list(imp.get("self_by_package_ms", {}).items())[:8]:
+                  print(f"| {k} | {v} |")
+              print()
+          lau = d.get("launch") or {}
+          if lau.get("healthz_median_seconds") is not None:
+              print(f"**time to a healthy port: {lau['healthz_median_seconds']}s median, "
+                    f"{lau['healthz_max_seconds']}s max**\n")
+          elif lau.get("skipped"):
+              print(f"_launch phase skipped: {lau['skipped']}_\n")
+          PY
+
+      - name: Upload profile
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: startup-profile-${{ matrix.os }}
+          path: |
+            startup-*.json
+            logs/
+          retention-days: 14
+          if-no-files-found: warn
