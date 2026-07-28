@@ -2125,3 +2125,56 @@ def test_held_close_tail_handles_more_blocks_and_stray_markers():
     )
     # A stray close in the tail is dropped, its text kept.
     assert _drain_reasoning_extractor(["<think>a ```</think>x</think>y"]) == ("a ```", "xy")
+
+
+def _forced_tool_choice_body(name, *, tool_name = None):
+    payload = ChatCompletionRequest(
+        model = "default",
+        messages = [{"role": "user", "content": "hi"}],
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool_name if tool_name is not None else name,
+                    "parameters": {"type": "object"},
+                },
+            }
+        ],
+        tool_choice = {"type": "function", "function": {"name": name}},
+    )
+    return _build_openai_passthrough_body(payload, backend_ctx = 4096)
+
+
+def test_forced_tool_choice_follows_the_neutralized_tool_name():
+    """A forced choice must name a tool llama-server was actually given (#7334).
+
+    The schema pass rewrites ``function.name`` along with the rest, so a
+    ``tool_choice`` copied from the request asked llama-server to force a name it
+    never advertised and the forced dispatch missed.
+    """
+    body = _forced_tool_choice_body("search<tool|>")
+    advertised = body["tools"][0]["function"]["name"]
+    forced = body.get("tool_choice", {}).get("function", {}).get("name")
+    assert "<tool|>" not in advertised
+    assert forced == advertised
+    assert forced == f"search<{_ZW}tool|>"
+
+
+def test_forced_tool_choice_is_untouched_when_it_already_matches():
+    """A clean name, and one naming no declared tool, stay byte-identical."""
+    body = _forced_tool_choice_body("plain_name")
+    assert body.get("tool_choice", {}).get("function", {}).get("name") == "plain_name"
+
+    # Forcing a function the request never declared is the caller's error, and
+    # llama-server must see it verbatim rather than a rewritten guess.
+    body = _forced_tool_choice_body("missing<tool|>", tool_name = "other")
+    assert body.get("tool_choice", {}).get("function", {}).get("name") == "missing<tool|>"
+
+    # A plain string tool_choice is forwarded unchanged.
+    payload = ChatCompletionRequest(
+        model = "default",
+        messages = [{"role": "user", "content": "hi"}],
+        tools = [{"type": "function", "function": {"name": "a", "parameters": {"type": "object"}}}],
+        tool_choice = "required",
+    )
+    assert _build_openai_passthrough_body(payload, backend_ctx = 4096)["tool_choice"] == "required"

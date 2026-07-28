@@ -16164,6 +16164,39 @@ def _llama_compatible_tools(openai_tools):
     return compatible_tools
 
 
+def _align_forced_tool_choice(tool_choice, tools):
+    """Point a forced ``tool_choice`` at the function name actually advertised.
+
+    Tool schemas are control-marker neutralized before they reach llama-server
+    (#7066), which rewrites ``function.name`` too. A ``tool_choice`` copied from
+    the request still carries the raw name, so llama-server was asked to force a
+    function it was never given and the forced dispatch missed (#7334). Only ever
+    rewrites a name that matches no advertised tool but whose neutralized form
+    does, so a legitimate choice is left byte-identical.
+    """
+    if not isinstance(tool_choice, dict):
+        return tool_choice
+    function = tool_choice.get("function")
+    name = function.get("name") if isinstance(function, dict) else None
+    if not isinstance(name, str) or not name:
+        return tool_choice
+    advertised = {
+        tool["function"]["name"]
+        for tool in tools or []
+        if isinstance(tool, dict)
+        and isinstance(tool.get("function"), dict)
+        and isinstance(tool["function"].get("name"), str)
+    }
+    if name in advertised:
+        return tool_choice
+    from core.inference.chat_template_helpers import neutralize_non_assistant_control_markup
+
+    aligned = neutralize_non_assistant_control_markup(name)
+    if aligned == name or aligned not in advertised:
+        return tool_choice
+    return {**tool_choice, "function": {**function, "name": aligned}}
+
+
 def _build_passthrough_payload(
     openai_messages,
     openai_tools,
@@ -16193,7 +16226,7 @@ def _build_passthrough_payload(
     if openai_tools:
         body["tools"] = _llama_compatible_tools(openai_tools)
         if tool_choice is not None:
-            body["tool_choice"] = tool_choice
+            body["tool_choice"] = _align_forced_tool_choice(tool_choice, body["tools"])
     if seed is not None:
         body["seed"] = seed
     if stream and stream_options is not None:
