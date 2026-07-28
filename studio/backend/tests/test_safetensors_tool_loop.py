@@ -3767,10 +3767,16 @@ class TestGGUFSafetensorsHealingParity:
             "I will search for Who discography",
         )
 
-    def test_reprompt_repeat_ignores_filler_drift(self):
-        # Rewording that changes no content word is still the same attempt.
+    def test_reprompt_repeat_keeps_filler_words_that_name_a_target(self):
+        # No word is reliably filler: dropping "ok"/"the" to absorb rewording also
+        # absorbed the search target. Reordered filler now reads as a new attempt,
+        # which costs one nudge out of the cap and never strands a plan.
         from core.inference.tool_call_parser import is_reprompt_repeat
-        assert is_reprompt_repeat(
+        assert not is_reprompt_repeat(
+            "I will search for OK Go discography",
+            "I will search for Go discography",
+        )
+        assert not is_reprompt_repeat(
             "I will now summarize the findings",
             "I will summarize the findings now",
         )

@@ -1727,6 +1727,11 @@ def test_forced_turn_suppression_covers_obligation_phrasing():
         # A missing answer is not a final answer: the plan behind it is still a stall.
         "I should call web_search because the answer is not in the provided context",
         "I must run the search since the answer is unknown so far",
+        # A pivot with nothing behind it answers nothing.
+        "I should call web_search, though.",
+        "I need to run the search, but",
+        # A purpose clause is part of the plan, not a summary of results.
+        "I need to call web_search to summarize the results",
     ):
         assert suppress(stall), f"leaked {stall!r}"
 

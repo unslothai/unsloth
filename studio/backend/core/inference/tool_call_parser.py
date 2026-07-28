@@ -210,9 +210,6 @@ def is_short_intent_without_action(text: str) -> bool:
 # stripping all non-word chars would collapse "C++" and "C#" to the same token.
 _REPEAT_TRAIL_PUNCT = ".,;:!?\"'`()[]{}<>‘’“”"
 _REPEAT_LEAD_PUNCT = "\"'`([{‘“"
-# Wording that can drift between two attempts without the attempt changing.
-# Articles stay out: "The Who" and "Who" are different search targets.
-_REPEAT_FILLER = frozenset({"now", "then", "just", "so", "ok", "okay", "please", "also", "again"})
 
 
 def _normalize_for_repeat(text: str) -> str:
@@ -226,27 +223,17 @@ def _normalize_for_repeat(text: str) -> str:
 
 
 # A nudge that just gets the same answer back has not worked, so stop there.
+# Exact after normalisation, deliberately. Every relaxation tried here lost a real
+# correction: a similarity ratio is length dependent (one changed token in a 50-word
+# plan still scored 0.98), a set ignores order ("cats not dogs"), and ignoring filler
+# words eats the target itself ("The Who", "OK Go"). A missed repeat costs one nudge
+# out of MAX_ACT_REPROMPTS; a false one strands the plan unexecuted.
 def is_reprompt_repeat(text: str, previous: str) -> bool:
-    if not previous:
-        return False
-    a, b = _normalize_for_repeat(text), _normalize_for_repeat(previous)
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    ta = [word for word in a.split() if word not in _REPEAT_FILLER]
-    tb = [word for word in b.split() if word not in _REPEAT_FILLER]
-    if len(ta) < 4 or len(tb) < 4:
-        return False  # too short for overlap to mean anything
-    # Ordered content-word sequence, not a similarity ratio: any ratio is length
-    # dependent (one corrected token in a 50-word plan still scored 0.98), and order
-    # matters since "cats not dogs" and "dogs not cats" share every word.
-    return ta == tb
+    return is_reprompt_restatement(text, previous)
 
 
-# Stricter sibling of ``is_reprompt_repeat``: exact equality, since this discards the
-# turn. An appended answer would clear the fuzzy bar, and deletions flip meaning
-# ("is not supported" -> "is supported").
+# Same comparison, different decision: this one discards the turn. An appended answer
+# must not match, and deletions flip meaning ("is not supported" -> "is supported").
 def is_reprompt_restatement(text: str, previous: str) -> bool:
     if not previous:
         return False

@@ -356,16 +356,17 @@ _FORCED_PLAN_INTENT = re.compile(
 # "the answer is not in the context" announces a *missing* answer, so the negated
 # forms are excluded or the plan behind them would ship as the final response.
 _FINAL_ANSWER_SIGNAL = re.compile(
-    r"\b(?:final\s+answer|answer\s*:|here\s+is|here's|in\s+summary"
-    r"|to\s+summari[sz]e|result\s*:"
+    r"\b(?:final\s+answer|answer\s*:|here\s+is|here's|in\s+summary|result\s*:"
     r"|(?:the\s+)?answer\s+is(?!\s+(?:not|unavailable|unknown|unclear|missing)\b))\b",
     re.I,
 )
 # A plan that pivots ("I should call web_search, but Tokyo is the capital") has an
 # answer attached, so the turn must survive. Leaking a plan sentence is cosmetic;
-# dropping an answer is not, so the doubtful case keeps the output.
+# dropping an answer is not, so the doubtful case keeps the output. The pivot has to
+# carry text of its own: "I should call web_search, though." answers nothing.
 _ANSWER_PIVOT = re.compile(
-    r"\b(?:but|however|although|though|that\s+said|in\s+the\s+meantime|meanwhile)\b",
+    r"\b(?:but|however|although|though|that\s+said|in\s+the\s+meantime|meanwhile)\b"
+    r"[\W_]*(?:\w+[\W_]+){1,}\w",
     re.I,
 )
 
