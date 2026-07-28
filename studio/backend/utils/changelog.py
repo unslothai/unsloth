@@ -39,9 +39,10 @@ CHANGELOG_SUCCESS_TTL_SECONDS = 30 * 60
 CHANGELOG_FAILURE_TTL_SECONDS = 5 * 60
 RELEASE_NOTES_MAX_CHARS = 20_000
 
-# CommonMark requires a space or tab after the hashes: a non-breaking space
-# copied from rich text renders as ordinary text, not a heading.
-_HEADING_PATTERN = re.compile(r"^ {0,3}##[ \t]+(?P<title>.*?)[ \t]*$")
+# CommonMark requires a space, a tab or the end of the line after the hashes: a
+# non-breaking space copied from rich text renders as ordinary text, not a
+# heading, but a bare `##` is an empty heading and still ends the release above.
+_HEADING_PATTERN = re.compile(r"^ {0,3}##(?:[ \t]+(?P<title>.*?))?[ \t]*$")
 _FENCE_PATTERN = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
 # CommonMark type 1 HTML blocks: contents are literal until a closing tag,
 # which the spec says need not be the one that opened the block.
@@ -327,7 +328,10 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             continue
 
         flush()
-        heading = match.group("title")
+        # An empty heading has no title at all, so it ends the release above it
+        # without indexing one of its own: `_version_from_heading` finds no
+        # version and `flush` then skips the section.
+        heading = match.group("title") or ""
         version = _version_from_heading(heading)
         body = []
 

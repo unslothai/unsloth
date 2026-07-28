@@ -1300,20 +1300,21 @@ def test_link_resolver_reads_comments_before_fences():
 
 
 def test_preview_heading_and_quote_markers_follow_the_backend_rule():
-    """An ATX heading needs an ASCII space or tab after the marker, which is what
-    _HEADING_PATTERN requires; `\\s` also matches a non-breaking space, so prose
-    beginning "## Important change" with one was read as a heading and dropped,
-    leaving a prose-only release with no collapsed preview at all. A blockquote
-    marker takes at most three leading spaces for the same reason every other
-    marker here does: accepting any run let an indented code sample containing
-    "> - sample output" shed its indentation and be shown as the summary."""
+    """An ATX heading needs an ASCII space, a tab or the end of the line after
+    the marker, which is what _HEADING_PATTERN requires; `\\s` also matches a
+    non-breaking space, so prose beginning "## Important change" with one was
+    read as a heading and dropped, leaving a prose-only release with no
+    collapsed preview at all. A blockquote marker takes at most three leading
+    spaces for the same reason every other marker here does: accepting any run
+    let an indented code sample containing "> - sample output" shed its
+    indentation and be shown as the summary."""
     src = PREVIEW.read_text(encoding="utf-8")
-    assert "const HEADING = /^#{1,6}[ \\t]+/;" in src
+    assert "const HEADING = /^#{1,6}(?:[ \\t]|$)/;" in src
     assert "const HEADING_LINE = /^ {0,3}#{1,6}(?:[ \\t]|$)/;" in src
     assert "const BLOCKQUOTE = /^ {0,3}>[ \\t]?/;" in src
     # The backend rule this mirrors.
     backend = (BACKEND / "utils" / "changelog.py").read_text(encoding="utf-8")
-    assert "^ {0,3}##[ \\t]+" in backend
+    assert "^ {0,3}##(?:[ \\t]+(?P<title>.*?))?[ \\t]*$" in backend
 
 
 def test_preview_collects_labels_only_from_real_definitions():
@@ -1521,3 +1522,49 @@ def test_a_failed_fetch_keeps_retry_reachable():
     assert (
         "const failed = !next || (!next.matched && next.error !== null);" in hook
     ), "the distinction this relies on"
+
+
+def test_an_unclosed_comment_in_prose_cannot_hide_later_links(run_scanner):
+    """CommonMark opens an HTML block (spec 0.31.2 section 4.6, type 2) only
+    when the line itself begins with `<!--`; one written mid-sentence is inline
+    raw HTML and cannot outlive the block it sits in. The link resolver carried
+    the unclosed state to every following line instead, so a note that merely
+    mentions the delimiter masked the relative links under it and they resolved
+    against Studio's own origin."""
+    repo = "https://github.com/unslothai/unsloth/blob/main/docs/a.md"
+    # A separate list item is a separate block, so the link below still renders.
+    item = run_scanner("links", "- Type <!-- to begin a comment\n- See [docs](docs/a.md)\n")
+    assert repo in item
+    # So does a paragraph the blank line already ended.
+    paragraph = run_scanner("links", "Type <!-- to begin\n\nSee [docs](docs/a.md)\n")
+    assert repo in paragraph
+    # A delimiter inside inline code is literal, as it is for the parser.
+    spanned = run_scanner("links", "- Wrap in `<!--` and `-->`\n- See [docs](docs/a.md)\n")
+    assert repo in spanned
+    # A comment that starts a line is still a block: it hides the lines below it
+    # down to the one holding the closer, that whole line included.
+    block = run_scanner("links", "<!-- staged\n- See [docs](docs/a.md)\n-->\n")
+    assert repo not in block
+    closer = run_scanner("links", "<!-- staged\n--> See [docs](docs/a.md)\n")
+    assert repo not in closer
+
+
+def test_a_bare_level_two_marker_ends_the_release(changelog_module, run_scanner):
+    """An ATX heading's opening sequence may be followed by the end of the line
+    (spec 0.31.2 section 4.2), so a bare `##` is an empty level-two heading. The
+    scanners required whitespace after the hashes, so everything below such a
+    line stayed inside the release above it and the popup showed unrelated notes
+    under that version."""
+    text = "## 2.0\n\n- new thing\n\n##\n\n- SECRET: not part of 2.0\n"
+    entry = changelog_module.find_release_notes(text, "2.0")
+    assert "new thing" in entry.body
+    assert "SECRET" not in entry.body
+    # An empty heading has no version, so it ends a release without indexing one.
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["2.0"]
+    # Prose still needs a space or a tab: `##x` is a paragraph, not a heading.
+    prose = "## 2.0\n\n- new thing\n\n##x\n\n- still 2.0\n"
+    assert "still 2.0" in changelog_module.find_release_notes(prose, "2.0").body
+    # The preview reads the same line the same way: an empty heading renders as
+    # nothing, so it ends the bullet instead of being appended to it.
+    preview = run_scanner("preview", "- new thing\n##\nUnrelated scratch notes\n")
+    assert preview_leads(preview) == ["new thing"]

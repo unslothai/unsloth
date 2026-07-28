@@ -20,9 +20,10 @@ const INDENTED_CODE_INDENT = 4;
 
 // At most three leading spaces: deeper is indented code, not a fence.
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
-// An ATX heading needs an ASCII space or tab after the marker, as in
-// _HEADING_PATTERN. `\s` would also match a non-breaking space and eat prose.
-const HEADING = /^#{1,6}[ \t]+/;
+// An ATX heading needs an ASCII space, a tab or the end of the line after the
+// marker, as in _HEADING_PATTERN. `\s` would also match a non-breaking space
+// and eat prose, while a bare `##` is an empty heading and still ends a bullet.
+const HEADING = /^#{1,6}(?:[ \t]|$)/;
 const BULLET = /^(?:[-*+]|(\d{1,9})[.)])[ \t]+(.*)$/;
 // At most three leading spaces, as everywhere else: deeper is indented code,
 // so a quoted line inside a code sample cannot reach the collector.

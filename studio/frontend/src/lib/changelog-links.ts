@@ -68,42 +68,65 @@ const ABSOLUTE = /^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|\/\/[^/]|#)/;
 
 const COMMENT_OPEN = "<!--";
 const COMMENT_CLOSE = "-->";
+const COMMENT_BLOCK_OPEN = /^ {0,3}<!--/;
 
 /**
- * `line` with its commented spans blanked, and whether a comment stays open.
- * Commented content renders as nothing, so it holds no fence, block or code
- * span. Lengths are preserved so offsets still line up with the original.
+ * `line` with its commented spans blanked, and whether a comment block is still
+ * open below it. Commented content renders as nothing, so it holds no fence,
+ * block or code span. Lengths are preserved so offsets still line up with the
+ * original.
+ *
+ * Only a comment that starts a line opens a block (CommonMark type 2), and only
+ * that block runs on to the line holding `-->`. One written mid-sentence is
+ * inline raw HTML: unclosed it is ordinary text, so a note that merely mentions
+ * `<!--` may not hide the links below it, as in `_strip_comments` on the
+ * backend and `stripCommentSpans` in the preview.
  */
 function maskComments(line: string, inComment: boolean): [string, boolean] {
+  if (inComment) {
+    // The closing line belongs to the block, tail included.
+    return [" ".repeat(line.length), !line.includes(COMMENT_CLOSE)];
+  }
+  if (COMMENT_BLOCK_OPEN.test(line)) {
+    // `<!-->` and `<!--->` are complete comments, so the closer may overlap the
+    // opener; searching past it would blank the rest of the file.
+    return [" ".repeat(line.length), !line.includes(COMMENT_CLOSE)];
+  }
+
   let out = "";
   let index = 0;
-  let open = inComment;
+  // Scanned only once an opener turns up, so a line without one never pays for
+  // it. Spans are ordered and disjoint and each opener sits at or past the one
+  // before, so the search resumes where it stopped rather than restarting.
+  let spans: CodeSpan[] | null = null;
+  let cursor = 0;
   while (index < line.length) {
-    if (open) {
-      const close = line.indexOf(COMMENT_CLOSE, index);
-      if (close < 0) {
-        return [out + " ".repeat(line.length - index), true];
-      }
-      out += " ".repeat(close + COMMENT_CLOSE.length - index);
-      index = close + COMMENT_CLOSE.length;
-      open = false;
-      continue;
-    }
     const start = line.indexOf(COMMENT_OPEN, index);
     if (start < 0) {
       return [out + line.slice(index), false];
     }
-    out += line.slice(index, start);
-    // `<!-->` and `<!--->` are complete comments, so the closer may overlap the
-    // opener; searching past it would blank the rest of the file.
+    spans ??= codeSpans(line);
+    while (cursor < spans.length && (spans[cursor]?.end ?? 0) <= start) {
+      cursor += 1;
+    }
+    // A delimiter inside inline code is literal, not a comment opener.
+    const span = spans[cursor];
+    if (span !== undefined && span.start <= start) {
+      out += line.slice(index, span.end);
+      index = span.end;
+      continue;
+    }
+    // `<!-->` and `<!--->` are complete comments, so the closer may overlap.
     const close = line.indexOf(COMMENT_CLOSE, start + 2);
     if (close < 0) {
-      return [out + " ".repeat(line.length - start), true];
+      // Nothing closes it here, so the renderer shows it as ordinary text.
+      return [out + line.slice(index), false];
     }
+    out += line.slice(index, start);
     out += " ".repeat(close + COMMENT_CLOSE.length - start);
     index = close + COMMENT_CLOSE.length;
   }
-  return [out, open];
+  return [out, false];
 }
 
 /** True if `line` starts a CommonMark type 6 or type 7 HTML block. */
