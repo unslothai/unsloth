@@ -115,10 +115,11 @@ def main(argv: list[str]) -> int:
     # the trailing text, leaving studio_install_ok "absent" and reporting FALSE_READY
     # over an install the real app parses, sees as incomplete, and offers to repair.
     #
-    # studio_install_ok is added by the install-manifest work; absent on older trees,
-    # which is different from present-and-false. A payload that does not parse at all
-    # is neither: the desktop gets None back and reports Stale
-    # ("desktop_capability_probe_failed", managed.rs:521), so it is repair evidence.
+    # studio_install_ok is added by the install-manifest work, so it is absent on older
+    # trees; that is recorded separately from present-and-false only to make the
+    # artefact readable, because the desktop treats both as Stale. A payload that does
+    # not parse at all is a third case with the same outcome: the desktop gets None
+    # back and reports Stale ("desktop_capability_probe_failed", managed.rs:521).
     install_ok: object = "absent"
     try:
         parsed = json.loads(caps_out)
@@ -131,14 +132,17 @@ def main(argv: list[str]) -> int:
         install_ok = "unparseable"
     say("capabilities.studio_install_ok", install_ok)
 
-    # The desktop's own conclusion: Ready only when the payload parses AND
-    # studio_install_ok is true (managed.rs:445). "absent" stays undecided so an
-    # older tree, which cannot answer, is judged on the backend alone.
-    caps_ready: object = "absent"
-    if caps_rc != 0 or install_ok is False or install_ok == "unparseable":
-        caps_ready = False
-    elif install_ok is True:
-        caps_ready = True
+    # The desktop's own conclusion: Ready only when the probe exits 0, the payload
+    # parses, AND studio_install_ok is true. The predicate is `!= Some(true)`
+    # (managed.rs:445), so an ABSENT field is Stale exactly like a false one -- a CLI
+    # too old to answer is already rejected one check earlier on
+    # desktop_manageability_version. Leaving "absent" undecided judged those installs
+    # on the backend alone, so a payload that stopped carrying the field reported
+    # HEALTHY on every booting leg and skipped the repair assertion this workflow
+    # exists to make, while the real app showed Stale and offered repair. That is the
+    # regression `unsloth_cli/commands/studio.py` is in this workflow's path filter to
+    # catch, so it must never be the thing that silences it.
+    caps_ready = caps_rc == 0 and install_ok is True
     say("desktop_would_call_install_ok", caps_ready)
 
     # ── the deeper probes the fix PRs add ────────────────────────────────────
@@ -285,9 +289,15 @@ def main(argv: list[str]) -> int:
     # Stale (managed.rs:445) rather than Ready. Calling that HEALTHY skipped the
     # re-run step, so the leg asserted nothing beyond a marker appearing and never
     # exercised the fast path that is supposed to clear an incomplete install.
-    if backend_ok and caps_ready is not False:
+    #
+    # `-h` gates the whole thing for the same reason: probe_managed_bin runs it FIRST
+    # and returns Stale "cli_unusable" without ever reaching the capability probe
+    # (managed.rs:465-478). Consulting cli_h_ok only in the repairable arm below let a
+    # CLI that cannot even print help be called HEALTHY as long as the backend booted,
+    # which skipped the re-run step for an install the app itself sends to repair.
+    if backend_ok and caps_ready and facts.get("cli_h_ok"):
         verdict = "HEALTHY"
-    elif caps_ready is False or not facts.get("cli_h_ok"):
+    elif not caps_ready or not facts.get("cli_h_ok"):
         verdict = "REPAIRABLE"
     else:
         verdict = "FALSE_READY"
