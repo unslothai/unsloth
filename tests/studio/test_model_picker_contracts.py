@@ -795,9 +795,7 @@ def test_backfill_skips_future_schema_local_records():
     persist this client's partial reading server-side and an API-triggered load
     would then apply settings the same client will not apply locally.
     """
-    src = " ".join(
-        _read("features/model-picker/model-config/per-model-config.ts").split()
-    )
+    src = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
     listing = src[src.index("export function listPerModelConfigs()") :]
     assert "storedConfigVersion(raw) > STORAGE_SCHEMA_VERSION" in listing[:900]
 
