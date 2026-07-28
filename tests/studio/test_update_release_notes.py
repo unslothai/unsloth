@@ -227,16 +227,14 @@ def test_commented_out_sections_are_not_releases(changelog_module, text):
 
 def test_repo_root_changelog_is_preferred_over_the_build_snapshot(changelog_module):
     """The build backend writes studio/CHANGELOG.md; the root file must win."""
-    paths = [str(p) for p in changelog_module._local_changelog_candidates()]
-    root = next(
-        i
-        for i, p in enumerate(paths)
-        if p.endswith(f"/unsloth/{changelog_module.CHANGELOG_FILENAME}")
-    )
-    packaged = next(
-        i
-        for i, p in enumerate(paths)
-        if p.endswith(f"/studio/{changelog_module.CHANGELOG_FILENAME}")
+    # Compare resolved paths, not name suffixes: the checkout is not always
+    # called "unsloth" (a worktree or a fork clone is not) and the separator is
+    # a backslash on Windows, so a string suffix match fails for two unrelated
+    # reasons that have nothing to do with the ordering under test.
+    paths = [Path(p).resolve() for p in changelog_module._local_changelog_candidates()]
+    root = paths.index((REPO / changelog_module.CHANGELOG_FILENAME).resolve())
+    packaged = paths.index(
+        (REPO / "studio" / changelog_module.CHANGELOG_FILENAME).resolve()
     )
     assert root < packaged
     build = (REPO / "build.sh").read_text(encoding = "utf-8")
