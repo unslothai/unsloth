@@ -594,3 +594,34 @@ def test_an_undecodable_bootstrap_password_does_not_stop_startup(tmp_path: Path,
     # A readable one still loads, so this is a narrowing of failure, not of function.
     pw_file.write_text("correct horse battery staple\n", encoding = "utf-8")
     assert storage._load_bootstrap_password() == "correct horse battery staple"
+
+
+def test_a_utf8_record_is_not_parsed_a_second_time(tmp_path: Path) -> None:
+    """These shards reach gigabytes and every resume reads all of one, so a
+    record that already read as UTF-8 must not be decoded and parsed again under
+    the codepage. The legacy reading exists only to recover keys UTF-8 could not."""
+    module = _load_state_store("cp1252")
+    calls: list[str] = []
+    real_parse = module._parse
+
+    def counting_parse(raw, encoding):
+        calls.append(encoding)
+        return real_parse(raw, encoding)
+
+    module._parse = counting_parse
+    try:
+        healthy = json.dumps({"id": 1, "author": "Jürgen"}).encode("utf-8")
+        reading = module._read_line(healthy, "cp1252")
+        assert reading.as_utf8 == {"id": 1, "author": "Jürgen"}
+        assert calls == ["utf-8"], calls
+
+        # A line UTF-8 cannot read still falls through to the codepage, which is
+        # the whole point of the second reading.
+        calls.clear()
+        legacy = json.dumps({"id": 2, "author": "Jürgen"}, ensure_ascii = False).encode("cp1252")
+        reading = module._read_line(legacy, "cp1252")
+        assert reading.as_utf8 is None
+        assert reading.as_legacy == {"id": 2, "author": "Jürgen"}
+        assert calls == ["utf-8", "cp1252"], calls
+    finally:
+        module._parse = real_parse

@@ -65,6 +65,14 @@ def _read_line(raw: bytes, codepage: str) -> _Reading:
     a JSON backslash, so the record fails to parse and its id is forgotten.
     """
     as_utf8 = _parse(raw, "utf-8")
+    # A record that reads as UTF-8 needs no second reading: both callers take
+    # that one and never look at the other. Parsing it again cost 2.8x on a
+    # 76 MB shard here, on a file the docstring above expects to reach
+    # gigabytes, and every resume pays it. Only a record, since the key lookup
+    # falls through to the codepage reading when UTF-8 yields something that is
+    # not one.
+    if isinstance(as_utf8, dict):
+        return _Reading(as_utf8, None)
     for encoding in (codepage, "latin-1", *_DOUBLE_BYTE_ENCODINGS):
         if not encoding:
             continue
