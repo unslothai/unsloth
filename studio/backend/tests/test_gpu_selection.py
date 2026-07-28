@@ -419,8 +419,16 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
                 return_value = True,
             ),
             patch(
-                "core.inference.llama_cpp.LlamaCppBackend._get_gpu_memory",
-                return_value = [(0, 7402, 8192)],
+                "core.inference.llama_cpp.LlamaCppBackend.vulkan_device_inventory",
+                return_value = [
+                    {
+                        "index": 0,
+                        "name": "Vulkan0",
+                        "free_mib": 7402,
+                        "total_mib": 8192,
+                        "is_igpu": False,
+                    }
+                ],
             ),
         ):
             result = get_vulkan_inference_gpu_info()
@@ -455,8 +463,20 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
                 return_value = True,
             ),
             patch(
-                "core.inference.llama_cpp.LlamaCppBackend._get_gpu_memory",
-                return_value = [(0, 12288, 0)],
+                "core.inference.llama_cpp.LlamaCppBackend.vulkan_device_inventory",
+                return_value = [
+                    {
+                        "index": 0,
+                        "name": "Vulkan0",
+                        "free_mib": 12288,
+                        "total_mib": 32768,
+                        "is_igpu": True,
+                    }
+                ],
+            ),
+            patch(
+                "core.inference.llama_cpp._apply_igpu_host_reserve_mib",
+                return_value = 12288,
             ),
         ):
             result = get_vulkan_inference_gpu_info()
@@ -476,8 +496,16 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
                 return_value = True,
             ),
             patch(
-                "core.inference.llama_cpp.LlamaCppBackend._get_gpu_memory",
-                return_value = [(1, 6144, 8192)],
+                "core.inference.llama_cpp.LlamaCppBackend.vulkan_device_inventory",
+                return_value = [
+                    {
+                        "index": 1,
+                        "name": "Vulkan1",
+                        "free_mib": 6144,
+                        "total_mib": 8192,
+                        "is_igpu": False,
+                    }
+                ],
             ),
             patch(
                 "utils.hardware.nvidia.get_backend_visible_gpu_info",
@@ -506,7 +534,7 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
                 return_value = True,
             ),
             patch(
-                "core.inference.llama_cpp.LlamaCppBackend._get_gpu_memory",
+                "core.inference.llama_cpp.LlamaCppBackend.vulkan_device_inventory",
                 return_value = [],
             ),
         ):

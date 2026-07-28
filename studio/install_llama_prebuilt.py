@@ -3087,13 +3087,26 @@ def resolve_linux_cuda_choice(
 
 
 def published_asset_choice_for_kind(
-    release: PublishedReleaseBundle, install_kind: str
+    release: PublishedReleaseBundle,
+    install_kind: str,
+    *,
+    host: HostInfo | None = None,
 ) -> AssetChoice | None:
     candidates = sorted(
         (artifact for artifact in release.artifacts if artifact.install_kind == install_kind),
         key = lambda artifact: (artifact.rank, artifact.asset_name),
     )
     for artifact in candidates:
+        if host is not None and install_kind in VULKAN_INSTALL_KINDS:
+            identity = f"{artifact.bundle_profile or ''} {artifact.asset_name}".lower()
+            if host.is_arm64:
+                if not any(token in identity for token in ("arm64", "aarch64")):
+                    continue
+            elif host.is_x86_64:
+                if not any(token in identity for token in ("x64", "x86_64", "amd64")):
+                    continue
+            else:
+                continue
         asset_url = release.assets.get(artifact.asset_name)
         if not asset_url:
             continue
@@ -3104,6 +3117,7 @@ def published_asset_choice_for_kind(
             url = asset_url,
             source_label = "published",
             install_kind = install_kind,
+            bundle_profile = artifact.bundle_profile,
             runtime_line = artifact.runtime_line,
             selection_log = list(release.selection_log)
             + [f"published_selection: selected {artifact.asset_name} install_kind={install_kind}"],
@@ -3470,7 +3484,7 @@ def resolve_release_asset_choice(
             choices = [
                 choice
                 for choice in (
-                    published_asset_choice_for_kind(release, "windows-vulkan"),
+                    published_asset_choice_for_kind(release, "windows-vulkan", host = host),
                     published_asset_choice_for_kind(release, "windows-cpu"),
                 )
                 if choice is not None
@@ -5452,7 +5466,9 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
             attempts.append(published_rocm)
     else:
         if host.has_intel_gpu and not host.has_physical_nvidia:
-            vulkan_choice = published_asset_choice_for_kind(bundle, "linux-vulkan")
+            vulkan_choice = published_asset_choice_for_kind(
+                bundle, "linux-vulkan", host = host
+            )
             if vulkan_choice is not None:
                 attempts.append(vulkan_choice)
         # CPU-only host. A usable-NVIDIA host never reaches here -- if its CUDA
@@ -6431,8 +6447,8 @@ def _route_to_vulkan_prebuilt(
     if _has_no_vulkan_prebuilt(host):
         if forced:
             log(
-                "Vulkan llama.cpp backend requested but ignored on Windows arm64 "
-                "(upstream ships no Vulkan arm64 prebuilt); keeping the published bundle"
+                "Vulkan llama.cpp backend requested on Windows arm64, but no "
+                "compatible Vulkan bundle is published"
             )
         return host, published_repo, published_release_tag, None
     if auto_no_hip:
@@ -6863,8 +6879,9 @@ def parse_args() -> argparse.Namespace:
         choices = ("vulkan",),
         help = (
             "Force the llama.cpp prebuilt backend. vulkan installs the Vulkan "
-            "bundle and records the choice so Studio updates keep it; ignored on hosts "
-            "with no Vulkan prebuilt (macOS, Windows arm64). "
+            "bundle and records the choice so Studio updates keep it. It is ignored "
+            "on macOS, which uses Metal, and fails closed on Windows arm64 when no "
+            "compatible Vulkan bundle is published. "
             "Same effect as UNSLOTH_LLAMA_CPP_BACKEND=vulkan / "
             "UNSLOTH_FORCE_VULKAN=1."
         ),

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
 import { useEffect, useState } from "react";
 import {
   aggregateGpuMemoryTotalGb,
+  fetchSystemInfo,
+  getCachedSystemInfo,
+  subscribeSystemInfo,
   type SystemInfoResponse,
 } from "./use-system";
 
@@ -109,33 +111,6 @@ const DEFAULT_GPU: GpuInfo = {
   systemRamTotalGb: 0
 };
 
-// One module-level cache so every GPU hook shares a single /api/system fetch.
-let cachedSystem: SystemInfoResponse | null = null;
-let systemPromise: Promise<SystemInfoResponse | null> | null = null;
-// An unavailable Vulkan probe answers gguf_devices as an empty list, so the
-// picker starts hidden and only useInferenceGpuInfo retries. Without this,
-// hooks that fetch once never see the recovery and stay hidden until remount.
-const systemSubscribers = new Set<(data: SystemInfoResponse | null) => void>();
-
-async function fetchSystemOnce(force = false): Promise<SystemInfoResponse | null> {
-  if (!force && cachedSystem) return cachedSystem;
-  if (systemPromise) return systemPromise;
-  systemPromise = (async () => {
-    try {
-      const res = await authFetch("/api/system");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      cachedSystem = (await res.json()) as SystemInfoResponse;
-      systemSubscribers.forEach((notify) => notify(cachedSystem));
-      return cachedSystem;
-    } catch {
-      return null;
-    } finally {
-      systemPromise = null;
-    }
-  })();
-  return systemPromise;
-}
-
 function toGpuInfo(
   data: SystemInfoResponse | null,
   source: "gpu" | "inference_gpu" = "gpu",
@@ -195,13 +170,11 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
   }
   // Otherwise the torch view is the pickable set. Unpinnable configurations
   // must hide every pick surface: the backend reports gguf_gpu_ids_supported,
-  // and absent support info defaults to pinnable (older backend). GGUF
-  // placement may use a different namespace from the global torch view, so
-  // prefer the gguf list when the backend sends one.
+  // and absent support info defaults to pinnable (older backend).
   const pinnableBackend = data?.gpu?.gguf_gpu_ids_supported !== false;
   const diffusionBackend =
     data?.device_backend === "cuda" || data?.device_backend === "rocm";
-  return (data?.gpu?.gguf_devices ?? data?.gpu?.devices ?? [])
+  return (data?.gpu?.devices ?? [])
     .filter((d) => typeof d.index === "number")
     .map((d) => ({
       index: d.index as number,
@@ -226,6 +199,7 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
 
 /** Aggregate GPU info from /api/system; shares one module-level fetch across all GPU hooks. */
 function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
+  const cachedSystem = getCachedSystemInfo();
   const [gpu, setGpu] = useState<GpuInfo>(
     cachedSystem ? toGpuInfo(cachedSystem, source) : DEFAULT_GPU,
   );
@@ -233,33 +207,29 @@ function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
     // No early return on cachedSystem: a consumer mounting as the cache fills
     // (between render and effect) would otherwise stay stuck at the default.
     let cancelled = false;
-    let retryId: number | undefined;
-    const update = (force = false, retryVulkan = false) => {
-      fetchSystemOnce(force).then((d) => {
+    const sync = (data: SystemInfoResponse) => {
+      if (cancelled) return;
+      const next = toGpuInfo(data, source);
+      setGpu((current) =>
+        JSON.stringify(current) === JSON.stringify(next) ? current : next,
+      );
+    };
+    const update = () => {
+      fetchSystemInfo().then((d) => {
         if (cancelled) return;
-        if (!d) {
-          // Once an unavailable Vulkan backend starts polling, a transient API
-          // failure must preserve the current state and continue the same loop.
-          if (retryVulkan) {
-            retryId = window.setTimeout(() => update(true, true), 3000);
-          }
-          return;
-        }
-        setGpu(toGpuInfo(d, source));
-        const inferenceGpu = d.inference_gpu;
-        if (
-          source === "inference_gpu" &&
-          inferenceGpu?.backend === "vulkan" &&
-          !inferenceGpu.available
-        ) {
-          retryId = window.setTimeout(() => update(true, true), 3000);
-        }
+        if (!d) return;
+        // A cache hit does not publish a new snapshot. Sync it here so a
+        // consumer mounting while the initial request finishes cannot miss it.
+        sync(d);
       });
     };
+    const unsubscribe = subscribeSystemInfo(sync, {
+      retryUnavailableVulkan: source === "inference_gpu",
+    });
     update();
     return () => {
       cancelled = true;
-      if (retryId !== undefined) window.clearTimeout(retryId);
+      unsubscribe();
     };
   }, [source]);
   return gpu;
@@ -277,6 +247,7 @@ export function useInferenceGpuInfo(): GpuInfo {
 
 /** All backend-visible GPUs (index, name, total VRAM); shares the same fetch. */
 export function useGpuDevices(): SystemGpuDevice[] {
+  const cachedSystem = getCachedSystemInfo();
   const [devices, setDevices] = useState<SystemGpuDevice[]>(
     cachedSystem ? toGpuDevices(cachedSystem) : [],
   );
@@ -295,11 +266,13 @@ export function useGpuDevices(): SystemGpuDevice[] {
       lastSerialized = serialized;
       setDevices(next);
     };
-    systemSubscribers.add(sync);
-    fetchSystemOnce().then(sync);
+    const unsubscribe = subscribeSystemInfo(sync, {
+      retryUnavailableVulkan: true,
+    });
+    fetchSystemInfo().then(sync);
     return () => {
       cancelled = true;
-      systemSubscribers.delete(sync);
+      unsubscribe();
     };
   }, []);
   return devices;
@@ -307,6 +280,7 @@ export function useGpuDevices(): SystemGpuDevice[] {
 
 /** Whether device discovery is settled enough to rewrite remembered UI state. */
 export function gpuDeviceCacheReady(): boolean {
+  const cachedSystem = getCachedSystemInfo();
   if (cachedSystem === null) {
     return false;
   }
@@ -319,13 +293,14 @@ export function gpuDeviceCacheReady(): boolean {
 
 /** Warm the shared system cache before validating persisted GPU IDs. */
 export async function ensureGpuDeviceCache(): Promise<void> {
-  await fetchSystemOnce();
+  await fetchSystemInfo();
 }
 
 /** Cached pinnable IDs, null before fetch, or [] when pinning is unavailable. */
 export function cachedPinnableGpuIndices(
   forDiffusion = false,
 ): number[] | null {
+  const cachedSystem = getCachedSystemInfo();
   return pinnableGpuContext(
     cachedSystem ? toGpuDevices(cachedSystem) : null,
     forDiffusion,
@@ -336,6 +311,7 @@ export function cachedPinnableGpuIndices(
 export function cachedPinnableGpuIndexKind(
   forDiffusion = false,
 ): GpuIndexKind | null | undefined {
+  const cachedSystem = getCachedSystemInfo();
   return pinnableGpuContext(
     cachedSystem ? toGpuDevices(cachedSystem) : null,
     forDiffusion,
@@ -347,6 +323,18 @@ export function reconcileCachedGpuSelection(
   savedIndexKind?: GpuIndexKind | null,
   forDiffusion = false,
 ): ReconciledGpuSelection {
+  const cachedSystem = getCachedSystemInfo();
+  if (!gpuDeviceCacheReady()) {
+    return {
+      ids,
+      indexKind:
+        ids == null
+          ? null
+          : savedIndexKind === undefined
+            ? "physical"
+            : savedIndexKind,
+    };
+  }
   const context = pinnableGpuContext(
     cachedSystem ? toGpuDevices(cachedSystem) : null,
     forDiffusion,

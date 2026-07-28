@@ -92,6 +92,7 @@ import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
   generateAudio,
   GenerationLengthError,
+  fetchGgufStagedMetadata,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
@@ -1596,11 +1597,22 @@ async function autoLoadSmallestModel(): Promise<{
       // the load with the picker hidden.
       await ensureGpuDeviceCache();
     }
+    const isDiffusion =
+      candidate.kind === "gguf" && config.selectedGpuIds != null
+        ? (
+            await fetchGgufStagedMetadata({
+              model_path: modelPath,
+              gguf_variant: candidate.ggufVariant,
+              hf_token: hfToken,
+            })
+          ).isDiffusion
+        : false;
     const effectiveGpuIds =
       config.selectedGpuIds !== undefined
         ? reconcilePersistedGpuIds(
             config.selectedGpuIds,
             config.selectedGpuIndexKind,
+            isDiffusion,
           )
         : null;
     // Under Manual GPU memory + Auto layers, llama.cpp's --fit owns context

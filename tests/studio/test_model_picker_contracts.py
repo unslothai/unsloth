@@ -627,13 +627,13 @@ def test_cpu_only_llama_build_hides_gpu_picker():
     assert "and not LlamaCppBackend._backend_lacks_gpu_lib()" in src
 
 
-def test_vulkan_gguf_devices_do_not_replace_global_gpu_info():
+def test_vulkan_inference_devices_do_not_replace_global_gpu_info():
     backend = (WORKDIR / "studio" / "backend" / "main.py").read_text(encoding = "utf-8")
-    assert '"gguf_devices": gguf_devices' in backend
-    assert "gguf_devices = LlamaCppBackend._get_vulkan_gpu_info()" in backend
-    assert "enriched_devices = LlamaCppBackend._get_vulkan_gpu_info()" not in backend
+    assert '"gguf_gpu_ids_supported": gpu_ids_supported' in backend
+    assert '"inference_gpu": inference_gpu_info' in backend
     frontend = _read("hooks/use-gpu-info.ts")
-    assert "data?.gpu?.gguf_devices ?? data?.gpu?.devices" in frontend
+    assert 'inference?.backend === "vulkan"' in frontend
+    assert "data?.gpu?.devices ?? []" in frontend
 
 
 def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():

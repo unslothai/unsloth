@@ -1249,20 +1249,16 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             )
             enriched_devices.append(enriched_dev)
 
-        # Vulkan has its own compact ordinal space, independent of torch and
-        # CUDA_VISIBLE_DEVICES. Keep torch's view global and expose the ggml
-        # records separately for the GGUF picker.
-        gguf_devices = enriched_devices
         try:
             from core.inference.llama_cpp import LlamaCppBackend
             from utils.hardware import DeviceType, get_device
 
-            # A Vulkan build is pinnable even on an XPU host, since its picks are
-            # ggml ordinals rather than torch ones, but only once the probe has
-            # enumerated some: an empty namespace has nothing valid to offer.
-            if LlamaCppBackend._is_vulkan_backend():
-                gguf_devices = LlamaCppBackend._get_vulkan_gpu_info()
-                gpu_ids_supported = bool(gguf_devices)
+            llama_uses_vulkan = LlamaCppBackend._is_vulkan_backend()
+            if llama_uses_vulkan:
+                # The separate inference inventory below owns Vulkan ordinals.
+                # Keep this false so a failed Vulkan probe cannot expose torch
+                # indices that llama.cpp would interpret in another namespace.
+                gpu_ids_supported = False
             else:
                 # XPU indices cannot yet be applied safely across Level Zero's
                 # FLAT and COMPOSITE hierarchy modes. A proven CPU-only
@@ -1272,6 +1268,7 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
                 )
         except Exception as e:
             logger.debug(f"Could not resolve gpu_ids support: {e}")
+            llama_uses_vulkan = False
             gpu_ids_supported = True
         # Preserve backend/index metadata from the visibility probe. In
         # particular, a CPU training host can expose a Vulkan inference GPU and
@@ -1282,7 +1279,6 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             "available": visibility_info.get("available", False),
             "devices": enriched_devices,
             "backend": visibility_info.get("backend"),
-            "gguf_devices": gguf_devices,
             "gguf_gpu_ids_supported": gpu_ids_supported,
         }
 
@@ -1291,6 +1287,7 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
         # If Vulkan is installed but its probe fails, retain the unavailable
         # Vulkan shape instead of budgeting training GPUs that llama.cpp cannot use.
         if visibility_info.get("backend") == "vulkan":
+            gpu_info["gguf_gpu_ids_supported"] = bool(enriched_devices)
             inference_gpu_info = gpu_info
         else:
             vulkan_info = get_vulkan_inference_gpu_info()

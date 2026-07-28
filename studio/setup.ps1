@@ -3723,8 +3723,8 @@ if ($LocalLlamaCppLinked) {
         # The backend override is case-insensitive and whitespace-trimmed. cpu
         # maps to the persisted --force-cpu choice. vulkan is consumed directly
         # by install_llama_prebuilt.py and does not change the torch backend.
-        $llamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
-        $legacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()
+        $llamaBackend = $sourceLlamaBackend
+        $legacyForceVulkan = $sourceLegacyForceVulkan
         $windowsArm64 = (
             $env:OS -eq "Windows_NT" -and
             (
@@ -3739,7 +3739,7 @@ if ($LocalLlamaCppLinked) {
             if ($IsMacOS) {
                 Write-Host "[WARN] Vulkan has no effect on macOS; the universal build uses Metal" -ForegroundColor Yellow
             } elseif ($windowsArm64) {
-                throw "Vulkan was requested, but upstream provides no Windows ARM64 Vulkan prebuilt. Unset UNSLOTH_LLAMA_CPP_BACKEND or compile llama.cpp from source."
+                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_LLAMA_CPP_BACKEND or compile llama.cpp from source."
             } else {
                 $prebuiltArgs += @("--llama-backend", "vulkan")
                 $explicitVulkanBackend = $true
@@ -3750,7 +3750,7 @@ if ($LocalLlamaCppLinked) {
         }
         if (-not $IsMacOS -and $llamaBackend -ne "cpu" -and $legacyForceVulkan -in @("1", "true", "yes", "on")) {
             if ($windowsArm64) {
-                throw "Vulkan was requested, but upstream provides no Windows ARM64 Vulkan prebuilt. Unset UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
+                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
             }
             $explicitVulkanBackend = $true
         }

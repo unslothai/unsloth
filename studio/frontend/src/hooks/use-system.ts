@@ -27,8 +27,6 @@ export interface SystemGpuInfo {
   parent_visible_gpu_ids?: number[];
   index_kind?: string;
   devices: GpuDevice[];
-  /** GGUF placement devices, using Vulkan ordinals when applicable. */
-  gguf_devices?: GpuDevice[];
 }
 
 /** Sum dedicated VRAM while counting a shared host-memory pool only once. */
@@ -77,7 +75,10 @@ export interface SystemInfoResponse {
 }
 
 let cachedSystem: SystemInfoResponse | null = null;
-let systemFetchPromise: Promise<SystemInfoResponse> | null = null;
+let systemFetchPromise: Promise<SystemInfoResponse | null> | null = null;
+const systemSubscribers = new Set<(data: SystemInfoResponse) => void>();
+let vulkanRetrySubscribers = 0;
+let vulkanRetryId: number | null = null;
 
 const DEFAULT_SYSTEM: SystemInfoResponse = {
   platform: "Unknown",
@@ -91,9 +92,50 @@ const DEFAULT_SYSTEM: SystemInfoResponse = {
   ml_packages: {}
 };
 
-async function fetchSystemOnce({
+export function getCachedSystemInfo(): SystemInfoResponse | null {
+  return cachedSystem;
+}
+
+export function subscribeSystemInfo(
+  subscriber: (data: SystemInfoResponse) => void,
+  options: { retryUnavailableVulkan?: boolean } = {},
+): () => void {
+  systemSubscribers.add(subscriber);
+  if (options.retryUnavailableVulkan) {
+    vulkanRetrySubscribers += 1;
+    scheduleVulkanRetry();
+  }
+  return () => {
+    systemSubscribers.delete(subscriber);
+    if (options.retryUnavailableVulkan) {
+      vulkanRetrySubscribers = Math.max(0, vulkanRetrySubscribers - 1);
+      if (vulkanRetrySubscribers === 0 && vulkanRetryId !== null) {
+        window.clearTimeout(vulkanRetryId);
+        vulkanRetryId = null;
+      }
+    }
+  };
+}
+
+function scheduleVulkanRetry(): void {
+  const inferenceGpu = cachedSystem?.inference_gpu;
+  if (
+    vulkanRetrySubscribers === 0 ||
+    vulkanRetryId !== null ||
+    inferenceGpu?.backend !== "vulkan" ||
+    inferenceGpu.available
+  ) {
+    return;
+  }
+  vulkanRetryId = window.setTimeout(() => {
+    vulkanRetryId = null;
+    void fetchSystemInfo({ force: true });
+  }, 3000);
+}
+
+export async function fetchSystemInfo({
   force = false,
-}: { force?: boolean } = {}): Promise<SystemInfoResponse> {
+}: { force?: boolean } = {}): Promise<SystemInfoResponse | null> {
   if (systemFetchPromise) return systemFetchPromise;
   if (!force && cachedSystem) return cachedSystem;
 
@@ -104,12 +146,13 @@ async function fetchSystemOnce({
       const data = await res.json();
 
       cachedSystem = data as SystemInfoResponse;
+      systemSubscribers.forEach((subscriber) => subscriber(cachedSystem!));
       return cachedSystem;
     } catch {
-      cachedSystem = null;
-      return DEFAULT_SYSTEM;
+      return null;
     } finally {
       systemFetchPromise = null;
+      scheduleVulkanRetry();
     }
   })();
 
@@ -134,9 +177,9 @@ export function useSystemInfo({
     let timeoutId: number | null = null;
 
     const update = (force: boolean) => {
-      void fetchSystemOnce({ force })
+      void fetchSystemInfo({ force })
         .then((info) => {
-          if (!cancelled) setSystemInfo(info);
+          if (!cancelled && info) setSystemInfo(info);
         })
         .finally(() => {
           if (cancelled || !pollMs) return;

@@ -1430,8 +1430,8 @@ else
         _PREBUILT_CMD+=(--has-rocm)
     fi
     # The normalized override affects llama.cpp only, not the training backend.
-    _llama_backend="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
-    _legacy_force_vulkan="$(printf '%s' "${UNSLOTH_FORCE_VULKAN:-}" | awk '{$1=$1; print tolower($0)}')"
+    _llama_backend="$_source_backend_choice"
+    _legacy_force_vulkan="$_source_legacy_force_vulkan"
     _explicit_vulkan_backend=false
     case "$_llama_backend" in
         cpu)

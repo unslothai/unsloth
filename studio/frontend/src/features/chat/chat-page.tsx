@@ -2423,13 +2423,11 @@ export function ChatPage({
       const previousConfig = currentRuntimePerModelConfig({
         includeMaxSeqLength: true,
       });
-      const hasAppliedConfig = applyModelLoadConfigToRuntime(
-        selection.config ?? rememberedConfigFor(selection),
-        { isDiffusion: selection.isDiffusion },
-      );
+      const loadConfig =
+        selection.config ?? rememberedConfigFor(selection);
       await selectModel({
         ...selection,
-        ...(hasAppliedConfig ? { keepSpeculative: true } : {}),
+        ...(loadConfig ? { config: loadConfig, keepSpeculative: true } : {}),
         previousConfig,
       });
     },

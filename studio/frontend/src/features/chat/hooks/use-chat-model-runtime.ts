@@ -21,6 +21,7 @@ import {
   getGgufDownloadProgress,
   getInferenceStatus,
   getLoadProgress,
+  fetchGgufStagedMetadata,
   listLoras,
   listModels,
   loadModel,
@@ -490,8 +491,8 @@ export function useChatModelRuntime() {
           : selection.nativePathExpiresAtMs ?? null;
       const explicitIsGguf =
         typeof selection === "string" ? undefined : selection.isGguf;
-      const isDiffusion =
-        typeof selection === "string" ? false : selection.isDiffusion === true;
+      let isDiffusion =
+        typeof selection === "string" ? undefined : selection.isDiffusion;
       const restorePreviousConfig = () => {
         if (typeof selection !== "string" && selection.previousConfig) {
           applyPerModelConfigToRuntime(selection.previousConfig, {
@@ -615,8 +616,21 @@ export function useChatModelRuntime() {
           let previousWasUnloaded = false;
           const pendingLoadConfig =
             typeof selection !== "string" ? selection.config : undefined;
+          if (isGguf && isDiffusion === undefined) {
+            isDiffusion = (
+              await fetchGgufStagedMetadata({
+                model_path: modelId,
+                gguf_variant: ggufVariant ?? null,
+                hf_token: useChatRuntimeStore.getState().hfToken || null,
+                nativePathToken: nativePathToken ?? null,
+              })
+            ).isDiffusion;
+          }
+          const targetIsDiffusion = isDiffusion === true;
           if (pendingLoadConfig) {
-            applyPerModelConfigToRuntime(pendingLoadConfig);
+            applyPerModelConfigToRuntime(pendingLoadConfig, {
+              isDiffusion: targetIsDiffusion,
+            });
           }
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
@@ -702,12 +716,12 @@ export function useChatModelRuntime() {
               ? reconcilePersistedGpuIds(
                   pendingLoadConfig.selectedGpuIds,
                   pendingLoadConfig.selectedGpuIndexKind,
-                  isDiffusion,
+                  targetIsDiffusion,
                 )
               : reconcilePersistedGpuIds(
                   stateBeforeUnload.selectedGpuIds,
                   stateBeforeUnload.selectedGpuIndexKind,
-                  isDiffusion,
+                  targetIsDiffusion,
                 );
           let loadSpeculativeType =
             pendingLoadConfig?.speculativeType != null
@@ -871,7 +885,7 @@ export function useChatModelRuntime() {
                   ? reconcilePersistedGpuIds(
                       pendingLoadConfig.selectedGpuIds,
                       pendingLoadConfig.selectedGpuIndexKind,
-                      isDiffusion,
+                      targetIsDiffusion,
                     )
                   : null;
               loadGpuLayers = pendingLoadConfig?.gpuLayers ?? GPU_LAYERS_AUTO;

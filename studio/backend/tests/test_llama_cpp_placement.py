@@ -171,12 +171,23 @@ def test_vulkan_auto_fit_and_launch_share_discrete_pool(tmp_path):
         return None, True
 
     backend._select_gpus = fallback
-    result = _launch(backend, gguf)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    backend._resolve_launch_mtp_path = lambda **_kwargs: "/fake/mtp.gguf"
+    result = _launch(
+        backend,
+        gguf,
+        mtp_draft_path = "/fake/mtp.gguf",
+        speculative_type = "mtp",
+    )
 
     assert planned
     assert all(gpus == [(1, 8_000)] for gpus in planned)
     cmd = result["cmd"]
     assert cmd[cmd.index("--device") + 1] == "Vulkan1"
+    assert cmd[cmd.index("--spec-draft-device") + 1] == "Vulkan1"
 
 
 def test_cuda_selection_uses_visibility_and_removes_environment_placement(tmp_path, monkeypatch):

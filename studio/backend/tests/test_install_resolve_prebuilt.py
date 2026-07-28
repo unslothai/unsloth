@@ -443,6 +443,13 @@ def test_direct_upstream_x86_intel_prefers_vulkan():
 
 
 def _published_vulkan_bundle(*install_kinds):
+    profiles = {
+        "linux-vulkan": "linux-vulkan-x64",
+        "windows-vulkan": "windows-vulkan-x64",
+        "linux-cpu": "linux-cpu-x64",
+        "linux-arm64": "linux-cpu-arm64",
+        "windows-cpu": "windows-cpu-x64",
+    }
     artifacts = [
         ilp.PublishedLlamaArtifact(
             asset_name = f"app-release-{install_kind}",
@@ -452,7 +459,7 @@ def _published_vulkan_bundle(*install_kinds):
             supported_sms = [],
             min_sm = None,
             max_sm = None,
-            bundle_profile = None,
+            bundle_profile = profiles.get(install_kind),
             rank = 60,
         )
         for install_kind in install_kinds
@@ -477,6 +484,21 @@ def test_fork_linux_intel_prefers_published_vulkan_bundle():
     assert [attempt.install_kind for attempt in attempts] == ["linux-vulkan", "linux-cpu"]
     assert attempts[0].source_label == "published"
     assert ["llama-diffusion-gemma-visual-server"] in ilp.runtime_payload_health_groups(attempts[0])
+
+
+def test_fork_linux_arm64_does_not_select_x64_vulkan_bundle():
+    bundle = _published_vulkan_bundle("linux-vulkan", "linux-arm64")
+    attempts = ilp._linux_published_attempts(
+        _host(
+            machine = "aarch64",
+            is_linux = True,
+            is_arm64 = True,
+            has_intel_gpu = True,
+        ),
+        bundle,
+    )
+
+    assert [attempt.install_kind for attempt in attempts] == ["linux-arm64"]
 
 
 def test_fork_windows_intel_prefers_published_vulkan_bundle():
@@ -1585,9 +1607,9 @@ def _windows_arm64_host(**overrides):
         ({}, "vulkan"),
     ],
 )
-def test_vulkan_opt_in_ignored_on_windows_arm64(monkeypatch, env, flag):
-    # Upstream builds win-vulkan for x64 only (arm64 gets CPU + opencl-adreno), so rewriting
-    # the host would only swap the published arm64 bundle for the upstream CPU one.
+def test_vulkan_opt_in_keeps_windows_arm64_host_for_strict_rejection(monkeypatch, env, flag):
+    # Windows arm64 has no compatible Vulkan bundle. Keep the real host shape so
+    # strict filtering rejects the CPU plan instead of routing through x64.
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     host = _windows_arm64_host()

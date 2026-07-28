@@ -4507,8 +4507,14 @@ def _reject_draft_device_with_gpu_ids(
         )
 
 
+_DIFFUSION_KIND_UNSET = object()
+
+
 async def _resolve_gguf_gpu_ids_for_request(
-    config: ModelConfig, gpu_ids: Optional[List[int]]
+    config: ModelConfig,
+    gpu_ids: Optional[List[int]],
+    *,
+    diffusion_kind: Optional[bool] | object = _DIFFUSION_KIND_UNSET,
 ) -> tuple[Optional[List[int]], bool]:
     """Validate GGUF GPU IDs and report whether they are Vulkan ordinals."""
     if not gpu_ids:
@@ -4519,7 +4525,8 @@ async def _resolve_gguf_gpu_ids_for_request(
 
     llama_backend = get_llama_cpp_backend()
     is_vulkan_build = await asyncio.to_thread(llama_backend.is_vulkan_build)
-    diffusion_kind = _classify_diffusion_gguf(config)
+    if diffusion_kind is _DIFFUSION_KIND_UNSET:
+        diffusion_kind = _classify_diffusion_gguf(config)
     confirmed_diffusion = diffusion_kind is True
     definitively_non_diffusion = diffusion_kind is False
     device = get_device()
@@ -4611,6 +4618,7 @@ def _guard_chat_load_against_training(
     n_parallel: int = 1,
     gpu_memory_mode: Literal["auto", "manual"] = "auto",
     gpu_ids_are_vulkan_ordinals: bool = False,
+    diffusion_kind: Optional[bool] | object = _DIFFUSION_KIND_UNSET,
 ) -> None:
     """Protect active training from automatically placed chat-model loads.
 
@@ -4634,7 +4642,8 @@ def _guard_chat_load_against_training(
         return
 
     is_gguf = bool(getattr(config, "is_gguf", False))
-    diffusion_kind = _classify_diffusion_gguf(config) if is_gguf else False
+    if diffusion_kind is _DIFFUSION_KIND_UNSET:
+        diffusion_kind = _classify_diffusion_gguf(config) if is_gguf else False
     if is_gguf and gpu_memory_mode == "manual" and diffusion_kind is False:
         return
 
@@ -5134,6 +5143,7 @@ async def _load_model_impl(
         # Normalize gpu_ids: empty list means auto-selection, same as None
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
         gpu_ids_are_vulkan_ordinals = False
+        diffusion_kind = _classify_diffusion_gguf(config) if config.is_gguf else False
 
         # Invalid GPU IDs must fail before the training coexistence guard.
         gguf_gpu_ids: Optional[List[int]] = None
@@ -5141,7 +5151,11 @@ async def _load_model_impl(
             (
                 gguf_gpu_ids,
                 gpu_ids_are_vulkan_ordinals,
-            ) = await _resolve_gguf_gpu_ids_for_request(config, effective_gpu_ids)
+            ) = await _resolve_gguf_gpu_ids_for_request(
+                config,
+                effective_gpu_ids,
+                diffusion_kind = diffusion_kind,
+            )
             _reject_draft_device_with_gpu_ids(
                 gguf_gpu_ids,
                 extra_llama_args,
@@ -5190,6 +5204,7 @@ async def _load_model_impl(
             n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
             gpu_memory_mode = request.gpu_memory_mode,
             gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
+            diffusion_kind = diffusion_kind,
         )
 
         # ── GGUF path: load via llama-server ──────────────────────
@@ -5745,6 +5760,7 @@ async def validate_model(
         # unloads the current model.
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
         gpu_ids_are_vulkan_ordinals = False
+        diffusion_kind = _classify_diffusion_gguf(config) if config.is_gguf else False
         if config.is_gguf:
             (
                 validated_gpu_ids,
@@ -5752,6 +5768,7 @@ async def validate_model(
             ) = await _resolve_gguf_gpu_ids_for_request(
                 config,
                 effective_gpu_ids,
+                diffusion_kind = diffusion_kind,
             )
             _reject_draft_device_with_gpu_ids(
                 validated_gpu_ids,
@@ -5842,6 +5859,7 @@ async def validate_model(
                 ),
                 gpu_memory_mode = request.gpu_memory_mode,
                 gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
+                diffusion_kind = diffusion_kind,
             )
 
         # A selected GGUF loads via llama.cpp: auto_map Python and root pickle weights in a
@@ -5915,7 +5933,7 @@ async def validate_model(
             if native_grant_backed
             else getattr(config, "display_name", config.identifier),
             is_gguf = is_gguf,
-            is_diffusion = is_gguf and _classify_diffusion_gguf(config) is True,
+            is_diffusion = is_gguf and diffusion_kind is True,
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
             requires_trust_remote_code = requires_trust_remote_code,

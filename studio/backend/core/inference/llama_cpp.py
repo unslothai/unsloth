@@ -1927,10 +1927,6 @@ def _backfill_usage_from_timings(usage, timings):
     return out
 
 
-def _vulkan_lib_filename() -> str:
-    return "ggml-vulkan.dll" if sys.platform == "win32" else "libggml-vulkan.so"
-
-
 # Host RAM to leave free on an integrated GPU, matching llama.cpp's own --fit
 # margin (default 1024 MiB per device). ggml reports an iGPU's "VRAM" as shared
 # system RAM, so hold back the same margin rather than inventing a larger one.
@@ -3656,42 +3652,6 @@ class LlamaCppBackend:
             if not row["name"]:
                 row["name"] = f"Vulkan{row['index']}"
         return rows
-
-    @staticmethod
-    def _get_vulkan_gpu_info(binary: Optional[str] = None) -> list[dict]:
-        """Vulkan-ordinal device records suitable for ``/api/system``.
-
-        Unlike CUDA/HIP physical IDs, these indices are explicitly tagged
-        ``vulkan`` so the frontend can offer them only to the GGUF picker.
-        """
-        devices = []
-        for row in LlamaCppBackend.vulkan_device_inventory(binary):
-            idx, free_mib, is_igpu = row["index"], row["free_mib"], row["is_igpu"]
-            # An iGPU's heap is shared system RAM, not a VRAM budget: report no
-            # total and no free, so the UI does not offer it twice.
-            total_mib = 0 if is_igpu else row["total_mib"]
-            capped = _apply_igpu_host_reserve_mib(free_mib, is_igpu)
-            total_gb = round(total_mib / 1024, 2) if total_mib > 0 else 0
-            free_gb = round(capped / 1024, 2) if not is_igpu else 0
-            used_gb = round(max(0, total_mib - free_mib) / 1024, 2) if total_mib > 0 else None
-            devices.append(
-                {
-                    "index": idx,
-                    "visible_ordinal": idx,
-                    "index_kind": "vulkan",
-                    "name": row["name"],
-                    "memory_total_gb": total_gb,
-                    "vram_total_gb": total_gb,
-                    "vram_free_gb": free_gb,
-                    "vram_used_gb": used_gb,
-                    "vram_utilization_pct": (
-                        round((used_gb / total_gb) * 100, 1)
-                        if used_gb is not None and total_gb > 0
-                        else None
-                    ),
-                }
-            )
-        return devices
 
     @staticmethod
     def _get_gpu_free_memory_vulkan(binary: Optional[str] = None) -> list[tuple[int, int, int]]:
@@ -8170,6 +8130,9 @@ class LlamaCppBackend:
 
                 # Speculative decoding. See _build_speculative_flags for the
                 # mode resolution, benchmarks, and llama.cpp references.
+                _vulkan_pin_ids = (
+                    gpu_indices if gpu_indices is not None else (gpu_ids or None)
+                )
                 launch_mtp_draft_path = self._resolve_launch_mtp_path(
                     mtp_draft_path = mtp_draft_path,
                 )
@@ -8182,6 +8145,11 @@ class LlamaCppBackend:
                     gpus = bool(_detected_gpus),
                     binary = binary,
                     mtp_draft_path = launch_mtp_draft_path,
+                    draft_device = (
+                        ",".join(f"Vulkan{i}" for i in _vulkan_pin_ids)
+                        if is_vulkan_backend and _vulkan_pin_ids
+                        else None
+                    ),
                 )
                 # Remember where the spec block sits so a drafter-load failure
                 # can be retried with these flags swapped out (see below).
@@ -8276,10 +8244,6 @@ class LlamaCppBackend:
                             "Skipping unsupported Windows cache flags for llama-server: %s",
                             ", ".join(unsupported_cache_flags),
                         )
-
-                # Vulkan pins via --device. Fall back to the requested IDs when
-                # the fit did not narrow the selection.
-                _vulkan_pin_ids = gpu_indices if gpu_indices is not None else (gpu_ids or None)
 
                 # Record the pin actually applied (fit-narrowed gpu_indices, else the raw
                 # request) for the keep-warm loop, dedupe, and /status, so an explicit
@@ -8964,6 +8928,7 @@ class LlamaCppBackend:
         gpus: bool,
         binary: Optional[str],
         mtp_draft_path: Optional[str] = None,
+        draft_device: Optional[str] = None,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
 
@@ -9106,6 +9071,8 @@ class LlamaCppBackend:
             # main GGUF.
             if mtp_draft_path:
                 flags.extend(["--model-draft", mtp_draft_path])
+                if draft_device:
+                    flags.extend(["--spec-draft-device", draft_device])
                 logger.info(f"Using separate MTP drafter: {mtp_draft_path}")
             spec_value = mtp_token
             ngram_knobs: list[str] = []
