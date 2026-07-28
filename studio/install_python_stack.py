@@ -2736,9 +2736,8 @@ def pip_install_try(
         env = _install_env_for_cmd(cmd),
     )
     if result.returncode == 0:
-        # Same reasoning as pip_install: a successful install that built from
-        # source is exactly what the clean-machine `nobuild` assert exists to
-        # catch, and it can only see what reaches the log.
+        # Same reasoning as pip_install below: `nobuild` can only catch a source
+        # build that reaches the log.
         if VERBOSE and result.stdout:
             print(_redact_install_output(result.stdout))
         return True
@@ -2796,15 +2795,14 @@ def pip_install(
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
-                # Echo the successful output under UNSLOTH_VERBOSE, the same way
-                # install.sh's run_install_cmd does. Dropping it made the whole
-                # dependency phase invisible to anything reading the install log:
-                # .github/scripts/clean-machine-assert.sh's `nobuild` check greps
-                # for uv's "Building <pkg>==<ver>", so a source build here -- and
-                # this is the step that installs studio.txt, where an sdist-only
-                # dependency actually shows up -- left it reporting "built: none"
-                # and the leg green. Redacted, because uv echoes index URLs with
-                # credentials in them.
+                # Echo successful output under UNSLOTH_VERBOSE, as install.sh's
+                # run_install_cmd does. Without it the dependency phase never
+                # reached the install log, and clean-machine-assert.sh's `nobuild`
+                # greps that log for uv's "Building <pkg>==<ver>" -- so a source
+                # build in this step, the one installing studio.txt where an
+                # sdist-only dependency actually shows up, reported "built: none"
+                # and the leg stayed green. Redacted: uv echoes index URLs with
+                # credentials.
                 if VERBOSE and result.stdout:
                     print(_redact_install_output(result.stdout))
                 return

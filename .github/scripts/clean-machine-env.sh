@@ -3,16 +3,16 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 #
 # Simulate a virgin developer machine on a GitHub-hosted runner. Two modes, because
-# "the tool is absent" and "the installer never called the tool" cannot be simulated
-# by the same mechanism:
+# "the tool is absent" and "the installer never called the tool" need different
+# mechanisms:
 #
 #   mask   Make the toolchain genuinely ABSENT: scrub PATH to OS defaults and (with
-#          --remove) move the real toolchain aside, so `command -v git` correctly
-#          FAILS, as on a clean Mac. A failing "poison shim" would do the opposite --
-#          `command -v` finds it and reports the tool as present -- so no shims here.
-#   trace  Leave the toolchain working but route it through logging wrappers that log
-#          the call then exec the real binary, proving whether the installer ever
-#          REACHES for a compiler/git without changing behaviour.
+#          --remove) move the real toolchain aside so `command -v git` correctly
+#          FAILS. Deliberately no "poison shims": a failing shim is still FOUND by
+#          `command -v`, which reports the tool as present, the opposite of clean.
+#   trace  Leave the toolchain working behind wrappers that log the call then exec
+#          the real binary, answering whether the installer ever REACHES for a
+#          compiler/git without changing behaviour.
 #
 # Writes shell exports to $CLEAN_ENV_FILE (default ./clean-machine.env) to `source`;
 # nothing is exported globally, so other steps keep a normal environment.
@@ -81,10 +81,10 @@ if [ "$MODE" = "mask" ]; then
   } >> "$ENV_FILE"
 
   if [ "$REMOVE" = "1" ] && [ "$OS" = "Darwin" ]; then
-    # Best-effort real removal; each step is independent and recorded in restore.sh
-    # so an `if: always()` step can put the runner back. xcode_select_link is exactly
-    # what `xcode-select -p` reads, so removing it reproduces a virgin Mac's gate.
-    # `xcode-select --reset` is NOT enough: it can reselect a full Xcode.app.
+    # Best effort, each step independent and recorded in restore.sh so an
+    # `if: always()` step can put the runner back. xcode_select_link is what
+    # `xcode-select -p` reads, so removing it reproduces a virgin Mac's gate;
+    # `xcode-select --reset` is NOT enough, it can reselect a full Xcode.app.
     if [ -e /var/db/xcode_select_link ]; then
       if sudo rm -f /var/db/xcode_select_link 2>/dev/null; then
         note "removed /var/db/xcode_select_link"
@@ -106,8 +106,7 @@ if [ "$MODE" = "mask" ]; then
     # Xcode.app must go too: with the link removed AND CommandLineTools moved,
     # `xcode-select -p` still does not fail, it falls through to the image's Xcode
     # bundle (observed: /Applications/Xcode_16.4.app/Contents/Developer), which
-    # re-arms /usr/bin/{git,cc} and silently un-cleans the machine. A rename is
-    # instant regardless of bundle size: same filesystem, no copy.
+    # re-arms /usr/bin/{git,cc}. A rename is instant whatever the bundle size.
     for app in /Applications/Xcode*.app; do
       [ -d "$app" ] || continue
       if sudo mv "$app" "${app}.masked" 2>/dev/null; then
@@ -126,6 +125,28 @@ if [ "$MODE" = "mask" ]; then
           note "WARN could not move $brewdir"
         fi
       fi
+    done
+  fi
+
+  if [ "$REMOVE" = "1" ] && [ "$OS" = "Linux" ]; then
+    # A hosted Linux runner keeps git, gcc, cmake and make in /usr/bin, which the PATH
+    # scrub has to keep, so absence must be made real: move the resolved binaries
+    # aside (recorded in restore.sh). Versioned siblings like gcc-11 survive, but a
+    # consumer install invokes the unsuffixed names, which is what `absent` checks.
+    for tool in $TOOLS; do
+      # Repeat per tool: a runner can carry the same name in /usr/bin and
+      # /usr/local/bin, and moving only the first leaves the second on PATH.
+      for _ in 1 2 3 4; do
+        real="$(command -v "$tool" 2>/dev/null || true)"
+        [ -n "$real" ] && [ -e "$real" ] || break
+        if sudo mv "$real" "$real.masked" 2>/dev/null; then
+          note "moved $real aside"
+          echo "sudo mv '$real.masked' '$real' 2>/dev/null || true" >> "$RESTORE"
+        else
+          note "WARN could not move $real"
+          break
+        fi
+      done
     done
   fi
 fi

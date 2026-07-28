@@ -2624,28 +2624,22 @@ exit 0
     }
 
     # ── CI only: overlay a source checkout over the package just installed ──
-    # Mirrors the same block in install.sh. Not a consumer knob: no command-line
-    # switch, absent from the usage text, and ignored unless
-    # UNSLOTH_CI_SOURCE_OVERLAY names a directory holding a pyproject.toml.
+    # Mirrors install.sh. Not a consumer knob: no switch, absent from the usage
+    # text, ignored unless UNSLOTH_CI_SOURCE_OVERLAY names a directory holding a
+    # pyproject.toml.
     #
-    # Why it exists: the clean-machine legs run THIS script from a branch, but
-    # the script installs unsloth from PyPI, which is the consumer path and must
-    # stay that way. Everything Python-side is then read out of the released
-    # wheel -- studio/setup.ps1, studio/install_python_stack.py, and every
-    # requirements/constraints file resolved through Path(__file__) -- so a
-    # branch could not be validated by the very workflow that exists to validate
-    # it. The `& $UnslothExe studio setup` call below goes through the CLI, and
-    # an editable overlay makes _PACKAGE_ROOT in unsloth_cli/commands/studio.py
-    # resolve to the working tree by PEP 660 __file__, exactly as the --local
-    # note on the Tauri overlay above describes, so setup.ps1 comes from the
-    # branch with no further change here.
-    #
-    # --local is deliberately NOT used for this: it also installs
-    # `unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo`, which
-    # genuinely requires git, and git absence is exactly what the masked leg
-    # proves. This overlay is editable + --no-deps only. It resolves no
-    # dependencies, clones nothing, and builds only unsloth's own pure-Python
-    # metadata, so it still works with git, cmake and MSVC all missing.
+    # The clean-machine legs run THIS script from a branch, but it installs
+    # unsloth from PyPI, the consumer path, so everything Python-side comes out
+    # of the released wheel (studio/setup.ps1, install_python_stack.py and every
+    # requirements/constraints file they reach via Path(__file__)) and the
+    # workflow meant to validate a branch could not. `& $UnslothExe studio setup`
+    # below goes through the CLI, and an editable overlay makes _PACKAGE_ROOT in
+    # unsloth_cli/commands/studio.py resolve to the working tree by PEP 660
+    # __file__, so setup.ps1 comes from the branch unchanged. NOT --local: that
+    # also installs `unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo`,
+    # which genuinely needs git, and git absence is what the masked leg proves.
+    # Editable + --no-deps resolves nothing and clones nothing, so it survives
+    # git, cmake and MSVC all missing.
     if ($env:UNSLOTH_CI_SOURCE_OVERLAY) {
         $CiOverlayRoot = $env:UNSLOTH_CI_SOURCE_OVERLAY
         if (-not (Test-Path -LiteralPath (Join-Path $CiOverlayRoot "pyproject.toml"))) {
