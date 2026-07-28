@@ -409,8 +409,8 @@ def _split_marker_boundary(text: str, ahead: str, markers) -> bool:
     return False
 
 
-def _rendered_lookahead(texts: list, index: int, limit: int) -> str:
-    """The first ``limit`` chars the template renders after ``texts[index]``.
+def _rendered_chunks(texts: list) -> tuple[list, list]:
+    """Split ``texts`` into what the template renders, plus per-part cursors.
 
     Adjacent text parts are concatenated with no separator and each is trimmed
     (``gemma-4.jinja:333-340``), so a marker can be split across THREE or more
@@ -418,17 +418,33 @@ def _rendered_lookahead(texts: list, index: int, limit: int) -> str:
     those and rendered a raw sentinel, which is the injection this pass exists
     to stop; the OpenAI schema allows any number of text parts per message
     (#7334).
+
+    Returns the non-empty trimmed renderings and, for each part, where its
+    look-ahead starts in them. Building that suffix per part instead was
+    quadratic in part count, and the schema caps neither (#7334).
+    """
+    chunks: list = []
+    starts: list = []
+    for text in texts:
+        if isinstance(text, str):
+            chunk = text.strip()
+            if chunk:
+                chunks.append(chunk)
+        starts.append(len(chunks))
+    return chunks, starts
+
+
+def _rendered_lookahead(chunks: list, start: int, limit: int) -> str:
+    """The first ``limit`` chars ``chunks`` renders from ``start`` onwards.
+
+    Every chunk is non-empty, so the scan stops within ``limit`` of them.
     """
     if limit <= 0:
         return ""
     out: list[str] = []
     total = 0
-    for text in texts[index + 1 :]:
-        if not isinstance(text, str):
-            continue
-        chunk = text.strip()
-        if not chunk:
-            continue
+    for position in range(start, len(chunks)):
+        chunk = chunks[position]
         out.append(chunk)
         total += len(chunk)
         if total >= limit:
@@ -466,6 +482,7 @@ def neutralize_message_content_for_role(role: Optional[str], content):
         ]
         # The marker may straddle the seam, so that many following chars suffice.
         lookahead = max((len(src) for src, _ in markers), default = 0)
+        chunks, starts = _rendered_chunks(texts)
         changed = False
         out = []
         for index, part in enumerate(content):
@@ -473,7 +490,7 @@ def neutralize_message_content_for_role(role: Optional[str], content):
             # follows, leaving both parts' own text intact.
             seam = ""
             if isinstance(texts[index], str):
-                ahead = _rendered_lookahead(texts, index, lookahead)
+                ahead = _rendered_lookahead(chunks, starts[index], lookahead)
                 if _split_marker_boundary(texts[index], ahead, markers):
                     seam = _THINK_NEUTRAL_ZW
             if isinstance(part, str):

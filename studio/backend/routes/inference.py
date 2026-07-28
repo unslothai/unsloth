@@ -13528,7 +13528,11 @@ async def _responses_stream(
                     # prefix like `echo "</thi` is plain text and belongs first.
                     _held_tail, _held_visible = extractor.flush_pending()
                     if _held_visible:
-                        visible_delta = _held_visible + visible_delta
+                        # The holdback is the TAIL of this delta, so it follows
+                        # what feed() already released; prepending it reversed
+                        # the model's own characters (`Answer </thi` came out as
+                        # `</thiAnswer `).
+                        visible_delta = visible_delta + _held_visible
                     if _held_tail:
                         for event in _ensure_reasoning_open():
                             yield event

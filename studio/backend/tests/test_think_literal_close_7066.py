@@ -5,8 +5,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import httpx
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -36,9 +40,10 @@ from routes.inference import (
     _extract_responses_reasoning,
     _openai_messages_for_passthrough,
     _responses_marker_holdback,
+    _responses_stream,
     _think_close_is_literal_in_span,
 )
-from models.inference import ChatCompletionRequest, ChatMessage
+from models.inference import ChatCompletionRequest, ChatMessage, ResponsesRequest
 
 
 def test_neutralize_think_markup_breaks_structural_match():
@@ -1640,6 +1645,43 @@ def test_a_marker_split_across_three_or_more_parts_is_broken():
     assert neutralize_message_content_for_role("user", plain) is plain
 
 
+def test_the_cross_part_lookahead_does_not_rescan_the_message_per_part():
+    """The look-ahead is built once, not rebuilt for every text part.
+
+    Rebuilding the suffix of the part list per part trimmed N*(N-1)/2 parts for
+    an N-part message -- 79_800 trims at N=400 -- and the OpenAI schema caps
+    neither the part count nor the part size, so a client burned that CPU
+    before tokenization even started (#7334).
+    """
+
+    class _CountingStr(str):
+        trims = 0
+
+        def strip(self, *args):
+            _CountingStr.trims += 1
+            return str.strip(self, *args)
+
+    def trims_for(parts: int) -> int:
+        _CountingStr.trims = 0
+        content = [{"type": "text", "text": _CountingStr("   ")} for _ in range(parts)]
+        neutralize_control_markup_in_messages([{"role": "user", "content": content}])
+        return _CountingStr.trims
+
+    small, large = trims_for(200), trims_for(400)
+    # Counted, not timed, so a loaded box cannot flake it: linear doubles,
+    # the per-part rescan quadrupled.
+    assert large <= 4 * 400, large
+    assert large <= 3 * small, (small, large)
+
+    # trim() drops a run of blank parts, so the halves still meet across it and
+    # the look-ahead has to reach the piece that completes the marker.
+    parts = ["</th"] + ["   "] * 500 + ["ink>"]
+    out = neutralize_message_content_for_role(
+        "user", [{"type": "text", "text": text} for text in parts]
+    )
+    assert "</think>" not in "".join(part["text"].strip() for part in out)
+
+
 def test_an_executed_tool_result_keeps_its_id_paired_with_the_call():
     """The generated call and its result take the same rewrite, or they stop
     matching and the template falls back to rendering the raw result name.
@@ -1801,16 +1843,134 @@ def test_a_held_quoted_close_is_not_flushed_raw_into_the_reasoning_item():
     assert extractor.feed("All done.", None) == ("", "All done.")
 
 
-def test_the_tool_call_branch_releases_the_marker_holdback():
+_STREAM_TOOL = {"type": "function", "name": "get_weather", "parameters": {"type": "object"}}
+
+
+def _stream_events(monkeypatch, content: str) -> list:
+    """Run the real /v1/responses SSE generator over one content+tool_calls delta.
+
+    Returns the ``(event name, payload)`` pairs in the order they streamed.
+    """
+    import routes.inference as inf_mod
+
+    chunk = {
+        "choices": [
+            {
+                "delta": {
+                    "content": content,
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "get_weather", "arguments": "{}"},
+                        }
+                    ],
+                }
+            }
+        ]
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n"
+        return httpx.Response(
+            200, content = body.encode(), headers = {"content-type": "text/event-stream"}
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        inf_mod.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: real_client(
+            transport = transport, timeout = kwargs.get("timeout", 600)
+        ),
+    )
+    monkeypatch.setattr(
+        inf_mod,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            context_length = 4096,
+            base_url = "http://llama.test",
+            supports_reasoning = True,
+            reasoning_always_on = False,
+            _request_reasoning_kwargs = (
+                lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+            ),
+        ),
+    )
+
+    class _Request:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [_STREAM_TOOL])
+
+    async def run() -> list:
+        response = await _responses_stream(
+            payload, [ChatMessage(role = "user", content = "hi")], _Request()
+        )
+        return [
+            piece.decode() if isinstance(piece, bytes) else piece
+            async for piece in response.body_iterator
+        ]
+
+    events = []
+    for line in asyncio.run(run()):
+        if not line.startswith("event: "):
+            continue
+        name, _, rest = line.partition("\n")
+        events.append((name[len("event: ") :], json.loads(rest.split("data: ", 1)[1].strip())))
+    return events
+
+
+def _visible_text_and_call_position(events: list) -> tuple:
+    text = "".join(
+        payload["delta"] for name, payload in events if name == "response.output_text.delta"
+    )
+    call_at = next(
+        index
+        for index, (name, payload) in enumerate(events)
+        if name == "response.output_item.added" and payload["item"]["type"] == "function_call"
+    )
+    last_text_at = max(
+        index for index, (name, _) in enumerate(events) if name == "response.output_text.delta"
+    )
+    return text, last_text_at, call_at
+
+
+def test_the_tool_call_branch_releases_the_marker_holdback(monkeypatch):
     """The think-marker holdback must be released before the call item.
 
     Structured reasoning is forwarded verbatim as it arrives (#7334), so the
     only pending text at a tool-call boundary is the raw marker prefix; leaving
-    it buffered reorders it after the call.
+    it buffered emits it from ``finish()``, after the call item.
     """
-    src = (Path(__file__).resolve().parents[1] / "routes/inference.py").read_text(encoding = "utf-8")
-    branch = src.split("# Tool-call delta: flush the held think-marker prefix", 1)[1][:900]
-    assert "extractor.flush_pending()" in branch
+    text, last_text_at, call_at = _visible_text_and_call_position(
+        _stream_events(monkeypatch, 'echo "</thi')
+    )
+    assert text == 'echo "</thi'
+    assert last_text_at < call_at
+
+
+def test_a_flushed_holdback_keeps_its_place_within_the_delta(monkeypatch):
+    """The released tail follows the visible text it was held back from.
+
+    One upstream delta can carry both ``content`` and ``tool_calls``. ``feed()``
+    returns the EARLIER visible text and ``flush_pending()`` releases the tail
+    withheld from that same delta, so prepending the tail reversed the
+    characters the model produced: ``Answer </thi`` streamed as
+    ``</thiAnswer`` (#7334).
+    """
+    text, last_text_at, call_at = _visible_text_and_call_position(
+        _stream_events(monkeypatch, "Answer </thi")
+    )
+    assert text == "Answer </thi"
+    # Order inside the delta AND against the call item, not one at the other's
+    # expense.
+    assert last_text_at < call_at
 
 
 def test_every_chat_template_retry_candidate_is_neutralized():
