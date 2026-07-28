@@ -690,9 +690,7 @@ def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
     turns a Save-nothing click into a stored override) and is re-sent by the
     next Apply. Three paths were missing the clear; each assertion below is the
     only thing pinning one of them."""
-    status = " ".join(
-        _read("features/chat/lib/apply-inference-status-to-store.ts").split()
-    )
+    status = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
     # A model/variant swap underneath this tab (another client, the CLI) must
     # reset the control like performLoad's cross-model reset does, or model A's
     # explicit count follows onto model B. Narrowly gated -- see
@@ -751,9 +749,7 @@ def test_hydration_keeps_the_slot_control_when_readopting_the_running_model():
     Gate the clear on this tab's own baseline having gone stale: a genuine A->B
     swap still clears (A's count cannot match B's echo), while re-adopting the
     running model keeps its live value."""
-    status = " ".join(
-        _read("features/chat/lib/apply-inference-status-to-store.ts").split()
-    )
+    status = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
     assert (
         "const slotsBaselineMatchesStatus = prevState.loadedNParallel === "
         "(status.requested_parallel_slots ?? null);" in status
@@ -767,9 +763,9 @@ def test_hydration_keeps_the_slot_control_when_readopting_the_running_model():
     assert "loadedNParallel: status.requested_parallel_slots," in status
 
     runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
-    resident = runtime.split(
-        "if (!forceReload && isExternalModelId(selectedCheckpoint)) {", 1
-    )[1].split("const stopDecision", 1)[0]
+    resident = runtime.split("if (!forceReload && isExternalModelId(selectedCheckpoint)) {", 1)[
+        1
+    ].split("const stopDecision", 1)[0]
     # The two properties that make the scenario above reachable: the branch
     # restores the model's own config, then hydrates against the external id.
     assert "applyPerModelConfigToRuntime(selection.previousConfig);" in resident
@@ -792,10 +788,7 @@ def test_parallel_slots_are_never_recorded_for_a_diffusion_load():
     runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
     # One gated local feeds the control and the rollback baseline together, so
     # they cannot drift apart.
-    assert (
-        "(loadResponse.is_gguf ?? false) && !(loadResponse.is_diffusion ?? false)"
-        in runtime
-    )
+    assert "(loadResponse.is_gguf ?? false) && !(loadResponse.is_diffusion ?? false)" in runtime
     assert "nParallel: committedSlots," in runtime
     assert "loadedNParallel: committedSlots," in runtime
 
