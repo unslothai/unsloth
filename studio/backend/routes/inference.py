@@ -561,9 +561,11 @@ _CLIP_KEEP_CHARS = (1500, 400)
 def _clip_long_contents(messages: list, target_est: int) -> int:
     """Clip oversized string contents middle-out until ``target_est`` is met.
 
-    Tool results first, then earlier user turns, the final message last.
-    Message count and roles never change, so tool pairing holds even when
-    group-dropping could not free enough. Returns messages clipped.
+    Assistant ``reasoning_content`` is clipped first (longest and most
+    expendable on overflow), then tool results, earlier user turns, and
+    the final message last.  Message count and roles never change, so
+    tool pairing holds even when group-dropping could not free enough.
+    Returns messages clipped.
     """
 
     def _candidates():
@@ -572,7 +574,25 @@ def _clip_long_contents(messages: list, target_est: int) -> int:
         last = [messages[-1]] if messages else []
         return tools + users + last
 
+    def _reasoning_candidates():
+        return [
+            m for m in messages
+            if m.get("role") == "assistant"
+            and isinstance(m.get("reasoning_content"), str)
+        ]
+
     clipped = 0
+    # Pass 1: clip reasoning_content on assistant messages.
+    for keep in _CLIP_KEEP_CHARS:
+        for msg in _reasoning_candidates():
+            if sum(_estimate_message_tokens(m) for m in messages) <= target_est:
+                return clipped
+            rc = msg.get("reasoning_content")
+            if not isinstance(rc, str) or len(rc) <= 2 * keep + len(_CLIP_MARKER):
+                continue
+            msg["reasoning_content"] = rc[:keep] + _CLIP_MARKER + rc[-keep:]
+            clipped += 1
+    # Pass 2: clip content fields as before.
     for keep in _CLIP_KEEP_CHARS:
         for msg in _candidates():
             if sum(_estimate_message_tokens(m) for m in messages) <= target_est:

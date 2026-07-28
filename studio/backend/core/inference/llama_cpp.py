@@ -8103,10 +8103,6 @@ class LlamaCppBackend:
                             thinking_default = False
                     self._reasoning_default = thinking_default
                     reasoning_kw = self._reasoning_kwargs(thinking_default)
-                    # preserve_thinking defaults ON so historical thinking
-                    # blocks are kept in context for reasoning models.
-                    if self._supports_preserve_thinking:
-                        reasoning_kw["preserve_thinking"] = True
                     cmd.extend(
                         [
                             "--chat-template-kwargs",
