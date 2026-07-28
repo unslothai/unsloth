@@ -105,53 +105,46 @@ def test_remove_pid_file_leaves_a_reused_entry_alone(tmp_path):
     assert own.read_text(encoding = "utf-8") == "999999"
 
 
-def test_recorded_records_read_per_port_and_legacy_files(tmp_path):
-    (tmp_path / "studio-8901-8550.pid").write_text("8550\n111.5", encoding = "utf-8")
-    (tmp_path / "studio-8902-8600.pid").write_text("8600", encoding = "utf-8")
-    (tmp_path / "studio.pid").write_text("4242", encoding = "utf-8")
+def test_read_pid_record_parses_pid_time_and_address(tmp_path):
+    (tmp_path / "r.pid").write_text("8550\n111.5\n127.0.0.1", encoding = "utf-8")
 
-    assert run._recorded_studio_records() == {8550: [111.5], 8600: [None], 4242: [None]}
+    assert run._read_pid_record(tmp_path / "r.pid") == (8550, 111.5, "127.0.0.1")
 
 
-def test_recorded_records_ignore_corrupt_files(tmp_path):
-    (tmp_path / "studio-8901-x.pid").write_text("not-a-pid", encoding = "utf-8")
+def test_read_pid_record_tolerates_a_bare_pid(tmp_path):
+    (tmp_path / "r.pid").write_text("8550", encoding = "utf-8")
 
-    assert run._recorded_studio_records() == {}
-
-
-def test_recorded_records_prune_dead_entries(tmp_path, monkeypatch):
-    monkeypatch.setattr(run, "_pid_alive", lambda pid: False)
-    (tmp_path / "studio-8901-8550.pid").write_text("8550", encoding = "utf-8")
-
-    assert run._recorded_studio_records() == {}
-    assert not (tmp_path / "studio-8901-8550.pid").exists()
+    assert run._read_pid_record(tmp_path / "r.pid") == (8550, None, None)
 
 
-def test_own_studio_blocking_the_port_is_recognised(tmp_path):
-    (tmp_path / "studio-8901-8550.pid").write_text("8550", encoding = "utf-8")
+def test_read_pid_record_rejects_a_corrupt_file(tmp_path):
+    (tmp_path / "r.pid").write_text("not-a-pid", encoding = "utf-8")
 
-    assert run._blocker_is_own_studio([(8550, "python", "127.0.0.1")], "127.0.0.1") == 8550
+    assert run._read_pid_record(tmp_path / "r.pid") is None
 
 
-def test_a_foreign_blocker_still_falls_back(tmp_path):
+def test_own_studio_on_port_is_found_without_psutil(tmp_path, monkeypatch):
+    # psutil is optional; a listener scan finds nothing without it, so detection
+    # must come from our own records or we silently start a duplicate.
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    (tmp_path / "studio-8901-8550.pid").write_text("8550\n\n127.0.0.1", encoding = "utf-8")
+
+    assert run._own_studio_on_port(8901, "127.0.0.1") == 8550
+
+
+def test_no_record_for_the_port_means_no_own_studio(tmp_path):
     # jupyter-lab on 8888 must keep the fallback, not abort the launch.
     (tmp_path / "studio-8901-8550.pid").write_text("8550", encoding = "utf-8")
 
-    assert run._blocker_is_own_studio([(117, "jupyter-lab", "127.0.0.1")], "127.0.0.1") is None
-    assert run._blocker_is_own_studio([], "127.0.0.1") is None
+    assert run._own_studio_on_port(8888, "127.0.0.1") is None
 
 
-def test_our_studio_is_found_behind_a_foreign_listener(tmp_path):
-    # One port, two bind addresses: checking only the first listener made the
-    # decision depend on psutil's ordering.
-    (tmp_path / "studio-8889-8550.pid").write_text("8550", encoding = "utf-8")
+def test_own_studio_on_port_prunes_a_dead_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(run, "_pid_alive", lambda pid: False)
+    (tmp_path / "studio-8901-8550.pid").write_text("8550", encoding = "utf-8")
 
-    assert (
-        run._blocker_is_own_studio(
-            [(117, "jupyter-lab", "127.0.0.1"), (8550, "python", "127.0.0.1")], "127.0.0.1"
-        )
-        == 8550
-    )
+    assert run._own_studio_on_port(8901, "127.0.0.1") is None
+    assert not (tmp_path / "studio-8901-8550.pid").exists()
 
 
 def test_a_reused_pid_is_not_treated_as_our_studio(tmp_path, monkeypatch):
@@ -159,7 +152,15 @@ def test_a_reused_pid_is_not_treated_as_our_studio(tmp_path, monkeypatch):
     monkeypatch.setattr(run, "_pid_is_studio_backend", lambda pid, created_times = (): False)
     (tmp_path / "studio-8901-8550.pid").write_text("8550", encoding = "utf-8")
 
-    assert run._blocker_is_own_studio([(8550, "postgres", "127.0.0.1")], "127.0.0.1") is None
+    assert run._own_studio_on_port(8901, "127.0.0.1") is None
+
+
+def test_an_unverifiable_record_still_blocks_a_duplicate(tmp_path, monkeypatch):
+    # Can't tell: refusing with a clear message beats a silent second instance.
+    monkeypatch.setattr(run, "_pid_is_studio_backend", lambda pid, created_times = (): None)
+    (tmp_path / "studio-8901-8550.pid").write_text("8550", encoding = "utf-8")
+
+    assert run._own_studio_on_port(8901, "127.0.0.1") == 8550
 
 
 def test_start_time_mismatch_rejects_a_reused_pid(monkeypatch):
@@ -180,11 +181,15 @@ def test_a_stale_record_does_not_veto_a_live_server_sharing_the_pid(monkeypatch)
     assert run._pid_is_studio_backend(1234, [111.5, 222.5]) is False
 
 
-def test_recorded_records_keep_every_timestamp_for_a_pid(tmp_path):
-    (tmp_path / "studio-8888-1234.pid").write_text("1234\n111.5", encoding = "utf-8")
-    (tmp_path / "studio-9000-1234.pid").write_text("1234\n999.0", encoding = "utf-8")
+def test_a_stale_record_on_another_port_does_not_hide_a_live_server(tmp_path, monkeypatch):
+    # 1234 was reused: the stale 8888 record must not stop us seeing 9000.
+    monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
+    monkeypatch.setattr(run, "_process_create_time", lambda pid: 999.0)
+    (tmp_path / "studio-8888-1234.pid").write_text("1234\n111.5\n", encoding = "utf-8")
+    (tmp_path / "studio-9000-1234.pid").write_text("1234\n999.0\n", encoding = "utf-8")
 
-    assert run._recorded_studio_records() == {1234: [111.5, 999.0]}
+    assert run._own_studio_on_port(8888, "127.0.0.1") is None
+    assert run._own_studio_on_port(9000, "127.0.0.1") == 1234
 
 
 def test_legacy_records_match_an_in_process_studio(monkeypatch):
@@ -224,46 +229,35 @@ def test_legacy_records_do_not_match_a_training_run(monkeypatch):
 
 
 def test_our_studio_on_another_bind_address_does_not_abort(tmp_path):
-    # Jupyter holds 127.0.0.1:8889, our server holds ::1:8889. Binding 127.0.0.1
-    # conflicts with Jupyter, not with us, so fall through to the next port.
-    (tmp_path / "studio-8889-8550.pid").write_text("8550", encoding = "utf-8")
+    # Our server holds ::1:8889; binding 127.0.0.1:8889 is not a conflict with us,
+    # so fall through to the next port instead of refusing.
+    (tmp_path / "studio-8889-8550.pid").write_text("8550\n\n::1", encoding = "utf-8")
 
-    blockers = [(117, "jupyter-lab", "127.0.0.1"), (8550, "python", "::1")]
-
-    assert run._blocker_is_own_studio(blockers, "127.0.0.1") is None
-    assert run._blocker_is_own_studio(blockers, "::1") == 8550
+    assert run._own_studio_on_port(8889, "127.0.0.1") is None
+    assert run._own_studio_on_port(8889, "::1") == 8550
 
 
-def test_a_wildcard_listener_blocks_any_bind(tmp_path):
-    (tmp_path / "studio-8889-8550.pid").write_text("8550", encoding = "utf-8")
-
-    assert run._blocker_is_own_studio([(8550, "python", "0.0.0.0")], "127.0.0.1") == 8550
-
-
-def test_a_wildcard_bind_is_blocked_by_any_listener(tmp_path):
-    (tmp_path / "studio-8889-8550.pid").write_text("8550", encoding = "utf-8")
-
-    assert run._blocker_is_own_studio([(8550, "python", "127.0.0.1")], "0.0.0.0") == 8550
+def test_address_matching(tmp_path):
+    assert run._addresses_collide("0.0.0.0", "127.0.0.1", 8889) is True
+    assert run._addresses_collide("127.0.0.1", "0.0.0.0", 8889) is True
+    assert run._addresses_collide("127.0.0.1", "127.0.0.1", 8889) is True
+    assert run._addresses_collide("::1", "127.0.0.1", 8889) is False
+    # An unrecorded address is unknown, so assume a conflict.
+    assert run._addresses_collide(None, "127.0.0.1", 8889) is True
 
 
-def test_listener_address_matching(monkeypatch):
-    assert run._listener_blocks_host("0.0.0.0", "127.0.0.1") is True
-    assert run._listener_blocks_host("127.0.0.1", "0.0.0.0") is True
-    assert run._listener_blocks_host("127.0.0.1", "127.0.0.1") is True
-    assert run._listener_blocks_host("::1", "127.0.0.1") is False
+def test_a_hostname_resolves_the_same_way_the_bind_does(tmp_path):
+    # `localhost` and the address _is_port_free actually binds must agree, or a
+    # recorded server is missed and a duplicate starts.
+    recorded = run._bind_address("localhost", 8889)
+
+    assert run._addresses_collide(recorded, "localhost", 8889) is True
 
 
 def test_fallback_aborts_on_our_own_server_further_up_the_range(tmp_path, monkeypatch):
     # jupyter holds 8888, our server holds 8889: skipping to 8890 is the duplicate.
-    (tmp_path / "studio-8889-8550.pid").write_text("8550", encoding = "utf-8")
+    (tmp_path / "studio-8889-8550.pid").write_text("8550\n\n127.0.0.1", encoding = "utf-8")
     monkeypatch.setattr(run, "_is_port_free", lambda host, p: p >= 8890)
-    monkeypatch.setattr(
-        run,
-        "_get_pids_on_port",
-        lambda p: (
-            [(8550, "python", "127.0.0.1")] if p == 8889 else [(117, "jupyter-lab", "127.0.0.1")]
-        ),
-    )
 
     with pytest.raises(SystemExit) as excinfo:
         run._find_free_port("127.0.0.1", 8889, avoid_own_studio = True)
@@ -271,8 +265,8 @@ def test_fallback_aborts_on_our_own_server_further_up_the_range(tmp_path, monkey
     assert excinfo.value.code == 1
 
 
-def test_fallback_still_skips_foreign_processes(monkeypatch):
+def test_fallback_still_skips_foreign_processes(tmp_path, monkeypatch):
+    # No record for 8889, so the blocker is not ours: keep falling back.
     monkeypatch.setattr(run, "_is_port_free", lambda host, p: p >= 8890)
-    monkeypatch.setattr(run, "_get_pids_on_port", lambda p: [(117, "jupyter-lab", "127.0.0.1")])
 
     assert run._find_free_port("127.0.0.1", 8889, avoid_own_studio = True) == 8890

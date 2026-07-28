@@ -689,47 +689,26 @@ def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
     return None
 
 
-def _get_pids_on_port(port: int) -> "list[tuple[int, str, str]]":
-    """(pid, name, bind address) for every listener on *port*. A port can have one
-    per address, and checking only the first makes the own-Studio call arbitrary."""
+def _bind_address(host: str, port: int) -> str:
+    """The address a bind to *host* actually uses -- resolved exactly as
+    _is_port_free does, so a recorded address and a requested one normalize alike."""
+    import socket
     try:
-        import psutil
-    except ImportError:
-        return []
-    found: "dict[tuple[int, str], tuple[int, str, str]]" = {}
-    try:
-        for conn in psutil.net_connections(kind = "tcp"):
-            if conn.status != "LISTEN" or conn.laddr.port != port or conn.pid is None:
-                continue
-            key = (conn.pid, conn.laddr.ip)
-            if key in found:
-                continue
-            try:
-                name = psutil.Process(conn.pid).name()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                name = "<unknown>"
-            found[key] = (conn.pid, name, conn.laddr.ip)
-    except (psutil.AccessDenied, OSError) as e:
-        logger.debug("Failed to scan network connections for port %s: %s", port, e)
-    return list(found.values())
+        return socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)[0][4][0]
+    except (OSError, IndexError):
+        return host
 
 
-def _listener_blocks_host(listen_ip: str, host: str) -> bool:
-    """Would a listener on *listen_ip* block a bind to *host*?
+def _addresses_collide(recorded: "str | None", host: str, port: int) -> bool:
+    """Would a server bound to *recorded* block a bind to *host*?
 
-    Wildcards on either side collide with everything; otherwise compare resolved
-    addresses. Unresolvable means assume a collision rather than start a duplicate.
+    Unknown or wildcard on either side collides: refusing with a clear message
+    beats silently starting a duplicate.
     """
     wildcards = ("0.0.0.0", "::", "")
-    if listen_ip in wildcards or host in wildcards:
+    if not recorded or recorded in wildcards or host in wildcards:
         return True
-    import socket
-
-    try:
-        host_ips = {info[4][0] for info in socket.getaddrinfo(host, None)}
-    except OSError:
-        return True
-    return listen_ip in host_ips
+    return recorded == _bind_address(host, port)
 
 
 def _is_port_free(host: str, port: int) -> bool:
@@ -788,7 +767,7 @@ def _find_free_port(
         if _is_port_free(host, candidate):
             return candidate
         if avoid_own_studio:
-            own = _blocker_is_own_studio(_get_pids_on_port(candidate), host)
+            own = _own_studio_on_port(candidate, host)
             if own is not None:
                 _abort_already_running(own, candidate)
     raise RuntimeError(f"Could not find a free port in range {start}-{start + max_attempts - 1}")
@@ -830,8 +809,8 @@ def _process_create_time(pid: int) -> "float | None":
         return None
 
 
-def _read_pid_record(path: Path) -> "tuple[int, float | None] | None":
-    """Parse ``pid`` / optional ``create_time`` from a PID file."""
+def _read_pid_record(path: Path) -> "tuple[int, float | None, str | None] | None":
+    """Parse ``pid`` / optional ``create_time`` / optional bind address."""
     try:
         lines = path.read_text(encoding = "utf-8").splitlines()
     except (OSError, UnicodeDecodeError):
@@ -844,23 +823,23 @@ def _read_pid_record(path: Path) -> "tuple[int, float | None] | None":
             created = float(lines[1].strip())
         except ValueError:
             created = None
-    return int(lines[0].strip()), created
+    address = lines[2].strip() if len(lines) > 2 and lines[2].strip() else None
+    return int(lines[0].strip()), created, address
 
 
-def _pid_is_studio_backend(pid: int, created_times: "Sequence[float | None]" = ()) -> bool:
-    """Guard against PID reuse.
+def _pid_is_studio_backend(pid: int, created_times: "Sequence[float | None]" = ()) -> "bool | None":
+    """Guard against PID reuse. True = ours, False = not ours, None = can't tell.
 
-    Start time is the reliable signal; any recorded time matching is enough, since
-    a stale record must not veto a live server that reused the PID. The cmdline
-    check only covers legacy records that predate the recorded time -- and the
-    in-venv path runs run_server() in-process, so its argv is `unsloth studio ...`.
+    Any recorded start time matching is enough: a stale record must not veto a live
+    server that reused the PID. The cmdline check covers untimed legacy records --
+    the in-venv path runs run_server() in-process, so argv is `unsloth studio ...`.
     """
     known = [c for c in created_times if c is not None]
     untimed = not created_times or len(known) < len(created_times)
     if known:
         actual = _process_create_time(pid)
         if actual is None:
-            return untimed
+            return True if untimed else None
         if any(abs(actual - c) < 1.0 for c in known):
             return True
         if not untimed:
@@ -869,47 +848,34 @@ def _pid_is_studio_backend(pid: int, created_times: "Sequence[float | None]" = (
         import psutil
         cmdline = " ".join(psutil.Process(pid).cmdline()).lower()
     except Exception:
-        return untimed
+        return True
     return "studio" in cmdline and ("run.py" in cmdline or "unsloth" in cmdline)
 
 
-def _blocker_is_own_studio(
-    blockers: "list[tuple[int, str, str]]", host: "str | None" = None
-) -> "int | None":
-    """PID of one of our recorded servers actually blocking *host*, if any.
+def _own_studio_on_port(port: int, host: str) -> "int | None":
+    """PID of one of our own servers already bound to *port* for *host*.
 
-    Address-matched: Jupyter on 127.0.0.1:8889 and our server on ::1:8889 is not a
-    conflict for `-H 127.0.0.1`, and must still fall through to the next port.
+    Reads our own records rather than enumerating listeners: psutil is optional,
+    and without it a listener scan finds nothing and we silently start a duplicate.
     """
-    recorded = _recorded_studio_records()
-    for pid, _name, listen_ip in blockers:
-        if host is not None and not _listener_blocks_host(listen_ip, host):
-            continue
-        if pid in recorded and _pid_is_studio_backend(pid, recorded[pid]):
-            return pid
-    return None
-
-
-def _recorded_studio_records() -> "dict[int, list[float | None]]":
-    """Live {pid: [create_time, ...]} under this STUDIO_HOME; prunes dead records.
-
-    Every recorded time is kept: a stale file and a live server can share a PID.
-    """
-    records: "dict[int, list[float | None]]" = {}
     try:
-        paths = list(_studio_root().glob(PID_FILE_GLOB)) + [_PID_FILE]
+        paths = list(_studio_root().glob(f"studio-{port}-*.pid"))
     except OSError:
-        return records
+        return None
     for path in paths:
         record = _read_pid_record(path)
         if record is None:
             continue
-        pid, created = record
-        if _pid_alive(pid):
-            records.setdefault(pid, []).append(created)
-        elif path != _PID_FILE:
+        pid, created, address = record
+        if not _pid_alive(pid):
             path.unlink(missing_ok = True)
-    return records
+            continue
+        if not _addresses_collide(address, host, port):
+            continue
+        # None (unverifiable) counts as ours: refusing beats a silent duplicate.
+        if _pid_is_studio_backend(pid, [created]) is not False:
+            return pid
+    return None
 
 
 def _abort_already_running(pid: int, port: int) -> "NoReturn":
@@ -949,16 +915,17 @@ os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 _OWN_PID_FILE: "Path | None" = None
 
 
-def _write_pid_file(port: int):
+def _write_pid_file(port: int, host: str = ""):
     """Record this PID under its own port so `stop` can find every server."""
     global _OWN_PID_FILE
     path = _pid_file_for_port(port)
     try:
         path.parent.mkdir(parents = True, exist_ok = True)
-        # Start time pins the record to this process, so a reused PID is not
-        # mistaken for it later.
+        # Start time pins the record to this process; the bind address tells a
+        # later launch whether this server would actually block it.
         created = _process_create_time(os.getpid())
-        body = str(os.getpid()) if created is None else f"{os.getpid()}\n{created!r}"
+        address = _bind_address(host, port) if host else ""
+        body = f"{os.getpid()}\n{'' if created is None else repr(created)}\n{address}"
         path.write_text(body, encoding = "utf-8")
         # An older CLI's `stop` only reads this one, and expects a bare PID.
         _PID_FILE.write_text(str(os.getpid()), encoding = "utf-8")
@@ -1724,7 +1691,7 @@ def run_server(
         original_port = port
         blocker = _get_pid_on_port(port)
         # Falling back past our own server is what creates the orphan.
-        own = _blocker_is_own_studio(_get_pids_on_port(port), host)
+        own = _own_studio_on_port(port, host)
         if own is not None:
             _abort_already_running(own, port)
         port = _find_free_port(host, port + 1, avoid_own_studio = True)
@@ -1925,7 +1892,7 @@ def run_server(
         (time.perf_counter() - boot_started) * 1000,
     )
 
-    _write_pid_file(port)
+    _write_pid_file(port, host)
     import atexit
 
     atexit.register(_remove_pid_file)
