@@ -35,6 +35,7 @@ import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import { pasteClipboardFiles } from "./utils/clipboard-files";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
@@ -118,6 +119,7 @@ import {
 } from "./provider-capabilities";
 import {
   type CompositionEvent,
+  type ClipboardEvent,
   type FC,
   type KeyboardEvent,
   type MutableRefObject,
@@ -834,7 +836,7 @@ export function SharedComposer({
   }, [text]);
 
   const addFiles = useCallback(
-    (files: FileList | null) => {
+    (files: FileList | readonly File[] | null) => {
       if (!files?.length) return;
       const next: PendingImage[] = [];
       let droppedImageForUnavailable = false;
@@ -864,6 +866,29 @@ export function SharedComposer({
       setPendingImages((prev) => [...prev, ...next]);
     },
     [setPendingAudioStore, attachUnavailableReason],
+  );
+
+  const handleFilePaste = useCallback(
+    (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      pasteClipboardFiles(
+        event,
+        async (files) => {
+          const supported = files.some(
+            (file) =>
+              (file.type.match(/^audio\//i) && file.size <= MAX_AUDIO_SIZE) ||
+              (file.type.match(/^image\/(jpeg|png|webp|gif)$/i) &&
+                file.size <= MAX_IMAGE_SIZE),
+          );
+          if (!supported) throw new Error("Unsupported compare attachment");
+          addFiles(files);
+        },
+        () =>
+          toast.error("Could not paste files.", {
+            description: "Compare supports images and audio within the attachment size limits.",
+          }),
+      );
+    },
+    [addFiles],
   );
 
   const removePendingImage = useCallback((id: string) => {
@@ -1688,6 +1713,7 @@ export function SharedComposer({
           setText(e.currentTarget.value);
         }}
         onKeyDown={onKeyDown}
+        onPaste={handleFilePaste}
         onBlur={() => {
           // Mac: switching input methods can fire compositionstart without a
           // matching compositionend, leaving composingRef pinned. The OS always

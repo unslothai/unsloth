@@ -100,13 +100,29 @@ function toGpuInfo(
 }
 
 function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
-  // Unpinnable configurations must hide every pick surface: XPU indices are
-  // torch-xpu ordinals no applicator speaks, and Vulkan-only builds pin ggml's
-  // own ordinals -- /load and /validate 400 picks on both, so the backend
-  // reports gpu.gguf_gpu_ids_supported and every gate keyed on physicalIndex
-  // (picker, persisted-pick reconcile) follows it. The device flavor lives on
-  // the TOP-LEVEL device_backend field; absent support info defaults to
-  // pinnable (older backend).
+  // GGUF loads run through llama-server, so on a Vulkan build the pickable set
+  // is the inference inventory, not the torch view: it can see cards torch
+  // cannot, and its indices are the ggml ordinals `--device Vulkan<i>` pins.
+  // The XPU ban does not apply there, it is about torch-xpu ordinals that no
+  // applicator speaks; a Vulkan pick does not use them.
+  const inference = data?.inference_gpu;
+  if (inference?.backend === "vulkan" && (inference.devices ?? []).length) {
+    const picksAccepted = inference.gguf_gpu_ids_supported !== false;
+    return (inference.devices ?? [])
+      .filter((d) => typeof d.index === "number")
+      .map((d) => ({
+        index: d.index as number,
+        name: d.name ?? `GPU ${d.index}`,
+        memoryTotalGb: d.memory_total_gb ?? 0,
+        memoryFreeGb: d.vram_free_gb ?? 0,
+        physicalIndex: picksAccepted && d.index_kind === "vulkan",
+      }));
+  }
+  // Otherwise the torch view is the pickable set. Unpinnable configurations
+  // must hide every pick surface: XPU indices are torch-xpu ordinals no
+  // applicator speaks, so /load and /validate 400 them, and the backend reports
+  // gpu.gguf_gpu_ids_supported. Absent support info defaults to pinnable
+  // (older backend).
   const pinnableBackend =
     data?.device_backend !== "xpu" &&
     data?.gpu?.gguf_gpu_ids_supported !== false;

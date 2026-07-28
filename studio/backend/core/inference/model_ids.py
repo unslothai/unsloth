@@ -42,9 +42,8 @@ def _looks_like_path(identifier: str) -> bool:
 def hf_cache_repo_id(path: Optional[str]) -> Optional[str]:
     """``.../models--org--name/snapshots/<sha>`` -> ``org/name``, else None.
 
-    A model loaded straight out of the HF cache has a snapshot directory as its
-    identifier, whose basename is a commit hash. Recover the repo id so callers
-    show ``unsloth/gemma-4-31B-it-GGUF`` rather than ``c1ac76e99d55...``.
+    A model loaded from the HF cache is identified by its snapshot dir, whose
+    basename is a commit hash; recover the repo id so callers don't show that.
     """
     if not path:
         return None

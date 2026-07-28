@@ -91,7 +91,11 @@ import { requestPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
-const pendingRunStartReadyByMessageId = new Map<string, Promise<void>>();
+// Resolves to the thread id assigned when this message's chat was first persisted.
+const pendingRunStartReadyByMessageId = new Map<
+  string,
+  Promise<string | undefined>
+>();
 
 type TitleResponse = {
   choices?: Array<{
@@ -705,6 +709,10 @@ function createStudioDbAdapter(
 
     async initialize(threadId: string) {
       await ensureThreadRecord({ threadId, modelType, pairId, projectId });
+      // A run already streaming on this thread filed its handles under "__default" because
+      // the id did not exist yet. Re-key them now, or the sidebar row and Stop look up an
+      // id nothing is registered against.
+      useChatRuntimeStore.getState().adoptDefaultThreadRun(threadId);
       return { remoteId: threadId, externalId: undefined };
     },
 
@@ -841,8 +849,8 @@ function trackHistoryAppend(
 
 function trackRunStartReady(
   messageId: string,
-  ready: Promise<void>,
-): Promise<void> {
+  ready: Promise<string | undefined>,
+): Promise<string | undefined> {
   pendingRunStartReadyByMessageId.set(messageId, ready);
   const cleanup = () => {
     setTimeout(() => {
@@ -857,7 +865,7 @@ function trackRunStartReady(
 
 async function waitForRunStartHistoryAppend(
   messages: Parameters<ChatModelAdapter["run"]>[0]["messages"],
-): Promise<void> {
+): Promise<string | undefined> {
   // Deep Research reserves an assistant placeholder before invoking the model
   // adapter, so the user message is not necessarily the final entry here.
   const userMessage = [...messages]
@@ -868,15 +876,16 @@ async function waitForRunStartHistoryAppend(
   }
   const runStartReady = pendingRunStartReadyByMessageId.get(userMessage.id);
   const historyAppendReady = pendingHistoryAppendByMessageId.get(userMessage.id);
-  const pending = [runStartReady, historyAppendReady].filter(
-    (ready): ready is Promise<void> => ready !== undefined,
-  );
-  if (pending.length === 0) {
-    return;
+  if (runStartReady === undefined && historyAppendReady === undefined) {
+    return undefined;
   }
   let didBecomeReady = false;
+  let adoptedThreadId: string | undefined;
   try {
-    await Promise.all(pending);
+    [adoptedThreadId] = await Promise.all([
+      runStartReady ?? Promise.resolve(undefined),
+      historyAppendReady?.then(() => undefined),
+    ]);
     didBecomeReady = true;
   } finally {
     if (
@@ -887,14 +896,22 @@ async function waitForRunStartHistoryAppend(
       pendingRunStartReadyByMessageId.delete(userMessage.id);
     }
   }
+  return adoptedThreadId;
 }
 
 function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter {
   return {
     ...adapter,
     async *run(options) {
-      await waitForRunStartHistoryAppend(options.messages);
-      const result = adapter.run(options);
+      const adoptedThreadId = await waitForRunStartHistoryAppend(options.messages);
+      // The thread has an id by the time that resolves, but assistant-ui bound unstable_threadId
+      // before the await. Hand the run its real id so a first turn never files its handles
+      // under the unresolved key that concurrent runs share.
+      const result = adapter.run(
+        !options.unstable_threadId && adoptedThreadId
+          ? { ...options, unstable_threadId: adoptedThreadId }
+          : options,
+      );
       if (!result) {
         return;
       }
@@ -1142,7 +1159,13 @@ function useStudioRuntimeAdapters(
             store.ggufContextLength,
           );
           if (savedUsage) {
-            store.setContextUsage(savedUsage);
+            // Key by the thread this loader read, not whichever is active when the await
+            // resolves: a switch inside it would file this thread's usage under the
+            // incoming one. Same rule the adapter's end-of-run write follows.
+            store.setThreadContextUsage(remoteId, savedUsage);
+            if (store.activeThreadId === remoteId) {
+              store.setContextUsage(savedUsage);
+            }
           }
           void refreshContextUsage({ threadId: remoteId });
         } else {
@@ -1161,18 +1184,23 @@ function useStudioRuntimeAdapters(
                 modelId?: string;
               }
             | undefined;
-          // Only when a local GGUF window is known; external providers have a null window.
+          // Window check applies only when a local GGUF window is known; external
+          // providers have ggufContextLength === null.
           const withinLocalLimit =
             !store.ggufContextLength ||
             (savedUsage?.totalTokens ?? 0) <= store.ggufContextLength;
-          // Legacy unscoped usage (no modelId) is trusted only when a known local window
-          // bounds the totals, so an old local turn can't be misattributed to an external one.
+          // Legacy unscoped usage (no modelId) is trusted only when a known local
+          // window bounds the totals, so an old local turn can't be misattributed
+          // to a newly-selected external provider.
           const modelMatches = savedUsage?.modelId
             ? savedUsage.modelId === store.params.checkpoint
             : typeof store.ggufContextLength === "number" &&
               store.ggufContextLength > 0;
           if (savedUsage && withinLocalLimit && modelMatches) {
-            store.setContextUsage(savedUsage);
+            store.setThreadContextUsage(remoteId, savedUsage);
+            if (store.activeThreadId === remoteId) {
+              store.setContextUsage(savedUsage);
+            }
           }
         }
 
@@ -1199,7 +1227,10 @@ function useStudioRuntimeAdapters(
 
       append({ parentId, message }: ExportedMessageRepositoryItem) {
         const initializeThread = aui.threadListItem().initialize();
-        trackRunStartReady(message.id, initializeThread.then(() => undefined));
+        trackRunStartReady(
+          message.id,
+          initializeThread.then(({ remoteId }) => remoteId),
+        );
         const write = (async () => {
           const { remoteId } = await initializeThread;
           if (isChatThreadDeleted(remoteId)) {
@@ -1328,17 +1359,6 @@ function createRuntimeHook(modelType: ModelType, pairId?: string) {
   };
 }
 
-function stopChatRun(threadId: string | null | undefined) {
-  if (!threadId) {
-    return;
-  }
-  try {
-    useChatRuntimeStore.getState().cancelByThreadId[threadId]?.();
-  } catch {
-    // The run may have ended while navigation was mounting.
-  }
-}
-
 function ThreadAutoSwitch({
   threadId,
   syncActiveThreadId = true,
@@ -1353,8 +1373,9 @@ function ThreadAutoSwitch({
   useEffect(() => {
     if (!isLoading && mainThreadId !== threadId) {
       if (syncActiveThreadId) {
-        requestPromptQueueStop();
-        stopChatRun(mainThreadId);
+        // Stop queueing prompts to the outgoing thread but leave its run alone: its runtime
+        // stays mounted and keeps streaming. Only an explicit Stop cancels one.
+        requestPromptQueueStop({ cancelActiveRun: false });
       }
       const switchResult = aui.threads().switchToThread(threadId) as unknown;
       if (
@@ -1385,16 +1406,14 @@ function ThreadNewChatSwitch({
 }: { nonce: string }): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
-  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
-  const mainThreadIdRef = useRef(mainThreadId);
-  mainThreadIdRef.current = mainThreadId;
-
+  // The outgoing thread is not read here: New Chat leaves it running.
   useEffect(() => {
     if (isLoading) {
       return;
     }
-    requestPromptQueueStop();
-    stopChatRun(mainThreadIdRef.current);
+    // New Chat leaves the previous conversation generating: its runtime stays mounted and
+    // the sidebar spins. Stopping it is its own Stop button's job.
+    requestPromptQueueStop({ cancelActiveRun: false });
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.
     void aui.threads().switchToNewThread();

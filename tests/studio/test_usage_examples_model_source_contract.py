@@ -50,9 +50,9 @@ def test_examples_never_print_a_hardcoded_model_id():
 
 
 def test_catalog_refresh_follows_the_loaded_model():
-    # A dep list that misses these never re-ran, so a finished load left the first
-    # fetch's name. It must not be gated on having no checkpoint either: the store
-    # keeps one across an idle unload, which changes nothing React can see.
+    # A dep list missing these never re-ran, so a finished load left the first fetch's
+    # name. Nor may it be gated on having no checkpoint: the store keeps one across an
+    # idle unload, which changes nothing React can see.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "}, [checkpoint, ggufVariant]);" in hook
@@ -66,9 +66,9 @@ def test_catalog_refresh_follows_the_loaded_model():
 
 
 def test_a_stored_checkpoint_needs_catalog_evidence():
-    # The store keeps a checkpoint across an idle unload and across the model being
-    # deleted. Preferring it on the switch setting alone kept naming one /v1/models
-    # had already proved absent, so the snippets 404d instead of falling back.
+    # The store keeps a checkpoint across an idle unload and across a deletion, so
+    # preferring it on the switch setting alone named a model /v1/models had proved
+    # absent, and the snippets 404d instead of falling back.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert 'const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));' in hook
@@ -79,8 +79,8 @@ def test_a_stored_checkpoint_needs_catalog_evidence():
 
 def test_standalone_idle_unload_still_names_the_stored_checkpoint():
     # UNSLOTH_MODEL_IDLE_TTL without auto-switch reloads exactly what it freed, so the
-    # stored checkpoint stays runnable after an idle unload and the panel must keep
-    # showing it. The stash restores only that model, so it can never pick catalog[0].
+    # stored checkpoint stays runnable and the panel must keep showing it. The stash
+    # restores only that model, so it can never pick catalog[0].
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "const [idleReload, setIdleReload] = useState(false);" in hook
@@ -92,9 +92,9 @@ def test_standalone_idle_unload_still_names_the_stored_checkpoint():
 
 
 def test_a_failed_refresh_does_not_erase_what_the_server_holds():
-    # Catching into [] and false made a transient error authoritative: the panel
-    # dropped a still-servable model and printed "No model" until the next poll.
-    # The catalog is deliberately tri-state, and a failure must stay the unknown one.
+    # Catching into [] and false made a transient error authoritative: the panel dropped
+    # a still-servable model and printed "No model". The catalog is deliberately
+    # tri-state, and a failure must stay the unknown state.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "listOpenAIModels().catch(() => null)" in hook
@@ -108,9 +108,9 @@ def test_a_failed_refresh_does_not_erase_what_the_server_holds():
 
 
 def test_the_pinned_quant_comes_from_the_catalog():
-    # Catalog membership proves the repo, not the saved quant. The stored one can
-    # name a file deleted while another quant of the same repo remains, and pinning
-    # it emitted repo:deleted-quant, a missing-quant 404 with a runnable one listed.
+    # Catalog membership proves the repo, not the saved quant: the stored one can name
+    # a file deleted while another quant remains, so pinning it 404d on a missing quant
+    # with a runnable one listed.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "const quant = catalog === null ? ggufVariant : entry?.quant;" in hook

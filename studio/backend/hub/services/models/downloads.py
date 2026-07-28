@@ -114,8 +114,8 @@ async def download_model_response(
 ):
     """Start a background download for a HuggingFace model.
 
-    ``allow_ambient_token=False`` keeps the worker anonymous when the caller
-    supplied no token, for repos named over the API rather than chosen here.
+    ``allow_ambient_token=False`` keeps the worker anonymous when the caller sent
+    no token, for repos named over the API rather than chosen here.
     """
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):

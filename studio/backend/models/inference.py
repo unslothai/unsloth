@@ -191,12 +191,26 @@ class LoadRequest(BaseModel):
             "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
         ),
     )
+    force_cancel_active: bool = Field(
+        False,
+        description = (
+            "Stop chats still generating instead of refusing with 409. A load "
+            "replaces the llama-server every open conversation decodes on."
+        ),
+    )
 
 
 class UnloadRequest(BaseModel):
     """Request to unload a model"""
 
     model_path: str = Field(..., description = "Model identifier to unload")
+    force_cancel_active: bool = Field(
+        False,
+        description = (
+            "Stop chats still generating instead of refusing with 409. An "
+            "unload takes away the llama-server they are decoding on."
+        ),
+    )
 
 
 class TranscribeRequest(BaseModel):
@@ -349,6 +363,14 @@ class InstallLatestTransformersRequest(BaseModel):
         max_length = 64,
         description = "Exact transformers version to install; must match the current "
         "latest PyPI release reported by /validate.",
+    )
+    force_cancel_active: bool = Field(
+        False,
+        description = (
+            "Stop chats still generating instead of refusing with 409. The install "
+            "is a step of the model swap that raised the same prompt, so a client "
+            "that already got consent for that swap can carry it through here."
+        ),
     )
 
 
@@ -2070,7 +2092,8 @@ class AnthropicMessage(BaseModel):
 
 
 class AnthropicTool(BaseModel):
-    # Client tools have input_schema; server tools may only have type/name.
+    # User-defined client tools have input_schema; Anthropic-schema client tools
+    # and server tools use type/name.
     type: Optional[str] = None
     name: Optional[str] = None
     description: Optional[str] = None
