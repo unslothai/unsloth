@@ -416,6 +416,7 @@ def test_an_undecodable_transport_marker_reads_as_unknown(tmp_path: Path) -> Non
     if backend not in sys.path:
         sys.path.insert(0, backend)
     from hub.utils import download_registry as registry
+
     marker = tmp_path / ".transport"
     marker.write_bytes(b"\x80\xffnative\n")
     assert registry._read_marker_value(marker) is None
