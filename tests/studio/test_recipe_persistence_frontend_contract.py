@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import ast
 from pathlib import Path
 
 
@@ -18,6 +19,7 @@ EXECUTIONS_DB = (
 RECIPES_DB = (
     ROOT / "studio" / "frontend" / "src" / "features" / "data-recipes" / "data" / "recipes-db.ts"
 ).read_text(encoding = "utf-8")
+PLAYWRIGHT_RECIPE = ROOT / "tests" / "studio" / "playwright_recipe_persistence.py"
 
 
 def test_first_job_id_snapshot_bypasses_execution_write_debounce():
@@ -32,3 +34,10 @@ def test_recipe_sanitizer_defines_arbitrary_json_keys_as_own_properties():
     assert "Object.defineProperty(output, key" in RECIPES_DB
     assert "enumerable: true" in RECIPES_DB
     assert "output[key] = sanitizeRecipeForPersistence" not in RECIPES_DB
+
+
+def test_recipe_playwright_does_not_import_jwt_dependent_auth_package():
+    tree = ast.parse(PLAYWRIGHT_RECIPE.read_text(encoding = "utf-8"))
+    assert not any(
+        isinstance(node, ast.ImportFrom) and node.module == "auth" for node in ast.walk(tree)
+    )

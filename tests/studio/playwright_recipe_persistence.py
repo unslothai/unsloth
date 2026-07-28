@@ -16,6 +16,7 @@ It does not add a frontend test runner or emulate IndexedDB.
 from __future__ import annotations
 
 import base64
+import importlib.util
 import json
 import os
 import secrets
@@ -37,8 +38,21 @@ from _playwright_robust import (  # noqa: E402
     install_view_transition_killer,
     wait_for_health,
 )
-from auth import storage as auth_storage  # noqa: E402
 from storage import studio_db  # noqa: E402
+
+
+def load_auth_storage():
+    """Load the auth storage helper without importing JWT-dependent auth APIs."""
+    path = BACKEND / "auth" / "storage.py"
+    spec = importlib.util.spec_from_file_location("_studio_auth_storage", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load auth storage helper from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+auth_storage = load_auth_storage()
 
 
 BASE = os.environ["BASE_URL"].rstrip("/")
@@ -81,9 +95,9 @@ def login(username: str, password: str) -> dict:
     )
     assert payload.get("access_token"), f"login for {username!r} returned no access token"
     assert payload.get("refresh_token"), f"login for {username!r} returned no refresh token"
-    assert not payload.get(
-        "must_change_password"
-    ), f"account {username!r} still requires a password change"
+    assert not payload.get("must_change_password"), (
+        f"account {username!r} still requires a password change"
+    )
     return payload
 
 
