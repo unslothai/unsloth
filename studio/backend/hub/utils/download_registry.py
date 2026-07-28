@@ -463,7 +463,11 @@ def _read_marker_value(marker: Path) -> Optional[str]:
         if not marker.exists():
             return None
         value = marker.read_text(encoding = "utf-8").strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # Pinning the decode turns an undecodable marker into UnicodeDecodeError,
+        # which is a ValueError. Before, such bytes simply read as an unknown
+        # value and the caller safely purged and restarted the partial download;
+        # letting it escape aborts prepare_cache_for_transport instead.
         return None
     return value if value in VALID_TRANSPORTS else None
 

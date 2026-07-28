@@ -402,3 +402,24 @@ def test_a_torn_line_does_not_relabel_a_utf8_shard(tmp_path: Path) -> None:
     assert after.startswith(before)
     assert "Jürgen".encode() in after
     assert "Jürgen".encode("utf-8").decode("cp1252").encode() not in after
+
+
+def test_an_undecodable_transport_marker_reads_as_unknown(tmp_path: Path) -> None:
+    """Pinning the decode turns an undecodable marker into UnicodeDecodeError,
+    which is a ValueError and so is not an OSError. Before the pin those bytes
+    simply read as an unknown value and the caller safely purged and restarted
+    the partial download; letting the error escape aborts the transfer instead.
+    """
+    import sys
+
+    backend = str(Path(__file__).resolve().parent.parent)
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    from hub.utils import download_registry as registry
+    marker = tmp_path / ".transport"
+    marker.write_bytes(b"\x80\xffnative\n")
+    assert registry._read_marker_value(marker) is None
+    # A readable but unknown value takes the same path, which is the behaviour
+    # this is restoring rather than a new one.
+    marker.write_text("something-else\n", encoding = "utf-8")
+    assert registry._read_marker_value(marker) is None
