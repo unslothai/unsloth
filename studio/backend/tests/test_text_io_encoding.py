@@ -129,15 +129,8 @@ def _text_mode_subprocess(node: ast.Call) -> bool:
     return False
 
 
-def _text_mode_kwargs_dict(node: ast.Dict) -> bool:
-    """A `{"text": True, ...}` literal with no "encoding" key.
-
-    Kwargs are built up in a dict and splatted (`run(cmd, **run_kwargs)`) where a
-    branch has to add a timeout or an env, and the call itself is often through a
-    helper, so neither the callee nor the keywords are visible at the call site.
-    The dict is, and text mode without an encoding means the ANSI codepage
-    wherever it lands.
-    """
+def _text_mode_dict(node: ast.Dict) -> bool:
+    """A ``{"text": True, ...}`` literal with no "encoding" key."""
     keys = [k.value for k in node.keys if isinstance(k, ast.Constant)]
     if "encoding" in keys:
         return False
@@ -152,16 +145,76 @@ def _text_mode_kwargs_dict(node: ast.Dict) -> bool:
     return False
 
 
+def _splatted_names(tree: ast.AST) -> set[str]:
+    """Names handed to a call as ``**name``."""
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for keyword in node.keywords:
+                if keyword.arg is None and isinstance(keyword.value, ast.Name):
+                    names.add(keyword.value.id)
+    return names
+
+
+def _encoding_assigned_later(tree: ast.AST, name: str) -> bool:
+    """``name["encoding"] = ...`` somewhere, so the literal need not carry it."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Subscript) or not isinstance(node.ctx, ast.Store):
+            continue
+        target, key = node.value, node.slice
+        if isinstance(target, ast.Name) and target.id == name:
+            if isinstance(key, ast.Constant) and key.value == "encoding":
+                return True
+    return False
+
+
+def _splatted_kwargs_offenders(tree: ast.AST) -> list[ast.Dict]:
+    """Text-mode kwargs built in a dict and splatted into a call.
+
+    Kwargs are collected in a dict and splatted (``run(cmd, **run_kwargs)``)
+    where a branch has to add a timeout or an env, and the call is often through
+    a helper, so neither the callee nor the keywords are visible at the call
+    site. Only dicts that reach a call this way are judged: an unrelated payload
+    that happens to carry ``"text": True`` is not subprocess configuration.
+    """
+    found = []
+    # ``run(cmd, **{...})``: the literal is at the call already.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg is None and isinstance(keyword.value, ast.Dict):
+                if _text_mode_dict(keyword.value):
+                    found.append(keyword.value)
+    splatted = _splatted_names(tree)
+    if not splatted:
+        return found
+    for node in ast.walk(tree):
+        targets = []
+        if isinstance(node, ast.Assign):
+            targets = [t for t in node.targets if isinstance(t, ast.Name)]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            targets = [node.target]
+        if not targets or not isinstance(node.value, ast.Dict):
+            continue
+        if not _text_mode_dict(node.value):
+            continue
+        for target in targets:
+            if target.id in splatted and not _encoding_assigned_later(tree, target.id):
+                found.append(node.value)
+                break
+    return found
+
+
 def _offenders(path: Path) -> list[str]:
     source = path.read_text(encoding = "utf-8")
     tree = ast.parse(source, filename = str(path))
     subprocess_names = _subprocess_names(tree)
     found: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Dict) and _text_mode_kwargs_dict(node):
-            found.append(
-                f"{path.name}:{node.lineno}: subprocess kwargs with text = True and no encoding"
-            )
+    for node in _splatted_kwargs_offenders(tree):
+        found.append(
+            f"{path.name}:{node.lineno}: subprocess kwargs with text = True and no encoding"
+        )
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -499,3 +552,45 @@ def test_a_corrupt_pid_file_does_not_abort_shutdown(tmp_path: Path, monkeypatch)
     pid_file.write_text(str(os.getpid()), encoding = "utf-8")
     studio_run._remove_pid_file()
     assert not pid_file.exists()
+
+
+def test_the_kwargs_guard_only_judges_dicts_that_reach_a_call(tmp_path: Path) -> None:
+    """Only a dict splatted into a call is subprocess configuration. An unrelated
+    payload that happens to carry "text": True is not, and neither is one whose
+    encoding is filled in on a later line."""
+    cases = {
+        "offender.py": 'kw = {"text": True}\nrun(cmd, **kw)\n',
+        "annotated.py": 'kw: dict = {"universal_newlines": True}\nrun(cmd, **kw)\n',
+        "payload.py": 'payload = {"text": True}\nrequests.post(url, json = payload)\n',
+        "inline.py": 'run(cmd, **{"text": True})\n',
+        "later.py": 'kw = {"text": True}\nkw["encoding"] = "utf-8"\nrun(cmd, **kw)\n',
+        "carried.py": 'kw = {"text": True, "encoding": "utf-8"}\nrun(cmd, **kw)\n',
+    }
+    flagged = set()
+    for name, source in cases.items():
+        path = tmp_path / name
+        path.write_text(source, encoding = "utf-8")
+        if any("subprocess kwargs" in line for line in _offenders(path)):
+            flagged.add(name)
+    assert flagged == {"offender.py", "annotated.py", "inline.py"}, flagged
+
+
+def test_an_undecodable_bootstrap_password_does_not_stop_startup(tmp_path: Path, monkeypatch) -> None:
+    """ensure_default_admin calls _load_bootstrap_password for every existing
+    admin and the lifespan calls that with no handler, so a raise here takes the
+    whole backend down instead of ignoring an unusable file."""
+    import sys
+
+    backend = str(Path(__file__).resolve().parent.parent)
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    from auth import storage
+
+    pw_file = tmp_path / ".bootstrap_password"
+    pw_file.write_bytes(b"\x80\xffnot-utf8\n")
+    monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", pw_file)
+    assert storage._load_bootstrap_password() is None
+
+    # A readable one still loads, so this is a narrowing of failure, not of function.
+    pw_file.write_text("correct horse battery staple\n", encoding = "utf-8")
+    assert storage._load_bootstrap_password() == "correct horse battery staple"

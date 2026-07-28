@@ -76,7 +76,15 @@ def _load_bootstrap_password() -> Optional[str]:
     global _bootstrap_password
     _bootstrap_password = None
     if _BOOTSTRAP_PW_PATH.is_file():
-        bootstrap_password = _BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8").strip()
+        # ensure_default_admin calls this for every existing admin and the
+        # lifespan calls that with no handler, so an unreadable file has to mean
+        # "no bootstrap password", not a backend that will not start. We write
+        # this file ourselves in UTF-8, so a byte that will not decode is a
+        # damaged or pre-pin one and its plaintext is worthless either way.
+        try:
+            bootstrap_password = _BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            return _bootstrap_password
         if bootstrap_password:
             _bootstrap_password = bootstrap_password
     return _bootstrap_password
