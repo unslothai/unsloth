@@ -847,9 +847,7 @@ def test_cached_repo_settings_are_keyed_by_the_repo_id():
     path (hub/services/cache_inventory.py), while the chat picker and the
     auto-switch index key it by repo_id. Keying the Hub's settings by the load id
     saved them where no other load looks, so they silently never applied."""
-    config_page = " ".join(
-        _read("features/model-picker/components/model-config-page.tsx").split()
-    )
+    config_page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert "const configId = target.configId ?? target.id;" in config_page
     for call in (
         "resolveInitialConfig(configId, target.ggufVariant)",
