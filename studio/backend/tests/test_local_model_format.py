@@ -108,7 +108,11 @@ def test_scan_lmstudio_dir_skips_mmproj_under_publisher(tmp_path):
     assert names == {"model-Q4_K_M"}
 
 
-def _touch_split(folder: Path, stem: str, parts: int = 3) -> Path:
+def _touch_split(
+    folder: Path,
+    stem: str,
+    parts: int = 3,
+) -> Path:
     """A llama.cpp split export: ``<stem>-00001-of-000NN.gguf`` and no config."""
     for part in range(1, parts + 1):
         _touch(folder / f"{stem}-{part:05d}-of-{parts:05d}.gguf")
