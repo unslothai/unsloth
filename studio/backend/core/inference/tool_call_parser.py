@@ -213,9 +213,7 @@ REPROMPT_REPEAT_SIMILARITY = 0.95
 # different search plans compared equal and the second one lost its nudge.
 def _normalize_for_repeat(text: str) -> str:
     return " ".join(
-        stripped
-        for word in text.lower().split()
-        if (stripped := word.strip(_REPEAT_EDGE_PUNCT))
+        stripped for word in text.lower().split() if (stripped := word.strip(_REPEAT_EDGE_PUNCT))
     )
 
 
