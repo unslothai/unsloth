@@ -124,6 +124,25 @@ def _drop_park() -> None:
         _parked_total = max(0, _parked_total - 1)
 
 
+def _live_capacity(current: "LlamaAdmissionQueue") -> int:
+    """Slots across every backend still serving requests.
+
+    A park is budgeted against the executor and there is only one of those, so
+    one queue's capacity is the wrong denominator. A reload mints a queue on a
+    new port while the old one drains, and prompts on both park threads: sizing
+    from either alone lets them add up past the reserve. Idle queues are the ones
+    the registry is about to evict and are holding nothing.
+    """
+    with _QUEUES_LOCK:
+        queues = list(_QUEUES.values())
+    # is_idle takes each queue's own lock, so never while holding _QUEUES_LOCK.
+    total = sum(
+        queue._capacity for queue in queues
+        if queue is current or not queue.is_idle()
+    )
+    return total if any(queue is current for queue in queues) else total + current._capacity
+
+
 @dataclass(frozen = True, **_SLOTS)
 class LlamaAdmissionConfig:
     enabled: bool = DEFAULT_ADMISSION_ENABLED
@@ -280,7 +299,7 @@ class _Waiter:
 
 
 class LlamaAdmissionLease:
-    __slots__ = ("_queue", "_slot", "_released", "_release_lock", "_parked")
+    __slots__ = ("_queue", "_slot", "_released", "_release_lock", "_parked", "_budgeted")
 
     def __init__(
         self,
@@ -292,6 +311,7 @@ class LlamaAdmissionLease:
         self._released = False
         self._release_lock = threading.Lock()
         self._parked = False
+        self._budgeted = False
 
     @property
     def slot(self) -> Optional[int]:
@@ -321,8 +341,24 @@ class LlamaAdmissionLease:
             if not queue.try_park(self._slot):
                 return False
             self._parked = True
+            self._budgeted = True
             self._slot = None
         return True
+
+    def _drop_budget(self) -> None:
+        """Give the executor budget back now the prompt wait is over.
+
+        Separate from the queue's parked count, which has to last until the slot
+        is back. This is about executor threads, and the thread is free the
+        moment the answer arrives, before the resume has even queued for a slot.
+        Holding it until then refuses someone else's park for a wait that already
+        finished, and that someone keeps the slot the resumer is waiting for.
+        """
+        with self._release_lock:
+            if not self._budgeted:
+                return
+            self._budgeted = False
+        _drop_park()
 
     def unpark(self) -> None:
         """Drop the parked state without reclaiming a slot.
@@ -335,6 +371,7 @@ class LlamaAdmissionLease:
             if not self._parked:
                 return
             self._parked = False
+        self._drop_budget()
         if self._queue is not None:
             self._queue.unpark()
 
@@ -354,6 +391,9 @@ class LlamaAdmissionLease:
         queue = self._queue
         if queue is None or not self._parked:
             return
+        # Before the wait: the prompt is answered, so this holder is off the
+        # executor already and must not keep anyone else off it.
+        self._drop_budget()
         slot = await queue.acquire_parked_slot(cancel_event = cancel_event, poll_s = poll_s)
         stranded = None
         with self._release_lock:
@@ -380,6 +420,7 @@ class LlamaAdmissionLease:
             self._released = True
             queue = self._queue
             parked, self._parked = self._parked, False
+        self._drop_budget()
         if queue is not None:
             if parked:
                 queue.unpark()
@@ -594,9 +635,10 @@ class LlamaAdmissionQueue:
 
         False leaves the slot with its holder, so a refused park costs nothing to
         undo. The per-queue count is only what ``is_idle`` reads; the budget it
-        is checked against is process-wide.
+        is checked against is process-wide, and so is the capacity it is sized
+        from.
         """
-        if not _claim_park(_max_parked(self._capacity)):
+        if not _claim_park(_max_parked(_live_capacity(self))):
             return False
         with self._lock:
             self._parked += 1
@@ -605,13 +647,9 @@ class LlamaAdmissionQueue:
         return True
 
     def unpark(self) -> None:
-        dropped = False
         with self._lock:
             if self._parked > 0:
                 self._parked -= 1
-                dropped = True
-        if dropped:
-            _drop_park()
 
     async def acquire_parked_slot(
         self,

@@ -1211,3 +1211,95 @@ def test_the_stream_retries_a_park_that_was_refused():
     assert all(
         isinstance(stmt, ast.Return) for stmt in guards[0].body
     ), "a refused park must leave _parked alone, so a later approval retries it"
+
+
+def test_the_park_budget_counts_every_live_backend(monkeypatch):
+    # base_url carries a fresh port on every load, so a reload mints a queue
+    # while the old one drains. Prompts on both park executor threads, and there
+    # is one executor, so sizing the budget from either backend alone lets them
+    # add up past the reserve.
+    monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
+
+    async def scenario():
+        config = LlamaAdmissionConfig()
+        old = get_llama_admission_queue("http://llama.test:1")
+        draining = old.reserve(capacity = 16, config = config).lease_nowait()
+        assert draining is not None  # in flight, so the registry keeps this queue
+
+        new = get_llama_admission_queue("http://llama.test:2")
+        lease = new.reserve(capacity = 16, config = config).lease_nowait()
+        assert lease is not None
+
+        # 16 slots each against 32 workers: their prompts alone can fill it.
+        assert llama_admission._max_parked(16) > 0, "this test needs a budget to remove"
+        assert not lease.park(), "budget sized from one backend of two"
+
+        draining.release()  # the old backend drains and is up for eviction
+        assert lease.park(), "an idle backend still counted against the budget"
+        lease.release()
+
+    asyncio.run(scenario())
+
+
+def test_the_park_budget_is_freed_when_the_prompt_is_answered(monkeypatch):
+    # The executor thread comes back the moment the answer arrives, before the
+    # resume has queued for a slot. Holding the budget until the slot lands
+    # refuses someone else's park for a wait that already finished, and that
+    # someone keeps holding the slot the resumer is waiting for.
+    monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
+
+    async def scenario():
+        config = LlamaAdmissionConfig()
+        queue = get_llama_admission_queue("http://llama.test")
+
+        parked = []
+        for _ in range(llama_admission._max_parked(1)):
+            lease = queue.reserve(capacity = 1, config = config).lease_nowait()
+            assert lease is not None and lease.park()
+            parked.append(lease)
+
+        blocked = queue.reserve(capacity = 1, config = config).lease_nowait()
+        assert blocked is not None
+        assert not blocked.park(), "the budget was not full to begin with"
+
+        # One prompt is answered. Its slot is taken, so the resume queues for one.
+        resumed = asyncio.ensure_future(parked[0].unpark_async(poll_s = 0.01))
+        await asyncio.sleep(0.05)
+        assert not resumed.done(), "the resume needs to still be waiting for its slot"
+
+        assert blocked.park(), "budget held for a prompt wait that is over"
+        # Which is what frees the slot the resumer was waiting for.
+        await asyncio.wait_for(resumed, timeout = 2)
+        for lease in parked[1:] + [blocked]:
+            lease.release()
+        parked[0].release()
+
+    asyncio.run(scenario())
+
+
+def test_releasing_a_parked_holder_returns_its_budget(monkeypatch):
+    # A client that disconnects on the prompt releases straight out of parked,
+    # without ever unparking. Its executor thread is gone with it, so keeping the
+    # budget would lose one for the life of the process.
+    monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
+
+    async def scenario():
+        config = LlamaAdmissionConfig()
+        queue = get_llama_admission_queue("http://llama.test")
+
+        parked = []
+        for _ in range(llama_admission._max_parked(1)):
+            lease = queue.reserve(capacity = 1, config = config).lease_nowait()
+            assert lease is not None and lease.park()
+            parked.append(lease)
+
+        blocked = queue.reserve(capacity = 1, config = config).lease_nowait()
+        assert blocked is not None
+        assert not blocked.park(), "the budget was not full to begin with"
+
+        parked[0].release()
+        assert blocked.park(), "a released park never gave its budget back"
+        for lease in parked[1:] + [blocked]:
+            lease.release()
+
+    asyncio.run(scenario())
