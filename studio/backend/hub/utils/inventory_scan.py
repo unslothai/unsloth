@@ -641,7 +641,6 @@ def snapshot_variants_all_complete(snapshot: str) -> bool:
     the sets are directly comparable.
     """
     from hub.utils.gguf import list_local_gguf_variants
-
     try:
         variants, _ = list_local_gguf_variants(snapshot)
         offered = {v.quant for v in variants if getattr(v, "quant", None)}

@@ -3056,7 +3056,6 @@ def snapshot_variants_all_complete(snapshot: str) -> bool:
     cache inventory needs the same predicate, so it lives beside the completed
     variant walk it is built on."""
     from hub.utils import inventory_scan
-
     return inventory_scan.snapshot_variants_all_complete(snapshot)
 
 
