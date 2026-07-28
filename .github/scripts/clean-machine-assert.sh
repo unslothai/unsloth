@@ -38,6 +38,16 @@ for check in "$@"; do
       for tool in git cc clang cmake; do
         command -v "$tool" >/dev/null 2>&1 || { ok "$tool not on PATH"; continue; }
         if "$tool" --version >/dev/null 2>&1; then
+          # On Intel runners /usr/bin/git keeps working once the CLT are gone, so it
+          # is not CLT-provided there and no masking can remove it. cc and clang do
+          # become stubs, and the consumer path needs no git on macOS, so report it
+          # rather than calling the simulation broken.
+          case " ${UNSLOTH_CLEAN_ALLOW_WORKING:-} " in
+            *" $tool "*)
+              echo "[assert] NOTE $tool still works ($(command -v "$tool")); allowed on this runner"
+              continue
+              ;;
+          esac
           fail "toolchain still usable: '$tool --version' succeeded ($(command -v "$tool")); masking failed"
         else
           ok "$tool present but non-functional (CLT stub), as on a clean Mac"

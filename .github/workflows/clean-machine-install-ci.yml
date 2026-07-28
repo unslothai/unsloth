@@ -83,8 +83,9 @@ jobs:
           # OS-version dimension.
           - {os: macos-15, mode: mask,  delivery: pipe,  flags: '',           experimental: false}
           - {os: macos-26, mode: mask,  delivery: file,  flags: '',           experimental: true}
-          # Intel pins python 3.12, not 3.13 -- informational only.
-          - {os: macos-15-intel, mode: mask, delivery: file, flags: '',       experimental: true}
+          # Intel pins python 3.12 and its /usr/bin/git is not CLT-provided, so it
+          # survives masking. Informational only.
+          - {os: macos-15-intel, mode: mask, delivery: file, flags: '',       experimental: true, allow_working: 'git'}
 
     steps:
       # checkout FIRST: it needs a working git, which masking then takes away.
@@ -118,7 +119,8 @@ jobs:
         if: matrix.mode == 'mask'
         run: |
           set -a; . ./clean-machine.env; set +a
-          bash .github/scripts/clean-machine-assert.sh absent
+          UNSLOTH_CLEAN_ALLOW_WORKING='${{ matrix.allow_working }}' \
+            bash .github/scripts/clean-machine-assert.sh absent
 
       - name: Install
         id: install
@@ -189,9 +191,10 @@ jobs:
         run: |
           set -a; . ./clean-machine.env; set +a
           # The tauri leg cannot honour UNSLOTH_STUDIO_HOME (see the Install step), so
-          # it installed into the legacy root and that is where to look.
+          # it installed into the legacy root. llama.cpp sits at <root>/llama.cpp and
+          # the venv at <root>/studio, so this is ~/.unsloth, not ~/.unsloth/studio.
           if [ "${{ matrix.delivery }}" = "tauri" ]; then
-            HOME_DIR="$HOME/.unsloth/studio"
+            HOME_DIR="$HOME/.unsloth"
           else
             HOME_DIR="$UNSLOTH_STUDIO_HOME"
           fi
