@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { useEffect, useState } from "react";
+import { shouldRetrySystemDiscovery } from "./system-discovery";
 
 export interface GpuDevice {
   index?: number;
@@ -118,13 +119,23 @@ export function subscribeSystemInfo(
 }
 
 function scheduleVulkanRetry(): void {
-  const inferenceGpu = cachedSystem?.inference_gpu;
   if (
-    vulkanRetrySubscribers === 0 ||
-    vulkanRetryId !== null ||
-    inferenceGpu?.backend !== "vulkan" ||
-    inferenceGpu.available
+    !shouldRetrySystemDiscovery(
+      cachedSystem === null,
+      cachedSystem?.inference_gpu,
+      vulkanRetrySubscribers,
+    )
   ) {
+    // A cold subscription schedules before its first request settles. Cancel
+    // that pending retry as soon as discovery succeeds with a usable inventory
+    // or a non-Vulkan backend.
+    if (vulkanRetryId !== null) {
+      window.clearTimeout(vulkanRetryId);
+      vulkanRetryId = null;
+    }
+    return;
+  }
+  if (vulkanRetryId !== null) {
     return;
   }
   vulkanRetryId = window.setTimeout(() => {
