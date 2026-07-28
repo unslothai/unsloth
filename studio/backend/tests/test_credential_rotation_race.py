@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 import pytest
 
-from auth import storage
+from auth import hashing, storage
 from auth.authentication import ALGORITHM, create_access_token, create_refresh_token
 
 
@@ -85,6 +85,80 @@ def test_tokens_from_the_current_credential_still_work(admin):
 
     jwt.decode(access, storage.get_jwt_secret(admin), algorithms = [ALGORITHM])
     assert storage.verify_refresh_token(refresh) == (admin, False)
+
+
+def test_refresh_cannot_outlive_a_rotation_it_raced(admin):
+    # /refresh consumes, then mints. A rotation landing in between must not let
+    # the replacement pair be signed with the credential that just replaced it.
+    secret = _verified_secret(admin)
+    token = create_refresh_token(subject = admin, secret = secret)
+    consumed = storage.consume_refresh_token(token)
+    assert consumed is not None
+    _username, _is_desktop, consumed_secret = consumed
+
+    storage.update_password(admin, "new-password-456", revoke_refresh_tokens = True)
+    access = create_access_token(subject = admin, secret = consumed_secret)
+    refresh = create_refresh_token(subject = admin, secret = consumed_secret)
+
+    with pytest.raises(jwt.InvalidTokenError):
+        jwt.decode(access, storage.get_jwt_secret(admin), algorithms = [ALGORITHM])
+    assert storage.verify_refresh_token(refresh) is None
+
+
+def test_desktop_login_cannot_outlive_a_rotation_it_raced(admin):
+    # The reset deletes the desktop secret, so a desktop-login that validated it
+    # just beforehand must not mint a session that survives.
+    raw = storage.create_desktop_secret()
+    verified = storage.validate_desktop_secret_with_credential(raw)
+    assert verified is not None
+    _username, verified_secret = verified
+
+    storage.update_password(admin, "new-password-456", revoke_refresh_tokens = True)
+    access = create_access_token(subject = admin, desktop = True, secret = verified_secret)
+    refresh = create_refresh_token(subject = admin, desktop = True, secret = verified_secret)
+
+    with pytest.raises(jwt.InvalidTokenError):
+        jwt.decode(access, storage.get_jwt_secret(admin), algorithms = [ALGORITHM])
+    assert storage.verify_refresh_token(refresh) is None
+
+
+def test_change_password_cannot_overwrite_a_rotation_it_raced(admin):
+    # A change-password that verified the old hash must not clobber a reset that
+    # committed while it was in flight.
+    _salt, verified_hash, _secret, _must_change = storage.get_user_and_secret(admin)
+
+    storage.update_password(admin, "reset-by-the-cli-789", revoke_refresh_tokens = True)
+
+    assert not storage.update_password(
+        admin,
+        "attacker-chosen-000",
+        revoke_refresh_tokens = True,
+        expect_password_hash = verified_hash,
+    )
+    salt, pwd_hash, _s, _m = storage.get_user_and_secret(admin)
+    assert hashing.verify_password("reset-by-the-cli-789", salt, pwd_hash)
+
+
+def test_api_key_creation_from_a_revoked_credential_is_refused(admin):
+    generation = storage.credential_generation(_verified_secret(admin))
+
+    storage.update_password(admin, "new-password-456", revoke_refresh_tokens = True)
+
+    with pytest.raises(storage.CredentialRotated):
+        storage.create_api_key(username = admin, name = "k", expect_gen = generation)
+    conn = storage.get_connection()
+    try:
+        assert conn.execute("SELECT COUNT(*) AS c FROM api_keys").fetchone()["c"] == 0
+    finally:
+        conn.close()
+
+
+def test_api_key_creation_under_the_current_credential_still_works(admin):
+    generation = storage.credential_generation(_verified_secret(admin))
+
+    raw_key, _row = storage.create_api_key(username = admin, name = "k", expect_gen = generation)
+
+    assert storage.validate_api_key(raw_key) == admin
 
 
 def test_unstamped_legacy_tokens_still_verify(admin):

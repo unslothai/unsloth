@@ -154,7 +154,22 @@ def reload_secret() -> None:
 
 async def get_current_subject(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
     """Validate JWT and require the password-change flow to be completed."""
-    return await _get_current_subject(
+    subject, _generation = await _get_current_credential(
+        credentials,
+        allow_password_change = False,
+    )
+    return subject
+
+
+async def get_current_credential(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> Tuple[str, Optional[str]]:
+    """As get_current_subject, but also returns the credential generation.
+
+    For routes that persist a new credential and must not do so on behalf of one
+    a concurrent reset has revoked.
+    """
+    return await _get_current_credential(
         credentials,
         allow_password_change = False,
     )
@@ -175,10 +190,11 @@ async def get_current_subject_allow_password_change(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> str:
     """Validate JWT but allow access to the password-change endpoint."""
-    return await _get_current_subject(
+    subject, _generation = await _get_current_credential(
         credentials,
         allow_password_change = True,
     )
+    return subject
 
 
 # The literal the examples ship with; pasted unedited more often than a revoked key.
@@ -196,10 +212,15 @@ def _invalid_api_key_detail(token: str) -> str:
     return "Invalid or expired API key"
 
 
-async def _get_current_subject(
+async def _get_current_credential(
     credentials: HTTPAuthorizationCredentials, *, allow_password_change: bool
-) -> str:
-    """FastAPI dependency: validate the JWT and return the subject. Use on protected routes."""
+) -> Tuple[str, Optional[str]]:
+    """Validate the bearer and return ``(subject, credential generation)``.
+
+    The generation is the credential version this request actually authenticated
+    against. Routes that persist new credentials must bind their write to it, or
+    a reset landing mid-request would bless what it just revoked.
+    """
     token = credentials.credentials
 
     # --- API key path (sk-unsloth-...) ---
@@ -210,7 +231,8 @@ async def _get_current_subject(
                 status_code = status.HTTP_401_UNAUTHORIZED,
                 detail = _invalid_api_key_detail(token),
             )
-        return username
+        secret = get_jwt_secret(username)
+        return username, credential_generation(secret) if secret is not None else None
 
     # --- JWT path ---
     subject = _decode_subject_without_verification(token)
@@ -241,7 +263,7 @@ async def _get_current_subject(
                 status_code = status.HTTP_403_FORBIDDEN,
                 detail = "Password change required",
             )
-        return subject
+        return subject, credential_generation(jwt_secret)
     except jwt.InvalidTokenError:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,

@@ -233,7 +233,7 @@ def test_consume_refresh_token_second_call_returns_none():
     storage.save_refresh_token(raw, storage.DEFAULT_ADMIN_USERNAME, expires)
 
     first = storage.consume_refresh_token(raw)
-    assert first == (storage.DEFAULT_ADMIN_USERNAME, False)
+    assert first[:2] == (storage.DEFAULT_ADMIN_USERNAME, False)
     second = storage.consume_refresh_token(raw)
     assert second is None
 
@@ -262,7 +262,7 @@ def test_consume_refresh_token_concurrent_only_one_succeeds(tmp_path, monkeypatc
 
     successes = [r for r in results if r is not None]
     assert len(successes) == 1, f"expected exactly one consumer to win, got {len(successes)}"
-    assert successes[0] == (storage.DEFAULT_ADMIN_USERNAME, False)
+    assert successes[0][:2] == (storage.DEFAULT_ADMIN_USERNAME, False)
 
 
 def test_consume_refresh_token_expired_returns_none():

@@ -132,6 +132,10 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+class CredentialRotated(Exception):
+    """A password reset revoked the credential this request authenticated with."""
+
+
 def credential_generation(jwt_secret: str) -> str:
     """Marker for the credential version a refresh token was issued under.
 
@@ -141,11 +145,16 @@ def credential_generation(jwt_secret: str) -> str:
     return hashlib.sha256(jwt_secret.encode("utf-8")).hexdigest()
 
 
-def _current_generation(conn: sqlite3.Connection, username: str) -> Optional[str]:
+def _current_secret(conn: sqlite3.Connection, username: str) -> Optional[str]:
     row = conn.execute(
         "SELECT jwt_secret FROM auth_user WHERE username = ?", (username,)
     ).fetchone()
-    return credential_generation(row["jwt_secret"]) if row else None
+    return row["jwt_secret"] if row else None
+
+
+def _current_generation(conn: sqlite3.Connection, username: str) -> Optional[str]:
+    secret = _current_secret(conn, username)
+    return credential_generation(secret) if secret is not None else None
 
 
 def get_connection() -> sqlite3.Connection:
@@ -606,12 +615,18 @@ def update_password(
     new_password: str,
     *,
     revoke_refresh_tokens: bool = False,
+    expect_password_hash: Optional[str] = None,
 ) -> bool:
     """Update password, clear first-login requirement, rotate JWT secret.
 
     ``revoke_refresh_tokens`` deletes the user's refresh tokens in the SAME
     transaction: a separate delete could fail after the password commit and
     leave a pre-change token still able to mint access tokens.
+
+    ``expect_password_hash`` makes the write conditional on the credential the
+    caller verified still being current, so a request that checked the old
+    password cannot overwrite a reset that landed while it was in flight.
+    Returns False when the credential moved underneath it.
     """
     from .hashing import hash_password
 
@@ -619,14 +634,24 @@ def update_password(
     jwt_secret = secrets.token_urlsafe(64)
     conn = get_connection()
     try:
-        cursor = conn.execute(
-            """
-            UPDATE auth_user
-            SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
-            WHERE username = ?
-            """,
-            (salt, pwd_hash, jwt_secret, username),
-        )
+        if expect_password_hash is None:
+            cursor = conn.execute(
+                """
+                UPDATE auth_user
+                SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
+                WHERE username = ?
+                """,
+                (salt, pwd_hash, jwt_secret, username),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                UPDATE auth_user
+                SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
+                WHERE username = ? AND password_hash = ?
+                """,
+                (salt, pwd_hash, jwt_secret, username, expect_password_hash),
+            )
         if revoke_refresh_tokens and cursor.rowcount > 0:
             conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
         conn.commit()
@@ -670,11 +695,14 @@ def save_refresh_token(
         conn.close()
 
 
-def consume_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
+def consume_refresh_token(token: str) -> Optional[Tuple[str, bool, str]]:
     """Atomically validate-and-delete a refresh token for single-use rotation.
 
     DELETE RETURNING fuses validate and delete into one statement so two
-    concurrent refresh requests cannot both consume the same token.
+    concurrent refresh requests cannot both consume the same token. Returns
+    ``(username, is_desktop, jwt_secret)``; the caller must mint the replacement
+    tokens against that secret so a rotation landing mid-refresh cannot issue a
+    post-rotation session from a pre-rotation token.
     """
     token_hash = _hash_token(token)
     now = datetime.now(timezone.utc).isoformat()
@@ -696,11 +724,12 @@ def consume_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
         conn.commit()
         if row is None:
             return None
-        if row["secret_gen"] is not None and row["secret_gen"] != _current_generation(
-            conn, row["username"]
-        ):
+        secret = _current_secret(conn, row["username"])
+        if secret is None:
             return None
-        return row["username"], bool(row["is_desktop"])
+        if row["secret_gen"] is not None and row["secret_gen"] != credential_generation(secret):
+            return None
+        return row["username"], bool(row["is_desktop"]), secret
     finally:
         conn.close()
 
@@ -784,28 +813,39 @@ def create_desktop_secret() -> str:
         conn.close()
 
 
-def validate_desktop_secret(raw_secret: str) -> Optional[str]:
-    """Return the real admin username when the desktop secret matches."""
+def validate_desktop_secret_with_credential(raw_secret: str) -> Optional[Tuple[str, str]]:
+    """Validate the desktop secret and return ``(username, jwt_secret)``.
+
+    Both reads share one transaction so the returned secret is the credential
+    version the desktop secret was checked against; a reset landing mid-request
+    then invalidates the tokens minted from it rather than blessing them.
+    """
     if not raw_secret.startswith(DESKTOP_SECRET_PREFIX):
-        return None
-    if get_user_and_secret(DEFAULT_ADMIN_USERNAME) is None:
         return None
 
     secret_hash = _pbkdf2_desktop_secret(raw_secret)
     conn = get_connection()
     try:
-        cur = conn.execute(
+        conn.execute("BEGIN")
+        row = conn.execute(
             "SELECT value FROM app_secrets WHERE key = ?",
             (_DESKTOP_SECRET_HASH_KEY,),
-        )
-        row = cur.fetchone()
-        if row is None:
+        ).fetchone()
+        if row is None or not secrets.compare_digest(row["value"], secret_hash):
             return None
-        if not secrets.compare_digest(row["value"], secret_hash):
+        jwt_secret = _current_secret(conn, DEFAULT_ADMIN_USERNAME)
+        if jwt_secret is None:
             return None
-        return DEFAULT_ADMIN_USERNAME
+        return DEFAULT_ADMIN_USERNAME, jwt_secret
     finally:
+        conn.rollback()
         conn.close()
+
+
+def validate_desktop_secret(raw_secret: str) -> Optional[str]:
+    """Return the real admin username when the desktop secret matches."""
+    verified = validate_desktop_secret_with_credential(raw_secret)
+    return verified[0] if verified else None
 
 
 def clear_desktop_secret() -> None:
@@ -833,6 +873,7 @@ def create_api_key(
     name: str,
     expires_at: Optional[str] = None,
     internal: bool = False,
+    expect_gen: Optional[str] = None,
 ) -> Tuple[str, dict]:
     """Create a new API key for *username*.
 
@@ -841,6 +882,10 @@ def create_api_key(
 
     Pass ``internal=True`` for keys minted by workflows (e.g. data-recipe
     runs) that should not appear in user-facing key listings.
+
+    ``expect_gen`` ties the insert to the credential generation the request
+    authenticated under, so a session revoked by a concurrent password reset
+    cannot mint a key that outlives it. Raises ``CredentialRotated`` if it moved.
     """
     raw_key = API_KEY_PREFIX + secrets.token_hex(16)
     key_hash = _pbkdf2_api_key(raw_key)
@@ -849,6 +894,12 @@ def create_api_key(
 
     conn = get_connection()
     try:
+        if expect_gen is not None:
+            conn.execute("BEGIN IMMEDIATE")
+            if _current_generation(conn, username) != expect_gen:
+                raise CredentialRotated(
+                    "The credential this request authenticated with was revoked."
+                )
         conn.execute(
             """
             INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at, is_internal)
