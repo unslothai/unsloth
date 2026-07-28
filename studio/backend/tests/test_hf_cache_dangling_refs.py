@@ -55,9 +55,7 @@ def _ref_names(repo_dir: Path) -> list[str]:
 def _scanned_repo_ids(cache_root: Path, monkeypatch) -> list[str]:
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [cache_root])
     return [
-        repo.repo_id
-        for scan in inventory_scan._compute_all_hf_cache_scans()
-        for repo in scan.repos
+        repo.repo_id for scan in inventory_scan._compute_all_hf_cache_scans() for repo in scan.repos
     ]
 
 

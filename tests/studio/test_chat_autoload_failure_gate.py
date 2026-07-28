@@ -226,9 +226,9 @@ def _build_harness():
         ),
         None,
     )
-    assert start is not None and end is not None and start < end, (
-        "could not locate the auto-load region in chat-adapter.ts"
-    )
+    assert (
+        start is not None and end is not None and start < end
+    ), "could not locate the auto-load region in chat-adapter.ts"
     body = "\n".join(lines[start:end])
     assert "async function autoLoadSmallestModel" in body
     TEMP.mkdir(parents = True, exist_ok = True)
@@ -241,17 +241,21 @@ def _build_harness():
 def _run(scenario_expr: str) -> dict:
     _require_node()
     _build_harness()
-    script = textwrap.dedent(
-        """
+    script = (
+        textwrap.dedent(
+            """
         // @ts-nocheck
         import { autoLoadSmallestModel, setScenario, EVENTS } from "./harness.ts";
         """
-    ) + SCENARIO_HELPERS + textwrap.dedent(
-        f"""
+        )
+        + SCENARIO_HELPERS
+        + textwrap.dedent(
+            f"""
         setScenario({scenario_expr});
         const result = await autoLoadSmallestModel();
         console.log(JSON.stringify({{ result, events: EVENTS }}));
         """
+        )
     )
     (TEMP / "run.mts").write_text(script, encoding = "utf-8")
     completed = subprocess.run(
@@ -333,9 +337,7 @@ def test_empty_device_still_downloads_the_default_model():
 def test_enumeration_failure_still_downloads_the_default_model():
     """A cached repo whose variants cannot be listed never reached /load, so it
     keeps falling through: only a real load rejection changes behaviour."""
-    out = _run(
-        "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: 'throw' } })"
-    )
+    out = _run("scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: 'throw' } })")
 
     assert _loaded_paths(out) == [DEFAULT_MODEL]
     assert out["result"]["loaded"] is True
