@@ -678,6 +678,17 @@ jobs:
             winget: 'masked'
             experimental: false
             overlay: true
+          # Windows on ARM gets as far as the dependency install and then stops on
+          # two packages that publish no win_arm64 wheel at all:
+          #   pyarrow==25.0.0  (pulled in by datasets) -- PyPI has win_amd64 only,
+          #     so uv falls back to the sdist and its CMake configure fails
+          #   hf-transfer==0.1.9 -- a maturin/Rust sdist whose openssl-sys build
+          #     script wants perl, which the image does not have
+          # The ARM-specific handling added for this platform is working: the log
+          # shows "windows on arm: skipping torchaudio", and torch 2.10.0+cpu and
+          # torchvision both install from wheels. The redness that remains is a
+          # real product gap on this platform, not a gap in the simulation, so the
+          # leg stays experimental and keeps reporting it rather than hiding it.
           - os: windows-11-arm
             winget: 'visible'
             experimental: true

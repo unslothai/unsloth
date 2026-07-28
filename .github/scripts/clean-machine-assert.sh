@@ -94,13 +94,28 @@ for check in "$@"; do
       ;;
 
     nobuild)
-      # "Built an sdist" is NOT "needed a compiler". Four packages on the macOS path
-      # are sdist-only PURE PYTHON (verified against cp313/macos-arm64):
+      # "Built an sdist" is NOT "needed a compiler". Every name below was checked
+      # against its actual sdist: setuptools.build_meta backend, no ext_modules,
+      # and not one .c/.cpp/.pyx/.rs file in the archive, so the PEP 517 build is
+      # a pure-Python metadata-and-copy step that completes with no compiler.
       #   openai-whisper, argbind, randomname  -- no version ever ships a wheel
       #   antlr4-python3-runtime==4.9.3        -- pinned below the 4.13.2 wheel
+      #   triton-kernels                       -- studio/backend/requirements/
+      #     triton-kernels.txt pins it to a git URL under the triton repo's
+      #     python/triton_kernels subdirectory. That tree is 75 files of Python
+      #     with a four-line pyproject.toml and no setup.py; the kernels are
+      #     Triton DSL compiled at runtime, never at install time. It is also a
+      #     direct URL the installer names itself, not something resolution
+      #     chose, and only the Linux legs reach it (install_python_stack.py
+      #     skips the step on Windows and macOS).
       # Failing on those is a false alarm, so the contract is "nothing needing a
       # COMPILER was built". UNSLOTH_ALLOW_SDIST extends the allowlist.
-      _allow="openai-whisper argbind randomname antlr4-python3-runtime ${UNSLOTH_ALLOW_SDIST:-}"
+      #
+      # Lowercased and underscore-folded on both sides, because a project's
+      # distribution name and the name uv prints can disagree on the separator:
+      # the requirement says triton_kernels, the build line says triton-kernels,
+      # and an allowlist that matched only one spelling would silently miss.
+      _allow="$(printf '%s' "openai-whisper argbind randomname antlr4-python3-runtime triton-kernels ${UNSLOTH_ALLOW_SDIST:-}" | tr 'A-Z_' 'a-z-')"
       if [ ! -f "$LOG" ]; then
         fail "nobuild requested but $LOG is missing"
       else
@@ -123,6 +138,7 @@ for check in "$@"; do
                   | grep -oiE "building wheel for [a-z0-9._-]+|building [a-z0-9._-]+(==| @ )" \
                   | tr 'A-Z' 'a-z' \
                   | sed -E -e 's/^building wheel for //' -e 's/^building //' -e 's/(==| @ )$//' \
+                  | tr '_' '-' \
                   | sort -u || true)"
         _bad=""
         for pkg in $_built; do
