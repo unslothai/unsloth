@@ -53,6 +53,15 @@ const normalizeLanguage = (language: string): BundledLanguage => {
 // unstyled, re-tokenizing in full at most every REFRESH_MS.
 const MIN_INCREMENTAL_CHARS = 2000;
 const REFRESH_MS = 250;
+// Date.now() is wall clock: a backward step (an NTP correction, or resuming
+// from sleep) makes `elapsed` negative, which pins the reuse branch on and
+// schedules the trailing refresh by the size of the step. The throttle only
+// needs elapsed time, which the monotonic clock provides.
+const monotonicNow = (): number =>
+  typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+
 // One slot per fence in flight. A message can hold several large fences, and
 // Streamdown revisits all of them on every render.
 const MAX_SLOTS_PER_KEY = 8;
@@ -91,19 +100,31 @@ export function createCodePlugin(
     slot.pending = null;
   };
 
+  const adopt = (slot: Slot, code: string, result: HighlightResult) => {
+    // Move code and result together so a reuse can never slice one against the
+    // other.
+    slot.code = code;
+    slot.result = result;
+    slot.inFlight = null;
+  };
+
   const dispatch = (slot: Slot, d: Dispatch) => {
     slot.inFlight = d.opts.code;
-    slot.lastDispatchAt = Date.now();
-    return inner.highlight({ ...d.opts, language: d.language }, (result) => {
-      // Adopt only the dispatch still in flight, and move code/result together
-      // so a reuse can never slice one against the other.
+    slot.lastDispatchAt = monotonicNow();
+    const immediate = inner.highlight({ ...d.opts, language: d.language }, (result) => {
+      // Adopt only the dispatch still in flight.
       if (slot.inFlight === d.opts.code) {
-        slot.code = d.opts.code;
-        slot.result = result;
-        slot.inFlight = null;
+        adopt(slot, d.opts.code, result);
       }
       d.callback?.(result);
     });
+    // @streamdown/code answers out of its own cache synchronously and then
+    // never invokes the callback, so adopt that result here as well; otherwise
+    // the slot keeps pointing at the older tokens.
+    if (immediate) {
+      adopt(slot, d.opts.code, immediate);
+    }
+    return immediate;
   };
 
   return {
@@ -147,7 +168,7 @@ export function createCodePlugin(
       // Finished fence re-rendered unchanged: serve it, never re-tokenize.
       if (slot.result && slot.code === opts.code) return slot.result;
 
-      const elapsed = Date.now() - slot.lastDispatchAt;
+      const elapsed = monotonicNow() - slot.lastDispatchAt;
       const grew = slot.result !== null && opts.code.length > slot.code.length;
       if (!grew || elapsed >= REFRESH_MS) {
         clearTrailing(slot);
@@ -163,7 +184,12 @@ export function createCodePlugin(
           target.trailing = null;
           const next = target.pending;
           target.pending = null;
-          if (next) dispatch(target, next);
+          if (!next) return;
+          const immediate = dispatch(target, next);
+          // Nothing consumes dispatch()'s return value on this path, so a
+          // synchronous inner cache hit has to be handed over by hand or the
+          // fence keeps its unstyled tail for good.
+          if (immediate) next.callback?.(immediate);
         }, Math.max(0, REFRESH_MS - elapsed));
       }
 
