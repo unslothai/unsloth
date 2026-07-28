@@ -682,3 +682,23 @@ def test_evicted_local_configs_drop_their_server_overrides():
     store = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
     assert "evicted?: { modelId: string; ggufVariant: string | null }[]" in store
     assert "modelIdFromStorageKey(" in store and "ggufVariantFromStorageKey(" in store
+
+
+def test_backfill_compares_server_keys_by_normalized_identity():
+    """app_settings has no schema version, so an install predating identity
+    normalization holds rows keyed by whatever id was typed, e.g.
+    "Unsloth/Repo-GGUF:Q4_K_M". This browser only ever stores the folded form,
+    so an exact property lookup reports "not on the server" for a row that is,
+    and the one-time backfill then overwrites settings it documents as the newer
+    authority. The comparison has to fold the same way the backend resolves.
+    """
+    src = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
+    assert "function normalizedOverrideKey(" in src
+    # Folded on both sides: the older `id::variant` local keys are not folded.
+    assert "const known = new Set(Object.keys(existing).map(normalizedOverrideKey));" in src
+    assert "if (known.has(key)) { continue; }" in src
+    # A variant never holds a colon, so the last one splits the key. Splitting on
+    # the first would cut a Windows drive letter off every path id.
+    assert "key.lastIndexOf(\":\")" in src
+    # Repo ids fold and POSIX paths do not, which is exactly what these do.
+    assert "normalizeModelIdentity(" in src and "normalizeGgufVariantIdentity(" in src

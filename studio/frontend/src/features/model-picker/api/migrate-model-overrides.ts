@@ -9,6 +9,10 @@
 // which is the exact bug the server-side map exists to fix.
 
 import {
+  normalizeGgufVariantIdentity,
+  normalizeModelIdentity,
+} from "../model-config/model-identity";
+import {
   isDefaultConfig,
   listPerModelConfigs,
 } from "../model-config/per-model-config";
@@ -35,6 +39,28 @@ function markRan(): void {
   } catch {
     // Nothing to do; the backfill is idempotent anyway.
   }
+}
+
+/**
+ * A server key under the same identity this browser stores.
+ *
+ * `app_settings` has no schema version and holds whatever id was current when
+ * the row was written, so an install that predates identity normalization has
+ * keys like `Unsloth/Repo-GGUF:Q4_K_M` while this browser only ever produces
+ * the folded form. The backend resolves the two to one model, so an exact
+ * property lookup would report "not on the server" for a row that is, and the
+ * backfill would overwrite it. Variants never contain a colon, so the last one
+ * splits the key; a repo id folds and a POSIX path deliberately does not.
+ */
+function normalizedOverrideKey(key: string): string {
+  const separator = key.lastIndexOf(":");
+  if (separator < 0) {
+    return modelOverrideKey(normalizeModelIdentity(key));
+  }
+  return modelOverrideKey(
+    normalizeModelIdentity(key.slice(0, separator)),
+    normalizeGgufVariantIdentity(key.slice(separator + 1)),
+  );
 }
 
 /**
@@ -66,10 +92,17 @@ export async function backfillModelOverrides(): Promise<void> {
     return;
   }
 
+  const known = new Set(Object.keys(existing).map(normalizedOverrideKey));
+
   let failed = false;
   for (const entry of local) {
-    const key = modelOverrideKey(entry.modelId, entry.ggufVariant);
-    if (existing[key]) {
+    // Folded on this side too: a v2 storage key already holds the normalized
+    // identity, but the older `id::variant` keys this browser still reads back
+    // hold whatever casing was typed.
+    const key = normalizedOverrideKey(
+      modelOverrideKey(entry.modelId, entry.ggufVariant),
+    );
+    if (known.has(key)) {
       continue;
     }
     try {
