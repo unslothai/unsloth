@@ -693,10 +693,7 @@ def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
     # A model/variant swap underneath this tab (another client, the CLI) must
     # reset the control like performLoad's cross-model reset does, or model A's
     # explicit count follows onto model B.
-    assert (
-        "...(seedLoadParams && hydratingExistingModel && { nParallel: null }),"
-        in status
-    )
+    assert "...(seedLoadParams && hydratingExistingModel && { nParallel: null })," in status
     # ... while still never adopting the RESOLVED echo into the control.
     assert "nParallel: status.requested_parallel_slots," not in status
 
@@ -705,9 +702,9 @@ def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
     # the second one at the shared tail, or it would swallow the fresh-default
     # path below and stay green when this branch loses its clear.
     candidate = adapter.split("async function loadAutoLoadCandidate", 1)[1]
-    gguf_branch, non_gguf_rest = candidate.split(
-        'if (candidate.kind === "gguf") {', 1
-    )[1].split("\n    } else {\n", 1)
+    gguf_branch, non_gguf_rest = candidate.split('if (candidate.kind === "gguf") {', 1)[1].split(
+        "\n    } else {\n", 1
+    )
     non_gguf_branch = non_gguf_rest.split("if (!(loadResp.is_lora ?? false)) {", 1)[0]
     # The cached-GGUF branch keeps the remembered override (it sends it)...
     assert "nParallel: config.nParallel ?? null," in gguf_branch
