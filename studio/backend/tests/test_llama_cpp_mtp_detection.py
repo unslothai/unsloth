@@ -762,6 +762,8 @@ def test_llama_server_env_includes_selected_ollama_runtime(tmp_path, monkeypatch
     binary_dir, runtime_dir = _make_ollama_cuda_runtime(tmp_path)
     binary = binary_dir / "llama-server"
     binary.write_bytes(b"")
+    python_cuda_dir = tmp_path / "site-packages" / "nvidia" / "cublas" / "lib"
+    python_cuda_dir.mkdir(parents = True)
 
     monkeypatch.setattr("core.inference.llama_cpp._OLLAMA_CUDA_ROOT", tmp_path / "ollama")
     monkeypatch.setattr(
@@ -773,6 +775,12 @@ def test_llama_server_env_includes_selected_ollama_runtime(tmp_path, monkeypatch
         "core.inference.llama_cpp._native_linux_system_rocm_lib_dirs",
         lambda _binary_dir: [],
     )
+    monkeypatch.setattr(
+        "glob.glob",
+        lambda pattern: (
+            [str(python_cuda_dir)] if pattern.replace("\\", "/").endswith("nvidia/cu*/lib") else []
+        ),
+    )
 
     env = LlamaCppBackend._llama_server_env_for_binary(str(binary))
 
@@ -780,6 +788,8 @@ def test_llama_server_env_includes_selected_ollama_runtime(tmp_path, monkeypatch
     assert str(runtime_dir.resolve()) in ld_dirs
     assert str(binary_dir.resolve()) in ld_dirs
     assert "/already-there" in ld_dirs
+    assert ld_dirs.index(str(python_cuda_dir)) < ld_dirs.index(str(runtime_dir.resolve()))
+    assert ld_dirs.index("/already-there") < ld_dirs.index(str(runtime_dir.resolve()))
 
 
 @_NEEDS_BASH

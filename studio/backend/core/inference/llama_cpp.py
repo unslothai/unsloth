@@ -4120,11 +4120,6 @@ class LlamaCppBackend:
             # which can be incompatible with the host amdkfd driver.
             lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
             lib_dirs.append(binary_dir)
-            # The installer also detects CUDA runtimes shipped privately by
-            # Ollama. Mirror that selected runtime here so the CUDA backend does
-            # not silently fall back to CPU after an otherwise successful install.
-            if sys.platform.startswith("linux"):
-                lib_dirs.extend(_linux_ollama_cuda_runtime_dirs(binary_dir))
             _arch = platform.machine()  # x86_64, aarch64, etc.
 
             # Pip-installed nvidia CUDA runtime libs. The prebuilt binary links
@@ -4152,9 +4147,20 @@ class LlamaCppBackend:
             ]:
                 if os.path.isdir(cuda_lib):
                     lib_dirs.append(cuda_lib)
+
+            # The installer also detects CUDA runtimes shipped privately by
+            # Ollama. Keep that runtime behind pip/toolkit and inherited paths:
+            # the selected CUDA major may have been qualified by Torch instead,
+            # while Ollama should still rescue hosts where it is the only source.
+            ollama_cuda_dirs = (
+                _linux_ollama_cuda_runtime_dirs(binary_dir)
+                if sys.platform.startswith("linux")
+                else []
+            )
             existing_ld = env.get("LD_LIBRARY_PATH", "")
-            new_ld = ":".join(lib_dirs)
-            env["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
+            env["LD_LIBRARY_PATH"] = ":".join(
+                path for path in [*lib_dirs, existing_ld, *ollama_cuda_dirs] if path
+            )
 
         return env
 
