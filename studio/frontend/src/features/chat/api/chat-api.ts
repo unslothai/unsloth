@@ -176,6 +176,11 @@ export async function countChatInputTokens(payload: {
   mcp_enabled?: boolean;
   rag_scope?: Record<string, unknown>;
   auto_heal_tool_calls?: boolean;
+  // Reasoning mode the next completion would send. Omitting these counts the
+  // model's load-time template default, not what the user has selected.
+  enable_thinking?: boolean;
+  reasoning_effort?: string;
+  preserve_thinking?: boolean;
   // Names the tokenizer that counted, in the `/api/inference/status` shape. Absent on
   // older backends.
 }): Promise<{ input_tokens: number; model?: string | null }> {

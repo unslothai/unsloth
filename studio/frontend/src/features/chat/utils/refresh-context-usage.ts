@@ -323,14 +323,17 @@ export async function refreshContextUsage(options?: {
       return;
     }
 
-    const toolExtras = await buildLocalTokenCountExtras(payloadThreadId, outbound);
+    const countExtras = await buildLocalTokenCountExtras(
+      payloadThreadId,
+      outbound,
+    );
 
     // Always ask the server: the template itself has tokens, and `unsloth run --enable-tools`
     // injects schemas the client cannot see.
     const result = await countChatInputTokens({
       model: capturedCheckpoint,
       messages: outbound,
-      ...toolExtras,
+      ...countExtras,
     });
     const inputTokens = result.input_tokens;
 

@@ -12603,12 +12603,16 @@ class LlamaCppBackend:
         system = None,
         tools = None,
         strict: bool = False,
+        chat_template_kwargs: Optional[dict] = None,
     ) -> int:
         """Count prompt tokens for a chat request via llama-server.
 
         Non-strict callers keep the historical best-effort behavior and return 0
         when no count is available. Strict callers (public count_tokens endpoints)
         raise instead, since the text-only fallback is an estimate, not a count.
+
+        ``chat_template_kwargs`` is the reasoning mode the matching completion would
+        send; omitting it renders the load-time ``--chat-template-kwargs`` default.
         """
         if not self.is_loaded:
             if strict:
@@ -12669,6 +12673,8 @@ class LlamaCppBackend:
                     template_body = {"messages": template_messages}
                     if tools:
                         template_body["tools"] = tools
+                    if chat_template_kwargs:
+                        template_body["chat_template_kwargs"] = chat_template_kwargs
                     resp = client.post(
                         f"{self.base_url}/apply-template",
                         json = template_body,

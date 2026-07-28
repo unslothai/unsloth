@@ -1389,6 +1389,47 @@ function outboundMessagesIncludeImage(
   return false;
 }
 
+/**
+ * Reasoning fields for a local count, mirroring the completion request built in
+ * buildRequestPayload. llama-server merges the load-time --chat-template-kwargs under
+ * whatever a request omits, so a count that drops these renders the launch default while
+ * the completion renders the user's mode -- a Preserve Thinking pill flipped on keeps
+ * every past turn's <think> block in the real prompt but not in the count. Sends
+ * enable_thinking rather than the Anthropic-style `thinking` wrapper the completion uses;
+ * the backend maps that wrapper onto the same field.
+ */
+export function buildLocalReasoningTokenCountExtras(): Record<string, unknown> {
+  const {
+    supportsReasoning,
+    reasoningEnabled,
+    reasoningStyle,
+    reasoningEffort,
+    reasoningEffortLevels,
+    supportsPreserveThinking,
+    preserveThinking,
+  } = useChatRuntimeStore.getState();
+  const localReasoningEffort = clampReasoningEffortToLevels(
+    reasoningEffort,
+    reasoningEffortLevels,
+  );
+  return {
+    ...(supportsReasoning
+      ? reasoningStyle === "enable_thinking_effort"
+        ? reasoningEnabled
+          ? { enable_thinking: true, reasoning_effort: localReasoningEffort }
+          : { enable_thinking: false }
+        : reasoningStyle === "reasoning_effort"
+          ? reasoningEnabled
+            ? { reasoning_effort: localReasoningEffort }
+            : {}
+          : { enable_thinking: reasoningEnabled }
+      : {}),
+    ...(supportsPreserveThinking
+      ? { preserve_thinking: preserveThinking }
+      : {}),
+  };
+}
+
 export async function buildLocalTokenCountExtras(
   threadId: string | undefined,
   outboundMessages: OpenAIChatMessage[],
@@ -1410,8 +1451,11 @@ export async function buildLocalTokenCountExtras(
     params,
   } = runtime;
 
+  // Independent of tools: the template renders in the selected reasoning mode either way.
+  const reasoningExtras = buildLocalReasoningTokenCountExtras();
+
   if (!supportsTools) {
-    return {};
+    return reasoningExtras;
   }
 
   const ragProjectId = await resolveProjectId(threadId);
@@ -1431,10 +1475,11 @@ export async function buildLocalTokenCountExtras(
     !ragEnabled &&
     !projectRagEnabled
   ) {
-    return {};
+    return reasoningExtras;
   }
 
   return {
+    ...reasoningExtras,
     enable_tools: true,
     // Auto-Heal off leaves leaked tool markup in the real prompt, so the count keeps it.
     auto_heal_tool_calls: autoHealToolCalls,

@@ -14327,6 +14327,22 @@ async def chat_count_tokens(
                         enabled_tool_names = _count_history_gate,
                     ).strip()
 
+    # Render the template in the caller's reasoning mode, exactly as the completion
+    # paths do. Anything omitted here falls back to the load-time
+    # --chat-template-kwargs, so a Think / Preserve Thinking toggle moved off the
+    # launch default would price a prompt the next request never sends.
+    _count_tpl_kwargs = None
+    _reasoning_kwargs_for = getattr(llama_backend, "_request_reasoning_kwargs", None)
+    if _reasoning_kwargs_for is not None:
+        _count_tpl_kwargs = _reasoning_kwargs_for(
+            payload.enable_thinking,
+            payload.reasoning_effort,
+            payload.preserve_thinking,
+        )
+    # Sent only when there is something to say, so a request with no reasoning fields
+    # keeps the exact call the counter has always taken.
+    _count_tpl_arg = {"chat_template_kwargs": _count_tpl_kwargs} if _count_tpl_kwargs else {}
+
     # Whose tokenizer counted, in the shape the status endpoint publishes: another client's
     # auto-switch can move the tokenizer without the caller's captured checkpoint changing.
     _tokenizer_model = _llama_status_checkpoint_id(llama_backend)
@@ -14337,6 +14353,7 @@ async def chat_count_tokens(
             None,
             openai_tools,
             strict = True,
+            **_count_tpl_arg,
         )
     except Exception:
         raise HTTPException(
