@@ -1355,9 +1355,8 @@ def test_header_kept_in_unscoped_conversion():
 
 
 def test_unclosed_header_in_truncated_scope_keeps_body():
-    # A capped fetch ends before </main>, so the segment is flushed, not closed.
-    # Headings survive the strip and alone clear the size gate, so the flushed
-    # segment must carry its dropped-prose count or the body is lost.
+    # A capped fetch ends before </main>, so the segment is flushed, not closed, and
+    # must still carry its dropped prose or the body is lost.
     sections = "".join(
         f"<h2>Section {i} of the article</h2><p>{'Body prose here. ' * 10}</p>" for i in range(12)
     )
@@ -1414,8 +1413,7 @@ def test_entity_encoded_body_is_not_lost_to_an_unclosed_header():
 
 
 def test_header_closed_by_an_ancestor_is_kept_whole():
-    # Without a matching </header> the header may have adopted the body, and
-    # size cannot tell that apart, so malformed markup keeps everything.
+    # Without a matching </header> the header may have adopted the body, so keep all.
     body = "<div><header><h1>Site</h1><ul>%s</ul></div><p>%s</p>" % (
         _interlanguage_list(300),
         "The real body prose. " * 20,

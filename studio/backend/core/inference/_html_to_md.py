@@ -184,27 +184,23 @@ _BLOCK_TAGS = frozenset(
 _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
-# A <header> is furniture only when it is almost entirely links: site nav, or the
-# 278-language dropdown Wikipedia's Vector 2022 skin puts inside <main>. Article
-# headers carry a byline, date or standfirst, so they are kept. Measured on live
-# pages, link-list headers sit at 0.94-1.00 and content headers at 0.13-0.90.
+# A <header> is furniture only when almost entirely links (site nav, Wikipedia's
+# in-<main> language dropdown). Live link lists measure 0.94-1.00, content headers
+# (byline, date, standfirst) 0.13-0.90.
 _HEADER_LINK_DENSITY = 0.93
-# Below this a header is too small to displace an article, and the ratio too
-# noisy to trust, so it is left alone. Live link-list headers start at 182
-# chars; the largest link-dense header that carries real content is 93.
+# Size floor: below it the ratio is too noisy and the header too small to displace an
+# article. Live link lists start at 182 chars, link-dense content headers top out at 93.
 _HEADER_MIN_CHARS = 150
-# A short label can carry a very long href, so a header whose rendered output
-# is this large displaces an article whatever its visible text measures. Live
-# content headers render to at most 363 chars, link lists to 1609 and up.
+# Short labels can carry huge hrefs, so judge rendered size too. Live content headers
+# render to at most 363 chars, link lists to 1609 and up.
 _HEADER_MAX_RENDERED_CHARS = 800
 
 
 class _HeaderFrame:
     """Buffered ``<header>`` output plus the link tally used to judge it.
 
-    Buffering (like ``_bq_stack``) lets the decision happen at ``</header>``,
-    when the whole subtree has been seen. A header that no end tag ever closes
-    is emitted unchanged, which is what browsers render."""
+    Buffering (like ``_bq_stack``) defers the decision to ``</header>``, once the
+    whole subtree is known. A header no end tag closes is emitted unchanged."""
 
     __slots__ = (
         "depth",
@@ -223,19 +219,17 @@ class _HeaderFrame:
         self.heading_spans: list[tuple[int, int]] = []
         self.heading_start: int | None = None
         self.n_headings: int = 0
-        # Heading text is excluded from both: it is never dropped, so it must not
-        # vote on dropping the rest. Only href anchors count as link furniture.
+        # Both exclude heading text (never dropped, so it must not vote on dropping
+        # the rest); only href anchors count as links.
         self.text_chars: int = 0
         self.link_chars: int = 0
 
     def render(self, closed_by_own_tag: bool) -> str:
         """The buffer, or only its headings when the header is link furniture.
 
-        Anything other than a matching ``</header>`` means the markup was
-        malformed and the header may have adopted the page body, so it is kept.
-        A heading buffered through a nested blockquote or table cell reaches
-        ``parts`` only when that buffer closes, leaving no usable span, so an
-        incomplete span set also keeps the whole buffer."""
+        Without a matching ``</header>`` the markup is malformed and the header may
+        have adopted the page body, so keep it whole. Same when a span is missing: a
+        heading nested in another buffer only reaches ``parts`` when that one closes."""
         if not closed_by_own_tag or len(self.heading_spans) != self.n_headings:
             return "".join(self.parts)
         big_enough = (
@@ -288,8 +282,8 @@ class _MarkdownRenderer(HTMLParser):
         self._link_href: str | None = None
         self._link_text_parts: list[str] = []
         self._in_link: bool = False
-        # Text under the open <a>, credited as link furniture only once </a>
-        # closes it: an <a> left open adopts body prose, which is not furniture.
+        # Text under the open <a>, credited as links only once </a> closes it: an
+        # <a> left open adopts body prose, which is not furniture.
         self._link_header_chars: int = 0
 
         # List state
@@ -415,10 +409,8 @@ class _MarkdownRenderer(HTMLParser):
         depth: int,
         own_tag: bool = False,
     ) -> None:
-        """Judge and emit every buffered header at or below *depth*.
-
-        Only the innermost frame can be closed by its own ``</header>``; an
-        outer one popped by the same end tag was bounded by an ancestor."""
+        """Judge and emit every buffered header at or below *depth*. Only the
+        innermost frame can be the one its own ``</header>`` closed."""
         closed_by_own_tag = own_tag
         while self._header_stack and self._header_stack[-1].depth >= depth:
             frame = self._header_stack.pop()
@@ -436,10 +428,8 @@ class _MarkdownRenderer(HTMLParser):
             self._emit("".join(self._header_stack.pop().parts))
 
     def _count_header_text(self, text: str) -> None:
-        """Tally visible text for the innermost header's link density.
-
-        Heading text is skipped: ``render()`` never drops it, so counting it
-        would let a long linked heading condemn the byline beside it."""
+        """Tally visible text for the innermost header's link density. Heading text
+        is skipped so a long linked heading cannot condemn the byline beside it."""
         if not self._header_stack or self._in_heading:
             return
         chars = len(text.strip())
@@ -462,8 +452,7 @@ class _MarkdownRenderer(HTMLParser):
             # Void elements never join the stack, so suppress a hidden one inline.
             return False
         if self._scope_tags is not None and tag in self._scope_tags:
-            # A scope element inside a header would strand its output in the
-            # buffer, so keep the header as-is and let scoping proceed normally.
+            # A scope element inside a header would strand its output in the buffer.
             self._flush_header_frames()
             if self._scope_depth == 0:
                 self._scope_seg_start = len(self._out)
@@ -477,8 +466,8 @@ class _MarkdownRenderer(HTMLParser):
     def _exit_tag(self, tag: str) -> bool:
         """Pop to the matching open tag; return True when the end tag should
         be rendered (False = it closed inside a hidden / out-of-scope region)."""
-        # A scope closing over an <a> the page left open would strand its text in
-        # the link buffer, so recover the link before the segment is recorded.
+        # A scope closing over an <a> the page left open would strand its text in the
+        # link buffer, so recover it before the segment is recorded.
         if self._in_link and self._scope_tags is not None and tag in self._scope_tags:
             self._finish_link()
         suppressed = bool(self._hidden_marks) or (
@@ -754,8 +743,8 @@ class _MarkdownRenderer(HTMLParser):
             else:
                 self._out.append("\n\n" + prefixed + "\n\n")
 
-        # A <header> no end tag ever closed adopts the page body under HTML5
-        # parsing, so emit it unchanged rather than judging a whole article.
+        # An unclosed <header> adopts the page body under HTML5 parsing, so emit it
+        # unchanged rather than judging a whole article.
         self._flush_header_frames()
 
         # A scope left open by truncated HTML never reached _exit_tag, so its output
