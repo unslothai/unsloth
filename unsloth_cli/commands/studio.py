@@ -485,7 +485,8 @@ def _write_auth_secret(path: Path, secret: str) -> None:
             pass
         with os.fdopen(fd, "w", encoding = "utf-8") as f:
             fd = -1
-            f.write(secret)
+            # Newline so `cat` doesn't run it into the shell prompt; readers strip.
+            f.write(secret + "\n")
         os.replace(tmp_path, path)
     except Exception:
         if fd >= 0:

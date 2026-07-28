@@ -251,7 +251,9 @@ def test_studio_default_prompt_rejects_current_password(monkeypatch, tmp_path):
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
     _seed_auth(studio_mod)
-    bootstrap_pw = (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).read_text()
+    bootstrap_pw = (
+        tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE
+    ).read_text().strip()
 
     _invoke_studio_default(monkeypatch, events, ["--secure"])
 
@@ -1204,6 +1206,40 @@ def test_connect_auth_db_creates_private_files(monkeypatch, tmp_path):
     assert stat.S_IMODE((auth_dir / "auth.db").stat().st_mode) == 0o600
 
 
+def test_write_auth_secret_terminates_the_file_with_a_newline(monkeypatch, tmp_path):
+    # Shared by .bootstrap_password and .desktop_secret; every reader strips.
+    studio_mod = _studio()
+    path = tmp_path / ".desktop_secret"
+
+    studio_mod._write_auth_secret(path, "desktop-abc123")
+
+    raw = path.read_text(encoding = "utf-8")
+    assert raw == "desktop-abc123\n"
+    assert raw.strip() == "desktop-abc123"
+
+
+def test_seeded_bootstrap_file_ends_with_a_newline(monkeypatch, tmp_path):
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+
+    raw = (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).read_text(
+        encoding = "utf-8"
+    )
+
+    assert raw.endswith("\n")
+
+    conn = sqlite3.connect(_auth_db(tmp_path))
+    try:
+        salt, pwd_hash = conn.execute(
+            "SELECT password_salt, password_hash FROM auth_user WHERE username = ?",
+            (studio_mod.DEFAULT_ADMIN_USERNAME,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert studio_mod._pbkdf2_hex(raw.strip(), salt.encode("utf-8")) == pwd_hash
+
+
 # ── non-interactive --password / UNSLOTH_STUDIO_PASSWORD / stdin ──────
 
 
@@ -1284,7 +1320,9 @@ def test_studio_default_password_must_differ_fails_closed(monkeypatch, tmp_path)
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
     _seed_auth(studio_mod)
-    bootstrap_pw = (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).read_text()
+    bootstrap_pw = (
+        tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE
+    ).read_text().strip()
 
     result = _invoke_studio_default(monkeypatch, events, ["--secure", "--password", bootstrap_pw])
 

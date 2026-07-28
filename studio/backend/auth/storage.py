@@ -57,7 +57,8 @@ def generate_bootstrap_password() -> str:
 
     # Persist so the same passphrase survives restarts until password change.
     ensure_dir(_BOOTSTRAP_PW_PATH.parent)
-    _BOOTSTRAP_PW_PATH.write_text(_bootstrap_password, encoding = "utf-8")
+    # Newline so `cat` doesn't run it into the shell prompt; readers strip.
+    _BOOTSTRAP_PW_PATH.write_text(_bootstrap_password + "\n", encoding = "utf-8")
     try:
         os.chmod(_BOOTSTRAP_PW_PATH, 0o600)
     except OSError:

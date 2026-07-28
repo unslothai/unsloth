@@ -134,6 +134,26 @@ def test_ensure_default_admin_loads_existing_bootstrap_after_restart(monkeypatch
     assert storage.get_bootstrap_password() == bootstrap_pw
 
 
+def test_bootstrap_password_file_ends_with_a_newline():
+    # Otherwise `cat` welds the passphrase to the shell prompt and both get copied.
+    storage.ensure_default_admin()
+
+    raw = storage._BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8")
+
+    assert raw.endswith("\n")
+    assert raw.strip() == storage.get_bootstrap_password()
+    assert "\n" not in raw.strip()
+
+
+def test_bootstrap_password_round_trips_across_a_restart_with_the_newline():
+    storage.ensure_default_admin()
+    original = storage.get_bootstrap_password()
+
+    storage._bootstrap_password = None
+
+    assert storage.generate_bootstrap_password() == original
+
+
 def test_ensure_default_admin_does_not_generate_for_empty_existing_bootstrap():
     seed_user()
     storage._BOOTSTRAP_PW_PATH.write_text(" \n", encoding = "utf-8")
@@ -358,7 +378,7 @@ def test_write_desktop_secret_file_is_0600_on_unix(tmp_path):
 
     studio_cli._write_auth_secret(path, "desktop-secret")
 
-    assert path.read_text() == "desktop-secret"
+    assert path.read_text() == "desktop-secret\n"
     if platform.system() != "Windows":
         assert oct(path.stat().st_mode & 0o777) == "0o600"
 
@@ -525,7 +545,8 @@ if result.exit_code != 0:
         capture_output = True,
     )
     assert result.returncode == 0, result.stderr + result.stdout
-    secret = (auth_dir / ".desktop_secret").read_text()
+    # Strip like the src-tauri readers do.
+    secret = (auth_dir / ".desktop_secret").read_text().strip()
     assert secret.startswith("desktop-")
 
     conn = sqlite3.connect(auth_dir / "auth.db")
