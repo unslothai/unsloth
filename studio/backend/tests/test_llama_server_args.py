@@ -115,6 +115,11 @@ def test_value_with_equals_form_passes_through():
     assert validate_extra_args(["--top-k=20"]) == ["--top-k=20"]
 
 
+def test_managed_long_flag_underscore_alias_is_rejected():
+    with pytest.raises(ValueError, match = "slot-save-path"):
+        validate_extra_args(["--slot_save_path", "/tmp/slots"])
+
+
 def test_non_flag_token_passes_through():
     # Bare positionals are passed through; llama-server can reject them.
     assert validate_extra_args(["foo"]) == ["foo"]

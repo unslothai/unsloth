@@ -183,11 +183,12 @@ def test_already_in_target_state_reloads_on_mode_change(loaded, requested):
     assert _target_state(_loaded_backend(loaded), requested) is False
 
 
-def test_already_in_target_state_ignores_mode_for_diffusion():
+def test_already_in_target_state_ignores_mode_for_diffusion(monkeypatch):
     # The diffusion runner is mode-agnostic (always "auto"), so a standing manual
     # preference must not force a needless reload.
     backend = _loaded_backend("auto")
     backend._is_diffusion = True
+    monkeypatch.setenv("LLAMA_ARG_SWA_FULL", "1")
     assert _target_state(backend, "manual") is True
 
 
