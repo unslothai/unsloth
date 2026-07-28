@@ -2175,7 +2175,7 @@ def _ensure_rocm_torch() -> None:
                 print(
                     _red(
                         "   bnb pre-release install failed; falling back to PyPI "
-                        "(4-bit decode will be broken on ROCm)"
+                        f"{_BNB_ROCM_PYPI_FALLBACK}, which carries the ROCm 4-bit fix"
                     )
                 )
         if not _bnb_installed:

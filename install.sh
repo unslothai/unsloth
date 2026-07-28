@@ -328,6 +328,7 @@ _gfx906_bnb_prune() {
 # carrying that fix, and its manylinux x86_64 wheel ships the same
 # libbitsandbytes_rocm{64,70,71,714,72}.so set as the pre-release. Keep this
 # floor in step with the amd extra in pyproject.toml.
+_BNB_ROCM_PYPI_FALLBACK="bitsandbytes>=0.50.0"
 _install_bnb_rocm() {
     _label="$1"
     _venv_py="$2"
@@ -369,10 +370,10 @@ _install_bnb_rocm() {
         fi
         rm -f "$_bnb_log"
         step "warning" "$_label (pre-release) failed (exit code $_bnb_rc)" "$C_WARN" >&2
-        substep "[WARN] bnb pre-release install failed; falling back to PyPI (4-bit decode broken on ROCm)" "$C_WARN"
+        substep "[WARN] bnb pre-release install failed; falling back to PyPI $_BNB_ROCM_PYPI_FALLBACK, which carries the ROCm 4-bit fix" "$C_WARN"
     fi
     run_install_cmd "$_label (pypi fallback)" "$_venv_py" -m pip install \
-        --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.50.0"
+        --force-reinstall --no-cache-dir --no-deps "$_BNB_ROCM_PYPI_FALLBACK"
 }
 
 if [ "$_next_is_package" = true ]; then
