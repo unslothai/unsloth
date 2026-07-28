@@ -62,21 +62,19 @@ def pytest_addoption(parser):
 def _no_background_model_scan(monkeypatch):
     """Keep the /v1 admission hook from scanning the real HF cache during tests.
 
-    The hook warms the local-model index on a background thread. That is right in a
-    server and wrong here: it walks the developer's actual caches, which on a large
-    install takes seconds, and the resulting I/O starves the loop under the
-    timing-sensitive streaming tests. Tests that exercise the warm patch it back.
+    The hook warms the local-model index on a background thread: right in a server,
+    wrong here, since it walks the developer's actual caches and the I/O starves the
+    loop under timing-sensitive streaming tests. Warm tests patch it back.
     """
     import time
 
     from core.inference import local_model_resolver
 
     monkeypatch.setattr(local_model_resolver, "warm_index_soon", lambda: None)
-    # Start from a built, empty index. Stubbing only the background warm still left the
-    # cold path walking those caches synchronously inside the admission wait, so on a
-    # large install the assertion became a 503 "still indexing". Tests that want the
-    # cold path set _scan back themselves (and stub the scan). _build_index is left
-    # alone so the tests that call it directly still exercise the real walk.
+    # Start from a built, empty index: stubbing only the warm left the cold path
+    # walking those caches inside the admission wait, so on a large install the
+    # assertion became a 503 "still indexing". Cold-path tests reset _scan themselves;
+    # _build_index is untouched so tests calling it directly still walk for real.
     monkeypatch.setattr(local_model_resolver, "_scan", (time.monotonic(), {}))
 
 

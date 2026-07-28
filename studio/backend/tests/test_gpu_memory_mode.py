@@ -304,12 +304,16 @@ def test_load_request_accepts_valid_tensor_split(good):
 def test_route_normalizes_explicit_extras_before_reload_dedupe():
     route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     load_impl = route_src[route_src.index("async def _load_model_impl") :]
+    preserve = load_impl.index("_gpu_layers_override = parse_gpu_layers_override")
+    translate = load_impl.index(
+        'request = request.model_copy(update = {"gpu_layers": _gpu_layers_override})'
+    )
     strip = load_impl.index("_stripped_explicit = strip_shadowing_flags")
     normalize = load_impl.index(
         'request = request.model_copy(update = {"llama_extra_args": extra_llama_args})'
     )
     dedupe = load_impl.index("and _request_matches_loaded_settings(")
-    assert strip < normalize < dedupe
+    assert preserve < translate < strip < normalize < dedupe
 
 
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])
@@ -1048,7 +1052,7 @@ def _rocm_torch_stub(monkeypatch):
 def test_subset_pin_masks_via_rocr_on_rocm(monkeypatch):
     # A GPU-subset pin must exclude the rest at the ROCr/HSA layer: HIP masking
     # still enumerates every agent first, which segfaults the build on an
-    # unsupported deselected GPU (e.g. a gfx1103 iGPU under a gfx110X prebuilt).
+    # unsupported deselected GPU (e.g. a gfx1036 iGPU under a gfx103X prebuilt).
     # ROCR drops it at the driver layer; only one mask is set (HIP cleared).
     _rocm_torch_stub(monkeypatch)
     env = {"HIP_VISIBLE_DEVICES": "9"}  # stale/inherited HIP mask must not survive
