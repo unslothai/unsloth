@@ -258,6 +258,11 @@ def main(argv: list[str]) -> int:
     )
     ap.add_argument("--json", help = "write the full report here")
     a = ap.parse_args(argv)
+    # range(0) launches nothing, so an empty runs list reaches the budget check as
+    # "no healthz measurement", warns and exits 0: a gate that cannot fail. Reject
+    # the value instead, since --repeats comes straight from a dispatch input.
+    if a.repeats < 1:
+        ap.error("--repeats must be at least 1")
 
     report: dict = {
         "platform": platform.system().lower(),
