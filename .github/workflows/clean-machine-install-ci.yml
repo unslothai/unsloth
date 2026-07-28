@@ -1,0 +1,528 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Proves Unsloth installs on a machine that has never seen a developer toolchain.
+#
+# Why this exists: studio-mac-install-matrix.yml runs `install.sh --local --no-torch`
+# on runners that already have Xcode CLT selected AND actions/setup-python
+# preinstalled, so the macOS dependency gate in install.sh never fires there -- and
+# `--local` is precisely the mode that legitimately needs git. A brand-new Mac
+# therefore hits a hard `exit 1` that no CI job covered.
+#
+# Hosted runners are developer machines, so each job simulates absence rather than
+# being virgin. Two modes, because they answer different questions and cannot be
+# done by the same mechanism (see .github/scripts/clean-machine-env.sh):
+#   mask  -> the toolchain is genuinely unusable; does the install still work?
+#   trace -> the toolchain works but is logged; does the installer ever call it?
+# Linux is the exception: containers are genuinely clean.
+
+name: Clean machine install
+
+on:
+  pull_request:
+    paths:
+      - 'install.sh'
+      - 'install.ps1'
+      - 'studio/setup.sh'
+      - 'studio/setup.ps1'
+      - 'studio/install_python_stack.py'
+      - '.github/scripts/clean-machine-*.sh'
+      - '.github/workflows/clean-machine-install-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'install.sh'
+      - 'install.ps1'
+      - '.github/workflows/clean-machine-install-ci.yml'
+  workflow_dispatch:
+    inputs:
+      installer_source:
+        description: 'published = curl unsloth.ai/install.sh, tree = the checked-out script'
+        type: choice
+        options: [tree, published]
+        default: tree
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Keep every install inside the workspace so a leg cannot inherit another's state.
+  UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
+  # No wildcard bind -> no ifconfig.me / check-host.net calls on the startup path.
+  UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK: '1'
+
+jobs:
+  # ── macOS: the reported failure ────────────────────────────────────────────
+  macos:
+    name: mac ${{ matrix.os }} / ${{ matrix.mode }} / ${{ matrix.delivery }}${{ matrix.flags && format(' {0}', matrix.flags) || '' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    continue-on-error: ${{ matrix.experimental }}
+    # Explicit legs rather than a full cross-product: the interesting dimensions are
+    # (does the toolchain exist) x (how the script is delivered), not every pairing.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The reported failure, in the shape users run it. Default install (torch
+          # included) because that is what a consumer actually gets.
+          - {os: macos-14, mode: mask,  delivery: pipe,  flags: '',           experimental: false}
+          - {os: macos-14, mode: mask,  delivery: file,  flags: '',           experimental: false}
+          # What the desktop app runs: no tty, stdin closed, TAURI markers on.
+          - {os: macos-14, mode: mask,  delivery: tauri, flags: '',           experimental: false}
+          # Toolchain present but logged: does the installer ever reach for it?
+          - {os: macos-14, mode: trace, delivery: file,  flags: '',           experimental: false}
+          # --no-torch is the one macOS path that can still want a compiler
+          # (sentencepiece has no guaranteed cp313 arm64 wheel), so probe it apart
+          # from the default path instead of letting it mask the gate under test.
+          - {os: macos-14, mode: mask,  delivery: file,  flags: '--no-torch', experimental: true}
+          # OS-version dimension.
+          - {os: macos-15, mode: mask,  delivery: pipe,  flags: '',           experimental: false}
+          - {os: macos-26, mode: mask,  delivery: file,  flags: '',           experimental: true}
+          # Intel pins python 3.12, not 3.13 -- informational only.
+          - {os: macos-15-intel, mode: mask, delivery: file, flags: '',       experimental: true}
+
+    steps:
+      # checkout FIRST: it needs a working git, which masking then takes away.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      # Deliberately no actions/setup-python: install.sh must bring its own
+      # uv-managed CPython, exactly as it must on a user's machine.
+
+      - name: Record the pre-masking toolchain
+        run: |
+          {
+            echo "xcode-select -p : $(xcode-select -p 2>&1 || true)"
+            echo "git             : $(command -v git || echo none)"
+            echo "brew            : $(command -v brew || echo none)"
+            echo "cmake           : $(command -v cmake || echo none)"
+            echo "python3         : $(command -v python3 || echo none)"
+          } | tee runner-baseline.txt
+
+      - name: Simulate a clean machine (${{ matrix.mode }})
+        run: |
+          mkdir -p logs
+          if [ "${{ matrix.mode }}" = "mask" ]; then
+            bash .github/scripts/clean-machine-env.sh mask --remove
+          else
+            bash .github/scripts/clean-machine-env.sh trace
+          fi
+
+      - name: Verify the simulation actually took effect
+        if: matrix.mode == 'mask'
+        run: |
+          set -a; . ./clean-machine.env; set +a
+          bash .github/scripts/clean-machine-assert.sh absent
+
+      - name: Install
+        id: install
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          set -a; . ./clean-machine.env; set +a
+          set -o pipefail
+          rc=0
+          FLAGS="${{ matrix.flags }}"
+          case "${{ matrix.delivery }}" in
+            file)
+              # Plain file execution: isolates "installer logic broken" from
+              # "curl-pipe delivery broken".
+              bash install.sh $FLAGS 2>&1 | tee logs/install.log || rc=$?
+              ;;
+            pipe)
+              # The shape users actually run. install.sh is ~150KB of top-level
+              # statements, so an early `exit` leaves the writer with a closed
+              # pipe -> `curl: (56)`. Piping a local file reproduces that
+              # faithfully without depending on unsloth.ai being current.
+              # On pull_request/push this input is empty, which correctly falls through to
+          # the checked-out ref -- only an explicit dispatch tests unsloth.ai.
+          if [ "${{ inputs.installer_source }}" = "published" ]; then
+                curl -fsSL https://unsloth.ai/install.sh | sh -s -- $FLAGS 2>&1 | tee logs/install.log || rc=$?
+              else
+                # `sh -s --` with no further args would pass an empty positional,
+                # so only add the separator when there are flags to pass.
+                if [ -n "$FLAGS" ]; then
+                  cat install.sh | sh -s -- $FLAGS 2>&1 | tee logs/install.log || rc=$?
+                else
+                  cat install.sh | sh 2>&1 | tee logs/install.log || rc=$?
+                fi
+              fi
+              ;;
+            tauri)
+              # Exactly how the desktop app invokes it: no tty, stdin closed.
+              # --tauri rejects a custom UNSLOTH_STUDIO_HOME outright (the desktop app
+              # still uses the legacy ~/.unsloth/studio root), so the workspace-scoped
+              # value every other leg relies on has to go here or the installer exits
+              # before it does any work. The runner is ephemeral, so the real home is
+              # as disposable as the override.
+              env -u UNSLOTH_STUDIO_HOME \
+                bash install.sh --tauri $FLAGS < /dev/null 2>&1 | tee logs/install.log || rc=$?
+              ;;
+          esac
+          echo "install_rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "installer exit code: $rc"
+          # The pipe legs are the ones that expose curl:(56); surface it explicitly
+          # rather than leaving it buried in a 4000-line log.
+          if grep -qE "curl: \(5[36]\)|Failure writing output to destination" logs/install.log; then
+            echo "::warning::curl reported a broken pipe -- an early exit killed the reader"
+          fi
+          exit "$rc"
+
+      - name: Assert no source build and no toolchain use
+        if: always() && steps.install.outcome == 'success'
+        run: |
+          set -a; . ./clean-machine.env; set +a
+          checks="nobuild"
+          [ "${{ matrix.mode }}" = "trace" ] && checks="$checks notools"
+          bash .github/scripts/clean-machine-assert.sh $checks
+
+      - name: Assert llama.cpp loads
+        if: steps.install.outcome == 'success'
+        run: |
+          set -a; . ./clean-machine.env; set +a
+          # The tauri leg cannot honour UNSLOTH_STUDIO_HOME (see the Install step), so
+          # it installed into the legacy root and that is where to look.
+          if [ "${{ matrix.delivery }}" = "tauri" ]; then
+            HOME_DIR="$HOME/.unsloth/studio"
+          else
+            HOME_DIR="$UNSLOTH_STUDIO_HOME"
+          fi
+          STUDIO_HOME="$HOME_DIR" bash .github/scripts/assert-llama-loads.sh
+
+      - name: Restore the runner
+        if: always()
+        run: bash .clean-machine/restore.sh || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: clean-mac-${{ matrix.os }}-${{ matrix.mode }}-${{ matrix.delivery }}
+          path: |
+            logs/
+            runner-baseline.txt
+            clean-machine.env
+            .clean-machine/tool-invocations.log
+          retention-days: 7
+          if-no-files-found: warn
+
+  # ── Linux: genuinely clean, via containers ────────────────────────────────
+  linux:
+    name: linux ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    timeout-minutes: 40
+    continue-on-error: ${{ matrix.experimental }}
+    # Container jobs default to `sh -e`, which is dash: `set -o pipefail` is an
+    # "Illegal option" there and kills the step before the installer even starts.
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Root + apt available: install.sh's _smart_apt_install should self-heal
+          # from a base image with no curl, git, gcc or cmake at all.
+          - label: ubuntu2404-root
+            image: ubuntu:24.04
+            runner: ubuntu-latest
+            experimental: false
+          - label: ubuntu2404-arm-root
+            image: ubuntu:24.04
+            runner: ubuntu-24.04-arm
+            experimental: false
+          # No elevation: today this hard-fails at install.sh:856-861. Expected
+          # failure -- the point is to pin the message and prove it is actionable
+          # rather than a bare `curl: (56)`.
+          - label: ubuntu2404-nonroot
+            image: ubuntu:24.04
+            runner: ubuntu-latest
+            experimental: true
+          # Non-apt: today this hard-fails at install.sh:2034. Expected failure;
+          # forces the decision on whether dnf/pacman/zypper get supported.
+          - label: fedora41
+            image: fedora:41
+            runner: ubuntu-latest
+            experimental: true
+
+    steps:
+      - name: Describe the container's starting state
+        run: |
+          for t in curl wget git gcc cc cmake make python3 sudo; do
+            printf '%-8s %s\n' "$t" "$(command -v $t 2>/dev/null || echo ABSENT)"
+          done | tee /tmp/container-baseline.txt
+
+      # The advertised `curl | sh` cannot even start on an image without curl, so
+      # the bootstrap transport is provisioned separately from the installer's own
+      # dependencies. Everything else stays absent.
+      - name: Provision only the bootstrap transport
+        run: |
+          if command -v apt-get >/dev/null 2>&1; then
+            apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y -q ca-certificates curl
+          fi
+
+      # No actions/checkout here on purpose: it requires git, and a container with git
+      # preinstalled is not the clean machine under test. Fetch the two files we need
+      # over the transport provisioned above -- and fetch the INSTALLER from the same
+      # ref, so these legs can validate a fix instead of only the published script.
+      - name: Fetch installer + assert script for this ref
+        run: |
+          mkdir -p logs .github/scripts
+          raw="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}"
+          curl -fsSL "$raw/.github/scripts/clean-machine-assert.sh" -o .github/scripts/clean-machine-assert.sh
+          # On pull_request/push this input is empty, which correctly falls through to
+          # the checked-out ref -- only an explicit dispatch tests unsloth.ai.
+          if [ "${{ inputs.installer_source }}" = "published" ]; then
+            curl -fsSL https://unsloth.ai/install.sh -o install.sh
+            echo "installer: published (unsloth.ai)"
+          else
+            curl -fsSL "$raw/install.sh" -o install.sh
+            echo "installer: this ref (${GITHUB_SHA})"
+          fi
+          wc -l install.sh
+
+      - name: Create an unprivileged user
+        if: matrix.label == 'ubuntu2404-nonroot'
+        run: |
+          useradd -m tester
+          # No sudo installed and not root -> exercises the "cannot elevate" branch.
+          chown -R tester logs install.sh
+
+      - name: Install (root)
+        if: matrix.label != 'ubuntu2404-nonroot'
+        run: |
+          set -o pipefail
+          rc=0
+          # Piped, because that is the advertised command and the shape that turns an
+          # early exit into curl:(56).
+          cat install.sh | sh 2>&1 | tee logs/install.log || rc=$?
+          echo "installer exit code: $rc"
+          exit "$rc"
+
+      - name: Install (unprivileged, expected to fail cleanly)
+        if: matrix.label == 'ubuntu2404-nonroot'
+        run: |
+          set -o pipefail
+          rc=0
+          su tester -c 'cat install.sh | sh' > logs/install.log 2>&1 || rc=$?
+          echo "installer exit code: $rc"
+          tail -40 logs/install.log
+          # It may legitimately fail; what must NOT happen is an unexplained exit or a
+          # bare broken-pipe error standing in for a real diagnosis.
+          if [ "$rc" != "0" ] && ! grep -qiE "sudo is not available|apt-get install|missing:|permission" logs/install.log; then
+            echo "::error::unprivileged install failed with no actionable message"
+            exit 1
+          fi
+
+      - name: Assert no source build
+        if: always()
+        run: |
+          if [ -f .github/scripts/clean-machine-assert.sh ]; then
+            INSTALL_LOG=logs/install.log bash .github/scripts/clean-machine-assert.sh nobuild
+          else
+            echo "::warning::assert script unavailable (fetch step did not run)"
+          fi
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: clean-linux-${{ matrix.label }}
+          path: |
+            logs/
+            /tmp/container-baseline.txt
+          retention-days: 7
+          if-no-files-found: warn
+
+  # ── WSL ───────────────────────────────────────────────────────────────────
+  # install.sh carries ~126 lines of WSL-specific logic (the `linux|wsl` dependency
+  # branch, UNSLOTH_WSL_REROUTED, the Strix Halo reroute to 24.04), and none of it
+  # had ever run in CI -- tests/sh/test_strixhalo_wsl_reroute.sh extracts functions
+  # and mocks the environment, which cannot catch anything about a real WSL.
+  #
+  # No third-party action: the official Ubuntu WSL rootfs plus `wsl --import` is
+  # deterministic, checksum-verifiable, and avoids adding a supply-chain dependency
+  # to a repo that audits its lockfiles.
+  wsl:
+    name: wsl ubuntu-24.04
+    runs-on: windows-latest
+    timeout-minutes: 50
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Import a fresh Ubuntu 24.04 WSL distro
+        shell: pwsh
+        run: |
+          # WSL2 is present on windows-2022+ runner images; only a distro is missing.
+          wsl --set-default-version 2
+          $url = 'https://cloud-images.ubuntu.com/wsl/releases/24.04/current/ubuntu-noble-wsl-amd64-24.04lts.rootfs.tar.gz'
+          $expected = '2a790896740b14d637dbdc583cce1ba081ac53b9e9cdb46dc09a2f73abbd9934'
+          New-Item -ItemType Directory -Force -Path wsl-dist, logs | Out-Null
+          Invoke-WebRequest -Uri $url -OutFile wsl-dist/rootfs.tar.gz -UseBasicParsing -TimeoutSec 900
+          $actual = (Get-FileHash wsl-dist/rootfs.tar.gz -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) {
+            Write-Host "::error::rootfs checksum mismatch: got $actual"
+            exit 1
+          }
+          wsl --import unsloth-ci "$PWD/wsl-dist/instance" "$PWD/wsl-dist/rootfs.tar.gz" --version 2
+          wsl -d unsloth-ci -- uname -a
+          # A freshly imported rootfs is genuinely bare: no curl, no git, no compiler.
+          # That is the clean machine, not a simulation of one.
+          wsl -d unsloth-ci -- sh -c 'for t in curl wget git gcc cmake python3 sudo; do printf "%-8s %s\n" "$t" "$(command -v $t || echo ABSENT)"; done'
+
+      - name: Install inside WSL, piped exactly as documented
+        shell: pwsh
+        run: |
+          # Only ca-certificates + curl, because the advertised one-liner cannot even
+          # start without a transport. Everything else must come from the installer.
+          wsl -d unsloth-ci -u root -- sh -c 'apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl' 2>&1 | Tee-Object -FilePath logs/wsl-bootstrap.log
+          # Copy the script in rather than reaching across /mnt/c: a DrvFs path brings
+          # Windows file permissions and CRLF risk with it, and neither is what a real
+          # WSL user's install looks like.
+          $wslPath = (wsl -d unsloth-ci -- wslpath -a "$($env:GITHUB_WORKSPACE -replace '\\','/')/install.sh").Trim()
+          Write-Host "installer source in WSL: $wslPath"
+          wsl -d unsloth-ci -u root -- cp "$wslPath" /root/install.sh
+          # Feed it through a pipe: same shape as `curl ... | sh`, so an early exit
+          # still exposes the broken-pipe problem, but the script under test is this
+          # ref rather than whatever production currently serves.
+          wsl -d unsloth-ci -u root -- sh -c 'cd /root && cat install.sh | sh' 2>&1 | Tee-Object -FilePath logs/wsl-install.log
+          Write-Host "installer exit: $LASTEXITCODE"
+
+      - name: Did it detect WSL, and did it end up usable?
+        if: always()
+        shell: pwsh
+        run: |
+          # The platform line proves the wsl branch was taken rather than plain linux.
+          Select-String -Path logs/wsl-install.log -Pattern 'platform|\[TAURI:DIAG\]|wsl' -ErrorAction SilentlyContinue |
+            Select-Object -First 10
+          wsl -d unsloth-ci -u root -- sh -c 'test -x "$HOME/.unsloth/studio/unsloth_studio/bin/unsloth" && "$HOME/.unsloth/studio/unsloth_studio/bin/unsloth" --version || echo "no CLI installed"' 2>&1 |
+            Tee-Object -FilePath logs/wsl-verify.log
+
+      - name: Tear the distro down
+        if: always()
+        shell: pwsh
+        run: wsl --unregister unsloth-ci 2>&1 | Out-Null; exit 0
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: clean-wsl-ubuntu2404
+          path: logs/
+          retention-days: 7
+          if-no-files-found: warn
+
+  # ── Windows ───────────────────────────────────────────────────────────────
+  windows:
+    name: win ${{ matrix.os }} / winget=${{ matrix.winget }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            winget: 'visible'
+            experimental: false
+          # The no-winget path (LTSC / Server / managed corporate machines) falls
+          # back to python.org + astral.sh and is completely untested today. It is
+          # also the path where Ensure-VCRedist silently does not run, which leaves
+          # torch unable to load -- hence the explicit `import torch` assert below.
+          - os: windows-latest
+            winget: 'masked'
+            experimental: false
+          - os: windows-11-arm
+            winget: 'visible'
+            experimental: true
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      # No actions/setup-python here either: install.ps1 must bootstrap Python.
+
+      - name: Simulate a clean machine
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          # Drop preinstalled Python, git, CMake, VS/LLVM and the WindowsApps
+          # aliases from PATH. A full Visual Studio uninstall is not realistic in
+          # CI (registry + vswhere discovery, slow, may need a reboot), so PATH and
+          # env scrubbing is the honest approximation -- recorded as such.
+          $drop = @('hostedtoolcache\windows\Python', 'WindowsApps', '\Git\',
+                    'CMake', 'Microsoft Visual Studio', 'BuildTools', 'LLVM',
+                    'MSYS', 'mingw', 'Strawberry')
+          $kept = ($env:PATH -split ';') | Where-Object {
+            $p = $_; $p -and -not ($drop | Where-Object { $p -like "*$_*" })
+          }
+          if ('${{ matrix.winget }}' -eq 'masked') {
+            $kept = $kept | Where-Object { $_ -notlike '*WinGet*' -and $_ -notlike '*Microsoft\WindowsApps*' }
+          }
+          $newPath = ($kept -join ';')
+          "PATH=$newPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          foreach ($v in 'VSINSTALLDIR','VCINSTALLDIR','WindowsSdkDir','INCLUDE','LIB','LIBPATH') {
+            "$v=" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+          Write-Host "kept PATH entries: $($kept.Count)"
+
+      - name: Verify the simulation took effect
+        shell: pwsh
+        run: |
+          foreach ($t in 'python','git','cmake','cl') {
+            $f = Get-Command $t -ErrorAction SilentlyContinue
+            Write-Host ("{0,-8} {1}" -f $t, $(if ($f) { $f.Source } else { 'ABSENT' }))
+          }
+          if ('${{ matrix.winget }}' -eq 'masked' -and (Get-Command winget -ErrorAction SilentlyContinue)) {
+            Write-Host '::error::winget still resolvable; masking failed'
+            exit 1
+          }
+
+      - name: Install
+        id: install
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          & ./install.ps1 -SkipTorch *>&1 | Tee-Object -FilePath logs/install.log
+          $rc = $LASTEXITCODE
+          Write-Host "installer exit code: $rc"
+          exit $rc
+
+      - name: Assert torch loads (the VCRedist contract)
+        if: steps.install.outcome == 'success'
+        shell: pwsh
+        run: |
+          # The prebuilt llama-server and PyTorch both link the VC++ runtime.
+          # Ensure-VCRedist only runs when winget exists, so on the masked leg this
+          # is the assertion that catches a silently broken install.
+          $py = Join-Path $env:UNSLOTH_STUDIO_HOME 'unsloth_studio\Scripts\python.exe'
+          if (-not (Test-Path $py)) { $py = (Get-Command python -ErrorAction SilentlyContinue).Source }
+          if (-not $py) { Write-Host '::error::no python from the install'; exit 1 }
+          & $py -c "import ctypes.util, sys; print('VCRUNTIME140:', ctypes.util.find_library('vcruntime140'))"
+          & $py -c "import torch; print('torch', torch.__version__)"
+          if ($LASTEXITCODE -ne 0) { Write-Host '::error::torch failed to import (VC++ runtime missing?)'; exit 1 }
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: clean-win-${{ matrix.os }}-${{ matrix.winget }}
+          path: logs/
+          retention-days: 7
+          if-no-files-found: warn
