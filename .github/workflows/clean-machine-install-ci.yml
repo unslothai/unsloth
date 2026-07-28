@@ -359,6 +359,17 @@ jobs:
             exit 1
           fi
 
+      # nobuild only reads the log, so an installer that exits 0 having done nothing
+      # satisfies it. These are the required Linux rows and, unlike the WSL and
+      # Windows jobs, they had no check that the install produced anything runnable.
+      - name: Assert the install is actually usable
+        if: steps.install_root.outcome == 'success'
+        run: |
+          VENV="$UNSLOTH_STUDIO_HOME/unsloth_studio"
+          [ -x "$VENV/bin/python" ] || { echo "::error::installer exited 0 but left no managed Python at $VENV/bin/python"; ls -la "$UNSLOTH_STUDIO_HOME" || true; exit 1; }
+          "$VENV/bin/python" -V
+          [ -x "$VENV/bin/unsloth" ] || { echo "::error::installer exited 0 but left no unsloth CLI at $VENV/bin/unsloth"; exit 1; }
+
       - name: Assert no source build
         if: always()
         run: |
@@ -444,6 +455,22 @@ jobs:
           # The platform line proves the wsl branch was taken rather than plain linux.
           Select-String -Path logs/wsl-install.log -Pattern 'platform|\[TAURI:DIAG\]|wsl' -ErrorAction SilentlyContinue |
             Select-Object -First 10
+          # Printing could not fail, and that alternation also matches `platform linux`.
+          # If detection regresses, every WSL-specific branch is skipped and this job
+          # still passes as a plain-Linux install, which is the one thing no other job
+          # covers. `step` writes the label in reverse video, so strip ANSI first or an
+          # anchored match can never hit.
+          $esc = [char]27
+          $platformLines = @(
+            Get-Content logs/wsl-install.log -ErrorAction SilentlyContinue |
+              ForEach-Object { $_ -replace "$esc\[[0-9;]*[A-Za-z]", '' } |
+              Where-Object { $_ -match '^\s*platform\s+\S' }
+          )
+          $platformLines | ForEach-Object { Write-Host "platform line: $_" }
+          if (-not ($platformLines | Where-Object { $_ -match '^\s*platform\s+wsl\s*$' })) {
+            Write-Host '::error::installer never reported ''platform wsl''; the WSL branch was not exercised'
+            exit 1
+          }
           # No `|| echo`: substituting a message for the missing CLI made the inner
           # shell -- and so this step, and so the job -- succeed even when the install
           # produced nothing usable, which is the half of the question this step asks.
