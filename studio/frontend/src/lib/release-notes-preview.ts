@@ -572,7 +572,28 @@ function collectBullets(markdown: string): {
 
   const lines = contentLines(markdown);
   const labels = new Set<string>();
+  // Skips the same code the pass below skips. A definition-shaped line inside
+  // an indented code block or a deep fence is literal text, so CommonMark
+  // leaves a later `[Beta] support` unresolved with its brackets showing;
+  // recording the label anyway made toPlainText strip them in the preview.
+  // A real definition takes at most three spaces of indentation, so the indent
+  // test cannot reject one.
+  let labelFence: string | null = null;
   for (const line of lines) {
+    if (labelFence !== null) {
+      if (closesDeepFence(labelFence, line)) {
+        labelFence = null;
+      }
+      continue;
+    }
+    const opener = opensDeepFence(line);
+    if (opener !== null) {
+      labelFence = opener;
+      continue;
+    }
+    if (line.indent >= INDENTED_CODE_INDENT) {
+      continue;
+    }
     const definition = DEFINITION.exec(line.text);
     if (definition) {
       labels.add(

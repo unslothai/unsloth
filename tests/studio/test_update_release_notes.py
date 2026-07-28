@@ -1299,3 +1299,20 @@ def test_preview_heading_and_quote_markers_follow_the_backend_rule():
     # The backend rule this mirrors.
     backend = (BACKEND / "utils" / "changelog.py").read_text(encoding="utf-8")
     assert "^ {0,3}##[ \\t]+" in backend
+
+
+def test_preview_collects_labels_only_from_real_definitions():
+    """A definition-shaped line inside an indented code block or a deep fence is
+    literal text, so CommonMark leaves a later "[Beta] support" unresolved with
+    its brackets showing. Recording the label anyway made toPlainText strip them
+    in the collapsed preview, so it disagreed with the expanded view. The
+    pre-scan skips the same code the collector pass skips; a real definition
+    takes at most three spaces of indentation, so the indent test cannot reject
+    one."""
+    src = PREVIEW.read_text(encoding = "utf-8")
+    scan = src.index("const labels = new Set<string>();")
+    collect = src.index("let deepFence: string | null = null;")
+    prescan = " ".join(src[scan:collect].split())
+    assert "let labelFence: string | null = null;" in prescan
+    assert "if (line.indent >= INDENTED_CODE_INDENT) { continue; }" in prescan
+    assert "closesDeepFence(labelFence, line)" in prescan
