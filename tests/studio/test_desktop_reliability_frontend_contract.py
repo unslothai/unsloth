@@ -238,12 +238,11 @@ def test_mac_chat_header_controls_share_the_titlebar_row():
     assert "absolute top-[var(--studio-content-top-inset,0px)]" in source
 
 
-def test_collapsed_mac_sidebar_divider_starts_below_titlebar():
+def test_collapsed_mac_sidebar_hides_divider():
     source = APP_SIDEBAR.read_text(encoding = "utf-8")
 
     assert "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0" in source
-    assert "top-[var(--studio-mac-titlebar-height,34px)]" in source
-    assert "group-data-[collapsible=icon]:block" in source
+    assert "top-[var(--studio-mac-titlebar-height,34px)]" not in source
 
 
 def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
