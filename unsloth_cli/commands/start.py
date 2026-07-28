@@ -6,6 +6,7 @@
 import atexit
 import base64
 import contextlib
+import errno
 import json
 import os
 import re
@@ -102,6 +103,8 @@ _CODEX_SUBAGENT_MCP_SERVER = "unsloth_local_agent"
 _CODEX_SUBAGENT_MCP_TOOL = "spawn_local_agent"
 _CODEX_SUBAGENT_CONFIG_ENV = "UNSLOTH_CODEX_SUBAGENT_CONFIG"
 _CODEX_PARENT_OVERLAY_MANIFEST = ".unsloth-parent-overlay.json"
+_CODEX_EPHEMERAL_STALE_SECONDS = 24 * 60 * 60
+_CODEX_EPHEMERAL_HEARTBEAT_SECONDS = 60
 _CODEX_SUBAGENT_TOOL_DESCRIPTION = (
     f"{_SUBAGENT_DESCRIPTION} Use this tool instead of the built-in spawn_agent tool for those "
     "requests. Other subagent requests may use the built-in tools normally."
@@ -2690,12 +2693,20 @@ def _locked_file(path: Path, blocking: bool = True):
                 handle.write(b"\0")
                 handle.flush()
             handle.seek(0)
-            mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
-            try:
-                msvcrt.locking(handle.fileno(), mode, 1)
-                acquired = True
-            except OSError:
-                acquired = False
+            while True:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    acquired = True
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                        raise
+                    if not blocking:
+                        break
+                    # LK_LOCK gives up after roughly ten seconds. Poll LK_NBLCK
+                    # instead so a large stale plugin checkout cannot make a
+                    # concurrent launch fail just because cleanup takes longer.
+                    time.sleep(0.05)
         else:
             import fcntl
             mode = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
@@ -2720,10 +2731,31 @@ def _reclaim_stale_ephemeral_sessions(parent: Path) -> None:
     for path in parent.glob("u-codex-*"):
         if not path.is_dir():
             continue
-        with _locked_file(path / ".active.lock", blocking = False) as stale:
-            pass
+        active_lock = path / ".active.lock"
+        try:
+            modified = active_lock.stat().st_mtime if active_lock.exists() else path.stat().st_mtime
+        except FileNotFoundError:
+            continue
+        # The wrapper owns the advisory lock, not the Codex child. If only the
+        # wrapper is killed, its child may still be using CODEX_HOME; give that
+        # process a full day to finish before treating the unlocked home as stale.
+        if time.time() - modified < _CODEX_EPHEMERAL_STALE_SECONDS:
+            continue
+        try:
+            with _locked_file(active_lock, blocking = False) as stale:
+                pass
+        except FileNotFoundError:
+            # A normally exiting session may have removed itself after the glob.
+            continue
         if stale:
             shutil.rmtree(path, ignore_errors = True)
+
+
+def _refresh_ephemeral_session_marker(path: Path, stop: threading.Event) -> None:
+    """Keep the stale grace period relative to wrapper death, not session start."""
+    while not stop.wait(_CODEX_EPHEMERAL_HEARTBEAT_SECONDS):
+        with contextlib.suppress(OSError):
+            os.utime(path, None)
 
 
 @contextlib.contextmanager
@@ -2731,6 +2763,8 @@ def _short_ephemeral_session(parent: Path):
     """Create a short Codex home whose lock makes crash cleanup concurrency-safe."""
     path = None
     active_lock = contextlib.ExitStack()
+    heartbeat_stop = None
+    heartbeat = None
     try:
         with _locked_file(parent / ".cleanup.lock") as cleanup_lock:
             if not cleanup_lock:  # The blocking acquisition should always succeed.
@@ -2740,11 +2774,31 @@ def _short_ephemeral_session(parent: Path):
             locked = active_lock.enter_context(_locked_file(path / ".active.lock"))
             if not locked:
                 raise RuntimeError(f"Could not lock ephemeral session home: {path}")
+            heartbeat_stop = threading.Event()
+            heartbeat = threading.Thread(
+                target = _refresh_ephemeral_session_marker,
+                args = (path / ".active.lock", heartbeat_stop),
+                name = "unsloth-codex-home-heartbeat",
+                daemon = True,
+            )
+            heartbeat.start()
         yield path
     finally:
-        active_lock.close()
-        if path is not None:
-            shutil.rmtree(path, ignore_errors = True)
+        if heartbeat_stop is not None:
+            heartbeat_stop.set()
+        if heartbeat is not None:
+            heartbeat.join(timeout = 1)
+        try:
+            with _locked_file(parent / ".cleanup.lock") as cleanup_lock:
+                if not cleanup_lock:  # The blocking acquisition should always succeed.
+                    raise RuntimeError(f"Could not lock ephemeral session root: {parent}")
+                # Release the live marker only after deletion is serialized with
+                # startup scavenging, so no scanner can race this rmtree.
+                active_lock.close()
+                if path is not None:
+                    shutil.rmtree(path, ignore_errors = True)
+        finally:
+            active_lock.close()
 
 
 @contextlib.contextmanager

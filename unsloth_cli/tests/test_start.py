@@ -10,6 +10,7 @@ import os
 import re
 import shlex
 import sys
+import time
 import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
@@ -4727,13 +4728,39 @@ def test_session_config_codex_uses_short_ephemeral_parent(monkeypatch, tmp_path)
     assert not home.exists()
 
 
-def test_session_config_reclaims_stale_short_homes_but_keeps_live(monkeypatch, tmp_path):
+def test_locked_file_windows_blocking_retries_until_acquired(monkeypatch, tmp_path):
+    attempts = []
+    sleeps = []
+
+    def locking(_fd, mode, _length):
+        if mode == 1:
+            attempts.append(mode)
+            if len(attempts) < 3:
+                raise PermissionError(start.errno.EACCES, "busy")
+
+    fake_msvcrt = SimpleNamespace(LK_NBLCK = 1, LK_UNLCK = 2, locking = locking)
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    _simulate_windows(monkeypatch)
+    monkeypatch.setattr(start.time, "sleep", sleeps.append)
+
+    with start._locked_file(tmp_path / "lock") as acquired:
+        assert acquired
+    assert len(attempts) == 3
+    assert sleeps == [0.05, 0.05]
+
+
+def test_session_config_reclaims_old_short_homes_but_keeps_recent_and_live(monkeypatch, tmp_path):
     short_parent = tmp_path / "u"
     short_parent.mkdir()
     stale = short_parent / "u-codex-abandoned"
     stale.mkdir()
     (stale / ".active.lock").write_bytes(b"\0")
     (stale / "plugin-checkout").write_text("left behind")
+    old = time.time() - start._CODEX_EPHEMERAL_STALE_SECONDS - 1
+    os.utime(stale / ".active.lock", (old, old))
+    recent = short_parent / "u-codex-surviving-child"
+    recent.mkdir()
+    (recent / ".active.lock").write_bytes(b"\0")
     monkeypatch.setattr(
         start,
         "_ephemeral_session_parent",
@@ -4742,6 +4769,7 @@ def test_session_config_reclaims_stale_short_homes_but_keeps_live(monkeypatch, t
 
     with start._session_config("codex", launch = True) as first:
         assert not stale.exists()
+        assert recent.exists()
         with start._session_config("codex", launch = True) as second:
             assert first.exists()
             assert second.exists()
@@ -4749,6 +4777,24 @@ def test_session_config_reclaims_stale_short_homes_but_keeps_live(monkeypatch, t
         assert first.exists()
         assert not second.exists()
     assert not first.exists()
+
+
+def test_session_config_serializes_normal_short_home_deletion(monkeypatch, tmp_path):
+    short_parent = tmp_path / "u"
+    short_parent.mkdir()
+    monkeypatch.setattr(start, "_ephemeral_session_parent", lambda _agent: short_parent)
+    original_rmtree = start.shutil.rmtree
+
+    def checked_rmtree(path, *args, **kwargs):
+        if path.parent == short_parent and path.name.startswith("u-codex-"):
+            with start._locked_file(short_parent / ".cleanup.lock", blocking = False) as unlocked:
+                assert not unlocked
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(start.shutil, "rmtree", checked_rmtree)
+    with start._session_config("codex", launch = True) as home:
+        assert home.exists()
+    assert not home.exists()
 
 
 # The temp-dir agents: --persist points each one's home/state env at the stable dir;
