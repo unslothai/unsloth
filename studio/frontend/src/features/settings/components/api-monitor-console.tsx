@@ -525,12 +525,12 @@ export function ApiMonitorConsole(): ReactElement {
           </div>
         ) : loggingDisabled ? (
           <div className="rounded-lg border border-border/70 p-4 text-sm text-muted-foreground">
-            Request logging is disabled by{" "}
+            The API monitor is disabled by{" "}
             <code className="rounded bg-muted/60 px-1 py-0.5 text-xs">
-              UNSLOTH_STUDIO_DISABLE_API_MONITOR_LOGS
+              UNSLOTH_STUDIO_DISABLE_API_MONITOR
             </code>
-            . API requests still run normally, they are just not recorded here. Unset
-            the variable and restart Studio to re-enable.
+            . Requests and model loads still run normally, they are just not recorded
+            here. Unset the variable and restart Studio to re-enable.
           </div>
         ) : entries.length === 0 ? (
           <div className="rounded-lg border border-border/70 p-4 text-sm text-muted-foreground">

@@ -9,10 +9,19 @@ from core.inference.api_monitor import ApiMonitor, _trim
 import routes.inference as inference_route
 
 
-def _get_monitor():
+def _get_monitor(monkeypatch, *, enabled: bool):
+    """Call GET /monitor against a monitor in a known state.
+
+    Swaps the whole singleton rather than poking ``_enabled`` on it: the route
+    reads ``snapshot()``, which does not consult the flag, so a shared monitor
+    carrying rows from an earlier test would leak into the assertions.
+    """
+    monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(enabled = enabled))
     app = FastAPI()
     app.include_router(inference_route.studio_router)
-    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # Dict literal, not `overrides[key] = ...`: verify_import_hoist.py does not
+    # see Load names inside an assignment target and reports the import unused.
+    app.dependency_overrides = {get_current_subject: lambda: "test-user"}
     return TestClient(app).get("/monitor")
 
 
@@ -41,78 +50,6 @@ def test_api_monitor_tracks_reply_usage_and_context():
     assert entry["total_tokens"] == 10
     assert entry["context_usage"] == 0.1
     assert entry["duration_ms"] is not None
-
-
-def test_api_monitor_can_be_disabled_by_env(monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_API_MONITOR_LOGS", "1")
-    monitor = ApiMonitor(max_entries = 3)
-
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "local-model",
-        prompt = "user: hello",
-    )
-
-    assert entry_id is None
-    monitor.append_reply(entry_id, "hi")
-    monitor.set_usage(entry_id, prompt_tokens = 4, completion_tokens = 6)
-    monitor.finish(entry_id)
-    assert monitor.snapshot() == []
-    assert monitor.active_count() == 0
-
-
-def test_api_monitor_explicit_enabled_overrides_env(monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_API_MONITOR_LOGS", "1")
-    monitor = ApiMonitor(max_entries = 3, enabled = True)
-
-    entry_id = monitor.start(
-        endpoint = "/v1/chat/completions",
-        method = "POST",
-        model = "local-model",
-        prompt = "user: hello",
-    )
-
-    assert entry_id is not None
-    assert len(monitor.snapshot()) == 1
-
-
-def test_api_monitor_disabled_skips_lifecycle_rows(monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_API_MONITOR_LOGS", "1")
-    monitor = ApiMonitor(max_entries = 3)
-
-    # Load/unload rows carry no prompt text, but the flag turns the monitor off, not
-    # just its request logging -- leaving these on would keep the console populated.
-    load = monitor.record_lifecycle(event = "load", model = "org/A-GGUF", running = True)
-    assert load is None
-    monitor.relabel(load, "org/A-GGUF")
-    monitor.finish(load)
-    assert monitor.record_lifecycle(event = "unload", model = "org/A-GGUF") is None
-
-    assert monitor.snapshot() == []
-    assert monitor.active_count() == 0
-
-
-def test_monitor_route_reports_logging_enabled(monkeypatch):
-    # Pinned rather than inherited: the module singleton reads the env var at import
-    # time, so a developer running with logging off would otherwise flip this test.
-    monkeypatch.setattr(inference_route.api_monitor, "enabled", True)
-    response = _get_monitor()
-
-    assert response.status_code == 200
-    assert response.json()["logging_enabled"] is True
-
-
-def test_monitor_route_reports_logging_disabled(monkeypatch):
-    monkeypatch.setattr(inference_route.api_monitor, "enabled", False)
-    response = _get_monitor()
-
-    assert response.status_code == 200
-    payload = response.json()
-    # An empty list alone can't be told apart from "no traffic yet", so the flag
-    # has to travel with it.
-    assert payload["logging_enabled"] is False
-    assert payload["entries"] == []
 
 
 def test_api_monitor_summary_omits_full_prompt_and_reply():
@@ -344,6 +281,63 @@ def test_api_monitor_append_reply_exact_cap_then_more_marks_truncated():
     assert len(reply) == m._MAX_REPLY_CHARS and reply.endswith("...")
 
 
+def test_api_monitor_disabled_is_noop():
+    monitor = ApiMonitor(max_entries = 3, enabled = False)
+
+    request_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+        context_length = 100,
+    )
+    load_id = monitor.record_lifecycle(
+        event = "load",
+        model = "local-model",
+        running = True,
+    )
+    unload_id = monitor.record_lifecycle(
+        event = "unload",
+        model = "local-model",
+    )
+    assert request_id == load_id == unload_id == ""
+
+    # Every mutator must be a safe no-op on the falsy id.
+    monitor.append_reply(request_id, "hi")
+    monitor.set_reply(request_id, "hi")
+    monitor.set_usage(request_id, prompt_tokens = 4, completion_tokens = 6)
+    monitor.relabel(load_id, "renamed-model")
+    monitor.set_progress(load_id, 50)
+    monitor.finish(load_id)
+    monitor.fail_open(load_id, "boom")
+    monitor.fail(request_id, "boom")
+    monitor.discard(unload_id)
+
+    assert monitor.snapshot() == []
+    assert monitor.active_count() == 0
+    assert monitor.get(request_id) is None
+
+
+def test_api_monitor_disable_env_var_truthy(monkeypatch):
+    import core.inference.api_monitor as m
+    for value in ("1", "true", "yes", "on", "TRUE", "On", " yes "):
+        monkeypatch.setenv(m._DISABLE_ENV, value)
+        assert m._api_monitor_disabled() is True, value
+
+
+def test_api_monitor_disable_env_var_falsy(monkeypatch):
+    import core.inference.api_monitor as m
+    for value in ("", "0", "false", "no", "off", "disabled"):
+        monkeypatch.setenv(m._DISABLE_ENV, value)
+        assert m._api_monitor_disabled() is False, value
+
+
+def test_api_monitor_disable_env_var_unset(monkeypatch):
+    import core.inference.api_monitor as m
+    monkeypatch.delenv(m._DISABLE_ENV, raising = False)
+    assert m._api_monitor_disabled() is False
+
+
 # ── model lifecycle rows (load / unload) ────────────────────────────
 
 
@@ -439,3 +433,68 @@ def test_request_rows_report_kind_request():
     monitor = ApiMonitor(max_entries = 2)
     monitor.start(endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = "hi")
     assert monitor.snapshot()[0]["kind"] == "request"
+
+
+# ── stream framing must not depend on the monitor ───────────────────
+
+
+def test_sse_done_detection_accepts_both_spacings():
+    done = inference_route._is_openai_sse_done
+    assert done("data: [DONE]") is True
+    assert done("data:[DONE]") is True
+    assert done('data: {"choices": []}') is False
+    assert done("event: ping") is False
+    assert done("") is False
+
+
+def test_sse_done_detection_is_independent_of_the_monitor():
+    """The external-provider proxy sets ``sent_done`` from the line itself.
+
+    It used to read the monitor helper's return, which is None for every line
+    once recording is off -- so the proxy appended a second [DONE] after the
+    provider's own, changing client-visible framing based on a logging flag.
+    """
+    line = "data: [DONE]"
+    assert inference_route._monitor_openai_sse_line(None, line) is None
+    assert inference_route._is_openai_sse_done(line) is True
+
+
+# ── /monitor route: the disabled state has to reach the UI ──────────
+
+
+def test_monitor_route_reports_enabled(monkeypatch):
+    response = _get_monitor(monkeypatch, enabled = True)
+
+    assert response.status_code == 200
+    assert response.json()["logging_enabled"] is True
+
+
+def test_monitor_route_reports_disabled(monkeypatch):
+    response = _get_monitor(monkeypatch, enabled = False)
+
+    # An empty list on its own is indistinguishable from "no traffic yet", so the
+    # console needs the flag to explain itself instead of claiming idleness.
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["logging_enabled"] is False
+    assert payload["entries"] == []
+
+
+def test_monitor_route_disabled_still_hides_recorded_rows(monkeypatch):
+    """A disabled monitor records nothing, so the route reports an empty list
+    even after traffic that would otherwise have shown up."""
+    monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(enabled = False))
+    inference_route.api_monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+        subject = "test-user",
+    )
+    app = FastAPI()
+    app.include_router(inference_route.studio_router)
+    app.dependency_overrides = {get_current_subject: lambda: "test-user"}
+    payload = TestClient(app).get("/monitor").json()
+
+    assert payload["logging_enabled"] is False
+    assert payload["entries"] == []

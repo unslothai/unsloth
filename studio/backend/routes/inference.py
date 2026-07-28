@@ -2856,6 +2856,18 @@ def _monitor_openai_error_message(data: dict) -> Optional[str]:
     return None
 
 
+def _is_openai_sse_done(raw_line: str) -> bool:
+    """Whether the line is the terminal `data: [DONE]` frame.
+
+    Deliberately independent of the monitor: framing the client sees must not
+    change just because recording is off.
+    """
+    # SSE spec allows `data:value` and `data: value`; accept both.
+    if not raw_line.startswith("data:"):
+        return False
+    return raw_line[5:].lstrip() == "[DONE]"
+
+
 def _monitor_openai_sse_line(
     monitor_id: Optional[str],
     raw_line: str,
@@ -2863,7 +2875,6 @@ def _monitor_openai_sse_line(
 ) -> Optional[str]:
     if not monitor_id:
         return None
-    # SSE spec allows `data:value` and `data: value`; accept both.
     if not raw_line.startswith("data:"):
         return None
     data_str = raw_line[5:].lstrip()
@@ -7799,7 +7810,10 @@ async def _proxy_to_external_provider(
                 if monitor_event == "error":
                     stream_failed = True
                 yield f"{line}\n\n"
-                if monitor_event == "done":
+                # Parsed from the line itself, not from monitor_event: with the
+                # monitor disabled the helper returns None for every line, and
+                # trusting it would append a second [DONE] after the provider's.
+                if _is_openai_sse_done(line):
                     sent_done = True
             if not sent_done:
                 if not stream_failed:
