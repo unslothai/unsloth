@@ -4773,15 +4773,6 @@ def _guard_chat_load_against_training(
     if is_gguf and gpu_memory_mode == "manual" and diffusion_kind is False:
         return
 
-    binary = LlamaCppBackend._find_llama_server_binary() if is_gguf else None
-    is_vulkan_backend = bool(
-        is_gguf
-        and (
-            gpu_ids_are_vulkan_ordinals
-            or (binary and LlamaCppBackend._is_vulkan_backend(binary))
-        )
-    )
-
     diffusion_gpu = None
     if is_gguf and diffusion_kind is not False and not gpu_ids_are_vulkan_ordinals:
         # Use the same token selection as the runner: an explicit pick wins,
@@ -4792,6 +4783,15 @@ def _guard_chat_load_against_training(
             requested_gpu_ids,
             cpu_only = LlamaCppBackend._effective_gpu_count() == 0,
         )
+
+    # Detected once: both the tensor-parallel KV sizing below and the Vulkan
+    # free-VRAM view need the same answer. An ordinal pin only exists on a
+    # Vulkan build, so it settles the question without probing the binary.
+    binary = LlamaCppBackend._find_llama_server_binary() if is_gguf else None
+    is_vulkan_backend = bool(
+        is_gguf
+        and (gpu_ids_are_vulkan_ordinals or (binary and LlamaCppBackend._is_vulkan_backend(binary)))
+    )
 
     required_override_gb = (
         _estimate_gguf_required_gb(
