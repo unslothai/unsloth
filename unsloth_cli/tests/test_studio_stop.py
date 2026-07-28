@@ -89,6 +89,40 @@ def test_stop_does_not_leave_the_older_instance_running(monkeypatch, tmp_path):
     assert live == set()
 
 
+def test_stop_signals_each_server_once(monkeypatch, tmp_path):
+    # A server writes its per-port file AND studio.pid. It stays alive while it
+    # shuts down gracefully, so a second SIGTERM would hit the SIG_DFL the first
+    # one installs and hard-kill it mid-cleanup.
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio_mod, "_PID_FILE", tmp_path / "studio.pid")
+    monkeypatch.setattr(studio_mod.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(studio_mod, "_pid_alive", lambda pid: True)
+    killed = []
+    monkeypatch.setattr(studio_mod.os, "kill", lambda pid, _sig: killed.append(pid))
+    monkeypatch.setattr(sys, "platform", "linux")
+    _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
+    _write_pid(tmp_path, "studio.pid", 8550)
+
+    result = _run_stop(studio_mod)
+
+    assert result.exit_code == 0, result.output
+    assert killed == [8550]
+    assert result.output.lower().count("sent shutdown signal") == 1
+
+
+def test_stop_removes_every_stale_file_for_one_pid(monkeypatch, tmp_path):
+    studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = set())
+    _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
+    _write_pid(tmp_path, "studio.pid", 8550)
+
+    result = _run_stop(studio_mod)
+
+    assert result.exit_code == 0, result.output
+    assert killed == []
+    assert not list(tmp_path.glob("*.pid"))
+
+
 def test_stop_reads_the_legacy_single_pid_file(monkeypatch, tmp_path):
     studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {4242})
     _write_pid(tmp_path, "studio.pid", 4242)

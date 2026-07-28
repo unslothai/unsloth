@@ -2424,9 +2424,14 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _pid_file_entries() -> "list[tuple[Path, int]]":
-    """(path, pid) per recorded server, including the legacy studio.pid."""
-    entries = []
+def _pid_file_entries() -> "list[tuple[int, list[Path]]]":
+    """(pid, files) per recorded server, including the legacy studio.pid.
+
+    Grouped by PID: a server writes both its per-port file and studio.pid, and
+    signalling twice would hit the SIG_DFL the first SIGTERM installs, hard-killing
+    it mid-shutdown.
+    """
+    by_pid: "dict[int, list[Path]]" = {}
     try:
         paths = sorted(STUDIO_HOME.glob(PID_FILE_GLOB)) + [_PID_FILE]
     except OSError:
@@ -2441,11 +2446,11 @@ def _pid_file_entries() -> "list[tuple[Path, int]]":
         except (OSError, UnicodeDecodeError):
             continue
         if text.isdigit():
-            entries.append((path, int(text)))
+            by_pid.setdefault(int(text), []).append(path)
         else:
             typer.echo(f"Ignoring invalid PID file {path.name}: {text}")
             path.unlink(missing_ok = True)
-    return entries
+    return list(by_pid.items())
 
 
 def _signal_stop(pid: int) -> "str | None":
@@ -2477,9 +2482,10 @@ def stop():
         raise typer.Exit(0)
 
     signalled, failed = [], []
-    for path, pid in entries:
+    for pid, paths in entries:
         if not _pid_alive(pid):
-            path.unlink(missing_ok = True)
+            for path in paths:
+                path.unlink(missing_ok = True)
             continue
         error = _signal_stop(pid)
         if error is not None:
@@ -2487,7 +2493,7 @@ def stop():
             typer.echo(f"Failed to stop Unsloth server (PID {pid}): {error}", err = True)
             continue
         typer.echo(f"Sent shutdown signal to Unsloth server (PID {pid}).")
-        signalled.append((path, pid))
+        signalled.append((pid, paths))
 
     if not signalled and not failed:
         typer.echo("No running Unsloth server found (cleaned up stale PID files).")
@@ -2499,15 +2505,16 @@ def stop():
             break
         time.sleep(0.5)
         for entry in list(pending):
-            path, pid = entry
+            pid, paths = entry
             if not _pid_alive(pid):
-                path.unlink(missing_ok = True)
+                for path in paths:
+                    path.unlink(missing_ok = True)
                 pending.remove(entry)
 
     stopped = len(signalled) - len(pending)
     if stopped:
         typer.echo(f"Unsloth server{'s' if stopped > 1 else ''} stopped ({stopped}).")
-    for _path, pid in pending:
+    for pid, _paths in pending:
         typer.echo(f"Unsloth server (PID {pid}) is shutting down (may take a few seconds).")
     if failed:
         raise typer.Exit(1)
