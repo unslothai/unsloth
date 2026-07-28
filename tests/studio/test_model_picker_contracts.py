@@ -1062,9 +1062,9 @@ def test_a_standalone_gguf_is_resident_despite_its_derived_quant():
         "(settingsTargetIsStandaloneFile || ggufVariantsMatch(activeGgufVariant, settingsTarget.ggufVariant))"
         in hub
     )
-    backend = (
-        WORKDIR / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
-    ).read_text(encoding = "utf-8")
-    assert "self._hf_variant = _extract_quant_label(gguf_path)" in backend, (
-        "the derived label this accounts for"
+    backend = (WORKDIR / "studio" / "backend" / "core" / "inference" / "llama_cpp.py").read_text(
+        encoding = "utf-8"
     )
+    assert (
+        "self._hf_variant = _extract_quant_label(gguf_path)" in backend
+    ), "the derived label this accounts for"
