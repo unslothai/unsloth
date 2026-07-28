@@ -462,7 +462,21 @@ function findStructuralThinkClose(
       // A quoted mention is symmetric. Accepting ANY two delimiters called
       // "`</think>\"yes\"" quoted and kept the whole visible answer in the
       // drawer, so the flanks must be the same char (#7334).
-      if (!before || before !== after || !`"'\``.includes(before)) {
+      if (streaming && !after && before && `"'\``.includes(before)) {
+        // Mid-stream an ABSENT trailing flank is not an empty one. Providers
+        // emit `</think>` as a single token, so `<think>echo "</think>` ends
+        // exactly on the tag and the quote that closes the mention lands in
+        // the NEXT delta. Reading the gap as "not quoted" calls the mention
+        // structural for one delta, and chat-adapter latches reasoningDuration
+        // off that instant and never lowers a nonzero value, so the reported
+        // thought time stopped at the mention (#7334). Defer exactly like the
+        // fence branch above, mirroring the backend extractor's
+        // _should_hold_quoted_think_close, and keep the scan re-readable: the
+        // next delta is what settles this tag, so nothing may resume past it.
+        onDeferredClose?.(closeIndex);
+        resumable = false;
+        literal = true;
+      } else if (!before || before !== after || !`"'\``.includes(before)) {
         literal = false;
       } else {
         // A prose mention closes its quote and reads on as prose, so the

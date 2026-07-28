@@ -246,6 +246,46 @@ const firing = {
   cold: replayDeferred(FIRE_DELTAS, false),
 };
 
+// Providers emit `</think>` as one token, so a quoted mention arrives as
+// `... "` / `</think>` / `" ...` and the middle delta ends EXACTLY on the tag.
+// The absent trailing flank is not an empty one: calling the mention structural
+// for that one delta makes chat-adapter latch reasoningDuration off it, and it
+// never lowers a nonzero value, so the thought time stops at the mention
+// (#7334). Defer instead, and report the candidate for the final parse.
+const QUOTE_SPLIT_DELTAS = ['<think>echo "', "</think>", '" here', " still thinking"];
+const quoteSplitDeferred = [];
+const quoteSplit = { closed: [] };
+let qsCum = "";
+for (const delta of QUOTE_SPLIT_DELTAS) {
+  qsCum += delta;
+  quoteSplit.closed.push(
+    hasClosedThinkTag(qsCum, {
+      streaming: true,
+      onDeferredClose: (index) => quoteSplitDeferred.push(index),
+    }),
+  );
+}
+quoteSplit.deferred = quoteSplitDeferred;
+quoteSplit.finalClosed = hasClosedThinkTag(qsCum);
+quoteSplit.finalTypes = parseAssistantContent(qsCum).map((part) => part.type);
+// The same deferral must still resolve STRUCTURAL as soon as the flank shows
+// the quote opens the ANSWER, or the visible answer never leaves the drawer.
+const ANSWER_SPLIT_DELTAS = ['<think>reason "', "</think>", '"Answer'];
+const answerSplit = { closed: [] };
+let asCum = "";
+for (const delta of ANSWER_SPLIT_DELTAS) {
+  asCum += delta;
+  answerSplit.closed.push(hasClosedThinkTag(asCum, { streaming: true }));
+}
+answerSplit.finalIndex = structuralThinkCloseIndex(asCum);
+answerSplit.finalParts = parseAssistantContent(asCum);
+// A reasoning block that simply ENDS on `"</think>` has no more deltas coming,
+// so the final parse still falls back to structural.
+const quoteAtEof = {
+  index: structuralThinkCloseIndex('<think>reason "</think>'),
+  streamingClosed: hasClosedThinkTag('<think>reason "</think>', { streaming: true }),
+};
+
 const streaming = {
   streamClosed,
   streamTypes,
@@ -255,6 +295,9 @@ const streaming = {
   deferred,
   resumeMismatches,
   firing,
+  quoteSplit,
+  answerSplit,
+  quoteAtEof,
 };
 
 // Perf guard for #7334: literal mentions must not make the parse super-linear.
@@ -462,6 +505,41 @@ def test_mid_stream_unclosed_fence_decision_is_deferred(tmp_path):
     # in the semantics test above) is what falls back to structural.
     assert streaming["unclosedStreaming"]["closed"] is False
     assert streaming["unclosedStreaming"]["types"] == ["reasoning"]
+
+
+def test_mid_stream_quoted_close_waits_for_its_trailing_flank(tmp_path):
+    """A close tag ending the delta must not read as the block end.
+
+    `</think>` is one token for every provider, so a quoted mention arrives as
+    `... "` / `</think>` / `" ...` and the middle delta stops exactly on the
+    tag. Reading the flank that has not arrived as "not a quote" called the
+    mention structural for that one delta; `chat-adapter` latches
+    `reasoningDuration` from `hasClosedThinkTag` behind a `!reasoningDuration`
+    guard and never lowers a nonzero value, so the reported thinking time
+    excluded every second of reasoning after the mention (#7334). The backend
+    extractor holds the same buffer (`_should_hold_quoted_think_close`).
+    """
+    streaming = _run_parse_harness(tmp_path)["streaming"]
+
+    # No delta of a quoted mention ever reads as closed, and the deferred
+    # candidate is reported so the adapter can time the thought from it.
+    assert streaming["quoteSplit"]["closed"] == [False, False, False, False]
+    assert streaming["quoteSplit"]["deferred"] == [len('<think>echo "')]
+    assert streaming["quoteSplit"]["finalClosed"] is False
+    assert streaming["quoteSplit"]["finalTypes"] == ["reasoning"]
+
+    # Deferring is not swallowing: the delta that reveals the quote opening the
+    # ANSWER still reclassifies the tag as structural, so the answer streams.
+    assert streaming["answerSplit"]["closed"] == [False, False, True]
+    assert streaming["answerSplit"]["finalIndex"] == len('<think>reason "')
+    assert streaming["answerSplit"]["finalParts"] == [
+        {"type": "reasoning", "text": 'reason "'},
+        {"type": "text", "text": '"Answer'},
+    ]
+
+    # And a stream that simply ends on the tag falls back to structural.
+    assert streaming["quoteAtEof"]["index"] == len('<think>reason "')
+    assert streaming["quoteAtEof"]["streamingClosed"] is False
 
 
 def test_known_synthetic_close_is_not_re_derived(tmp_path):
