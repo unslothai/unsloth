@@ -381,6 +381,31 @@ def _compute_all_hf_cache_scans() -> list:
     return scans
 
 
+def default_ref_snapshot(repo_dir: Path) -> Optional[Path]:
+    """Snapshot dir that ``refs/main`` names in *repo_dir*, or ``None``.
+
+    This is the directory ``from_pretrained(repo_id)`` ends up in, so callers
+    compare it against the snapshot the inventory row advertises: naming the
+    repo id is only safe when the two hold the same payload.
+    """
+    ref_path = repo_dir / "refs" / "main"
+    try:
+        # No strip: huggingface_hub matches the raw ref contents against the
+        # snapshot dir name, so a ref with stray whitespace resolves nowhere.
+        commit = ref_path.read_text(encoding = "utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not commit:
+        return None
+    snapshot = repo_dir / "snapshots" / commit
+    try:
+        if not snapshot.is_dir():
+            return None
+        return snapshot.resolve()
+    except (OSError, ValueError):
+        return None
+
+
 def default_ref_resolves_on_disk(repo_dir: Path) -> bool:
     """Whether ``refs/main`` names a snapshot that exists in *repo_dir*.
 
@@ -389,19 +414,7 @@ def default_ref_resolves_on_disk(repo_dir: Path) -> bool:
     upstream HEAD instead of the snapshot already on disk. Callers use this to
     hand out the snapshot path as the load identity instead of the repo id.
     """
-    ref_path = repo_dir / "refs" / "main"
-    try:
-        # No strip: huggingface_hub matches the raw ref contents against the
-        # snapshot dir name, so a ref with stray whitespace resolves nowhere.
-        commit = ref_path.read_text(encoding = "utf-8")
-    except (OSError, UnicodeDecodeError):
-        return False
-    if not commit:
-        return False
-    try:
-        return (repo_dir / "snapshots" / commit).is_dir()
-    except (OSError, ValueError):
-        return False
+    return default_ref_snapshot(repo_dir) is not None
 
 
 def token_fingerprint(hf_token: Optional[str]) -> str:
@@ -617,6 +630,28 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
     return complete
 
 
+def snapshot_variants_all_complete(snapshot: str) -> bool:
+    """True when every quant the variant lister would advertise from *snapshot* is
+    fully on disk.
+
+    One complete quant is not enough: the picker enumerates the whole directory, so a
+    half-downloaded split quant sitting beside a good one still gets offered and the
+    generated command asks llama-server for shards that are absent. Both sides derive
+    their labels from ``extract_quant_label`` over paths relative to the snapshot, so
+    the sets are directly comparable.
+    """
+    from hub.utils.gguf import list_local_gguf_variants
+
+    try:
+        variants, _ = list_local_gguf_variants(snapshot)
+        offered = {v.quant for v in variants if getattr(v, "quant", None)}
+        if not offered:
+            return False
+        return offered <= _completed_gguf_variants(Path(snapshot))
+    except Exception:
+        return False
+
+
 def _manifest_partial(
     repo_type: RepoType,
     repo_id: str,
@@ -694,6 +729,7 @@ def is_snapshot_partial(
     repo_type: RepoType,
     repo_id: str,
     repo_cache_dir: Optional[Path] = None,
+    snapshot_dir: Optional[Path] = None,
 ) -> bool:
     """Repo-row partial flag for snapshot-style downloads (full-snapshot
     models — safetensors/adapter/checkpoint — and all datasets).
@@ -704,7 +740,12 @@ def is_snapshot_partial(
       3. Manifest walk (stat per expected file under the latest snapshot).
 
     A manifest without a resolvable snapshot is partial: the worker got
-    far enough to record expectations but did not leave a usable snapshot."""
+    far enough to record expectations but did not leave a usable snapshot.
+
+    *snapshot_dir* pins the manifest walk to the snapshot the row will hand out
+    as its load identity. Without it the walk uses the newest snapshot, so a
+    weightless metadata-only revision beside a complete download flags the row
+    partial and ``can_chat`` goes false for a model that loads fine."""
     from hub.utils import download_manifest
     return _compose_partial(
         lambda: download_manifest.has_cancel_marker(
@@ -718,7 +759,7 @@ def is_snapshot_partial(
             repo_type,
             repo_id,
             None,
-            None,
+            snapshot_dir,
             repo_cache_dir,
         ),
     )

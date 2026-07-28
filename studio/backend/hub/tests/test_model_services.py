@@ -866,7 +866,7 @@ def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
-        lambda _kind, _repo_id, _path: False,
+        lambda _kind, _repo_id, _path, **_kw: False,
     )
 
     result = {"cached": cache_inventory._scan_cached_models()}
@@ -914,7 +914,7 @@ def test_cached_scans_hide_embedders_configured_by_cache_path(monkeypatch, tmp_p
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
-        lambda _kind, _repo_id, _path: False,
+        lambda _kind, _repo_id, _path, **_kw: False,
     )
 
     assert cache_inventory._scan_cached_gguf() == []
@@ -977,7 +977,7 @@ def test_cached_scans_hide_embedders_configured_by_snapshot_path(monkeypatch, tm
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
-        lambda _kind, _repo_id, _path: False,
+        lambda _kind, _repo_id, _path, **_kw: False,
     )
 
     assert cache_inventory._scan_cached_gguf() == []
@@ -1015,7 +1015,7 @@ def test_cached_models_scan_keeps_unrelated_repo_with_custom_generic_embedder(
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
-        lambda _kind, _repo_id, _path: False,
+        lambda _kind, _repo_id, _path, **_kw: False,
     )
 
     result = {"cached": cache_inventory._scan_cached_models()}
@@ -1054,7 +1054,7 @@ def test_cached_scans_hide_stale_default_embedder_after_custom_setting(monkeypat
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
-        lambda _kind, _repo_id, _path: False,
+        lambda _kind, _repo_id, _path, **_kw: False,
     )
 
     assert cache_inventory._scan_cached_gguf() == []

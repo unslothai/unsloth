@@ -3052,26 +3052,12 @@ def _repo_gguf_last_modified(repo_info) -> float:
 
 
 def snapshot_variants_all_complete(snapshot: str) -> bool:
-    """True when every quant the variant lister would advertise from *snapshot* is
-    fully on disk.
-
-    One complete quant is not enough: the picker enumerates the whole directory, so a
-    half-downloaded split quant sitting beside a good one still gets offered and the
-    generated command asks llama-server for shards that are absent. Both sides derive
-    their labels from ``extract_quant_label`` over paths relative to the snapshot, so
-    the sets are directly comparable.
-    """
+    """Re-exported for callers that already import it from here; the scan-side
+    cache inventory needs the same predicate, so it lives beside the completed
+    variant walk it is built on."""
     from hub.utils import inventory_scan
-    from hub.utils.gguf import list_local_gguf_variants
 
-    try:
-        variants, _ = list_local_gguf_variants(snapshot)
-        offered = {v.quant for v in variants if getattr(v, "quant", None)}
-        if not offered:
-            return False
-        return offered <= inventory_scan._completed_gguf_variants(Path(snapshot))
-    except Exception:
-        return False
+    return inventory_scan.snapshot_variants_all_complete(snapshot)
 
 
 def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:

@@ -269,10 +269,12 @@ def _cache_inventory_fields(
     active_hub_cache: Optional[Path] = None,
     partial: bool = False,
     requires_variant: bool = False,
+    payload_snapshots: frozenset[str] = frozenset(),
 ) -> dict:
     # *snapshot_path* becomes the load identity whenever the repo id will not
     # resolve, so callers must pass a snapshot that holds the payload this row
-    # advertises, not merely the newest one.
+    # advertises, not merely the newest one. *payload_snapshots* are every
+    # snapshot that does hold it, used to judge where the repo id would land.
     load_id = repo_id
     active_cache = True
     if repo_path is not None:
@@ -288,16 +290,18 @@ def _cache_inventory_fields(
         except (OSError, RuntimeError, ValueError):
             active_cache = False
             load_id = str(snapshot_path or repo_path)
-    if (
-        load_id == repo_id
-        and snapshot_path is not None
-        and repo_path is not None
-        and not hf_cache_scan.default_ref_resolves_on_disk(repo_path)
-    ):
+    if load_id == repo_id and snapshot_path is not None and repo_path is not None:
+        default_snapshot = hf_cache_scan.default_ref_snapshot(repo_path)
         # No usable refs/main: from_pretrained(repo_id) would fail offline and
         # would fetch the current upstream HEAD online, ignoring the snapshot
-        # already on disk. Point the load straight at that snapshot instead.
-        load_id = str(snapshot_path)
+        # already on disk. A refs/main that resolves is no better when it lands
+        # on a revision without the payload this row advertises: a metadata
+        # probe against a moved commit leaves exactly such a snapshot, and it
+        # is the newest, so it wins the ref. Point the load at the payload.
+        if default_snapshot is None or (
+            payload_snapshots and str(default_snapshot) not in payload_snapshots
+        ):
+            load_id = str(snapshot_path)
     return {
         "inventory_id": _local_inventory_id("cache", model_format, repo_id),
         "load_id": load_id,
@@ -378,15 +382,19 @@ def _scan_cached_gguf() -> list[dict]:
                 last_modified = max(last_modified, (existing or {}).get("last_modified", 0.0))
                 if last_modified > 0:
                     row["last_modified"] = last_modified
+                # Walks each snapshot's quants, so it runs only for repos that
+                # made it past the skips above.
+                gguf_snapshot, gguf_payload_snapshots = _repo_gguf_payload_snapshots(repo_info)
                 row.update(
                     _cache_inventory_fields(
                         repo_id,
                         "gguf",
                         repo_path = repo_path,
-                        snapshot_path = _repo_gguf_payload_snapshot(repo_info) or snapshot_path,
+                        snapshot_path = gguf_snapshot or snapshot_path,
                         active_hub_cache = active_hub_cache,
                         partial = bool(row["partial"]),
                         requires_variant = True,
+                        payload_snapshots = gguf_payload_snapshots,
                     )
                 )
                 if _repo_has_mmproj(repo_info):
@@ -432,6 +440,7 @@ class _CachedNonGgufPayload(NamedTuple):
     model_format: ModelFormat
     last_modified: float
     payload_snapshot: Optional[Path]
+    payload_snapshots: frozenset[str]
 
 
 # Keys mirror _classify_non_gguf_model_format's keyword arguments so a revision's
@@ -470,19 +479,42 @@ def _newest_snapshot_dir(candidates) -> Optional[Path]:
         return best[1]
 
 
-def _repo_gguf_payload_snapshot(repo_info) -> Optional[Path]:
-    """Newest snapshot dir holding a primary GGUF, or None when none does.
+def _resolved_snapshot_ids(candidates) -> frozenset[str]:
+    """The same strings ``_newest_snapshot_dir`` would return, for membership."""
+    resolved: set[str] = set()
+    for candidate in candidates:
+        path = Path(candidate)
+        try:
+            resolved.add(str(path.resolve()))
+        except OSError:
+            resolved.add(str(path))
+    return frozenset(resolved)
+
+
+def _repo_gguf_payload_snapshots(repo_info) -> tuple[Optional[Path], frozenset[str]]:
+    """Snapshot dirs a GGUF load can actually use, plus the newest of them.
 
     The row's size sums quants over every revision, while local variant
     resolution reads only the directory handed out as ``load_id``, so the two
-    must agree or an advertised quant resolves to nothing.
+    must agree or an advertised quant resolves to nothing. A snapshot holding
+    only part of a split quant is not usable either: the picker still offers
+    that quant and the generated command asks for shards that are absent, so
+    prefer a complete one exactly as ``_repo_gguf_load_id`` does. Fall back to
+    any primary GGUF when nothing is complete, which is what shipped before.
     """
-    return _newest_snapshot_dir(
+    with_gguf = [
         snapshot
         for revision in repo_info.revisions
         if (snapshot := getattr(revision, "snapshot_path", None)) is not None
         and any(_is_main_gguf_filename(f.file_name) for f in revision.files)
-    )
+    ]
+    complete = [
+        snapshot
+        for snapshot in with_gguf
+        if hf_cache_scan.snapshot_variants_all_complete(str(snapshot))
+    ]
+    usable = complete or with_gguf
+    return _newest_snapshot_dir(usable), _resolved_snapshot_ids(usable)
 
 
 def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
@@ -551,19 +583,21 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     else:
         selected_blobs = all_weight_blobs
 
+    # Weights are pooled across revisions, so the newest snapshot need not hold
+    # any: the load id has to name one that classifies the same way on its own,
+    # otherwise the load fails on a fully cached model.
+    payload_snapshots = [
+        snapshot
+        for snapshot, flags in revision_flags
+        if _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = True) == model_format
+    ]
     return _CachedNonGgufPayload(
         size_bytes = sum(size for size, _mtime in selected_blobs.values()),
         has_runnable_weights = model_format != "unknown",
         model_format = model_format,
         last_modified = max((mtime for _size, mtime in selected_blobs.values()), default = 0.0),
-        # Weights are pooled across revisions, so the newest snapshot need not
-        # hold any: the load id has to name one that classifies the same way on
-        # its own, otherwise the load fails on a fully cached model.
-        payload_snapshot = _newest_snapshot_dir(
-            snapshot
-            for snapshot, flags in revision_flags
-            if _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = True) == model_format
-        ),
+        payload_snapshot = _newest_snapshot_dir(payload_snapshots),
+        payload_snapshots = _resolved_snapshot_ids(payload_snapshots),
     )
 
 
@@ -695,10 +729,14 @@ def _scan_cached_models() -> list[dict]:
                 if local_metadata.pop("_hidden_stt", False):
                     skipped_stt += 1
                     continue
+                # Scoped to the snapshot the row will advertise: an incomplete
+                # newer revision must not flip can_chat off for the complete
+                # one this row actually hands out as its load id.
                 snapshot_partial = hf_cache_scan.is_snapshot_partial(
                     "model",
                     repo_id,
                     repo_path,
+                    snapshot_dir = payload.payload_snapshot,
                 )
                 row = {
                     "repo_id": repo_id,
@@ -730,6 +768,7 @@ def _scan_cached_models() -> list[dict]:
                         snapshot_path = payload.payload_snapshot or snapshot_path,
                         active_hub_cache = active_hub_cache,
                         partial = bool(row["partial"]),
+                        payload_snapshots = payload.payload_snapshots,
                     )
                 )
                 if _prefer_cache_row(row, existing):

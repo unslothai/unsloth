@@ -367,7 +367,13 @@ def _autoload_gguf_rows(cache_root: Path, monkeypatch) -> list[dict]:
         inventory_scan.invalidate_hf_cache_scans()
 
 
-def _two_snapshot_repo(cache_root: Path, older_files: dict, newer_files: dict) -> Path:
+def _two_snapshot_repo(
+    cache_root: Path,
+    older_files: dict,
+    newer_files: dict,
+    *,
+    ref: str = UPSTREAM_HEAD,
+) -> Path:
     """A repo whose payload sits in the older of two snapshots.
 
     Realistic because a metadata probe (config.json only) against a commit that
@@ -376,7 +382,7 @@ def _two_snapshot_repo(cache_root: Path, older_files: dict, newer_files: dict) -
     repo_dir = cache_root / "models--Org--Model"
     (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
     (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
-    (repo_dir / "refs" / "main").write_text(UPSTREAM_HEAD, encoding = "utf-8")
+    (repo_dir / "refs" / "main").write_text(ref, encoding = "utf-8")
     for commit, files in ((OLDER, older_files), (NEWER, newer_files)):
         snapshot = repo_dir / "snapshots" / commit
         snapshot.mkdir(parents = True, exist_ok = True)
@@ -443,3 +449,131 @@ def test_load_id_still_prefers_the_newest_snapshot_that_holds_the_payload(tmp_pa
     rows = _autoload_rows(tmp_path, monkeypatch)
 
     assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / NEWER
+
+
+def test_load_id_leaves_the_payload_snapshot_when_main_resolves_elsewhere(tmp_path, monkeypatch):
+    """A ``refs/main`` that resolves is not enough: the metadata probe that
+    strands the weights in an older snapshot also repoints ``refs/main`` at the
+    weightless one, so loading by repo id lands on a revision with no weights
+    and the app downloads the model again."""
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
+        newer_files = {"config.json": b"{}"},
+        ref = NEWER,
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    load_id = rows[0]["load_id"]
+    # Behavioural: follow the load identity to a directory the way a load would
+    # (repo id resolves through refs/main) and require the weights to be there.
+    resolved = (
+        repo_dir / "snapshots" / (repo_dir / "refs" / "main").read_text(encoding = "utf-8")
+        if load_id == "Org/Model"
+        else Path(load_id)
+    )
+    assert any(
+        entry.suffix == ".safetensors" for entry in resolved.iterdir()
+    ), f"load_id {load_id} resolves to {resolved.name}, which holds no weights"
+    assert Path(load_id) == repo_dir / "snapshots" / OLDER
+
+
+def test_load_id_stays_the_repo_id_when_main_resolves_onto_the_payload(tmp_path, monkeypatch):
+    """The rule must stay narrow: when ``refs/main`` names a snapshot that does
+    hold the payload, the pinned revision keeps winning and the row keeps the
+    repo id, even though a newer snapshot is runnable too."""
+    _two_snapshot_repo(
+        tmp_path,
+        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
+        newer_files = {"config.json": b"{}", "model.safetensors": b"\0" * 13},
+        ref = OLDER,
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["load_id"] == "Org/Model"
+
+
+def test_gguf_load_id_skips_a_snapshot_holding_half_a_split_quant(tmp_path, monkeypatch):
+    """The newest snapshot can hold shard 1 of an interrupted split download.
+    The picker still offers that quant, so the generated command asks
+    llama-server for a shard that is absent while a complete quant sits in an
+    older snapshot."""
+    from hub.utils.gguf import list_local_gguf_variants
+
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"Model-Q4_K_M.gguf": b"\0" * 32},
+        newer_files = {"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
+    )
+
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    load_dir = Path(rows[0]["load_id"])
+    variants, _has_vision = list_local_gguf_variants(str(load_dir))
+    offered = {v.quant for v in variants if getattr(v, "quant", None)}
+    complete = inventory_scan._completed_gguf_variants(load_dir)
+    assert offered and offered <= complete, (
+        f"load_id {load_dir.name} offers {sorted(offered)} with only "
+        f"{sorted(complete)} complete; the usable quant is in {OLDER[:8]}"
+    )
+    assert load_dir == repo_dir / "snapshots" / OLDER
+
+
+def test_partial_is_judged_against_the_snapshot_the_row_advertises(tmp_path, monkeypatch):
+    """The manifest walk used the newest snapshot while the load id now names an
+    older complete one, so a weightless probe snapshot flagged the row partial;
+    that flips ``can_chat`` off and auto-load skips a model that loads fine."""
+    from hub.utils import download_manifest
+
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
+        newer_files = {"config.json": b"{}"},
+    )
+    download_manifest.write_manifest(
+        "model",
+        "Org/Model",
+        None,
+        [
+            download_manifest.ExpectedFile(path = "config.json", size = 2),
+            download_manifest.ExpectedFile(path = "model.safetensors", size = 11),
+        ],
+        hub_cache = tmp_path,
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / OLDER
+    assert rows[0].get("partial") is False
+    assert rows[0]["capabilities"].get("can_chat") is True
+
+
+def test_a_genuinely_incomplete_download_is_still_partial(tmp_path, monkeypatch):
+    """Negative side of the same rule: scoping the manifest walk to the
+    advertised snapshot must not stop reporting a truncated download."""
+    from hub.utils import download_manifest
+
+    _two_snapshot_repo(
+        tmp_path,
+        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
+        newer_files = {"config.json": b"{}", "model.safetensors": b"\0" * 4},
+    )
+    download_manifest.write_manifest(
+        "model",
+        "Org/Model",
+        None,
+        [
+            download_manifest.ExpectedFile(path = "config.json", size = 2),
+            download_manifest.ExpectedFile(path = "model.safetensors", size = 11),
+        ],
+        hub_cache = tmp_path,
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0].get("partial") is True
+    assert rows[0]["capabilities"].get("can_chat") is False
