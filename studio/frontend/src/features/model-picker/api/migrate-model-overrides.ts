@@ -44,13 +44,10 @@ function markRan(): void {
 /**
  * A server key under the same identity this browser stores.
  *
- * `app_settings` has no schema version and holds whatever id was current when the
- * row was written, so an old install has keys like `Unsloth/Repo-GGUF:Q4_K_M` while
- * this browser only produces the folded form. The backend resolves both to one
- * model, so an exact lookup would report "not on the server" and let the backfill
- * overwrite it. The split is quant-aware like the backend's: a repo id folds and a
- * POSIX path deliberately does not, and an ordinary colon inside a filename, or a
- * Windows drive letter, is not a separator at all.
+ * `app_settings` has no schema version, so an old install holds keys like
+ * `Unsloth/Repo-GGUF:Q4_K_M` that the backend resolves to the same model as this
+ * browser's folded form; an exact lookup would call it missing and let the backfill
+ * overwrite it. The quant-aware split folds repo ids and leaves POSIX paths alone.
  */
 function normalizedOverrideKey(key: string): string {
   const split = splitQuantSuffix(key);

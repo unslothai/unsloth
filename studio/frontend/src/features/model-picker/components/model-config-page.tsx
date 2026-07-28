@@ -872,12 +872,9 @@ export function ModelConfigPage({
     const effectiveAtBaseline = perModelConfigsEqual(effectiveConfig, baseline);
     const effectivePersistenceOnly =
       isActiveModel && effectiveAtBaseline && rememberChanged;
-    // Storage's own shape, because savePerModelConfig judges the normalized
-    // object: the runtime hands this page Speculative Decoding "auto", which
-    // canonicalizes to null, so the raw one looked non-default. Remember then
-    // reported saved while the local write had dropped the entry as default, and
-    // the mirror below sent the server a "auto" override the browser did not
-    // have, which is exactly the disagreement that mirror must not create.
+    // Judge what storage keeps: savePerModelConfig normalizes first, and the runtime's
+    // Speculative Decoding "auto" canonicalizes to null, so judging the raw object
+    // reported saved while the write dropped it, and mirrored an override nothing held.
     const normalizedRuntimeConfig = normalizePerModelConfig(
       effectiveRuntimeConfig,
     );

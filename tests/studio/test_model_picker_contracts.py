@@ -697,8 +697,7 @@ def test_backfill_compares_server_keys_by_normalized_identity():
     # Folded on both sides: the older `id::variant` local keys are not.
     assert "const known = new Set(Object.keys(existing).map(normalizedOverrideKey));" in src
     assert "if (known.has(key)) { continue; }" in src
-    # A variant never holds a colon, so the last one splits the key; the first would
-    # cut the drive letter off every Windows path id.
+    # A quant-aware split, so a Windows drive letter is not read as a separator.
     assert "const split = splitQuantSuffix(key);" in src
     # Repo ids fold and POSIX paths do not, which is what these do.
     assert "normalizeModelIdentity(" in src and "normalizeGgufVariantIdentity(" in src
@@ -895,8 +894,7 @@ def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
     ).read_text(encoding = "utf-8")
     assert "def split_quant_suffix(" in backend, "the rule this mirrors"
     assert "_BPW_SUFFIX" in backend and "bpw" in identity
-    # Both sides accept the same quant vocabulary. The regex itself lives with
-    # the loader that reads the filenames.
+    # Both sides accept the same quant vocabulary; the regex lives with the loader.
     quants = (WORKDIR / "studio" / "backend" / "core" / "inference" / "llama_cpp.py").read_text(
         encoding = "utf-8"
     )
