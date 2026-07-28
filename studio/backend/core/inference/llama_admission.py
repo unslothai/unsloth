@@ -56,6 +56,51 @@ DEFAULT_ADMISSION_QUEUE_PER_SLOT = 16
 # load downshifted to fit VRAM) keeps the depth it had before scaling existed
 # rather than dropping to 16 and rejecting callers that used to queue.
 DEFAULT_ADMISSION_MIN_QUEUE = 64
+# Executor threads kept clear of parked approvals, so generation steps, stream
+# teardown and unrelated to_thread work still run while prompts sit unanswered.
+_EXECUTOR_RESERVE = 4
+
+
+def _executor_workers() -> int:
+    """Threads asyncio's default executor runs to_thread work on."""
+    return min(32, (os.cpu_count() or 1) + 4)
+
+
+def _max_parked(capacity: int) -> int:
+    """How many holders may sit on an approval prompt with their slot given back.
+
+    The loop blocks inside the to_thread(next, gen) call that drives it, so a
+    pending prompt parks an executor thread whether or not it parked its slot.
+    The pool already permits `capacity` of those, and every park frees a slot
+    that admits one more, so budget only what the executor has left over. Zero on
+    a backend whose --parallel alone fills it, which then behaves as it did
+    before parking existed: the prompt holds its slot.
+    """
+    workers = _executor_workers()
+    return max(0, min(workers // 4, workers - _EXECUTOR_RESERVE - max(0, capacity)))
+
+
+# Counted process-wide, not per queue. There is one default executor, but a
+# per-queue budget is the same allowance again for every backend, and base_url
+# carries a fresh port on every model load, so a reload would mint a queue that
+# knows nothing about the approvals still parked on the old one.
+_PARK_LOCK = threading.Lock()
+_parked_total = 0
+
+
+def _claim_park(limit: int) -> bool:
+    global _parked_total
+    with _PARK_LOCK:
+        if _parked_total >= limit:
+            return False
+        _parked_total += 1
+        return True
+
+
+def _drop_park() -> None:
+    global _parked_total
+    with _PARK_LOCK:
+        _parked_total = max(0, _parked_total - 1)
 
 
 @dataclass(frozen = True, **_SLOTS)
@@ -232,21 +277,31 @@ class LlamaAdmissionLease:
         """Pool slot this lease holds, or None when admission is disabled."""
         return self._slot
 
-    def park(self) -> None:
+    def park(self) -> bool:
         """Hand the slot back while this holder waits on something off the GPU.
 
         A run stopped on a tool approval prompt is not decoding, so holding its
         slot would let unanswered prompts fill the pool while llama-server idles.
         The lease itself stays valid: releasing it after a park is still correct.
+
+        False when the park budget is spent, and nothing was given back: the
+        caller keeps its slot across the prompt, as it did before parking
+        existed. Slower for whoever is queued behind it, but freeing the slot
+        admits another run that can park too, and those pile up on the same
+        executor the generators themselves run on.
         """
         queue = self._queue
-        slot = None
         with self._release_lock:
             if queue is None or self._released or self._parked:
-                return
+                return False
+            # Under the lease lock so the decision and the handover cannot be
+            # split. Nothing takes the queue lock and then a lease lock, so this
+            # order is the only one in play.
+            if not queue.try_park(self._slot):
+                return False
             self._parked = True
-            slot, self._slot = self._slot, None
-        queue.park(slot)
+            self._slot = None
+        return True
 
     def unpark(self) -> None:
         """Drop the parked state without reclaiming a slot.
@@ -513,17 +568,29 @@ class LlamaAdmissionQueue:
             self._release_slot_locked(slot)
             self._grant_waiters_locked()
 
-    def park(self, slot: Optional[int]) -> None:
-        """Return a parked holder's slot to the pool. See ``LlamaAdmissionLease.park``."""
+    def try_park(self, slot: Optional[int]) -> bool:
+        """Return a parked holder's slot to the pool. See ``LlamaAdmissionLease.park``.
+
+        False leaves the slot with its holder, so a refused park costs nothing to
+        undo. The per-queue count is only what ``is_idle`` reads; the budget it
+        is checked against is process-wide.
+        """
+        if not _claim_park(_max_parked(self._capacity)):
+            return False
         with self._lock:
             self._parked += 1
             self._release_slot_locked(slot)
             self._grant_waiters_locked()
+        return True
 
     def unpark(self) -> None:
+        dropped = False
         with self._lock:
             if self._parked > 0:
                 self._parked -= 1
+                dropped = True
+        if dropped:
+            _drop_park()
 
     async def acquire_parked_slot(
         self,
@@ -684,5 +751,10 @@ def get_llama_admission_queue(key: str) -> LlamaAdmissionQueue:
 
 
 def reset_llama_admission_queues() -> None:
+    global _parked_total
     with _QUEUES_LOCK:
         _QUEUES.clear()
+    # The budget outlives the queues it was claimed against, so dropping them
+    # without it would leak the count and shrink the budget for good.
+    with _PARK_LOCK:
+        _parked_total = 0

@@ -9413,7 +9413,10 @@ async def openai_chat_completions(
                     if lease is None:
                         return
                     if on:
-                        lease.park()
+                        # Refused when the park budget is spent: the slot stays with
+                        # this run, so there is nothing to take back afterwards.
+                        if not lease.park():
+                            return
                     elif wait:
                         # Resuming: park() may have handed our slot to a waiter, so wait for room instead
                         # of putting two holders on one slot.

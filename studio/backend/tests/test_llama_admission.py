@@ -1066,3 +1066,114 @@ def test_an_immediate_arrival_cannot_take_an_approved_chats_slot():
         assert queue.snapshot().active <= 1
 
     asyncio.run(scenario())
+
+
+def test_parking_is_bounded_so_the_thread_pool_cannot_be_drained():
+    # The loop blocks inside the to_thread(next, gen) call that drives it, so a
+    # pending prompt parks an executor thread whether or not it parked its slot.
+    # Parking frees a slot, which admits another run that can park too, so
+    # unbounded parking drains the pool the generators themselves run on.
+    async def scenario():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+        limit = llama_admission._max_parked(1)
+        assert limit >= 1
+
+        leases = []
+        for _ in range(limit):
+            lease = queue.reserve(capacity = 1, config = config).lease_nowait()
+            assert lease is not None and lease.park()
+            leases.append(lease)
+
+        refused = queue.reserve(capacity = 1, config = config).lease_nowait()
+        assert refused is not None
+        assert not refused.park(), "parking is unbounded"
+        # Refusing means keeping the slot, the old behaviour, not an error.
+        assert refused.slot is not None
+        assert queue.snapshot().active == 1
+
+        leases[0].unpark()
+        assert refused.park(), "budget was not returned"
+        for lease in leases[1:] + [refused]:
+            lease.release()
+        leases[0].release()
+
+    asyncio.run(scenario())
+
+
+def test_the_park_budget_is_shared_by_every_queue():
+    # One executor, so a per-queue budget is the same budget handed out again to
+    # every backend, and every reload onto a fresh ephemeral port.
+    async def scenario():
+        config = LlamaAdmissionConfig()
+        first = get_llama_admission_queue("http://llama.test:1")
+        second = get_llama_admission_queue("http://llama.test:2")
+        limit = llama_admission._max_parked(1)
+
+        for index in range(limit):
+            queue = first if index % 2 == 0 else second
+            lease = queue.reserve(capacity = 1, config = config).lease_nowait()
+            assert lease.park()
+
+        spare = second.reserve(capacity = 1, config = config).lease_nowait()
+        assert not spare.park(), "each queue got its own budget"
+
+        # A reset drops the queues the count was claimed against, so it has to
+        # drop the count too, or a leak shrinks the budget for the whole process.
+        reset_llama_admission_queues()
+        revived = get_llama_admission_queue("http://llama.test:1")
+        fresh = revived.reserve(capacity = 1, config = config).lease_nowait()
+        assert fresh.park(), "reset leaked the park count"
+        fresh.release()
+
+    asyncio.run(scenario())
+
+
+def test_the_park_budget_leaves_the_executor_room_to_work():
+    # The pool already permits `capacity` pending prompts, and every park frees a
+    # slot that admits one more, so the budget has to account for both.
+    workers = llama_admission._executor_workers()
+    reserve = llama_admission._EXECUTOR_RESERVE
+    assert 1 <= llama_admission._max_parked(1) <= workers // 2
+    # A backend whose --parallel alone fills the executor gets no parks at all,
+    # rather than a budget that pushes it over.
+    assert llama_admission._max_parked(workers) == 0
+    for capacity in range(0, workers + 8):
+        budget = llama_admission._max_parked(capacity)
+        assert budget >= 0, f"negative budget at capacity {capacity}"
+        assert budget == 0 or capacity + budget <= workers - reserve, (
+            f"capacity {capacity} plus {budget} parks leaves the executor short"
+        )
+
+
+def test_the_stream_retries_a_park_that_was_refused():
+    # _park_admission short-circuits on `on == _parked`, so recording a refused
+    # park as parked would make it skip the park for every later approval in the
+    # same run, even once the budget frees up. Structural: the difference only
+    # appears on the second approval of one stream, and everything else about a
+    # refused park (it keeps its slot, unpark is a no-op) is behavioural above.
+    import ast
+
+    # Read rather than import: routes.inference pulls in the whole app.
+    route = os.path.join(_backend, "routes", "inference.py")
+    with open(route, encoding = "utf-8") as handle:
+        tree = ast.parse(handle.read())
+    helpers = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_park_admission"
+    ]
+    assert len(helpers) == 1, f"expected one _park_admission, found {len(helpers)}"
+
+    guards = [
+        node for node in ast.walk(helpers[0])
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.UnaryOp)
+        and isinstance(node.test.op, ast.Not)
+        and isinstance(node.test.operand, ast.Call)
+        and getattr(node.test.operand.func, "attr", None) == "park"
+        and getattr(node.test.operand.func.value, "id", None) == "lease"
+    ]
+    assert len(guards) == 1, "lease.park()'s answer is ignored"
+    assert all(isinstance(stmt, ast.Return) for stmt in guards[0].body), (
+        "a refused park must leave _parked alone, so a later approval retries it"
+    )
