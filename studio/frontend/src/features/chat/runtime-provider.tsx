@@ -1418,6 +1418,13 @@ function ThreadNewChatSwitch({
     // still happens on first message append.
     void aui.threads().switchToNewThread();
     useChatRuntimeStore.getState().setActiveThreadId(null);
+    // The line above blanks the bar, and this view reaches none of the other recount
+    // triggers: it has no persisted thread for the history loader and ActiveThreadSync
+    // is off while a nonce is present. Without this an empty New Chat opened against an
+    // already-resident GGUF hides the bar until the first completion, while loading a
+    // model on the same view shows it. The template and system prompt are already in the
+    // request, so price them. modelLoading defers to the post-load recount.
+    void refreshContextUsage();
   }, [aui, isLoading, nonce]);
 
   return null;
