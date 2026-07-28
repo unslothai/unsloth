@@ -1332,3 +1332,18 @@ def test_an_html_block_to_the_left_of_a_list_item_closes_it(changelog_module):
     # Ordinary lazy continuation is untouched.
     lazy = "## 3.0\n\n- item\ncontinued\n\n  ## 2.0\n\n## 1.0\n\n- one\n"
     assert [e.version for e in changelog_module.parse_changelog(lazy)] == ["3.0", "1.0"]
+
+
+def test_the_download_panel_can_shrink_inside_the_capped_stack():
+    """The bottom-right stack is capped to the viewport, and a flex item defaults
+    to min-height:auto, so this wrapper could not shrink below its own content.
+    On a short viewport the cap was then absorbed by the update card, whose
+    header and actions are fixed, rather than by the download list, which
+    scrolls. Only the shared-stack branch needs it; standalone is positioned
+    fixed and is not a flex item at all."""
+    panel = (
+        FRONTEND / "features/hub/download-manager/download-manager-panel.tsx"
+    ).read_text(encoding = "utf-8")
+    assert 'positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end"' in panel
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
+    assert "max-h-[calc(100dvh_-_2rem)]" in provider, "the cap this has to absorb"
