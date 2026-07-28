@@ -138,6 +138,69 @@ def test_capability_flags_come_from_a_guarded_import_not_find_spec():
     assert head.count("ALLOW_BITSANDBYTES = False") >= 1
 
 
+def _bnb_guards():
+    src = (REPO_ROOT / "unsloth" / "models" / "loader.py").read_text(encoding = "utf-8")
+    tree = ast.parse(src)
+    return src, [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(n, ast.Name) and n.id == "ALLOW_BITSANDBYTES"
+            for n in ast.walk(node.test)
+        )
+    ]
+
+
+def test_bitsandbytes_guard_is_not_gated_on_use_exact_model_name():
+    """use_exact_model_name suppresses repo-name remapping; it cannot make bnb
+    available. Gating on it left the default load_in_4bit=True set on a host
+    without bitsandbytes."""
+    _, guards = _bnb_guards()
+    assert len(guards) == 2, f"expected both loader guards, found {len(guards)}"
+    for guard in guards:
+        names = {n.id for n in ast.walk(guard.test) if isinstance(n, ast.Name)}
+        assert "use_exact_model_name" not in names, (
+            f"guard at line {guard.lineno} still gates the capability check on naming"
+        )
+
+
+def test_bitsandbytes_guard_drops_a_bnb_quantization_config():
+    """A BitsAndBytesConfig in kwargs re-sets the flags downstream, so clearing
+    load_in_4bit/8bit alone still builds the bnb quantizer in Transformers. A
+    non-bnb config (GPTQ/AWQ/fp8) must not be touched."""
+    _, guards = _bnb_guards()
+    for guard in guards:
+        # ast.unparse normalises quotes, so match on the call shape instead.
+        def _is_pop(node):
+            return (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "pop"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "kwargs"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "quantization_config"
+            )
+
+        assert any(_is_pop(n) for n in ast.walk(guard)), (
+            f"guard at line {guard.lineno} leaves the bnb config in kwargs"
+        )
+        # the pop must be conditional on the config actually asking for bnb
+        pops = [
+            node
+            for node in ast.walk(guard)
+            if isinstance(node, ast.If) and any(_is_pop(n) for n in ast.walk(node))
+        ]
+        assert pops, f"guard at line {guard.lineno} pops unconditionally"
+        assert any(
+            isinstance(n, ast.Name) and n.id == "_wants_bnb"
+            for node in pops
+            for n in ast.walk(node.test)
+        ), f"guard at line {guard.lineno} does not gate the pop on a bnb request"
+
+
 def test_bitsandbytes_guard_clears_8bit_as_well_as_4bit():
     """8bit is bitsandbytes too: leaving load_in_8bit set sends the request to
     Transformers, which builds the bnb quantizer and fails there instead."""

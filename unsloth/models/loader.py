@@ -472,17 +472,42 @@ class FastLanguageModel(FastLlamaModel):
                         fast_inference = False
                         break
 
-        # bitsandbytes unusable (absent, or unstable as on some AMD stacks)
-        if not ALLOW_BITSANDBYTES and not use_exact_model_name:
-            if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
+        # bitsandbytes unusable (absent, or unstable as on some AMD stacks). This is
+        # a capability check, so it is not gated on use_exact_model_name: that only
+        # suppresses repo-name remapping and cannot make bitsandbytes available.
+        if not ALLOW_BITSANDBYTES:
+            # A user-supplied config sets load_in_4bit/8bit above and is forwarded
+            # in kwargs, so clearing the flags alone still rebuilds the bnb
+            # quantizer downstream. Only drop it when it asks for bnb: a GPTQ /
+            # AWQ / fp8 / torchao config must pass through untouched.
+            _quant_cfg = kwargs.get("quantization_config", None)
+            if isinstance(_quant_cfg, dict):
+                _wants_bnb = bool(
+                    _quant_cfg.get("load_in_4bit", False) or _quant_cfg.get("load_in_8bit", False)
+                )
+            elif _quant_cfg is not None:
+                _wants_bnb = bool(
+                    getattr(_quant_cfg, "load_in_4bit", False)
+                    or getattr(_quant_cfg, "load_in_8bit", False)
+                )
+            else:
+                _wants_bnb = False
+            if (
+                load_in_4bit
+                or load_in_8bit
+                or _wants_bnb
+                or model_name.lower().endswith("-bnb-4bit")
+            ):
                 print(
                     "Unsloth: `bitsandbytes` is unavailable here - disabling 4bit/8bit. "
                     "16bit LoRA and full finetuning still work."
                 )
-            # 8bit is bitsandbytes too: leaving it set sends the request on to
+            # 8bit is bitsandbytes too: leaving either set sends the request on to
             # Transformers, which builds the bnb quantizer and fails there.
             load_in_4bit = False
             load_in_8bit = False
+            if _wants_bnb:
+                kwargs.pop("quantization_config", None)
 
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
@@ -1146,17 +1171,42 @@ class FastModel(FastBaseModel):
             if is_dist:
                 device_map = distributed_device_map
 
-        # bitsandbytes unusable (absent, or unstable as on some AMD stacks)
-        if not ALLOW_BITSANDBYTES and not use_exact_model_name:
-            if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
+        # bitsandbytes unusable (absent, or unstable as on some AMD stacks). This is
+        # a capability check, so it is not gated on use_exact_model_name: that only
+        # suppresses repo-name remapping and cannot make bitsandbytes available.
+        if not ALLOW_BITSANDBYTES:
+            # A user-supplied config sets load_in_4bit/8bit above and is forwarded
+            # in kwargs, so clearing the flags alone still rebuilds the bnb
+            # quantizer downstream. Only drop it when it asks for bnb: a GPTQ /
+            # AWQ / fp8 / torchao config must pass through untouched.
+            _quant_cfg = kwargs.get("quantization_config", None)
+            if isinstance(_quant_cfg, dict):
+                _wants_bnb = bool(
+                    _quant_cfg.get("load_in_4bit", False) or _quant_cfg.get("load_in_8bit", False)
+                )
+            elif _quant_cfg is not None:
+                _wants_bnb = bool(
+                    getattr(_quant_cfg, "load_in_4bit", False)
+                    or getattr(_quant_cfg, "load_in_8bit", False)
+                )
+            else:
+                _wants_bnb = False
+            if (
+                load_in_4bit
+                or load_in_8bit
+                or _wants_bnb
+                or model_name.lower().endswith("-bnb-4bit")
+            ):
                 print(
                     "Unsloth: `bitsandbytes` is unavailable here - disabling 4bit/8bit. "
                     "16bit LoRA and full finetuning still work."
                 )
-            # 8bit is bitsandbytes too: leaving it set sends the request on to
+            # 8bit is bitsandbytes too: leaving either set sends the request on to
             # Transformers, which builds the bnb quantizer and fails there.
             load_in_4bit = False
             load_in_8bit = False
+            if _wants_bnb:
+                kwargs.pop("quantization_config", None)
 
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
