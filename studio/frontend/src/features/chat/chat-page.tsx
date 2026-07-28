@@ -16,7 +16,6 @@ import {
   useActiveModelConfig,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
-import { shouldUseNativeMacWindowTitlebar } from "@/components/tauri/window-titlebar";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
   DropdownMenu,
@@ -782,12 +781,16 @@ function GeneralCompareHeader({
   // Controlled so the body-portaled popover can't linger over another tab off-route.
   const active = useChatActive();
   const [selectorOpen, setSelectorOpen] = useState(false);
+
+  const { pinned } = useSidebar();
   return (
     <div
       className={cn(
         "pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
         side === "left"
-          ? "pl-12 pr-3 md:pl-2"
+          ? pinned
+            ? "pl-12 pr-3 md:pl-2"
+            : "pl-12 pr-3 md:pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
           : "pl-3 pr-[calc(3rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
       )}
     >
@@ -2845,8 +2848,6 @@ export function ChatPage({
   );
   const { isMobile, pinned } = useSidebar();
 
-  const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
-
   const enterCompare = useCallback(() => {
     viewBeforeCompareRef.current = { ...search };
     useChatRuntimeStore.getState().setActiveThreadId(null);
@@ -3192,15 +3193,7 @@ export function ChatPage({
     // Provides `active` to ChatRuntimeProvider (drops the message views/composers
     // while off-route, keeping the runtime alive) and to the compare chrome.
     <ChatActiveContext.Provider value={active}>
-    <div
-      className={cn(
-        "flex min-h-0 min-w-0 flex-1 basis-0 overflow-hidden bg-background",
-        usesNativeMacTitlebar &&
-          !isMobile &&
-          !pinned &&
-          "[--studio-content-top-inset:var(--studio-mac-titlebar-height,34px)]",
-      )}
-    >
+    <div className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-hidden bg-background">
       {/* Portaled surfaces render to document.body, escaping the parent's hidden
           wrapper, so gate them on `active` to keep them off other tabs. */}
       {active && <GuidedTour {...tour.tourProps} />}
@@ -3223,7 +3216,11 @@ export function ChatPage({
         <div
           className={cn(
             "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[10px] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
-            isMobile ? "pl-12" : "pl-2",
+            isMobile
+              ? "pl-12"
+              : pinned
+                ? "pl-2"
+                : "pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
               "right-[10px] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}

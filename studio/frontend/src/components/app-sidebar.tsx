@@ -1183,8 +1183,19 @@ export function AppSidebar() {
     <Sidebar
       collapsible="icon"
       variant="sidebar"
-      className="font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-white dark:group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-background"
+      className={cn(
+        "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-white dark:group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-background",
+        usesNativeMacTitlebar &&
+          "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0",
+      )}
     >
+
+      {usesNativeMacTitlebar && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute bottom-0 right-0 top-[var(--studio-mac-titlebar-height,34px)] z-20 hidden w-px bg-sidebar-border group-data-[collapsible=icon]:block dark:group-data-[collapsible=icon]:hidden"
+        />
+      )}
       <SidebarHeader
         className={cn(
           "relative",

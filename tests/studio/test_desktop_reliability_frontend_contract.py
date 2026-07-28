@@ -226,17 +226,24 @@ def test_visible_mac_sidebar_header_is_a_drag_region():
     assert header.index(drag_region) < header.index('"relative z-10 flex items-center')
 
 
-def test_collapsed_native_mac_chat_header_clears_traffic_lights():
+def test_mac_chat_header_controls_share_the_titlebar_row():
     source = CHAT_PAGE.read_text(encoding = "utf-8")
+    provider = APP_PROVIDER.read_text(encoding = "utf-8")
 
-    assert "const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);" in source
-    assert '"[--studio-content-top-inset:var(--studio-mac-titlebar-height,34px)]"' in source
-    assert "usesNativeMacTitlebar &&" in source
-    assert "!isMobile &&" in source
-    assert "!pinned &&" in source
-    assert "var(--studio-mac-traffic-light-inset" not in source
+    assert "shouldUseNativeMacWindowTitlebar" not in source
+    assert "[--studio-content-top-inset:var(--studio-mac-titlebar-height" not in source
+    assert source.count("var(--studio-mac-traffic-light-inset") == 2
+    assert '"--studio-chat-header-padding-top": "7px"' in provider
     assert "pt-[var(--studio-content-top-inset,0px)] md:flex-row" in source
     assert "absolute top-[var(--studio-content-top-inset,0px)]" in source
+
+
+def test_collapsed_mac_sidebar_divider_starts_below_titlebar():
+    source = APP_SIDEBAR.read_text(encoding = "utf-8")
+
+    assert "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0" in source
+    assert "top-[var(--studio-mac-titlebar-height,34px)]" in source
+    assert "group-data-[collapsible=icon]:block" in source
 
 
 def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
