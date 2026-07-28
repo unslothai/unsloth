@@ -1,15 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""VRAM coordination between chat/inference and training.
+"""Memory coordination between inference and training.
 
-Decides, from live free VRAM, whether a resident chat model can stay loaded
-during training or must be unloaded, and unloads it across all backends
-(HF/MLX orchestrator + llama.cpp GGUF server). In the route layer because the
-GGUF accessor lives in routes/inference.py; backends are imported lazily.
+Uses live free VRAM to keep resident chat and STT models when they fit. STT is
+evicted before chat when training needs memory.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from loggers import get_logger
 
@@ -77,6 +75,37 @@ def summarize_resident_chat() -> Dict[str, Any]:
     }
 
 
+def summarize_resident_stt() -> Dict[str, Any]:
+    """Report the resident dictation model (either engine). Never raises."""
+    try:
+        from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
+        from core.inference.stt_sidecar import get_stt_sidecar
+
+        sidecar = get_stt_sidecar()
+        model = sidecar.loaded_model
+        device = sidecar.device
+        loading = sidecar.is_loading()
+        # whisper.cpp holds GPU memory via its subprocess, and both engines can be
+        # live at once (engine switch or direct /audio/stt/load). Always fold the
+        # GGUF sidecar in: a resident Transformers model must not mask a GGUF
+        # server still binding its backend, or admission lets training launch into
+        # that startup and OOM.
+        ggml = get_ggml_stt_sidecar()
+        if not model:
+            model = ggml.loaded_model
+            device = device or ggml.device
+        loading = loading or ggml.is_loading()
+        return {
+            "model": model,
+            "device": device,
+            "loading": loading,
+            "any": bool(model or loading),
+        }
+    except Exception as e:
+        logger.warning("Could not inspect STT sidecar: %s", e)
+        return {"model": None, "device": None, "loading": False, "any": False}
+
+
 def can_keep_chat_during_training(
     *,
     model_name: str,
@@ -106,8 +135,8 @@ def can_keep_chat_during_training(
             resolve_requested_gpu_ids,
         )
 
-        if get_device() != DeviceType.CUDA:
-            return False, {"mode": "non_cuda", "reason": "non_cuda"}
+        if get_device() not in (DeviceType.CUDA, DeviceType.XPU):
+            return False, {"mode": "non_accelerator", "reason": "non_accelerator"}
 
         # Full finetuning runs in 16-bit, so ignore the 4-bit request or we under-count.
         effective_4bit = False if training_type == "Full Finetuning" else load_in_4bit
@@ -196,6 +225,7 @@ def can_load_chat_during_training(
     max_seq_length: int,
     requested_gpu_ids: Optional[List[int]],
     is_gguf: bool = False,
+    is_vulkan: bool = False,
     required_override_gb: Optional[float] = None,
     single_device_gpu: Optional[str] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
@@ -204,11 +234,15 @@ def can_load_chat_during_training(
     chat model against the free VRAM that remains). Sizes/places it the same way
     the loader will: HF auto reuses auto_select_gpu_ids; HF explicit requires an
     even-share per-GPU floor for device_map="balanced"; GGUF sizes from
-    required_override_gb over the visible pool. ``single_device_gpu`` is the
-    exact physical device token selected by a single-device runner.
-    `load_in_4bit` must be effective (LoRA can flip 4-bit -> 16-bit). Non-CUDA
-    allows the load; default-deny on any CUDA case it can't size, so a load never
-    OOMs training."""
+    required_override_gb over the visible pool. A Vulkan GGUF selection picks by ggml
+    Vulkan ordinal (separate index space from CUDA ids), so its requested_gpu_ids is
+    NOT resolved against the CUDA set (which would raise -> invalid_gpu_ids -> bypass
+    the OOM check); conservatively size an N-device request against the least-free
+    N visible GPUs instead.
+    ``single_device_gpu`` is the exact physical device token selected by a
+    single-device runner. `load_in_4bit` must be effective (LoRA can flip 4-bit
+    -> 16-bit). CPU/MLX allows the load; default-deny on any CUDA/XPU case it
+    can't size, so a load never OOMs training."""
     try:
         from utils.hardware import (
             DeviceType,
@@ -219,8 +253,8 @@ def can_load_chat_during_training(
             resolve_requested_gpu_ids,
         )
 
-        if get_device() != DeviceType.CUDA:
-            return True, {"mode": "non_cuda", "reason": "non_cuda"}
+        if get_device() not in (DeviceType.CUDA, DeviceType.XPU):
+            return True, {"mode": "non_accelerator", "reason": "non_accelerator"}
 
         est_kwargs = dict(
             hf_token = hf_token or None,
@@ -228,6 +262,11 @@ def can_load_chat_during_training(
             load_in_4bit = load_in_4bit,
             max_seq_length = max_seq_length or 2048,
         )
+
+        # A Vulkan GGUF selection uses ggml Vulkan ordinals, not CUDA physical ids;
+        # size it against the full visible pool (GGUF self-placement) rather than
+        # resolving ordinals against the CUDA parent-visible set.
+        vulkan_gguf = is_gguf and is_vulkan
 
         # HF auto: reuse the loader's selector; fits iff its pick clears the margin.
         if not requested_gpu_ids and not is_gguf:
@@ -254,7 +293,9 @@ def can_load_chat_during_training(
             }
 
         # Explicit GPUs, or GGUF: size directly and check live free VRAM.
-        if single_device_gpu is not None:
+        if requested_gpu_ids and vulkan_gguf:
+            mode = "gguf_vulkan"
+        elif single_device_gpu is not None:
             mode = "single_device"
         elif is_gguf:
             mode = "gguf"
@@ -267,7 +308,17 @@ def can_load_chat_during_training(
             return False, {"mode": mode, "reason": "estimate_unavailable"}
 
         free_by_index = _free_vram_by_index(get_visible_gpu_utilization().get("devices", []))
-        if single_device_gpu is not None:
+        if requested_gpu_ids and vulkan_gguf:
+            # Vulkan ordinals cannot be mapped to CUDA physical indices. Budget
+            # the least-free N visible cards for an N-device request. If that
+            # conservative subset fits, any physical mapping of the ordinals
+            # fits, without collapsing a multi-GPU request to one card.
+            visible_free = list(free_by_index.values())
+            if not visible_free:
+                return False, {"mode": "gguf_vulkan", "reason": "no_visible_gpus"}
+            n_pins = min(len(requested_gpu_ids), len(visible_free))
+            free_vals = sorted(visible_free)[:n_pins]
+        elif single_device_gpu is not None:
             token = str(single_device_gpu).strip()
             if not token:
                 # Empty token = a CPU-only single-device runner (e.g. a CPU
@@ -295,7 +346,8 @@ def can_load_chat_during_training(
                 return True, {"mode": mode, "reason": "invalid_gpu_ids"}
             free_vals = [free_by_index.get(i, 0.0) for i in resolved]
         else:
-            # GGUF: llama.cpp picks the GPU(s); any visible GPU is a candidate.
+            # GGUF self-placement / auto Vulkan (no requested ids): llama.cpp picks
+            # the GPU(s), so any visible GPU is a candidate -> size the whole pool.
             free_vals = list(free_by_index.values())
 
         if not free_vals:
@@ -365,4 +417,111 @@ def free_chat_models_for_training(reason: str) -> List[str]:
     except Exception as e:
         logger.warning("Could not unload GGUF chat model: %s", e)
 
+    return freed
+
+
+def free_stt_model_for_training(reason: str) -> List[str]:
+    """Unload the dictation model(s) before training. Never raises.
+
+    The Transformers and GGUF sidecars are freed under independent exception
+    boundaries so a failure unloading one backend never skips freeing the other
+    (both can hold accelerator memory at once after an engine switch).
+    """
+    freed: List[str] = []
+    try:
+        from core.inference.stt_sidecar import get_stt_sidecar
+        sidecar = get_stt_sidecar()
+        if sidecar.is_loading() and sidecar.cancel_pending_load():
+            logger.info("Cancelling STT model load for training (%s)", reason)
+            # The loader may still be in from_pretrained()/.to(device) holding
+            # VRAM; wait for it to observe the cancel and release first.
+            sidecar.wait_for_load_to_settle()
+            # A load that finished before seeing the cancel leaves a resident
+            # model; unload it so training gets the memory back.
+            if sidecar.loaded_model:
+                sidecar.unload()
+            freed.append("stt:loading")
+        else:
+            model = sidecar.loaded_model
+            if model:
+                logger.info("Unloading STT model '%s' for training (%s)", model, reason)
+                sidecar.unload()
+                freed.append(f"stt:{model}")
+    except Exception as e:
+        logger.warning("Could not unload Transformers STT model: %s", e)
+
+    # Check the GGUF sidecar even after a cancelled/failed Transformers unload;
+    # both engines can hold memory at once (engine switch or direct load).
+    try:
+        from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
+        ggml = get_ggml_stt_sidecar()
+        if ggml.is_loading() and ggml.cancel_pending_load():
+            logger.info("Cancelling GGUF STT model load for training (%s)", reason)
+            # whisper-server may still be binding its backend; wait for the
+            # cancelled startup to be killed and reaped before training claims
+            # the memory (loaded_model stays unset until it is ready).
+            ggml.wait_for_load_to_settle()
+            if ggml.loaded_model:
+                ggml.unload()
+            freed.append("stt:gguf-loading")
+        else:
+            ggml_model = ggml.loaded_model
+            if ggml_model:
+                logger.info("Unloading GGUF STT model '%s' for training (%s)", ggml_model, reason)
+                ggml.unload()
+                freed.append(f"stt:{ggml_model}")
+    except Exception as e:
+        logger.warning("Could not unload GGUF STT model: %s", e)
+
+    return freed
+
+
+def coordinate_models_for_training(
+    can_keep: Callable[[], Tuple[bool, Dict[str, Any]]],
+) -> List[str]:
+    """Keep resident models when they fit, evicting STT before chat."""
+    resident_chat = summarize_resident_chat()
+    resident_stt = summarize_resident_stt()
+    if not resident_chat["any"] and not resident_stt["any"]:
+        return []
+
+    if resident_chat.get("loading"):
+        freed = free_stt_model_for_training(reason = "chat model still loading")
+        freed += free_chat_models_for_training(reason = "chat model still loading")
+        return freed
+
+    freed: List[str] = []
+    if resident_stt.get("loading"):
+        released_stt = free_stt_model_for_training(reason = "STT model still loading")
+        freed += released_stt
+        resident_stt = (
+            {"model": None, "device": None, "loading": False, "any": False}
+            if released_stt
+            else summarize_resident_stt()
+        )
+        if not resident_chat["any"] and not resident_stt["any"]:
+            return freed
+
+    keep, info = can_keep()
+    if keep:
+        logger.info(
+            "Keeping resident models loaded during training (free ~%s GB, needs ~%s GB): %s",
+            info.get("usable_gb"),
+            info.get("required_gb"),
+            {"chat": resident_chat, "stt": resident_stt},
+        )
+        return freed
+
+    if resident_stt["any"]:
+        freed += free_stt_model_for_training(reason = "insufficient training memory")
+        if not resident_chat["any"]:
+            return freed
+        keep, _info = can_keep()
+        if keep:
+            logger.info("Keeping chat model loaded after freeing STT: %s", resident_chat)
+            return freed
+
+    freed += free_chat_models_for_training(
+        reason = "insufficient VRAM to run training alongside chat",
+    )
     return freed

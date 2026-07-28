@@ -88,6 +88,7 @@ export interface LocalModelInfo {
   capabilities?: BackendModelCapabilities | null;
   source: LocalSource;
   model_id?: string | null;
+  active_cache?: boolean | null;
   base_model?: string | null;
   base_model_source?: BaseModelSource | null;
   adapter_type?: string | null;
@@ -258,11 +259,18 @@ export async function listCachedDatasets(): Promise<CachedDatasetRepo[]> {
   return data.cached;
 }
 
-export async function deleteCachedDataset(repoId: string): Promise<void> {
+export async function deleteCachedDataset(
+  repoId: string,
+  cachePath?: string | null,
+): Promise<void> {
+  const payload: Record<string, string> = { repo_id: repoId };
+  if (cachePath) {
+    payload.cache_path = cachePath;
+  }
   const response = await authFetch("/api/hub/datasets/cached", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repo_id: repoId }),
+    body: JSON.stringify(payload),
   });
   await throwIfNotOk(response, `Failed to delete dataset (${response.status})`);
   bumpInventoryVersion();
@@ -272,10 +280,16 @@ export async function deleteCachedModel(
   repoId: string,
   variant?: string,
   hfToken?: string | null,
+  cachePath?: string | null,
 ): Promise<void> {
   const payload: Record<string, string> = { repo_id: repoId };
   if (variant) {
     payload.variant = variant;
+  }
+  // Scope the delete to the exact cache this row represents so copies in other,
+  // previously selected caches are not removed.
+  if (cachePath) {
+    payload.cache_path = cachePath;
   }
   const response = await authFetch("/api/hub/delete-cached", {
     method: "DELETE",

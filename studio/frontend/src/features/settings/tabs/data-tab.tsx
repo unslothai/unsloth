@@ -39,6 +39,9 @@ import {
   useChatSidebarItems,
 } from "@/features/chat";
 import { useT } from "@/i18n";
+
+import { isTauri } from "@/lib/api-base";
+import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
@@ -147,6 +150,12 @@ export function DataTab() {
     setExporting(true);
     try {
       await downloadChatExport();
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Could not export chats", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
     } finally {
       setExporting(false);
     }
@@ -164,9 +173,11 @@ export function DataTab() {
             : t("settings.data.exportedArchivedChatCount", { count: exported }),
       );
     } catch (error) {
-      toast.error(t("settings.data.failedToExportArchivedChats"), {
-        description: error instanceof Error ? error.message : undefined,
-      });
+      if (!isDownloadCancelled(error)) {
+        toast.error(t("settings.data.failedToExportArchivedChats"), {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
     } finally {
       setArchivedExporting(false);
     }
@@ -188,6 +199,24 @@ export function DataTab() {
       }
     } catch {
       toast.error(t("settings.chat.importFailed"));
+    }
+  };
+
+  const handleImportClick = async () => {
+    if (!isTauri) {
+      importInputRef.current?.click();
+      return;
+    }
+    try {
+      const selected = await pickNativeChatImport();
+      if (!selected) {
+        return;
+      }
+      await handleImport(new File([selected.content], selected.name));
+    } catch (error) {
+      toast.error(t("settings.chat.importFailed"), {
+        description: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 
@@ -219,9 +248,11 @@ export function DataTab() {
     try {
       await exportFineTuneJsonl(fineTuneFormat);
     } catch (error) {
-      toast.error(t("settings.data.fineTuneExportFailed"), {
-        description: error instanceof Error ? error.message : undefined,
-      });
+      if (!isDownloadCancelled(error)) {
+        toast.error(t("settings.data.fineTuneExportFailed"), {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
     } finally {
       setFineTuneExporting(false);
     }
@@ -632,7 +663,7 @@ export function DataTab() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => importInputRef.current?.click()}
+            onClick={() => void handleImportClick()}
           >
             <HugeiconsIcon icon={Upload01Icon} className="size-3.5 mr-1.5" />
             {t("settings.chat.importChatsAction")}

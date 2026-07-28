@@ -15,6 +15,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -713,6 +715,79 @@ def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
     assert err is None
     assert "hello" in body
     assert content_type == ""
+
+
+@pytest.mark.parametrize(
+    "disable_dns_pinning,expected_url",
+    [
+        (False, "https://203.0.113.7:8443/page?q=1"),
+        (True, "https://example.com:8443/page?q=1"),
+    ],
+)
+def test_fetch_url_raw_dns_pinning_proxy_opt_out(monkeypatch, disable_dns_pinning, expected_url):
+    import email
+    import urllib.request
+
+    import core.inference.tools as tools_mod
+
+    class _FakeResp:
+        headers = email.message_from_string("Content-Type: text/plain\n")
+
+        def __init__(self):
+            self._body = b"ok"
+
+        def read(self, n = -1):
+            body, self._body = self._body, b""
+            return body
+
+    requested = []
+
+    class _FakeOpener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            requested.append(req)
+            return _FakeResp()
+
+    resolved = []
+
+    def resolve(host, port):
+        resolved.append((host, port))
+        return True, "", "203.0.113.7"
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "1" if disable_dns_pinning else "0")
+    monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", resolve)
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _FakeOpener())
+
+    # No embedded credentials: the web access policy rejects those outright
+    # (see test_fetch_url_raw_rejects_embedded_credentials).
+    err, body, _content_type = tools_mod._fetch_url_raw("https://example.com:8443/page?q=1")
+
+    assert err is None
+    assert body == "ok"
+    assert resolved == [("example.com", 8443)]
+    assert [req.full_url for req in requested] == [expected_url]
+    assert requested[0].get_header("Host") == "example.com:8443"
+
+
+def test_fetch_url_raw_rejects_embedded_credentials(monkeypatch):
+    # Credentials in the URL are blocked rather than stripped, so they can never
+    # leak to a redirect target or into logs.
+    import core.inference.tools as tools_mod
+
+    def resolve(host, port):
+        raise AssertionError("must be rejected before DNS resolution")
+
+    monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", resolve)
+
+    err, body, _content_type = tools_mod._fetch_url_raw(
+        "https://user:secret@example.com:8443/page?q=1"
+    )
+
+    assert err is not None and "credentials" in err
+    assert body == ""
 
 
 def test_fetch_page_text_missing_content_type_html_sniffed(monkeypatch):

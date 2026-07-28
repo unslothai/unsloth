@@ -70,11 +70,23 @@ class LoadRequest(BaseModel):
 
     cache_type_kv: Optional[str] = Field(
         None,
-        description = "KV cache data type for both K and V (e.g. 'f16', 'bf16', 'q8_0', 'q4_1', 'q5_1')",
+        description = (
+            "KV cache data type for both K and V "
+            "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
+        ),
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. For GGUF models the picked devices are pinned via CUDA/HIP_VISIBLE_DEVICES.",
+        description = (
+            "GPU placement pool, for example [0, 1]. Omit or pass [] to use "
+            "automatic selection. CUDA/ROCm and Intel XPU values are physical "
+            "GPU indices; Vulkan values are ggml device ordinals. Explicit "
+            "physical IDs are unsupported when the parent visibility mask uses "
+            "non-numeric or subdevice entries, including CUDA_VISIBLE_DEVICES "
+            "with UUID/MIG entries and ZE_AFFINITY_MASK with subdevice tokens "
+            "(for example '0.0,0.1') or FLAT-hierarchy tile handles. For GGUF "
+            "models the fitter may pin the smallest subset of this pool that fits."
+        ),
     )
     speculative_type: Optional[str] = Field(
         None,
@@ -185,6 +197,32 @@ class UnloadRequest(BaseModel):
     """Request to unload a model"""
 
     model_path: str = Field(..., description = "Model identifier to unload")
+
+
+class TranscribeRequest(BaseModel):
+    """Speech-to-text request for the dictation STT sidecar."""
+
+    audio: str = Field(..., description = "Base64-encoded audio (any common format)")
+    model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
+    language: Optional[str] = Field(None, description = "BCP-47 language, or 'auto'/None to detect")
+    fast: bool = Field(
+        False,
+        description = "Use low-latency single-candidate decoding for dictation",
+    )
+    engine: Optional[str] = Field(
+        None,
+        description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
+    )
+
+
+class SttLoadRequest(BaseModel):
+    """Warm the STT sidecar with a model without transcribing."""
+
+    model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
+    engine: Optional[str] = Field(
+        None,
+        description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
+    )
 
 
 class ValidateModelRequest(BaseModel):
@@ -407,7 +445,10 @@ class LoadResponse(BaseModel):
     )
     cache_type_kv: Optional[str] = Field(
         None,
-        description = "KV cache data type for K and V (e.g. 'f16', 'bf16', 'q8_0')",
+        description = (
+            "KV cache data type for K and V "
+            "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
+        ),
     )
     chat_template: Optional[str] = Field(
         None,
@@ -459,7 +500,14 @@ class LoadResponse(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
+        description = "Effective GPU indices the model is using after fit-time narrowing, or None for automatic selection.",
+    )
+    requested_gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = (
+            "GPU placement pool requested by the user before fit-time narrowing, "
+            "or None for automatic selection."
+        ),
     )
 
 
@@ -560,7 +608,11 @@ class InferenceStatusResponse(BaseModel):
     )
     cache_type_kv: Optional[str] = Field(
         None,
-        description = "KV cache quantization dtype (e.g. 'q8_0'), or None for default",
+        description = (
+            "KV cache quantization dtype "
+            "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32'), "
+            "or None for default"
+        ),
     )
     chat_template: Optional[str] = Field(
         None, description = "Model's default chat template (Jinja2 source), if any"
@@ -623,7 +675,14 @@ class InferenceStatusResponse(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
+        description = "Effective GPU indices the model is using after fit-time narrowing, or None for automatic selection.",
+    )
+    requested_gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = (
+            "GPU placement pool requested by the user before fit-time narrowing, "
+            "or None for automatic selection."
+        ),
     )
     llama_cpp_supports_mtp: bool = Field(
         True,
@@ -873,11 +932,11 @@ class ThinkingConfig(BaseModel):
 
 
 # Recognized permission_mode values. The field accepts a plain string rather than
-# a Literal so an unrecognized value from a newer UI/client degrades to the
-# safest gate ("ask") instead of a 422; the tool loops apply the same unknown ->
-# ask fallback, so normalizing here keeps that forward-compat path reachable at
-# the API boundary. None stays unset ("behaves as 'ask'" without self-enabling
-# the confirm gate).
+# a Literal so an unrecognized value from a newer UI/client degrades to the safest
+# gate ("ask") instead of a 422. None stays unset at the request boundary: the tool
+# loops normalize it to the product default "auto", while the route's confirm-gate
+# derivation keeps an unset mode lenient (a non-streaming request cannot prompt, so
+# it runs) to keep non-streaming clients and health checks working.
 _KNOWN_PERMISSION_MODES = ("ask", "auto", "off", "full")
 
 
@@ -1040,11 +1099,13 @@ class ChatCompletionRequest(BaseModel):
             "[x-unsloth] Permission level for local tool calls. 'ask' pauses every "
             "call for approval; 'ask'/'auto' enable the confirmation gate on their "
             "own (needs a streaming request to deliver prompts). 'auto' ('Approve for "
-            "me') only pauses calls detected as potentially unsafe (state-mutating "
-            "terminal/python/MCP calls); read-only calls run immediately, and the "
-            "sandbox stays on. 'full' is equivalent to bypass_permissions=true (no "
-            "confirmation, no sandbox). Unset behaves as 'ask'. An unrecognized value "
-            "(e.g. from a newer client) is treated as 'ask'."
+            "me') only pauses calls detected as high risk (credential reads, privilege "
+            "escalation, destructive/persistence, network exfil); ordinary calls run "
+            "immediately, and the sandbox stays on. 'full' is equivalent to "
+            "bypass_permissions=true (no confirmation, no sandbox). Unset defaults to "
+            "'auto' for the per-call gate; a non-streaming request without an explicit "
+            "mode cannot prompt and runs the loop. An unrecognized value (e.g. from a "
+            "newer client) is treated as 'ask'."
         ),
     )
     auto_heal_tool_calls: Optional[bool] = Field(
@@ -1330,6 +1391,21 @@ class ChatCompletionRequest(BaseModel):
         elif self.permission_mode == "off":
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
+        elif (
+            self.permission_mode is None
+            and self.confirm_tool_calls is True
+            and not (self.provider_id or self.provider_type)
+        ):
+            # An explicit confirm_tool_calls=True with no mode opted into the
+            # pre-permission-mode contract of gating every call, so resolve it to
+            # "ask" rather than let the loop apply the "auto" default, which would
+            # silently weaken that opt-in to high-risk calls only. Unlike the "ask"
+            # branch below this only sets permission_mode, which is inert unless
+            # Unsloth's own tool loop runs, so it needs no enable_tools/mcp gate --
+            # deliberate, since a process-wide --enable-tools policy can force the
+            # loop when the request sets neither flag. A bare unset request
+            # (confirm_tool_calls is None) still defaults to auto.
+            self.permission_mode = "ask"
         elif (
             self.permission_mode == "ask"
             and self.confirm_tool_calls is None
@@ -2013,7 +2089,7 @@ class AnthropicMessagesRequest(BaseModel):
     )
     permission_mode: Optional[str] = Field(
         None,
-        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' only pauses calls detected as potentially unsafe, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset behaves as 'ask'; an unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
+        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' ('Approve for me') only pauses calls detected as high risk, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset defaults to 'auto' for the per-call gate; a non-streaming request without an explicit mode runs the loop. An unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,

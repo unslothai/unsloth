@@ -23,7 +23,7 @@ FRONTEND = WORKDIR / "studio" / "frontend" / "src"
 def _read(rel: str) -> str:
     path = FRONTEND / rel
     assert path.exists(), f"missing source file: {path}"
-    return path.read_text()
+    return path.read_text(encoding = "utf-8")
 
 
 def test_models_api_sends_token_via_header_not_query():
@@ -58,6 +58,70 @@ def test_compare_load_clears_stale_native_lease():
     src = _read("features/chat/shared-composer.tsx")
     assert "activeNativePathToken: null" in src
     assert "activeNativePathExpiresAtMs: null" in src
+
+
+def test_autoload_records_backend_loaded_model_identity():
+    """An inactive-cache inventory row loads by local path, so startup autoload
+    must key both the active checkpoint and its summary by the backend's loaded
+    model identity instead of the catalog repo id."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    autoload = src.split("async function loadAutoLoadCandidate", 1)[1]
+    autoload = autoload.split("\n  try {", 1)[0]
+    assert "const loadedModelId = loadResp.model || modelPath" in autoload
+    assert "setCheckpoint(loadedModelId," in autoload
+    assert "id: loadedModelId" in autoload
+    assert "m.id === loadedModelId" in autoload
+
+
+def test_chat_autoload_toast_is_persistent_and_dismissible():
+    """Send-triggered autoload stays visible until it settles but remains
+    dismissible, matching the explicit model-loading toast's lifetime."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    auto_load = src.split("async function autoLoadSmallestModel", 1)[1]
+    auto_load = auto_load.split("export function createOpenAIStreamAdapter", 1)[0]
+    assert "toast.loading(" not in auto_load
+    assert "const updateAutoLoadToast =" in auto_load
+    assert "if (autoLoadToastDismissed) return;" in auto_load
+    assert auto_load.count("toast.message(") == 2
+    assert auto_load.count("updateAutoLoadToast(") >= 4
+    assert "duration: Number.POSITIVE_INFINITY" in auto_load
+    assert "closeButton: true" in auto_load
+    assert "icon: createLoadingToastIcon()" in auto_load
+    assert "onDismiss:" in auto_load
+    # Terminal success uses a fresh finite toast after manual progress dismissal.
+    assert "showAutoLoadSuccess" in auto_load
+    assert "description: undefined" in auto_load
+    assert "icon: undefined" in auto_load
+    assert "duration: 5000" in auto_load
+    assert "duration: 30000" not in auto_load
+    assert auto_load.count("toast.dismiss(toastId)") >= 4
+
+    explicit_load = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "duration: Infinity" in explicit_load
+
+
+def test_recipe_model_load_toast_is_persistent_and_dismissible():
+    """Recipe model loading uses the same dismissible persistent lifecycle as
+    chat loading because both call the non-abortable loadModel API."""
+    src = _read("features/recipe-studio/hooks/use-recipe-executions.ts")
+    model_load = src.split("async function loadLocalModelSelection", 1)[1]
+    model_load = model_load.split("function getLocalModelLoadPlanForPayload", 1)[0]
+    assert "toast.loading(" not in model_load
+    assert "toast.message(" in model_load
+    assert "duration: Number.POSITIVE_INFINITY" in model_load
+    assert "closeButton: true" in model_load
+    assert "icon: createLoadingToastIcon()" in model_load
+    assert "onDismiss:" in model_load
+    assert "description: undefined" in model_load
+    assert "icon: undefined" in model_load
+    assert "duration: 2000" in model_load
+
+    toast_lib = _read("lib/toast.ts")
+    assert "createElement(Spinner" in toast_lib
+    assert 'className: "size-4 text-muted-foreground"' in toast_lib
+
+    sonner = _read("components/ui/sonner.tsx")
+    assert "loading: createLoadingToastIcon()" in sonner
 
 
 def test_rollback_restores_native_lease_expiry_with_token():
@@ -138,6 +202,19 @@ def test_active_model_config_round_trips_gpu_fields():
     assert "export function gpuFieldsSignature" in shared
 
 
+def test_gpu_picker_round_trips_requested_pool_not_fitted_subset():
+    """A GGUF fit may narrow [0, 1] to [0], but load/status hydration must keep
+    [0, 1] as the editable pool so a later reload can grow back onto GPU 1."""
+    types = _read("features/chat/types/api.ts")
+    assert types.count("requested_gpu_ids?: number[] | null") >= 2
+
+    store = _read("features/chat/stores/chat-runtime-store.ts")
+    assert "resp.requested_gpu_ids ?? resp.gpu_ids ?? null" in store
+
+    status = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    assert "status.requested_gpu_ids ?? status.gpu_ids ?? null" in status
+
+
 def test_compare_load_uses_each_models_gpu_config():
     src = _read("features/chat/shared-composer.tsx")
     assert "ownConfig.gpuMemoryMode ?? compareLoadKnobs.gpuMemoryMode" in src
@@ -189,6 +266,24 @@ def test_local_picker_rows_require_chat_capability():
     memo = re.search(r"const localModels = useMemo\(.*?\[inventory\.localRows\]", src, re.S)
     assert memo, "localModels memo not found"
     assert "row.capabilities.canChat" in memo.group(0)
+
+
+def test_model_picker_toolbar_reflows_before_crossing_picker_edge():
+    """The content-sized section tabs and fixed-width dropdowns must reflow,
+    while an oversized tab group must shrink labels but preserve its icons."""
+    picker = _read("features/model-picker/components/model-selector/pickers.tsx")
+    assert '"flex flex-wrap items-center gap-2"' in picker
+    assert 'hasConnected ? "-mr-4" : "-mr-2"' in picker
+    assert '"flex max-w-full min-w-0 flex-wrap items-center gap-2"' in picker
+
+    tabs = _read("features/model-picker/components/model-selector/pill-tabs.tsx")
+    assert 'fit ? "min-w-0 shrink" : "min-w-0 flex-1"' in tabs
+    assert '<span className="min-w-0 truncate">{tab.label}</span>' in tabs
+
+    selector = _read("features/model-picker/components/model-selector.tsx")
+    assert 'icon={StarIcon} className="size-3.5 shrink-0"' in selector
+    assert 'icon={Download01Icon} className="size-3.5 shrink-0"' in selector
+    assert 'icon={CloudIcon} className="size-3.5 shrink-0"' in selector
 
 
 def test_native_picked_gguf_template_read_through_lease():
@@ -248,6 +343,30 @@ def test_pinned_validation_uses_cached_local_variant_listing():
     assert "bumpInventoryVersion(" in delete_fn
 
 
+def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
+    """Autoload must probe the exact cache row it will load, including rows
+    retained from a previously selected Hugging Face cache."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    auto_load = src.split("async function autoLoadSmallestModel", 1)[1]
+    assert auto_load.count("preferLocalCache: true") >= 2
+    assert auto_load.count("localPath: repo.cache_path") >= 2
+
+    chat_api = _read("features/chat/api/chat-api.ts")
+    variants_fn = chat_api.split("export async function listGgufVariants", 1)[1]
+    variants_fn = variants_fn.split("export interface KvCacheEstimate", 1)[0]
+    assert 'params.set("prefer_local_cache", "true")' in variants_fn
+    assert 'params.set("local_path", localPath)' in variants_fn
+
+
+def test_cache_location_update_invalidates_frontend_inventory():
+    """A successful cache switch must refresh both inventory rows and cached
+    GGUF variant results before any stale active-cache identity can be reused."""
+    src = _read("features/settings/api/hugging-face-cache.ts")
+    update_fn = src.split("export async function updateHuggingFaceCacheSettings", 1)[1]
+    assert "bumpInventoryVersion();" in update_fn
+    assert "invalidateGgufVariantsCache();" in update_fn
+
+
 def test_downloaded_list_offsets_virtual_rows():
     """The On Device virtualized list sits below the Pinned block in the same
     scroll element, so it must pass its measured offset as scrollMargin or rows
@@ -276,6 +395,36 @@ def test_fixed_layer_gguf_pins_displayed_context():
     assert "const pinFixedLayerContext =" in src
     assert 'config.gpuMemoryMode === "manual"' in src
     assert "customContextLength: activeLoadedContext" in src
+
+
+def test_fixed_layer_pin_recomputed_after_committing_gpu_layers():
+    """pinFixedLayerContext is computed from the render-time config, before a
+    same-click GPU Layers draft is committed. handleRun must recompute it from the
+    committed effectiveConfig; otherwise typing a positive GPU Layers value on an
+    auto-fit GGUF and clicking Reload saves customContextLength: null, so a later
+    fresh load sends the native context with fixed layers (the OOM the pin avoids)."""
+    src = _read("features/model-picker/components/model-config-page.tsx")
+    assert "const effectivePinFixedLayerContext =" in src
+    assert 'effectiveConfig.gpuMemoryMode === "manual"' in src
+    assert "effectiveConfig.gpuLayers != null" in src
+    assert "effectiveConfig.customContextLength == null" in src
+    assert "{ ...effectiveConfig, customContextLength: activeLoadedContext }" in src
+
+
+def test_blur_cache_cleared_on_every_settled_render():
+    """The lastBlurCommittedRef bridge is valid only across the single synchronous
+    same-click gesture that set it. Keying its clear on [value] missed a Reset (or
+    external edit) that restores the shown value unchanged after the blur dispatched
+    onChange: value nets back to its prior number, the effect never re-ran, and a
+    later Load/Save replayed the override Reset removed. Clear it on every settled
+    render instead."""
+    src = _read("features/model-picker/components/numeric-value-input.tsx")
+    # The clearing effect must run on every commit, not be gated on [value] alone.
+    assert not re.search(r"lastBlurCommittedRef\.current = null;\s*\}, \[value\]\);", src)
+    assert re.search(
+        r"useEffect\(\(\) => \{\s*lastBlurCommittedRef\.current = null;\s*\}\);",
+        src,
+    )
 
 
 def test_auto_defaults_not_persisted_as_overrides():
@@ -314,13 +463,88 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
     Reset) so isDefaultConfig can clear a remembered override; the concrete
     fallback is substituted only into the load request, not the saved record."""
     src = _read("features/model-picker/components/model-config-page.tsx")
-    # Load-only substitution of the resolved value.
-    assert "maxSeqLength: maxSeqLengthValue" in src
-    assert "const loadConfig" in src
-    # The persisted record is loaded via onRun(loadConfig), and save uses the
-    # untouched runtimeConfig (so a reset/default config stays default).
-    assert "onRun(loadConfig)" in src
+    # Load-only substitution of the resolved value (recomputed from any committed
+    # same-click Max Seq Length draft, so it is never dropped).
+    assert "maxSeqLength: effectiveMaxSeqLengthValue" in src
+    assert "const effectiveLoadConfig" in src
+    # The persisted record is saved from effectiveRuntimeConfig; the load request
+    # carries effectiveLoadConfig (with any committed context input).
+    assert "onRun(effectiveLoadConfig)" in src
     assert "savePerModelConfig(" in src
+
+
+def test_initial_load_uses_staged_config_payload():
+    """Run-settings Load must pass the staged config through to /load even when
+    React has not flushed NumericValueInput blur commits into the store yet."""
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "const pendingLoadConfig =" in runtime
+    assert "pendingLoadConfig?.kvCacheDtype" in runtime
+    assert "pendingLoadConfig?.customContextLength" in runtime
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "contextInputRef" in page
+    assert "contextInputRef.current?.commit()" in page
+    numeric = _read("features/model-picker/components/numeric-value-input.tsx")
+    assert "export type NumericValueInputHandle" in numeric
+    assert "commit:" in numeric
+    # P1: commit returns null unless the user actually edited the field,
+    # so Load/Save with untouched Auto does not pin native context.
+    assert "dirtyRef.current" in numeric
+    assert "return null;" in numeric
+    # P2: blur clears dirtyRef after commit so Reset/slider cannot be
+    # overwritten by a stale draft on a later Load.
+    assert "dirtyRef.current = false;" in numeric
+    assert "draftRef.current = String(final);" in numeric
+    # Same-click Load after blur still sees the committed draft.
+    assert "lastBlurCommittedRef" in numeric
+    # Invalid drafts must not turn Auto into an explicit pin.
+    assert "const commitDraft = (raw: string): number | null" in numeric
+    assert re.search(r"if \(!Number\.isFinite\(parsed\)\) \{\s*return null;", numeric)
+    assert re.search(
+        r"if \(final == null\) \{\s*"
+        r"draftRef\.current = String\(value\);\s*"
+        r"lastBlurCommittedRef\.current = null;",
+        numeric,
+    )
+    # handleRun only promotes commit() when non-null.
+    assert "committedContext != null" in page
+    assert "pendingPatch.customContextLength = committedContext;" in page
+
+
+def test_same_click_commit_covers_all_numeric_inputs():
+    """The same-click blur bridge must flush every NumericValueInput-backed
+    setting, not just Context Length. Max Seq Length (non-GGUF), GPU Layers and
+    MoE Layers (GGUF) also stage their draft only on blur, so handleRun must
+    imperatively commit each and fold the value into the staged load config;
+    otherwise a value the user typed right before clicking Load/Reload is lost."""
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    # Each numeric input owns an imperative handle that handleRun commits, and the
+    # handle is forwarded down to the actual NumericValueInput.
+    for ref in ("maxSeqLengthInputRef", "gpuLayersInputRef", "moeLayersInputRef"):
+        assert f"const {ref} = useRef<NumericValueInputHandle>(null);" in page
+        assert f"{ref}.current?.commit()" in page
+        assert f"inputRef={{{ref}}}" in page
+    # The leaf sub-components accept and forward the handle as a ref.
+    assert page.count("inputRef?: Ref<NumericValueInputHandle>;") >= 2
+    assert "ref={inputRef}" in page
+    # Committed drafts are folded into the staged config, gated on non-null so an
+    # untouched field never fabricates an override.
+    assert "committedMaxSeqLength != null" in page
+    assert "committedGpuLayers != null" in page
+    assert "committedMoeLayers != null" in page
+    assert "pendingPatch.gpuLayers = committedGpuLayers;" in page
+    assert "pendingPatch.nCpuMoe = committedMoeLayers;" in page
+    # The non-GGUF load path substitutes the committed Max Seq Length draft.
+    assert "const effectiveMaxSeqLengthValue =" in page
+    assert "maxSeqLength: effectiveMaxSeqLengthValue" in page
+
+
+def test_context_commit_rechecks_persistence_only_shortcut():
+    """Committed context changes must bypass persistence-only saves."""
+    src = _read("features/model-picker/components/model-config-page.tsx")
+    assert "const effectiveConfig =" in src
+    assert "perModelConfigsEqual(effectiveConfig, baseline)" in src
+    assert "const effectivePersistenceOnly =" in src
+    assert "if (effectivePersistenceOnly)" in src
 
 
 def test_reset_enabled_for_explicit_context_pin_at_native():
@@ -405,3 +629,24 @@ def test_legacy_migration_is_idempotent_and_non_destructive():
     # Layer 3: non-overwriting merge skips an existing (or default) key, so even a
     # forced re-run cannot duplicate or clobber a user's config.
     assert "if (isDefaultConfig(migrated) || Object.hasOwn(map, key)) {" in src
+
+
+def test_vulkan_inference_devices_are_the_pickable_set():
+    """GGUF loads run through llama-server, so on a Vulkan build the picker must
+    offer the inference inventory (ggml ordinals, the space `--device Vulkan<i>`
+    pins) rather than the torch view, which can miss cards llama-server drives.
+    The XPU ban must not apply there: it is about torch-xpu ordinals no
+    applicator speaks, and a Vulkan pick does not use them.
+    """
+    src = " ".join(_read("hooks/use-gpu-info.ts").split())
+    # The Vulkan inventory is consulted first, and only when it has devices.
+    assert (
+        "const inference = data?.inference_gpu; "
+        'if (inference?.backend === "vulkan" && (inference.devices ?? []).length) {' in src
+    )
+    # Pinnable on the ggml ordinal space, gated on the backend's own support flag.
+    assert "const picksAccepted = inference.gguf_gpu_ids_supported !== false;" in src
+    assert 'physicalIndex: picksAccepted && d.index_kind === "vulkan",' in src
+    # The torch fallback keeps its physical-only gate and the XPU ban.
+    assert 'data?.device_backend !== "xpu" &&' in src
+    assert 'physicalIndex: pinnableBackend && d.index_kind === "physical",' in src

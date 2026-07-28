@@ -34,6 +34,7 @@ def main_module():
 def _make_protected_app(
     max_bytes: int,
     main_module,
+    request_max_bytes_getter = None,
     upload_passthrough_prefixes: tuple = (),
     upload_passthrough_max_bytes_getter = None,
 ):
@@ -41,7 +42,13 @@ def _make_protected_app(
     app.add_middleware(
         main_module.MaxBodyMiddleware,
         max_bytes_getter = lambda: max_bytes,
-        protected_prefixes = ("/v1/chat/completions", "/api/settings", "/api/train"),
+        protected_prefixes = (
+            "/v1/chat/completions",
+            "/api/inference",
+            "/api/settings",
+            "/api/train",
+        ),
+        request_max_bytes_getter = request_max_bytes_getter,
         upload_passthrough_prefixes = upload_passthrough_prefixes,
         upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter,
     )
@@ -67,6 +74,10 @@ def _make_protected_app(
                 chunks += 1
                 total += len(chunk)
         return {"ok": True, "chunks": chunks, "total": total}
+
+    @app.post("/api/inference/audio/transcribe/raw")
+    async def transcribe_raw(request: Request):
+        return {"ok": True, "total": len(await request.body())}
 
     @app.get("/api/train/status")
     async def status_get():
@@ -96,6 +107,43 @@ class TestMaxBodyMiddleware:
         r = c.post("/api/other", json = {"text": "x" * 5000})
         assert r.status_code == 200
         assert r.json()["unprotected"] is True
+
+    def test_route_specific_cap_overrides_default(self, main_module):
+        app = _make_protected_app(
+            4096,
+            main_module,
+            request_max_bytes_getter = lambda path: (
+                128 if path.endswith("/transcribe/raw") else 4096
+            ),
+        )
+        c = TestClient(app)
+
+        rejected = c.post(
+            "/api/inference/audio/transcribe/raw",
+            content = b"x" * 129,
+        )
+        accepted = c.post(
+            "/api/inference/audio/transcribe/raw",
+            content = b"x" * 128,
+        )
+
+        assert rejected.status_code == 413
+        assert accepted.status_code == 200
+        assert accepted.json()["total"] == 128
+
+    def test_stt_routes_use_audio_specific_caps(self, main_module):
+        from utils.upload_limits import (
+            STT_AUDIO_JSON_MAX_BYTES,
+            STT_AUDIO_RAW_MAX_BYTES,
+        )
+        assert (
+            main_module._get_request_body_max_bytes("/api/inference/audio/transcribe/raw")
+            == STT_AUDIO_RAW_MAX_BYTES
+        )
+        assert (
+            main_module._get_request_body_max_bytes("/api/inference/audio/transcribe")
+            == STT_AUDIO_JSON_MAX_BYTES
+        )
 
     def test_settings_put_body_over_cap_rejected(self, main_module):
         app = _make_protected_app(1024, main_module)
@@ -470,6 +518,49 @@ class TestSecurityHeadersMiddleware:
         names = {n.lower() for n, _ in start["headers"]}
         assert b"content-security-policy" in names
         assert b"server" in names
+
+
+class TestResearchPortMiddleware:
+    def test_is_pure_asgi_and_forwards_receive_unchanged(self, main_module):
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        cls = main_module.ResearchPortMiddleware
+        assert not issubclass(cls, BaseHTTPMiddleware)
+        assert not hasattr(cls, "dispatch")
+
+        seen = {}
+
+        class Supervisor:
+            def note_server_port(self, server):
+                seen["server"] = server
+
+        async def inner_app(scope, receive, send):
+            seen["receive"] = receive
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+        request_app = type("App", (), {})()
+        request_app.state = type("State", (), {"research_supervisor": Supervisor()})()
+        sentinel_receive = object()
+
+        async def send(_message):
+            return None
+
+        asyncio.run(
+            cls(inner_app)(
+                {
+                    "type": "http",
+                    "path": "/api/research/runs/run-1/events",
+                    "app": request_app,
+                    "server": ("127.0.0.1", 4321),
+                },
+                sentinel_receive,
+                send,
+            )
+        )
+
+        assert seen["receive"] is sentinel_receive
+        assert seen["server"] == ("127.0.0.1", 4321)
 
 
 class TestFrontendAssets:

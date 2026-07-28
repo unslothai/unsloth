@@ -6,7 +6,7 @@ import { resolveInitialConfig } from "@/features/model-picker";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
-import { toast } from "@/lib/toast";
+import { createLoadingToastIcon, toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
@@ -74,6 +74,8 @@ import {
   getStoredChatThread,
   getStoredChatProject,
   listStoredChatThreads,
+  listStoredChatMessages,
+  saveStoredChatMessage,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
 import {
@@ -89,6 +91,7 @@ import {
 import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
   generateAudio,
+  GenerationLengthError,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
@@ -105,6 +108,16 @@ import {
   encryptProviderApiKey,
   isProviderKeyRotationError,
 } from "./providers-api";
+import {
+  beginExternalResearchFollow,
+  ingestResearchUpdate,
+  useResearchRunStore,
+} from "../stores/research-run-store";
+import {
+  cancelResearchRun,
+  createResearchRun,
+  followResearchRun,
+} from "./research-api";
 
 // Small models (<=9B) answer from memory instead of calling search, so "auto"
 // forces retrieval for them and leaves it to larger ones.
@@ -1352,6 +1365,29 @@ async function resolveProjectInstructions(
   return project.instructions?.trim() ?? "";
 }
 
+async function resolveChatInstructions(
+  threadId: string | undefined,
+  systemPrompt: unknown,
+  systemVariables: unknown,
+): Promise<string> {
+  const safeSystemPrompt =
+    typeof systemPrompt === "string"
+      ? resolveSystemPromptVariables(
+          systemPrompt,
+          typeof systemVariables === "string" ? systemVariables : "",
+        )
+      : "";
+  const projectInstructions = await resolveProjectInstructions(threadId);
+  return [
+    projectInstructions
+      ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
+      : "",
+    safeSystemPrompt.trim(),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 async function resolveProjectId(
   threadId: string | undefined,
 ): Promise<string | null> {
@@ -1404,6 +1440,7 @@ const GGUF_KNOWN_QUANT_RE =
 
 type AutoLoadCandidate = {
   id: string;
+  loadId?: string | null;
   kind: LastLocalModelKind;
   ggufVariant: string | null;
   maxSeqLength: number;
@@ -1475,13 +1512,38 @@ async function autoLoadSmallestModel(): Promise<{
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
   const specSettings = resolveSpeculativeSettingsForLoad();
   const lastLoaded = readLastLocalModelLoad();
-  const toastId = toast("Loading a model…", {
+  let autoLoadToastDismissed = false;
+  const toastId = toast.message("Loading a model…", {
     description: lastLoaded
       ? "Loading last used model."
       : "Auto-selecting the smallest downloaded model.",
-    duration: 5000,
+    duration: Number.POSITIVE_INFINITY,
     closeButton: true,
+    icon: createLoadingToastIcon(),
+    onDismiss: () => {
+      autoLoadToastDismissed = true;
+    },
   });
+  const updateAutoLoadToast = (message: string, description: string): void => {
+    if (autoLoadToastDismissed) return;
+    toast.message(message, {
+      id: toastId,
+      description,
+      duration: Number.POSITIVE_INFINITY,
+    });
+  };
+  const showAutoLoadSuccess = (message: string): void => {
+    const options = {
+      description: undefined,
+      duration: 5000,
+      icon: undefined,
+    };
+    if (autoLoadToastDismissed) {
+      toast.success(message, options);
+      return;
+    }
+    toast.success(message, { ...options, id: toastId });
+  };
   let blockedByTrustRemoteCode = false;
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
@@ -1530,6 +1592,7 @@ async function autoLoadSmallestModel(): Promise<{
       return false;
     }
     const currentStore = useChatRuntimeStore.getState();
+    const modelPath = candidate.loadId ?? candidate.id;
     const { config } = resolveInitialConfig(candidate.id, candidate.ggufVariant);
     const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
       modelId: candidate.id,
@@ -1582,7 +1645,7 @@ async function autoLoadSmallestModel(): Promise<{
       : null;
     if (
       !(await canAutoLoad({
-        model_path: candidate.id,
+        model_path: modelPath,
         max_seq_length: fitMaxSeqLength,
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
@@ -1602,7 +1665,7 @@ async function autoLoadSmallestModel(): Promise<{
     }
     loadAttempts += 1;
     const loadResp = await loadModel({
-      model_path: candidate.id,
+      model_path: modelPath,
       hf_token: hfToken,
       max_seq_length: fitMaxSeqLength,
       load_in_4bit: true,
@@ -1635,9 +1698,10 @@ async function autoLoadSmallestModel(): Promise<{
     }
     // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
     persistGpuMemoryModeOnLoad(loadResp, effectiveGpuMemoryMode);
+    const loadedModelId = loadResp.model || modelPath;
     useChatRuntimeStore
       .getState()
-      .setCheckpoint(candidate.id, candidate.ggufVariant ?? undefined);
+      .setCheckpoint(loadedModelId, candidate.ggufVariant ?? undefined);
     const store = useChatRuntimeStore.getState();
     store.setModelRequiresTrustRemoteCode(
       loadResp.requires_trust_remote_code ?? false,
@@ -1653,7 +1717,7 @@ async function autoLoadSmallestModel(): Promise<{
           : effectiveMaxSeqLength,
     });
     const autoModel: ChatModelSummary = {
-      id: candidate.id,
+      id: loadedModelId,
       name: loadResp.display_name ?? candidate.id,
       isVision: loadResp.is_vision ?? false,
       isLora: loadResp.is_lora ?? false,
@@ -1662,7 +1726,7 @@ async function autoLoadSmallestModel(): Promise<{
       audioType: loadResp.audio_type ?? null,
       hasAudioInput: loadResp.has_audio_input ?? false,
     };
-    if (!store.models.some((m) => m.id === candidate.id)) {
+    if (!store.models.some((m) => m.id === loadedModelId)) {
       store.setModels([...store.models, autoModel]);
     }
     if (candidate.kind === "gguf") {
@@ -1735,7 +1799,7 @@ async function autoLoadSmallestModel(): Promise<{
         ggufVariant: candidate.ggufVariant,
       });
     }
-    toast.success(candidate.successLabel, { id: toastId });
+    showAutoLoadSuccess(candidate.successLabel);
     return true;
   }
   try {
@@ -1749,7 +1813,10 @@ async function autoLoadSmallestModel(): Promise<{
         const repo = findCachedRepo(ggufRepos, lastLoaded.id);
         if (repo && lastLoaded.ggufVariant) {
           try {
-            const variants = await listGgufVariants(repo.repo_id);
+            const variants = await listGgufVariants(repo.repo_id, undefined, {
+              preferLocalCache: true,
+              localPath: repo.cache_path,
+            });
             const variant = variants.variants.find(
               (entry) =>
                 entry.downloaded &&
@@ -1758,14 +1825,14 @@ async function autoLoadSmallestModel(): Promise<{
                 isAutoLoadableGgufVariant(entry),
             );
             if (variant) {
-              toast("Loading last used model…", {
-                id: toastId,
-                description: `${repo.repo_id} (${variant.quant})`,
-                duration: 5000,
-              });
+              updateAutoLoadToast(
+                "Loading last used model…",
+                `${repo.repo_id} (${variant.quant})`,
+              );
               if (
                 await loadAutoLoadCandidate({
                   id: repo.repo_id,
+                  loadId: repo.load_id,
                   kind: "gguf",
                   ggufVariant: variant.quant,
                   maxSeqLength: 0,
@@ -1786,14 +1853,11 @@ async function autoLoadSmallestModel(): Promise<{
         const repo = findCachedRepo(modelRepos, lastLoaded.id);
         if (repo) {
           try {
-            toast("Loading last used model…", {
-              id: toastId,
-              description: repo.repo_id,
-              duration: 5000,
-            });
+            updateAutoLoadToast("Loading last used model…", repo.repo_id);
             if (
               await loadAutoLoadCandidate({
                 id: repo.repo_id,
+                loadId: repo.load_id,
                 kind: "model",
                 ggufVariant: null,
                 maxSeqLength: store.params.maxSeqLength,
@@ -1810,11 +1874,10 @@ async function autoLoadSmallestModel(): Promise<{
           }
         }
       }
-      toast("Loading a model…", {
-        id: toastId,
-        description: "Auto-selecting the smallest downloaded model.",
-        duration: 5000,
-      });
+      updateAutoLoadToast(
+        "Loading a model…",
+        "Auto-selecting the smallest downloaded model.",
+      );
     }
 
     // GGUF first: smallest-total-size repo, then its smallest variant.
@@ -1823,7 +1886,10 @@ async function autoLoadSmallestModel(): Promise<{
       for (const repo of sorted) {
         if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
         try {
-          const variants = await listGgufVariants(repo.repo_id);
+          const variants = await listGgufVariants(repo.repo_id, undefined, {
+            preferLocalCache: true,
+            localPath: repo.cache_path,
+          });
           const downloaded = variants.variants
             .filter((v) => v.downloaded && isAutoLoadableGgufVariant(v))
             .sort((a, b) => a.size_bytes - b.size_bytes);
@@ -1839,6 +1905,7 @@ async function autoLoadSmallestModel(): Promise<{
             if (
               await loadAutoLoadCandidate({
                 id: repo.repo_id,
+                loadId: repo.load_id,
                 kind: "gguf",
                 ggufVariant: variant.quant,
                 maxSeqLength: 0,
@@ -1873,6 +1940,7 @@ async function autoLoadSmallestModel(): Promise<{
           if (
             await loadAutoLoadCandidate({
               id: repo.repo_id,
+              loadId: repo.load_id,
               kind: "model",
               ggufVariant: null,
               maxSeqLength: 4096,
@@ -1900,12 +1968,10 @@ async function autoLoadSmallestModel(): Promise<{
     }
 
     // No cached models — try downloading a small default GGUF.
-    toast("Downloading a small model…", {
-      id: toastId,
-      description:
-        "No downloaded models found. Fetching Qwen3.5-4B-MTP (UD-Q4_K_XL).",
-      duration: 30000,
-    });
+    updateAutoLoadToast(
+      "Downloading a small model…",
+      "No downloaded models found. Fetching Qwen3.5-4B-MTP (UD-Q4_K_XL).",
+    );
     try {
       const rt = useChatRuntimeStore.getState();
       if (
@@ -2001,7 +2067,7 @@ async function autoLoadSmallestModel(): Promise<{
         kind: "gguf",
         ggufVariant: "UD-Q4_K_XL",
       });
-      toast.success("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)", { id: toastId });
+      showAutoLoadSuccess("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)");
       return { loaded: true, blockedByTrustRemoteCode: false };
     } catch {
       toast.dismiss(toastId);
@@ -2026,13 +2092,248 @@ export function createOpenAIStreamAdapter(
   options: OpenAIStreamAdapterOptions = {},
 ): ChatModelAdapter {
   return {
-    async *run({ messages, abortSignal, unstable_threadId }) {
+    async *run({
+      messages,
+      abortSignal,
+      unstable_threadId,
+      unstable_assistantMessageId,
+    }) {
       await useChatRuntimeStore.getState().hydratePersistedSettings();
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable even if the user
       // switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const threadAlreadyResearched = Boolean(
+        resolvedThreadId &&
+          useResearchRunStore.getState().claimedThreadIds[resolvedThreadId],
+      );
+      if (runtime.deepResearchEnabled && threadAlreadyResearched) {
+        runtime.setDeepResearchEnabled(false);
+        runtime = useChatRuntimeStore.getState();
+      }
+      if (
+        runtime.deepResearchEnabled &&
+        !options.pairId &&
+        (options.modelType === undefined || options.modelType === "base")
+      ) {
+        if (runtime.modelLoading) {
+          toast.info("Waiting for model to finish loading…");
+          await waitForModelReady(abortSignal);
+        }
+        if (!useChatRuntimeStore.getState().params.checkpoint) {
+          const { loaded, blockedByTrustRemoteCode } =
+            await autoLoadSmallestModel();
+          if (!loaded) {
+            toast.error(
+              blockedByTrustRemoteCode
+                ? "This model needs custom code approval"
+                : "No model loaded",
+              {
+                description: blockedByTrustRemoteCode
+                  ? "Select it from the top bar to review and approve its custom code, or pick another model."
+                  : "Pick a model in the top bar, then retry.",
+              },
+            );
+            throw new Error("Load a model first.");
+          }
+        }
+        runtime = useChatRuntimeStore.getState();
+        if (!resolvedThreadId) throw new Error("Research requires a saved chat.");
+        if (!unstable_assistantMessageId) {
+          throw new Error(
+            "Deep research could not bind its assistant message. Please retry the send.",
+          );
+        }
+        const userMessage = [...messages].reverse().find((m) => m.role === "user");
+        if (!userMessage) throw new Error("Research requires a user message.");
+        const userMessageIndex = messages.indexOf(userMessage);
+        const userMessageParentId =
+          userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null;
+        const { params } = runtime;
+        const model = params.checkpoint.trim();
+        if (!model || parseExternalModelId(model)) {
+          throw new Error("Deep research requires a selected local model.");
+        }
+        const inferenceRequest: {
+          model: string;
+          temperature?: number;
+          topP?: number;
+          maxTokens?: number;
+          enableThinking?: boolean;
+          reasoningEffort?: string;
+        } = { model };
+        if (
+          Number.isFinite(params.temperature) &&
+          params.temperature >= 0 &&
+          params.temperature <= 2
+        ) {
+          inferenceRequest.temperature = params.temperature;
+        }
+        if (Number.isFinite(params.topP) && params.topP > 0 && params.topP <= 1) {
+          inferenceRequest.topP = params.topP;
+        }
+        if (Number.isFinite(params.maxTokens) && params.maxTokens > 0) {
+          inferenceRequest.maxTokens = Math.min(8192, Math.floor(params.maxTokens));
+        }
+        const reasoningRequested =
+          runtime.reasoningAlwaysOn ||
+          (runtime.reasoningEnabled && runtime.reasoningEffort !== "none");
+        if (
+          runtime.reasoningStyle === "enable_thinking" ||
+          runtime.reasoningStyle === "enable_thinking_effort"
+        ) {
+          inferenceRequest.enableThinking = reasoningRequested;
+        }
+        if (
+          reasoningRequested &&
+          (runtime.reasoningStyle === "reasoning_effort" ||
+            runtime.reasoningStyle === "enable_thinking_effort")
+        ) {
+          // Clamp like normal chat does. reasoningEffort is one shared persisted setting and
+          // the load paths refresh reasoningEffortLevels without re-clamping it, so a level
+          // this model lacks is dropped by llama.cpp and the run falls back to the default.
+          inferenceRequest.reasoningEffort = clampReasoningEffortToLevels(
+            runtime.reasoningEffort,
+            runtime.reasoningEffortLevels,
+          );
+        }
+        const researchProjectId = await resolveProjectId(resolvedThreadId);
+        const projectRagEnabled = researchProjectId
+          ? await projectHasSources(researchProjectId)
+          : false;
+        const researchInstructions = await resolveChatInstructions(
+          resolvedThreadId,
+          params.systemPrompt,
+          params.systemVariables,
+        );
+        const ragScope =
+          runtime.ragEnabled || projectRagEnabled
+            ? runtime.ragEnabled && runtime.ragSource.type === "kb"
+              ? {
+                  kb_id: runtime.ragSource.kbId,
+                   default_top_k: runtime.ragTopK,
+                   mode: runtime.ragMode,
+                   autoinject: runtime.ragAutoInject,
+                   autoinject_min_score: runtime.ragAutoInjectMinScore,
+                }
+              : {
+                  ...(runtime.ragEnabled
+                    ? { thread_id: resolvedThreadId }
+                    : {}),
+                  ...(projectRagEnabled && researchProjectId
+                    ? { project_id: researchProjectId }
+                    : {}),
+                   default_top_k: runtime.ragTopK,
+                   mode: runtime.ragMode,
+                   autoinject: runtime.ragAutoInject,
+                   autoinject_min_score: runtime.ragAutoInjectMinScore,
+                }
+            : undefined;
+
+        const threadKey = resolvedThreadId;
+        runtime.setThreadRunning(threadKey, true);
+        let report = "";
+        let releaseResearchFollow: (() => void) | null = null;
+        const researchFollowController = new AbortController();
+        const detachResearchFollow = () => {
+          researchFollowController.abort({ detach: true });
+        };
+        const forwardAdapterAbort = () => {
+          researchFollowController.abort(abortSignal.reason);
+        };
+        abortSignal.addEventListener("abort", forwardAdapterAbort, { once: true });
+        try {
+          // The normal history adapter persists messages after model execution,
+          // but research validates the user message before it can start.
+          const storedUserMessage = (await listStoredChatMessages(resolvedThreadId)).find(
+            (message) => message.id === userMessage.id,
+          );
+          await saveStoredChatMessage({
+            id: userMessage.id,
+            threadId: resolvedThreadId,
+            parentId: storedUserMessage?.parentId ?? userMessageParentId,
+            role: "user",
+            content: userMessage.content,
+            ...(userMessage.attachments?.length
+              ? { attachments: userMessage.attachments }
+              : {}),
+            createdAt: userMessage.createdAt?.getTime?.() ?? Date.now(),
+          });
+          const createdRun = await createResearchRun({
+            threadId: resolvedThreadId,
+            userMessageId: userMessage.id,
+            assistantMessageId: unstable_assistantMessageId,
+            inferenceRequest,
+            ...(researchInstructions ? { instructions: researchInstructions } : {}),
+            ...(ragScope ? { ragScope } : {}),
+            websitePolicy: {
+              allowedDomains: [...runtime.researchWebsitePolicy.allowedDomains],
+              blockedDomains: [...runtime.researchWebsitePolicy.blockedDomains],
+            },
+          });
+          releaseResearchFollow = beginExternalResearchFollow(
+            createdRun,
+            detachResearchFollow,
+          );
+          runtime.setDeepResearchEnabled(false);
+          if (abortSignal.aborted) {
+            const detached = Boolean(
+              (abortSignal.reason as { detach?: boolean } | undefined)?.detach,
+            );
+            if (!detached) {
+              try {
+                ingestResearchUpdate(await cancelResearchRun(createdRun.id));
+              } catch {
+                // The durable run remains visible and can be stopped again after recovery.
+              }
+            }
+            return;
+          }
+          for await (const update of followResearchRun(createdRun.id, {
+            initialRun: createdRun,
+            signal: researchFollowController.signal,
+            replayFrom: 0,
+          })) {
+            const run = update.run;
+            ingestResearchUpdate(run, update.event);
+            // The activity store coalesces these high-frequency events. Yielding them
+            // through assistant-ui would replace the whole hidden message content per
+            // token, making long planning turns progressively more expensive.
+            if (
+              update.event?.event === "reasoning.updated" ||
+              update.event?.event === "report.updated"
+            ) {
+              continue;
+            }
+            if (run.status === "completed" && typeof run.report === "string") {
+              report = run.report;
+            } else if (typeof run.report === "string") {
+              report = run.report;
+            }
+            yield {
+              content: [{ type: "text" as const, text: report }],
+              metadata: {
+                custom: {
+                  researchRunId: run.id,
+                  researchRun: run,
+                  serverManaged: true,
+                  serverRevision: run.lastEventSeq,
+                },
+              },
+            };
+          }
+        } catch (error) {
+          if (!abortSignal.aborted && !researchFollowController.signal.aborted) {
+            throw error;
+          }
+        } finally {
+          abortSignal.removeEventListener("abort", forwardAdapterAbort);
+          releaseResearchFollow?.();
+          runtime.setThreadRunning(threadKey, false);
+        }
+        return;
+      }
       const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
       const toolConfirmationScopeId = resolvedThreadId
         ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
@@ -2304,25 +2605,11 @@ export function createOpenAIStreamAdapter(
         );
       }
 
-      const safeSystemPrompt =
-        typeof params.systemPrompt === "string"
-          ? resolveSystemPromptVariables(
-              params.systemPrompt,
-              typeof params.systemVariables === "string"
-                ? params.systemVariables
-                : "",
-            )
-          : "";
-      const projectInstructions =
-        await resolveProjectInstructions(resolvedThreadId);
-      const combinedSystemPrompt = [
-        projectInstructions
-          ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
-          : "",
-        safeSystemPrompt.trim(),
-      ]
-        .filter(Boolean)
-        .join("\n\n");
+      const combinedSystemPrompt = await resolveChatInstructions(
+        resolvedThreadId,
+        params.systemPrompt,
+        params.systemVariables,
+      );
       if (combinedSystemPrompt) {
         outboundMessages.unshift({
           role: "system",
@@ -3158,12 +3445,15 @@ export function createOpenAIStreamAdapter(
             // Permission level for local tool calls is sent for every local
             // chat, not only when a tool pill is on: a process policy
             // (unsloth run --enable-tools) can open the tool loop with no pill,
-            // and the backend must still see the selected gate. ask/auto request
-            // the confirm gate ("auto" only pauses calls flagged unsafe); off
-            // and full never prompt, full also drops the sandbox.
+            // and the backend must still see the selected gate. "auto" OMITS
+            // confirm_tool_calls: an explicit true would make the backend treat
+            // every auto request as needing a stream and defeat the safe-only
+            // no-stream exception. "ask" sends true; off/full send false (full
+            // also drops the sandbox).
             permission_mode: permissionMode,
-            confirm_tool_calls:
-              permissionMode === "ask" || permissionMode === "auto",
+            ...(permissionMode === "auto"
+              ? {}
+              : { confirm_tool_calls: permissionMode === "ask" }),
             bypass_permissions: bypassPermissions,
             ...(supportsTools &&
             (toolsEnabled ||
@@ -4080,7 +4370,15 @@ export function createOpenAIStreamAdapter(
         );
         if (!abortSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (err instanceof StreamInterruptedError) {
+          if (err instanceof GenerationLengthError) {
+            toast.error("Response ran out of tokens", {
+              description:
+                "The model used the full Max Tokens budget while thinking " +
+                "and did not produce a final answer. Increase Max Tokens in " +
+                "chat Settings or turn off thinking, then retry.",
+              duration: 8000,
+            });
+          } else if (err instanceof StreamInterruptedError) {
             // Connection dropped mid-turn: surface it explicitly (the rethrow
             // below also marks the message with an inline error + Retry).
             toast.error("Response interrupted", {

@@ -10,6 +10,7 @@ omegaconf
 einx
 pyloudnorm
 openai-whisper
+av                               # PyAV: decode dictation audio (webm/opus/mp3/…) for the Whisper STT sidecar
 uroman                           # 4.0 MB - used for Outetts.
 MeCab                            # 19.9 MB - used for Outetts.
 inflect                          # number-to-words, required by OuteTTS

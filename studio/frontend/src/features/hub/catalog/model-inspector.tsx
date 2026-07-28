@@ -166,7 +166,7 @@ function StatRow({
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>
-        <span className="hub-tag-meta inline-flex cursor-default items-center gap-1.5 px-2.5 py-1 text-[11.5px] text-muted-foreground transition-colors hover:text-foreground/80">
+        <span className="hub-tag-meta inline-flex cursor-default items-center gap-1.5 px-2.5 py-1 text-ui-11p5 text-muted-foreground transition-colors hover:text-foreground/80">
           <HugeiconsIcon
             icon={icon}
             strokeWidth={1.75}
@@ -208,7 +208,7 @@ function StatusChip({
   return (
     <span
       className={cn(
-        "inline-flex h-5 shrink-0 items-center whitespace-nowrap rounded-full border bg-transparent px-2 text-[11px] font-medium leading-none",
+        "inline-flex h-5 shrink-0 items-center whitespace-nowrap rounded-full border bg-transparent px-2 text-ui-11 font-medium leading-none",
         toneClass,
         className,
       )}
@@ -248,12 +248,12 @@ function BaseModelSearchChip({
           <button
             type="button"
             onClick={() => onSearchHub(searchTerm)}
-            className="inline-flex h-6 max-w-full cursor-pointer items-center gap-1.5 rounded-full bg-muted px-2.5 text-[11.5px] transition-colors hover:bg-muted/80 dark:bg-[rgba(255,255,255,0.04)]"
+            className="inline-flex h-6 max-w-full cursor-pointer items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 transition-colors hover:bg-muted/80 dark:bg-[rgba(255,255,255,0.04)]"
           >
             {content}
           </button>
         ) : (
-          <span className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-full bg-muted px-2.5 text-[11.5px] dark:bg-[rgba(255,255,255,0.04)]">
+          <span className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 dark:bg-[rgba(255,255,255,0.04)]">
             {content}
           </span>
         )}
@@ -325,11 +325,11 @@ function ModelStatusChips({
           >
             This model may not be supported yet.
             {unslothSupport.reason && (
-              <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+              <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
                 {unslothSupport.reason}
               </span>
             )}
-            <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+            <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
               Still downloadable to your Hugging Face cache.
             </span>
           </TooltipContent>
@@ -349,7 +349,7 @@ function ModelStatusChips({
           >
             This device has no supported GPU or usable MLX, so only GGUF models
             can run here.
-            <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+            <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
               Still downloadable to your Hugging Face cache.
             </span>
           </TooltipContent>
@@ -368,7 +368,7 @@ function ModelStatusChips({
             className="tooltip-compact max-w-xs"
           >
             Estimated 4-bit memory load is around {vramInfo.est} GB.
-            <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+            <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
               {vramDetail}
             </span>
           </TooltipContent>
@@ -502,10 +502,10 @@ export const ModelInspector = memo(function ModelInspector({
           <HugeiconsIcon icon={CubeIcon} strokeWidth={1.5} className="size-5" />
         </div>
         <div className="space-y-1">
-          <p className="text-[15px] font-semibold tracking-tight text-foreground">
+          <p className="text-ui-15 font-semibold tracking-tight text-foreground">
             Select a {isDataset ? "dataset" : "model"}
           </p>
-          <p className="max-w-sm text-[12.5px] leading-5 text-muted-foreground">
+          <p className="max-w-sm text-ui-12p5 leading-5 text-muted-foreground">
             {isDataset
               ? "Choose a dataset from the catalog to inspect its download state and details."
               : "Choose an item from the catalog to inspect its runtime fit, download state, and model card."}
@@ -528,7 +528,7 @@ export const ModelInspector = memo(function ModelInspector({
     model.downloadsAllTime != null ? (
       <>
         Downloads (30 days)
-        <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+        <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
           {formatCompact(model.downloadsAllTime)} all time
         </span>
       </>
@@ -582,11 +582,11 @@ export const ModelInspector = memo(function ModelInspector({
           <OwnerAvatar
             owner={model.owner}
             repoName={model.title}
-            className="size-[60px] rounded-[18px] text-[19px]"
+            className="size-[60px] rounded-[18px] text-ui-19"
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
-              <h2 className="truncate text-[25px] font-semibold leading-[31px] tracking-normal text-foreground">
+              <h2 className="truncate text-ui-25 font-semibold leading-ui-31 tracking-normal text-foreground">
                 {model.title}
               </h2>
               {model.hubRepoId && (
@@ -599,7 +599,7 @@ export const ModelInspector = memo(function ModelInspector({
                 </div>
               )}
             </div>
-            <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[15px] leading-[24px] text-muted-foreground">
+            <div className="mt-0.5 flex min-w-0 items-center gap-1 text-ui-15 leading-ui-24 text-muted-foreground">
               <span className="truncate">{model.owner}</span>
               {model.owner.toLowerCase() === "unsloth" && (
                 <span
@@ -613,12 +613,12 @@ export const ModelInspector = memo(function ModelInspector({
 
         <div className="mt-4 flex flex-wrap items-center gap-1.5">
           {isDataset && (
-            <span className="inline-flex shrink-0 items-center rounded-full border border-violet-500/40 bg-transparent px-2 py-0.5 text-[11.5px] font-medium text-violet-600 dark:text-violet-400">
+            <span className="inline-flex shrink-0 items-center rounded-full border border-violet-500/40 bg-transparent px-2 py-0.5 text-ui-11p5 font-medium text-violet-600 dark:text-violet-400">
               Dataset
             </span>
           )}
           {!isDataset && (
-            <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-muted px-2.5 text-[11.5px] font-medium text-foreground dark:bg-[rgba(255,255,255,0.04)]">
+            <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 font-medium text-foreground dark:bg-[rgba(255,255,255,0.04)]">
               <HugeiconsIcon
                 icon={CubeIcon}
                 strokeWidth={1.75}
@@ -736,12 +736,12 @@ export const ModelInspector = memo(function ModelInspector({
 
       <div className="pb-5 pt-5">
         {selectionHiddenByFilters && (
-          <p className="mb-3 rounded-[8px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11.5px] leading-snug text-muted-foreground">
+          <p className="mb-3 rounded-[8px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui-11p5 leading-snug text-muted-foreground">
             Current selection is hidden by the active filters or search.
           </p>
         )}
         {metadataUnavailable && (
-          <p className="mb-3 text-[11.5px] leading-snug text-muted-foreground">
+          <p className="mb-3 text-ui-11p5 leading-snug text-muted-foreground">
             Couldn't load full details from Hugging Face. Some fields may be
             incomplete.
           </p>
