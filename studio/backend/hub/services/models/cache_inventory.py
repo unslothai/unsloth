@@ -270,6 +270,9 @@ def _cache_inventory_fields(
     partial: bool = False,
     requires_variant: bool = False,
 ) -> dict:
+    # *snapshot_path* becomes the load identity whenever the repo id will not
+    # resolve, so callers must pass a snapshot that holds the payload this row
+    # advertises, not merely the newest one.
     load_id = repo_id
     active_cache = True
     if repo_path is not None:
@@ -380,7 +383,7 @@ def _scan_cached_gguf() -> list[dict]:
                         repo_id,
                         "gguf",
                         repo_path = repo_path,
-                        snapshot_path = snapshot_path,
+                        snapshot_path = _repo_gguf_payload_snapshot(repo_info) or snapshot_path,
                         active_hub_cache = active_hub_cache,
                         partial = bool(row["partial"]),
                         requires_variant = True,
@@ -428,6 +431,58 @@ class _CachedNonGgufPayload(NamedTuple):
     has_runnable_weights: bool
     model_format: ModelFormat
     last_modified: float
+    payload_snapshot: Optional[Path]
+
+
+# Keys mirror _classify_non_gguf_model_format's keyword arguments so a revision's
+# flags can be classified on their own, exactly as the whole repo's are.
+_PAYLOAD_FLAGS = (
+    "has_config",
+    "has_adapter_config",
+    "has_adapter_weights",
+    "has_safetensors",
+    "has_transformers_safetensors",
+    "has_checkpoint_weights",
+)
+
+
+def _newest_snapshot_dir(candidates) -> Optional[Path]:
+    """Newest of *candidates* by directory mtime, or None when there are none.
+
+    Ordering and resolution match ``_cached_model_snapshot_path`` and
+    ``hub.utils.gguf.iter_hf_cache_snapshots`` so every consumer names the same
+    directory by the same string.
+    """
+    best: Optional[tuple[float, Path]] = None
+    for candidate in candidates:
+        path = Path(candidate)
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        if best is None or mtime > best[0]:
+            best = (mtime, path)
+    if best is None:
+        return None
+    try:
+        return best[1].resolve()
+    except OSError:
+        return best[1]
+
+
+def _repo_gguf_payload_snapshot(repo_info) -> Optional[Path]:
+    """Newest snapshot dir holding a primary GGUF, or None when none does.
+
+    The row's size sums quants over every revision, while local variant
+    resolution reads only the directory handed out as ``load_id``, so the two
+    must agree or an advertised quant resolves to nothing.
+    """
+    return _newest_snapshot_dir(
+        snapshot
+        for revision in repo_info.revisions
+        if (snapshot := getattr(revision, "snapshot_path", None)) is not None
+        and any(_is_main_gguf_filename(f.file_name) for f in revision.files)
+    )
 
 
 def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
@@ -435,12 +490,8 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     adapter_blobs: dict[str, tuple[int, float]] = {}
     safetensors_blobs: dict[str, tuple[int, float]] = {}
     checkpoint_blobs: dict[str, tuple[int, float]] = {}
-    has_config = False
-    has_adapter_config = False
-    has_adapter_weights = False
-    has_safetensors = False
-    has_transformers_safetensors = False
-    has_checkpoint = False
+    repo_flags = dict.fromkeys(_PAYLOAD_FLAGS, False)
+    revision_flags: list[tuple[Path, dict[str, bool]]] = []
 
     def _record_blob(
         target: dict[str, tuple[int, float]], file_obj, rev_id: str, file_name: str
@@ -454,6 +505,7 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
 
     for revision in repo_info.revisions:
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
+        flags = dict.fromkeys(_PAYLOAD_FLAGS, False)
         for f in revision.files:
             file_name = str(f.file_name)
             lower = file_name.lower()
@@ -461,37 +513,34 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
             if _is_gguf_filename(lower):
                 continue
             if name == "config.json":
-                has_config = True
+                flags["has_config"] = True
                 continue
             if name == "adapter_config.json":
-                has_adapter_config = True
+                flags["has_adapter_config"] = True
                 continue
             is_adapter = _is_adapter_weight_name(name)
             is_safetensors = name.endswith(".safetensors") and not is_adapter
             is_checkpoint = _is_checkpoint_weight_name(name)
             if is_adapter:
-                has_adapter_weights = True
+                flags["has_adapter_weights"] = True
                 _record_blob(adapter_blobs, f, rev_id, file_name)
             if is_safetensors:
-                has_safetensors = True
+                flags["has_safetensors"] = True
                 if _is_transformers_safetensors_weight_name(name):
-                    has_transformers_safetensors = True
+                    flags["has_transformers_safetensors"] = True
                 _record_blob(safetensors_blobs, f, rev_id, file_name)
             if is_checkpoint:
-                has_checkpoint = True
+                flags["has_checkpoint_weights"] = True
                 _record_blob(checkpoint_blobs, f, rev_id, file_name)
+        snapshot = getattr(revision, "snapshot_path", None)
+        if snapshot is not None:
+            revision_flags.append((Path(snapshot), flags))
+        for key, seen in flags.items():
+            if seen:
+                repo_flags[key] = True
 
     model_format = (
-        _classify_non_gguf_model_format(
-            has_config = has_config,
-            has_adapter_config = has_adapter_config,
-            has_adapter_weights = has_adapter_weights,
-            has_safetensors = has_safetensors,
-            has_transformers_safetensors = has_transformers_safetensors,
-            has_checkpoint_weights = has_checkpoint,
-            trusted_hf_cache_repo = True,
-        )
-        or "unknown"
+        _classify_non_gguf_model_format(**repo_flags, trusted_hf_cache_repo = True) or "unknown"
     )
     if model_format == "adapter":
         selected_blobs = adapter_blobs
@@ -507,6 +556,15 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
         has_runnable_weights = model_format != "unknown",
         model_format = model_format,
         last_modified = max((mtime for _size, mtime in selected_blobs.values()), default = 0.0),
+        # Weights are pooled across revisions, so the newest snapshot need not
+        # hold any: the load id has to name one that classifies the same way on
+        # its own, otherwise the load fails on a fully cached model.
+        payload_snapshot = _newest_snapshot_dir(
+            snapshot
+            for snapshot, flags in revision_flags
+            if _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = True)
+            == model_format
+        ),
     )
 
 
@@ -670,7 +728,7 @@ def _scan_cached_models() -> list[dict]:
                         repo_id,
                         payload.model_format,
                         repo_path = repo_path,
-                        snapshot_path = snapshot_path,
+                        snapshot_path = payload.payload_snapshot or snapshot_path,
                         active_hub_cache = active_hub_cache,
                         partial = bool(row["partial"]),
                     )

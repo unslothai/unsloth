@@ -336,3 +336,110 @@ def test_default_ref_resolves_only_when_main_names_a_snapshot(tmp_path):
     assert inventory_scan.default_ref_resolves_on_disk(dangling) is False
     assert inventory_scan.default_ref_resolves_on_disk(resolved) is True
     assert inventory_scan.default_ref_resolves_on_disk(detached) is False
+
+
+# --- the load id must name a snapshot that holds the advertised payload ------
+
+OLDER = "d" * 40
+NEWER = "e" * 40
+
+
+def _age(path: Path, seconds: float) -> None:
+    """Backdate a snapshot dir; snapshot selection orders by directory mtime."""
+    stamp = os.stat(path).st_mtime - seconds
+    os.utime(path, (stamp, stamp))
+
+
+def _autoload_gguf_rows(cache_root: Path, monkeypatch) -> list[dict]:
+    """What chat auto-load sees for GGUF: GET /api/hub/cached-gguf."""
+    from hub.services.models import cache_inventory
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [cache_root])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = cache_root),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    try:
+        return cache_inventory._scan_cached_gguf()
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+
+
+def _two_snapshot_repo(cache_root: Path, older_files: dict, newer_files: dict) -> Path:
+    """A repo whose payload sits in the older of two snapshots.
+
+    Realistic because a metadata probe (config.json only) against a commit that
+    has moved on materialises a newer, weightless snapshot beside the download.
+    """
+    repo_dir = cache_root / "models--Org--Model"
+    (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "refs" / "main").write_text(UPSTREAM_HEAD, encoding = "utf-8")
+    for commit, files in ((OLDER, older_files), (NEWER, newer_files)):
+        snapshot = repo_dir / "snapshots" / commit
+        snapshot.mkdir(parents = True, exist_ok = True)
+        for name, payload in files.items():
+            (snapshot / name).write_bytes(payload)
+    _age(repo_dir / "snapshots" / OLDER, 600)
+    return repo_dir
+
+
+def test_load_id_names_the_snapshot_holding_the_safetensors_payload(tmp_path, monkeypatch):
+    """The row aggregates weights over every revision, so the payload it
+    advertises can live in an older snapshot than the newest directory."""
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
+        newer_files = {"config.json": b"{}"},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    assert rows[0]["model_format"] == "safetensors"
+    load_dir = Path(rows[0]["load_id"])
+    # Behavioural: from_pretrained(load_id) has to find the weights the row
+    # advertised, otherwise auto-load fails on a model that is fully cached.
+    assert any(entry.suffix == ".safetensors" for entry in load_dir.iterdir()), (
+        f"load_id {load_dir.name} holds no weights; payload is in {OLDER[:8]}"
+    )
+    assert load_dir == repo_dir / "snapshots" / OLDER
+
+
+def test_load_id_names_the_snapshot_holding_the_advertised_gguf_quant(tmp_path, monkeypatch):
+    """Same for GGUF: the row's size sums quants across revisions, while local
+    variant resolution only ever reads the one directory in ``load_id``."""
+    from hub.utils.gguf import list_local_gguf_variants
+
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"config.json": b"{}", "Model-Q4_K_M.gguf": b"\0" * 32},
+        newer_files = {"config.json": b"{}"},
+    )
+
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    assert rows[0]["size_bytes"] == 32
+    load_dir = Path(rows[0]["load_id"])
+    variants, _has_vision = list_local_gguf_variants(str(load_dir))
+    assert [v.quant for v in variants] == ["Q4_K_M"], (
+        f"no variant resolves under load_id {load_dir.name}; the quant is in {OLDER[:8]}"
+    )
+    assert load_dir == repo_dir / "snapshots" / OLDER
+
+
+def test_load_id_still_prefers_the_newest_snapshot_that_holds_the_payload(tmp_path, monkeypatch):
+    """The payload rule must not pin loads to stale revisions: when both
+    snapshots are runnable, the newest one still wins."""
+    repo_dir = _two_snapshot_repo(
+        tmp_path,
+        older_files = {"config.json": b"{}", "model.safetensors": b"\0" * 11},
+        newer_files = {"config.json": b"{}", "model.safetensors": b"\0" * 13},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert Path(rows[0]["load_id"]) == repo_dir / "snapshots" / NEWER
