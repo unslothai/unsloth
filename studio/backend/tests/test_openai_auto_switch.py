@@ -701,9 +701,14 @@ def _mock_override_store(monkeypatch):
 
     store = {}
 
-    def _merge_entry(key, entry_key, entry_value):
+    def _merge_entry(key, entry_key, entry_value, *, only_if_absent = False):
         current = dict(store.get(key) or {})
-        if entry_value:
+        if only_if_absent:
+            # Create only: an entry already there wins and nothing is deleted.
+            if not entry_value or entry_key in current:
+                return current
+            current[entry_key] = entry_value
+        elif entry_value:
             current[entry_key] = entry_value
         else:
             current.pop(entry_key, None)
@@ -5179,3 +5184,163 @@ def test_abs_path_ids_are_recognised_in_either_platform_spelling():
     # A repo id has no leading separator, drive or UNC prefix under either reading.
     for repo_id in ("org/Repo-GGUF", "Repo", "org/Repo-GGUF:Q4_K_M"):
         assert resolver._is_abs_path_id(repo_id) is False, repo_id
+
+
+def test_only_if_absent_put_never_replaces_a_newer_server_entry(monkeypatch):
+    """The one-time localStorage backfill reads the override map once and then
+    writes each model in turn, so a save by another tab during that pass was
+    overwritten by this browser's older copy. only_if_absent makes the write a
+    create, so the entry already on the server wins."""
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+
+    # The other tab's save lands first.
+    newer = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF", max_seq_length = 8192
+    )
+    settings_route.update_openai_auto_switch_override(newer, "tester")
+
+    # The backfill's write, carrying this browser's older localStorage value.
+    backfill = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF", max_seq_length = 2048, only_if_absent = True
+    )
+    resp = settings_route.update_openai_auto_switch_override(backfill, "tester")
+    assert resp.overrides["unsloth/B-GGUF"]["max_seq_length"] == 8192
+
+    # With nothing stored it still creates, or the migration would never run.
+    fresh = settings_route.ModelOverridePayload(
+        model_id = "unsloth/C-GGUF", max_seq_length = 2048, only_if_absent = True
+    )
+    resp2 = settings_route.update_openai_auto_switch_override(fresh, "tester")
+    assert resp2.overrides["unsloth/C-GGUF"]["max_seq_length"] == 2048
+
+
+def test_only_if_absent_matches_a_legacy_casing_and_never_deletes(monkeypatch):
+    """The stored key can carry the casing an older install typed, and it must not
+    be duplicated or emptied by a create for the folded spelling."""
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+
+    stored = settings_route.ModelOverridePayload(
+        model_id = "Unsloth/B-GGUF:Q4_K_M", max_seq_length = 8192
+    )
+    settings_route.update_openai_auto_switch_override(stored, "tester")
+
+    folded = settings_route.ModelOverridePayload(
+        model_id = "unsloth/b-gguf:q4_k_m", max_seq_length = 2048, only_if_absent = True
+    )
+    resp = settings_route.update_openai_auto_switch_override(folded, "tester")
+    assert list(resp.overrides) == ["Unsloth/B-GGUF:Q4_K_M"]
+    assert resp.overrides["Unsloth/B-GGUF:Q4_K_M"]["max_seq_length"] == 8192
+
+    # An all-default create is a no-op, not the "empty payload means forget" path.
+    empty = settings_route.ModelOverridePayload(
+        model_id = "Unsloth/B-GGUF:Q4_K_M", only_if_absent = True
+    )
+    resp2 = settings_route.update_openai_auto_switch_override(empty, "tester")
+    assert resp2.overrides["Unsloth/B-GGUF:Q4_K_M"]["max_seq_length"] == 8192
+
+    # A create that is also a delete has no meaning.
+    with pytest.raises(HTTPException) as excinfo:
+        settings_route.update_openai_auto_switch_override(
+            settings_route.ModelOverridePayload(
+                model_id = "Unsloth/B-GGUF:Q4_K_M", remove = True, only_if_absent = True
+            ),
+            "tester",
+        )
+    assert excinfo.value.status_code == 400
+
+
+def test_only_if_absent_does_not_break_the_empty_payload_removal(monkeypatch):
+    """only_if_absent is a write mode, not a saved field: leaving it in the dumped
+    payload would make every request look non-empty and silently retire the legacy
+    "a payload carrying only model_id forgets this model" contract."""
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+
+    stored = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF", max_seq_length = 4096
+    )
+    settings_route.update_openai_auto_switch_override(stored, "tester")
+    empty = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF")
+    resp = settings_route.update_openai_auto_switch_override(empty, "tester")
+    assert "unsloth/B-GGUF" not in resp.overrides
+
+
+def test_map_entry_create_tests_and_writes_in_one_transaction(tmp_path, monkeypatch):
+    """The real store, not the in-memory stand-in: the existence test has to share
+    the write's transaction, or a concurrent writer still slips between them."""
+    import storage.studio_db as db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(db, "_schema_ready", False)
+
+    key = "test_map_entry_create"
+    assert db.upsert_app_setting_map_entry(key, "a", {"v": 1}) == {"a": {"v": 1}}
+    # Present: left exactly as it is.
+    assert db.upsert_app_setting_map_entry(key, "a", {"v": 2}, only_if_absent = True) == {
+        "a": {"v": 1}
+    }
+    assert db.get_app_setting(key) == {"a": {"v": 1}}
+    # Absent: created.
+    assert db.upsert_app_setting_map_entry(key, "b", {"v": 3}, only_if_absent = True) == {
+        "a": {"v": 1},
+        "b": {"v": 3},
+    }
+    # A create never deletes, even with nothing to store.
+    assert db.upsert_app_setting_map_entry(key, "a", None, only_if_absent = True) == {
+        "a": {"v": 1},
+        "b": {"v": 3},
+    }
+    # The ordinary write still replaces and still removes.
+    db.upsert_app_setting_map_entry(key, "a", {"v": 9})
+    db.upsert_app_setting_map_entry(key, "b", None)
+    assert db.get_app_setting(key) == {"a": {"v": 9}}
+
+
+def test_gpu_ids_dedupe_is_not_a_scan_of_the_list_being_built():
+    """gpu_ids arrives from an authenticated client and normalize_model_override
+    de-duplicates it. Testing membership against the growing list walks up to
+    MAX_GPU_ID entries per element; a set keeps the pass linear. Order, bounds and
+    the bool rejection all have to survive the change."""
+    import time
+
+    from utils.openai_auto_switch_settings import MAX_GPU_ID, normalize_model_override
+
+    assert normalize_model_override({"gpu_ids": [3, 1, 3, 0, 1, 2]})["gpu_ids"] == [3, 1, 0, 2]
+    # bool is an int subclass; [True, False] must not pin GPUs 1 and 0.
+    assert normalize_model_override({"gpu_ids": [True, False]}) == {}
+    assert normalize_model_override({"gpu_ids": [MAX_GPU_ID + 1, -1, 2]})["gpu_ids"] == [2]
+
+    ids = [index % (MAX_GPU_ID + 1) for index in range(200_000)]
+    started = time.perf_counter()
+    normalized = normalize_model_override({"gpu_ids": ids})
+    elapsed = time.perf_counter() - started
+    assert len(normalized["gpu_ids"]) == MAX_GPU_ID + 1
+    # The scan version took ~1s for this input on a dev box; a linear pass is ~50ms.
+    # The bound is loose so a slow CI runner does not redden it.
+    assert elapsed < 0.5, elapsed
+
+
+def test_gpu_ids_payload_is_bounded():
+    """A list longer than the number of ids the normalizer can store adds nothing
+    but work, so it is rejected at the boundary. A real device list is tiny."""
+    import pydantic
+
+    import routes.settings as settings_route
+    from utils.openai_auto_switch_settings import MAX_GPU_ID
+
+    assert settings_route.MAX_GPU_IDS == MAX_GPU_ID + 1
+    at_limit = settings_route.ModelOverridePayload(
+        model_id = "x", gpu_ids = list(range(settings_route.MAX_GPU_IDS))
+    )
+    assert len(at_limit.gpu_ids) == settings_route.MAX_GPU_IDS
+    with pytest.raises(pydantic.ValidationError):
+        settings_route.ModelOverridePayload(
+            model_id = "x", gpu_ids = [0] * (settings_route.MAX_GPU_IDS + 1)
+        )
+    # The ordinary case is untouched.
+    assert settings_route.ModelOverridePayload(model_id = "x", gpu_ids = [0, 1]).gpu_ids == [0, 1]

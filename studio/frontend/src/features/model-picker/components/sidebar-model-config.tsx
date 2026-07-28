@@ -3,6 +3,7 @@
 
 import { useMemo } from "react";
 import { gpuFieldsSignature } from "../model-config/apply-per-model-config";
+import { isOllamaLinkPath } from "../model-config/model-identity";
 import type { PerModelConfig } from "../model-config/per-model-config";
 import { ModelConfigPage } from "./model-config-page";
 import type { ModelPickTarget } from "./model-selector/types";
@@ -67,6 +68,9 @@ export function SidebarModelConfig({
       displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf,
       ggufVariant,
       isGguf,
+      // An Ollama blob loads through a link dir the auto-switch resolver skips,
+      // so its settings must not be mirrored as if the API could load it.
+      apiLoadable: isGguf && !isOllamaLinkPath(modelId),
       meta: {
         source: "local",
         isLora: false,

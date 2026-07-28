@@ -128,10 +128,23 @@ function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
 // replace. Different models still overlap.
 const writesByKey = new Map<string, Promise<void>>();
 
+export interface PutModelOverrideOptions {
+  /**
+   * Create only: leave an entry already on the server exactly as it is.
+   *
+   * The one-time backfill reads the map once and then writes each model in turn,
+   * so another tab saving during that pass would be overwritten by this browser's
+   * older localStorage copy. The server tests and writes under one transaction,
+   * which closes the window without a round trip per model.
+   */
+  onlyIfAbsent?: boolean;
+}
+
 export async function putModelOverride(
   modelId: string,
   ggufVariant: string | null | undefined,
   config: PerModelConfig | null,
+  options?: PutModelOverrideOptions,
 ): Promise<void> {
   // Keyed by the folded identity, not the literal spelling: the backfill sends a
   // legacy casing and a UI save the normalized one, and the backend resolves both
@@ -144,7 +157,7 @@ export async function putModelOverride(
   const previous = writesByKey.get(key) ?? Promise.resolve();
   const write = previous
     .catch(() => {})
-    .then(() => sendModelOverride(modelId, ggufVariant, config));
+    .then(() => sendModelOverride(modelId, ggufVariant, config, options));
   writesByKey.set(key, write);
   try {
     await write;
@@ -160,6 +173,7 @@ async function sendModelOverride(
   modelId: string,
   ggufVariant: string | null | undefined,
   config: PerModelConfig | null,
+  options?: PutModelOverrideOptions,
 ): Promise<void> {
   const res = await authFetch(OVERRIDES_URL, {
     method: "PUT",
@@ -167,6 +181,12 @@ async function sendModelOverride(
     body: JSON.stringify({
       // biome-ignore lint/style/useNamingConvention: API schema
       model_id: modelOverrideKey(modelId, ggufVariant),
+      // Only sent when set, so an older backend that does not know the field is
+      // not handed an unexpected key by every ordinary save.
+      ...(options?.onlyIfAbsent
+        ? // biome-ignore lint/style/useNamingConvention: API schema
+          { only_if_absent: true }
+        : {}),
       // Say which operation this is: an all-default save carries no fields, which is
       // shape-identical to "forget this model", and guessing wrong wipes launch flags
       // the UI cannot show or restore.

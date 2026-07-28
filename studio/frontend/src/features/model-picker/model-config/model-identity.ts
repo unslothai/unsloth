@@ -7,6 +7,7 @@ import {
 } from "@/features/hub";
 
 export {
+  isOllamaLinkPath,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
 } from "@/features/hub";

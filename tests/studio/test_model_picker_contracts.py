@@ -932,3 +932,100 @@ def test_the_settings_page_judges_the_config_storage_actually_keeps():
     assert "export function normalizePerModelConfig(" in store
     assert "const normalized = normalize(config);" in store
     assert "if (isDefaultConfig(normalized)) {" in store, "the rule this mirrors"
+
+
+def test_the_chat_picker_marks_ollama_targets_unloadable_by_the_api():
+    """A settings target opened from the Chat model picker carried no apiLoadable,
+    so the `?? target.isGguf` fallback mirrored an Ollama GGUF to the server.
+    local_model_resolver.py refuses every path under a .studio_links/ollama_links
+    link dir, which is exactly how Ollama's blobs reach this picker, so the mirror
+    advertised a load the API can never make."""
+    picker = " ".join(_read("features/model-picker/components/model-selector.tsx").split())
+    assert "apiLoadable: isGguf && !isOllamaLinkPath(id)," in picker
+    sidebar = " ".join(
+        _read("features/model-picker/components/sidebar-model-config.tsx").split()
+    )
+    assert "apiLoadable: isGguf && !isOllamaLinkPath(modelId)," in sidebar
+    # The same classification gates the one-time backfill, or a config saved before
+    # the upgrade still reaches the server on the next start.
+    backfill = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
+    assert "!isOllamaLinkPath(entry.modelId) &&" in backfill
+
+    identity = _read("features/hub/lib/model-identity.ts")
+    assert 'new Set([".studio_links", "ollama_links"])' in identity
+    resolver = (
+        WORKDIR / "studio" / "backend" / "core" / "inference" / "local_model_resolver.py"
+    ).read_text(encoding = "utf-8")
+    assert 'seg in (".studio_links", "ollama_links")' in resolver, "the rule this mirrors"
+
+
+def test_the_backfill_writes_are_creates_not_replacements():
+    """The backfill reads the override map once and then writes each model in turn,
+    so a save by another tab during that pass was overwritten by this browser's
+    older localStorage copy. The server tests and writes under one transaction
+    rather than this re-fetching per model."""
+    backfill = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
+    assert "{ onlyIfAbsent: true }," in backfill
+    api = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
+    assert "onlyIfAbsent?: boolean;" in api
+    assert "options?.onlyIfAbsent ? { only_if_absent: true } : {}" in api.replace(
+        "// biome-ignore lint/style/useNamingConvention: API schema ", ""
+    )
+    # Ordinary saves must stay unconditional, or a settings edit would never land.
+    assert "syncModelOverride" in api and "only_if_absent: true" in api
+
+    route = (WORKDIR / "studio" / "backend" / "routes" / "settings.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "only_if_absent: bool = False" in route, "the rule this mirrors"
+    assert "only_if_absent = payload.only_if_absent," in route
+    # A write mode must not leak into the saved fields, or "only model_id means
+    # forget this model" stops working.
+    assert '"remove", "only_if_absent"' in route
+
+
+def test_the_hub_settings_page_matches_a_resident_path_loaded_model():
+    """A GGUF loaded from an inactive HF cache or straight off disk loads by path,
+    but /status reports the clean public id, so comparing it to settingsTarget.id
+    said "not loaded" and the page showed saved or default values instead of the
+    live launch config."""
+    hub = " ".join(_read("features/hub/hub-page.tsx").split())
+    assert (
+        "residentModelIdMatches( activeCheckpoint, settingsTarget.id, settingsTarget.configId, )"
+        in hub
+    )
+    assert "loadedConfig={settingsTargetIsResident ? activeModelConfig : null}" in hub
+    assert "settingsTargetIsResident ? activeGgufContextLength : null" in hub
+    # The alias is the backend's own public id rule, not a private heuristic.
+    identity = _read("features/hub/lib/model-identity.ts")
+    assert "export function publicModelId(" in identity
+    assert "models--" in identity and "snapshots" in identity
+    backend = (
+        WORKDIR / "studio" / "backend" / "core" / "inference" / "model_ids.py"
+    ).read_text(encoding = "utf-8")
+    assert "def public_model_id(" in backend, "the rule this mirrors"
+
+
+def test_a_standalone_gguf_has_one_settings_key():
+    """The inventory labels a single scanned .gguf from its filename, so the Hub row
+    menu keyed its settings to `<path>:Q4_K_M` while the Chat picker, the detail
+    card and the backfill all use the bare path: two surfaces, two configs."""
+    hub = " ".join(_read("features/hub/hub-page.tsx").split())
+    assert "let ggufVariant = settingsGgufVariantForRow(row);" in hub
+    assert "row.formatVariant" not in hub, "the row's raw label is not a settings key"
+
+    helper = " ".join(_read("features/hub/inventory/settings-identity.ts").split())
+    assert 'row.kind === "local" && row.path.toLowerCase().endsWith(".gguf")' in helper
+
+    common = (
+        WORKDIR
+        / "studio"
+        / "backend"
+        / "hub"
+        / "services"
+        / "models"
+        / "common.py"
+    ).read_text(encoding = "utf-8")
+    # The rule this mirrors: a variant is derived only for a single scanned file.
+    assert "extract_quant_label(gguf_files[0].name)" in common
+    assert "if scan_path.is_file() and len(gguf_files) == 1" in common

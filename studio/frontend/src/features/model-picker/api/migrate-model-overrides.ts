@@ -8,6 +8,7 @@
 // API load uses app defaults, the exact bug the server-side map exists to fix.
 
 import {
+  isOllamaLinkPath,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
   splitQuantSuffix,
@@ -73,10 +74,13 @@ export async function backfillModelOverrides(): Promise<void> {
     // A quant means GGUF, the only thing API auto-switch resolves, so backfilling a
     // safetensors config would claim behaviour that does not exist. A standalone
     // .gguf has no quant to select between and is stored with a null variant, so it
-    // needs the extra test or its settings stay browser-only for good.
+    // needs the extra test or its settings stay browser-only for good. An Ollama
+    // blob is GGUF but reached through a link dir the resolver skips, so it is not
+    // auto-switchable either.
     (entry) =>
       (entry.ggufVariant != null ||
         entry.modelId.toLowerCase().endsWith(".gguf")) &&
+      !isOllamaLinkPath(entry.modelId) &&
       !isDefaultConfig(entry.config),
   );
   if (local.length === 0) {
@@ -118,10 +122,14 @@ export async function backfillModelOverrides(): Promise<void> {
       continue;
     }
     try {
+      // Create only. `known` is a snapshot from before this loop started, so a save
+      // by another tab during the pass is invisible here; the server does the test
+      // and the write together rather than this re-fetching once per model.
       await putModelOverride(
         current.modelId,
         current.ggufVariant,
         current.config,
+        { onlyIfAbsent: true },
       );
     } catch {
       failed = true;

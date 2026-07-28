@@ -287,6 +287,9 @@ VALID_GPU_MEMORY_MODES = frozenset({"auto", "manual"})
 
 MAX_SEQ_LENGTH_CEILING = 1048576
 MAX_CHAT_TEMPLATE_OVERRIDE_BYTES = 65_536
+# Highest device index a stored gpu_ids entry may name. Also bounds how many
+# distinct ids one entry can hold, which is what the payload limit is built from.
+MAX_GPU_ID = 1024
 
 
 def _clean_str(value: Any, allowed: frozenset[str]) -> Optional[str]:
@@ -378,11 +381,15 @@ def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
     gpu_ids = payload.get("gpu_ids")
     if isinstance(gpu_ids, (list, tuple)) and gpu_ids:
         # De-duplicate, preserving order: resolve_requested_gpu_ids rejects a repeat,
-        # so storing [0, 0] would 400 every later API load of this model.
+        # so storing [0, 0] would 400 every later API load of this model. Membership
+        # is a set, not a scan of the list being built: an id only has to be in
+        # 0..MAX_GPU_ID, so a long array walks that scan once per element.
         cleaned_ids: list[int] = []
+        seen_ids: set[int] = set()
         for gid in gpu_ids:
-            parsed = _bounded_int(gid, minimum = 0, maximum = 1024)
-            if parsed is not None and parsed not in cleaned_ids:
+            parsed = _bounded_int(gid, minimum = 0, maximum = MAX_GPU_ID)
+            if parsed is not None and parsed not in seen_ids:
+                seen_ids.add(parsed)
                 cleaned_ids.append(parsed)
         if cleaned_ids:
             entry["gpu_ids"] = cleaned_ids
@@ -613,12 +620,18 @@ def set_model_override(
     model_id: str,
     llama_extra_args: Optional[list[str]] = None,
     max_seq_length: Optional[int] = None,
+    *,
+    only_if_absent: bool = False,
     **config: Any,
 ) -> dict:
     """Upsert one model's launch config; a config with no usable fields removes it.
 
     The two legacy parameters stay positional for existing callers; every other
     per-model field is passed by keyword and normalized together.
+
+    ``only_if_absent`` turns the upsert into a create, leaving an entry already
+    stored untouched. Returns the normalized entry either way; read the map back
+    to see what is actually stored.
     """
     if not model_id or not model_id.strip():
         raise ValueError("model_id is required.")
@@ -633,6 +646,11 @@ def set_model_override(
     from storage.studio_db import upsert_app_setting_map_entry
 
     # Atomic per-entry merge so two PUTs for different models can't drop each other.
-    upsert_app_setting_map_entry(MODEL_OVERRIDES_SETTING_KEY, model_id.strip(), entry or None)
+    upsert_app_setting_map_entry(
+        MODEL_OVERRIDES_SETTING_KEY,
+        model_id.strip(),
+        entry or None,
+        only_if_absent = only_if_absent,
+    )
     _invalidate(MODEL_OVERRIDES_SETTING_KEY)
     return entry

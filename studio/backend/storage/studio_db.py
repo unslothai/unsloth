@@ -2959,11 +2959,22 @@ def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
 
 
 def upsert_app_setting_map_entry(
-    key: str, entry_key: str, entry_value: dict[str, Any] | None
+    key: str,
+    entry_key: str,
+    entry_value: dict[str, Any] | None,
+    *,
+    only_if_absent: bool = False,
 ) -> dict[str, Any]:
     """Set (or delete, when entry_value is falsy) one sub-entry of a dict-valued
     app setting, atomically under BEGIN IMMEDIATE so concurrent writers to other
-    sub-entries cannot drop each other's updates."""
+    sub-entries cannot drop each other's updates.
+
+    ``only_if_absent`` makes the write a create: an entry already there is left
+    exactly as it is, and nothing is ever deleted. The test and the write share
+    this transaction, so a caller that read the map earlier cannot replace a value
+    written since. Used by the one-time localStorage backfill, whose contract is
+    that the server copy is the newer authority.
+    """
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -2971,7 +2982,12 @@ def upsert_app_setting_map_entry(
         current = _json_loads(row["value_json"], {}) if row else {}
         if not isinstance(current, dict):
             current = {}
-        if entry_value:
+        if only_if_absent:
+            if not entry_value or entry_key in current:
+                conn.rollback()
+                return current
+            current[entry_key] = entry_value
+        elif entry_value:
             current[entry_key] = entry_value
         else:
             current.pop(entry_key, None)

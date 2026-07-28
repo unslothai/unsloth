@@ -63,3 +63,101 @@ export function ggufVariantsMatch(
     normalizeGgufVariantIdentity(left) === normalizeGgufVariantIdentity(right)
   );
 }
+
+// Mirrors core/inference/model_ids.py _looks_like_path.
+const PUBLIC_ID_PATH_PREFIX_RE = /^(?:[/\\]|\.{1,2}[\\/]|~)/;
+const GGUF_SUFFIX_RE = /\.gguf$/i;
+const BACKSLASHES_RE = /\\/g;
+const TRAILING_SLASHES_RE = /\/+$/;
+
+function looksLikeModelPath(identifier: string): boolean {
+  if (GGUF_SUFFIX_RE.test(identifier)) {
+    return true;
+  }
+  if (PUBLIC_ID_PATH_PREFIX_RE.test(identifier)) {
+    return true;
+  }
+  if (identifier.length >= 2 && identifier[1] === ":") {
+    return true;
+  }
+  return identifier.split("/").length - 1 >= 2 || identifier.includes("\\");
+}
+
+/** `.../models--org--name/snapshots/<sha>` -> `org/name`, else null. */
+function hfCacheRepoId(path: string): string | null {
+  const parts = path.replace(BACKSLASHES_RE, "/").split("/");
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index];
+    if (part.startsWith("models--") && parts[index + 1] === "snapshots") {
+      return part.slice("models--".length).replaceAll("--", "/");
+    }
+  }
+  return null;
+}
+
+/**
+ * The clean id the backend reports for a model loaded by path.
+ *
+ * Mirrors ``public_model_id`` in studio/backend/core/inference/model_ids.py, which
+ * is what ``/api/inference/status`` puts in ``active_model``: an HF cache snapshot
+ * becomes its repo id and any other local GGUF becomes its filename stem. Repo ids
+ * and already-clean names come back unchanged.
+ */
+export function publicModelId(identifier: string): string {
+  const trimmed = identifier.trim();
+  if (!(trimmed && looksLikeModelPath(trimmed))) {
+    return trimmed;
+  }
+  const repoId = hfCacheRepoId(trimmed);
+  if (repoId) {
+    return repoId;
+  }
+  const slashPath = trimmed
+    .replace(BACKSLASHES_RE, "/")
+    .replace(TRAILING_SLASHES_RE, "");
+  const name = slashPath.slice(slashPath.lastIndexOf("/") + 1);
+  return name.replace(GGUF_SUFFIX_RE, "") || trimmed;
+}
+
+/**
+ * Whether the model the backend reports as loaded is one of *candidates*.
+ *
+ * A GGUF loaded from an inactive HF cache or straight off disk is loaded by path,
+ * but `/status` reports the clean public id, so an exact comparison against the
+ * catalog row's path says "not loaded" and the caller falls back to saved or
+ * default values instead of the live launch config. Candidates are compared
+ * literally first, then by the public id the backend would report for them.
+ */
+export function residentModelIdMatches(
+  activeModelId: string | null | undefined,
+  ...candidates: (string | null | undefined)[]
+): boolean {
+  if (candidates.some((candidate) => modelIdsMatch(activeModelId, candidate))) {
+    return true;
+  }
+  const active = activeModelId?.trim();
+  // A path-shaped active id is the raw identifier, which the literal pass covered.
+  if (!active || looksLikeModelPath(active)) {
+    return false;
+  }
+  return candidates.some((candidate) => {
+    const trimmed = candidate?.trim();
+    return trimmed ? modelIdsMatch(active, publicModelId(trimmed)) : false;
+  });
+}
+
+// Ollama's blobs reach the picker through a ".studio_links"/"ollama_links" symlink
+// directory. core/inference/local_model_resolver.py refuses to index anything under
+// those (the scanner that creates them runs off the request path), so the API can
+// never load one and mirroring its settings would advertise a load that cannot happen.
+const OLLAMA_LINK_SEGMENTS = new Set([".studio_links", "ollama_links"]);
+
+export function isOllamaLinkPath(modelId: string | null | undefined): boolean {
+  if (!modelId) {
+    return false;
+  }
+  return modelId
+    .replace(BACKSLASHES_RE, "/")
+    .split("/")
+    .some((segment) => OLLAMA_LINK_SEGMENTS.has(segment));
+}

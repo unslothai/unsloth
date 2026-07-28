@@ -70,6 +70,7 @@ import { useHubModelVram } from "./hooks/use-hub-model-vram";
 import { useModelsSelection } from "./hooks/use-models-selection";
 import { useHubInventory } from "./inventory";
 import { LOCAL_MODEL_SOURCE } from "./inventory/constants";
+import { settingsGgufVariantForRow } from "./inventory/settings-identity";
 import {
   CHANNEL_TO_SECTION,
   type ChannelId,
@@ -84,7 +85,11 @@ import {
   isHiddenModelId,
 } from "./lib/hidden-models";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
-import { ggufVariantsMatch, modelIdsMatch } from "./lib/model-identity";
+import {
+  ggufVariantsMatch,
+  modelIdsMatch,
+  residentModelIdMatches,
+} from "./lib/model-identity";
 import {
   type ModelTypeFilter,
   matchesModelType,
@@ -1271,7 +1276,7 @@ export function ModelsPage() {
       // repo with format_variant null). Opening with a null variant keys the config
       // to `repo::` while the loader reads `repo::Q4_K_M`, so it never applies and
       // the server mirror is wrong too. Resolve it as the on-device card does.
-      let ggufVariant = row.formatVariant?.trim() || null;
+      let ggufVariant = settingsGgufVariantForRow(row);
       if (!ggufVariant && row.isGguf && row.capabilities.requiresVariant) {
         const repoId = row.kind === "cache" ? row.repoId : (row.repoId ?? null);
         if (repoId) {
@@ -1429,6 +1434,18 @@ export function ModelsPage() {
     },
     [selectedModel],
   );
+  // Whether the settings page is open on the model that is actually loaded, so it
+  // can show the live launch config. A GGUF loaded from an inactive HF cache or
+  // straight off disk loads by path but is reported by its clean public id, so the
+  // row's path and its settings identity both have to be offered as aliases.
+  const settingsTargetIsResident =
+    settingsTarget !== null &&
+    residentModelIdMatches(
+      activeCheckpoint,
+      settingsTarget.id,
+      settingsTarget.configId,
+    ) &&
+    ggufVariantsMatch(activeGgufVariant, settingsTarget.ggufVariant);
   const handleSearchHub = useCallback(
     (next: string) => {
       const trimmed = next.trim();
@@ -1856,17 +1873,9 @@ export function ModelsPage() {
           <div className="hub-canvas absolute inset-0 z-30 flex min-h-0 flex-col">
             <HubModelSettingsView
               target={settingsTarget}
-              loadedConfig={
-                modelIdsMatch(activeCheckpoint, settingsTarget.id) &&
-                ggufVariantsMatch(activeGgufVariant, settingsTarget.ggufVariant)
-                  ? activeModelConfig
-                  : null
-              }
+              loadedConfig={settingsTargetIsResident ? activeModelConfig : null}
               loadedContextLength={
-                modelIdsMatch(activeCheckpoint, settingsTarget.id) &&
-                ggufVariantsMatch(activeGgufVariant, settingsTarget.ggufVariant)
-                  ? activeGgufContextLength
-                  : null
+                settingsTargetIsResident ? activeGgufContextLength : null
               }
               onBack={() => setSettingsTarget(null)}
               onRun={runSettingsTarget}

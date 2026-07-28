@@ -40,6 +40,7 @@ from utils.openai_auto_switch_settings import (
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
     DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED,
     DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
+    MAX_GPU_ID,
     get_auto_unload_idle_seconds,
     get_auto_unload_keep_kv,
     get_model_overrides,
@@ -142,6 +143,11 @@ _MAX_VARIANT_SUFFIX_LEN = 64
 # sync while the local save succeeded.
 MAX_MODEL_OVERRIDE_KEY_LEN = 4096 + 1 + _MAX_VARIANT_SUFFIX_LEN
 
+# normalize_model_override keeps ids 0..MAX_GPU_ID, so a longer list cannot name a
+# device the normalizer would store; it only makes it walk more duplicates. Bound
+# it here so an oversized array is rejected at the boundary instead of costing CPU.
+MAX_GPU_IDS = MAX_GPU_ID + 1
+
 
 class ModelOverridePayload(BaseModel):
     """One model's saved launch config, applied when the API loads that model.
@@ -172,10 +178,15 @@ class ModelOverridePayload(BaseModel):
     # -1 is Auto (llama.cpp --fit sizes the offload); the normalizer treats it as unset.
     gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 1024)
     n_cpu_moe: Optional[int] = Field(default = None, ge = 0, le = 1024)
-    gpu_ids: Optional[list[int]] = None
+    gpu_ids: Optional[list[int]] = Field(default = None, max_length = MAX_GPU_IDS)
     # Explicit intent: an all-default save carries no fields, which is shape
     # identical to "forget this model". None keeps the legacy contract.
     remove: Optional[bool] = None
+    # Create, don't replace: the one-time localStorage backfill reads the map once
+    # and then writes each model in turn, so another tab saving during that pass
+    # would be overwritten by this browser's older copy. The server tests and
+    # writes under one transaction, which costs no extra round trip.
+    only_if_absent: bool = False
 
     @field_validator("chat_template_override")
     @classmethod
@@ -365,11 +376,18 @@ def update_openai_auto_switch_override(
     from utils.openai_auto_switch_settings import get_model_override
 
     try:
+        if payload.only_if_absent and payload.remove is True:
+            # A create that is also a delete has no meaning, and silently picking one
+            # would either lose settings or resurrect them.
+            raise ValueError("only_if_absent cannot be combined with remove.")
         # Only model_id is the documented "remove". Otherwise omitted launch flags
         # carry over from the stored entry, since the settings UI cannot express them.
         requested_extra_args = payload.llama_extra_args
+        # only_if_absent is a write mode, not a saved field: leaving it in would make
+        # every payload look non-empty and break the legacy "no fields means remove".
         saved_fields = payload.model_dump(
-            exclude = {"model_id", "llama_extra_args", "remove"}, exclude_none = True
+            exclude = {"model_id", "llama_extra_args", "remove", "only_if_absent"},
+            exclude_none = True,
         )
         if payload.remove is not None:
             is_removal = payload.remove
@@ -413,6 +431,7 @@ def update_openai_auto_switch_override(
                 gpu_layers = payload.gpu_layers,
                 n_cpu_moe = payload.n_cpu_moe,
                 gpu_ids = payload.gpu_ids,
+                only_if_absent = payload.only_if_absent,
             )
     except ValueError as exc:
         raise log_and_http_error(
