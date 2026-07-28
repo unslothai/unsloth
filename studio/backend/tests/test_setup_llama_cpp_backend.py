@@ -41,9 +41,9 @@ def _run(value: str | None, system: str = "Linux") -> tuple[list[str], str]:
     harness = (
         f'set -u\n_PREBUILT_CMD=()\nC_WARN=""\nC_OK=""\n_HOST_SYSTEM="{system}"\n'
         '_source_backend_choice="$(printf \'%s\' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" '
-        '| awk \'{$1=$1; print tolower($0)}\')"\n'
+        "| awk '{$1=$1; print tolower($0)}')\"\n"
         '_source_legacy_force_vulkan="$(printf \'%s\' "${UNSLOTH_FORCE_VULKAN:-}" '
-        '| awk \'{$1=$1; print tolower($0)}\')"\n'
+        "| awk '{$1=$1; print tolower($0)}')\"\n"
         'step() { printf "STEP: %s\\n" "$*" >&2; }\n'
         f"{_backend_block()}\n"
         'printf "%s\\n" "${_PREBUILT_CMD[@]}"'
@@ -176,7 +176,7 @@ def _run_ps1(value: str | None) -> str:
     # The override is normalized (assign + warn) at the top of the prebuilt block and
     # applied to $prebuiltArgs lower down; compose both real snippets.
     normalize = _ps1_search(
-        r'\$llamaBackend = \$sourceLlamaBackend.*?'
+        r"\$llamaBackend = \$sourceLlamaBackend.*?"
         r"Ignoring UNSLOTH_LLAMA_CPP_BACKEND=.*?\n\s*\}",
         re.DOTALL,
     )
@@ -187,7 +187,7 @@ def _run_ps1(value: str | None) -> str:
     if value is not None:
         env["UNSLOTH_LLAMA_CPP_BACKEND"] = value
     harness = (
-        '$prebuiltArgs = @()\n'
+        "$prebuiltArgs = @()\n"
         '$sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()\n'
         '$sourceLegacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()\n'
         f'{normalize}\n{apply_flag}\n"ARGS:" + ($prebuiltArgs -join ",")'

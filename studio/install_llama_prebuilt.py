@@ -5466,9 +5466,7 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
             attempts.append(published_rocm)
     else:
         if host.has_intel_gpu and not host.has_physical_nvidia:
-            vulkan_choice = published_asset_choice_for_kind(
-                bundle, "linux-vulkan", host = host
-            )
+            vulkan_choice = published_asset_choice_for_kind(bundle, "linux-vulkan", host = host)
             if vulkan_choice is not None:
                 attempts.append(vulkan_choice)
         # CPU-only host. A usable-NVIDIA host never reaches here -- if its CUDA

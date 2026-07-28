@@ -8130,9 +8130,7 @@ class LlamaCppBackend:
 
                 # Speculative decoding. See _build_speculative_flags for the
                 # mode resolution, benchmarks, and llama.cpp references.
-                _vulkan_pin_ids = (
-                    gpu_indices if gpu_indices is not None else (gpu_ids or None)
-                )
+                _vulkan_pin_ids = gpu_indices if gpu_indices is not None else (gpu_ids or None)
                 launch_mtp_draft_path = self._resolve_launch_mtp_path(
                     mtp_draft_path = mtp_draft_path,
                 )
