@@ -385,7 +385,9 @@ function reconcileIncoming(
   ) {
     return null;
   }
-  return mergeTerminalSnapshots(incoming, current, true);
+  const useIncomingState =
+    incomingEvent > currentEvent || incomingTerminal || forwardPolledTransition;
+  return mergeTerminalSnapshots(incoming, current, useIncomingState);
 }
 
 async function persistOnce(

@@ -64,20 +64,15 @@ async function request(
     controller.abort(new DOMException("Request timed out", "TimeoutError"));
   }, USER_ASSET_REQUEST_TIMEOUT_MS);
   try {
-    const method = (init?.method ?? "GET").toUpperCase();
-    const mutatesUserAssets =
-      method === "POST" || method === "PUT" || method === "DELETE";
     const expectedSubjectKey =
-      options.expectedSubjectKey ??
-      (mutatesUserAssets ? getAuthSubjectKey() : undefined);
-    const guard = expectedSubjectKey ? { expectedSubjectKey } : undefined;
+      options.expectedSubjectKey ?? getAuthSubjectKey();
     return await authFetch(
       `${USER_ASSETS_BASE}${path}`,
       {
         ...init,
         signal: controller.signal,
       },
-      guard,
+      { expectedSubjectKey },
     );
   } catch (error) {
     if (timedOut) {

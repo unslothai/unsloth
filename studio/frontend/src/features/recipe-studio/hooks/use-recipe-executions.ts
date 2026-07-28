@@ -3,6 +3,7 @@
 
 import { getAuthSubjectKey, subscribeAuthSubject } from "@/features/auth";
 import { getInferenceStatus, loadModel } from "@/features/chat";
+import { getServerRecipeExecutionDataset } from "@/features/user-assets";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { toastError } from "@/shared/toast";
 import {
@@ -15,12 +16,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
-import {
-  cancelRecipeJob,
-  createRecipeJob,
-  validateRecipe,
-} from "../api";
-import { getServerRecipeExecutionDataset } from "@/features/user-assets";
+import { cancelRecipeJob, createRecipeJob, validateRecipe } from "../api";
 import { saveRecipeExecution } from "../data/executions-db";
 import type {
   RecipeExecutionKind,
@@ -781,6 +777,7 @@ export function useRecipeExecutions({
           kind: resumable.kind,
           rows: resumable.rows,
           jobId: resumable.jobId,
+          expectedSubjectKey: owner.subjectKey,
           initialExecution: resumable,
           notify: false,
           onUpsert: (record) => {
@@ -957,6 +954,7 @@ export function useRecipeExecutions({
           kind,
           rows,
           jobId: createdJob.job_id,
+          expectedSubjectKey: owner.subjectKey,
           initialExecution: executionWithJob,
           notify: true,
           onUpsert: ownedUpsert,

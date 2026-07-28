@@ -32,6 +32,22 @@ EDIT_RECIPE_PAGE = (
     / "pages"
     / "edit-recipe-page.tsx"
 ).read_text(encoding = "utf-8")
+USER_ASSETS_API = (
+    ROOT / "studio" / "frontend" / "src" / "features" / "user-assets" / "api.ts"
+).read_text(encoding = "utf-8")
+RECIPE_API = (
+    ROOT / "studio" / "frontend" / "src" / "features" / "recipe-studio" / "api" / "index.ts"
+).read_text(encoding = "utf-8")
+EXECUTION_TRACKER = (
+    ROOT
+    / "studio"
+    / "frontend"
+    / "src"
+    / "features"
+    / "recipe-studio"
+    / "executions"
+    / "tracker.ts"
+).read_text(encoding = "utf-8")
 PLAYWRIGHT_RECIPE = ROOT / "tests" / "studio" / "playwright_recipe_persistence.py"
 
 
@@ -71,3 +87,23 @@ def test_legacy_import_has_an_indexeddb_claim_when_web_locks_are_unavailable():
 def test_recipe_editor_waits_for_authoritative_record_before_rendering():
     assert "getCachedRecipe" not in EDIT_RECIPE_PAGE
     assert 'status: "loading"' in EDIT_RECIPE_PAGE
+
+
+def test_equal_event_snapshots_preserve_current_nonterminal_scalars():
+    assert (
+        "incomingEvent > currentEvent || incomingTerminal || forwardPolledTransition"
+        in EXECUTIONS_DB
+    )
+    assert "mergeTerminalSnapshots(incoming, current, useIncomingState)" in EXECUTIONS_DB
+
+
+def test_user_asset_reads_capture_the_starting_auth_subject():
+    assert "options.expectedSubjectKey ?? getAuthSubjectKey()" in USER_ASSETS_API
+    assert "{ expectedSubjectKey }," in USER_ASSETS_API
+
+
+def test_job_tracking_reads_are_bound_to_the_execution_owner():
+    assert "expectedSubjectKey: string;" in EXECUTION_TRACKER
+    assert "getRecipeJobStatus(jobId, { expectedSubjectKey })" in EXECUTION_TRACKER
+    assert "getRecipeJobAnalysis(jobId, { expectedSubjectKey })" in EXECUTION_TRACKER
+    assert "expectedSubjectKey?: string;" in RECIPE_API

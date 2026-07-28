@@ -3,10 +3,10 @@
 
 import { toastError, toastSuccess } from "@/shared/toast";
 import {
+  RecipeApiError,
   getRecipeJobAnalysis,
   getRecipeJobDataset,
   getRecipeJobStatus,
-  RecipeApiError,
   streamRecipeJobEvents,
 } from "../api";
 import type {
@@ -34,6 +34,7 @@ type TrackRecipeExecutionParams = {
   kind: RecipeExecutionKind;
   rows: number;
   jobId: string;
+  expectedSubjectKey: string;
   initialExecution: RecipeExecutionRecord;
   notify: boolean;
   onUpsert: (record: RecipeExecutionRecord) => void;
@@ -94,6 +95,7 @@ export async function trackRecipeExecution({
   kind,
   rows,
   jobId,
+  expectedSubjectKey,
   initialExecution,
   notify,
   onUpsert,
@@ -108,6 +110,7 @@ export async function trackRecipeExecution({
   const eventsAbortController = new AbortController();
   void streamRecipeJobEvents({
     jobId,
+    expectedSubjectKey,
     signal: eventsAbortController.signal,
     lastEventId: latestExecution.lastEventId,
     onEvent: (event) => {
@@ -210,7 +213,7 @@ export async function trackRecipeExecution({
 
   try {
     while (!done) {
-      const status = await getRecipeJobStatus(jobId);
+      const status = await getRecipeJobStatus(jobId, { expectedSubjectKey });
       if (done && isTerminalStatus(lastStatus)) {
         break;
       }
@@ -231,7 +234,8 @@ export async function trackRecipeExecution({
         latestExecution = {
           ...latestExecution,
           status: "error",
-          error: "This run belonged to a previous backend session and can no longer be resumed.",
+          error:
+            "This run belonged to a previous backend session and can no longer be resumed.",
           finishedAt: Date.now(),
         };
         onUpsert(latestExecution);
@@ -255,7 +259,9 @@ export async function trackRecipeExecution({
   if (lastStatus === "completed") {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const finalStatus = await getRecipeJobStatus(jobId);
+        const finalStatus = await getRecipeJobStatus(jobId, {
+          expectedSubjectKey,
+        });
         latestExecution = applyExecutionStatusSnapshot(
           latestExecution,
           finalStatus,
@@ -290,10 +296,14 @@ export async function trackRecipeExecution({
 
     const [analysisResult, datasetResult] = await Promise.allSettled([
       shouldFetchAnalysis
-        ? getRecipeJobAnalysis(jobId)
+        ? getRecipeJobAnalysis(jobId, { expectedSubjectKey })
         : Promise.resolve(eventAnalysis),
       shouldFetchPreviewDataset || kind === "full"
-        ? getRecipeJobDataset(jobId, { limit: DATASET_PAGE_SIZE, offset: 0 })
+        ? getRecipeJobDataset(jobId, {
+            limit: DATASET_PAGE_SIZE,
+            offset: 0,
+            expectedSubjectKey,
+          })
         : Promise.resolve({ dataset: eventDataset ?? [], total: rows }),
     ]);
 
