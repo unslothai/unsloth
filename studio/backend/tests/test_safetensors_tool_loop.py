@@ -24,6 +24,7 @@ from core.inference.safetensors_agentic import (
     strip_tool_markup_streaming,
 )
 from core.inference.tool_call_parser import (
+    NUDGE_TOOL_CALLS_STATUS,
     RAG_MAX_SEARCHES_PER_TURN,
     has_tool_signal,
     parse_tool_calls_from_text,
@@ -2229,6 +2230,24 @@ def test_reprompt_names_only_active_tools_not_hardcoded():
     assert "search_knowledge_base" in reprompt["content"]
     assert "web_search" not in reprompt["content"]
     assert "python" not in reprompt["content"]
+
+
+def test_reprompt_is_announced_on_the_status_channel():
+    # The re-prompted turn regenerates with nothing visible in between, so the
+    # badge is the only sign the model is still working. The blank status must
+    # still come first -- the route resets its text cursor on that one alone.
+    _captured, events = _reprompt_loop(auto_heal_tool_calls = True)
+    statuses = [e["text"] for e in events if e["type"] == "status"]
+    assert NUDGE_TOOL_CALLS_STATUS in statuses
+    index = statuses.index(NUDGE_TOOL_CALLS_STATUS)
+    assert statuses[index - 1] == ""
+    assert statuses[-1] == ""
+
+
+def test_reprompt_status_absent_without_a_nudge():
+    _captured, events = _reprompt_loop(auto_heal_tool_calls = False)
+    statuses = [e["text"] for e in events if e["type"] == "status"]
+    assert NUDGE_TOOL_CALLS_STATUS not in statuses
 
 
 def test_reprompt_suppressed_when_auto_heal_disabled():
