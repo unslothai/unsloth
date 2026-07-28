@@ -38,6 +38,11 @@ import {
   deleteCachedModel,
 } from "../inventory";
 import { formatBytes } from "../lib/format";
+
+import {
+  ggufFilenamesMatch,
+  ggufSelectionOverrideMatchesIntent,
+} from "../lib/gguf-filename";
 import {
   ggufVariantDisplayLabel,
   sortLocalGgufVariants,
@@ -87,6 +92,9 @@ interface LocalOnDeviceCardProps {
   activeGgufVariant?: string | null;
   isLoading: boolean;
   loadingPhase?: "downloading" | "starting";
+  preferredFile?: string | null;
+  preferredFileIntent?: number;
+
   gpuGb?: number;
   systemRamGb?: number;
   unsupportedReason?: string | null;
@@ -207,6 +215,9 @@ export function LocalOnDeviceCard({
   activeGgufVariant = null,
   isLoading,
   loadingPhase,
+  preferredFile = null,
+  preferredFileIntent = 0,
+
   gpuGb,
   systemRamGb,
   unsupportedReason,
@@ -281,6 +292,8 @@ export function LocalOnDeviceCard({
   const [selectedVariantState, setSelectedVariantState] = useState<{
     key: string;
     quant: string | null;
+    preferredFile?: string | null;
+    preferredFileIntent?: number;
   }>(() => ({
     key: variantKey,
     quant: null,
@@ -324,8 +337,21 @@ export function LocalOnDeviceCard({
       systemRamGb,
     ],
   );
+  const preferredQuant = preferredFile
+    ? (variants?.find((variant) =>
+        ggufFilenamesMatch(variant.filename, preferredFile),
+      )?.quant ?? null)
+    : null;
   const selectedVariantOverride =
-    selectedVariantState.key === variantKey ? selectedVariantState.quant : null;
+    selectedVariantState.key === variantKey &&
+    ggufSelectionOverrideMatchesIntent(
+      preferredFile,
+      preferredFileIntent,
+      selectedVariantState.preferredFile,
+      selectedVariantState.preferredFileIntent,
+    )
+      ? selectedVariantState.quant
+      : preferredQuant;
   const selectedQuant =
     selectedVariantOverride &&
     sortedVariants?.some((variant) =>
@@ -502,6 +528,9 @@ export function LocalOnDeviceCard({
                               setSelectedVariantState({
                                 key: variantKey,
                                 quant: variant.quant,
+
+                                preferredFile,
+                                preferredFileIntent,
                               });
                               setVariantOpen(false);
                             }}

@@ -15,6 +15,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { WebUpdateBanner } from "@/components/web/update-banner";
 import { fetchDeviceType } from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
+import { DeepLinkHandler } from "@/features/deep-links";
 import { DownloadManagerPanel } from "@/features/hub/download-manager";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import {
@@ -500,6 +501,7 @@ export function AppProvider({ children }: AppProviderProps) {
     <MotionConfig reducedMotion={REDUCED_MOTION_MAP[reduceMotion]}>
       <TooltipProvider>
         <AppearanceCustomizationEffect />
+        <DeepLinkHandler />
         <TauriWrapper>{children}</TauriWrapper>
         <Toaster
           position="top-right"
