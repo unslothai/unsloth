@@ -1719,6 +1719,9 @@ def test_forced_turn_suppression_covers_obligation_phrasing():
         "I must call web_search now",
         "I must use render_html now",
         "I must run the search first",
+        # Subjectless plans open a new sentence just as often as a new line.
+        "Okay. Need to call web_search now.",
+        "Understood. Going to search now.",
     ):
         assert suppress(stall), f"leaked {stall!r}"
 
@@ -1728,6 +1731,9 @@ def test_forced_turn_suppression_covers_obligation_phrasing():
         "Here is the summary of what I found.",
         "Run `pip install unsloth` to get started.",
         "I should mention that the square is red.",
+        # Obligation phrasing mid-sentence is prose that happens to name a tool.
+        "The API I should invoke is foo() because it supports streaming.",
+        "The tool I need to use is documented here.",
         "You should call your bank about the charge.",
         # Second person is the user's obligation, not the model's plan.
         "You must call your bank about the charge.",

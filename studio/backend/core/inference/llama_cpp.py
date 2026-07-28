@@ -352,8 +352,8 @@ _MAX_TOOL_CALLS_PER_TURN = 8
 # to name a tool ("The API I should invoke is foo() because ..."), and dropping
 # that loses a real answer.
 _FORCED_PLAN_INTENT = re.compile(
-    r"(?:(?:^|[.!?]\s+)\s*i\s+(?:(?:need|have|ought)\s+to|should|must)"
-    r"|^need\s+to|^going\s+to)"
+    r"(?:^|[.!?]\s+)\s*"
+    r"(?:i\s+(?:(?:need|have|ought)\s+to|should|must)|need\s+to|going\s+to)"
     r"\s+(?:\w+\s+){0,2}?(?:call|use|run|search|fetch|render|invoke|query)\b",
     re.I | re.M,
 )

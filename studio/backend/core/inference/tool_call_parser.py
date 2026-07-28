@@ -168,20 +168,23 @@ RAG_SEARCH_CAP_NUDGE = (
 # ── Plan-without-action re-prompt (shared by the GGUF and safetensors loops) ──
 # Forward-looking intent: the model says what it *will* do, not a final answer.
 INTENT_SIGNAL = re.compile(
-    r"(?i)("
+    r"(?im)("
     # Direct intent ("I'll"); lookahead drops negated forms ("I will not").
     r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall)\b(?!\s+(?:not|never)\b)"
     r"|"
     # "let me know" hands control back rather than announcing an action.
     r"\b(?:let me|allow me)\b(?!\s+(?:not|never|know)\b)"
     r"|"
-    # Step/plan framing: "First, I ...", "First, search ...", "Step 1:", "Here's
-    # my plan". "first" needs either first person or an action verb, so the
-    # imperative "First, search the web" still counts while "First, the answer
-    # is 42" does not.
-    r"\b(?:first,?\s+(?:i|we|let['\u2019]?s|let us)\b"
-    r"|first,?\s+(?:call|use|run|search|fetch|render|invoke|query|check|look|find|get)\b"
-    r"|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
+    # Step/plan framing: "First, I ...", "First, search ...", "The first step is
+    # to ...", "Step 1:", "Here's my plan". "first" only opens a sentence (so
+    # "The first line is blank." is prose) and must not be followed by a
+    # determiner, which is what factual openings look like ("First, the answer
+    # is 42"). Everything else after it announces an action.
+    r"(?:^|[.!?]\s+)\s*(?:the\s+)?first\s+step\b"
+    r"|(?:^|[.!?]\s+)\s*first,?\s+"
+    r"(?!(?:the|a|an|this|that|it|there|my|your|our|his|her|their)\b)\w+"
+    r"|"
+    r"\b(?:step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
     r"|"
     r"\b(?:now i|next i)\b"
     r")"
@@ -198,7 +201,10 @@ def is_short_intent_without_action(text: str) -> bool:
 
 
 _REPEAT_WORD_RE = re.compile(r"[^\w\s]+")
-REPROMPT_REPEAT_SIMILARITY = 0.85
+# Tight on purpose. At 0.85 a single changed token in a 15-word plan still scores
+# ~0.87, so a corrected query ("CUDA 12.4" -> "12.5") read as a repeat and cost the
+# model its remaining nudge. At 0.95 only filler drift survives the comparison.
+REPROMPT_REPEAT_SIMILARITY = 0.95
 
 
 def _normalize_for_repeat(text: str) -> str:

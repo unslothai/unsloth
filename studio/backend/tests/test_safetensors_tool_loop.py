@@ -3657,6 +3657,8 @@ class TestGGUFSafetensorsHealingParity:
             # Imperative plans carry no pronoun; an action verb is enough.
             "First, search the web for the latest release notes.",
             "First, check the documentation.",
+            "First, analyze the attached data",
+            "The first step is to search the web",
             "Here's my plan",
             "Now I need to call web_search",
             # The "let me know" exemption is scoped to "let me", not every
@@ -3681,6 +3683,8 @@ class TestGGUFSafetensorsHealingParity:
             "Let me know if you need anything else.",
             "First, the answer is 42",
             "First, the result is 3.",
+            "First, it is 42",
+            "The first line is blank.",
         ):
             assert not shared_re.search(plain), f"wrongly fired on {plain!r}"
             assert not shared_fn(plain), f"helper wrongly fired on {plain!r}"
@@ -3692,6 +3696,16 @@ class TestGGUFSafetensorsHealingParity:
         from core.inference.tool_call_parser import MAX_ACT_REPROMPTS as shared_cap
 
         assert gguf_cap == sf_cap == shared_cap
+
+    def test_reprompt_repeat_keeps_a_changed_query_token(self):
+        # One corrected token in a long plan is a new attempt, not a repeat; at the
+        # old 0.85 bar it scored ~0.87 and cost the model its remaining nudge.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+
+        before = "I will search the web for the latest CUDA version 12.4 driver release notes"
+        after = "I will search the web for the latest CUDA version 12.5 driver release notes"
+        assert not is_reprompt_repeat(after, before)
+        assert is_reprompt_repeat(before, before)
 
     def test_reprompt_repeat_detects_restated_answers(self):
         # A nudge answered with the same text again has not worked; stop there.
