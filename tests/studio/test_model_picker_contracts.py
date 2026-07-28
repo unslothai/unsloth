@@ -920,12 +920,9 @@ def test_the_settings_page_judges_the_config_storage_actually_keeps():
     object called a default config non-default, so Remember reported saved while
     the local write had dropped the entry, and the mirror sent the server an
     "auto" override the browser did not have."""
-    src = " ".join(
-        _read("features/model-picker/components/model-config-page.tsx").split()
-    )
+    src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert (
-        "const normalizedRuntimeConfig = normalizePerModelConfig( effectiveRuntimeConfig, );"
-        in src
+        "const normalizedRuntimeConfig = normalizePerModelConfig( effectiveRuntimeConfig, );" in src
     )
     assert "const defaultConfig = isDefaultConfig(normalizedRuntimeConfig);" in src
     # The same object goes to storage and to the server, or they disagree again.
