@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import os
 import re
 import socket
@@ -57,9 +58,7 @@ sys.modules.setdefault("loggers", _loggers_stub)
 # blew up with AttributeError, but only when this file was collected first, so the
 # same test passed alone and failed under `pytest tests/studio`. Only stub when the
 # package is genuinely missing, and give the stub the attribute those callers use.
-try:
-    import structlog  # noqa: E402, F401
-except ImportError:
+if importlib.util.find_spec("structlog") is None:
     _structlog_stub = types.ModuleType("structlog")
     _structlog_stub.get_logger = lambda *args, **kwargs: _logging.getLogger(
         args[0] if args else "structlog"
