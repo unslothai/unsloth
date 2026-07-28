@@ -2894,11 +2894,19 @@ def write_openclaw_config(
     agents = _subdict(config, "agents")
     defaults = _subdict(agents, "defaults")
     _subdict(defaults, "model")["primary"] = f"unsloth/{model['id']}"
-    # OPENCLAW_STATE_DIR does not relocate the workspace. Keep it beside the managed
-    # config so ephemeral launches avoid ~/.openclaw and persisted sessions retain it.
-    workspace = path.parent / "workspace"
-    workspace.mkdir(parents = True, exist_ok = True, mode = 0o700)
-    defaults["workspace"] = workspace_path or str(workspace)
+    # `unsloth start openclaw` is a coding-agent entry point, so the selected
+    # project may already contain its own AGENTS.md and git metadata. Do not seed
+    # OpenClaw's personal-assistant bootstrap files or initialize a repository in it.
+    defaults["skipBootstrap"] = True
+    # OPENCLAW_STATE_DIR does not relocate the workspace. Callers normally pin it to
+    # the directory where `unsloth start openclaw` was invoked so OpenClaw edits the
+    # same project as every other coding agent. Keep the managed fallback for direct
+    # config-writer callers that do not provide an explicit workspace.
+    if workspace_path is None:
+        workspace = path.parent / "workspace"
+        workspace.mkdir(parents = True, exist_ok = True, mode = 0o700)
+        workspace_path = str(workspace)
+    defaults["workspace"] = workspace_path
     # Per-agent paths override agents.defaults.workspace and OPENCLAW_STATE_DIR. This
     # config is itself an isolated Unsloth copy, so remove stale explicit paths and let
     # OpenClaw resolve every listed agent beneath the managed defaults/state directory.
@@ -3493,9 +3501,9 @@ def openclaw(
     )
     with _session_config("openclaw", launch, persist = persist) as cfg:
         config_path = cfg / "openclaw.json"
-        workspace_path = None
+        workspace_path = str(Path.cwd())
         if _wsl_windows_executable(command):
-            workspace_path = _wsl_windows_path(cfg / "workspace")
+            workspace_path = _wsl_windows_path(Path.cwd())
         # key lives in the config, not the env; --yolo writes the exec policy here too.
         write_openclaw_config(
             base,

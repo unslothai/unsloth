@@ -3304,7 +3304,10 @@ def test_write_openclaw_config_corrupt_left_alone(tmp_path, capsys):
     assert "couldn't parse" in capsys.readouterr().err
 
 
-def test_connect_openclaw_no_launch(fake_studio, tmp_path):
+def test_connect_openclaw_no_launch(fake_studio, tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
     result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
     assert result.exit_code == 0, result.output
     assert "openclaw" in result.output
@@ -3315,9 +3318,8 @@ def test_connect_openclaw_no_launch(fake_studio, tmp_path):
     config = json.loads(config_path.read_text())
     assert config["models"]["providers"]["unsloth"]["apiKey"] == "sk-unsloth-feedfacefeedface"
     assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
-    assert config["agents"]["defaults"]["workspace"] == str(
-        tmp_path / "agents" / "openclaw" / "workspace"
-    )
+    assert config["agents"]["defaults"]["skipBootstrap"] is True
+    assert config["agents"]["defaults"]["workspace"] == str(project)
     assert _launch_command(result.output) == ["openclaw", "tui", "--local"]
     # OpenAI /v1/chat/completions works on either backend — no GGUF gate.
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
@@ -3326,6 +3328,9 @@ def test_connect_openclaw_no_launch(fake_studio, tmp_path):
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
 def test_connect_openclaw_wsl_windows_shim_translates_workspace(fake_studio, tmp_path, monkeypatch):
     windows_workspace = r"\\wsl.localhost\Ubuntu\tmp\openclaw\workspace"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
     monkeypatch.setattr(
         start.shutil, "which", lambda _: "/mnt/c/Users/x/AppData/Roaming/npm/openclaw"
@@ -3338,7 +3343,7 @@ def test_connect_openclaw_wsl_windows_shim_translates_workspace(fake_studio, tmp
     config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
     config = json.loads(config_path.read_text())
     assert config["agents"]["defaults"]["workspace"] == windows_workspace
-    assert (config_path.parent / "workspace").is_dir()
+    assert not (config_path.parent / "workspace").exists()
 
 
 def test_connect_openclaw_no_launch_keeps_explicit_subcommand(fake_studio):
