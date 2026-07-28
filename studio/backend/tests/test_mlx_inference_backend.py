@@ -1237,6 +1237,67 @@ def test_mlx_vlm_cache_rolls_back_failures_cancellation_and_cleans_up(monkeypatc
     assert control["state"] is None
 
 
+def _mrope_model(arch = "qwen2_vl", **lm):
+    """Qwen-style mRoPE model; pass an attribute as None to omit it."""
+    fields = {
+        "_rope_deltas": object(),
+        "_position_ids": object(),
+        "get_rope_index": lambda *a, **k: None,
+        **lm,
+    }
+    kept = {k: v for k, v in fields.items() if v is not None}
+    return SimpleNamespace(
+        config = SimpleNamespace(model_type = arch), language_model = SimpleNamespace(**kept)
+    )
+
+
+def test_mlx_vlm_mrope_admission_and_rope_suppression(monkeypatch):
+    from core.inference import mlx_inference as module
+
+    monkeypatch.setattr(module, "_runtime_primes_rope", lambda: True)
+    assert module._vlm_mrope_reuse_arch(_mrope_model("qwen2_vl")) == "qwen2_vl"
+    assert module._vlm_mrope_reuse_arch(_mrope_model("qwen2_5_vl")) == "qwen2_5_vl"
+    # Refused: unmeasured architecture, missing Qwen-style state, Falcon spatial state.
+    assert module._vlm_mrope_reuse_arch(_mrope_model("qwen3_5")) is None
+    assert module._vlm_mrope_reuse_arch(_mrope_model(_rope_deltas = None)) is None
+    assert module._vlm_mrope_reuse_arch(_mrope_model(_position_ids = None)) is None
+    assert module._vlm_mrope_reuse_arch(_mrope_model(get_rope_index = None)) is None
+    assert module._vlm_mrope_reuse_arch(_mrope_model(_pos_hw = object())) is None
+
+    ids = lambda n: SimpleNamespace(shape = (1, n))
+
+    class _Model:
+        config = SimpleNamespace(model_type = "qwen2_vl")
+        language_model = SimpleNamespace(
+            _rope_deltas = object(), _position_ids = None, get_rope_index = lambda *a, **k: None
+        )
+
+        def get_input_embeddings(
+            self,
+            input_ids = None,
+            pixel_values = None,
+            **kwargs,
+        ):
+            return SimpleNamespace(rope_deltas = object(), position_ids = object())
+
+    model = _Model()
+    # Reuse: the runtime primes a 12-token map and trims the ids to the 7-token suffix, so
+    # the map is exactly the cut length longer and the suffix-derived fields are dropped.
+    with module._temporary_mlx_vlm_rope_suppression(model, SimpleNamespace(observed_prefix = 5)):
+        assert "get_input_embeddings" in vars(model)
+        model.language_model._position_ids = SimpleNamespace(shape = (3, 1, 12))
+        reused = model.get_input_embeddings(ids(7), pixel_values = None)
+        assert reused.rope_deltas is None and reused.position_ids is None
+    assert "get_input_embeddings" not in vars(model)
+    # A cold request keeps the state it just computed.
+    with module._temporary_mlx_vlm_rope_suppression(model, SimpleNamespace(observed_prefix = 0)):
+        cold = model.get_input_embeddings(ids(12), pixel_values = None)
+        assert cold.rope_deltas is not None and cold.position_ids is not None
+    # A measured architecture is refused on a runtime that cannot prime.
+    monkeypatch.setattr(module, "_runtime_primes_rope", lambda: False)
+    assert module._vlm_mrope_reuse_arch(_mrope_model("qwen2_vl")) is None
+
+
 class _FakeLRUPromptCache:
     def __init__(
         self,

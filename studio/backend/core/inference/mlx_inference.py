@@ -7,6 +7,7 @@ instead of torch/transformers for model loading and generation.
 
 import copy
 import hashlib
+import importlib
 import json
 import os
 import threading
@@ -79,6 +80,95 @@ def _temporary_mlx_adapter_state(model, use_adapter):
         yield
     finally:
         model.update_modules(adapter_modules)
+
+
+def _vlm_runtime_reused_prefix(model, input_ids, cache_state):
+    """True when this forward is the runtime's reuse of Studio's cut prefix.
+
+    The runtime primes a position map over the whole prompt and then trims the
+    ids to the uncached suffix, so on a reusing forward the primed map is exactly
+    ``observed_prefix`` longer than the ids. A cold prefill passes the full prompt
+    and fails that identity, which is what keeps a cold request unsuppressed.
+
+    The map is cleared when the request begins, so a populated one can only have
+    come from this request's priming; a length left over from an earlier request
+    cannot satisfy the identity by coincidence.
+    """
+    prefix = int(getattr(cache_state, "observed_prefix", 0) or 0)
+    if prefix <= 0 or input_ids is None:
+        return False
+    primed = getattr(getattr(model, "language_model", None), "_position_ids", None)
+    if primed is None:
+        return False
+    try:
+        return int(primed.shape[-1]) == int(input_ids.shape[-1]) + prefix
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return False
+
+
+@contextmanager
+def _temporary_mlx_vlm_rope_suppression(model, cache_state):
+    """Drop suffix-derived multimodal-RoPE state during a reusing request.
+
+    On a cached-prefix continuation the runtime recomputes RoPE state from the
+    uncached suffix — with no image grid, so it yields a zero delta — and merges
+    it over the whole-prompt value it primed, positioning the suffix from the
+    cache offset instead of the multimodal map the prefill used. Studio drops the
+    two feature fields the runtime's own merge already treats as optional, so the
+    primed whole-prompt value governs. Studio never computes RoPE state itself.
+
+    Suppression must apply exactly when the runtime accepted the cached prefix,
+    which is decided on the first forward. Reuse cannot be inferred from
+    ``pixel_values`` alone: a text-only continuation is cache-eligible too and
+    already passes ``None``. It is instead detected arithmetically — when the
+    runtime reuses, it primes a whole-prompt position map and trims ``input_ids``
+    to the uncached suffix, so the primed map is exactly ``observed_prefix``
+    longer than this forward's ids. A cold prefill (priming failed, or the suffix
+    still holds vision) passes the full prompt, so the identity does not hold and
+    the request stays byte-identical to today.
+
+    The override is installed on this model *instance* (not its class) for one
+    request and removed on completion, cancellation, or error, so two backend
+    instances sharing a model class, each under its own generation lock, cannot
+    race on a shared method; any pre-existing instance override is restored
+    exactly rather than deleted.
+    """
+    if cache_state is None or _vlm_mrope_reuse_arch(model) is None:
+        yield
+        return
+    original = model.get_input_embeddings
+    had_own_override = "get_input_embeddings" in vars(model)
+    reuse = {"active": None}
+    # Drop any map left by an earlier request so the identity below can only be
+    # satisfied by this request's priming. A cold prefill recomputes it anyway.
+    language_model = getattr(model, "language_model", None)
+    if hasattr(language_model, "_position_ids"):
+        language_model._position_ids = None
+
+    def _suppressing_get_input_embeddings(
+        input_ids = None,
+        pixel_values = None,
+        *args,
+        **kwargs,
+    ):
+        # Decide before delegating: some runtimes clear the primed map inside
+        # this call when no pixel values are present.
+        if reuse["active"] is None:
+            reuse["active"] = _vlm_runtime_reused_prefix(model, input_ids, cache_state)
+        features = original(input_ids, pixel_values, *args, **kwargs)
+        if reuse["active"] and pixel_values is None:
+            features.rope_deltas = None
+            features.position_ids = None
+        return features
+
+    model.get_input_embeddings = _suppressing_get_input_embeddings
+    try:
+        yield
+    finally:
+        if had_own_override:
+            model.get_input_embeddings = original
+        else:
+            del model.get_input_embeddings
 
 
 def _mlx_vlm_model_config(model):
@@ -332,6 +422,61 @@ class _MLXPromptCacheHistory:
         self._lru.insert_cache(key, tokens, cache)
 
 
+# Multimodal-RoPE architectures whose warm reuse was measured to produce output
+# text identical to a cold run — the sampled tokens match, and there is no output
+# difference across long generations (the residual last-token logit divergence,
+# 0.04, is below the plain-cache control). Other multimodal-position architectures
+# — recurrent gated-delta, Falcon-style spatial state, and unmeasured families —
+# stay refused.
+_MROPE_BYTE_EXACT_ARCHS = frozenset({"qwen2_vl", "qwen2_5_vl"})
+
+
+def _runtime_primes_rope():
+    """True when the runtime exposes the whole-prompt RoPE priming entry point.
+
+    The helper lives in ``mlx_vlm.generate`` in 0.5.0 and moved to
+    ``mlx_vlm.generate.dispatch`` in the 0.6 package restructuring; 0.4.4 has no
+    equivalent, so the suffix-derived delta cannot be corrected there and reuse
+    stays refused. Its presence is a capability pre-filter, not a version claim.
+    """
+    for module_name in ("mlx_vlm.generate.dispatch", "mlx_vlm.generate"):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        if hasattr(module, "_prime_cached_prefix_rope_state"):
+            return True
+    return False
+
+
+def _vlm_mrope_reuse_arch(model):
+    """Name of the byte-exact multimodal-RoPE architecture for ``model``, else None.
+
+    A model qualifies only when its architecture is one measured byte-exact, it
+    keeps Qwen-style position state (``_rope_deltas`` plus a callable
+    ``get_rope_index``), it carries none of the Falcon-style spatial fields this
+    design neither preserves nor validates, and the runtime primes. Continuation
+    for these is byte-identical once the suffix-derived RoPE recomputation is
+    suppressed (see ``_temporary_mlx_vlm_rope_suppression``).
+    """
+    arch = getattr(getattr(model, "config", None), "model_type", None)
+    if arch not in _MROPE_BYTE_EXACT_ARCHS:
+        return None
+    language_model = getattr(model, "language_model", None)
+    # `_position_ids` is required too: reuse is recognised by comparing the primed
+    # whole-prompt map against the trimmed ids, so a model without it would be admitted
+    # while that signal never appears, leaving the suffix-derived state in place.
+    if not all(hasattr(language_model, attr) for attr in ("_rope_deltas", "_position_ids")):
+        return None
+    if not callable(getattr(language_model, "get_rope_index", None)):
+        return None
+    if any(hasattr(language_model, attr) for attr in ("_rope_delta", "_pos_hw", "_full_attn_mask")):
+        return None
+    if not _runtime_primes_rope():
+        return None
+    return arch
+
+
 def _mlx_vlm_prompt_cache_api(model = None):
     """Return the upstream state class only when cached continuation is safe.
 
@@ -368,14 +513,14 @@ def _mlx_vlm_prompt_cache_api(model = None):
             "_full_attn_mask",
         )
     )
-    if has_multimodal_position_state:
-        # Multimodal RoPE models are refused on every runtime. Newer mlx-vlm
-        # primes rope deltas before a cached-prefix trim, but reuse still decodes
-        # differently from a cold run for these architectures — measured on
-        # Qwen2.5-VL, with and without Studio's own cut — because the suffix is
-        # positioned arithmetically from the cache offset rather than from the
-        # multimodal position map the prefill used. Presence of the priming
-        # helper is therefore not evidence that reuse is safe.
+    if has_multimodal_position_state and _vlm_mrope_reuse_arch(model) is None:
+        # Multimodal-position models are admitted only for the measured
+        # byte-exact multimodal-RoPE architectures on a priming runtime; those
+        # decode identically to a cold run once Studio suppresses the
+        # suffix-derived RoPE recomputation (see the generation path). Every
+        # other multimodal-position architecture — recurrent gated-delta,
+        # Falcon-style spatial state, unmeasured families, and older runtimes
+        # that do not prime — falls back to cold prefill.
         return None
     return PromptCacheState
 
@@ -1564,24 +1709,27 @@ class MLXInferenceBackend:
                     # before any output escapes.
                     if cumulative:
                         yield cumulative
-                    for response in vlm_stream(
-                        self._model,
-                        self._processor,
-                        prompt,
-                        images,
-                        **request_kwargs,
-                    ):
-                        final_response = response
-                        exposed_cached_n = getattr(response, "cached_tokens", None)
-                        if exposed_cached_n is not None:
-                            cached_n = int(exposed_cached_n or 0)
-                        token_text = response.text if hasattr(response, "text") else str(response)
-                        cumulative += token_text
-                        yield cumulative
-                        if cancel_event and cancel_event.is_set():
-                            break
-                    else:
-                        completed = True
+                    with _temporary_mlx_vlm_rope_suppression(self._model, cache_state):
+                        for response in vlm_stream(
+                            self._model,
+                            self._processor,
+                            prompt,
+                            images,
+                            **request_kwargs,
+                        ):
+                            final_response = response
+                            exposed_cached_n = getattr(response, "cached_tokens", None)
+                            if exposed_cached_n is not None:
+                                cached_n = int(exposed_cached_n or 0)
+                            token_text = (
+                                response.text if hasattr(response, "text") else str(response)
+                            )
+                            cumulative += token_text
+                            yield cumulative
+                            if cancel_event and cancel_event.is_set():
+                                break
+                        else:
+                            completed = True
                     cancelled = cancel_event is not None and cancel_event.is_set()
                     if (
                         completed
