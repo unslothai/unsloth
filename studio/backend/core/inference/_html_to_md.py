@@ -208,14 +208,28 @@ class _HeaderFrame:
     Buffering (like ``_bq_stack``) defers the decision to ``</header>``, once the
     whole subtree is known. A header no end tag closes is emitted unchanged."""
 
-    __slots__ = ("depth", "parts", "heading_parts", "text_chars", "link_chars")
+    __slots__ = (
+        "depth",
+        "parts",
+        "heading_parts",
+        "text_chars",
+        "link_chars",
+        "outer_in_cell",
+        "outer_in_pre",
+        "outer_bq_depth",
+    )
 
-    def __init__(self, depth: int):
+    def __init__(self, depth: int, in_cell: bool, in_pre: bool, bq_depth: int):
         self.depth = depth
         self.parts: list[str] = []
         # A copy of the heading output, teed as it is emitted so a heading routed
         # through a nested blockquote or table cell is still recoverable.
         self.heading_parts: list[str] = []
+        # Side buffers already open here are ancestors, so their content belongs
+        # to this frame; ones opened later are nested and buffer normally.
+        self.outer_in_cell = in_cell
+        self.outer_in_pre = in_pre
+        self.outer_bq_depth = bq_depth
         # Both exclude heading text (never dropped, so it must not vote on dropping
         # the rest); only href anchors count as links.
         self.text_chars: int = 0
@@ -272,6 +286,10 @@ class _MarkdownRenderer(HTMLParser):
         # Open <header> buffers, innermost last. Empty unless strip_header.
         self._strip_header = strip_header
         self._header_stack: list[_HeaderFrame] = []
+        # Furniture chars removed, so a candidate is sized as the page wrote it.
+        self._dropped_chars: int = 0
+        self._seg_dropped_start: int = 0
+        self.scope_dropped: list[int] = []
         # Open-tag indices of elements acting as headings (h1-h6 or role=heading),
         # unwound with _hidden_marks so an unclosed one cannot stick.
         self._heading_marks: list[int] = []
@@ -306,9 +324,28 @@ class _MarkdownRenderer(HTMLParser):
         self._bq_stack: list[list[str]] = []
 
     # ------------------------------------------------------------------
+    def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
+        """True when a side buffer opened *inside* *frame* still holds content.
+
+        Such a buffer emits into the frame when it closes; one that was already
+        open when the header started encloses it and must not capture it."""
+        return (
+            self._in_link
+            or (self._in_cell and not frame.outer_in_cell)
+            or (self._in_pre and not frame.outer_in_pre)
+            or len(self._bq_stack) > frame.outer_bq_depth
+        )
+
     def _emit(self, text: str) -> None:
-        if self._heading_marks and self._header_stack:
-            self._header_stack[-1].heading_parts.append(text)
+        frame = self._header_stack[-1] if self._header_stack else None
+        # Tee wherever the text is routed, so a heading inside a nested buffer is
+        # still captured. Link text arrives raw and again formatted by
+        # _finish_link, which runs with _in_link cleared, so only that form is teed.
+        if frame is not None and self._heading_marks and not self._in_link:
+            frame.heading_parts.append(text)
+        if frame is not None and not self._nested_buffer_open(frame):
+            frame.parts.append(text)
+            return
         if self._in_link:
             self._link_text_parts.append(text)
         elif self._in_cell:
@@ -317,8 +354,6 @@ class _MarkdownRenderer(HTMLParser):
             self._pre_parts.append(text)
         elif self._bq_stack:
             self._bq_stack[-1].append(text)
-        elif self._header_stack:
-            self._header_stack[-1].parts.append(text)
         else:
             self._out.append(text)
 
@@ -421,7 +456,9 @@ class _MarkdownRenderer(HTMLParser):
                 self._header_stack[-1].text_chars += frame.text_chars
                 self._header_stack[-1].link_chars += frame.link_chars
                 self._header_stack[-1].heading_parts.extend(frame.heading_parts)
-            self._emit(frame.render(closed_by_own_tag))
+            out = frame.render(closed_by_own_tag)
+            self._dropped_chars += sum(len(part) for part in frame.parts) - len(out)
+            self._emit(out)
             closed_by_own_tag = False
 
     def _flush_header_frames(self) -> None:
@@ -451,7 +488,14 @@ class _MarkdownRenderer(HTMLParser):
             if tag in _HEADING_TAGS or _is_aria_heading(attr_dict):
                 self._heading_marks.append(len(self._open_tags) - 1)
             if self._strip_header and tag == "header" and not self._hidden_marks:
-                self._header_stack.append(_HeaderFrame(len(self._open_tags) - 1))
+                self._header_stack.append(
+                    _HeaderFrame(
+                        len(self._open_tags) - 1,
+                        self._in_cell,
+                        self._in_pre,
+                        len(self._bq_stack),
+                    )
+                )
         elif _is_hidden_element(attr_dict):
             # Void elements never join the stack, so suppress a hidden one inline.
             return False
@@ -460,6 +504,7 @@ class _MarkdownRenderer(HTMLParser):
             self._flush_header_frames()
             if self._scope_depth == 0:
                 self._scope_seg_start = len(self._out)
+                self._seg_dropped_start = self._dropped_chars
             self._scope_depth += 1
         if self._hidden_marks:
             return False
@@ -492,6 +537,7 @@ class _MarkdownRenderer(HTMLParser):
             self._scope_depth -= 1
             if self._scope_depth == 0 and self._scope_seg_start is not None:
                 self.scope_segments.append("".join(self._out[self._scope_seg_start :]))
+                self.scope_dropped.append(self._dropped_chars - self._seg_dropped_start)
                 self._scope_seg_start = None
         return not suppressed
 
@@ -747,6 +793,7 @@ class _MarkdownRenderer(HTMLParser):
         # here (after the side-buffers) so a truncated main-content page is scored.
         if self._scope_seg_start is not None:
             self.scope_segments.append("".join(self._out[self._scope_seg_start :]))
+            self.scope_dropped.append(self._dropped_chars - self._seg_dropped_start)
             self._scope_seg_start = None
             self._scope_depth = 0
 
@@ -870,14 +917,19 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
     """Length and boilerplate-stripped render of the largest single ``<tag>``
     subtree. Sizing candidates one at a time stops many tiny sibling cards from
     clearing the threshold together, and returning that one subtree keeps
-    unrelated siblings (related cards, comment threads) out of the output."""
+    unrelated siblings (related cards, comment threads) out of the output.
+
+    Candidates are sized with their dropped header furniture added back, so
+    removing it never costs an article the size gate or a sibling comparison."""
     renderer = _new_renderer(source_html, frozenset({tag}), strip_header = True)
+    dropped = renderer.scope_dropped
     best_len = 0
     best_render = ""
-    for seg in renderer.scope_segments:
+    for i, seg in enumerate(renderer.scope_segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg))
-        if len(rendered) > best_len:
-            best_len = len(rendered)
+        size = len(rendered) + dropped[i]
+        if size > best_len:
+            best_len = size
             best_render = rendered
     return best_len, best_render
 

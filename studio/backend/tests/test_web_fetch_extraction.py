@@ -1511,3 +1511,42 @@ def test_anchor_without_href_is_prose_not_link_furniture():
     out = html_to_markdown(f"<body>{body}</body>", main_content = True)
     assert "Introductory prose" in out
     assert "Byline" in out
+
+
+def test_linked_heading_is_not_emitted_twice():
+    body = (
+        "<main><header><h1><a href='/post'>Title</a></h1><ul>%s</ul></header><p>%s</p></main>"
+        % (
+            _interlanguage_list(300),
+            "Article body. " * 30,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "# [Title](/post)" in out
+    assert out.count("Title") == 1
+
+
+def test_header_inside_an_enclosing_blockquote_is_still_stripped():
+    # The blockquote encloses the header, so its content belongs to the frame.
+    body = (
+        "<main><blockquote><header><h1>T</h1><ul>%s</ul></header></blockquote><p>%s</p></main>"
+        % (
+            _interlanguage_list(300),
+            "Article body. " * 30,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Lang0" not in out
+    assert out.index("Article body.") < 16000
+
+
+def test_short_article_still_beats_a_card_after_its_header_goes():
+    # Sizing adds the dropped furniture back, so stripping cannot cost the win.
+    real = "<article><header><h1>Real</h1><ul>%s</ul></header><p>%s</p></article>" % (
+        _interlanguage_list(300),
+        "Short real body. " * 6,
+    )
+    card = "<article><p>%s</p></article>" % ("Related card teaser text here. " * 8)
+    out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
+    assert "Short real body." in out
+    assert "Related card teaser" not in out
