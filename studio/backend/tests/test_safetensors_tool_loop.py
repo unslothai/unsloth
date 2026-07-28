@@ -3762,7 +3762,6 @@ class TestGGUFSafetensorsHealingParity:
     def test_reprompt_repeat_ignores_filler_drift(self):
         # Rewording that changes no content word is still the same attempt.
         from core.inference.tool_call_parser import is_reprompt_repeat
-
         assert is_reprompt_repeat(
             "I will now summarize the findings",
             "I will summarize the findings now",
