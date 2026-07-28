@@ -117,6 +117,15 @@ def test_read_pid_record_tolerates_a_bare_pid(tmp_path):
     assert run._read_pid_record(tmp_path / "r.pid") == (8550, None, None)
 
 
+def test_read_pid_record_rejects_pid_zero_and_init(tmp_path):
+    # kill(0) signals our whole process group.
+    (tmp_path / "zero.pid").write_text("0", encoding = "utf-8")
+    (tmp_path / "init.pid").write_text("1", encoding = "utf-8")
+
+    assert run._read_pid_record(tmp_path / "zero.pid") is None
+    assert run._read_pid_record(tmp_path / "init.pid") is None
+
+
 def test_read_pid_record_rejects_a_corrupt_file(tmp_path):
     (tmp_path / "r.pid").write_text("not-a-pid", encoding = "utf-8")
 
@@ -259,6 +268,19 @@ def test_a_dead_legacy_record_falls_back(tmp_path, monkeypatch):
     (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
 
     assert run._own_studio_on_port(8901, "127.0.0.1") is None
+
+
+def test_a_stale_per_port_record_does_not_mask_a_legacy_server(tmp_path, monkeypatch):
+    # Crashed current build left studio-8901-8550.pid; 8550 was then reused by a
+    # pre-upgrade server recorded only in studio.pid. The stale record must not
+    # count as "port already known" and send us falling back past the live one.
+    monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
+    monkeypatch.setattr(run, "_process_create_time", lambda pid: 999.0)
+    monkeypatch.setattr(run, "_get_pid_on_port", lambda p: (8550, "python"))
+    (tmp_path / "studio-8901-8550.pid").write_text("8550\n111.5\n127.0.0.1", encoding = "utf-8")
+    (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
+
+    assert run._own_studio_on_port(8901, "127.0.0.1") == 8550
 
 
 def test_a_current_server_elsewhere_does_not_block_a_foreign_port(tmp_path, monkeypatch):

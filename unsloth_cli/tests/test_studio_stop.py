@@ -381,6 +381,27 @@ def test_stop_continues_after_one_server_fails_to_stop(monkeypatch, tmp_path):
     assert "8550" in combined
 
 
+def test_stop_never_signals_pid_zero_or_init(monkeypatch, tmp_path):
+    # os.kill(0, SIGTERM) hits our whole process group -- the shell and its jobs.
+    studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {0, 1})
+    _write_pid(tmp_path, "studio-8901-0.pid", 0)
+    _write_pid(tmp_path, "studio-8902-1.pid", 1)
+
+    result = _run_stop(studio_mod)
+
+    assert result.exit_code == 0, result.output
+    assert killed == []
+    assert not list(tmp_path.glob("*.pid"))
+
+
+def test_signal_stop_refuses_pid_zero_or_init(monkeypatch, tmp_path):
+    studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {0, 1})
+
+    assert studio_mod._signal_stop(0) is not None
+    assert studio_mod._signal_stop(1) is not None
+    assert killed == []
+
+
 def test_stop_discards_a_corrupt_pid_file(monkeypatch, tmp_path):
     studio_mod, _live, _killed = _install(monkeypatch, tmp_path, alive = set())
     (tmp_path / "studio-8901-8550.pid").write_text("not-a-pid", encoding = "utf-8")

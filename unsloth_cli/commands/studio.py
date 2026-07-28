@@ -2432,13 +2432,17 @@ def _read_pid_record(path: Path) -> "tuple[int, float | None] | None":
         return None
     if not lines or not lines[0].strip().isdigit():
         return None
+    pid = int(lines[0].strip())
+    # kill(0) signals our whole process group; kill(1) is init. Never either.
+    if pid < 2:
+        return None
     created = None
     if len(lines) > 1:
         try:
             created = float(lines[1].strip())
         except ValueError:
             created = None
-    return int(lines[0].strip()), created
+    return pid, created
 
 
 def _pid_file_entries() -> "list[tuple[int, list[float | None], list[Path]]]":
@@ -2507,6 +2511,8 @@ def _signal_stop(pid: int) -> "str | None":
     """SIGTERM (or taskkill) the pid. Returns an error string, or None on success."""
     import signal as _signal
 
+    if pid < 2:
+        return f"refusing to signal PID {pid}"
     try:
         if sys.platform == "win32":
             # /T also stops llama-server children, which otherwise keep GPU and port.

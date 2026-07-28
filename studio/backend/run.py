@@ -817,6 +817,10 @@ def _read_pid_record(path: Path) -> "tuple[int, float | None, str | None] | None
         return None
     if not lines or not lines[0].strip().isdigit():
         return None
+    pid = int(lines[0].strip())
+    # kill(0) signals our whole process group; kill(1) is init. Never either.
+    if pid < 2:
+        return None
     created = None
     if len(lines) > 1:
         try:
@@ -824,7 +828,7 @@ def _read_pid_record(path: Path) -> "tuple[int, float | None, str | None] | None
         except ValueError:
             created = None
     address = lines[2].strip() if len(lines) > 2 and lines[2].strip() else None
-    return int(lines[0].strip()), created, address
+    return pid, created, address
 
 
 def _pid_is_studio_backend(pid: int, created_times: "Sequence[float | None]" = ()) -> "bool | None":
@@ -891,9 +895,11 @@ def _legacy_studio_on_port(port: int) -> "int | None":
     if not _pid_alive(pid):
         return None
     # A current build writes a per-port file too, so its port is already known --
-    # and this port's records were just checked. Only unported records get here.
-    if any(r and r[0] == pid for r in _per_port_records()):
-        return None
+    # and this port's records were just checked. Only count a record that still
+    # matches the live process: a stale one may just share a reused PID.
+    for other in _per_port_records():
+        if other and other[0] == pid and _pid_is_studio_backend(pid, [other[1]]) is not False:
+            return None
     blocker = _get_pid_on_port(port)
     if blocker is not None and blocker[0] != pid:
         return None
