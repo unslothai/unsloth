@@ -22,10 +22,12 @@ anyio<4.14.0
 
 pandas==2.3.3
 
-# av (PyAV) 16+ ships no cp313 macOS arm64 wheel, so the resolver picks 18.0.0 and
-# tries to BUILD it. That needs a compiler *and* FFmpeg headers, and the Xcode CLT
-# supply no FFmpeg headers, so it fails on a Mac however equipped. 15.1.0 is the
-# newest release with a wheel for that target.
+# av (PyAV) 16+ builds its macOS arm64 wheels against macosx_14_0, so on macOS 13
+# none of them are installable and the resolver falls back to building from source.
+# That needs a compiler *and* FFmpeg headers, and the Xcode CLT supply no FFmpeg
+# headers, so it fails on such a Mac however equipped. 15.1.0 is the newest release
+# with a macosx_13_0 arm64 wheel. (16.0.0 does ship cp313; it is the deployment
+# target that rules it out, and 17+ moves to cp311-abi3 at macosx_14_0 as well.)
 #
 # This was the last macOS-default package needing a toolchain. The other sdist-only
 # ones there (openai-whisper, argbind, randomname, antlr4-python3-runtime==4.9.3) are
