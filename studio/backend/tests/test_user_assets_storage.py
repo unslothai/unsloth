@@ -49,6 +49,22 @@ def test_owner_isolation_and_secrets_never_reach_sqlite():
     assert marker.encode() not in path.read_bytes()
 
 
+def test_recipe_summaries_are_payload_free_and_paginated():
+    for asset_id in ("r1", "r2", "r3"):
+        user_assets_db.create_recipe(
+            "owner",
+            recipe(asset_id, {"nodes": [], "large": "payload-must-not-be-listed"}),
+        )
+
+    first = user_assets_db.list_recipe_summaries("owner", limit = 2)
+    second = user_assets_db.list_recipe_summaries("owner", cursor = first["nextCursor"], limit = 2)
+
+    assert [item["id"] for item in first["recipes"]] == ["r1", "r2"]
+    assert [item["id"] for item in second["recipes"]] == ["r3"]
+    assert all("payload" not in item for item in first["recipes"] + second["recipes"])
+    assert second["nextCursor"] is None
+
+
 def test_execution_timestamps_remain_monotonic_across_clock_rollback(monkeypatch):
     user_assets_db.create_recipe("owner", recipe())
     future = 1_900_000_000_000

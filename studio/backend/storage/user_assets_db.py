@@ -33,6 +33,8 @@ from storage import studio_db
 
 DEFAULT_EXECUTION_PAGE_LIMIT = 100
 MAX_EXECUTION_PAGE_LIMIT = 100
+DEFAULT_RECIPE_PAGE_LIMIT = 100
+MAX_RECIPE_PAGE_LIMIT = 100
 
 
 class UserAssetStorageError(RuntimeError):
@@ -159,6 +161,109 @@ def list_recipes(owner_subject: str) -> list[dict[str, Any]]:
             (owner,),
         ).fetchall()
         return [_recipe_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def _recipe_summary_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "learningRecipeId": row["learning_recipe_id"],
+        "learningRecipeTitle": row["learning_recipe_title"],
+        "revision": row["revision"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def _encode_recipe_cursor(updated_at: int, asset_id: str) -> str:
+    payload = json.dumps(
+        {"v": 1, "updatedAt": updated_at, "id": asset_id},
+        separators = (",", ":"),
+    ).encode("ascii")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_recipe_cursor(cursor: str) -> tuple[int, str]:
+    try:
+        if not isinstance(cursor, str) or not cursor or len(cursor) > 512:
+            raise ValueError
+        decoded = base64.b64decode(
+            cursor + "=" * (-len(cursor) % 4),
+            altchars = b"-_",
+            validate = True,
+        )
+        value = json.loads(decoded.decode("ascii"))
+        if not isinstance(value, dict) or value.get("v") != 1:
+            raise ValueError
+        updated_at = validate_timestamp(value.get("updatedAt"), "cursor updatedAt")
+        asset_id = validate_id(value.get("id"), "cursor recipe id")
+        return updated_at, asset_id
+    except (
+        binascii.Error,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        UserAssetValidationError,
+        ValueError,
+    ) as error:
+        raise UserAssetValidationError("invalid_cursor", "recipe cursor is invalid") from error
+
+
+def list_recipe_summaries(
+    owner_subject: str,
+    *,
+    cursor: str | None = None,
+    limit: int = DEFAULT_RECIPE_PAGE_LIMIT,
+) -> dict[str, Any]:
+    owner = _require_owner(owner_subject)
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or not 1 <= limit <= MAX_RECIPE_PAGE_LIMIT
+    ):
+        raise UserAssetValidationError(
+            "invalid_page_limit",
+            f"recipe page limit must be between 1 and {MAX_RECIPE_PAGE_LIMIT}",
+        )
+    cursor_values = _decode_recipe_cursor(cursor) if cursor is not None else None
+    conn = studio_db.get_connection()
+    try:
+        if cursor_values is None:
+            rows = conn.execute(
+                """
+                SELECT id, name, learning_recipe_id, learning_recipe_title,
+                       revision, created_at, updated_at
+                FROM data_recipes
+                WHERE owner_subject = ? AND deleted_at IS NULL
+                ORDER BY updated_at DESC, id ASC
+                LIMIT ?
+                """,
+                (owner, limit + 1),
+            ).fetchall()
+        else:
+            cursor_updated_at, cursor_id = cursor_values
+            rows = conn.execute(
+                """
+                SELECT id, name, learning_recipe_id, learning_recipe_title,
+                       revision, created_at, updated_at
+                FROM data_recipes
+                WHERE owner_subject = ? AND deleted_at IS NULL
+                  AND (updated_at < ? OR (updated_at = ? AND id > ?))
+                ORDER BY updated_at DESC, id ASC
+                LIMIT ?
+                """,
+                (owner, cursor_updated_at, cursor_updated_at, cursor_id, limit + 1),
+            ).fetchall()
+        page_rows = rows[:limit]
+        next_cursor = None
+        if len(rows) > limit and page_rows:
+            last = page_rows[-1]
+            next_cursor = _encode_recipe_cursor(last["updated_at"], last["id"])
+        return {
+            "recipes": [_recipe_summary_from_row(row) for row in page_rows],
+            "nextCursor": next_cursor,
+        }
     finally:
         conn.close()
 

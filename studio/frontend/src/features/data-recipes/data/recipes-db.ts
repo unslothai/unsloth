@@ -21,14 +21,14 @@ import {
 } from "@/features/user-assets/persistence-policy";
 import { normalizeNonEmptyName } from "@/utils";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import type { RecipeRecord, SaveRecipeInput } from "../types";
+import type { RecipeRecord, RecipeSummary, SaveRecipeInput } from "../types";
 
 const recentRecipeCache = new Map<string, RecipeRecord>();
 const recipeRecordSubjects = new WeakMap<RecipeRecord, string>();
 const repositoryListeners = new Set<() => void>();
-const cachedRecipeLists = new Map<string, RecipeRecord[]>();
+const cachedRecipeLists = new Map<string, RecipeSummary[]>();
 const readyRecipeLists = new Set<string>();
-const recipeListRequests = new Map<string, Promise<RecipeRecord[]>>();
+const recipeListRequests = new Map<string, Promise<RecipeSummary[]>>();
 
 function recipeCacheKey(subject: string, id: string): string {
   return `${subject}\u0000${id}`;
@@ -42,17 +42,14 @@ function assertSubjectUnchanged(subject: string): void {
 
 function cacheRecipeList(
   subject: string,
-  recipes: RecipeRecord[],
-): RecipeRecord[] {
-  for (const recipe of recipes) {
-    primeRecipeCacheForSubject(subject, recipe);
-  }
+  recipes: RecipeSummary[],
+): RecipeSummary[] {
   cachedRecipeLists.set(subject, recipes);
   readyRecipeLists.add(subject);
   return recipes;
 }
 
-export function preloadRecipes(): Promise<RecipeRecord[]> {
+export function preloadRecipes(): Promise<RecipeSummary[]> {
   const subject = getAuthSubjectKey();
   if (readyRecipeLists.has(subject)) {
     return Promise.resolve(cachedRecipeLists.get(subject) ?? []);
@@ -204,9 +201,9 @@ function notifyRepositoryChanged(): void {
   for (const listener of repositoryListeners) listener();
 }
 
-export async function listRecipes(): Promise<RecipeRecord[]> {
+export async function listRecipes(): Promise<RecipeSummary[]> {
   const subject = getAuthSubjectKey();
-  const records = await listServerRecipes<RecipeRecord["payload"]>();
+  const records = await listServerRecipes({ expectedSubjectKey: subject });
   assertSubjectUnchanged(subject);
   return records;
 }
@@ -326,7 +323,7 @@ export function createRecipeFromLearningRecipe(input: {
 }
 
 export function useRecipes(): {
-  recipes: RecipeRecord[];
+  recipes: RecipeSummary[];
   ready: boolean;
   error: Error | null;
   refresh: () => void;
@@ -338,7 +335,7 @@ export function useRecipes(): {
   );
   const [loadState, setLoadState] = useState<{
     subject: string;
-    recipes: RecipeRecord[];
+    recipes: RecipeSummary[];
     ready: boolean;
     error: Error | null;
   }>(() => ({

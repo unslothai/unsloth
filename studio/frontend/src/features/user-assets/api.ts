@@ -150,6 +150,8 @@ export type RecipeAssetRecord<TPayload> = {
   updatedAt: number;
 };
 
+export type RecipeAssetSummary = Omit<RecipeAssetRecord<never>, "payload">;
+
 export function bootstrapUserAssets(
   options: { signal?: AbortSignal; expectedSubjectKey?: string } = {},
 ): Promise<UserAssetsBootstrap> {
@@ -160,13 +162,21 @@ export function bootstrapUserAssets(
   );
 }
 
-export async function listServerRecipes<TPayload>(): Promise<
-  RecipeAssetRecord<TPayload>[]
-> {
-  const response = await requestJson<{
-    recipes: RecipeAssetRecord<TPayload>[];
-  }>("/recipes");
-  return response.recipes;
+export async function listServerRecipes(
+  options: { expectedSubjectKey?: string } = {},
+): Promise<RecipeAssetSummary[]> {
+  const recipes: RecipeAssetSummary[] = [];
+  let cursor: string | null = null;
+  do {
+    const query: string = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+    const response: {
+      recipes: RecipeAssetSummary[];
+      nextCursor: string | null;
+    } = await requestJson(`/recipes${query}`, {}, options);
+    recipes.push(...response.recipes);
+    cursor = response.nextCursor;
+  } while (cursor);
+  return recipes;
 }
 
 export function getServerRecipe<TPayload>(

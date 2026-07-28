@@ -41,8 +41,19 @@ def _recipe_input(payload: RecipeCreateRequest | RecipeUpdateRequest) -> dict:
 
 
 @router.get("/recipes", response_model = RecipeListResponse)
-def list_recipes(current_subject: str = Depends(get_current_subject)):
-    return {"recipes": user_assets_db.list_recipes(current_subject)}
+def list_recipes(
+    cursor: str | None = Query(default = None, min_length = 1, max_length = 512),
+    limit: int = Query(default = 100, ge = 1, le = 100),
+    current_subject: str = Depends(get_current_subject),
+):
+    try:
+        return user_assets_db.list_recipe_summaries(
+            current_subject,
+            cursor = cursor,
+            limit = limit,
+        )
+    except UserAssetValidationError as error:
+        raise_validation(error)
 
 
 @router.post(

@@ -49,8 +49,19 @@ class RecipeRecord(StrictModel):
     updatedAt: int
 
 
+class RecipeSummary(StrictModel):
+    id: str
+    name: str
+    learningRecipeId: str | None = None
+    learningRecipeTitle: str | None = None
+    revision: int
+    createdAt: int
+    updatedAt: int
+
+
 class RecipeListResponse(StrictModel):
-    recipes: list[RecipeRecord]
+    recipes: list[RecipeSummary]
+    nextCursor: str | None = None
 
 
 class ExecutionUpsertRequest(StrictModel):

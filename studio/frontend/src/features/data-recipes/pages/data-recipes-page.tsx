@@ -394,7 +394,6 @@ export function DataRecipesPage(): ReactElement {
   }
 
   function openRecipe(recipe: (typeof recipes)[number]): void {
-    primeRecipeCache(recipe);
     navigate({
       to: "/data-recipes/$recipeId",
       params: { recipeId: recipe.id },

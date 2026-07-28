@@ -20,6 +20,8 @@ import { MAX_LEGACY_BATCH_JSON_BYTES } from "./persistence-policy";
 const SOURCE = "recipe-indexeddb-v1";
 const DEVICE_IMPORT_OWNER_KEY = "user-assets:recipe-indexeddb-v1:owner";
 const DEVICE_IMPORT_LOCK_NAME = "user-assets:recipe-indexeddb-v1:claim";
+const DEVICE_IMPORT_CLAIM_DB = "unsloth-user-assets-migration-claims";
+const DEVICE_IMPORT_CLAIM_STORE = "claims";
 const LEGACY_PAGE_SIZE = 100;
 const utf8Encoder = new TextEncoder();
 
@@ -157,14 +159,16 @@ function rejectedItems(
 async function claimLegacyBrowserData(owner: string): Promise<boolean> {
   if (typeof window === "undefined") return true;
   if (typeof navigator.locks === "undefined") {
-    throw new Error("Browser storage migration ownership could not be locked.");
+    return claimLegacyBrowserDataWithIndexedDb(owner);
   }
   try {
     return await navigator.locks.request(
       DEVICE_IMPORT_LOCK_NAME,
       { mode: "exclusive" },
       () => {
-        const claimedOwner = window.localStorage.getItem(DEVICE_IMPORT_OWNER_KEY);
+        const claimedOwner = window.localStorage.getItem(
+          DEVICE_IMPORT_OWNER_KEY,
+        );
         if (claimedOwner && claimedOwner !== owner) return false;
         if (!claimedOwner) {
           window.localStorage.setItem(DEVICE_IMPORT_OWNER_KEY, owner);
@@ -175,6 +179,72 @@ async function claimLegacyBrowserData(owner: string): Promise<boolean> {
   } catch {
     throw new Error("Could not confirm ownership of browser-saved recipes.");
   }
+}
+
+function openDeviceImportClaimDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = window.indexedDB.open(DEVICE_IMPORT_CLAIM_DB, 1);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      if (!database.objectStoreNames.contains(DEVICE_IMPORT_CLAIM_STORE)) {
+        database.createObjectStore(DEVICE_IMPORT_CLAIM_STORE, {
+          keyPath: "key",
+        });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () =>
+      reject(
+        request.error ??
+          new Error("Could not open the migration claim database."),
+      );
+    request.onblocked = () =>
+      reject(new Error("The migration claim database is blocked."));
+  });
+}
+
+async function claimLegacyBrowserDataWithIndexedDb(
+  owner: string,
+): Promise<boolean> {
+  if (typeof window.indexedDB === "undefined") {
+    throw new Error("Browser storage migration ownership could not be locked.");
+  }
+  const database = await openDeviceImportClaimDb();
+  return new Promise((resolve, reject) => {
+    let claimed = false;
+    const transaction = database.transaction(
+      DEVICE_IMPORT_CLAIM_STORE,
+      "readwrite",
+    );
+    transaction.oncomplete = () => {
+      database.close();
+      resolve(claimed);
+    };
+    transaction.onerror = () => {
+      database.close();
+      reject(
+        transaction.error ??
+          new Error("Could not claim browser-saved recipes."),
+      );
+    };
+    transaction.onabort = transaction.onerror;
+
+    const store = transaction.objectStore(DEVICE_IMPORT_CLAIM_STORE);
+    const request = store.get(DEVICE_IMPORT_OWNER_KEY);
+    request.onsuccess = () => {
+      const existing = request.result as
+        | { key: string; owner: string }
+        | undefined;
+      if (existing) {
+        claimed = existing.owner === owner;
+        return;
+      }
+      const addRequest = store.add({ key: DEVICE_IMPORT_OWNER_KEY, owner });
+      addRequest.onsuccess = () => {
+        claimed = true;
+      };
+    };
+  });
 }
 
 function throwIfAborted(signal: AbortSignal): void {

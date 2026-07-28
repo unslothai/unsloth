@@ -15,6 +15,11 @@ export type RecipeRecord = {
   removedCredentialPaths?: string[];
 };
 
+export type RecipeSummary = Omit<
+  RecipeRecord,
+  "payload" | "removedCredentialPaths"
+>;
+
 export type SaveRecipeInput = {
   id?: string | null;
   name: string;
