@@ -733,8 +733,7 @@ _SSE_DONE_CHUNK = "data: [DONE]\n\n"
 def _sse_chunk_is_stream_done(chunk) -> bool:
     """True only for the bare sentinel that closes a successful stream.
 
-    Exact equality on purpose: ``_openai_stream_error_sse`` ends in the same
-    sentinel but is yielded before its generator's cleanup has run.
+    Exact equality: ``_openai_stream_error_sse`` ends in the same sentinel before its cleanup runs.
     """
     return chunk == _SSE_DONE_CHUNK
 
@@ -2451,10 +2450,9 @@ async def _await_cancel_or_disconnect_then_close_client(
 
 
 async def _stop_local_disconnect_cancel_watcher(watcher, timeout_s: float = 5.0) -> None:
-    # Bounded: this runs in the stream's finally, so awaiting the watcher
-    # outright would let a wedged poll loop hold the response open forever.
-    # asyncio.wait never cancels its argument and never re-raises. Abandoning
-    # the watcher is safe -- it owns no resources.
+    # Bounded: this runs in the stream's finally, so awaiting the watcher outright would let a
+    # wedged poll loop hold the response open forever. asyncio.wait neither cancels nor re-raises,
+    # and an abandoned watcher owns no resources.
     watcher.cancel()
     done, _pending = await asyncio.wait({watcher}, timeout = timeout_s)
     if not done:
@@ -9407,8 +9405,7 @@ async def openai_chat_completions(
                 raise _openai_admission_http_exception(exc, status_code = 429)
 
             _tool_sentinel = object()
-            # True only once the sync generator returned on its own. A cancel
-            # still emits [DONE] with it parked inside _open_stream's client.
+            # True only once the sync generator returned on its own; see _gguf_decode_finished.
             _tool_decode_finished = {"value": False}
 
             _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
@@ -10026,8 +10023,8 @@ async def openai_chat_completions(
             )
 
         _gguf_sentinel = object()
-        # True only once the sync generator returned on its own: only then has
-        # _open_stream's client exited. A cancel still emits [DONE] without it.
+        # True only once the sync generator returned on its own: only then has _open_stream's
+        # client exited. A cancel still emits [DONE] without it.
         _gguf_decode_finished = {"value": False}
 
         if payload.stream:
@@ -10262,13 +10259,11 @@ async def openai_chat_completions(
                     stream_started = True
                     try:
                         async for chunk in iterator:
-                            # The slot is idle once the sync generator returned
-                            # and the stream ends with the plain sentinel. The
-                            # finally only runs at ASGI teardown, so waiting for
-                            # it starves the next request on any wedge. Release
-                            # before the yield: a stalled send() or a consumer
-                            # that stops pulling parks us here, and Starlette
-                            # never aclose()s a body iterator. Idempotent, so
+                            # The slot is idle once the sync generator returned and the stream ends
+                            # with the plain sentinel. The finally only runs at ASGI teardown, so
+                            # waiting for it starves the next request. Release before the yield: a
+                            # stalled send() or a consumer that stops pulling parks us there, and
+                            # Starlette never aclose()s a body iterator. Release is idempotent, so
                             # the finally stays the backstop.
                             if (
                                 lease is not None

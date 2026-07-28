@@ -3,17 +3,15 @@
 
 """A finished GGUF chat stream must free its llama-server slot at [DONE].
 
-llama-server has a fixed slot count and Unsloth gates concurrent decoding on it
-with an admission lease. The lease used to be released only in the stream's
-outer finally, which does not run until the ASGI response body is torn down, so
-any wedged teardown pinned a slot long after llama-server had freed it and the
-next chat request queued behind a generation that had already finished. The
-queue has no default timeout, so the wait was unbounded.
+llama-server has a fixed slot count, gated by an admission lease. Releasing that lease only in
+the stream's outer finally, which runs at ASGI teardown, let a wedged teardown pin a slot
+llama-server had already freed, so the next chat request queued behind a finished generation
+with no timeout to bound the wait.
 
-The wedge here stands in for the real one: the frontend deliberately does not
-cancel its reader after [DONE] (chat-api.ts), and uvicorn advertises ASGI
-spec_version 2.3, so Starlette's OSError/ClientDisconnect path -- the only
-disconnect detector _SameTaskStreamingResponse keeps -- cannot fire.
+The wedge below stands in for the real one: the frontend never cancels its reader after [DONE]
+(chat-api.ts), and uvicorn advertises ASGI spec_version 2.3, so Starlette's
+OSError/ClientDisconnect path, the only disconnect detector _SameTaskStreamingResponse keeps,
+cannot fire.
 """
 
 import asyncio
@@ -43,8 +41,8 @@ def _active_slots() -> int:
 def test_sse_chunk_is_stream_done_only_matches_the_success_sentinel():
     done = inference_route._sse_chunk_is_stream_done
     assert done("data: [DONE]\n\n")
-    # The error path packs a payload line and the sentinel into one chunk. Its
-    # cleanup has not run yet, so it must not look like a finished stream.
+    # The error path packs a payload line and the sentinel into one chunk, and its cleanup has
+    # not run, so it must not count as a finished stream.
     assert not done('data: {"error": {"message": "boom"}}\n\ndata: [DONE]\n\n')
     assert not done('data: {"choices": [{"delta": {"content": "data: [DONE]"}}]}\n\n')
     assert not done("")
@@ -62,10 +60,8 @@ def _reserve_one_slot():
 
 
 def test_slot_is_freed_at_done_even_if_teardown_never_finishes():
-    """Model the stream's shape: yield chunks, then wedge in the finally.
-
-    Without the release at [DONE] the slot stays held for as long as the
-    teardown is stuck, which is what starved the following request in CI.
+    """Yield chunks, then wedge in the finally: without the release at [DONE] the slot stays
+    held for as long as the teardown is stuck, which is what starved the next request in CI.
     """
     wedged = asyncio.Event()
 
@@ -97,9 +93,8 @@ def test_slot_is_freed_at_done_even_if_teardown_never_finishes():
         saw_done = asyncio.Event()
 
         async def _consume():
-            # Stands in for Starlette's stream_response: it keeps pulling after
-            # the last chunk, so the generator resumes past [DONE] and only then
-            # runs into the wedged teardown.
+            # Like Starlette's stream_response: it keeps pulling after the last chunk, so the
+            # generator resumes past [DONE] and only then runs into the wedged teardown.
             async for chunk in _admitted(lease):
                 seen.append(chunk)
                 if inference_route._sse_chunk_is_stream_done(chunk):
@@ -108,8 +103,7 @@ def test_slot_is_freed_at_done_even_if_teardown_never_finishes():
         task = asyncio.create_task(_consume())
         try:
             await asyncio.wait_for(saw_done.wait(), timeout = 5.0)
-            # Give the generator a turn to resume past the [DONE] yield and
-            # reach the wedge, without letting the wedge end the test.
+            # Give the generator a turn to resume past the [DONE] yield and reach the wedge.
             for _ in range(50):
                 if _active_slots() == 0:
                     break
@@ -158,8 +152,7 @@ def test_stopping_the_disconnect_watcher_cannot_hang():
                 try:
                     await asyncio.sleep(0.01)
                 except asyncio.CancelledError:
-                    # A watcher that swallows cancellation, as the real one does
-                    # for every exception on its way out.
+                    # Swallow cancellation, as the real watcher does on its way out.
                     if release.is_set():
                         raise
                     continue
@@ -203,9 +196,8 @@ class _OneSlotGgufBackend:
 def test_real_stream_frees_the_slot_at_done_with_a_wedged_teardown(monkeypatch):
     """Drive the real ASGI route, wedged exactly where CI wedged.
 
-    ``_stop_local_disconnect_cancel_watcher`` runs in ``gguf_stream_chunks``'s
-    finally on the success path. Hanging it reproduces a response that has sent
-    [DONE] but cannot finish, which is the state the CI job was left in.
+    Hanging ``_stop_local_disconnect_cancel_watcher``, which runs in ``gguf_stream_chunks``'s
+    success-path finally, leaves a response that has sent [DONE] but cannot finish.
     """
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _OneSlotGgufBackend())
     monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: False)
