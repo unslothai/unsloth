@@ -96,7 +96,7 @@ def _push_adapter_dir_cas(
     A pre-check at a pinned revision refuses when the repo carries the OTHER
     format's weight file that this upload would not replace; the commit then
     uses parent_commit=<that revision> so the Hub itself rejects a concurrent
-    writer (retried once against the new head before surfacing a conflict).
+    writer, which is surfaced as a conflict rather than retried on top.
     """
     from huggingface_hub import CommitOperationAdd
 
@@ -153,11 +153,22 @@ def _push_adapter_dir_cas(
             _commit(head, existing)
         except RuntimeError:
             raise
-        except Exception:
-            # The branch head moved under us; re-verify against the new head
-            # once, then let a second failure surface as the conflict it is.
-            head, existing = _precheck()
-            _commit(head, existing)
+        except Exception as exc:
+            # parent_commit pins the commit to the head that was checked, so
+            # a moved head lands here -- but so do transport and server
+            # failures, and a commit the Hub applied whose response was lost
+            # is indistinguishable from one it rejected. (RuntimeError is
+            # re-raised above, so hub versions that wrap LFS upload failures
+            # in one keep their own message.) Claim only what holds for every
+            # exception reaching here: the commit was not confirmed and was
+            # NOT re-applied over a newer head, so nothing published
+            # meanwhile was overwritten.
+            raise RuntimeError(
+                f"Adapter upload to '{repo_id}' was not confirmed ({exc}). It "
+                "was not re-committed over a newer head, so nothing published "
+                "meanwhile was overwritten. Check the repo and retry if the "
+                "adapter is missing."
+            ) from exc
         # An all-unchanged upload short-circuits client-side without the
         # parent_commit check, so verify the invariant on the final head.
         _final_head, _ = _precheck()
