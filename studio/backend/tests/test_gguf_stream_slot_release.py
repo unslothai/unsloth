@@ -40,14 +40,15 @@ def _active_slots() -> int:
     return sum(queue.snapshot().active for queue in queues)
 
 
-def test_sse_chunk_ends_the_stream_only_matches_the_sentinel():
-    ends = inference_route._sse_chunk_ends_the_stream
-    assert ends("data: [DONE]\n\n")
-    # The error path emits a payload line and the sentinel in one chunk.
-    assert ends('data: {"error": {"message": "boom"}}\n\ndata: [DONE]\n\n')
-    assert not ends('data: {"choices": [{"delta": {"content": "data: [DONE]"}}]}\n\n')
-    assert not ends("")
-    assert not ends(None)
+def test_sse_chunk_is_stream_done_only_matches_the_success_sentinel():
+    done = inference_route._sse_chunk_is_stream_done
+    assert done("data: [DONE]\n\n")
+    # The error path packs a payload line and the sentinel into one chunk. Its
+    # cleanup has not run yet, so it must not look like a finished stream.
+    assert not done('data: {"error": {"message": "boom"}}\n\ndata: [DONE]\n\n')
+    assert not done('data: {"choices": [{"delta": {"content": "data: [DONE]"}}]}\n\n')
+    assert not done("")
+    assert not done(None)
 
 
 _ONE_SLOT = llama_admission.LlamaAdmissionConfig(max_queue = 4)
@@ -81,7 +82,7 @@ def test_slot_is_freed_at_done_even_if_teardown_never_finishes():
         try:
             async for chunk in iterator:
                 yield chunk
-                if held is not None and inference_route._sse_chunk_ends_the_stream(chunk):
+                if held is not None and inference_route._sse_chunk_is_stream_done(chunk):
                     held.release()
         finally:
             if held is not None:
@@ -101,7 +102,7 @@ def test_slot_is_freed_at_done_even_if_teardown_never_finishes():
             # runs into the wedged teardown.
             async for chunk in _admitted(lease):
                 seen.append(chunk)
-                if inference_route._sse_chunk_ends_the_stream(chunk):
+                if inference_route._sse_chunk_is_stream_done(chunk):
                     saw_done.set()
 
         task = asyncio.create_task(_consume())
@@ -258,7 +259,7 @@ def test_real_stream_frees_the_slot_at_done_with_a_wedged_teardown(monkeypatch):
             frames.append(message)
             if message.get("type") == "http.response.body":
                 chunk = message.get("body", b"").decode()
-                if inference_route._sse_chunk_ends_the_stream(chunk):
+                if inference_route._sse_chunk_is_stream_done(chunk):
                     sent_body.set()
 
         task = asyncio.create_task(app(scope, receive, send))
