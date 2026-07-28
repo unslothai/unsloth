@@ -2671,6 +2671,83 @@ def _ephemeral_session_parent(agent: str) -> Optional[Path]:
     return root
 
 
+def _ephemeral_session_prefix(agent: str, parent: Optional[Path]) -> str:
+    """Return the platform-specific prefix for an ephemeral agent home."""
+    return "u-codex-" if agent == "codex" and parent is not None else f"unsloth-{agent}-"
+
+
+@contextlib.contextmanager
+def _locked_file(path: Path, blocking: bool = True):
+    """Yield whether an advisory lock was acquired for the first byte of path."""
+    handle = path.open("a+b")
+    acquired = False
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
+            try:
+                msvcrt.locking(handle.fileno(), mode, 1)
+                acquired = True
+            except OSError:
+                acquired = False
+        else:
+            import fcntl
+
+            mode = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+            try:
+                fcntl.flock(handle.fileno(), mode)
+                acquired = True
+            except BlockingIOError:
+                acquired = False
+        yield acquired
+    finally:
+        if acquired:
+            if os.name == "nt":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def _reclaim_stale_ephemeral_sessions(parent: Path) -> None:
+    """Remove abandoned short Codex homes while preserving locked live sessions."""
+    for path in parent.glob("u-codex-*"):
+        if not path.is_dir():
+            continue
+        with _locked_file(path / ".active.lock", blocking = False) as stale:
+            pass
+        if stale:
+            shutil.rmtree(path, ignore_errors = True)
+
+
+@contextlib.contextmanager
+def _short_ephemeral_session(parent: Path):
+    """Create a short Codex home whose lock makes crash cleanup concurrency-safe."""
+    path = None
+    active_lock = contextlib.ExitStack()
+    try:
+        with _locked_file(parent / ".cleanup.lock") as cleanup_lock:
+            if not cleanup_lock:  # The blocking acquisition should always succeed.
+                raise RuntimeError(f"Could not lock ephemeral session root: {parent}")
+            _reclaim_stale_ephemeral_sessions(parent)
+            path = Path(tempfile.mkdtemp(prefix = "u-codex-", dir = parent))
+            locked = active_lock.enter_context(_locked_file(path / ".active.lock"))
+            if not locked:
+                raise RuntimeError(f"Could not lock ephemeral session home: {path}")
+        yield path
+    finally:
+        active_lock.close()
+        if path is not None:
+            shutil.rmtree(path, ignore_errors = True)
+
+
 @contextlib.contextmanager
 def _session_config(
     agent: str,
@@ -2687,16 +2764,15 @@ def _session_config(
     """
     if launch and not persist:
         parent = _ephemeral_session_parent(agent)
-        path = Path(
-            tempfile.mkdtemp(
-                prefix = "u-codex-" if parent is not None else f"unsloth-{agent}-",
-                dir = parent,
-            )
-        )
-        try:
-            yield path
-        finally:
-            shutil.rmtree(path, ignore_errors = True)
+        if parent is not None:
+            with _short_ephemeral_session(parent) as path:
+                yield path
+        else:
+            path = Path(tempfile.mkdtemp(prefix = _ephemeral_session_prefix(agent, parent)))
+            try:
+                yield path
+            finally:
+                shutil.rmtree(path, ignore_errors = True)
     else:
         # Never wipe this dir: a previously printed recipe may still be running
         # an agent whose sessions/state live here, and every config writer

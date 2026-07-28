@@ -1550,7 +1550,8 @@ def test_connect_codex_launch_uses_ephemeral_home(fake_studio, monkeypatch):
     assert result.exit_code == 0, result.output
     home = Path(captured["home"])
     assert captured["config_present"]  # config existed while codex ran
-    assert "unsloth-codex-" in home.name  # an ephemeral temp dir, not ~/.codex
+    parent = start._ephemeral_session_parent("codex")
+    assert home.name.startswith(start._ephemeral_session_prefix("codex", parent))
     assert not home.exists()  # cleaned up after the agent exits
 
 
@@ -4702,7 +4703,8 @@ def test_session_config_default_launch_is_ephemeral():
     # Default launch (no --persist) still uses a throwaway temp dir wiped on exit.
     with start._session_config("codex", launch = True) as home:
         assert home.exists()
-        assert "unsloth-codex-" in home.name
+        parent = start._ephemeral_session_parent("codex")
+        assert home.name.startswith(start._ephemeral_session_prefix("codex", parent))
     assert not home.exists()
 
 
@@ -4723,6 +4725,33 @@ def test_session_config_codex_uses_short_ephemeral_parent(monkeypatch, tmp_path)
         assert home.name.startswith("u-codex-")
         assert home.exists()
     assert not home.exists()
+
+
+def test_session_config_reclaims_stale_short_homes_but_keeps_live(
+    monkeypatch,
+    tmp_path,
+):
+    short_parent = tmp_path / "u"
+    short_parent.mkdir()
+    stale = short_parent / "u-codex-abandoned"
+    stale.mkdir()
+    (stale / ".active.lock").write_bytes(b"\0")
+    (stale / "plugin-checkout").write_text("left behind")
+    monkeypatch.setattr(
+        start,
+        "_ephemeral_session_parent",
+        lambda agent: short_parent if agent == "codex" else None,
+    )
+
+    with start._session_config("codex", launch = True) as first:
+        assert not stale.exists()
+        with start._session_config("codex", launch = True) as second:
+            assert first.exists()
+            assert second.exists()
+            assert first != second
+        assert first.exists()
+        assert not second.exists()
+    assert not first.exists()
 
 
 # The temp-dir agents: --persist points each one's home/state env at the stable dir;
@@ -4769,7 +4798,8 @@ def test_default_launch_home_is_ephemeral(agent, fake_studio, tmp_path, monkeypa
     monkeypatch.setattr(start.shutil, "which", lambda _: f"/usr/local/bin/{agent}")
     captured = _capture_launch(monkeypatch, [agent])
     home = captured["env"][_RESUME_ENV_VAR[agent]]
-    assert f"unsloth-{agent}-" in home
+    parent = start._ephemeral_session_parent(agent)
+    assert start._ephemeral_session_prefix(agent, parent) in home
     assert str(tmp_path / "agents") not in home
 
 
