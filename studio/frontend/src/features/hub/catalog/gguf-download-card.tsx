@@ -58,6 +58,10 @@ import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
 import { formatBytes } from "../lib/format";
 import { type GgufFitClass, classifyGgufFit } from "../lib/gguf-fit";
 import {
+  ggufFilenamesMatch,
+  ggufSelectionOverrideMatchesIntent,
+} from "../lib/gguf-filename";
+import {
   ggufVariantDisplayLabel,
   ggufVariantDownloadSizeBytes,
   sortDownloadableGgufVariants,
@@ -540,6 +544,9 @@ export function GgufDownloadCard({
   repoId,
   isActive,
   activeQuant,
+  preferredFile = null,
+
+  preferredFileIntent = 0,
   isLoadingThisModel,
   gpuGb,
   systemRamGb,
@@ -553,6 +560,9 @@ export function GgufDownloadCard({
   repoId: string;
   isActive: boolean;
   activeQuant: string | null;
+  preferredFile?: string | null;
+
+  preferredFileIntent?: number;
   isLoadingThisModel: boolean;
   gpuGb?: number;
   systemRamGb?: number;
@@ -579,9 +589,25 @@ export function GgufDownloadCard({
     repoId: string;
     quant: string | null;
     userPicked?: boolean;
+    preferredFile?: string | null;
+
+    preferredFileIntent?: number;
   }>(() => ({ repoId, quant: null }));
+  const preferredQuant = preferredFile
+    ? (variants?.find((variant) =>
+        ggufFilenamesMatch(variant.filename, preferredFile),
+      )?.quant ?? null)
+    : null;
   const selectedQuantOverride =
-    selectedQuantState.repoId === repoId ? selectedQuantState.quant : null;
+    selectedQuantState.repoId === repoId &&
+    ggufSelectionOverrideMatchesIntent(
+      preferredFile,
+      preferredFileIntent,
+      selectedQuantState.preferredFile,
+      selectedQuantState.preferredFileIntent,
+    )
+      ? selectedQuantState.quant
+      : preferredQuant;
   const [open, setOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [updateTarget, setUpdateTarget] = useState<string | null>(null);
@@ -732,10 +758,13 @@ export function GgufDownloadCard({
         repoId,
         quant,
         userPicked: true,
+        preferredFile,
+
+        preferredFileIntent,
       });
       setOpen(false);
     },
-    [repoId],
+    [preferredFile, preferredFileIntent, repoId],
   );
   const handleDeleteVariant = useCallback((quant: string) => {
     setDeleteTarget(quant);

@@ -781,6 +781,7 @@ function GeneralCompareHeader({
   // Controlled so the body-portaled popover can't linger over another tab off-route.
   const active = useChatActive();
   const [selectorOpen, setSelectorOpen] = useState(false);
+
   const { pinned } = useSidebar();
   return (
     <div
@@ -3192,7 +3193,7 @@ export function ChatPage({
     // Provides `active` to ChatRuntimeProvider (drops the message views/composers
     // while off-route, keeping the runtime alive) and to the compare chrome.
     <ChatActiveContext.Provider value={active}>
-    <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background overflow-hidden">
+    <div className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-hidden bg-background">
       {/* Portaled surfaces render to document.body, escaping the parent's hidden
           wrapper, so gate them on `active` to keep them off other tabs. */}
       {active && <GuidedTour {...tour.tourProps} />}

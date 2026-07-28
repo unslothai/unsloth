@@ -17,7 +17,7 @@ mod process;
 mod update;
 mod windows_job;
 
-use log::info;
+use log::{info, warn};
 use process::new_backend_state;
 use simplelog::{
     CombinedLogger, Config, LevelFilter, SharedLogger, TermLogger, TerminalMode, WriteLogger,
@@ -176,9 +176,11 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
+                let _ = window.unminimize();
                 let _ = window.set_focus();
             }
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -234,6 +236,13 @@ fn main() {
             has_saved_window_state,
         ])
         .setup(|app| {
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Err(error) = app.deep_link().register_all() {
+                    warn!("Failed to register deep-link handlers: {error}");
+                }
+            }
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             setup_custom_titlebar(app)?;
             setup_tray(app)?;

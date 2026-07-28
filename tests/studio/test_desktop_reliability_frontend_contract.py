@@ -28,6 +28,7 @@ APP_PROVIDER = FRONTEND / "app/provider.tsx"
 
 CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
 TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
+CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
 
 
 def test_file_actions_route_through_native_commands_only_in_tauri():
@@ -214,6 +215,34 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
         'className="pointer-events-none absolute top-full size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
         in source
     )
+
+
+def test_visible_mac_sidebar_header_is_a_drag_region():
+    source = APP_SIDEBAR.read_text(encoding = "utf-8")
+    header = source.split("<SidebarHeader", 1)[1].split("</SidebarHeader>", 1)[0]
+    drag_region = "data-tauri-drag-region={usesNativeMacTitlebar || undefined}"
+
+    assert drag_region in header
+    assert header.index(drag_region) < header.index('"relative z-10 flex items-center')
+
+
+def test_mac_chat_header_controls_share_the_titlebar_row():
+    source = CHAT_PAGE.read_text(encoding = "utf-8")
+    provider = APP_PROVIDER.read_text(encoding = "utf-8")
+
+    assert "shouldUseNativeMacWindowTitlebar" not in source
+    assert "[--studio-content-top-inset:var(--studio-mac-titlebar-height" not in source
+    assert source.count("var(--studio-mac-traffic-light-inset") == 2
+    assert '"--studio-chat-header-padding-top": "7px"' in provider
+    assert "pt-[var(--studio-content-top-inset,0px)] md:flex-row" in source
+    assert "absolute top-[var(--studio-content-top-inset,0px)]" in source
+
+
+def test_collapsed_mac_sidebar_hides_divider():
+    source = APP_SIDEBAR.read_text(encoding = "utf-8")
+
+    assert "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0" in source
+    assert "top-[var(--studio-mac-titlebar-height,34px)]" not in source
 
 
 def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
