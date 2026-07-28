@@ -897,7 +897,11 @@ jobs:
           # `--no-torch` only (112-142), so the token was silently dropped and every
           # Windows leg installed torch anyway. The assert below needs torch, so get it
           # on purpose rather than by accident.
-          & $script *>&1 | Tee-Object -FilePath logs/install.log
+          # Under powershell.exe, not this pwsh 7 step: a clean Windows box ships
+          # Windows PowerShell 5.1 only, and the desktop launches it the same way
+          # (install.rs:325-339). pwsh 7 is a runner-image extra no user is promised.
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+              -File $script *>&1 | Tee-Object -FilePath logs/install.log
           $rc = $LASTEXITCODE
           Write-Host "installer exit code: $rc"
           exit $rc
