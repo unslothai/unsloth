@@ -251,9 +251,7 @@ def test_studio_default_prompt_rejects_current_password(monkeypatch, tmp_path):
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
     _seed_auth(studio_mod)
-    bootstrap_pw = (
-        tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE
-    ).read_text().strip()
+    bootstrap_pw = (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).read_text().strip()
 
     _invoke_studio_default(monkeypatch, events, ["--secure"])
 
@@ -1223,9 +1221,7 @@ def test_seeded_bootstrap_file_ends_with_a_newline(monkeypatch, tmp_path):
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
     _seed_auth(studio_mod)
 
-    raw = (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).read_text(
-        encoding = "utf-8"
-    )
+    raw = (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).read_text(encoding = "utf-8")
 
     assert raw.endswith("\n")
 
@@ -1320,9 +1316,7 @@ def test_studio_default_password_must_differ_fails_closed(monkeypatch, tmp_path)
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
     _seed_auth(studio_mod)
-    bootstrap_pw = (
-        tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE
-    ).read_text().strip()
+    bootstrap_pw = (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).read_text().strip()
 
     result = _invoke_studio_default(monkeypatch, events, ["--secure", "--password", bootstrap_pw])
 
