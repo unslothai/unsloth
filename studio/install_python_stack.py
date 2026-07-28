@@ -3163,10 +3163,9 @@ def install_python_stack() -> int:
             _torchao_spec,
         )
 
-    # 5. Triton kernels (no-deps, from source). Skip on Windows and macOS
-    #    (no support), and on any machine without git: the requirement is a
-    #    git+https URL, so pip cannot fetch it. These are a training speedup, not
-    #    a boot requirement, so warn and continue rather than fail the install.
+    # 5. Triton kernels (no-deps, from source). Skipped on Windows/macOS (no support)
+    #    and without git, since the requirement is a git+https URL. A training speedup
+    #    only, so warn and continue rather than fail the install.
     if not IS_WINDOWS and not IS_MACOS:
         if not _has_working_git():
             _progress("triton kernels (skipped, no git)")

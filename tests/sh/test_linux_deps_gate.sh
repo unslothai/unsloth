@@ -4,17 +4,14 @@
 #
 # Guards the Linux/WSL system-dependency gate in install.sh.
 #
-# History: the gate hard-required cmake, git, gcc and libcurl4-openssl-dev "to build
-# the GGUF inference engine", auto-installing them on apt distros and `exit 1`-ing
-# everywhere else with a Fedora/Arch/openSUSE instruction. Nothing on the consumer
-# path builds anything: unslothai/llama.cpp publishes linux-x64 and linux-arm64
-# prebuilts covering cpu, cuda12, cuda13, rocm and vulkan. So the gate stranded every
-# non-apt distro over tooling that was never used -- the same defect the macOS Xcode
-# CLT gate had.
+# History: the gate hard-required cmake, git, gcc and libcurl4-openssl-dev, installing
+# them on apt distros and `exit 1`-ing everywhere else. Nothing on the consumer path
+# builds anything (unslothai/llama.cpp publishes linux-x64/arm64 prebuilts for cpu,
+# cuda12, cuda13, rocm and vulkan), so it stranded every non-apt distro over unused
+# tooling, the same defect the macOS Xcode CLT gate had.
 #
-# The contract now: only a download transport (curl or wget) is fatal. Build tooling
-# is a warning. git is required for --local only, because that mode installs
-# unsloth-zoo from a git+https URL.
+# The contract now: only a download transport (curl or wget) is fatal, build tooling
+# is a warning, and git is required for --local only (unsloth-zoo git+https URL).
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -62,8 +59,8 @@ C_WARN=''; C_ERR=''; C_OK=''; C_DIM=''; C_RST=''
 step()    { echo "STEP $1 $2"; }
 substep() { echo "SUBSTEP $1"; }
 tauri_log() { echo "[TAURI:$1] $2"; }
-# Stand-in for the real apt path. Records that it was reached and with what, so a
-# test can tell "asked apt for curl" from "asked apt for the whole build toolchain".
+# Stand-in for the real apt path, recording what it was called with so a test can
+# tell "asked apt for curl" from "asked apt for the whole build toolchain".
 _smart_apt_install() { echo "APT_CALLED: $*"; }
 HARNESS
 
@@ -71,8 +68,7 @@ _BIN=$(mktemp -d)
 _mk() { printf '#!/bin/sh\n%s\n' "$2" > "$_BIN/$1"; chmod +x "$_BIN/$1"; }
 
 # PATH is the sandbox and ONLY the sandbox, so an unstocked tool is genuinely absent
-# and the host's /usr/bin/cmake cannot turn an "absent" case into a "present" one.
-# bash therefore has to be invoked by absolute path.
+# and the host's /usr/bin/cmake cannot leak in. bash must then be invoked absolutely.
 _SH="${BASH:-/bin/bash}"
 
 _run_gate() {
@@ -82,8 +78,7 @@ _run_gate() {
 }
 
 echo "=== Fedora/Arch/openSUSE shape: curl present, no build tooling, no apt ==="
-# This is the case that used to exit 1 with "Automatic system package installation is
-# supported on apt-based Linux distributions only".
+# Used to exit 1 with "supported on apt-based Linux distributions only".
 rm -f "$_BIN"/*
 _mk curl 'exit 0'
 _out="$(_run_gate false)"
@@ -116,8 +111,8 @@ _out="$(_run_gate false)"
 assert_contains "install proceeds"                       "$_out" "RC=0"
 assert_contains "asks apt for curl"                      "$_out" "APT_CALLED: curl"
 assert_not_contains "does not ask apt for cmake"         "$_out" "APT_CALLED: curl cmake"
-# Only the transport goes to apt. The build tooling is still reported as missing in
-# the warning line, so match the apt call itself rather than the package names.
+# Only the transport goes to apt. Build tooling still appears in the warning line, so
+# match the apt call itself rather than the package names.
 assert_contains    "apt asked for exactly curl"          "$_out" "APT_CALLED: curl
 "
 assert_contains    "build tooling only warned about"     "$_out" "using prebuilt llama.cpp"
