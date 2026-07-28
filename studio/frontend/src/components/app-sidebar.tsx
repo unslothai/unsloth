@@ -1205,6 +1205,7 @@ export function AppSidebar() {
               />
             )}
             <div
+              data-tauri-drag-region={usesNativeMacTitlebar || undefined}
               className={cn(
                 "relative z-10 flex items-center gap-[8.5px] group-data-[collapsible=icon]:hidden",
                 showCompactMacBrand &&
