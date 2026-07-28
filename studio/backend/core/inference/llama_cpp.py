@@ -2102,8 +2102,7 @@ _OLLAMA_CUDA_ROOT = Path("/usr/local/lib/ollama")
 
 
 def _linux_ollama_cuda_runtime_dirs(
-    binary_dir: Union[str, Path],
-    ollama_root: Optional[Union[str, Path]] = None,
+    binary_dir: Union[str, Path], ollama_root: Optional[Union[str, Path]] = None
 ) -> list[str]:
     """Return Ollama's private CUDA runtime matching the installed prebuilt.
 

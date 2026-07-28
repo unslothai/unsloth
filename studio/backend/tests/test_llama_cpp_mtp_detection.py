@@ -695,7 +695,10 @@ def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch
 
 
 def _make_ollama_cuda_runtime(
-    tmp_path: Path, runtime_line: str = "cuda13", *, complete: bool = True
+    tmp_path: Path,
+    runtime_line: str = "cuda13",
+    *,
+    complete: bool = True,
 ) -> tuple[Path, Path]:
     binary_dir = tmp_path / "llama.cpp" / "build" / "bin"
     binary_dir.mkdir(parents = True)
@@ -750,9 +753,7 @@ def test_llama_server_env_includes_selected_ollama_runtime(tmp_path, monkeypatch
     binary = binary_dir / "llama-server"
     binary.write_bytes(b"")
 
-    monkeypatch.setattr(
-        "core.inference.llama_cpp._OLLAMA_CUDA_ROOT", tmp_path / "ollama"
-    )
+    monkeypatch.setattr("core.inference.llama_cpp._OLLAMA_CUDA_ROOT", tmp_path / "ollama")
     monkeypatch.setattr(
         "core.inference.llama_cpp.child_env_without_native_path_secret",
         lambda: {"LD_LIBRARY_PATH": "/already-there"},
