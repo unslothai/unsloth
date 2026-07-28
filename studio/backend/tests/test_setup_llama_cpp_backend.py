@@ -204,7 +204,7 @@ def _source_backend_choice_block() -> str:
     text = _SETUP_SH.read_text(encoding = "utf-8")
     m = re.search(
         r'_source_backend_choice="\$\(printf.*?\n.*?_explicit_vulkan_source_build=false\n'
-        r'.*?\nfi\n',
+        r".*?\nfi\n",
         text,
         re.DOTALL,
     )
@@ -226,10 +226,7 @@ def _source_backend_choice_block() -> str:
     ],
 )
 def test_llama_backend_source_choice_in_setup_sh(
-    backend,
-    force_vulkan,
-    expected_backend,
-    expected_explicit,
+    backend, force_vulkan, expected_backend, expected_explicit
 ):
     env = {
         k: v
@@ -269,11 +266,7 @@ def _ps1_search(pattern: str, flags = 0) -> str:
         ("rocm", "1", "False"),
     ],
 )
-def test_llama_backend_source_choice_in_setup_ps1(
-    backend,
-    force_vulkan,
-    expected_explicit,
-):
+def test_llama_backend_source_choice_in_setup_ps1(backend, force_vulkan, expected_explicit):
     normalize = _ps1_search(
         r'\$sourceLlamaBackend = "\$\(\$env:UNSLOTH_LLAMA_BACKEND\)".*?'
         r"\$explicitVulkanSourceBuild = \(.*?\n\)\n",

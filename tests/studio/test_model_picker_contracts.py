@@ -801,10 +801,7 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     # The Vulkan inventory is authoritative even while its probe is temporarily
     # empty. Falling through would expose physical CUDA/ROCm IDs in an ordinal
     # picker and make DiffusionGemma offer a selection the route rejects.
-    assert (
-        "const inference = data?.inference_gpu; "
-        'if (inference?.backend === "vulkan") {' in src
-    )
+    assert "const inference = data?.inference_gpu; " 'if (inference?.backend === "vulkan") {' in src
     # A confirmed-Vulkan backend with no enumerated devices yet must return no
     # devices, not fall through to the torch/CUDA inventory below.
     assert "if (!(inference.devices ?? []).length) return [];" in src
