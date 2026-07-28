@@ -12,7 +12,7 @@
 #
 # Usage:
 #   pwsh -File .github/scripts/interrupt-install.ps1 -Marker 'studio deps' `
-#        -LogPath logs/install.log -InstallArgs '-SkipTorch'
+#        -LogPath logs/install.log -InstallArgs '--tauri --no-torch --local'
 [CmdletBinding()]
 param(
   [string]$Marker = '',
@@ -88,8 +88,12 @@ if ($killed) {
   # never under the studio home anyway (install.ps1 takes it from winget or
   # astral.sh). Normalise the separators, and take uv by name since the runner is
   # ephemeral and runs no other uv.
-  $homeNorm = if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $null }
-              else { ($env:UNSLOTH_STUDIO_HOME -replace '/', '\').TrimEnd('\') }
+  # Under --tauri there is no UNSLOTH_STUDIO_HOME, so fall back to the root
+  # install.ps1 uses then, or the sweep would only ever see uv.
+  $studioRoot = if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { Join-Path $HOME '.unsloth\studio' }
+                else { $env:UNSLOTH_STUDIO_HOME }
+  $homeNorm = if ([string]::IsNullOrWhiteSpace($studioRoot)) { $null }
+              else { ($studioRoot -replace '/', '\').TrimEnd('\') }
   foreach ($p in @(Get-Process -Name 'uv', 'python', 'pythonw' -ErrorAction SilentlyContinue)) {
     $path = $null
     try { $path = $p.Path } catch { }

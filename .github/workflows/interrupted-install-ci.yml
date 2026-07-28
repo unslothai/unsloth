@@ -201,11 +201,14 @@ jobs:
   # ── Windows: no process groups, so the kill path differs ──────────────────
   interrupt-windows:
     name: windows kill@${{ matrix.label }}
-    env:
-      # These legs run install.ps1 WITHOUT --tauri (install.ps1:189-215 rejects a custom
-      # root under --tauri exactly like install.sh:100-147), so the workspace-scoped
-      # root is usable here.
-      UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
+    # No UNSLOTH_STUDIO_HOME here. The desktop app always invokes the installer as
+    # `--tauri [--local]` and scrubs the variable first (install.rs:202 and :356), and
+    # install.ps1:189-215 rejects a custom root under --tauri, so a workspace-scoped
+    # root forced these legs down the shell-install path instead: UNSLOTH_TAURI_MODE=0,
+    # frontend build enabled, different root resolution, no bundled-file overlay. Worse,
+    # "Installing PyTorch" is only ever printed by Write-TauriLog (install.ps1:2440), so
+    # without --tauri the torch leg's marker could not appear at all. The runner is
+    # ephemeral, so the default root is safe to install into.
     runs-on: windows-latest
     timeout-minutes: 60
     strategy:
@@ -215,8 +218,8 @@ jobs:
           # install.ps1 parses `--no-torch` (install.ps1:121); `-SkipTorch` matches no
           # case in that switch and is silently dropped. The torch leg must NOT skip
           # torch, or its marker never appears.
-          - {label: studio-deps, marker: 'studio deps', installArgs: '--no-torch --local'}
-          - {label: torch, marker: 'Installing PyTorch', installArgs: '--local'}
+          - {label: studio-deps, marker: 'studio deps', installArgs: '--tauri --no-torch --local'}
+          - {label: torch, marker: 'Installing PyTorch', installArgs: '--tauri --local'}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -251,7 +254,8 @@ jobs:
         id: probe
         shell: pwsh
         run: |
-          $bin = Join-Path $env:UNSLOTH_STUDIO_HOME 'unsloth_studio\Scripts\unsloth.exe'
+          # --tauri refuses a custom root, so this is where install.ps1:254-262 puts it.
+          $bin = Join-Path $env:USERPROFILE '.unsloth\studio\unsloth_studio\Scripts\unsloth.exe'
           if (-not (Test-Path $bin)) {
             "verdict=NO_CLI" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             Write-Host '[probe] no unsloth CLI -> preflight reports NotInstalled (safe)'
@@ -278,7 +282,7 @@ jobs:
         run: |
           pwsh -NoProfile -NonInteractive -File install.ps1 ${{ matrix.installArgs }} *>&1 |
             Tee-Object -FilePath logs/repair.log
-          $bin = Join-Path $env:UNSLOTH_STUDIO_HOME 'unsloth_studio\Scripts\unsloth.exe'
+          $bin = Join-Path $env:USERPROFILE '.unsloth\studio\unsloth_studio\Scripts\unsloth.exe'
           if (-not (Test-Path $bin)) {
             Write-Host "::error::after a full re-run there is still no unsloth CLI at $bin"
             Get-Content logs/repair.log -Tail 30 -ErrorAction SilentlyContinue

@@ -22,7 +22,8 @@ ManagedReady with can_auto_repair=false and the backend dies on `import structlo
 
 Verdicts:
   HEALTHY      the backend boots -- the interruption did no lasting harm
-  REPAIRABLE   the backend is broken AND something reports it, so the app can repair
+  REPAIRABLE   the backend is broken AND a probe the DESKTOP consumes reports it,
+               so the app can offer a repair
   FALSE_READY  the backend is broken and every probe says ready -> THE BUG
 
 Exit: 0 for HEALTHY/REPAIRABLE/NO_CLI, 1 for FALSE_READY, 2 for a usage error.
@@ -107,6 +108,12 @@ def main(argv: list[str]) -> int:
     say("capabilities.studio_install_ok", install_ok)
 
     # ── the deeper probes the fix PRs add ────────────────────────────────────
+    # RECORDED, but NOT repair evidence: preflight/managed.rs runs only `-h` and
+    # `studio desktop-capabilities --json` (managed.rs:357) and reads
+    # studio_install_ok from that payload (managed.rs:445). It never invokes these
+    # two commands, so counting them would let a leg pass while the real app still
+    # reports ManagedReady over a torn install -- the exact false negative this
+    # workflow exists to catch.
     for label, args in (
         ("verify_install", ["studio", "verify-install"]),
         ("desktop_runtime_check", ["studio", "desktop-runtime-check"]),
@@ -142,16 +149,25 @@ def main(argv: list[str]) -> int:
     # then be false for a perfectly good install.
     blog_path = out / "backend.log"
     blog_fh = blog_path.open("w", encoding = "utf-8", errors = "replace")
-    proc = subprocess.Popen(
-        [binp, "studio", "--api-only", "-H", "127.0.0.1", "-p", str(port)],
-        stdout = blog_fh,
-        stderr = subprocess.STDOUT,
-        text = True,
-        **popen_kw,
-    )
+    # An interrupted install can leave the console script in place while its venv
+    # interpreter is gone: the earlier probes then report failure through run()'s
+    # OSError catch, but an unguarded spawn here raises instead, so no verdict.json
+    # is written and both workflows die on the json.load rather than reporting. An
+    # unlaunchable CLI is a broken backend that `-h` already flags -> REPAIRABLE.
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            [binp, "studio", "--api-only", "-H", "127.0.0.1", "-p", str(port)],
+            stdout = blog_fh,
+            stderr = subprocess.STDOUT,
+            text = True,
+            **popen_kw,
+        )
+    except OSError as e:
+        say("backend_spawn_error", f"{type(e).__name__}: {e}")
     backend_ok = False
     deadline = time.time() + a.boot_timeout
-    while time.time() < deadline:
+    while proc is not None and time.time() < deadline:
         if proc.poll() is not None:
             break
         for path in ("/api/health", "/healthz"):
@@ -167,6 +183,8 @@ def main(argv: list[str]) -> int:
         time.sleep(1)
 
     def reap() -> None:
+        if proc is None:
+            return
         if os.name == "posix":
             import signal
             for sig in (signal.SIGTERM, signal.SIGKILL):
@@ -180,11 +198,20 @@ def main(argv: list[str]) -> int:
                 except subprocess.TimeoutExpired:
                     continue
         else:
-            proc.terminate()
+            # On win32 the CLI re-spawns the server as a CHILD and waits on it
+            # (unsloth_cli/commands/studio.py:1543); CREATE_NEW_PROCESS_GROUP does not
+            # make terminate() reach descendants, so killing the wrapper alone leaves a
+            # server holding the venv open and the repair step reinstalls into files
+            # Windows has locked. taskkill /T takes the tree.
+            run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], timeout = 30)
             try:
                 proc.wait(timeout = 10)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                proc.terminate()
+                try:
+                    proc.wait(timeout = 10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
 
     reap()
     blog_fh.close()
@@ -202,9 +229,7 @@ def main(argv: list[str]) -> int:
     if backend_ok:
         verdict = "HEALTHY"
     elif (
-        facts.get("verify_install") == "failed"
-        or facts.get("desktop_runtime_check") == "failed"
-        or facts.get("capabilities.studio_install_ok") is False
+        facts.get("capabilities.studio_install_ok") is False
         or not facts.get("cli_h_ok")
         or not facts.get("capabilities_ok")
     ):
