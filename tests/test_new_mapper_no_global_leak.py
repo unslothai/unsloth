@@ -28,8 +28,13 @@ import ast
 import os
 import sys
 import types
+from importlib.metadata import version as _dist_version
 
 import pytest
+from packaging.version import Version
+
+# loader_utils reads both; via metadata so transformers stays unimported here.
+transformers_version = _dist_version("transformers")
 
 _MODELS = os.path.join(os.path.dirname(__file__), os.pardir, "unsloth", "models")
 
@@ -102,6 +107,10 @@ def _extract_resolvers(monkeypatch, fetched_source):
         "SUPPORTS_FOURBIT": True,
         "BAD_MAPPINGS": {},
         "_env_says_offline": lambda: False,
+        # Unreached today (vllm stubbed absent, SUPPORTS_FOURBIT True), but present
+        # so a change to either gate fails on the assertion, not on a bare NameError.
+        "Version": Version,
+        "transformers_version": transformers_version,
         "INT_TO_FLOAT_MAPPER": installed["INT_TO_FLOAT_MAPPER"],
         "FLOAT_TO_INT_MAPPER": installed["FLOAT_TO_INT_MAPPER"],
         "MAP_TO_UNSLOTH_16bit": installed["MAP_TO_UNSLOTH_16bit"],
@@ -140,10 +149,12 @@ def test_get_new_mapper_does_not_rebind_the_installed_fp8_tables(monkeypatch):
     # it actually ran before trusting anything below.
     assert int_to_float and float_to_int and map_to_16bit, "the fetch/exec path did not run"
 
-    # Non-empty only. This fixture serves the same mapper.py as both the installed
-    # and the fetched source, so it cannot tell a fetched table from the installed
-    # one; test_probe_answers_for_an_fp8_repo_only_the_fetched_mapper_knows does that.
+    # Shape only: this fixture serves one mapper.py as both installed and fetched
+    # source, so identity catches "handed back the installed tables" but not
+    # "returned a stale copy". Provenance is pinned by
+    # test_probe_answers_for_an_fp8_repo_only_the_fetched_mapper_knows.
     assert fp8_block and fp8_row
+    assert fp8_block is not block and fp8_row is not row
 
     assert namespace["FLOAT_TO_FP8_BLOCK_MAPPER"] is block
     assert namespace["FLOAT_TO_FP8_ROW_MAPPER"] is row
