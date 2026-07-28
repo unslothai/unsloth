@@ -2911,7 +2911,8 @@ def reset_password():
     """Reset the Unsloth admin password.
 
     Rotates the credential in place: a running Unsloth accepts the new password on
-    its next request, so there is nothing to restart.
+    its next request, so there is nothing to restart. Shared /p preview links are
+    not revoked -- rotate those in Settings if the old password leaked.
     """
     new_password = _generate_reset_password()
     try:
@@ -2935,4 +2936,7 @@ def reset_password():
         conn.close()
 
     typer.echo(f"New password for '{DEFAULT_ADMIN_USERNAME}': {new_password}")
-    typer.echo("Sessions and API keys revoked. A running Unsloth uses it immediately.")
+    typer.echo(
+        "Sessions and API keys revoked. A running Unsloth takes it on the next request, "
+        "though repeated failed logins can hold the rate limit shut for up to a minute."
+    )
