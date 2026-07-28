@@ -33,9 +33,9 @@ $PackageDir = Split-Path -Parent $ScriptDir
 # errors. Only use "master" temporarily when the latest release is missing
 # support for a new model architecture.
 #
-# UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", or "vulkan". "cpu"
-# forces the CPU-only prebuilt. "vulkan" selects Vulkan even when CUDA or
-# ROCm is detected.
+# UNSLOTH_LLAMA_BACKEND : "auto" (default), "cpu", "vulkan", "hip", or
+# "rocm". "cpu" forces the CPU-only prebuilt. "vulkan" selects Vulkan even
+# when CUDA or ROCm is detected. "hip"/"rocm" opts out of automatic Vulkan.
 $DefaultLlamaPrForce = ""
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
@@ -3537,31 +3537,16 @@ $ResolvedSourceUrl = $LlamaSource
 $ResolvedSourceRef = $RequestedLlamaTag
 $ResolvedSourceRefKind = "tag"
 $ResolvedLlamaTag = $RequestedLlamaTag
-$sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
-$sourceLegacyLlamaBackend = "$($env:UNSLOTH_LLAMA_BACKEND)".Trim().ToLowerInvariant()
-if (-not $sourceLlamaBackend) {
-    # Legacy pre-consolidation var name; still honored so an existing
-    # UNSLOTH_LLAMA_BACKEND=vulkan environment keeps forcing Vulkan instead of
-    # silently reverting to auto-detected CUDA/ROCm/CPU.
-    $sourceLlamaBackend = $sourceLegacyLlamaBackend
-} elseif (
-    $sourceLlamaBackend -notin @("cpu", "vulkan") -and
-    $sourceLegacyLlamaBackend -in @("cpu", "vulkan")
-) {
-    # Same rule install_llama_prebuilt.py's llama_backend_from_env() applies:
-    # "auto" (or a typo) is not an explicit backend, so the legacy var is still
-    # consulted. Without this the installer plans Vulkan from the inherited
-    # environment while setup keeps $explicitVulkanBackend false, silently
-    # substituting a non-Vulkan build for a request meant to fail closed.
-    $sourceLlamaBackend = $sourceLegacyLlamaBackend
-}
+$sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_BACKEND)".Trim().ToLowerInvariant()
 $sourceLegacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()
 $explicitVulkanSourceBuild = (
     -not $IsMacOS -and
-    $sourceLlamaBackend -ne "cpu" -and
     (
         $sourceLlamaBackend -eq "vulkan" -or
-        $sourceLegacyForceVulkan -in @("1", "true", "yes", "on")
+        (
+            $sourceLlamaBackend -notin @("cpu", "vulkan", "hip", "rocm") -and
+            $sourceLegacyForceVulkan -in @("1", "true", "yes", "on")
+        )
     )
 )
 
@@ -3812,16 +3797,20 @@ if ($LocalLlamaCppLinked) {
             if ($IsMacOS) {
                 Write-Host "[WARN] Vulkan has no effect on macOS; the universal build uses Metal" -ForegroundColor Yellow
             } elseif ($windowsArm64) {
-                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_LLAMA_CPP_BACKEND or compile llama.cpp from source."
+                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_LLAMA_BACKEND or compile llama.cpp from source."
             } else {
                 $prebuiltArgs += @("--llama-backend", "vulkan")
                 $explicitVulkanBackend = $true
                 Write-Host "  llama.cpp      Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" -ForegroundColor Cyan
             }
-        } elseif ($llamaBackend -and $llamaBackend -notin @("auto", "vulkan")) {
-            Write-Host "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND/UNSLOTH_LLAMA_BACKEND='$llamaBackend' (expected 'auto', 'cpu', or 'vulkan')" -ForegroundColor Yellow
+        } elseif ($llamaBackend -and $llamaBackend -notin @("auto", "hip", "rocm")) {
+            Write-Host "[WARN] Ignoring UNSLOTH_LLAMA_BACKEND='$llamaBackend' (expected 'auto', 'cpu', 'vulkan', 'hip', or 'rocm')" -ForegroundColor Yellow
         }
-        if (-not $IsMacOS -and $llamaBackend -ne "cpu" -and $legacyForceVulkan -in @("1", "true", "yes", "on")) {
+        if (
+            -not $IsMacOS -and
+            $llamaBackend -notin @("cpu", "vulkan", "hip", "rocm") -and
+            $legacyForceVulkan -in @("1", "true", "yes", "on")
+        ) {
             if ($windowsArm64) {
                 throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
             }

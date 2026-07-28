@@ -6210,22 +6210,18 @@ def _normalized_llama_backend(value: str | None) -> str | None:
     if not value:
         return None
     backend = value.strip().lower()
-    return backend if backend in {"vulkan", "cpu"} else None
+    if backend in {"vulkan", "hip", "rocm", "cpu"}:
+        return "hip" if backend == "rocm" else backend
+    return None
 
 
 def llama_backend_from_env() -> str | None:
     """Read an explicit llama.cpp backend preference from the environment.
 
-    ``UNSLOTH_LLAMA_CPP_BACKEND`` is shared with setup.sh/setup.ps1. ``auto`` and
-    unknown values leave selection automatic; ``cpu`` and ``vulkan`` are explicit.
-    Falls back to the legacy ``UNSLOTH_LLAMA_BACKEND`` var (pre-consolidation name)
-    when the new one is unset/auto, so an existing UNSLOTH_LLAMA_BACKEND=vulkan
-    environment still forces Vulkan instead of silently reverting to auto-detected
-    CUDA/ROCm/CPU.
+    ``UNSLOTH_LLAMA_BACKEND`` is shared with setup.sh/setup.ps1. ``auto`` and
+    unknown values leave selection automatic. ``cpu`` and ``vulkan`` select those
+    bundles explicitly, while ``hip``/``rocm`` opt out of automatic Vulkan routing.
     """
-    backend = _normalized_llama_backend(os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND"))
-    if backend is not None:
-        return backend
     return _normalized_llama_backend(os.environ.get("UNSLOTH_LLAMA_BACKEND"))
 
 
@@ -6238,8 +6234,8 @@ def resolved_llama_backend(llama_backend: str | None = None) -> str | None:
 def force_vulkan_requested(llama_backend: str | None = None) -> bool:
     """Whether this run should install the Vulkan llama.cpp prebuilt.
 
-    Triggered by ``UNSLOTH_LLAMA_CPP_BACKEND=vulkan``, legacy
-    ``UNSLOTH_FORCE_VULKAN``, or ``--llama-backend vulkan``. Scoped to the
+    Triggered by ``UNSLOTH_LLAMA_BACKEND=vulkan``, legacy ``UNSLOTH_FORCE_VULKAN``,
+    or ``--llama-backend vulkan``. Scoped to the
     llama.cpp backend; the torch/training stack installs separately and still sees
     the real GPU.
     """
@@ -6420,7 +6416,7 @@ def _route_to_vulkan_prebuilt(
     The default Unsloth release manifest includes Vulkan app bundles, including the
     DiffusionGemma visual server. Three triggers route here, all suppressed when a CPU
     flag (--cpu-fallback or --force-cpu, folded into force_cpu) wins:
-      * ``UNSLOTH_LLAMA_CPP_BACKEND=vulkan`` / ``UNSLOTH_FORCE_VULKAN`` /
+      * ``UNSLOTH_LLAMA_BACKEND=vulkan`` / ``UNSLOTH_FORCE_VULKAN`` /
         ``--llama-backend vulkan`` forces Vulkan over the detected CUDA/ROCm backend;
       * Windows AMD with no HIP-prebuilt gfx arch auto-falls back to Vulkan (#7357);
       * an auto-detected Intel GPU with NO physical NVIDIA/ROCm, the purpose of the
@@ -6445,7 +6441,7 @@ def _route_to_vulkan_prebuilt(
     if host.is_macos:
         if forced:
             log(
-                "UNSLOTH_LLAMA_CPP_BACKEND=vulkan is set but ignored on macOS "
+                "UNSLOTH_LLAMA_BACKEND=vulkan is set but ignored on macOS "
                 "(Metal is used; there is no Vulkan prebuilt)"
             )
         return host, published_repo, published_release_tag, None
@@ -6876,7 +6872,7 @@ def parse_args() -> argparse.Namespace:
         action = "store_true",
         default = False,
         help = (
-            "Deliberate CPU-only install (UNSLOTH_LLAMA_CPP_BACKEND=cpu). Drops GPU "
+            "Deliberate CPU-only install (UNSLOTH_LLAMA_BACKEND=cpu). Drops GPU "
             "detection like --cpu-fallback but also records force_cpu in the marker, so "
             "the in-app updater re-asserts CPU and never re-routes to a GPU/Vulkan "
             "bundle that would revive the Intel iGPU crash (#7213)."
@@ -6890,7 +6886,7 @@ def parse_args() -> argparse.Namespace:
             "bundle and records the choice so Studio updates keep it. It is ignored "
             "on macOS, which uses Metal, and fails closed on Windows arm64 when no "
             "compatible Vulkan bundle is published. "
-            "Same effect as UNSLOTH_LLAMA_CPP_BACKEND=vulkan / "
+            "Same effect as UNSLOTH_LLAMA_BACKEND=vulkan / "
             "UNSLOTH_FORCE_VULKAN=1."
         ),
     )

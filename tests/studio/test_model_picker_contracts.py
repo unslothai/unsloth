@@ -694,6 +694,20 @@ def test_chat_load_prepares_hf_token_before_gguf_metadata_preflight():
     assert 'throw new Error("Model load cancelled.")' in runtime
 
 
+def test_chat_autoload_prepares_hf_token_before_gguf_metadata_preflight():
+    """Background autoload performs the same GGUF classification probe as the
+    interactive paths, so a stale saved token must take the same recovery path.
+    """
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    autoload = adapter.split("async function loadAutoLoadCandidate", 1)[1]
+    autoload = autoload.split("async function autoLoadSmallestModel", 1)[0]
+    prepare = autoload.index("prepareHfTokenForUse(")
+    metadata = autoload.index("fetchGgufStagedMetadata({", prepare)
+    assert prepare < metadata
+    assert "hf_token: preparedToken.token" in autoload
+    assert 'throw new Error("Model load cancelled.")' in autoload
+
+
 def test_cpu_only_llama_build_hides_gpu_picker():
     src = (WORKDIR / "studio" / "backend" / "main.py").read_text(encoding = "utf-8")
     assert "and not LlamaCppBackend._backend_lacks_gpu_lib()" in src
@@ -770,10 +784,12 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     applicator speaks, and a Vulkan pick does not use them.
     """
     src = " ".join(_read("hooks/use-gpu-info.ts").split())
-    # The Vulkan inventory is consulted first, and only when it has devices.
+    # The Vulkan inventory is authoritative even while its probe is temporarily
+    # empty. Falling through would expose physical CUDA/ROCm IDs in an ordinal
+    # picker and make DiffusionGemma offer a selection the route rejects.
     assert (
         "const inference = data?.inference_gpu; "
-        'if (inference?.backend === "vulkan" && (inference.devices ?? []).length) {' in src
+        'if (inference?.backend === "vulkan") {' in src
     )
     # Pinnable on the ggml ordinal space, gated on the backend's own support flag.
     assert "const picksAccepted = inference.gguf_gpu_ids_supported !== false;" in src

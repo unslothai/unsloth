@@ -152,7 +152,7 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
   // The XPU ban does not apply there, it is about torch-xpu ordinals that no
   // applicator speaks; a Vulkan pick does not use them.
   const inference = data?.inference_gpu;
-  if (inference?.backend === "vulkan" && (inference.devices ?? []).length) {
+  if (inference?.backend === "vulkan") {
     const picksAccepted = inference.gguf_gpu_ids_supported !== false;
     return (inference.devices ?? [])
       .filter((d) => typeof d.index === "number")

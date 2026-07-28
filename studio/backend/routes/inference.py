@@ -4773,6 +4773,15 @@ def _guard_chat_load_against_training(
     if is_gguf and gpu_memory_mode == "manual" and diffusion_kind is False:
         return
 
+    binary = LlamaCppBackend._find_llama_server_binary() if is_gguf else None
+    is_vulkan_backend = bool(
+        is_gguf
+        and (
+            gpu_ids_are_vulkan_ordinals
+            or (binary and LlamaCppBackend._is_vulkan_backend(binary))
+        )
+    )
+
     diffusion_gpu = None
     if is_gguf and diffusion_kind is not False and not gpu_ids_are_vulkan_ordinals:
         # Use the same token selection as the runner: an explicit pick wins,
@@ -4794,7 +4803,10 @@ def _guard_chat_load_against_training(
             cache_type_kv = cache_type_kv,
             tensor_parallel = (
                 _effective_tensor_parallel(llama_extra_args, tensor_parallel)
-                and (is_vulkan or LlamaCppBackend._effective_gpu_count(requested_gpu_ids) >= 2)
+                and (
+                    is_vulkan_backend
+                    or LlamaCppBackend._effective_gpu_count(requested_gpu_ids) >= 2
+                )
             ),
         )
         if is_gguf
@@ -4803,10 +4815,6 @@ def _guard_chat_load_against_training(
 
     vulkan_free_vram_gb = None
     if is_gguf:
-        binary = LlamaCppBackend._find_llama_server_binary()
-        is_vulkan_backend = bool(
-            gpu_ids_are_vulkan_ordinals or (binary and LlamaCppBackend._is_vulkan_backend(binary))
-        )
         if is_vulkan_backend and (gpu_ids_are_vulkan_ordinals or diffusion_kind is False):
             gpu_memory = LlamaCppBackend._get_gpu_memory(binary)
             if not requested_gpu_ids:

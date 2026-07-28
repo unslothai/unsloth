@@ -37,11 +37,11 @@ fi
 #                             Only use "master" temporarily when the latest release
 #                             is missing support for a new model architecture.
 #
-#   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", or "vulkan". "cpu"
-#                               forces the CPU-only prebuilt. "vulkan" selects
-#                               Vulkan even when CUDA or ROCm is detected.
-#                               UNSLOTH_LLAMA_BACKEND (legacy name) is honored
-#                               as a fallback when this is unset.
+#   UNSLOTH_LLAMA_BACKEND : "auto" (default), "cpu", "vulkan", "hip", or
+#                           "rocm". "cpu" forces the CPU-only prebuilt. "vulkan"
+#                           selects Vulkan even when CUDA or ROCm is detected.
+#                           "hip"/"rocm" keeps the detected HIP backend and opts
+#                           out of automatic Vulkan fallback.
 # ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
@@ -1274,35 +1274,19 @@ _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
 _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
-_source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" | awk '{$1=$1; print tolower($0)}')"
-_source_legacy_backend="$(printf '%s' "${UNSLOTH_LLAMA_BACKEND:-}" | awk '{$1=$1; print tolower($0)}')"
-if [ -z "$_source_backend_choice" ]; then
-    # Legacy pre-consolidation var name; still honored so an existing
-    # UNSLOTH_LLAMA_BACKEND=vulkan environment keeps forcing Vulkan instead of
-    # silently reverting to auto-detected CUDA/ROCm/CPU.
-    _source_backend_choice="${_source_legacy_backend:-auto}"
-elif [ "$_source_backend_choice" != "cpu" ] && [ "$_source_backend_choice" != "vulkan" ]; then
-    # install_llama_prebuilt.py's llama_backend_from_env() also consults the
-    # legacy var when the new one is SET but is not an explicit backend name
-    # ("auto", or a typo). Mirror it: the installer inherits this environment
-    # and plans Vulkan either way, so without this setup leaves
-    # _explicit_vulkan_backend/_explicit_vulkan_source_build false and silently
-    # substitutes a CUDA/ROCm/CPU build for a request meant to fail closed.
-    # An unrecognized value with no legacy backend is preserved for the warning.
-    case "$_source_legacy_backend" in
-        cpu|vulkan) _source_backend_choice="$_source_legacy_backend" ;;
-    esac
-fi
+_source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
 _source_legacy_force_vulkan="$(printf '%s' "${UNSLOTH_FORCE_VULKAN:-}" | awk '{$1=$1; print tolower($0)}')"
 _explicit_vulkan_source_build=false
-if [ "$_HOST_SYSTEM" != "Darwin" ] && [ "$_source_backend_choice" != "cpu" ]; then
-    if [ "$_source_backend_choice" = "vulkan" ]; then
-        _explicit_vulkan_source_build=true
-    else
-        case "$_source_legacy_force_vulkan" in
-            1|true|yes|on) _explicit_vulkan_source_build=true ;;
-        esac
-    fi
+if [ "$_HOST_SYSTEM" != "Darwin" ]; then
+    case "$_source_backend_choice" in
+        vulkan) _explicit_vulkan_source_build=true ;;
+        cpu|hip|rocm) ;;
+        *)
+            case "$_source_legacy_force_vulkan" in
+                1|true|yes|on) _explicit_vulkan_source_build=true ;;
+            esac
+            ;;
+    esac
 fi
 
 # Pick the release repo install_llama_prebuilt.py plans against. Every host this
@@ -1490,7 +1474,7 @@ else
     case "$_llama_backend" in
         cpu)
             if [ "$_HOST_SYSTEM" = "Darwin" ]; then
-                step "llama.cpp" "UNSLOTH_LLAMA_CPP_BACKEND=cpu has no effect on macOS (universal build; use -ngl 0 at runtime for CPU-only)" "$C_WARN" >&2
+                step "llama.cpp" "UNSLOTH_LLAMA_BACKEND=cpu has no effect on macOS (universal build; use -ngl 0 at runtime for CPU-only)" "$C_WARN" >&2
             else
                 _PREBUILT_CMD+=(--force-cpu)
             fi
@@ -1504,12 +1488,17 @@ else
                 step "llama.cpp" "Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" "$C_OK"
             fi
             ;;
-        ""|auto) ;;
-        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND/UNSLOTH_LLAMA_BACKEND='$_llama_backend' (expected 'auto', 'cpu', or 'vulkan')" "$C_WARN" >&2 ;;
+        ""|auto|hip|rocm) ;;
+        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_BACKEND='$_llama_backend' (expected 'auto', 'cpu', 'vulkan', 'hip', or 'rocm')" "$C_WARN" >&2 ;;
     esac
-    if [ "$_llama_backend" != "cpu" ] && [ "$_HOST_SYSTEM" != "Darwin" ]; then
-        case "$_legacy_force_vulkan" in
-            1|true|yes|on) _explicit_vulkan_backend=true ;;
+    if [ "$_HOST_SYSTEM" != "Darwin" ]; then
+        case "$_llama_backend" in
+            cpu|vulkan|hip|rocm) ;;
+            *)
+                case "$_legacy_force_vulkan" in
+                    1|true|yes|on) _explicit_vulkan_backend=true ;;
+                esac
+                ;;
         esac
     fi
     _PREBUILT_LOG="$(mktemp)"

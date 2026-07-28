@@ -27,7 +27,7 @@ _SKIP_NO_PWSH = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "pwsh 
 def _backend_block() -> str:
     text = _SETUP_SH.read_text(encoding = "utf-8")
     m = re.search(r"_llama_backend=.*?esac", text, re.DOTALL)
-    assert m, "UNSLOTH_LLAMA_CPP_BACKEND block not found in setup.sh"
+    assert m, "UNSLOTH_LLAMA_BACKEND block not found in setup.sh"
     return m.group(0)
 
 
@@ -35,12 +35,16 @@ def _run(value: str | None, system: str = "Linux") -> tuple[list[str], str]:
     # Pass the value through env (not the script text) so whitespace survives, and
     # stub the setup.sh logging helpers the unknown-value branch calls. system sets
     # _HOST_SYSTEM so the macOS (Darwin) no-op branch can be exercised.
-    env = {k: v for k, v in os.environ.items() if k != "UNSLOTH_LLAMA_CPP_BACKEND"}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("UNSLOTH_LLAMA_BACKEND", "UNSLOTH_FORCE_VULKAN")
+    }
     if value is not None:
-        env["UNSLOTH_LLAMA_CPP_BACKEND"] = value
+        env["UNSLOTH_LLAMA_BACKEND"] = value
     harness = (
         f'set -u\n_PREBUILT_CMD=()\nC_WARN=""\nC_OK=""\n_HOST_SYSTEM="{system}"\n'
-        '_source_backend_choice="$(printf \'%s\' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" '
+        '_source_backend_choice="$(printf \'%s\' "${UNSLOTH_LLAMA_BACKEND:-auto}" '
         "| awk '{$1=$1; print tolower($0)}')\"\n"
         '_source_legacy_force_vulkan="$(printf \'%s\' "${UNSLOTH_FORCE_VULKAN:-}" '
         "| awk '{$1=$1; print tolower($0)}')\"\n"
@@ -90,6 +94,15 @@ def test_backend_vulkan_is_accepted(value):
     args, stderr = _run(value)
     assert "--force-cpu" not in args
     assert args[-2:] == ["--llama-backend", "vulkan"]
+    assert "Ignoring" not in stderr
+
+
+@_SKIP_NO_BASH
+@pytest.mark.parametrize("value", ["hip", "HIP", "rocm", " ROCM "])
+def test_backend_hip_opt_out_is_accepted(value):
+    args, stderr = _run(value)
+    assert "--force-cpu" not in args
+    assert "--llama-backend" not in args
     assert "Ignoring" not in stderr
 
 
@@ -190,98 +203,52 @@ def test_legacy_force_vulkan_gets_the_same_strict_fallback():
 def _source_backend_choice_block() -> str:
     text = _SETUP_SH.read_text(encoding = "utf-8")
     m = re.search(
-        r'_source_backend_choice="\$\(printf.*?\n(?:.*?\n)*?fi\n',
+        r'_source_backend_choice="\$\(printf.*?\n.*?_explicit_vulkan_source_build=false\n'
+        r'.*?\nfi\n',
         text,
+        re.DOTALL,
     )
-    assert m, "_source_backend_choice fallback block not found in setup.sh"
+    assert m, "_source_backend_choice block not found in setup.sh"
     return m.group(0)
 
 
 @_SKIP_NO_BASH
 @pytest.mark.parametrize(
-    "cpp_backend, legacy_backend, expected",
+    "backend, force_vulkan, expected_backend, expected_explicit",
     [
-        (None, "vulkan", "vulkan"),
-        (None, "VULKAN", "vulkan"),
-        (None, None, "auto"),
-        ("cpu", "vulkan", "cpu"),
-        ("vulkan", None, "vulkan"),
-        # install_llama_prebuilt.py's llama_backend_from_env() consults the legacy
-        # var whenever the new one is not an explicit backend name, so an explicit
-        # "auto" (or a typo) beside a legacy UNSLOTH_LLAMA_BACKEND=vulkan must
-        # resolve to vulkan here too. Otherwise setup leaves _explicit_vulkan_backend
-        # false while the installer it launches plans Vulkan, and a failed Vulkan
-        # install silently degrades to a CUDA/ROCm/CPU build instead of failing closed.
-        ("auto", "vulkan", "vulkan"),
-        ("banana", "vulkan", "vulkan"),
-        ("auto", "cpu", "cpu"),
-        # An unrecognized value with no legacy backend is preserved so the
-        # "Ignoring ..." warning can still name what the user actually set.
-        ("banana", None, "banana"),
+        (None, None, "auto", "false"),
+        ("vulkan", None, "vulkan", "true"),
+        ("auto", "on", "auto", "true"),
+        ("banana", "1", "banana", "true"),
+        ("cpu", "1", "cpu", "false"),
+        ("hip", "1", "hip", "false"),
+        ("rocm", "1", "rocm", "false"),
     ],
 )
-def test_legacy_llama_backend_env_falls_back_in_setup_sh(cpp_backend, legacy_backend, expected):
-    # UNSLOTH_LLAMA_BACKEND was the documented override before setup.sh moved to
-    # UNSLOTH_LLAMA_CPP_BACKEND; an environment that still sets only the legacy
-    # name must resolve the same as if the new var had been set directly.
+def test_llama_backend_source_choice_in_setup_sh(
+    backend,
+    force_vulkan,
+    expected_backend,
+    expected_explicit,
+):
     env = {
         k: v
         for k, v in os.environ.items()
-        if k not in ("UNSLOTH_LLAMA_CPP_BACKEND", "UNSLOTH_LLAMA_BACKEND")
+        if k not in ("UNSLOTH_LLAMA_BACKEND", "UNSLOTH_FORCE_VULKAN")
     }
-    if cpp_backend is not None:
-        env["UNSLOTH_LLAMA_CPP_BACKEND"] = cpp_backend
-    if legacy_backend is not None:
-        env["UNSLOTH_LLAMA_BACKEND"] = legacy_backend
+    if backend is not None:
+        env["UNSLOTH_LLAMA_BACKEND"] = backend
+    if force_vulkan is not None:
+        env["UNSLOTH_FORCE_VULKAN"] = force_vulkan
     harness = (
-        "set -u\n" f"{_source_backend_choice_block()}\n" 'printf "%s" "$_source_backend_choice"'
+        "set -u\n_HOST_SYSTEM=Linux\n"
+        f"{_source_backend_choice_block()}\n"
+        'printf "%s:%s" "$_source_backend_choice" "$_explicit_vulkan_source_build"'
     )
     out = subprocess.run(
         ["bash", "-c", harness], capture_output = True, text = True, env = env, check = True
     )
-    assert out.stdout == expected
-
-
-@_SKIP_NO_PWSH
-@pytest.mark.parametrize(
-    "cpp_backend, legacy_backend, expected",
-    [
-        (None, "vulkan", "vulkan"),
-        (None, "VULKAN", "vulkan"),
-        (None, None, ""),
-        ("cpu", "vulkan", "cpu"),
-        ("vulkan", None, "vulkan"),
-        ("auto", "vulkan", "vulkan"),
-        ("banana", "vulkan", "vulkan"),
-        ("auto", "cpu", "cpu"),
-        ("banana", None, "banana"),
-    ],
-)
-def test_legacy_llama_backend_env_falls_back_in_setup_ps1(cpp_backend, legacy_backend, expected):
-    # setup.ps1 must resolve the legacy var exactly like setup.sh and
-    # install_llama_prebuilt.py's llama_backend_from_env(), so a Windows host with
-    # an inherited UNSLOTH_LLAMA_BACKEND=vulkan still fails closed on Vulkan.
-    normalize = _ps1_search(
-        r'\$sourceLlamaBackend = "\$\(\$env:UNSLOTH_LLAMA_CPP_BACKEND\)".*?\n\}\n',
-        re.DOTALL,
-    )
-    env = {
-        k: v
-        for k, v in os.environ.items()
-        if k not in ("UNSLOTH_LLAMA_CPP_BACKEND", "UNSLOTH_LLAMA_BACKEND")
-    }
-    if cpp_backend is not None:
-        env["UNSLOTH_LLAMA_CPP_BACKEND"] = cpp_backend
-    if legacy_backend is not None:
-        env["UNSLOTH_LLAMA_BACKEND"] = legacy_backend
-    out = subprocess.run(
-        ["pwsh", "-NoProfile", "-Command", f'{normalize}\n"RESULT:$sourceLlamaBackend"'],
-        capture_output = True,
-        text = True,
-        env = env,
-        check = True,
-    )
-    assert out.stdout.strip() == f"RESULT:{expected}"
+    assert out.stdout == f"{expected_backend}:{expected_explicit}"
 
 
 def _ps1_search(pattern: str, flags = 0) -> str:
@@ -290,22 +257,73 @@ def _ps1_search(pattern: str, flags = 0) -> str:
     return m.group(0)
 
 
+@_SKIP_NO_PWSH
+@pytest.mark.parametrize(
+    "backend, force_vulkan, expected_explicit",
+    [
+        (None, None, "False"),
+        ("vulkan", None, "True"),
+        ("auto", "on", "True"),
+        ("cpu", "1", "False"),
+        ("hip", "1", "False"),
+        ("rocm", "1", "False"),
+    ],
+)
+def test_llama_backend_source_choice_in_setup_ps1(
+    backend,
+    force_vulkan,
+    expected_explicit,
+):
+    normalize = _ps1_search(
+        r'\$sourceLlamaBackend = "\$\(\$env:UNSLOTH_LLAMA_BACKEND\)".*?'
+        r"\$explicitVulkanSourceBuild = \(.*?\n\)\n",
+        re.DOTALL,
+    )
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("UNSLOTH_LLAMA_BACKEND", "UNSLOTH_FORCE_VULKAN")
+    }
+    if backend is not None:
+        env["UNSLOTH_LLAMA_BACKEND"] = backend
+    if force_vulkan is not None:
+        env["UNSLOTH_FORCE_VULKAN"] = force_vulkan
+    out = subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-Command",
+            f'{normalize}\n"RESULT:$sourceLlamaBackend:$explicitVulkanSourceBuild"',
+        ],
+        capture_output = True,
+        text = True,
+        env = env,
+        check = True,
+    )
+    expected_backend = (backend or "").strip().lower()
+    assert out.stdout.strip() == f"RESULT:{expected_backend}:{expected_explicit}"
+
+
 def _run_ps1(value: str | None) -> str:
     # The override is normalized (assign + warn) at the top of the prebuilt block and
     # applied to $prebuiltArgs lower down; compose both real snippets.
     normalize = _ps1_search(
-        r"\$llamaBackend = \$sourceLlamaBackend.*?Ignoring UNSLOTH_LLAMA_CPP_BACKEND.*?\n\s*\}",
+        r"\$llamaBackend = \$sourceLlamaBackend.*?Ignoring UNSLOTH_LLAMA_BACKEND.*?\n\s*\}",
         re.DOTALL,
     )
     apply_flag = _ps1_search(
         r'if \(\$llamaBackend -eq "cpu"\) \{\s*\$prebuiltArgs \+= "--force-cpu"\s*\}'
     )
-    env = {k: v for k, v in os.environ.items() if k != "UNSLOTH_LLAMA_CPP_BACKEND"}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("UNSLOTH_LLAMA_BACKEND", "UNSLOTH_FORCE_VULKAN")
+    }
     if value is not None:
-        env["UNSLOTH_LLAMA_CPP_BACKEND"] = value
+        env["UNSLOTH_LLAMA_BACKEND"] = value
     harness = (
         "$prebuiltArgs = @()\n"
-        '$sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()\n'
+        '$sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_BACKEND)".Trim().ToLowerInvariant()\n'
         '$sourceLegacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()\n'
         f'{normalize}\n{apply_flag}\n"ARGS:" + ($prebuiltArgs -join ",")'
     )
@@ -341,6 +359,15 @@ def test_ps1_backend_vulkan_is_accepted(value):
     out = _run_ps1(value)
     assert "--force-cpu" not in out
     assert "--llama-backend,vulkan" in out
+    assert "Ignoring" not in out
+
+
+@_SKIP_NO_PWSH
+@pytest.mark.parametrize("value", ["hip", "HIP", "rocm", " ROCM "])
+def test_ps1_backend_hip_opt_out_is_accepted(value):
+    out = _run_ps1(value)
+    assert "--force-cpu" not in out
+    assert "--llama-backend" not in out
     assert "Ignoring" not in out
 
 

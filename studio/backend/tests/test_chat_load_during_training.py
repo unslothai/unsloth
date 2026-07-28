@@ -757,6 +757,11 @@ class TestChatLoadGuardRoute(unittest.TestCase):
                 "_effective_gpu_count",
                 return_value = 0,
             ),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_find_llama_server_binary",
+                return_value = "/fake/llama-server",
+            ),
             patch.object(self.route.LlamaCppBackend, "_is_vulkan_backend", return_value = True),
         ):
             self._guard(
