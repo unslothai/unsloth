@@ -451,9 +451,7 @@ async def desktop_login(payload: DesktopLoginRequest) -> Token:
 
     return Token(
         access_token = create_access_token(subject = username, desktop = True, secret = jwt_secret),
-        refresh_token = create_refresh_token(
-            subject = username, desktop = True, secret = jwt_secret
-        ),
+        refresh_token = create_refresh_token(subject = username, desktop = True, secret = jwt_secret),
         token_type = "bearer",
         must_change_password = False,
     )
@@ -469,9 +467,7 @@ async def refresh(payload: RefreshTokenRequest) -> Token:
             detail = "Invalid or expired refresh token",
         )
     username, is_desktop, jwt_secret = consumed
-    new_access_token = create_access_token(
-        subject = username, desktop = is_desktop, secret = jwt_secret
-    )
+    new_access_token = create_access_token(subject = username, desktop = is_desktop, secret = jwt_secret)
     new_refresh_token = create_refresh_token(
         subject = username, desktop = is_desktop, secret = jwt_secret
     )
@@ -562,8 +558,7 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
 
 @router.post("/api-keys", response_model = CreateApiKeyResponse)
 async def create_api_key(
-    payload: CreateApiKeyRequest,
-    credential: tuple = Depends(get_current_credential),
+    payload: CreateApiKeyRequest, credential: tuple = Depends(get_current_credential)
 ) -> CreateApiKeyResponse:
     """Create a new API key. The raw key is returned once and cannot be retrieved later."""
     current_subject, generation = credential
