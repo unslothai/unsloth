@@ -92,6 +92,7 @@ import {
 import {
   countReasoningGroups,
   createReasoningDurationTracker,
+  lastReasoningGroupTextLength,
 } from "../utils/reasoning-duration";
 import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
@@ -4163,6 +4164,16 @@ export function createOpenAIStreamAdapter(
               ) {
                 reasoningDurationTracker.startGroup(
                   parsedReasoningGroupCount - 1,
+                );
+              }
+              if (parsedReasoningGroupCount > 0) {
+                // Providers that close every reasoning block atomically
+                // (structured parts wrapped as <think>..</think>) end the group
+                // on each chunk. Reopen while the reasoning text is still
+                // growing so the timer spans the whole pass.
+                reasoningDurationTracker.resumeGroup(
+                  parsedReasoningGroupCount - 1,
+                  lastReasoningGroupTextLength(assistantContent),
                 );
               }
               if (
