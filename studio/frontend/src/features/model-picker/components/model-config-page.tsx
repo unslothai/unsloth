@@ -115,6 +115,7 @@ function withoutUnsupportedDiffusionSettings(
     (config.gpuMemoryMode ?? "auto") === "auto" &&
     config.gpuLayers == null &&
     config.nCpuMoe == null &&
+    !config.tensorParallel &&
     !hasUnsupportedGpuPick
   ) {
     return config;
@@ -124,6 +125,7 @@ function withoutUnsupportedDiffusionSettings(
     gpuMemoryMode: "auto",
     gpuLayers: undefined,
     nCpuMoe: undefined,
+    tensorParallel: false,
     ...(hasUnsupportedGpuPick
       ? {
           selectedGpuIds: undefined,

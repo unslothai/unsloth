@@ -6636,6 +6636,9 @@ def install_prebuilt(
 ) -> None:
     # force_cpu drops GPU detection (mechanism, both --cpu-fallback and --force-cpu);
     # persist_force_cpu records the deliberate choice so the updater re-asserts it.
+    if resolved_llama_backend(llama_backend) == "cpu":
+        force_cpu = True
+        persist_force_cpu = True
     host = detect_host()
     host = _apply_host_overrides(
         host,
@@ -6970,6 +6973,7 @@ def emit_resolver_output(payload: dict[str, Any], *, output_format: str) -> None
 
 def main() -> int:
     args = parse_args()
+    cpu_backend_requested = resolved_llama_backend(args.llama_backend) == "cpu"
     if args.validate_install is not None:
         try:
             validate_existing_install(
@@ -7037,9 +7041,9 @@ def main() -> int:
         # Host-aware "is a prebuilt available" probe, no download. Every host now
         # plans against the fork (args.published_repo defaults to it); an explicit
         # --published-repo overrides. PrebuiltFallback == source build.
-        # Both flags drop GPU detection; --force-cpu additionally persists (install
-        # path only). The probe only needs the mechanism, so OR them.
-        _cpu_mechanism = args.cpu_fallback or args.force_cpu
+        # CPU fallback and explicit CPU choices drop GPU detection. The probe only
+        # needs the mechanism; persistence belongs to the install path.
+        _cpu_mechanism = args.cpu_fallback or args.force_cpu or cpu_backend_requested
         host = _apply_host_overrides(
             detect_host(),
             override_has_rocm = args.has_rocm,
@@ -7097,10 +7101,10 @@ def main() -> int:
         published_release_tag = args.published_release_tag or "",
         override_has_rocm = args.has_rocm,
         override_rocm_gfx = args.rocm_gfx,
-        # Both drop GPU detection; only --force-cpu (deliberate) is recorded so the
-        # updater re-asserts it. --cpu-fallback stays transient and heals to GPU.
-        force_cpu = args.cpu_fallback or args.force_cpu,
-        persist_force_cpu = args.force_cpu,
+        # Explicit CPU choices persist so the updater re-asserts them.
+        # --cpu-fallback stays transient and heals to GPU.
+        force_cpu = args.cpu_fallback or args.force_cpu or cpu_backend_requested,
+        persist_force_cpu = args.force_cpu or cpu_backend_requested,
         llama_backend = args.llama_backend,
         instruction_cleanup_root = install_arg.absolute(),
     )

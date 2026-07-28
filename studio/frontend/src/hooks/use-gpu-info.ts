@@ -172,8 +172,7 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
   // must hide every pick surface: the backend reports gguf_gpu_ids_supported,
   // and absent support info defaults to pinnable (older backend).
   const pinnableBackend = data?.gpu?.gguf_gpu_ids_supported !== false;
-  const diffusionBackend =
-    data?.device_backend === "cuda" || data?.device_backend === "rocm";
+  const diffusionBackend = data?.device_backend === "cuda";
   return (data?.gpu?.devices ?? [])
     .filter((d) => typeof d.index === "number")
     .map((d) => ({

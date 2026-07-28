@@ -695,6 +695,47 @@ def test_resolve_prebuilt_cpu_fallback_overrides_intel_vulkan(monkeypatch, capsy
     assert seen["repo"] == FORK
 
 
+def test_cpu_backend_env_forces_cpu_in_resolver(monkeypatch, capsys):
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "cpu")
+    monkeypatch.setattr(
+        ilp,
+        "detect_host",
+        lambda: _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True),
+    )
+    seen, _ = _run_resolve_capture_host(monkeypatch, capsys)
+    assert seen["host"].has_intel_gpu is False
+    assert seen["repo"] == FORK
+
+
+def test_cpu_backend_env_forces_cpu_in_direct_install(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "cpu")
+    monkeypatch.setattr(
+        ilp,
+        "detect_host",
+        lambda: _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True),
+    )
+    seen = {}
+
+    def _route(
+        host,
+        repo,
+        tag,
+        *,
+        force_cpu,
+        llama_backend = None,
+    ):
+        seen["host"] = host
+        seen["force_cpu"] = force_cpu
+        raise RuntimeError("stop after routing")
+
+    monkeypatch.setattr(ilp, "_route_to_vulkan_prebuilt", _route)
+    with pytest.raises(RuntimeError, match = "stop after routing"):
+        ilp.install_prebuilt(tmp_path, "latest", FORK, "")
+
+    assert seen["host"].has_intel_gpu is False
+    assert seen["force_cpu"] is True
+
+
 @pytest.mark.parametrize(
     "flags, expect_force, expect_persist",
     [

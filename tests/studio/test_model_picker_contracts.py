@@ -651,6 +651,7 @@ def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
         'gpuMemoryMode: "auto"',
         "gpuLayers: undefined",
         "nCpuMoe: undefined",
+        "tensorParallel: false",
         "selectedGpuIds: undefined",
         "selectedGpuIndexKind: undefined",
     ):
@@ -715,5 +716,6 @@ def test_vulkan_inference_devices_are_the_pickable_set():
         '(d.index_kind === "vulkan" || '
         '(data?.device_backend !== "xpu" && d.index_kind === "physical")),' in src
     )
-    # Only a physical CUDA/ROCm index is ever handed to the diffusion runner.
+    # Only a physical CUDA index is ever handed to the diffusion runner.
+    assert 'const diffusionBackend = data?.device_backend === "cuda";' in src
     assert 'diffusionPinnable: diffusionBackend && d.index_kind === "physical",' in src
