@@ -818,10 +818,7 @@ def _continues_paragraph(line: str, column: int) -> bool:
 
 
 def _close_dedented(
-    columns: tuple[int, ...],
-    line: str,
-    indent: int,
-    after_paragraph: bool,
+    columns: tuple[int, ...], line: str, indent: int, after_paragraph: bool
 ) -> tuple[int, ...]:
     """`columns` with every item `line` is written to the left of closed.
 
@@ -836,12 +833,7 @@ def _close_dedented(
     return columns
 
 
-def _lazy_marker(
-    line: str,
-    state: _ListState,
-    after_paragraph: bool,
-    quoted: bool,
-) -> bool:
+def _lazy_marker(line: str, state: _ListState, after_paragraph: bool, quoted: bool) -> bool:
     """Whether a marker-shaped `line` is really text of the paragraph above it.
 
     Only a marker inside the paragraph's own item interrupts it; one to the left
