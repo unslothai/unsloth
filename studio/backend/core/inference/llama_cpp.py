@@ -5365,10 +5365,15 @@ class LlamaCppBackend:
         n_ctx: int,
         extra_args: Optional[List[str]],
         gpu_ids: Optional[List[int]] = None,
+        gpu_memory_mode: Literal["auto", "manual"] = "auto",
+        gpu_layers: int = -1,
     ) -> bool:
         """Launch the OpenAI-compat diffusion shim (which drives the on-device
         visual decoder) and wait for health. Presents the same /v1 + /health
         interface as llama-server, so the rest of Unsloth is unchanged.
+
+        Manual mode forwards gpu_layers as --ngl so a GGUF larger than VRAM can be
+        split across GPU and RAM; auto leaves the runner's all-layers default.
         """
         assets = self._find_diffusion_assets()
         if assets is None:
@@ -5408,6 +5413,22 @@ class LlamaCppBackend:
             "--maxtok",
             str(maxtok),
         ]
+        # Manual mode: honour the picked split. Without this the runner pins every
+        # layer to GPU and a GGUF larger than VRAM dies in cudaMalloc with no way
+        # out, even with GPU layers set to 0 (#7574).
+        manual_ngl = gpu_layers if (gpu_memory_mode == "manual" and gpu_layers >= 0) else None
+        if manual_ngl is not None:
+            cmd += ["--ngl", str(manual_ngl)]
+            # Block diffusion is compute-bound, not bandwidth-bound, so CPU-side layers
+            # cost far more than on an autoregressive model (the reporter measured ~6
+            # tok/s against ~31 for non-diffusion Gemma on the same box). Make the
+            # tradeoff visible instead of silently swapping an OOM for a slow model.
+            logger.warning(
+                "DiffusionGemma: %d GPU layers requested. Layers left on CPU are much "
+                "slower for block diffusion than for a regular model; prefer a smaller "
+                "quant over a large CPU split if throughput matters.",
+                manual_ngl,
+            )
 
         env = child_env_without_native_path_secret()
         # `python -m unsloth_zoo.diffusion_studio.shim` imports unsloth_zoo, which
@@ -5477,12 +5498,13 @@ class LlamaCppBackend:
         self._flash_attn_enabled = True
         self._effective_cache_types = ("f16", "f16")
         self._kv_cache_context_total = None
-        self._gpu_offload_active = True
-        # Diffusion doesn't use the llama.cpp GPU-memory knobs; reset them to
-        # defaults (the picked device is still recorded below) so /load, /status
-        # and reload dedup don't report a previous GGUF's manual settings.
-        self._gpu_memory_mode = "auto"
-        self._gpu_layers = -1
+        self._gpu_offload_active = manual_ngl != 0
+        # Diffusion uses only the layer split of the llama.cpp GPU-memory knobs.
+        # Record what was actually applied (so /load, /status and reload dedup
+        # agree with the running child) and reset the rest to defaults so a
+        # previous GGUF's manual settings are not reported.
+        self._gpu_memory_mode = gpu_memory_mode if manual_ngl is not None else "auto"
+        self._gpu_layers = manual_ngl if manual_ngl is not None else -1
         self._n_cpu_moe = 0
         self._tensor_split = None
         # Diffusion is never tensor-parallel; clear any state left by a prior TP
@@ -5515,7 +5537,7 @@ class LlamaCppBackend:
         healthy = self._wait_for_health(timeout = 600.0)
         if healthy:
             self._healthy = True
-            self._gpu_offload_active = True
+            self._gpu_offload_active = manual_ngl != 0
             if extra_args is not None:
                 self._extra_args = list(extra_args)
                 self._extra_args_source = (model_identifier, hf_variant)
@@ -6984,6 +7006,8 @@ class LlamaCppBackend:
                         n_ctx = n_ctx,
                         extra_args = extra_args,
                         gpu_ids = gpu_ids,
+                        gpu_memory_mode = gpu_memory_mode,
+                        gpu_layers = gpu_layers,
                     )
 
             if not binary:
