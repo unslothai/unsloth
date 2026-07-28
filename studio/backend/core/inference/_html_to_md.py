@@ -99,6 +99,12 @@ def _is_hidden_element(attr_dict: dict) -> bool:
     return _style_hides_element(attr_dict.get("style") or "")
 
 
+def _is_aria_heading(attr_dict: dict) -> bool:
+    """True for an accessible heading (``role="heading"``) built from a plain
+    element, which carries the page title just as an ``h1``-``h6`` does."""
+    return (attr_dict.get("role") or "").strip().lower() == "heading"
+
+
 # HTML5 optional end tags: a listed start tag implicitly closes an open element
 # of the key type (as browsers do), else an unclosed ``<p hidden>``/``<li hidden>``
 # swallows every following sibling. Keys: closable elements; values: closers.
@@ -202,23 +208,14 @@ class _HeaderFrame:
     Buffering (like ``_bq_stack``) defers the decision to ``</header>``, once the
     whole subtree is known. A header no end tag closes is emitted unchanged."""
 
-    __slots__ = (
-        "depth",
-        "parts",
-        "heading_spans",
-        "heading_start",
-        "n_headings",
-        "text_chars",
-        "link_chars",
-    )
+    __slots__ = ("depth", "parts", "heading_parts", "text_chars", "link_chars")
 
     def __init__(self, depth: int):
         self.depth = depth
         self.parts: list[str] = []
-        # Index ranges into parts holding the headings, kept when the rest goes.
-        self.heading_spans: list[tuple[int, int]] = []
-        self.heading_start: int | None = None
-        self.n_headings: int = 0
+        # A copy of the heading output, teed as it is emitted so a heading routed
+        # through a nested blockquote or table cell is still recoverable.
+        self.heading_parts: list[str] = []
         # Both exclude heading text (never dropped, so it must not vote on dropping
         # the rest); only href anchors count as links.
         self.text_chars: int = 0
@@ -228,16 +225,15 @@ class _HeaderFrame:
         """The buffer, or only its headings when the header is link furniture.
 
         Without a matching ``</header>`` the markup is malformed and the header may
-        have adopted the page body, so keep it whole. Same when a span is missing: a
-        heading nested in another buffer only reaches ``parts`` when that one closes."""
-        if not closed_by_own_tag or len(self.heading_spans) != self.n_headings:
+        have adopted the page body, so keep it whole."""
+        if not closed_by_own_tag:
             return "".join(self.parts)
         big_enough = (
             self.text_chars >= _HEADER_MIN_CHARS
             or sum(len(part) for part in self.parts) >= _HEADER_MAX_RENDERED_CHARS
         )
         if big_enough and self.link_chars >= _HEADER_LINK_DENSITY * self.text_chars:
-            return "".join("".join(self.parts[start:end]) for start, end in self.heading_spans)
+            return "".join(self.heading_parts)
         return "".join(self.parts)
 
 
@@ -276,7 +272,9 @@ class _MarkdownRenderer(HTMLParser):
         # Open <header> buffers, innermost last. Empty unless strip_header.
         self._strip_header = strip_header
         self._header_stack: list[_HeaderFrame] = []
-        self._in_heading: bool = False
+        # Open-tag indices of elements acting as headings (h1-h6 or role=heading),
+        # unwound with _hidden_marks so an unclosed one cannot stick.
+        self._heading_marks: list[int] = []
 
         # Link state
         self._link_href: str | None = None
@@ -309,6 +307,8 @@ class _MarkdownRenderer(HTMLParser):
 
     # ------------------------------------------------------------------
     def _emit(self, text: str) -> None:
+        if self._heading_marks and self._header_stack:
+            self._header_stack[-1].heading_parts.append(text)
         if self._in_link:
             self._link_text_parts.append(text)
         elif self._in_cell:
@@ -402,6 +402,8 @@ class _MarkdownRenderer(HTMLParser):
             del self._open_tags[close_at:]
             while self._hidden_marks and self._hidden_marks[-1] >= close_at:
                 self._hidden_marks.pop()
+            while self._heading_marks and self._heading_marks[-1] >= close_at:
+                self._heading_marks.pop()
             self._close_header_frames(close_at)
 
     def _close_header_frames(
@@ -418,7 +420,7 @@ class _MarkdownRenderer(HTMLParser):
                 # Roll the tally outward so an enclosing header is judged whole.
                 self._header_stack[-1].text_chars += frame.text_chars
                 self._header_stack[-1].link_chars += frame.link_chars
-                self._header_stack[-1].n_headings += frame.n_headings
+                self._header_stack[-1].heading_parts.extend(frame.heading_parts)
             self._emit(frame.render(closed_by_own_tag))
             closed_by_own_tag = False
 
@@ -430,7 +432,7 @@ class _MarkdownRenderer(HTMLParser):
     def _count_header_text(self, text: str) -> None:
         """Tally visible text for the innermost header's link density. Heading text
         is skipped so a long linked heading cannot condemn the byline beside it."""
-        if not self._header_stack or self._in_heading:
+        if not self._header_stack or self._heading_marks:
             return
         chars = len(text.strip())
         self._header_stack[-1].text_chars += chars
@@ -446,6 +448,8 @@ class _MarkdownRenderer(HTMLParser):
             self._open_tags.append(tag)
             if _is_hidden_element(attr_dict):
                 self._hidden_marks.append(len(self._open_tags) - 1)
+            if tag in _HEADING_TAGS or _is_aria_heading(attr_dict):
+                self._heading_marks.append(len(self._open_tags) - 1)
             if self._strip_header and tag == "header" and not self._hidden_marks:
                 self._header_stack.append(_HeaderFrame(len(self._open_tags) - 1))
         elif _is_hidden_element(attr_dict):
@@ -480,6 +484,8 @@ class _MarkdownRenderer(HTMLParser):
                     del self._open_tags[i:]
                     while self._hidden_marks and self._hidden_marks[-1] >= i:
                         self._hidden_marks.pop()
+                    while self._heading_marks and self._heading_marks[-1] >= i:
+                        self._heading_marks.pop()
                     self._close_header_frames(i, own_tag = tag == "header")
                     break
         if self._scope_tags is not None and tag in self._scope_tags and self._scope_depth > 0:
@@ -512,10 +518,6 @@ class _MarkdownRenderer(HTMLParser):
             return
 
         if tag in _HEADING_TAGS:
-            self._in_heading = True
-            if self._header_stack and self._header_stack[-1].heading_start is None:
-                self._header_stack[-1].heading_start = len(self._header_stack[-1].parts)
-                self._header_stack[-1].n_headings += 1
             level = int(tag[1])
             self._emit("\n\n" + "#" * level + " ")
 
@@ -610,13 +612,6 @@ class _MarkdownRenderer(HTMLParser):
 
         if tag in _HEADING_TAGS:
             self._emit("\n\n")
-            self._in_heading = False
-            frame = self._header_stack[-1] if self._header_stack else None
-            if frame is not None and frame.heading_start is not None:
-                # An empty span means the heading went into a nested buffer.
-                if len(frame.parts) > frame.heading_start:
-                    frame.heading_spans.append((frame.heading_start, len(frame.parts)))
-                frame.heading_start = None
 
         elif tag == "a":
             if self._header_stack:

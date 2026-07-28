@@ -1433,9 +1433,26 @@ def test_unclosed_header_does_not_strip_a_short_article_it_adopted():
     assert "Short real article." in out
 
 
-def test_heading_inside_a_nested_buffer_is_not_lost():
+def test_heading_inside_a_nested_buffer_is_kept_and_the_links_still_go():
+    # The heading is teed as it is emitted, so routing it through a blockquote
+    # neither loses the title nor forces the whole language list back in.
     body = (
         "<main><header><blockquote><h1>Page Title</h1></blockquote><ul>%s</ul></header><p>%s</p></main>"
+        % (
+            _interlanguage_list(400),
+            "Article body. " * 30,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Page Title" in out
+    assert "Lang0" not in out
+    assert out.index("Article body.") < 16000
+
+
+def test_heading_inside_a_table_cell_is_kept():
+    body = (
+        "<main><header><table><tr><td><h1>Page Title</h1></td></tr></table>"
+        "<ul>%s</ul></header><p>%s</p></main>"
         % (
             _interlanguage_list(300),
             "Article body. " * 30,
@@ -1443,6 +1460,21 @@ def test_heading_inside_a_nested_buffer_is_not_lost():
     )
     out = html_to_markdown(f"<body>{body}</body>", main_content = True)
     assert "Page Title" in out
+    assert "Lang0" not in out
+
+
+def test_aria_role_heading_is_preserved_like_a_real_heading():
+    body = (
+        "<main><header><div role='heading' aria-level='1'>Page Title</div>"
+        "<ul>%s</ul></header><p>%s</p></main>"
+        % (
+            _interlanguage_list(300),
+            "Article body. " * 30,
+        )
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Page Title" in out
+    assert "Lang0" not in out
     assert "Article body." in out
 
 
