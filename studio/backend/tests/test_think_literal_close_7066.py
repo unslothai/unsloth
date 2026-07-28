@@ -2042,3 +2042,30 @@ def test_every_chat_template_retry_candidate_is_neutralized():
     # The caller's list is left alone, so the repairs kept seeing raw JSON.
     assert messages[0]["content"] == "quote this: </think> and <|im_start|>"
     assert isinstance(messages[1]["tool_calls"][0]["function"]["arguments"], str)
+
+
+def test_rendered_lookahead_bounds_each_chunk_before_joining():
+    """One blank part must not recopy the whole next part (#7334).
+
+    Blank parts all share the same look-ahead cursor, so appending a chunk whole
+    and only then checking the limit made the join quadratic: 8k blanks before a
+    10 MB part copied ~80 GB before tokenization.
+    """
+    from core.inference.chat_template_helpers import _rendered_chunks, _rendered_lookahead
+
+    chunks, starts = _rendered_chunks(["", "x", "A" * 4_000_000])
+    ahead = _rendered_lookahead(chunks, starts[0], 19)
+    assert len(ahead) == 19
+    assert ahead == "x" + "A" * 18
+    # A limit larger than everything rendered still returns everything.
+    assert _rendered_lookahead(["ab", "cd"], 0, 99) == "abcd"
+
+
+def test_split_marker_seam_survives_the_bounded_lookahead():
+    """Bounding the look-ahead must not lose a marker cut across parts (#7066)."""
+    out = neutralize_message_content_for_role("user", ["a </", "think> b"])
+    assert out == [f"a </{_ZW}", "think> b"]
+    # Three-way split, with a blank part in between.
+    out = neutralize_message_content_for_role("user", ["x <", "", "/thi", "nk> y"])
+    assert "".join(out).replace(_ZW, "@").count("@") >= 1
+    assert "</think>" not in "".join(out)

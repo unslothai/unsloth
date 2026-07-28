@@ -437,14 +437,17 @@ def _rendered_chunks(texts: list) -> tuple[list, list]:
 def _rendered_lookahead(chunks: list, start: int, limit: int) -> str:
     """The first ``limit`` chars ``chunks`` renders from ``start`` onwards.
 
-    Every chunk is non-empty, so the scan stops within ``limit`` of them.
+    Each chunk is cut to what is still wanted before the join. Appending it whole
+    and only then checking the total recopied a huge part once per BLANK part,
+    which all share one ``start``: 8k blanks before a 10 MB part copied ~80 GB
+    (#7334).
     """
     if limit <= 0:
         return ""
     out: list[str] = []
     total = 0
     for position in range(start, len(chunks)):
-        chunk = chunks[position]
+        chunk = chunks[position][: limit - total]
         out.append(chunk)
         total += len(chunk)
         if total >= limit:
