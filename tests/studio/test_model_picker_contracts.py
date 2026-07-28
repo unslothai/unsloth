@@ -235,6 +235,8 @@ def test_gpu_picker_round_trips_requested_pool_not_fitted_subset():
     store = _read("features/chat/stores/chat-runtime-store.ts")
     assert 'hasOwnProperty.call(resp, "requested_gpu_ids")' in store
     assert "const reportedGpuIds = requestedGpuIdsFromResponse(resp)" in store
+    assert "loadedGpuIndexKind: GpuIndexKind | null;" in store
+    assert "loadedGpuIndexKind: gpuIds == null ? null : (gpuIndexKind ?? null)" in store
     # A cold discovery cache reports gpuIndexKind === undefined (deferred, not
     # rejected); only a warm cache's definitive null should drop the pin.
     assert "reportedGpuIds != null && gpuIndexKind !== null" in store
@@ -242,6 +244,9 @@ def test_gpu_picker_round_trips_requested_pool_not_fitted_subset():
     status = _read("features/chat/lib/apply-inference-status-to-store.ts")
     assert "const incomingGpuFields = loadedGpuMemoryFields(status)" in status
     assert "const incomingGpuIds = incomingGpuFields.loadedGpuIds" in status
+    assert "const incomingGpuIndexKind = incomingGpuFields.loadedGpuIndexKind" in status
+    assert status.count("prevState.loadedGpuIndexKind") >= 2
+    assert status.count("sameGpuSelection(") >= 2
 
 
 def test_compare_load_uses_each_models_gpu_config():
@@ -264,6 +269,29 @@ def test_compare_load_uses_each_models_gpu_config():
     page = _read("features/chat/chat-page.tsx")
     assert page.count("isDiffusion: meta.isDiffusion") >= 2
     assert "isDiffusion: globalIsDiffusion" in page
+
+
+def test_diffusion_load_paths_disable_tensor_parallel():
+    """Every frontend path that classifies DiffusionGemma must send tensor
+    parallelism as false so the ignored setting cannot force repeat reloads."""
+    compare = _read("features/chat/shared-composer.tsx")
+    compact_compare = " ".join(compare.split())
+    assert "const effectiveTensorParallel = resolvedIsDiffusion ? false :" in compact_compare
+    assert compare.count("tensor_parallel: effectiveTensorParallel") == 2
+
+    runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
+    assert "const loadTensorParallel = targetIsDiffusion ? false :" in runtime
+
+    apply = " ".join(_read("features/model-picker/model-config/apply-per-model-config.ts").split())
+    assert "tensorParallel: options.isDiffusion ? false :" in apply
+
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    autoload = adapter.split("async function loadAutoLoadCandidate", 1)[1]
+    autoload = autoload.split("async function autoLoadSmallestModel", 1)[0]
+    compact_autoload = " ".join(autoload.split())
+    assert "config.selectedGpuIds != null || config.tensorParallel === true" in compact_autoload
+    assert "const effectiveTensorParallel = isDiffusion ? false :" in compact_autoload
+    assert autoload.count("tensor_parallel: effectiveTensorParallel") == 2
 
 
 def test_active_native_gguf_metadata_uses_path_token():

@@ -1572,7 +1572,10 @@ async function autoLoadSmallestModel(): Promise<{
       await ensureGpuDeviceCache();
     }
     let isDiffusion = false;
-    if (candidate.kind === "gguf" && config.selectedGpuIds != null) {
+    if (
+      candidate.kind === "gguf" &&
+      (config.selectedGpuIds != null || config.tensorParallel === true)
+    ) {
       // Prepare the token before this probe, exactly as validateModel/loadModel
       // (and the interactive performLoad path) do: the Hub 401s an invalid
       // Authorization header even for a public repo, so sending the raw stored
@@ -1590,6 +1593,9 @@ async function autoLoadSmallestModel(): Promise<{
         })
       ).isDiffusion;
     }
+    const effectiveTensorParallel = isDiffusion
+      ? false
+      : config.tensorParallel;
     const effectiveGpuIds =
       config.selectedGpuIds !== undefined
         ? reconcilePersistedGpuIds(
@@ -1623,7 +1629,7 @@ async function autoLoadSmallestModel(): Promise<{
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
         cache_type_kv: config.kvCacheDtype,
-        tensor_parallel: config.tensorParallel,
+        tensor_parallel: effectiveTensorParallel,
         // The same remembered-derived GPU pick the load below sends.
         ...(candidate.kind === "gguf"
           ? {
@@ -1651,7 +1657,7 @@ async function autoLoadSmallestModel(): Promise<{
       cache_type_kv: config.kvCacheDtype,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
-      tensor_parallel: config.tensorParallel,
+      tensor_parallel: effectiveTensorParallel,
       // GGUF-only: the safetensors fallback loads via HF auto-placement (no
       // explicit pins). The split ratio is deliberately never remembered
       // (positionally bound to an exact GPU set), so auto-load leaves llama.cpp's

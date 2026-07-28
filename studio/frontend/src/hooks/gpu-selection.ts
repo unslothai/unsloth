@@ -21,6 +21,19 @@ export interface ReconciledGpuSelection {
   indexKind: GpuIndexKind | null;
 }
 
+export function sameGpuSelection(
+  left: ReconciledGpuSelection,
+  right: ReconciledGpuSelection,
+): boolean {
+  if (left.indexKind !== right.indexKind) return false;
+  if (left.ids === right.ids) return true;
+  if (left.ids === null || right.ids === null) return false;
+  return (
+    left.ids.length === right.ids.length &&
+    left.ids.every((id, index) => id === right.ids?.[index])
+  );
+}
+
 export interface PinnableGpuContext {
   devices: SystemGpuDevice[] | null;
   ids: number[] | null;

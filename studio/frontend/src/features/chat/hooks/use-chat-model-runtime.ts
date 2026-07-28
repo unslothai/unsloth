@@ -765,8 +765,10 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.customContextLength ??
             stateBeforeUnload.customContextLength;
           const loadGgufContextLength = stateBeforeUnload.ggufContextLength;
-          const loadTensorParallel =
-            pendingLoadConfig?.tensorParallel ?? stateBeforeUnload.tensorParallel;
+          const loadTensorParallel = targetIsDiffusion
+            ? false
+            : (pendingLoadConfig?.tensorParallel ??
+              stateBeforeUnload.tensorParallel);
           const loadActivePresetSource = stateBeforeUnload.activePresetSource;
           const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
           const loadGpuMemoryMode =

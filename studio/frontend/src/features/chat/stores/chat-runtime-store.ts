@@ -692,6 +692,7 @@ export function loadedGpuMemoryFields(resp: {
       selectedGpuIds: null,
       selectedGpuIndexKind: null,
       loadedGpuIds: null,
+      loadedGpuIndexKind: null,
       loadedGpuMemoryMode: null,
       gpuLayers: GPU_LAYERS_AUTO,
       loadedGpuLayers: null,
@@ -764,6 +765,7 @@ export function loadedGpuMemoryFields(resp: {
     // explicit-null-namespace convention (discovery not complete yet).
     selectedGpuIndexKind: gpuIds == null ? null : (gpuIndexKind ?? null),
     loadedGpuIds: gpuIds,
+    loadedGpuIndexKind: gpuIds == null ? null : (gpuIndexKind ?? null),
     ...manualKnobs,
   };
 }
@@ -1044,6 +1046,8 @@ type ChatRuntimeStore = {
   /** Namespace used by selectedGpuIds; kept with deferred persisted picks. */
   selectedGpuIndexKind: GpuIndexKind | null;
   loadedGpuIds: number[] | null;
+  /** Backend-reported namespace paired with loadedGpuIds. */
+  loadedGpuIndexKind: GpuIndexKind | null;
   /** Persisted: expand every On Device GGUF repo's quantizations by default
    *  instead of waiting for a click. */
   expandQuantizations: boolean;
@@ -1555,6 +1559,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   selectedGpuIds: null,
   selectedGpuIndexKind: null,
   loadedGpuIds: null,
+  loadedGpuIndexKind: null,
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
@@ -1940,6 +1945,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       selectedGpuIds: null,
       selectedGpuIndexKind: null,
       loadedGpuIds: null,
+      loadedGpuIndexKind: null,
       loadedIsMultimodal: false,
       loadedIsDiffusion: false,
       customContextLength: null,

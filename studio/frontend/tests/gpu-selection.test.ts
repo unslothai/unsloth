@@ -8,6 +8,7 @@ import {
   type GpuIndexKind,
   reconcileGpuSelection,
   resolveGpuSelectionContext,
+  sameGpuSelection,
 } from "../src/hooks/gpu-selection.ts";
 
 const ids = [0, 1];
@@ -105,4 +106,28 @@ test("recovered inventories filter matching picks and reject mismatched namespac
     ids: null,
     indexKind: null,
   });
+});
+
+test("selection equality includes the GPU index namespace", () => {
+  assert.equal(
+    sameGpuSelection(
+      { ids: [0, 1], indexKind: null },
+      { ids: [0, 1], indexKind: "vulkan" },
+    ),
+    false,
+  );
+  assert.equal(
+    sameGpuSelection(
+      { ids: [0, 1], indexKind: "vulkan" },
+      { ids: [0, 1], indexKind: "vulkan" },
+    ),
+    true,
+  );
+  assert.equal(
+    sameGpuSelection(
+      { ids: [0], indexKind: "physical" },
+      { ids: [1], indexKind: "physical" },
+    ),
+    false,
+  );
 });

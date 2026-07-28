@@ -21,6 +21,7 @@ import {
   isMultimodalResponse,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
+import { sameGpuSelection } from "@/hooks/gpu-selection";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
 
@@ -224,12 +225,19 @@ export function applyActiveModelStatusToStore(
     incomingGpuMode === "manual" ? (status.tensor_split ?? null) : null;
   const incomingGpuFields = loadedGpuMemoryFields(status);
   const incomingGpuIds = incomingGpuFields.loadedGpuIds;
+  const incomingGpuIndexKind = incomingGpuFields.loadedGpuIndexKind;
   const gpuStatusChanged =
     prevState.loadedGpuMemoryMode !== incomingGpuMode ||
     prevState.loadedGpuLayers !== incomingGpuLayers ||
     prevState.loadedNCpuMoe !== incomingNCpuMoe ||
     !sameArray(prevState.loadedSplitRatio, incomingSplit) ||
-    !sameArray(prevState.loadedGpuIds, incomingGpuIds) ||
+    !sameGpuSelection(
+      {
+        ids: prevState.loadedGpuIds,
+        indexKind: prevState.loadedGpuIndexKind,
+      },
+      { ids: incomingGpuIds, indexKind: incomingGpuIndexKind },
+    ) ||
     prevState.loadedCustomContextLength !== gpuPin;
   const gpuMemoryEditsPending =
     (prevState.loadedGpuMemoryMode !== null &&
@@ -239,9 +247,15 @@ export function applyActiveModelStatusToStore(
         prevState.nCpuMoe !== prevState.loadedNCpuMoe ||
         !sameArray(prevState.splitRatio, prevState.loadedSplitRatio))) ||
     prevState.customContextLength !== prevState.loadedCustomContextLength;
-  const gpuIdsEditPending = !sameArray(
-    prevState.selectedGpuIds,
-    prevState.loadedGpuIds,
+  const gpuIdsEditPending = !sameGpuSelection(
+    {
+      ids: prevState.selectedGpuIds,
+      indexKind: prevState.selectedGpuIndexKind,
+    },
+    {
+      ids: prevState.loadedGpuIds,
+      indexKind: prevState.loadedGpuIndexKind,
+    },
   );
   // A same-model reload from another client advances every loaded baseline.
   // Preserve each editable group only when this tab has an unapplied change.

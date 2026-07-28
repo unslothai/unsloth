@@ -1095,9 +1095,11 @@ export function SharedComposer({
               ownConfig.specDraftNMax,
             )
           : specSettings.specDraftNMax;
-        const effectiveTensorParallel = ownRemembered
-          ? ownConfig.tensorParallel
-          : fallbackTensorParallel;
+        const effectiveTensorParallel = resolvedIsDiffusion
+          ? false
+          : ownRemembered
+            ? ownConfig.tensorParallel
+            : fallbackTensorParallel;
         if (ownConfig.selectedGpuIds != null) {
           await ensureGpuDeviceCache();
         }

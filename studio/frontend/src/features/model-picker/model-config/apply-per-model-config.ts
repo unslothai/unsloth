@@ -50,7 +50,9 @@ export function applyPerModelConfigToRuntime(
       normalizeSpeculativeType(config.speculativeType) ??
       readPersistedSpeculativeType(),
     specDraftNMax: config.specDraftNMax ?? null,
-    tensorParallel: config.tensorParallel ?? false,
+    tensorParallel: options.isDiffusion
+      ? false
+      : (config.tensorParallel ?? false),
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
     // GPU Memory knobs are per-model (GGUF-only). Absent = defaults; the mode is
     // a standing preference so an absent mode falls back to the persisted one.
