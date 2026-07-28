@@ -125,13 +125,69 @@ def all_hf_cache_scans() -> list:
             flight.event.set()
 
 
+def _prune_dangling_hf_cache_refs(cache_root: Path) -> int:
+    """Drop ``refs/<branch>`` files naming a commit with no snapshot on disk.
+
+    ``scan_cache_dir`` raises CorruptedCacheException for such a repo and omits
+    it from ``.repos``, so an otherwise intact download disappears from the Hub
+    inventory while the model-picker's directory walk still lists it. Studio
+    creates this state itself: a metadata probe that 404s writes ``.no_exist/``
+    plus ``refs/main`` at the live upstream HEAD without materialising that
+    snapshot, so any repo re-uploaded since it was downloaded goes invisible.
+
+    Removing the ref is lossless -- it already resolves to nothing, and
+    huggingface_hub rewrites it on the next download. Returns the number of
+    refs removed.
+    """
+    try:
+        repo_dirs = [
+            entry for entry in cache_root.iterdir() if entry.is_dir() and "--" in entry.name
+        ]
+    except OSError:
+        return 0
+    removed = 0
+    for repo_dir in repo_dirs:
+        refs_dir = repo_dir / "refs"
+        snapshots_dir = repo_dir / "snapshots"
+        if not refs_dir.is_dir():
+            continue
+        # A running download writes its ref before materialising the snapshot,
+        # so its ref is legitimately dangling for the length of the transfer.
+        try:
+            if repo_cache_dir_has_incomplete_blobs(repo_dir):
+                continue
+            ref_files = [entry for entry in refs_dir.rglob("*") if entry.is_file()]
+        except OSError:
+            continue
+        for ref in ref_files:
+            try:
+                commit = ref.read_text(encoding = "utf-8").strip()
+            except (OSError, UnicodeDecodeError):
+                continue
+            if not commit or (snapshots_dir / commit).is_dir():
+                continue
+            try:
+                ref.unlink()
+            except OSError as exc:
+                logger.debug("Could not prune dangling HF ref %s: %s", ref, exc)
+                continue
+            logger.info("Pruned dangling HF cache ref %s -> %s (no snapshot on disk)", ref, commit)
+            removed += 1
+    return removed
+
+
 def _compute_all_hf_cache_scans() -> list:
     from huggingface_hub import scan_cache_dir
 
     scans: list = []
     for cache_root in hf_cache_roots():
         try:
-            scans.append(scan_cache_dir(cache_dir = str(cache_root)))
+            scan = scan_cache_dir(cache_dir = str(cache_root))
+            # Only a warned-about scan can be hiding a repo, so a healthy cache
+            # is never walked twice and never written to.
+            if scan.warnings and _prune_dangling_hf_cache_refs(cache_root):
+                scan = scan_cache_dir(cache_dir = str(cache_root))
+            scans.append(scan)
         except Exception as exc:
             logger.warning("Could not scan HF cache %s: %s", cache_root, exc)
     return scans
