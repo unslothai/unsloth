@@ -19,9 +19,18 @@ function maxWidth(): number {
   return Math.max(SIDEBAR_WIDTH_MIN, Math.min(SIDEBAR_WIDTH_MAX, viewportCap));
 }
 
-export function clampSidebarWidth(px: number): number {
+/** Clamps to the absolute range, ignoring the viewport. */
+function clampStored(px: number): number {
   if (!Number.isFinite(px)) return SIDEBAR_WIDTH_DEFAULT;
-  return Math.min(maxWidth(), Math.max(SIDEBAR_WIDTH_MIN, Math.round(px)));
+  return Math.min(
+    SIDEBAR_WIDTH_MAX,
+    Math.max(SIDEBAR_WIDTH_MIN, Math.round(px)),
+  );
+}
+
+/** Clamps to what the current viewport allows. */
+export function clampSidebarWidth(px: number): number {
+  return Math.min(maxWidth(), clampStored(px));
 }
 
 function loadWidth(): number {
@@ -29,16 +38,24 @@ function loadWidth(): number {
   try {
     const raw = window.localStorage.getItem(WIDTH_KEY);
     if (raw === null) return SIDEBAR_WIDTH_DEFAULT;
-    const parsed = Number.parseFloat(raw);
-    if (!Number.isFinite(parsed)) return SIDEBAR_WIDTH_DEFAULT;
-    return clampSidebarWidth(parsed);
+    return clampStored(Number.parseFloat(raw));
   } catch {
     return SIDEBAR_WIDTH_DEFAULT;
   }
 }
 
-let widthValue = loadWidth();
+// The preference is stored whole; `effective` is what the viewport allows.
+// Narrowing the window shrinks the sidebar without losing the preference.
+let storedWidth = loadWidth();
+let effectiveWidth = clampSidebarWidth(storedWidth);
 const listeners = new Set<() => void>();
+
+function recompute() {
+  const next = clampSidebarWidth(storedWidth);
+  if (next === effectiveWidth) return;
+  effectiveWidth = next;
+  listeners.forEach((cb) => cb());
+}
 
 function subscribe(cb: () => void) {
   listeners.add(cb);
@@ -48,31 +65,35 @@ function subscribe(cb: () => void) {
   // Keep tabs in sync, same as the pin flag.
   const onStorage = (e: StorageEvent) => {
     if (e.key === WIDTH_KEY || e.key === null) {
-      widthValue = loadWidth();
+      storedWidth = loadWidth();
+      effectiveWidth = clampSidebarWidth(storedWidth);
       cb();
     }
   };
   window.addEventListener("storage", onStorage);
+  window.addEventListener("resize", recompute);
   return () => {
     listeners.delete(cb);
     window.removeEventListener("storage", onStorage);
+    window.removeEventListener("resize", recompute);
   };
 }
 
 function setWidthGlobal(next: number) {
-  const clamped = clampSidebarWidth(next);
-  if (clamped === widthValue) return;
-  widthValue = clamped;
-  try {
-    window.localStorage.setItem(WIDTH_KEY, String(clamped));
-  } catch {}
-  listeners.forEach((cb) => cb());
+  const stored = clampStored(next);
+  if (stored !== storedWidth) {
+    storedWidth = stored;
+    try {
+      window.localStorage.setItem(WIDTH_KEY, String(stored));
+    } catch {}
+  }
+  recompute();
 }
 
 export function useSidebarWidth() {
   const width = useSyncExternalStore(
     subscribe,
-    () => widthValue,
+    () => effectiveWidth,
     () => SIDEBAR_WIDTH_DEFAULT,
   );
 

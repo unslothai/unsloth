@@ -327,7 +327,7 @@ function Sidebar({
         >
           {children}
         </div>
-        <SidebarResizeHandle />
+        <SidebarResizeHandle side={side} />
       </div>
     </div>
   )
@@ -349,7 +349,13 @@ type SidebarDragState = {
  * resize, Home restores the default. The width is painted straight to the
  * wrapper while dragging and only persisted on release.
  */
-function SidebarResizeHandle({ className }: { className?: string }) {
+function SidebarResizeHandle({
+  className,
+  side = "left",
+}: {
+  className?: string
+  side?: "left" | "right"
+}) {
   const { open, toggleSidebar, width, setWidth, resetWidth } = useSidebar()
   const ref = React.useRef<HTMLButtonElement>(null)
   const dragRef = React.useRef<SidebarDragState | null>(null)
@@ -361,11 +367,10 @@ function SidebarResizeHandle({ className }: { className?: string }) {
   const wrapperRef = React.useRef<HTMLElement | null>(null)
   const frameRef = React.useRef(0)
   const pendingRef = React.useRef(0)
-
-  const wrapper = () =>
-    wrapperRef.current ??
-    ref.current?.closest<HTMLElement>('[data-slot="sidebar-wrapper"]') ??
-    null
+  const committedRef = React.useRef(width)
+  React.useEffect(() => {
+    committedRef.current = width
+  }, [width])
 
   // Resizing relayouts the whole shell, and pointermove fires faster than the
   // display refreshes, so coalesce to one paint per frame.
@@ -386,12 +391,13 @@ function SidebarResizeHandle({ className }: { className?: string }) {
     if (frameRef.current) {
       cancelAnimationFrame(frameRef.current)
       frameRef.current = 0
-      // Flush the queued frame instead of dropping it.
-      wrapperRef.current?.style.setProperty(
-        "--sidebar-width",
-        `${pendingRef.current}px`,
-      )
     }
+    // Hand the property back to the committed value. A commit re-renders with
+    // the new width; a cancel or a no-commit drag keeps DOM and store in step.
+    wrapperRef.current?.style.setProperty(
+      "--sidebar-width",
+      `${committedRef.current}px`,
+    )
     wrapperRef.current?.removeAttribute("data-resizing")
     wrapperRef.current = null
     setDragging(false)
@@ -405,9 +411,11 @@ function SidebarResizeHandle({ className }: { className?: string }) {
     event.currentTarget.setPointerCapture(event.pointerId)
     wrapperRef.current =
       ref.current?.closest<HTMLElement>('[data-slot="sidebar-wrapper"]') ?? null
-    // Collapsed: grow from the measured rail so the edge tracks the pointer.
-    const wrapperLeft = wrapper()?.getBoundingClientRect().left ?? 0
-    const railWidth = (ref.current?.getBoundingClientRect().left ?? wrapperLeft) - wrapperLeft
+    // Collapsed: grow from the rendered rail so the edge tracks the pointer.
+    const railWidth =
+      ref.current
+        ?.closest<HTMLElement>('[data-slot="sidebar-container"]')
+        ?.getBoundingClientRect().width ?? SIDEBAR_WIDTH_MIN
     dragRef.current = {
       startX: event.clientX,
       startWidth: open ? width : railWidth,
@@ -423,7 +431,9 @@ function SidebarResizeHandle({ className }: { className?: string }) {
   const handlePointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
     const drag = dragRef.current
     if (!drag) return
-    const delta = event.clientX - drag.startX
+    // A right sidebar grows as the pointer moves left.
+    const delta =
+      (side === "right" ? -1 : 1) * (event.clientX - drag.startX)
     if (!drag.moved && Math.abs(delta) < SIDEBAR_DRAG_SLOP) return
     drag.moved = true
 
@@ -498,17 +508,27 @@ function SidebarResizeHandle({ className }: { className?: string }) {
           onPointerEnter={() => setHovered(true)}
           onPointerLeave={() => setHovered(false)}
           className={cn(
-            "absolute inset-y-0 -right-1 z-30 hidden w-2 touch-none select-none sm:block",
+            "absolute inset-y-0 z-30 hidden w-2 touch-none select-none sm:block",
+            side === "right" ? "-left-1" : "-right-1",
             // `!` overrides the app-wide hand cursor on buttons.
-            open ? "cursor-col-resize!" : "cursor-e-resize!",
+            open
+              ? "cursor-col-resize!"
+              : side === "right"
+                ? "cursor-w-resize!"
+                : "cursor-e-resize!",
             // Sits exactly on the sidebar border so hover recolours one line.
-            "after:absolute after:inset-y-0 after:right-1 after:w-px after:bg-transparent after:transition-colors after:duration-150",
+            "after:absolute after:inset-y-0 after:w-px after:bg-transparent after:transition-colors after:duration-150",
+            side === "right" ? "after:left-1" : "after:right-1",
             "hover:after:bg-sidebar-ring/25 data-dragging:after:bg-sidebar-ring/25",
             className
           )}
         />
       </TooltipTrigger>
-      <TooltipContent side="right" align="center" className="tooltip-compact">
+      <TooltipContent
+        side={side === "right" ? "left" : "right"}
+        align="center"
+        className="tooltip-compact"
+      >
         <span className="flex flex-col gap-px">
           <span>{open ? "Click to collapse" : "Click to expand"} {isMacPlatform ? "⌘B" : "Ctrl+B"}</span>
           <span className="opacity-70">Drag to resize</span>

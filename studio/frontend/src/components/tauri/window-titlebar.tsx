@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
+import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import {
@@ -110,9 +111,12 @@ export function WindowTitlebar({
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
   const { pinned, togglePinned } = useSidebarPin();
+  // The titlebar sits outside the sidebar wrapper, so it cannot inherit
+  // --sidebar-width. Read the resized width from the same store instead.
+  const { width } = useSidebarWidth();
   const sidebarWidth = showSidebarSurface
     ? pinned
-      ? "var(--studio-sidebar-expanded-width,17.5rem)"
+      ? `${width}px`
       : "var(--studio-sidebar-collapsed-width,3rem)"
     : "0px";
   const contentBorderLeft = pinned ? `calc(${sidebarWidth} + 12px)` : "0px";
