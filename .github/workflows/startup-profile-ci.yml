@@ -24,9 +24,16 @@ name: Startup profile
 on:
   pull_request:
     paths:
-      - 'studio/backend/main.py'
-      - 'studio/backend/run.py'
-      - 'studio/backend/routes/**'
+      # The measured import graph is the whole backend tree, not three files:
+      # main.py imports auth, core, hub, loggers, models, picker, routes and
+      # utils at module scope, and routes/models.py pulls in utils.utils and
+      # utils.hidden_models. Listing only main/run/routes let a change to any
+      # of the rest move `import main` without ever running this job.
+      - 'studio/backend/**'
+      - '!studio/backend/tests/**'
+      # The launch phase spawns `unsloth studio --api-only`, so the CLI is on
+      # the measured process-to-healthz path too.
+      - 'unsloth_cli/**'
       - 'studio/src-tauri/src/preflight**'
       - 'scripts/profile_startup.py'
       - '.github/workflows/startup-profile-ci.yml'
