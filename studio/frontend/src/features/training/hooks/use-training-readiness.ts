@@ -3,6 +3,7 @@
 
 import {
   type StartValidationResult,
+  hasIncompatibleTrainingModalities,
   validateS3Source,
   validateTrainingConfig,
 } from "../lib/validation";
@@ -62,9 +63,7 @@ function selectTrainingReadiness(
   const modelError = state.modelDefaultsError;
   const isModelCapabilitiesSettled = hasModel && !isLoadingModel;
   const isIncompatible =
-    isModelCapabilitiesSettled &&
-    ((!state.isVisionModel && state.isDatasetImage === true) ||
-      (!state.isAudioModel && state.isDatasetAudio === true));
+    isModelCapabilitiesSettled && hasIncompatibleTrainingModalities(state);
   const hasDatasetModalityMetadata = state.isDatasetImage !== null;
   const modelHandlesAllModalities = state.isVisionModel && state.isAudioModel;
   const datasetUnverified =

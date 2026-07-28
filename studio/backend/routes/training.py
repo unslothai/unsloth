@@ -60,11 +60,16 @@ from models import (
     TrainingProgress,
 )
 from models.responses import TrainingStopResponse, TrainingMetricsResponse
-from pydantic import BaseModel as PydanticBaseModel
+from pydantic import BaseModel as PydanticBaseModel, ValidationError as PydanticValidationError
 
 
 class TrainingStopRequest(PydanticBaseModel):
     save: bool = True
+    expected_job_id: Optional[str] = None
+
+
+class TrainingResetRequest(PydanticBaseModel):
+    expected_job_id: Optional[str] = None
 
 
 router = APIRouter()
@@ -236,6 +241,25 @@ _RESUME_CACHE_FIELDS = (
     "dataset_local_path",
     "dataset_snapshot_path",
 )
+_RESUME_CHECKPOINT_STRUCTURE_FIELDS = (
+    "load_in_4bit",
+    "use_lora",
+    "lora_r",
+    "lora_alpha",
+    "lora_dropout",
+    "target_modules",
+    "gradient_checkpointing",
+    "use_rslora",
+    "use_loftq",
+    "use_dora",
+    "finetune_vision_layers",
+    "finetune_language_layers",
+    "finetune_attention_modules",
+    "finetune_mlp_modules",
+    "optim",
+    "lr_scheduler_type",
+    "embedding_learning_rate",
+)
 
 
 def _normalized_optional_string(value: Any) -> Optional[str]:
@@ -284,6 +308,11 @@ def _apply_resume_resource_provenance(
                 detail = "The training type does not match the source run.",
             )
         request.training_type = stored_training_type
+    for field in _RESUME_CHECKPOINT_STRUCTURE_FIELDS:
+        if field not in stored:
+            continue
+        value = stored[field]
+        setattr(request, field, list(value) if isinstance(value, list) else value)
 
     stored_dataset = _normalized_optional_string(stored.get("hf_dataset"))
     requested_dataset = _normalized_optional_string(request.hf_dataset)
@@ -301,6 +330,23 @@ def _apply_resume_resource_provenance(
     for field in _RESUME_CACHE_FIELDS:
         default = False if field.endswith("_known_cached") else None
         setattr(request, field, stored.get(field, default))
+    try:
+        validated_request = TrainingStartRequest.model_validate(
+            {
+                field: getattr(request, field)
+                for field in TrainingStartRequest.model_fields
+            }
+        )
+    except PydanticValidationError as error:
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "The source run contains invalid training configuration and cannot "
+                "be resumed safely."
+            ),
+        ) from error
+    for field in TrainingStartRequest.model_fields:
+        setattr(request, field, getattr(validated_request, field))
     return _normalized_optional_string(stored.get("actual_model_repo_id"))
 
 
@@ -401,6 +447,8 @@ async def start_training(
         resume_run: Optional[dict] = None
         resume_actual_model_repo_id: Optional[str] = None
         resume_requires_exact_resources = False
+        resume_requires_exact_model = False
+        resume_requires_exact_dataset = False
         if request.resume_from_checkpoint:
             try:
                 resume_output_dir = normalize_resume_output_dir(request.resume_from_checkpoint)
@@ -423,11 +471,17 @@ async def start_training(
                 )
             request.resume_from_checkpoint = resume_checkpoint
             resume_actual_model_repo_id = _apply_resume_resource_provenance(request, resume_run)
-            from core.training.provenance import resource_provenance_is_complete
-
-            resume_requires_exact_resources = resource_provenance_is_complete(
-                training_run_config(resume_run)
+            from core.training.provenance import (
+                exact_resume_resource_requirements,
+                resource_provenance_is_complete,
             )
+
+            resume_config = training_run_config(resume_run)
+            (
+                resume_requires_exact_model,
+                resume_requires_exact_dataset,
+            ) = exact_resume_resource_requirements(resume_config)
+            resume_requires_exact_resources = resource_provenance_is_complete(resume_config)
 
         if request.local_datasets:
             request.local_datasets = _validate_local_dataset_paths(
@@ -583,6 +637,8 @@ async def start_training(
             "output_dir": resume_output_dir,
             "resume_from_checkpoint": request.resume_from_checkpoint,
             "require_exact_resume_resources": resume_requires_exact_resources,
+            "require_exact_model_resource": resume_requires_exact_model,
+            "require_exact_dataset_resource": resume_requires_exact_dataset,
             "trust_remote_code": request.trust_remote_code,
             "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
             "subject": current_subject,
@@ -593,11 +649,13 @@ async def start_training(
         # Latest-sidecar models size and train 16-bit (same flip as chat load):
         # 4-bit is disabled for brand-new architectures, so VRAM coexistence
         # checks must not underestimate against a load the worker will refuse.
-        from core.training.provenance import ExactResumeResourcesUnavailable
+        from core.training.provenance import (
+            ExactResumeResourcesUnavailable,
+            effective_training_load_in_4bit,
+        )
 
         if training_kwargs["load_in_4bit"]:
             from core.training.training import resolve_training_model_load_target
-            from utils.transformers_version import latest_tier_active_for
 
             try:
                 model_load_target = await asyncio.to_thread(
@@ -606,11 +664,16 @@ async def start_training(
                 )
             except ExactResumeResourcesUnavailable as exc:
                 raise HTTPException(status_code = 409, detail = str(exc))
-            if await asyncio.to_thread(
-                latest_tier_active_for,
-                model_load_target,
-                training_kwargs["hf_token"] or None,
-            ):
+            try:
+                effective_load_in_4bit = await asyncio.to_thread(
+                    effective_training_load_in_4bit,
+                    training_kwargs,
+                    model_load_target,
+                    training_kwargs["hf_token"] or None,
+                )
+            except ExactResumeResourcesUnavailable as exc:
+                raise HTTPException(status_code = 409, detail = str(exc))
+            if not effective_load_in_4bit:
                 training_kwargs["load_in_4bit"] = False
                 logger.info(
                     "Latest-transformers sidecar active for %s - sizing and "
@@ -759,7 +822,10 @@ async def stop_training(
                 status = "idle", message = "No training job is currently running"
             )
 
-        if not backend.stop_training(save = body.save):
+        if not backend.stop_training(
+            save = body.save,
+            expected_job_id = body.expected_job_id,
+        ):
             return TrainingStopResponse(
                 status = "idle", message = "No training job is currently running"
             )
@@ -780,41 +846,21 @@ async def stop_training(
 
 
 @router.post("/reset")
-async def reset_training(current_subject: str = Depends(get_current_subject)):
+async def reset_training(
+    body: TrainingResetRequest = TrainingResetRequest(),
+    current_subject: str = Depends(get_current_subject),
+):
     """Reset training state so the user can return to configuration."""
     try:
         backend = get_training_backend()
-        is_active = backend.is_training_active()
-
-        if is_active:
-            if backend._cancel_requested:
-                # Cancel (save=False) requested — force-terminate to reset immediately.
-                logger.info("Force-terminating subprocess for immediate reset (cancel path)")
-                backend.force_terminate()
-            else:
-                logger.warning("Rejected reset while training active: is_active=%s", is_active)
-                raise HTTPException(
-                    status_code = 409,
-                    detail = "Training is still running. Stop training and wait for it to finish before resetting.",
-                )
-
-        logger.info("Reset training state: clearing runtime + metric history")
-        backend._should_stop = False  # Clear stop flag so status returns to idle
-        backend.trainer._update_progress(
-            is_training = False,
-            is_completed = False,
-            error = None,
-            status_message = "Ready to train",
-            step = 0,
-            loss = None,
-            epoch = 0,
-            total_steps = 0,
-        )
-        backend.loss_history = []
-        backend.lr_history = []
-        backend.step_history = []
-        backend.grad_norm_history = []
-        backend.grad_norm_step_history = []
+        result = backend.reset_training_state(expected_job_id = body.expected_job_id)
+        if result == "superseded":
+            return {"status": "superseded"}
+        if result == "active":
+            raise HTTPException(
+                status_code = 409,
+                detail = "Training is still running. Stop training and wait for it to finish before resetting.",
+            )
         return {"status": "ok"}
     except HTTPException:
         raise

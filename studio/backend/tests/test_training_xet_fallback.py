@@ -43,6 +43,7 @@ _mpl.pyplot = _plt
 _stub("matplotlib", _mpl)
 _stub("matplotlib.pyplot", _plt)
 _hw = _types.ModuleType("utils.hardware")
+_hw.get_device = lambda: _types.SimpleNamespace(value = "cpu")
 _hw.prepare_gpu_selection = lambda *a, **k: (None, None)
 _stub("utils.hardware", _hw)
 _npl = _types.ModuleType("utils.native_path_leases")
@@ -119,6 +120,9 @@ class _FakeQueue:
     def get(self, *a, **k):
         raise queue.Empty
 
+    def get_nowait(self):
+        raise queue.Empty
+
 
 class _FakeCtx:
     def __init__(self):
@@ -166,7 +170,7 @@ def test_respawn_uses_disable_xet_and_preserves_run_row(monkeypatch):
         b, "_finalize_run_in_db", lambda **k: finalized.__setitem__("n", finalized["n"] + 1)
     )
 
-    b._respawn_worker_disable_xet()
+    assert b._respawn_worker_disable_xet() is True
 
     assert len(fake_ctx.spawned) == 1, "respawn must start exactly one worker"
     cfg = fake_ctx.spawned[0]["kwargs"]["config"]
@@ -174,6 +178,159 @@ def test_respawn_uses_disable_xet_and_preserves_run_row(monkeypatch):
     assert cfg["model_name"] == "org/model"
     assert created["n"] == 0, "respawn must not recreate the DB run row"
     assert finalized["n"] == 0, "a successful respawn must not finalize the run as error"
+
+
+def test_cancel_wins_pending_respawn_and_pump_finalizes(monkeypatch):
+    from core.training import lifecycle
+
+    b, proc = _backend_mid_load()
+    b.current_job_id = "job_old"
+    b._db_run_created = True
+    b._db_config = {"model_name": "org/model"}
+    b._event_queue = _FakeQueue()
+    b._progress.is_training = True
+    b._last_hf_cache_env = {"HF_HOME": "/tmp/hf-cache"}
+    b._handle_event({"type": "stall", "message": "x"})
+    assert proc.is_alive() is False
+
+    fake_ctx = _FakeCtx()
+    monkeypatch.setattr(training_mod, "_CTX", fake_ctx)
+    finalized: list[dict] = []
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kwargs: finalized.append(kwargs))
+
+    lifecycle_attempted = threading.Event()
+    training_lifecycle_guard = lifecycle.training_lifecycle_guard
+
+    @contextlib.contextmanager
+    def observed_lifecycle_guard():
+        lifecycle_attempted.set()
+        with training_lifecycle_guard():
+            yield
+
+    monkeypatch.setattr(lifecycle, "training_lifecycle_guard", observed_lifecycle_guard)
+
+    with training_lifecycle_guard():
+        pump = threading.Thread(target = b._pump_loop)
+        b._pump_thread = pump
+        pump.start()
+        assert lifecycle_attempted.wait(timeout = 2.0)
+        assert b._spawn_in_progress is False
+        assert b._last_full_config["disable_xet"] is False
+        with b._lock:
+            b._should_stop = True
+            b._cancel_requested = True
+
+    pump.join(timeout = 5.0)
+    assert pump.is_alive() is False
+    assert fake_ctx.spawned == []
+    assert b._spawn_in_progress is False
+    assert b._pump_running is False
+    assert len(finalized) == 1
+    assert finalized[0]["status"] == "stopped"
+    assert finalized[0]["clear_output_dir"] is True
+    assert finalized[0]["expected_job_id"] == "job_old"
+
+
+def test_cancel_interrupts_sidecar_wait_before_respawn(monkeypatch):
+    from utils import transformers_version
+
+    b, proc = _backend_mid_load()
+    b.current_job_id = "job_old"
+    b._last_hf_cache_env = {"HF_HOME": "/tmp/hf-cache"}
+    b._handle_event({"type": "stall", "message": "x"})
+    assert proc.is_alive() is False
+
+    fake_ctx = _FakeCtx()
+    monkeypatch.setattr(training_mod, "_CTX", fake_ctx)
+    sidecar_checked = threading.Event()
+
+    def sidecar_swap_in_progress():
+        sidecar_checked.set()
+        return True
+
+    monkeypatch.setattr(
+        transformers_version,
+        "sidecar_swap_in_progress",
+        sidecar_swap_in_progress,
+    )
+
+    result: list[bool] = []
+    respawn = threading.Thread(
+        target = lambda: result.append(
+            b._respawn_worker_disable_xet(expected_job_id = "job_old")
+        )
+    )
+    respawn.start()
+    assert sidecar_checked.wait(timeout = 2.0)
+    with b._lock:
+        b._should_stop = True
+        b._cancel_requested = True
+
+    respawn.join(timeout = 2.0)
+    assert respawn.is_alive() is False
+    assert result == [False]
+    assert fake_ctx.spawned == []
+    assert b._spawn_in_progress is False
+    assert b._last_full_config["disable_xet"] is False
+
+
+def test_reset_waits_for_cancelled_respawn_finalization(monkeypatch):
+    from utils import transformers_version
+
+    b, proc = _backend_mid_load()
+    b.current_job_id = "job_old"
+    b._db_run_created = True
+    b._db_config = {"model_name": "org/model"}
+    b._event_queue = _FakeQueue()
+    b._progress.is_training = True
+    b._last_hf_cache_env = {"HF_HOME": "/tmp/hf-cache"}
+    b._handle_event({"type": "stall", "message": "x"})
+    assert proc.is_alive() is False
+
+    fake_ctx = _FakeCtx()
+    monkeypatch.setattr(training_mod, "_CTX", fake_ctx)
+    finalized: list[dict] = []
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kwargs: finalized.append(kwargs))
+
+    sidecar_checked = threading.Event()
+
+    def sidecar_swap_in_progress():
+        sidecar_checked.set()
+        return True
+
+    monkeypatch.setattr(
+        transformers_version,
+        "sidecar_swap_in_progress",
+        sidecar_swap_in_progress,
+    )
+
+    pump = threading.Thread(target = b._pump_loop)
+    b._pump_thread = pump
+    pump.start()
+    assert sidecar_checked.wait(timeout = 2.0)
+    with b._lock:
+        b._should_stop = True
+        b._cancel_requested = True
+
+    assert b.reset_training_state(expected_job_id = "job_old") == "reset"
+    pump.join(timeout = 2.0)
+    assert pump.is_alive() is False
+    assert fake_ctx.spawned == []
+    assert finalized == [
+        {
+            "status": "stopped",
+            "error_message": None,
+            "output_dir": None,
+            "clear_output_dir": True,
+            "resume_blocked": True,
+            "expected_job_id": "job_old",
+        }
+    ]
+    assert b._spawn_in_progress is False
+    assert b._should_stop is False
+    assert b._progress.status_message == "Ready to train"
 
 
 def test_second_stall_surfaces_error_without_respawn():

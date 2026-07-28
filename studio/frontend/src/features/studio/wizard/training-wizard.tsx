@@ -63,11 +63,11 @@ function SectionBox({
   return (
     <section
       data-tour={dataTour}
-      className="elevated-card flex flex-col gap-4 bg-card p-5"
+      className="@container/train-card elevated-card flex flex-col gap-4 bg-card p-5"
     >
       {title && (
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
+        <div className="flex flex-col items-stretch gap-3 @md/train-card:flex-row @md/train-card:items-center @md/train-card:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
             {icon && (
               <span
                 className="train-section-chip inline-flex size-9 shrink-0 items-center justify-center rounded-full"
@@ -95,10 +95,14 @@ function SectionBox({
               )}
             </div>
           </div>
-          {titleAction && <div className="shrink-0">{titleAction}</div>}
+          {titleAction && (
+            <div className="w-full min-w-0 @md/train-card:w-auto @md/train-card:shrink-0">
+              {titleAction}
+            </div>
+          )}
         </div>
       )}
-      <div className="min-w-0">{children}</div>
+      <div className="@container/train-section min-w-0">{children}</div>
     </section>
   );
 }
@@ -150,7 +154,7 @@ function ParamModeToggle({
       <TabsList
         unstyled={true}
         aria-label={t("studio.params.mode.ariaLabel")}
-        className="hub-menu-trigger hub-tab-toggle relative inline-flex h-8 w-[170px] shrink-0 items-center rounded-full"
+        className="hub-menu-trigger hub-tab-toggle relative inline-flex h-8 w-full shrink-0 items-center rounded-full @md/train-card:w-[170px]"
       >
         <span
           aria-hidden="true"
@@ -277,8 +281,8 @@ function TrainingMethodSelect() {
 function ModelPanel() {
   const t = useT();
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_180px_200px]">
-      <div className="sm:col-span-2 xl:col-span-1">
+    <div className="grid grid-cols-1 gap-4 @md/train-section:grid-cols-2 @2xl/train-section:grid-cols-[minmax(0,1fr)_180px_200px]">
+      <div className="@md/train-section:col-span-2 @2xl/train-section:col-span-1">
         <SetupField label={t("studio.wizard.modelLabel")}>
           <TrainModelSelector />
         </SetupField>

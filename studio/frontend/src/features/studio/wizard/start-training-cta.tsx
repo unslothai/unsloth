@@ -40,9 +40,6 @@ function resolveStartTrainingError(input: {
     datasetSource,
     configValidation,
   } = input;
-  if (startError) {
-    return startError;
-  }
   if (modelError) {
     return t("studio.training.modelUnverified");
   }
@@ -50,9 +47,6 @@ function resolveStartTrainingError(input: {
     return !isAudioModel && isDatasetAudio === true
       ? t("studio.training.audioIncompatible")
       : t("studio.training.visionIncompatible");
-  }
-  if (datasetUnverified) {
-    return t("studio.training.datasetUnverified");
   }
   if (!hasModel) {
     return null;
@@ -70,7 +64,10 @@ function resolveStartTrainingError(input: {
   if (!configValidation.ok && configValidation.message) {
     return configValidation.message;
   }
-  return null;
+  if (startError) {
+    return startError;
+  }
+  return datasetUnverified ? t("studio.training.datasetUnverified") : null;
 }
 
 function resolveStartTrainingButtonLabel({
@@ -192,8 +189,13 @@ export function StartTrainingCta() {
             isDatasetWarning ? "text-status-warning" : "text-destructive",
           )}
         >
-          <p>{errorMessage}</p>
-          {modelError && !startError && (
+          <p
+            role={isDatasetWarning ? "status" : "alert"}
+            className="min-w-0 break-words"
+          >
+            {errorMessage}
+          </p>
+          {modelError && (
             <button
               type="button"
               onClick={ensureModelDefaultsLoaded}

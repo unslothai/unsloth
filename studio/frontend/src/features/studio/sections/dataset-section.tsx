@@ -487,7 +487,7 @@ export function DatasetPanel() {
       {datasetSource === "s3" && <S3ConfigForm />}
 
       {datasetSource !== "s3" && (
-        <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2 lg:gap-5">
+        <div className="grid grid-cols-1 items-start gap-4 @xl/train-section:grid-cols-2 @xl/train-section:gap-5">
           <div className="flex flex-col gap-2">
             <FieldLabel>{t("studio.wizard.hfDatasetLabel")}</FieldLabel>
             <DatasetSelector />
@@ -671,60 +671,64 @@ export function DatasetPanel() {
       )}
 
       {datasetSource !== "s3" && selectedDatasetName && (
-        <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3.5 py-3">
-          <div className="rounded-md bg-indigo-500/10 p-1.5">
-            <HugeiconsIcon
-              icon={FileAttachmentIcon}
-              className="size-4 text-indigo-500"
-            />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="truncate font-mono text-sm font-medium">
-              {datasetSource === "upload"
-                ? (selectedLocalDataset?.label ??
-                  deriveLocalDatasetName(selectedDatasetName))
-                : selectedDatasetName}
-            </p>
-            <p className="text-ui-10 text-muted-foreground">
-              {datasetSource === "upload" ? (
-                uploadedFile ? (
-                  <>
-                    {t("studio.dataset.localDataset")}
-                    {selectedLocalRows != null
-                      ? t("studio.dataset.localDatasetRows", {
-                          count: selectedLocalRows.toLocaleString(),
-                        })
-                      : ""}
-                  </>
+        <div className="flex flex-col items-stretch gap-3 rounded-lg border bg-muted/40 px-3.5 py-3 @md/train-section:flex-row @md/train-section:items-center">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="shrink-0 rounded-md bg-indigo-500/10 p-1.5">
+              <HugeiconsIcon
+                icon={FileAttachmentIcon}
+                className="size-4 text-indigo-500"
+              />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-mono text-sm font-medium">
+                {datasetSource === "upload"
+                  ? (selectedLocalDataset?.label ??
+                    deriveLocalDatasetName(selectedDatasetName))
+                  : selectedDatasetName}
+              </p>
+              <p className="text-ui-10 text-muted-foreground">
+                {datasetSource === "upload" ? (
+                  uploadedFile ? (
+                    <>
+                      {t("studio.dataset.localDataset")}
+                      {selectedLocalRows != null
+                        ? t("studio.dataset.localDatasetRows", {
+                            count: selectedLocalRows.toLocaleString(),
+                          })
+                        : ""}
+                    </>
+                  ) : (
+                    t("studio.dataset.localDataset")
+                  )
                 ) : (
-                  t("studio.dataset.localDataset")
-                )
-              ) : (
-                <>
-                  {t("studio.dataset.huggingFaceDataset")}
-                  {datasetSubset && ` / ${datasetSubset}`}
-                  {datasetSplit && ` / ${datasetSplit}`}
-                </>
-              )}
-            </p>
+                  <>
+                    {t("studio.dataset.huggingFaceDataset")}
+                    {datasetSubset && ` / ${datasetSubset}`}
+                    {datasetSplit && ` / ${datasetSplit}`}
+                  </>
+                )}
+              </p>
+            </div>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="shrink-0 text-xs"
-            onClick={() => openPreview()}
-          >
-            <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
-            {t("studio.dataset.viewDataset")}
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="shrink-0 text-xs"
-            onClick={clearSelection}
-          >
-            {t("studio.dataset.clear")}
-          </Button>
+          <div className="flex flex-wrap items-center justify-end gap-1 @md/train-section:ml-auto @md/train-section:flex-nowrap">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="shrink-0 text-xs"
+              onClick={() => openPreview()}
+            >
+              <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
+              {t("studio.dataset.viewDataset")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="shrink-0 text-xs"
+              onClick={clearSelection}
+            >
+              {t("studio.dataset.clear")}
+            </Button>
+          </div>
         </div>
       )}
 

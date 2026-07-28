@@ -43,11 +43,7 @@ import {
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
-import {
-  hfApiToken,
-  useHfTokenStore,
-  useHubModelSearch,
-} from "@/features/hub";
+import { hfApiToken, useHfTokenStore, useHubModelSearch } from "@/features/hub";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import type { LocalModelInfo } from "@/features/training";

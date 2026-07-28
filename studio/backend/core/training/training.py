@@ -219,6 +219,12 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "require_exact_resume_resources": values.get(
             "require_exact_resume_resources", False
         ),
+        "require_exact_model_resource": values.get(
+            "require_exact_model_resource", False
+        ),
+        "require_exact_dataset_resource": values.get(
+            "require_exact_dataset_resource", False
+        ),
         "trust_remote_code": values.get("trust_remote_code", False),
         "approved_remote_code_fingerprint": values.get("approved_remote_code_fingerprint"),
         "subject": values.get("subject"),
@@ -254,6 +260,8 @@ def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
             "subject",
             "cache_pin_warnings",
             "require_exact_resume_resources",
+            "require_exact_model_resource",
+            "require_exact_dataset_resource",
         }
     }
     s3_config = config.get("s3_config")
@@ -318,7 +326,9 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
             requested_pin, "model", pinned_repo_id, _MODEL_SNAPSHOT_METADATA
         )
         if pin is None:
-            if config.get("require_exact_resume_resources"):
+            if config.get("require_exact_resume_resources") or config.get(
+                "require_exact_model_resource"
+            ):
                 from .provenance import ExactResumeResourcesUnavailable
 
                 raise ExactResumeResourcesUnavailable(
@@ -366,6 +376,9 @@ def resolve_training_model_load_target(values: dict[str, Any]) -> str:
         "require_exact_resume_resources": values.get(
             "require_exact_resume_resources", False
         ),
+        "require_exact_model_resource": values.get(
+            "require_exact_model_resource", False
+        ),
         "load_in_4bit": values.get("load_in_4bit", True),
     }
     _apply_model_cache_pin(config, [])
@@ -375,12 +388,22 @@ def resolve_training_model_load_target(values: dict[str, Any]) -> str:
 def _apply_cache_pins(config: dict[str, Any]) -> None:
     warnings: list[str] = []
     resume = bool(config.get("resume_from_checkpoint"))
-    if resume and config.get("require_exact_resume_resources"):
-        from .provenance import validate_exact_resource_pins
+    if resume:
+        from .provenance import (
+            validate_exact_dataset_pin,
+            validate_exact_model_pin,
+            validate_exact_resource_pins,
+        )
 
-        model_snapshot, dataset_snapshot = validate_exact_resource_pins(config)
-        config["model_snapshot_path"] = model_snapshot
-        config["dataset_snapshot_path"] = dataset_snapshot
+        if config.get("require_exact_resume_resources"):
+            model_snapshot, dataset_snapshot = validate_exact_resource_pins(config)
+            config["model_snapshot_path"] = model_snapshot
+            config["dataset_snapshot_path"] = dataset_snapshot
+        else:
+            if config.get("require_exact_model_resource"):
+                config["model_snapshot_path"] = validate_exact_model_pin(config)
+            if config.get("require_exact_dataset_resource"):
+                config["dataset_snapshot_path"] = validate_exact_dataset_pin(config)
     _apply_model_cache_pin(config, warnings)
 
     hf_dataset = config.get("hf_dataset") or ""
@@ -393,7 +416,9 @@ def _apply_cache_pins(config: dict[str, Any]) -> None:
 
         snap = dataset_cache_path_from_cache_path(requested_ds_pin, hf_dataset)
         if snap is None:
-            if config.get("require_exact_resume_resources"):
+            if config.get("require_exact_resume_resources") or config.get(
+                "require_exact_dataset_resource"
+            ):
                 from .provenance import ExactResumeResourcesUnavailable
 
                 raise ExactResumeResourcesUnavailable(
@@ -940,6 +965,7 @@ class TrainingBackend:
         # Left True after an abnormal death so _ensure_pump_alive spots a crash.
         self._pump_running: bool = False
         self._lock = threading.Lock()
+        self._provenance_lock = threading.Lock()
         self._run_intent_lock = threading.RLock()
 
         # Stop watchdog: after a stop is requested, escalates to force_terminate()
@@ -1047,7 +1073,9 @@ class TrainingBackend:
         Hook failures never block the start.
         """
         with self._lock:
-            if self._proc is not None and self._proc.is_alive():
+            if self._spawn_in_progress or (
+                self._proc is not None and self._proc.is_alive()
+            ):
                 logger.warning("Training subprocess already running")
                 return False
 
@@ -1121,6 +1149,17 @@ class TrainingBackend:
         # otherwise leave _spawn_in_progress latched, wedging is_training_active
         # (and the install route) until restart.
         try:
+            if (
+                config.get("require_exact_resume_resources")
+                or config.get("require_exact_model_resource")
+            ) and config.get("load_in_4bit"):
+                from .provenance import effective_training_load_in_4bit
+
+                effective_training_load_in_4bit(
+                    config,
+                    config.get("model_snapshot_path") or config["model_name"],
+                    config.get("hf_token") or None,
+                )
             # Synchronous validation passed -> free VRAM (export + chat) now, before
             # auto-selection and the spawn, so placement sees the freed memory. Runs AFTER the handshake
             # so a lost race to an install can't tear down chat/export for a training run that never spawns.
@@ -1248,10 +1287,32 @@ class TrainingBackend:
             self._spawn_in_progress = False
             raise
 
-    def stop_training(self, save: bool = True) -> bool:
+    def stop_training(
+        self,
+        save: bool = True,
+        expected_job_id: Optional[str] = None,
+    ) -> bool:
         """Send stop signal to the training subprocess."""
+        from .lifecycle import training_lifecycle_guard
+
+        with training_lifecycle_guard():
+            return self._stop_training_with_lifecycle_reserved(
+                save = save,
+                expected_job_id = expected_job_id,
+            )
+
+    def _stop_training_with_lifecycle_reserved(
+        self,
+        save: bool,
+        expected_job_id: Optional[str],
+    ) -> bool:
         with self._run_intent_lock:
             with self._lock:
+                if (
+                    expected_job_id is not None
+                    and self.current_job_id != expected_job_id
+                ):
+                    return False
                 run_id = self.current_job_id
             if not save and run_id:
                 persist_error: Optional[Exception] = None
@@ -1295,6 +1356,7 @@ class TrainingBackend:
                     self._cancel_requested = True
                     self._cancel_cleanup_output_dir = self._output_dir
                     self._output_dir = self._progress.output_dir = None
+                self._needs_xet_respawn = False
                 if self._stop_queue is not None:
                     try:
                         self._stop_queue.put({"type": "stop", "save": save})
@@ -1307,6 +1369,68 @@ class TrainingBackend:
                 )
         self._start_stop_watchdog(cancel = not save, expected_job_id = run_id)
         return True
+
+    def reset_training_state(
+        self,
+        expected_job_id: Optional[str] = None,
+    ) -> str:
+        from .lifecycle import training_lifecycle_guard
+
+        with training_lifecycle_guard():
+            with self._lock:
+                if (
+                    expected_job_id is not None
+                    and self.current_job_id != expected_job_id
+                ):
+                    return "superseded"
+                target_job_id = self.current_job_id
+
+            is_active = self.is_training_active()
+            with self._lock:
+                if (
+                    self.current_job_id != target_job_id
+                    or (
+                        expected_job_id is not None
+                        and self.current_job_id != expected_job_id
+                    )
+                ):
+                    return "superseded"
+                cancel_requested = self._cancel_requested
+                proc = self._proc
+
+            if is_active:
+                if not cancel_requested:
+                    return "active"
+
+        if is_active:
+            self.force_terminate(target_proc = proc)
+
+        with training_lifecycle_guard():
+            with self._lock:
+                if (
+                    self.current_job_id != target_job_id
+                    or (
+                        expected_job_id is not None
+                        and self.current_job_id != expected_job_id
+                    )
+                ):
+                    return "superseded"
+                self._should_stop = False
+                self._progress.is_training = False
+                self._progress.is_completed = False
+                self._progress.error = None
+                self._progress.status_message = "Ready to train"
+                self._progress.step = 0
+                self._progress.loss = None
+                self._progress.epoch = 0
+                self._progress.total_steps = 0
+                self.loss_history.clear()
+                self.lr_history.clear()
+                self.step_history.clear()
+                self.grad_norm_history.clear()
+                self.grad_norm_step_history.clear()
+                self._needs_xet_respawn = False
+            return "reset"
 
     def _start_stop_watchdog(
         self,
@@ -1436,42 +1560,51 @@ class TrainingBackend:
         # Create the row if a start-time create failed (no-op otherwise; skips when the pump
         # is mid-create, in which case its create-then-finalize records the run instead).
         self._ensure_db_run_created()
-        with self._lock:
-            claim = (
-                bool(run_id)
-                and self.current_job_id == run_id
-                and self._db_run_created
-                and not self._run_finalized
-            )
-            batch: list = []
-            final_step = final_loss = duration = None
-            loss_history: list = []
-            if clear_output_dir:
-                self._output_dir = self._progress.output_dir = None
+        with self._provenance_lock:
+            with self._lock:
+                claim = (
+                    bool(run_id)
+                    and self.current_job_id == run_id
+                    and self._db_run_created
+                    and not self._run_finalized
+                )
+                batch: list = []
+                final_step = final_loss = duration = None
+                loss_history: list = []
+                if clear_output_dir:
+                    self._output_dir = self._progress.output_dir = None
+                if claim:
+                    self._run_finalized = True  # claim this run's finalize
+                    batch = list(self._metric_buffer)
+                    del self._metric_buffer[: len(batch)]
+                    final_step = self._progress.step
+                    final_loss = self._progress.loss
+                    if final_loss is not None and not math.isfinite(final_loss):
+                        final_loss = None
+                    duration = self._progress.elapsed_seconds
+                    loss_history = list(self.loss_history)
+                    config_json = (
+                        _json.dumps(_sanitize_db_config(self._db_config))
+                        if self._db_config is not None
+                        else None
+                    )
+                else:
+                    config_json = None
             if claim:
-                self._run_finalized = True  # claim this run's finalize
-                batch = list(self._metric_buffer)
-                del self._metric_buffer[: len(batch)]
-                final_step = self._progress.step
-                final_loss = self._progress.loss
-                if final_loss is not None and not math.isfinite(final_loss):
-                    final_loss = None
-                duration = self._progress.elapsed_seconds
-                loss_history = list(self.loss_history)
-        if claim:
-            self._finish_stopped_run(
-                run_id,
-                output_dir,
-                batch,
-                final_step,
-                final_loss,
-                duration,
-                loss_history,
-                status = status,
-                error_message = error_message,
-                clear_output_dir = clear_output_dir,
-                resume_blocked = resume_blocked,
-            )
+                self._finish_stopped_run(
+                    run_id,
+                    output_dir,
+                    batch,
+                    final_step,
+                    final_loss,
+                    duration,
+                    loss_history,
+                    status = status,
+                    error_message = error_message,
+                    clear_output_dir = clear_output_dir,
+                    resume_blocked = resume_blocked,
+                    config_json = config_json,
+                )
         with self._lock:
             if target_proc is None or self._proc is target_proc:
                 self._proc = None  # drop only our handle, never a run that replaced it
@@ -1489,6 +1622,7 @@ class TrainingBackend:
         error_message: Optional[str] = None,
         clear_output_dir: bool = False,
         resume_blocked: bool = False,
+        config_json: Optional[str] = None,
     ) -> None:
         """Record a force-stopped run finished by its captured id, from state snapshotted
         under the lock. insert_metrics_batch upserts and finish_run is an idempotent UPDATE,
@@ -1517,6 +1651,7 @@ class TrainingBackend:
                     error_message = error_message,
                     clear_output_dir = clear_output_dir,
                     resume_blocked = resume_blocked,
+                    config_json = config_json,
                 )
                 return
             except Exception:
@@ -1596,116 +1731,155 @@ class TrainingBackend:
         if proc is not None and proc.is_alive():
             proc.terminate()
 
-    def _respawn_worker_disable_xet(self) -> None:
+    def _respawn_worker_disable_xet(
+        self,
+        expected_job_id: Optional[str] = None,
+    ) -> bool:
         """Respawn the worker once with HF_HUB_DISABLE_XET=1 after a model-load
         stall. Runs on the exiting pump thread, reaps the terminated worker, and
         starts a fresh worker + pump. DB/progress run-state is preserved so the
         history row is not duplicated; the new worker re-formats and loads over HTTP.
         """
-        config = self._last_full_config
-        if config is None:
-            logger.error("Cannot respawn training worker: no stored config")
-            return
+        from .lifecycle import training_lifecycle_guard
 
-        with self._lock:
-            old_proc = self._proc
-        if old_proc is not None:
-            old_proc.join(timeout = 5.0)
-            if old_proc.is_alive():
-                old_proc.kill()
-                old_proc.join(timeout = 2.0)
-
-        config = {**config, "disable_xet": True}
-        self._last_full_config = config
-        logger.warning("Respawning training worker with HF_HUB_DISABLE_XET=1 after Xet stall")
-
-        cache_env = getattr(self, "_last_hf_cache_env", None)
-        if not cache_env:
-            from utils.hf_cache_settings import get_hf_cache_paths
-            cache_env = get_hf_cache_paths().child_env({})
-        from utils.hf_cache_settings import child_environment_for_spawn
-
-        # This run is active, so an install request 409s rather than proceeds: a reservation seen here
-        # is transient (an aborting install or short lazy repair). Wait it out instead of stranding the
-        # stalled run; only a wedged reservation fails the respawn.
-        from utils.transformers_version import sidecar_swap_in_progress
-
-        self._spawn_in_progress = True
-        _swap_wait_deadline = time.time() + 120
-        while sidecar_swap_in_progress() and time.time() < _swap_wait_deadline:
-            time.sleep(1)
-        if sidecar_swap_in_progress():
-            # Raising here would land in the pump's broad finalization catch and
-            # strand the run in a training state with no worker: finalize it as a
-            # failure explicitly instead.
-            self._spawn_in_progress = False
-            msg = (
-                "A transformers installation is replacing the latest sidecar; "
-                "cannot respawn the training worker."
-            )
-            logger.error(msg)
+        with training_lifecycle_guard():
             with self._lock:
-                self._progress.is_training = False
-                self._progress.error = msg
-            self._ensure_db_run_created()
-            self._finalize_run_in_db(status = "error", error_message = msg)
-            return
+                if expected_job_id is not None and self.current_job_id != expected_job_id:
+                    return False
+                if self._should_stop or self._cancel_requested:
+                    return False
+                reservation_job_id = self.current_job_id
+                config = self._last_full_config
+                old_proc = self._proc
+                self._spawn_in_progress = True
 
-        # Reset the handshake flag on any unexpected failure past this point, so a
-        # crashed respawn cannot wedge is_training_active until restart.
+        def release_spawn_reservation() -> None:
+            with self._lock:
+                if self.current_job_id == reservation_job_id:
+                    self._spawn_in_progress = False
+
         try:
-            try:
-                with (
-                    child_environment_for_spawn(cache_env),
-                    native_path_secret_removed_for_child_start(),
-                ):
-                    event_queue = _CTX.Queue()
-                    stop_queue = _CTX.Queue()
-                    new_proc = _CTX.Process(
-                        target = run_without_native_path_secret,
-                        args = ("core.training.worker", "run_training_process", cache_env),
-                        kwargs = {
-                            "event_queue": event_queue,
-                            "stop_queue": stop_queue,
-                            "config": config,
-                        },
-                        daemon = True,
-                    )
-                    new_proc.start()
-                    from utils.process_lifetime import adopt_pid
+            if config is None:
+                logger.error("Cannot respawn training worker: no stored config")
+                release_spawn_reservation()
+                return False
 
-                    adopt_pid(new_proc.pid)  # bind to parent lifetime (Windows job / sweep)
-            except Exception:
-                logger.error("Failed to respawn training subprocess", exc_info = True)
-                self._spawn_in_progress = False
+            if old_proc is not None:
+                old_proc.join(timeout = 5.0)
+                if old_proc.is_alive():
+                    old_proc.kill()
+                    old_proc.join(timeout = 2.0)
+
+            config = {**config, "disable_xet": True}
+            logger.warning("Respawning training worker with HF_HUB_DISABLE_XET=1 after Xet stall")
+
+            cache_env = getattr(self, "_last_hf_cache_env", None)
+            if not cache_env:
+                from utils.hf_cache_settings import get_hf_cache_paths
+                cache_env = get_hf_cache_paths().child_env({})
+            from utils.hf_cache_settings import child_environment_for_spawn
+            from utils.transformers_version import sidecar_swap_in_progress
+
+            swap_wait_deadline = time.time() + 120
+            while time.time() < swap_wait_deadline:
                 with self._lock:
-                    # No replacement pump will run; clear the flag so a later run can't
-                    # inherit a stale _pump_running=True and spawn a duplicate.
-                    self._pump_running = False
-                    self._progress.is_training = False
-                    self._progress.error = "Failed to recover stalled model download"
-                self._ensure_db_run_created()
-                self._finalize_run_in_db(
-                    status = "error",
-                    error_message = "Failed to recover stalled model download",
-                )
-                return
-
-            logger.info("Training subprocess respawned with Xet disabled (pid=%s)", new_proc.pid)
-            new_pump = threading.Thread(target = self._pump_loop, daemon = True)
-            with self._lock:
-                self._in_model_load = False
-                self._event_queue = event_queue
-                self._stop_queue = stop_queue
-                self._proc = new_proc
-                self._spawn_in_progress = False
-                self._pump_thread = new_pump
-                # Start under the lock so _ensure_pump_alive can never observe the
-                # new pump as a not-yet-started (dead) thread and spawn a duplicate.
-                new_pump.start()
+                    superseded = self.current_job_id != reservation_job_id
+                    stopping = self._should_stop or self._cancel_requested
+                if superseded or stopping or not sidecar_swap_in_progress():
+                    break
+                time.sleep(0.25)
         except Exception:
-            self._spawn_in_progress = False
+            release_spawn_reservation()
             raise
+
+        with training_lifecycle_guard():
+            with self._lock:
+                if self.current_job_id != reservation_job_id:
+                    return False
+                if self._should_stop or self._cancel_requested:
+                    self._spawn_in_progress = False
+                    if self._cancel_requested:
+                        self._should_stop = True
+                    return False
+
+            try:
+                swap_in_progress = sidecar_swap_in_progress()
+            except Exception:
+                release_spawn_reservation()
+                raise
+            if swap_in_progress:
+                release_spawn_reservation()
+                msg = (
+                    "A transformers installation is replacing the latest sidecar; "
+                    "cannot respawn the training worker."
+                )
+                logger.error(msg)
+                with self._lock:
+                    self._progress.is_training = False
+                    self._progress.error = msg
+                self._ensure_db_run_created()
+                self._finalize_run_in_db(status = "error", error_message = msg)
+                return False
+
+            with self._lock:
+                self._last_full_config = config
+
+            # Reset the handshake flag on any unexpected failure past this point, so a
+            # crashed respawn cannot wedge is_training_active until restart.
+            try:
+                try:
+                    with (
+                        child_environment_for_spawn(cache_env),
+                        native_path_secret_removed_for_child_start(),
+                    ):
+                        event_queue = _CTX.Queue()
+                        stop_queue = _CTX.Queue()
+                        new_proc = _CTX.Process(
+                            target = run_without_native_path_secret,
+                            args = ("core.training.worker", "run_training_process", cache_env),
+                            kwargs = {
+                                "event_queue": event_queue,
+                                "stop_queue": stop_queue,
+                                "config": config,
+                            },
+                            daemon = True,
+                        )
+                        new_proc.start()
+                        from utils.process_lifetime import adopt_pid
+
+                        adopt_pid(new_proc.pid)  # bind to parent lifetime (Windows job / sweep)
+                except Exception:
+                    logger.error("Failed to respawn training subprocess", exc_info = True)
+                    self._spawn_in_progress = False
+                    with self._lock:
+                        # No replacement pump will run; clear the flag so a later run can't
+                        # inherit a stale _pump_running=True and spawn a duplicate.
+                        self._pump_running = False
+                        self._progress.is_training = False
+                        self._progress.error = "Failed to recover stalled model download"
+                    self._ensure_db_run_created()
+                    self._finalize_run_in_db(
+                        status = "error",
+                        error_message = "Failed to recover stalled model download",
+                    )
+                    return False
+
+                logger.info("Training subprocess respawned with Xet disabled (pid=%s)", new_proc.pid)
+                new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+                with self._lock:
+                    self._in_model_load = False
+                    self._event_queue = event_queue
+                    self._stop_queue = stop_queue
+                    self._proc = new_proc
+                    self._spawn_in_progress = False
+                    self._pump_thread = new_pump
+                    # Start under the lock so _ensure_pump_alive can never observe the
+                    # new pump as a not-yet-started (dead) thread and spawn a duplicate.
+                    new_pump.start()
+                return True
+            except Exception:
+                release_spawn_reservation()
+                raise
 
     def _ensure_pump_alive(self) -> bool:
         """Restart the event pump if it crashed, even after the worker exited.
@@ -1916,9 +2090,13 @@ class TrainingBackend:
                 # Model-load stall: respawn over HTTP instead of finalizing as failure.
                 # Starts a fresh pump on this thread (no self-join); it takes over
                 # _pump_running, so this exit leaves the flag set.
-                if self._needs_xet_respawn:
+                with self._lock:
+                    needs_xet_respawn = self._needs_xet_respawn
                     self._needs_xet_respawn = False
-                    self._respawn_worker_disable_xet()
+                    respawn_job_id = self.current_job_id
+                if needs_xet_respawn and self._respawn_worker_disable_xet(
+                    expected_job_id = respawn_job_id
+                ):
                     return
 
                 # Mark done if no explicit complete/error was received.
@@ -1991,43 +2169,52 @@ class TrainingBackend:
     def _handle_resource_provenance_event(self, event: dict[str, Any]) -> None:
         from .provenance import normalize_worker_provenance_event
 
-        with self._lock:
-            if not self.current_job_id or self._db_config is None:
+        with self._provenance_lock:
+            with self._lock:
+                if (
+                    not self.current_job_id
+                    or self._db_config is None
+                    or self._run_finalized
+                ):
+                    return
+                run_id = self.current_job_id
+                current_config = dict(self._db_config)
+
+            updates = normalize_worker_provenance_event(event, current_config)
+            with self._lock:
+                if (
+                    self.current_job_id != run_id
+                    or self._db_config is None
+                    or self._run_finalized
+                ):
+                    return
+                self._db_config.update(updates)
+                if self._last_full_config is not None:
+                    self._last_full_config.update(updates)
+                config_json = _json.dumps(_sanitize_db_config(self._db_config))
+                db_run_created = self._db_run_created
+
+            if not db_run_created:
                 return
-            run_id = self.current_job_id
-            current_config = dict(self._db_config)
+            for attempt in range(_DB_FINALIZE_RETRIES):
+                try:
+                    from storage.studio_db import update_run_config_json
 
-        updates = normalize_worker_provenance_event(event, current_config)
-        with self._lock:
-            if self.current_job_id != run_id or self._db_config is None:
-                return
-            self._db_config.update(updates)
-            if self._last_full_config is not None:
-                self._last_full_config.update(updates)
-            config_json = _json.dumps(_sanitize_db_config(self._db_config))
-            db_run_created = self._db_run_created
-
-        if not db_run_created:
-            return
-        for attempt in range(_DB_FINALIZE_RETRIES):
-            try:
-                from storage.studio_db import update_run_config_json
-
-                if not update_run_config_json(run_id, config_json):
+                    if not update_run_config_json(run_id, config_json):
+                        logger.warning(
+                            "Training provenance was not persisted because run %s is no longer active",
+                            run_id,
+                        )
+                    return
+                except Exception:
+                    if attempt + 1 < _DB_FINALIZE_RETRIES:
+                        time.sleep(_DB_FINALIZE_RETRY_S)
+                        continue
                     logger.warning(
-                        "Training provenance was not persisted because run %s is no longer active",
+                        "Failed to persist training resource provenance for run %s",
                         run_id,
+                        exc_info = True,
                     )
-                return
-            except Exception:
-                if attempt + 1 < _DB_FINALIZE_RETRIES:
-                    time.sleep(_DB_FINALIZE_RETRY_S)
-                    continue
-                logger.warning(
-                    "Failed to persist training resource provenance for run %s",
-                    run_id,
-                    exc_info = True,
-                )
 
     def _handle_event(self, event: dict) -> None:
         """Apply a subprocess event to local state.
@@ -2416,47 +2603,62 @@ class TrainingBackend:
         progress are snapshotted under the lock and threaded through the flush/finish calls,
         so a new run racing between this claim and the DB writes can't be flushed or marked
         stopped under the old run's finalize."""
-        with self._lock:
-            if expected_job_id is not None and self.current_job_id != expected_job_id:
-                return
-            if not self.current_job_id or not self._db_run_created or self._run_finalized:
-                return
-            self._run_finalized = True
-            run_id = self.current_job_id
-            final_step = self._progress.step
-            final_loss = self._progress.loss
-            if final_loss is not None and not math.isfinite(final_loss):
-                final_loss = None
-            duration = self._progress.elapsed_seconds
-            loss_history = list(self.loss_history)
-        self._flush_metrics_to_db(run_id = run_id)
-        for attempt in range(_DB_FINALIZE_RETRIES):
-            try:
-                from storage.studio_db import finish_run
-                from utils.downsample import downsample
-
-                finish_run(
-                    id = run_id,
-                    status = status,
-                    ended_at = datetime.now(timezone.utc).isoformat(),
-                    final_step = final_step,
-                    final_loss = final_loss,
-                    duration_seconds = duration,
-                    loss_sparkline = _json.dumps(downsample(loss_history, 50)),
-                    output_dir = output_dir,
-                    error_message = error_message,
-                    clear_output_dir = clear_output_dir,
-                    resume_blocked = resume_blocked,
+        with self._provenance_lock:
+            with self._lock:
+                if expected_job_id is not None and self.current_job_id != expected_job_id:
+                    return
+                if (
+                    not self.current_job_id
+                    or not self._db_run_created
+                    or self._run_finalized
+                ):
+                    return
+                self._run_finalized = True
+                run_id = self.current_job_id
+                final_step = self._progress.step
+                final_loss = self._progress.loss
+                if final_loss is not None and not math.isfinite(final_loss):
+                    final_loss = None
+                duration = self._progress.elapsed_seconds
+                loss_history = list(self.loss_history)
+                config_json = (
+                    _json.dumps(_sanitize_db_config(self._db_config))
+                    if self._db_config is not None
+                    else None
                 )
-                return
-            except Exception:
-                if attempt + 1 < _DB_FINALIZE_RETRIES:
-                    time.sleep(_DB_FINALIZE_RETRY_S)
-                    continue
-                with self._lock:
-                    if self.current_job_id == run_id:
-                        self._run_finalized = False
-                logger.warning("Failed to finalize run in DB (status=%s)", status, exc_info = True)
+            self._flush_metrics_to_db(run_id = run_id)
+            for attempt in range(_DB_FINALIZE_RETRIES):
+                try:
+                    from storage.studio_db import finish_run
+                    from utils.downsample import downsample
+
+                    finish_run(
+                        id = run_id,
+                        status = status,
+                        ended_at = datetime.now(timezone.utc).isoformat(),
+                        final_step = final_step,
+                        final_loss = final_loss,
+                        duration_seconds = duration,
+                        loss_sparkline = _json.dumps(downsample(loss_history, 50)),
+                        output_dir = output_dir,
+                        error_message = error_message,
+                        clear_output_dir = clear_output_dir,
+                        resume_blocked = resume_blocked,
+                        config_json = config_json,
+                    )
+                    return
+                except Exception:
+                    if attempt + 1 < _DB_FINALIZE_RETRIES:
+                        time.sleep(_DB_FINALIZE_RETRY_S)
+                        continue
+                    with self._lock:
+                        if self.current_job_id == run_id:
+                            self._run_finalized = False
+                    logger.warning(
+                        "Failed to finalize run in DB (status=%s)",
+                        status,
+                        exc_info = True,
+                    )
 
     def _flush_metrics_to_db(self, run_id: Optional[str] = None) -> None:
         """Flush buffered metrics to the DB and update live progress. The target run id,

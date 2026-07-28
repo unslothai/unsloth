@@ -85,6 +85,27 @@ class ExactResumeResourcesUnavailable(ValueError):
     pass
 
 
+def effective_training_load_in_4bit(
+    config: dict[str, Any],
+    model_load_target: str,
+    hf_token: Optional[str],
+) -> bool:
+    if not bool(config.get("load_in_4bit")):
+        return False
+    from utils.transformers_version import latest_tier_active_for
+
+    latest_tier_active = latest_tier_active_for(model_load_target, hf_token)
+    if latest_tier_active and (
+        config.get("require_exact_resume_resources")
+        or config.get("require_exact_model_resource")
+    ):
+        raise ExactResumeResourcesUnavailable(
+            "This checkpoint requires its original 4-bit model load mode, "
+            "which is unavailable with the active Transformers runtime."
+        )
+    return not latest_tier_active
+
+
 def _normalized_repo_id(value: Any) -> Optional[str]:
     if not isinstance(value, str):
         return None
@@ -446,7 +467,7 @@ def resource_provenance_is_complete(config: dict[str, Any]) -> bool:
     )
 
 
-def validate_exact_resource_pins(config: dict[str, Any]) -> tuple[str, str]:
+def validate_exact_model_pin(config: dict[str, Any]) -> str:
     model_snapshot = exact_model_snapshot_path(
         config.get("model_snapshot_path"),
         config.get("actual_model_repo_id") or config.get("model_name"),
@@ -456,6 +477,10 @@ def validate_exact_resource_pins(config: dict[str, Any]) -> tuple[str, str]:
         raise ExactResumeResourcesUnavailable(
             "The exact model snapshot for this run is no longer available."
         )
+    return model_snapshot
+
+
+def validate_exact_dataset_pin(config: dict[str, Any]) -> str:
     dataset_snapshot = exact_dataset_snapshot_path(
         config.get("dataset_snapshot_path"),
         config.get("hf_dataset"),
@@ -464,22 +489,61 @@ def validate_exact_resource_pins(config: dict[str, Any]) -> tuple[str, str]:
         raise ExactResumeResourcesUnavailable(
             "The exact dataset snapshot for this run is no longer available."
         )
+    return dataset_snapshot
+
+
+def validate_exact_resource_pins(config: dict[str, Any]) -> tuple[str, str]:
+    model_snapshot = validate_exact_model_pin(config)
+    dataset_snapshot = validate_exact_dataset_pin(config)
     return model_snapshot, dataset_snapshot
+
+
+def exact_resume_resource_requirements(
+    config: dict[str, Any],
+) -> tuple[bool, bool]:
+    marker = config.get(RESOURCE_PROVENANCE_KEY)
+    if marker is None:
+        return False, False
+    if (
+        not isinstance(marker, dict)
+        or marker.get("version") != RESOURCE_PROVENANCE_VERSION
+        or marker.get("status") not in {"pending", "incomplete", "complete"}
+    ):
+        raise ExactResumeResourcesUnavailable("The resource provenance is invalid.")
+
+    from utils.paths import is_local_path
+
+    actual_model_repo_id = _normalized_repo_id(config.get("actual_model_repo_id"))
+    if actual_model_repo_id is not None:
+        require_model = True
+    else:
+        model_source = config.get("model_name")
+        model_repo_id = _normalized_repo_id(model_source)
+        require_model = model_repo_id is not None and not is_local_path(str(model_source))
+    require_dataset = _normalized_repo_id(config.get("hf_dataset")) is not None
+
+    if require_model:
+        if marker.get("model_status") != _ATTESTED:
+            raise ExactResumeResourcesUnavailable(
+                "The model revision used by this run was not attested."
+            )
+        validate_exact_model_pin(config)
+    if require_dataset:
+        if marker.get("dataset_status") != _ATTESTED:
+            raise ExactResumeResourcesUnavailable(
+                "The dataset revision used by this run was not attested."
+            )
+        validate_exact_dataset_pin(config)
+    return require_model, require_dataset
 
 
 def resource_provenance_allows_resume(config: dict[str, Any]) -> bool:
     marker = config.get(RESOURCE_PROVENANCE_KEY)
     if marker is None:
         return True
-    if not isinstance(marker, dict) or marker.get("version") != RESOURCE_PROVENANCE_VERSION:
-        return False
-    status = marker.get("status")
-    if status in {"pending", "incomplete"}:
-        return True
-    if status != "complete":
-        return False
     try:
-        validate_exact_resource_pins(config)
+        exact_resume_resource_requirements(config)
     except ExactResumeResourcesUnavailable:
         return False
-    return True
+    status = marker.get("status")
+    return status in {"pending", "incomplete", "complete"}

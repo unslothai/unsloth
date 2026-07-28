@@ -219,7 +219,8 @@ def normalize_resume_output_dir(path_value: str) -> str:
         raise ValueError("Resume checkpoint uses a path from a different operating system.")
     try:
         path = resolve_output_dir(path_value)
-    except RuntimeError as error:
+        path.resolve(strict = True)
+    except (OSError, RuntimeError) as error:
         raise ValueError("Resume checkpoint path could not be resolved.") from error
     if not _is_under_outputs(path):
         raise ValueError("Resume checkpoint must be inside Unsloth outputs.")
@@ -274,6 +275,6 @@ def can_resume_run(run: dict) -> bool:
     if not resume_state_available:
         return False
 
-    from .provenance import resource_provenance_allows_resume
+    from core.training.provenance import resource_provenance_allows_resume
 
     return resource_provenance_allows_resume(training_run_config(run))

@@ -251,6 +251,20 @@ def _higher_tier(a: str, b: str) -> str:
     return a if _TIER_RANK.get(a, 0) >= _TIER_RANK.get(b, 0) else b
 
 
+def get_transformers_activation_tier(
+    model_name: str,
+    hf_token: str | None = None,
+) -> str:
+    if _is_lora_adapter_dir(Path(model_name)):
+        resolved = _resolve_base_model(model_name)
+    else:
+        resolved = _remote_lora_base(model_name, hf_token = hf_token) or model_name
+    tier = get_transformers_tier(resolved, hf_token)
+    if model_name != resolved and _safe_is_file(Path(model_name) / "config.json"):
+        tier = _higher_tier(tier, get_transformers_tier(model_name, hf_token))
+    return tier
+
+
 def activate_transformers_for_subprocess(model_name: str, hf_token: str | None = None) -> None:
     """Activate the correct transformers version in a subprocess worker.
 
@@ -267,15 +281,7 @@ def activate_transformers_for_subprocess(model_name: str, hf_token: str | None =
     # checkpoint with a private/offline _name_or_path must not resolve to an
     # unreachable HF id and skip its own config). Remote adapters activate for their
     # BASE model, matching latest_tier_active_for and the inference worker.
-    if _is_lora_adapter_dir(Path(model_name)):
-        resolved = _resolve_base_model(model_name)
-    else:
-        resolved = _remote_lora_base(model_name, hf_token = hf_token) or model_name
-    tier = get_transformers_tier(resolved, hf_token)
-    if model_name != resolved and _safe_is_file(Path(model_name) / "config.json"):
-        # Gate on a real local config.json: a checkpoint carries config the base may not
-        # surface, but path names alone must not upgrade a plain adapter.
-        tier = _higher_tier(tier, get_transformers_tier(model_name, hf_token))
+    tier = get_transformers_activation_tier(model_name, hf_token)
 
     if tier == "latest":
         pinned = latest_venv_pinned_version()
@@ -364,16 +370,7 @@ def latest_tier_active_for(model_name: str, hf_token: str | None = None) -> bool
         # any resolution so the common case costs no config or network reads.
         if latest_venv_pinned_version() is None:
             return False
-        if _is_lora_adapter_dir(Path(model_name)):
-            resolved = _resolve_base_model(model_name)
-        else:
-            # A remote LoRA activates the sidecar for its BASE model; sizing and the
-            # worker's 4-bit guard must see that base too, not the adapter repo.
-            resolved = _remote_lora_base(model_name, hf_token = hf_token) or model_name
-        tier = get_transformers_tier(resolved, hf_token)
-        if model_name != resolved and _safe_is_file(Path(model_name) / "config.json"):
-            tier = _higher_tier(tier, get_transformers_tier(model_name, hf_token))
-        return tier == "latest"
+        return get_transformers_activation_tier(model_name, hf_token) == "latest"
     except Exception:
         return False
 

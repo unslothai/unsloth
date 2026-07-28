@@ -14,6 +14,7 @@ Fakes only; no GPU, network, or subprocess.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import queue
 import sys
@@ -47,6 +48,7 @@ _mpl.pyplot = _plt
 _stub("matplotlib", _mpl)
 _stub("matplotlib.pyplot", _plt)
 _hw = _types.ModuleType("utils.hardware")
+_hw.get_device = lambda: _types.SimpleNamespace(value = "cpu")
 _hw.prepare_gpu_selection = lambda *a, **k: (None, None)
 _stub("utils.hardware", _hw)
 _npl = _types.ModuleType("utils.native_path_leases")
@@ -420,6 +422,86 @@ def test_stop_training_starts_watchdog_only_when_worker_alive(monkeypatch):
     assert b._stop_watchdog is None
 
 
+def test_stop_training_expected_job_mismatch_leaves_current_run_untouched():
+    b = TrainingBackend()
+    b.current_job_id = "job_new"
+    b._proc = _FakeProc(alive = True)
+    b._stop_queue = queue.Queue()
+    b._progress.status_message = "Training"
+
+    assert (
+        b.stop_training(
+            save = False,
+            expected_job_id = "job_old",
+        )
+        is False
+    )
+    assert b._should_stop is False
+    assert b._cancel_requested is False
+    assert b._stop_queue.empty()
+    assert b._progress.status_message == "Training"
+    assert b._proc is not None
+    assert b._proc.is_alive() is True
+
+
+def test_reset_training_expected_job_mismatch_leaves_current_run_untouched(monkeypatch):
+    b = TrainingBackend()
+    b.current_job_id = "job_new"
+    b._proc = _FakeProc(alive = True)
+    b._cancel_requested = True
+    b._progress.is_training = True
+    b.loss_history = [1.0]
+
+    def fail_if_terminated(*args, **kwargs):
+        raise AssertionError("current run must not be terminated")
+
+    monkeypatch.setattr(b, "force_terminate", fail_if_terminated)
+
+    assert b.reset_training_state(expected_job_id = "job_old") == "superseded"
+    assert b.current_job_id == "job_new"
+    assert b._proc is not None
+    assert b._proc.is_alive() is True
+    assert b._progress.is_training is True
+    assert b._cancel_requested is True
+    assert b.loss_history == [1.0]
+
+
+def test_scoped_stop_identity_check_is_serialized_with_new_start():
+    from core.training.lifecycle import training_lifecycle_guard
+
+    b = TrainingBackend()
+    b.current_job_id = "job_old"
+    old_proc = _FakeProc(alive = False)
+    new_proc = _FakeProc(alive = True)
+    b._proc = old_proc
+    result: list[bool] = []
+    entered = threading.Event()
+
+    def stop_old_run():
+        entered.set()
+        result.append(
+            b.stop_training(
+                save = False,
+                expected_job_id = "job_old",
+            )
+        )
+
+    with training_lifecycle_guard():
+        thread = threading.Thread(target = stop_old_run)
+        thread.start()
+        assert entered.wait(timeout = 1.0)
+        b.current_job_id = "job_new"
+        b._proc = new_proc
+        b._stop_queue = queue.Queue()
+
+    thread.join(timeout = 5.0)
+    assert result == [False]
+    assert b.current_job_id == "job_new"
+    assert b._proc is new_proc
+    assert new_proc.is_alive() is True
+    assert b._stop_queue.empty()
+
+
 # ----------------------------------------------------------------------------
 # (d) A stale watchdog must never clobber a run that replaced its worker.
 # ----------------------------------------------------------------------------
@@ -787,6 +869,7 @@ def test_escalation_finalizes_watched_run_by_id_end_to_end(monkeypatch):
     b = TrainingBackend()
     b.current_job_id = "job_old"
     b._db_run_created = True
+    b._db_config = {"model_name": "org/model", "hf_token": "hf_secret"}
     b._should_stop = True
     b._proc = _FakeProc(alive = False)
     b._progress.is_training = True
@@ -798,8 +881,54 @@ def test_escalation_finalizes_watched_run_by_id_end_to_end(monkeypatch):
     assert [f["id"] for f in recs["finished"]] == ["job_old"], "must finish the captured run by id"
     assert recs["finished"][0]["status"] == "error"
     assert recs["finished"][0]["resume_blocked"] is True
+    assert json.loads(recs["finished"][0]["config_json"]) == {
+        "model_name": "org/model"
+    }
     assert recs["insert_ids"] == ["job_old"], "buffered metrics must land on the captured run"
     assert b._metric_buffer == [], "the captured batch must be drained"
+
+
+def test_escalation_holds_provenance_lock_until_terminal_write_finishes(
+    monkeypatch,
+):
+    b = TrainingBackend()
+    b.current_job_id = "job_serialized"
+    b._db_run_created = True
+    b._db_config = {"model_name": "org/model"}
+    b._should_stop = True
+    b._proc = _FakeProc(alive = False)
+    entered = threading.Event()
+    release = threading.Event()
+    acquired = threading.Event()
+
+    def finish(*_args, **_kwargs):
+        entered.set()
+        assert release.wait(timeout = 5)
+
+    def acquire_provenance():
+        with b._provenance_lock:
+            acquired.set()
+
+    monkeypatch.setattr(b, "_finish_stopped_run", finish)
+    finalize_thread = threading.Thread(
+        target = b._finalize_stopped_after_escalation,
+        kwargs = {
+            "target_proc": b._proc,
+            "watched_job_id": "job_serialized",
+        },
+    )
+    finalize_thread.start()
+    assert entered.wait(timeout = 5)
+    provenance_thread = threading.Thread(target = acquire_provenance)
+    provenance_thread.start()
+    assert not acquired.wait(timeout = 0.1)
+    release.set()
+    finalize_thread.join(timeout = 5)
+    provenance_thread.join(timeout = 5)
+
+    assert not finalize_thread.is_alive()
+    assert not provenance_thread.is_alive()
+    assert acquired.is_set()
 
 
 def test_escalation_defers_when_row_cannot_be_created_here(monkeypatch):

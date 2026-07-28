@@ -17,6 +17,10 @@ from utils.datasets.raw_text import prepare_raw_text_dataset
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 
+async def _inline_to_thread(func, /, *args, **kwargs):
+    return func(*args, **kwargs)
+
+
 def _load_route_module(name: str, relative_path: str):
     spec = importlib.util.spec_from_file_location(name, _BACKEND_ROOT / relative_path)
     module = importlib.util.module_from_spec(spec)
@@ -323,6 +327,11 @@ class TestTrainingRawSupport(unittest.TestCase):
                 training_route,
                 "get_training_backend",
                 return_value = DummyBackend(),
+            ),
+            patch.object(
+                training_route.asyncio,
+                "to_thread",
+                new = _inline_to_thread,
             ),
             patch.object(training_route, "load_model_defaults", return_value = {}),
             patch(

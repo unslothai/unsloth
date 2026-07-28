@@ -90,3 +90,7 @@ export interface TrainingStopResponse {
   status: "stopped" | "idle";
   message: string;
 }
+
+export interface TrainingResetResponse {
+  status: "ok" | "superseded";
+}

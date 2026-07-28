@@ -1,0 +1,536 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { prepareHfTokenForUse } from "@/features/hf-auth";
+import { getHfToken, useHfTokenStore } from "@/features/hub";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import { primeNativeNotificationPermission } from "@/lib/native-notifications";
+import { checkDatasetFormat } from "../api/datasets-api";
+import { buildTrainingStartPayload } from "../api/mappers";
+import { startTraining } from "../api/train-api";
+import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-store";
+import { useTrainingConfigStore } from "../stores/training-config-store";
+import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
+import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
+import type { CheckFormatResponse } from "../types/datasets";
+import { cacheLocalPathMatchesSelection } from "./cache-reference";
+import { isMissingLocalDatasetCacheError } from "./local-cache-errors";
+import { isRawTextDatasetFormat } from "./training-methods";
+import { normalizeTrainingStartError } from "./training-start-errors";
+import {
+  TRAINING_SETUP_CHANGED_ERROR,
+  type TrainingStartLease,
+  isTrainingStartLeaseActive,
+  releaseTrainingStart,
+  settleAcceptedTrainingStart,
+  tryAcquireTrainingStart,
+} from "./training-start-runtime";
+import {
+  hasIncompatibleTrainingModalities,
+  validateTrainingConfig,
+} from "./validation";
+
+const ROLE_REMAP: Record<string, Record<string, string>> = {
+  alpaca: { user: "instruction", system: "input", assistant: "output" },
+  sharegpt: { user: "human", assistant: "gpt", system: "system" },
+};
+
+type AttemptPhase = "preflight" | "transport" | "finished";
+
+class FreshTrainingStartAttempt {
+  private readonly lease: TrainingStartLease;
+  private expectedConfig: TrainingConfigStore;
+  private expectedHfToken: string;
+  private phase: AttemptPhase = "preflight";
+
+  constructor(lease: TrainingStartLease) {
+    this.lease = lease;
+    this.expectedConfig = useTrainingConfigStore.getState();
+    this.expectedHfToken = getHfToken();
+  }
+
+  static begin(): FreshTrainingStartAttempt | null {
+    const lease = tryAcquireTrainingStart();
+    if (!lease) {
+      return null;
+    }
+    const runtime = useTrainingRuntimeStore.getState();
+    runtime.setStartError(null);
+    const attempt = new FreshTrainingStartAttempt(lease);
+    runtime.setStartResources(
+      attempt.config.selectedModel,
+      getHfDatasetName(attempt.config),
+      false,
+      attempt.config.projectName || "",
+    );
+    return attempt;
+  }
+
+  get config(): TrainingConfigStore {
+    return this.expectedConfig;
+  }
+
+  get hfToken(): string {
+    return this.expectedHfToken;
+  }
+
+  acceptPreparedHfToken(token: string | null): boolean {
+    if (this.phase !== "preflight") {
+      return false;
+    }
+    if (!isTrainingStartLeaseActive(this.lease)) {
+      return this.invalidate();
+    }
+    if (useTrainingConfigStore.getState() !== this.expectedConfig) {
+      return this.abortForChangedInputs();
+    }
+    const nextToken = token ?? "";
+    const currentToken = getHfToken();
+    if (currentToken !== this.expectedHfToken && currentToken !== nextToken) {
+      return this.abortForChangedInputs();
+    }
+    if (currentToken !== nextToken) {
+      useHfTokenStore.getState().setToken(nextToken);
+    }
+    this.expectedHfToken = getHfToken();
+    return true;
+  }
+
+  updateConfig(update: () => void): boolean {
+    if (this.abortIfInputsChanged()) {
+      return false;
+    }
+    update();
+    this.expectedConfig = useTrainingConfigStore.getState();
+    return !this.abortIfInputsChanged();
+  }
+
+  abortIfInputsChanged(): boolean {
+    if (this.phase === "finished") {
+      return true;
+    }
+    if (this.phase === "transport") {
+      return false;
+    }
+    if (!isTrainingStartLeaseActive(this.lease)) {
+      this.invalidate();
+      return true;
+    }
+    if (
+      useTrainingConfigStore.getState() === this.expectedConfig &&
+      getHfToken() === this.expectedHfToken
+    ) {
+      return false;
+    }
+    this.abortForChangedInputs();
+    return true;
+  }
+
+  enterTransport(): boolean {
+    if (this.abortIfInputsChanged()) {
+      return false;
+    }
+    this.phase = "transport";
+    return true;
+  }
+
+  cancel(error?: string | null): false {
+    if (this.phase === "finished") {
+      return false;
+    }
+    this.phase = "finished";
+    return releaseTrainingStart(this.lease, error);
+  }
+
+  settleAccepted(jobId: string, message: string): Promise<boolean> {
+    this.phase = "finished";
+    return settleAcceptedTrainingStart(this.lease, jobId, message);
+  }
+
+  private abortForChangedInputs(): false {
+    return this.cancel(TRAINING_SETUP_CHANGED_ERROR);
+  }
+
+  private invalidate(): false {
+    this.phase = "finished";
+    return false;
+  }
+}
+
+export async function startFreshTrainingRun(): Promise<boolean> {
+  const attempt = FreshTrainingStartAttempt.begin();
+  if (!attempt) {
+    return false;
+  }
+
+  const validation = validateTrainingConfig(attempt.config);
+  if (!validation.ok) {
+    return attempt.cancel(validation.message);
+  }
+
+  try {
+    const tokenResult = await prepareAttemptHfToken(attempt);
+    if (!tokenResult.ready) {
+      return false;
+    }
+    primeNativeNotificationPermission().catch(() => undefined);
+
+    if (!(await prepareSelectedDataset(attempt, tokenResult.token))) {
+      return false;
+    }
+    if (useTrainingRuntimeStore.getState().stopRequested) {
+      return attempt.cancel();
+    }
+    if (!(await confirmSelectedModelRemoteCode(attempt, tokenResult.token))) {
+      return false;
+    }
+    return await submitFreshTrainingRun(attempt, tokenResult.token);
+  } catch (error) {
+    if (attempt.abortIfInputsChanged()) {
+      return false;
+    }
+    const rawMessage =
+      error instanceof Error ? error.message : "Failed to start training";
+    return attempt.cancel(normalizeTrainingStartError(rawMessage));
+  }
+}
+
+type AttemptHfTokenResult =
+  | { ready: false }
+  | { ready: true; token: string | null };
+
+async function prepareAttemptHfToken(
+  attempt: FreshTrainingStartAttempt,
+): Promise<AttemptHfTokenResult> {
+  const preparedToken = await prepareHfTokenForUse(attempt.hfToken);
+  if (!attempt.acceptPreparedHfToken(preparedToken.token)) {
+    return { ready: false };
+  }
+  if (!preparedToken.proceed) {
+    attempt.cancel();
+    return { ready: false };
+  }
+  return { ready: true, token: preparedToken.token };
+}
+
+async function prepareSelectedDataset(
+  attempt: FreshTrainingStartAttempt,
+  hfToken: string | null,
+): Promise<boolean> {
+  const datasetName = getDatasetName(attempt.config);
+  if (!datasetName) {
+    return true;
+  }
+
+  let isVlm =
+    attempt.config.isVisionModel && attempt.config.isDatasetImage === true;
+  const check = await checkSelectedDataset(
+    attempt,
+    datasetName,
+    hfToken,
+    isVlm,
+  );
+  if (!check) {
+    return false;
+  }
+
+  const isAudio = check.is_audio === true;
+  const isImage = check.is_image === true;
+  if (isImage && attempt.config.isVisionModel) {
+    isVlm = true;
+  }
+  if (!applyDetectedDatasetModality(attempt, isImage, isAudio)) {
+    return false;
+  }
+  if (hasIncompatibleTrainingModalities(attempt.config)) {
+    return attempt.cancel();
+  }
+  if (!needsManualMapping(attempt.config, check, isVlm, isAudio)) {
+    return true;
+  }
+  return openManualMapping(attempt, check, isVlm, isAudio);
+}
+
+function applyDetectedDatasetModality(
+  attempt: FreshTrainingStartAttempt,
+  isImage: boolean,
+  isAudio: boolean,
+): boolean {
+  if (
+    isImage === attempt.config.isDatasetImage &&
+    isAudio === attempt.config.isDatasetAudio
+  ) {
+    return true;
+  }
+  return attempt.updateConfig(() => {
+    useTrainingConfigStore.setState({
+      isDatasetImage: isImage,
+      isDatasetAudio: isAudio,
+      ...(isImage || isAudio ? { datasetStreaming: false } : {}),
+    });
+  });
+}
+
+function openManualMapping(
+  attempt: FreshTrainingStartAttempt,
+  check: CheckFormatResponse,
+  isVlm: boolean,
+  isAudio: boolean,
+): false {
+  const hint = buildManualMappingHint(attempt.config, check, isVlm, isAudio);
+  if (
+    Object.keys(hint).length > 0 &&
+    !attempt.updateConfig(() => {
+      useTrainingConfigStore.getState().setDatasetManualMapping(hint);
+    })
+  ) {
+    return false;
+  }
+  attempt.cancel();
+  useDatasetPreviewDialogStore.getState().openMapping(check);
+  return false;
+}
+
+async function confirmSelectedModelRemoteCode(
+  attempt: FreshTrainingStartAttempt,
+  hfToken: string | null,
+): Promise<boolean> {
+  const modelName = attempt.config.selectedModel;
+  if (!modelName) {
+    return true;
+  }
+
+  let approvalApplied = true;
+  const approved = await confirmRemoteCodeIfNeeded({
+    modelName,
+    hfToken,
+    requiresTrustRemoteCode: attempt.config.trustRemoteCode,
+    onApprove: (fingerprint) => {
+      approvalApplied = attempt.updateConfig(() => {
+        useTrainingConfigStore.setState({
+          trustRemoteCode: true,
+          approvedRemoteCodeFingerprint: fingerprint,
+        });
+      });
+    },
+  });
+  if (!approvalApplied || attempt.abortIfInputsChanged()) {
+    return false;
+  }
+  return approved || attempt.cancel();
+}
+
+async function submitFreshTrainingRun(
+  attempt: FreshTrainingStartAttempt,
+  hfToken: string | null,
+): Promise<boolean> {
+  const validation = validateTrainingConfig(attempt.config);
+  if (!validation.ok) {
+    return attempt.cancel(validation.message);
+  }
+
+  const payload = buildTrainingStartPayload(attempt.config);
+  payload.hf_token = hfToken;
+  if (!attempt.enterTransport()) {
+    return false;
+  }
+
+  useTrainingRuntimeStore
+    .getState()
+    .setStartResources(
+      payload.model_name,
+      payload.hf_dataset,
+      false,
+      payload.project_name ?? "",
+    );
+  const response = await startTraining(payload);
+  if (response.status === "error") {
+    return attempt.cancel(
+      normalizeTrainingStartError(response.error || response.message),
+    );
+  }
+
+  return attempt.settleAccepted(response.job_id, response.message);
+}
+
+async function checkSelectedDataset(
+  attempt: FreshTrainingStartAttempt,
+  datasetName: string,
+  hfToken: string | null,
+  isVlm: boolean,
+): Promise<CheckFormatResponse | null> {
+  const config = attempt.config;
+  const preferLocalCache =
+    config.datasetSource === "huggingface" && config.datasetKnownCached;
+  const datasetLocalPath =
+    config.datasetSource === "huggingface" ? config.datasetLocalPath : null;
+
+  try {
+    const check = await checkDatasetFormat({
+      datasetName,
+      hfToken,
+      subset: config.datasetSubset,
+      split: config.datasetSplit,
+      isVlm,
+      preferLocalCache,
+      localPath: datasetLocalPath,
+    });
+    return attempt.abortIfInputsChanged() ? null : check;
+  } catch (error) {
+    if (attempt.abortIfInputsChanged()) {
+      return null;
+    }
+    if (!(preferLocalCache && isMissingLocalDatasetCacheError(error))) {
+      throw error;
+    }
+  }
+
+  if (
+    !attempt.updateConfig(() => {
+      clearMissingDatasetCacheReference(datasetName, datasetLocalPath);
+    })
+  ) {
+    return null;
+  }
+
+  const fallbackConfig = attempt.config;
+  const check = await checkDatasetFormat({
+    datasetName,
+    hfToken,
+    subset: fallbackConfig.datasetSubset,
+    split: fallbackConfig.datasetSplit,
+    isVlm,
+    preferLocalCache: false,
+    localPath: null,
+  });
+  return attempt.abortIfInputsChanged() ? null : check;
+}
+
+function needsManualMapping(
+  config: TrainingConfigState,
+  check: CheckFormatResponse,
+  isVlm: boolean,
+  isAudio: boolean,
+): boolean {
+  return (
+    !isRawTextDatasetFormat(config.datasetFormat) &&
+    (check.requires_manual_mapping ||
+      check.detected_format === "custom_heuristic") &&
+    !hasManualMapping(config, isVlm, isAudio)
+  );
+}
+
+function buildManualMappingHint(
+  config: TrainingConfigState,
+  check: CheckFormatResponse,
+  isVlm: boolean,
+  isAudio: boolean,
+): Record<string, string> {
+  if (check.suggested_mapping) {
+    return remapSuggestedColumns(config, check.suggested_mapping);
+  }
+  if (isAudio) {
+    return detectedAudioMapping(check);
+  }
+  if (isVlm) {
+    return detectedVisionMapping(check);
+  }
+  return {};
+}
+
+function remapSuggestedColumns(
+  config: TrainingConfigState,
+  suggestedMapping: Record<string, string>,
+): Record<string, string> {
+  const hint: Record<string, string> = {};
+  const table = ROLE_REMAP[config.datasetFormat];
+  for (const [column, role] of Object.entries(suggestedMapping)) {
+    hint[column] = table ? (table[role] ?? role) : role;
+  }
+  return hint;
+}
+
+function detectedAudioMapping(
+  check: CheckFormatResponse,
+): Record<string, string> {
+  const hint: Record<string, string> = {};
+  if (check.detected_audio_column) {
+    hint[check.detected_audio_column] = "audio";
+  }
+  if (check.detected_text_column) {
+    hint[check.detected_text_column] = "text";
+  }
+  if (check.detected_speaker_column) {
+    hint[check.detected_speaker_column] = "speaker_id";
+  }
+  return hint;
+}
+
+function detectedVisionMapping(
+  check: CheckFormatResponse,
+): Record<string, string> {
+  const hint: Record<string, string> = {};
+  if (check.detected_image_column) {
+    hint[check.detected_image_column] = "image";
+  }
+  if (check.detected_text_column) {
+    hint[check.detected_text_column] = "text";
+  }
+  return hint;
+}
+
+function clearMissingDatasetCacheReference(
+  datasetName: string,
+  datasetLocalPath: string | null,
+): void {
+  const current = useTrainingConfigStore.getState();
+  if (
+    current.datasetSource !== "huggingface" ||
+    current.dataset !== datasetName ||
+    !current.datasetKnownCached ||
+    !cacheLocalPathMatchesSelection(current.datasetLocalPath, datasetLocalPath)
+  ) {
+    return;
+  }
+  useTrainingConfigStore.setState({
+    datasetKnownCached: false,
+    datasetLocalPath: null,
+    browseDatasetSelection: {
+      source: "huggingface",
+      dataset: datasetName,
+      knownCached: false,
+      localPath: null,
+    },
+  });
+}
+
+function getDatasetName(config: TrainingConfigState): string | null {
+  return config.datasetSource === "huggingface"
+    ? config.dataset
+    : config.uploadedFile;
+}
+
+function getHfDatasetName(config: TrainingConfigState): string | null {
+  return config.datasetSource === "huggingface" ? config.dataset : null;
+}
+
+function hasManualMapping(
+  config: TrainingConfigState,
+  isVlm: boolean,
+  isAudio: boolean,
+): boolean {
+  const roles = new Set(Object.values(config.datasetManualMapping));
+  if (isAudio) {
+    return roles.has("audio") && roles.has("text");
+  }
+  if (isVlm) {
+    return roles.has("image") && roles.has("text");
+  }
+  if (config.datasetFormat === "alpaca") {
+    return roles.has("instruction") && roles.has("output");
+  }
+  if (config.datasetFormat === "sharegpt") {
+    return roles.has("human") && roles.has("gpt");
+  }
+  return roles.has("user") && roles.has("assistant");
+}

@@ -49,6 +49,7 @@ _mpl.pyplot = _plt
 _stub("matplotlib", _mpl)
 _stub("matplotlib.pyplot", _plt)
 _hw = _types.ModuleType("utils.hardware")
+_hw.get_device = lambda: _types.SimpleNamespace(value = "cpu")
 _hw.prepare_gpu_selection = lambda *a, **k: (None, None)
 _stub("utils.hardware", _hw)
 _npl = _types.ModuleType("utils.native_path_leases")

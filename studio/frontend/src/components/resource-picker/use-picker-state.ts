@@ -17,6 +17,7 @@ type PickerViewInput = {
 
 type PickerViewState = {
   activeQuery: string;
+  handleOpenChange: (nextOpen: boolean) => void;
   handleQueryChange: (next: string) => void;
   tab: PickerTab;
 };
@@ -86,17 +87,6 @@ export function usePickerState({
     setLockedInferredTab(null);
   }, []);
 
-  const handleOpenChange = useCallback(
-    (nextOpen: boolean) => {
-      if (nextOpen) {
-        setOpen(true);
-        return;
-      }
-      closePicker();
-    },
-    [closePicker],
-  );
-
   const getViewState = useCallback(
     ({ hasDeviceItems, isLoadingDevice }: PickerViewInput): PickerViewState => {
       const tab = resolvePickerTab({
@@ -119,10 +109,21 @@ export function usePickerState({
         }
         setQuery(next);
       };
-      return { activeQuery, handleQueryChange, tab };
+      const handleOpenChange = (nextOpen: boolean) => {
+        if (nextOpen) {
+          if (!hasExplicitTabPreference) {
+            setLockedInferredTab(tab);
+          }
+          setOpen(true);
+          return;
+        }
+        closePicker();
+      };
+      return { activeQuery, handleOpenChange, handleQueryChange, tab };
     },
     [
       deviceQuery,
+      closePicker,
       hasExplicitTabPreference,
       hubQuery,
       lockedInferredTab,
@@ -137,7 +138,6 @@ export function usePickerState({
     debouncedHubQuery,
     deviceQuery,
     getViewState,
-    handleOpenChange,
     handleTabChange,
     hubQuery,
     open,

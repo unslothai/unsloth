@@ -8,6 +8,15 @@ export interface StartValidationResult {
   message: string | null;
 }
 
+export function hasIncompatibleTrainingModalities(
+  config: TrainingConfigState,
+): boolean {
+  return (
+    (!config.isVisionModel && config.isDatasetImage === true) ||
+    (!config.isAudioModel && config.isDatasetAudio === true)
+  );
+}
+
 export function validateS3Source(
   config: TrainingConfigState,
 ): StartValidationResult {
@@ -19,7 +28,8 @@ export function validateS3Source(
   ) {
     return {
       ok: false,
-      message: "S3 datasets are not supported for vision or audio training yet.",
+      message:
+        "S3 datasets are not supported for vision or audio training yet.",
     };
   }
   const s3 = config.s3Config;

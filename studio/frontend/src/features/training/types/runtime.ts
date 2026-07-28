@@ -117,6 +117,7 @@ export interface TrainingRuntimeActions {
   setStopRequested: (value: boolean) => void;
   setHydrating: (value: boolean) => void;
   setHasHydrated: (value: boolean) => void;
+  tryBeginStarting: () => boolean;
   setStarting: (value: boolean) => void;
   setStartError: (value: string | null) => void;
   setStartResources: (
@@ -137,7 +138,8 @@ export interface TrainingRuntimeActions {
   setCurrentRunViewActive: (value: boolean) => void;
 }
 
-export type TrainingRuntimeStore = TrainingRuntimeState & TrainingRuntimeActions;
+export type TrainingRuntimeStore = TrainingRuntimeState &
+  TrainingRuntimeActions;
 
 export interface TrainingViewData {
   // Current metrics (for ProgressSection)

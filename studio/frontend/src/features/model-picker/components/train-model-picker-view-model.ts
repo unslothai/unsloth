@@ -5,16 +5,19 @@ import {
   findCanonicalHubResourceId,
   hubResourceIdsEqual,
 } from "@/components/resource-picker/hub-resource-id";
-import type {
-  CachedInventoryRow,
-  HfModelResult,
-  LocalInventoryRow,
-  LocalSource,
-  ModelInventoryFormat,
+import { pathDisplayName } from "@/components/resource-picker/path-display-name";
+import {
+  type CachedInventoryRow,
+  type HfModelResult,
+  type LocalInventoryRow,
+  type LocalSource,
+  type ModelInventoryFormat,
+  repoOf,
 } from "@/features/hub";
 import {
   type ModelTypeCapabilityFlags,
   cacheLocalPathMatchesSelection,
+  isLocalTrainingModelSelection,
   trainingModelTypeFlagsFromMetadata,
   type validateTrainingModelCandidate,
 } from "@/features/training";
@@ -103,6 +106,45 @@ export function trainModelDeviceItemMatchesSelection({
     return cacheLocalPathMatchesSelection(item.localPath, selectedLocalPath);
   }
   return true;
+}
+
+export function trainModelSelectionDisplayName({
+  selectedModel,
+  knownCached,
+  selectedLocalPath,
+  selectedFormat,
+  deviceItems,
+}: {
+  selectedModel: string | null;
+  knownCached: boolean;
+  selectedLocalPath: string | null;
+  selectedFormat: ModelInventoryFormat | null;
+  deviceItems: readonly TrainModelDeviceItem[];
+}): string | null {
+  if (!selectedModel) {
+    return null;
+  }
+  if (
+    !isLocalTrainingModelSelection({
+      model: selectedModel,
+      knownCached,
+      localPath: selectedLocalPath,
+    })
+  ) {
+    return repoOf(selectedModel);
+  }
+  const selectedDeviceTitle = deviceItems.find((item) =>
+    trainModelDeviceItemMatchesSelection({
+      item,
+      selectedModel,
+      selectedLocalPath,
+      selectedFormat,
+    }),
+  )?.title;
+  return (
+    selectedDeviceTitle ??
+    pathDisplayName(selectedLocalPath?.trim() || selectedModel)
+  );
 }
 
 export function toCachedTrainModelDeviceItem(

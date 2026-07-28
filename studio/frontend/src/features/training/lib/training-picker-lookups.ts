@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { CachedInventoryRow, LocalInventoryRow } from "@/features/hub";
+import {
+  type CachedInventoryRow,
+  type LocalInventoryRow,
+  normalizeModelIdentity,
+} from "@/features/hub";
 
 function addLookupValue<T>(
   map: Map<string, T>,
@@ -9,7 +13,7 @@ function addLookupValue<T>(
   row: T,
 ) {
   if (value) {
-    map.set(value.toLowerCase(), row);
+    map.set(normalizeModelIdentity(value), row);
   }
 }
 

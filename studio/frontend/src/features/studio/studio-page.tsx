@@ -182,12 +182,14 @@ export function StudioPage(): ReactElement {
             ) : (
               <>
                 <TabsContent value="configure" className="mt-0">
-                  <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_320px] lg:gap-10">
-                    <div className="min-w-0">
-                      <TrainingWizard />
-                    </div>
-                    <div className="lg:sticky lg:top-6 lg:self-start">
-                      <RunPreviewCard startCta={<StartTrainingCta />} />
+                  <div className="@container/train-configure">
+                    <div className="grid grid-cols-1 gap-8 @5xl/train-configure:grid-cols-[minmax(0,1fr)_320px] @5xl/train-configure:gap-10">
+                      <div className="min-w-0">
+                        <TrainingWizard />
+                      </div>
+                      <div className="@5xl/train-configure:sticky @5xl/train-configure:top-6 @5xl/train-configure:self-start">
+                        <RunPreviewCard startCta={<StartTrainingCta />} />
+                      </div>
                     </div>
                   </div>
                 </TabsContent>

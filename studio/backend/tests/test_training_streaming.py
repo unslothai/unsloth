@@ -23,6 +23,10 @@ datasets = pytest.importorskip("datasets")
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 
+async def _inline_to_thread(func, /, *args, **kwargs):
+    return func(*args, **kwargs)
+
+
 def _load_route_module(name: str, relative_path: str):
     spec = importlib.util.spec_from_file_location(name, _BACKEND_ROOT / relative_path)
     module = importlib.util.module_from_spec(spec)
@@ -364,11 +368,14 @@ def test_streaming_start_accepts_raw_text_and_cpt(training_type, format_type):
         start_training = _start_training,
     )
 
-    with patch.object(training_route, "get_training_backend", return_value = backend):
-        with patch.object(training_route, "load_model_defaults", return_value = {}):
-            response = asyncio.run(
-                training_route.start_training(request, current_subject = "test-user")
-            )
+    with (
+        patch.object(training_route, "get_training_backend", return_value = backend),
+        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+        patch.object(training_route, "load_model_defaults", return_value = {}),
+    ):
+        response = asyncio.run(
+            training_route.start_training(request, current_subject = "test-user")
+        )
 
     assert response.status == "queued"
     assert captured["dataset_streaming"] is True
@@ -404,11 +411,14 @@ def test_streaming_start_happy_path_reaches_backend():
         start_training = _start_training,
     )
 
-    with patch.object(training_route, "get_training_backend", return_value = backend):
-        with patch.object(training_route, "load_model_defaults", return_value = {}):
-            response = asyncio.run(
-                training_route.start_training(request, current_subject = "test-user")
-            )
+    with (
+        patch.object(training_route, "get_training_backend", return_value = backend),
+        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+        patch.object(training_route, "load_model_defaults", return_value = {}),
+    ):
+        response = asyncio.run(
+            training_route.start_training(request, current_subject = "test-user")
+        )
 
     assert response.status == "queued"
     assert captured["dataset_streaming"] is True

@@ -997,6 +997,7 @@ def finish_run(
     error_message: Optional[str] = None,
     clear_output_dir: bool = False,
     resume_blocked: bool = False,
+    config_json: Optional[str] = None,
 ) -> None:
     conn = get_connection()
     try:
@@ -1005,6 +1006,7 @@ def finish_run(
             UPDATE training_runs
             SET status = ?, ended_at = ?, final_step = ?, final_loss = ?,
                 duration_seconds = ?, loss_sparkline = ?,
+                config_json = COALESCE(?, config_json),
                 output_dir = CASE
                     WHEN resume_blocked = 1 OR ? = 1 THEN NULL
                     WHEN ? IS NOT NULL THEN ?
@@ -1022,6 +1024,7 @@ def finish_run(
                 final_loss,
                 duration_seconds,
                 loss_sparkline,
+                config_json,
                 int(clear_output_dir),
                 output_dir,
                 output_dir,

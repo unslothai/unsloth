@@ -3,6 +3,7 @@
 
 import importlib.util
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -10,8 +11,10 @@ from unittest.mock import patch
 import pytest
 
 from core.training.provenance import (
+    ExactResumeResourcesUnavailable,
     RESOURCE_PROVENANCE_KEY,
     build_worker_provenance_event,
+    exact_resume_resource_requirements,
     exact_dataset_snapshot_path,
     normalize_worker_provenance_event,
     resource_provenance_allows_resume,
@@ -335,10 +338,88 @@ def test_shared_hf_loader_marks_only_successful_exact_dataset_load(tmp_path):
 
 
 @pytest.mark.parametrize("status", ["pending", "incomplete"])
-def test_unattested_current_provenance_preserves_resume_compatibility(status):
+def test_unattested_current_provenance_without_hub_resources_can_resume(status):
     assert resource_provenance_allows_resume(
         {RESOURCE_PROVENANCE_KEY: {"version": 1, "status": status}}
     ) is True
+
+
+def test_unattested_current_hub_dataset_cannot_resume_mutable_revision(tmp_path):
+    model = _model_snapshot(tmp_path, "org/model", "model-commit")
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": str(model),
+        "hf_dataset": "org/dataset",
+        RESOURCE_PROVENANCE_KEY: {"version": 1, "status": "incomplete"},
+    }
+
+    assert resource_provenance_allows_resume(config) is False
+
+
+def test_current_provenance_enforces_only_hub_resources(tmp_path):
+    model = _model_snapshot(tmp_path, "org/model", "model-commit")
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": str(model),
+        "local_datasets": ["/datasets/train.jsonl"],
+        RESOURCE_PROVENANCE_KEY: {
+            "version": 1,
+            "status": "incomplete",
+            "model_status": "attested",
+            "dataset_status": "incomplete",
+        },
+    }
+
+    assert exact_resume_resource_requirements(config) == (True, False)
+    assert resource_provenance_allows_resume(config) is True
+
+
+def test_attested_hub_identity_cannot_be_shadowed_by_relative_local_path(
+    tmp_path,
+    monkeypatch,
+):
+    (tmp_path / "org" / "model").mkdir(parents = True)
+    monkeypatch.chdir(tmp_path)
+    marker = {
+        "version": 1,
+        "status": "incomplete",
+        "model_status": "incomplete",
+        "dataset_status": "incomplete",
+    }
+
+    local_config = {
+        "model_name": "org/model",
+        RESOURCE_PROVENANCE_KEY: marker,
+    }
+    assert exact_resume_resource_requirements(local_config) == (False, False)
+    assert resource_provenance_allows_resume(local_config) is True
+
+    config = {
+        "model_name": "selected/model",
+        "actual_model_repo_id": "org/model",
+        RESOURCE_PROVENANCE_KEY: marker,
+    }
+
+    with pytest.raises(
+        ExactResumeResourcesUnavailable,
+        match = "model revision used by this run was not attested",
+    ):
+        exact_resume_resource_requirements(config)
+    assert resource_provenance_allows_resume(config) is False
+
+
+def test_pending_current_hub_pins_are_not_treated_as_attested(tmp_path):
+    model = _model_snapshot(tmp_path, "org/model", "model-commit")
+    dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": str(model),
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": str(dataset),
+        RESOURCE_PROVENANCE_KEY: {"version": 1, "status": "pending"},
+    }
+
+    assert resource_provenance_allows_resume(config) is False
 
 
 @pytest.mark.parametrize(
@@ -354,7 +435,7 @@ def test_malformed_provenance_is_rejected_while_legacy_is_unchanged(marker):
     assert resource_provenance_allows_resume({"model_name": "legacy/model"}) is True
 
 
-def test_resume_eligibility_preserves_pending_and_legacy_compatibility(monkeypatch):
+def test_resume_eligibility_rejects_unpinned_current_hub_and_preserves_legacy(monkeypatch):
     from core.training import resume
 
     monkeypatch.setattr(resume, "has_resume_state", lambda _path: True)
@@ -376,7 +457,7 @@ def test_resume_eligibility_preserves_pending_and_legacy_compatibility(monkeypat
                 }
             ),
         }
-    ) is True
+    ) is False
     assert resume.can_resume_run(
         {
             **base_run,
@@ -478,6 +559,158 @@ def test_db_config_update_only_mutates_running_run(monkeypatch, tmp_path):
         final_loss = 1.0,
         duration_seconds = 60.0,
         loss_sparkline = "[]",
+        config_json = '{"final":true}',
     )
     assert studio_db.update_run_config_json("run-db", '{"late":true}') is False
-    assert json.loads(studio_db.get_run("run-db")["config_json"]) == {"after": True}
+    assert json.loads(studio_db.get_run("run-db")["config_json"]) == {"final": True}
+
+
+def test_finalization_persists_provenance_after_event_update_failure(tmp_path):
+    from core.training.training import TrainingBackend
+
+    config, event, _, _ = _complete_event(tmp_path)
+    backend = TrainingBackend()
+    backend.current_job_id = "run-final"
+    backend._db_run_created = True
+    backend._db_config = {
+        **config,
+        "model_snapshot_path": None,
+        "dataset_snapshot_path": None,
+        RESOURCE_PROVENANCE_KEY: {"version": 1, "status": "pending"},
+        "hf_token": "hf_secret",
+        "wandb_token": "wandb_secret",
+        "subject": "user",
+    }
+    finished: list[dict] = []
+
+    with (
+        patch(
+            "storage.studio_db.update_run_config_json",
+            side_effect = RuntimeError("database is locked"),
+        ),
+        patch("core.training.training.time.sleep"),
+    ):
+        backend._handle_resource_provenance_event(event)
+
+    with patch(
+        "storage.studio_db.finish_run",
+        side_effect = lambda **kwargs: finished.append(kwargs),
+    ):
+        backend._finalize_run_in_db(status = "stopped")
+
+    persisted = json.loads(finished[0]["config_json"])
+    assert persisted[RESOURCE_PROVENANCE_KEY]["status"] == "complete"
+    assert "hf_token" not in persisted
+    assert "wandb_token" not in persisted
+    assert "subject" not in persisted
+
+
+def test_finalization_waits_for_inflight_provenance(tmp_path):
+    from core.training.training import TrainingBackend
+
+    config, event, _, _ = _complete_event(tmp_path)
+    backend = TrainingBackend()
+    backend.current_job_id = "run-race"
+    backend._db_run_created = True
+    backend._db_config = {
+        **config,
+        "model_snapshot_path": None,
+        "dataset_snapshot_path": None,
+        RESOURCE_PROVENANCE_KEY: {"version": 1, "status": "pending"},
+    }
+    entered = threading.Event()
+    release = threading.Event()
+    finish_entered = threading.Event()
+    finished: list[dict] = []
+
+    def normalize(event_value, config_value):
+        entered.set()
+        assert release.wait(timeout = 5)
+        return normalize_worker_provenance_event(event_value, config_value)
+
+    def finish(**kwargs):
+        finish_entered.set()
+        finished.append(kwargs)
+
+    with (
+        patch(
+            "core.training.provenance.normalize_worker_provenance_event",
+            side_effect = normalize,
+        ),
+        patch("storage.studio_db.update_run_config_json", return_value = True),
+        patch(
+            "storage.studio_db.finish_run",
+            side_effect = finish,
+        ),
+    ):
+        provenance_thread = threading.Thread(
+            target = backend._handle_resource_provenance_event,
+            args = (event,),
+        )
+        provenance_thread.start()
+        assert entered.wait(timeout = 5)
+        finalize_thread = threading.Thread(
+            target = backend._finalize_run_in_db,
+            kwargs = {"status": "stopped"},
+        )
+        finalize_thread.start()
+        assert not finish_entered.wait(timeout = 0.1)
+        release.set()
+        provenance_thread.join(timeout = 5)
+        finalize_thread.join(timeout = 5)
+
+    assert not provenance_thread.is_alive()
+    assert not finalize_thread.is_alive()
+    persisted = json.loads(finished[0]["config_json"])
+    assert persisted[RESOURCE_PROVENANCE_KEY]["status"] == "complete"
+
+
+def test_provenance_continues_after_failed_finalization(tmp_path):
+    from core.training.training import TrainingBackend
+
+    config, event, _, _ = _complete_event(tmp_path)
+    backend = TrainingBackend()
+    backend.current_job_id = "run-finalize-failure"
+    backend._db_run_created = True
+    backend._db_config = {
+        **config,
+        "model_snapshot_path": None,
+        "dataset_snapshot_path": None,
+        RESOURCE_PROVENANCE_KEY: {"version": 1, "status": "pending"},
+    }
+    finish_entered = threading.Event()
+    release_finish = threading.Event()
+    provenance_done = threading.Event()
+
+    def fail_finish(**_kwargs):
+        finish_entered.set()
+        assert release_finish.wait(timeout = 5)
+        raise RuntimeError("database is locked")
+
+    def apply_provenance():
+        backend._handle_resource_provenance_event(event)
+        provenance_done.set()
+
+    with (
+        patch("storage.studio_db.finish_run", side_effect = fail_finish),
+        patch("storage.studio_db.update_run_config_json", return_value = True) as update,
+        patch("core.training.training.time.sleep"),
+    ):
+        finalize_thread = threading.Thread(
+            target = backend._finalize_run_in_db,
+            kwargs = {"status": "stopped"},
+        )
+        finalize_thread.start()
+        assert finish_entered.wait(timeout = 5)
+        provenance_thread = threading.Thread(target = apply_provenance)
+        provenance_thread.start()
+        assert not provenance_done.wait(timeout = 0.1)
+        release_finish.set()
+        finalize_thread.join(timeout = 5)
+        provenance_thread.join(timeout = 5)
+
+    assert not finalize_thread.is_alive()
+    assert not provenance_thread.is_alive()
+    assert backend._run_finalized is False
+    assert backend._db_config[RESOURCE_PROVENANCE_KEY]["status"] == "complete"
+    update.assert_called_once()

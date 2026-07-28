@@ -95,6 +95,17 @@ function maybeNotifyTrainingTerminalTransition(
 }
 
 export function useTrainingRuntimeLifecycle(): void {
+  useEffect(
+    () =>
+      useTrainingConfigStore.subscribe(() => {
+        const runtime = useTrainingRuntimeStore.getState();
+        if (runtime.startError !== null) {
+          runtime.setStartError(null);
+        }
+      }),
+    [],
+  );
+
   useEffect(() => {
     let disposed = false;
     let openingStream = false;

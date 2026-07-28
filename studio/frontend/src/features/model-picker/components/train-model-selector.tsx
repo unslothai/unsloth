@@ -19,7 +19,7 @@ import {
   classifyUnslothSupport,
   hfApiToken,
   matchTokens,
-  repoOf,
+  normalizeModelIdentity,
   tokenizeQuery,
   useHfTokenStore,
   useHubInfiniteScroll,
@@ -65,6 +65,7 @@ import {
   toCachedTrainModelDeviceItem,
   toLocalTrainModelDeviceItem,
   trainModelDeviceItemMatchesSelection,
+  trainModelSelectionDisplayName,
 } from "./train-model-picker-view-model";
 import { TRAIN_PICKER_TRIGGER_CLASS } from "./train-picker-trigger";
 
@@ -216,7 +217,7 @@ export function TrainModelSelector({
     hasDeviceItems: trainableLocalModels.length > 0,
     isLoadingDevice: isLoadingLocalModels,
   });
-  const { activeQuery, handleQueryChange, tab } = pickerView;
+  const { activeQuery, handleOpenChange, handleQueryChange, tab } = pickerView;
 
   const filteredLocalModels = useMemo(() => {
     const tokens = tokenizeQuery(picker.deviceQuery);
@@ -359,7 +360,7 @@ export function TrainModelSelector({
   }
 
   function pickHubModel(id: string) {
-    const key = id.trim().toLowerCase();
+    const key = normalizeModelIdentity(id);
     const result = hfResultById.get(key);
     const cached = cachedModelByLookup.get(key);
     const local = localModelByLookup.get(key);
@@ -398,7 +399,7 @@ export function TrainModelSelector({
       pickHubModel(id);
       return;
     }
-    const key = id.trim().toLowerCase();
+    const key = normalizeModelIdentity(id);
     const cached = cachedModelByLookup.get(key);
     const local = localModelByLookup.get(key);
     const validationCached =
@@ -467,7 +468,23 @@ export function TrainModelSelector({
     return true;
   }
 
-  const display = selectedModel ? repoOf(selectedModel) : null;
+  const display = useMemo(
+    () =>
+      trainModelSelectionDisplayName({
+        selectedModel,
+        knownCached: modelKnownCached,
+        selectedLocalPath: modelLocalPath,
+        selectedFormat: selectedModelFormat,
+        deviceItems: trainableLocalModels,
+      }),
+    [
+      modelKnownCached,
+      modelLocalPath,
+      selectedModel,
+      selectedModelFormat,
+      trainableLocalModels,
+    ],
+  );
   const hasExactMatch = hasExactTrainingModelMatch(
     activeQuery,
     tab,
@@ -483,7 +500,7 @@ export function TrainModelSelector({
   return (
     <PickerShell
       open={picker.open}
-      onOpenChange={picker.handleOpenChange}
+      onOpenChange={handleOpenChange}
       tab={tab}
       onTabChange={picker.handleTabChange}
       hubQuery={picker.hubQuery}

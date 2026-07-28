@@ -51,6 +51,16 @@ function findExactLocalDataset(
   );
 }
 
+function findExactCachedDataset(
+  query: string,
+  deviceItems: readonly DatasetDeviceItem[],
+): Extract<DatasetDeviceItem, { kind: "cached" }> | undefined {
+  return deviceItems.find(
+    (item): item is Extract<DatasetDeviceItem, { kind: "cached" }> =>
+      item.kind === "cached" && hubResourceIdsEqual(item.repoId, query),
+  );
+}
+
 function hasExactDatasetMatch(
   query: string,
   tab: "device" | "hub",
@@ -64,10 +74,8 @@ function hasExactDatasetMatch(
     return hubItems.some((item) => hubResourceIdsEqual(item.id, query));
   }
   return (
-    deviceItems.some(
-      (item) =>
-        item.kind === "cached" && hubResourceIdsEqual(item.repoId, query),
-    ) || findExactLocalDataset(query, deviceItems) !== undefined
+    findExactCachedDataset(query, deviceItems) !== undefined ||
+    findExactLocalDataset(query, deviceItems) !== undefined
   );
 }
 
@@ -178,7 +186,7 @@ export function DatasetSelector({
     hasDeviceItems: deviceItems.length > 0,
     isLoadingDevice: isLoadingLocal,
   });
-  const { activeQuery, handleQueryChange, tab } = pickerView;
+  const { activeQuery, handleOpenChange, handleQueryChange, tab } = pickerView;
 
   const {
     results: hfResults,
@@ -276,6 +284,15 @@ export function DatasetSelector({
         closePicker();
         return true;
       }
+      const cached = findExactCachedDataset(query, deviceItems);
+      if (cached) {
+        selectHfDataset(cached.repoId, {
+          knownCached: true,
+          localPath: cached.cachePath,
+        });
+        closePicker();
+        return true;
+      }
       const item = findExactLocalDataset(query, deviceItems);
       if (!item) {
         return false;
@@ -288,6 +305,7 @@ export function DatasetSelector({
       closePicker,
       deviceItems,
       hubItems,
+      selectHfDataset,
       selectHubDataset,
       selectLocalDataset,
       tab,
@@ -316,7 +334,7 @@ export function DatasetSelector({
   return (
     <PickerShell
       open={picker.open}
-      onOpenChange={picker.handleOpenChange}
+      onOpenChange={handleOpenChange}
       tab={tab}
       onTabChange={picker.handleTabChange}
       hubQuery={picker.hubQuery}

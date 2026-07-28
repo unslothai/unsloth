@@ -7,7 +7,7 @@
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 // eslint-disable-next-line no-restricted-imports
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
-import { validateHfToken } from "./api";
+import { type HfTokenValidationResult, validateHfToken } from "./api";
 import { useHfTokenWarningStore } from "./store";
 
 export interface PreparedHfToken {
@@ -29,13 +29,15 @@ export async function prepareHfTokenForUse(
   options: PrepareHfTokenOptions = {},
 ): Promise<PreparedHfToken> {
   const normalized = token?.trim() ?? "";
-  if (!normalized) return { proceed: true, token: null };
+  if (!normalized) {
+    return { proceed: true, token: null };
+  }
   const allowAnonymous = options.allowAnonymous ?? true;
   if (allowAnonymous && anonymousForSession.has(normalized)) {
     return { proceed: true, token: null };
   }
 
-  let validation;
+  let validation: HfTokenValidationResult;
   try {
     validation = await validateHfToken(normalized);
   } catch {
@@ -53,7 +55,10 @@ export async function prepareHfTokenForUse(
     .requestDecision(allowAnonymous);
   if (decision === "anonymous") {
     anonymousForSession.add(normalized);
-    useHfTokenStore.getState().clearToken();
+    const tokenStore = useHfTokenStore.getState();
+    if (tokenStore.token === normalized) {
+      tokenStore.clearToken();
+    }
     return { proceed: true, token: null };
   }
   if (decision === "replace") {

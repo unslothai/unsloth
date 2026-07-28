@@ -88,12 +88,9 @@ def _effective_training_load_in_4bit(
     model_load_target: str,
     hf_token: str | None,
 ) -> bool:
-    load_in_4bit = bool(config.get("load_in_4bit"))
-    if not load_in_4bit:
-        return False
-    from utils.transformers_version import latest_tier_active_for
+    from .provenance import effective_training_load_in_4bit
 
-    return not latest_tier_active_for(model_load_target, hf_token)
+    return effective_training_load_in_4bit(config, model_load_target, hf_token)
 
 
 def _drop_model_pin(config: dict) -> str:
@@ -102,11 +99,33 @@ def _drop_model_pin(config: dict) -> str:
     return config["model_name"]
 
 
+def _drop_model_pin_for_fallback(
+    config: dict,
+    hf_token: str | None,
+) -> str:
+    from utils.transformers_version import get_transformers_activation_tier
+
+    active_target = _resolve_cached_model_load_name(config)
+    fallback_target = config["model_name"]
+    active_tier = get_transformers_activation_tier(active_target, hf_token)
+    fallback_tier = get_transformers_activation_tier(fallback_target, hf_token)
+    if active_tier != fallback_tier:
+        raise RuntimeError(
+            "The cached model is incomplete and its Hugging Face fallback requires "
+            f"a different Transformers runtime ({active_tier} to {fallback_tier}). "
+            "Remove the incomplete cached model and retry."
+        )
+    return _drop_model_pin(config)
+
+
 def _cache_artifact_fallback_allowed(
     config: dict,
     error: BaseException | None,
+    resource: str,
 ) -> bool:
-    if config.get("require_exact_resume_resources"):
+    if config.get("require_exact_resume_resources") or config.get(
+        f"require_exact_{resource}_resource"
+    ):
         return False
     from hub.utils.dataset_cache import is_cache_artifact_error
 
@@ -118,7 +137,10 @@ def _require_strict_cached_dataset(
     dataset: Any,
     split: str,
 ) -> Any:
-    if config.get("require_exact_resume_resources") and dataset is None:
+    if (
+        config.get("require_exact_resume_resources")
+        or config.get("require_exact_dataset_resource")
+    ) and dataset is None:
         raise FileNotFoundError(
             f"The exact cached dataset split '{split}' is no longer available."
         )
@@ -126,14 +148,26 @@ def _require_strict_cached_dataset(
 
 
 def _verify_config_pins(config: dict, event_queue: Any) -> bool:
-    if config.get("require_exact_resume_resources"):
+    require_model = bool(
+        config.get("require_exact_resume_resources")
+        or config.get("require_exact_model_resource")
+    )
+    require_dataset = bool(
+        config.get("require_exact_resume_resources")
+        or config.get("require_exact_dataset_resource")
+    )
+    if require_model or require_dataset:
         from core.training.provenance import (
             ExactResumeResourcesUnavailable,
-            validate_exact_resource_pins,
+            validate_exact_dataset_pin,
+            validate_exact_model_pin,
         )
 
         try:
-            model_snapshot, dataset_snapshot = validate_exact_resource_pins(config)
+            model_snapshot = validate_exact_model_pin(config) if require_model else None
+            dataset_snapshot = (
+                validate_exact_dataset_pin(config) if require_dataset else None
+            )
         except ExactResumeResourcesUnavailable as error:
             event_queue.put(
                 {
@@ -144,14 +178,15 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
                 }
             )
             return False
-        config["model_snapshot_path"] = model_snapshot
-        config["dataset_snapshot_path"] = dataset_snapshot
-        return True
+        if model_snapshot is not None:
+            config["model_snapshot_path"] = model_snapshot
+        if dataset_snapshot is not None:
+            config["dataset_snapshot_path"] = dataset_snapshot
 
     for message in config.get("cache_pin_warnings") or []:
         _send_status(event_queue, message)
     model_path = config.get("model_snapshot_path")
-    if model_path:
+    if model_path and not require_model:
         from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
 
         pinned_repo_id = config.get("actual_model_repo_id") or config["model_name"]
@@ -164,7 +199,7 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
         if config["model_snapshot_path"] is None:
             config["actual_model_repo_id"] = None
     dataset_path = config.get("dataset_snapshot_path")
-    if dataset_path:
+    if dataset_path and not require_dataset:
         from hub.utils.dataset_cache import dataset_cache_path_from_cache_path
 
         resolved = dataset_cache_path_from_cache_path(
@@ -222,7 +257,7 @@ def _load_hf_train_and_eval_datasets(
             dataset = _require_strict_cached_dataset(config, dataset, train_split)
             loaded_from_cache = dataset is not None
         except Exception as error:
-            if not _cache_artifact_fallback_allowed(config, error):
+            if not _cache_artifact_fallback_allowed(config, error, "dataset"):
                 raise
             status_callback("Cached dataset unavailable; downloading from the Hub...")
 
@@ -241,7 +276,7 @@ def _load_hf_train_and_eval_datasets(
                         eval_split,
                     )
                 except Exception as error:
-                    if not _cache_artifact_fallback_allowed(config, error):
+                    if not _cache_artifact_fallback_allowed(config, error, "dataset"):
                         raise
                     status_callback(
                         "Cached eval split unavailable; reloading train and eval from the Hub..."
@@ -254,7 +289,9 @@ def _load_hf_train_and_eval_datasets(
             else:
                 eval_dataset = load_remote(eval_split)
         except Exception as error:
-            if config.get("require_exact_resume_resources"):
+            if config.get("require_exact_resume_resources") or config.get(
+                "require_exact_dataset_resource"
+            ):
                 raise
             status_callback(f"Eval split load failed: {error}")
             eval_dataset = None
@@ -310,7 +347,7 @@ def _load_embedding_hf_dataset(
                     )
                 )
         except Exception as error:
-            if not _cache_artifact_fallback_allowed(config, error):
+            if not _cache_artifact_fallback_allowed(config, error, "dataset"):
                 raise
             status_callback("Cached dataset unavailable; downloading from the Hub...")
             dataset = None
@@ -1812,10 +1849,46 @@ def _mlx_local_dataset_loader_for_files(files: list[str]) -> str:
 _MLX_WORKER_COMPLETE = "_mlx_worker_complete"
 
 
-def _start_mlx_stop_poller(stop_queue):
+def _start_worker_stop_poller(
+    stop_queue,
+    on_stop: Callable[[bool], None],
+    *,
+    completion_type: str | None = None,
+    timeout: float = 1.0,
+):
     import queue as _queue
     import threading
 
+    cancel_requested = False
+
+    def poll_stop():
+        nonlocal cancel_requested
+        while True:
+            try:
+                msg = stop_queue.get(timeout = timeout)
+                if not isinstance(msg, dict):
+                    continue
+                message_type = msg.get("type")
+                if completion_type is not None and message_type == completion_type:
+                    return
+                if message_type != "stop":
+                    continue
+                if not bool(msg.get("save", True)):
+                    cancel_requested = True
+                on_stop(not cancel_requested)
+                if cancel_requested:
+                    return
+            except _queue.Empty:
+                continue
+            except (EOFError, OSError, ValueError):
+                return
+
+    stop_thread = threading.Thread(target = poll_stop, daemon = True)
+    stop_thread.start()
+    return stop_thread
+
+
+def _start_mlx_stop_poller(stop_queue):
     stop_save = [True]
     stop_requested = [False]
     trainer_ref = [None]
@@ -1823,26 +1896,19 @@ def _start_mlx_stop_poller(stop_queue):
     def is_stop_requested():
         return stop_requested[0]
 
-    def poll_stop():
-        while True:
-            try:
-                msg = stop_queue.get(timeout = 0.25)
-                if msg and msg.get("type") == _MLX_WORKER_COMPLETE:
-                    return
-                if msg and msg.get("type") == "stop":
-                    stop_save[0] = msg.get("save", True)
-                    stop_requested[0] = True
-                    trainer = trainer_ref[0]
-                    if trainer is not None:
-                        trainer.stop_requested = True
-                    return
-            except _queue.Empty:
-                continue
-            except (EOFError, OSError):
-                return
+    def apply_stop(save: bool) -> None:
+        stop_save[0] = save
+        stop_requested[0] = True
+        trainer = trainer_ref[0]
+        if trainer is not None:
+            trainer.stop_requested = True
 
-    stop_thread = threading.Thread(target = poll_stop, daemon = True)
-    stop_thread.start()
+    stop_thread = _start_worker_stop_poller(
+        stop_queue,
+        apply_stop,
+        completion_type = _MLX_WORKER_COMPLETE,
+        timeout = 0.25,
+    )
     return stop_save, stop_requested, trainer_ref, is_stop_requested, stop_thread
 
 
@@ -1975,7 +2041,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
             random_state = model_random_state,
         )
     except Exception as error:
-        if not model_local_only or not _cache_artifact_fallback_allowed(config, error):
+        if not model_local_only or not _cache_artifact_fallback_allowed(
+            config, error, "model"
+        ):
             raise
         security_error = _model_load_security_error(config, model_name, hf_token)
         if security_error:
@@ -1987,7 +2055,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 f"Cached files for {model_name} are incomplete; retrying from Hugging Face..."
             ),
         )
-        model_load_name = _drop_model_pin(config)
+        model_load_name = _drop_model_pin_for_fallback(config, hf_token)
         model_local_only = False
         model, tokenizer = FastMLXModel.from_pretrained(
             model_load_name,
@@ -3273,27 +3341,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     trainer.add_progress_callback(_on_progress)
 
-    # Wire up stop_queue polling to trainer.should_stop
-    import threading
-    import queue as _queue
+    def _apply_stop(save: bool) -> None:
+        trainer.should_stop = True
+        trainer.save_on_stop = save
+        logger.info("Stop signal received (save=%s)", save)
 
-    def _poll_stop():
-        while True:
-            try:
-                msg = stop_queue.get(timeout = 1.0)
-                if msg and msg.get("type") == "stop":
-                    save = msg.get("save", True)
-                    trainer.should_stop = True
-                    trainer.save_on_stop = save
-                    logger.info("Stop signal received (save=%s)", save)
-                    return
-            except _queue.Empty:
-                continue
-            except (EOFError, OSError):
-                return
-
-    stop_thread = threading.Thread(target = _poll_stop, daemon = True)
-    stop_thread.start()
+    _start_worker_stop_poller(stop_queue, _apply_stop)
 
     # ── 4. Execute the training pipeline ──
     # Order: detect → dataset → model → prepare → train. Dataset processing runs
@@ -3329,6 +3382,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 dataset_local_path = config.get("dataset_snapshot_path"),
                 require_exact_resume_resources = bool(
                     config.get("require_exact_resume_resources")
+                    or config.get("require_exact_dataset_resource")
                 ),
             )
             if isinstance(result, tuple):
@@ -3353,7 +3407,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 model_local_only,
             )
         except Exception as error:
-            if not model_local_only or not _cache_artifact_fallback_allowed(config, error):
+            if not model_local_only or not _cache_artifact_fallback_allowed(
+                config, error, "model"
+            ):
                 raise
             security_error = _model_load_security_error(config, model_name, hf_token)
             if security_error:
@@ -3363,7 +3419,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 event_queue,
                 f"Cached files for {model_name} are incomplete; retrying from Hugging Face...",
             )
-            model_load_name = _drop_model_pin(config)
+            model_load_name = _drop_model_pin_for_fallback(config, hf_token)
             model_local_only = False
             _pre_detect_training_model(
                 trainer,
@@ -3437,19 +3493,18 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         # Latest-sidecar models load 16-bit here too: bnb 4-bit feeds quantized
         # expert weights into unvalidated paths (same flip as the chat worker).
-        _train_load_in_4bit = _effective_training_load_in_4bit(
-            config,
-            model_load_name,
-            hf_token,
-        )
-        if config["load_in_4bit"] and not _train_load_in_4bit:
-            logger.info(
-                "Latest-transformers sidecar active for %s - forcing a 16-bit "
-                "training load (4-bit is disabled for brand-new architectures)",
-                model_load_name,
-            )
-
         try:
+            _train_load_in_4bit = _effective_training_load_in_4bit(
+                config,
+                model_load_name,
+                hf_token,
+            )
+            if config["load_in_4bit"] and not _train_load_in_4bit:
+                logger.info(
+                    "Latest-transformers sidecar active for %s - forcing a 16-bit "
+                    "training load (4-bit is disabled for brand-new architectures)",
+                    model_load_name,
+                )
             success = trainer.load_model(
                 model_name = model_name,
                 max_seq_length = config["max_seq_length"],
@@ -3467,7 +3522,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 not success
                 and model_local_only
                 and not trainer.should_stop
-                and _cache_artifact_fallback_allowed(config, trainer.model_load_error)
+                and _cache_artifact_fallback_allowed(
+                    config, trainer.model_load_error, "model"
+                )
             ):
                 security_error = _model_load_security_error(config, model_name, hf_token)
                 if security_error:
@@ -3477,7 +3534,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     event_queue,
                     f"Cached files for {model_name} are incomplete; retrying from Hugging Face...",
                 )
-                model_load_name = _drop_model_pin(config)
+                model_load_name = _drop_model_pin_for_fallback(config, hf_token)
                 model_local_only = False
                 trainer.model = None
                 trainer.tokenizer = None
@@ -3878,8 +3935,6 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
       ModernBert.py, Qwen3_Embedding_0_6B.py
     """
     import math
-    import queue as _queue
-    import threading
 
     model_name = config["model_name"]
     model_load_name = _resolve_cached_model_load_name(config)
@@ -3920,26 +3975,16 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     _should_stop = False
     _save_on_stop = True
 
-    def _poll_stop():
+    def _apply_stop(save: bool) -> None:
         nonlocal _should_stop, _save_on_stop
-        while True:
-            try:
-                msg = stop_queue.get(timeout = 1.0)
-                if msg and msg.get("type") == "stop":
-                    _save_on_stop = msg.get("save", True)
-                    _should_stop = True
-                    logger.info(
-                        "Embedding training: stop signal received (save=%s)",
-                        _save_on_stop,
-                    )
-                    return
-            except _queue.Empty:
-                continue
-            except (EOFError, OSError):
-                return
+        _save_on_stop = save
+        _should_stop = True
+        logger.info(
+            "Embedding training: stop signal received (save=%s)",
+            _save_on_stop,
+        )
 
-    stop_thread = threading.Thread(target = _poll_stop, daemon = True)
-    stop_thread.start()
+    _start_worker_stop_poller(stop_queue, _apply_stop)
 
     # ── 2. Load model ──
     _send_status(event_queue, "Loading embedding model...")
@@ -3963,7 +4008,9 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 token = hf_token,
             )
         except Exception as error:
-            if not model_local_only or not _cache_artifact_fallback_allowed(config, error):
+            if not model_local_only or not _cache_artifact_fallback_allowed(
+                config, error, "model"
+            ):
                 raise
             security_error = _model_load_security_error(config, model_name, hf_token)
             if security_error:
@@ -3973,7 +4020,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 event_queue,
                 f"Cached files for {model_name} are incomplete; retrying from Hugging Face...",
             )
-            model_load_name = _drop_model_pin(config)
+            model_load_name = _drop_model_pin_for_fallback(config, hf_token)
             model_local_only = False
             model = FastSentenceTransformer.from_pretrained(
                 model_name = model_load_name,

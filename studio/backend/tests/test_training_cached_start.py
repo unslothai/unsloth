@@ -265,12 +265,58 @@ def test_route_forwards_cache_reference_fields():
     assert captured["dataset_known_cached"] is True
     assert captured["dataset_local_path"] == "/tmp/hf-cache/datasets--org--dataset"
     assert captured["require_exact_resume_resources"] is False
+    assert captured["require_exact_model_resource"] is False
+    assert captured["require_exact_dataset_resource"] is False
 
 
 def test_training_request_does_not_accept_client_strict_resume_flag():
     request = _request(require_exact_resume_resources = True)
 
     assert not hasattr(request, "require_exact_resume_resources")
+
+
+def test_stop_route_passes_expected_job_id_to_backend():
+    route = _load_route_module("training_route_scoped_stop")
+    calls: list[dict] = []
+    backend = SimpleNamespace(
+        is_training_active = lambda: True,
+        stop_training = lambda **kwargs: calls.append(kwargs) or True,
+    )
+
+    with patch.object(route, "get_training_backend", return_value = backend):
+        response = asyncio.run(
+            route.stop_training(
+                route.TrainingStopRequest(
+                    save = False,
+                    expected_job_id = "job_old",
+                ),
+                current_subject = "test-user",
+            )
+        )
+
+    assert response.status == "stopped"
+    assert calls == [{"save": False, "expected_job_id": "job_old"}]
+
+
+def test_reset_route_reports_superseded_job_without_mutation():
+    route = _load_route_module("training_route_scoped_reset")
+    calls: list[str | None] = []
+    backend = SimpleNamespace(
+        reset_training_state = lambda expected_job_id = None: (
+            calls.append(expected_job_id) or "superseded"
+        )
+    )
+
+    with patch.object(route, "get_training_backend", return_value = backend):
+        response = asyncio.run(
+            route.reset_training(
+                route.TrainingResetRequest(expected_job_id = "job_old"),
+                current_subject = "test-user",
+            )
+        )
+
+    assert response == {"status": "superseded"}
+    assert calls == ["job_old"]
 
 
 def test_resume_route_uses_source_run_resource_pins(tmp_path):
@@ -369,8 +415,149 @@ def test_resume_route_uses_source_run_resource_pins(tmp_path):
     assert captured["dataset_snapshot_path"] == str(old_dataset)
     assert captured["model_local_path"] == str(model_root)
     assert captured["dataset_local_path"] == str(dataset_root)
+    assert captured["load_in_4bit"] is True
     assert captured["require_exact_resume_resources"] is True
+    assert captured["require_exact_model_resource"] is True
+    assert captured["require_exact_dataset_resource"] is True
     assert tier_targets == [str(old_model.resolve())]
+
+
+def test_resume_resource_provenance_restores_model_structure():
+    route = _load_route_module("training_route_resume_model_structure")
+    request = _request(
+        load_in_4bit = False,
+        use_lora = False,
+        lora_r = 64,
+        lora_alpha = 128,
+        lora_dropout = 0.25,
+        target_modules = ["client_proj"],
+        gradient_checkpointing = "client",
+        use_dora = True,
+        optim = "sgd",
+        lr_scheduler_type = "cosine",
+        embedding_learning_rate = 5e-5,
+        finetune_vision_layers = False,
+        finetune_language_layers = True,
+        finetune_attention_modules = False,
+        finetune_mlp_modules = True,
+    )
+    source_structure = {
+        "load_in_4bit": True,
+        "use_lora": True,
+        "lora_r": 8,
+        "lora_alpha": 16,
+        "lora_dropout": 0.05,
+        "target_modules": ["q_proj", "v_proj"],
+        "gradient_checkpointing": "unsloth",
+        "use_rslora": True,
+        "use_loftq": False,
+        "use_dora": False,
+        "optim": "adamw_8bit",
+        "lr_scheduler_type": "linear",
+        "embedding_learning_rate": 2e-5,
+        "finetune_vision_layers": True,
+        "finetune_language_layers": False,
+        "finetune_attention_modules": True,
+        "finetune_mlp_modules": False,
+    }
+    resume_run = {
+        "model_name": "unsloth/test",
+        "config_json": {
+            "model_name": "unsloth/test",
+            "training_type": "LoRA/QLoRA",
+            "hf_dataset": "org/dataset",
+            **source_structure,
+        },
+    }
+
+    route._apply_resume_resource_provenance(request, resume_run)
+
+    for field, expected in source_structure.items():
+        assert getattr(request, field) == expected
+
+
+@pytest.mark.parametrize(
+    "invalid_structure",
+    [
+        {"lora_r": 0},
+        {"use_rslora": True, "use_dora": True},
+        {"gradient_checkpointing": True},
+    ],
+)
+def test_resume_resource_provenance_rejects_invalid_stored_structure(invalid_structure):
+    route = _load_route_module("training_route_resume_invalid_structure")
+    request = _request()
+    resume_run = {
+        "model_name": "unsloth/test",
+        "config_json": {
+            "model_name": "unsloth/test",
+            "training_type": "LoRA/QLoRA",
+            "hf_dataset": "org/dataset",
+            **invalid_structure,
+        },
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        route._apply_resume_resource_provenance(request, resume_run)
+
+    assert exc_info.value.status_code == 409
+    assert "invalid training configuration" in exc_info.value.detail
+
+
+def test_exact_resume_rejects_latest_tier_load_mode_change(tmp_path):
+    route = _load_route_module("training_route_resume_latest_tier")
+    model = tmp_path / "models--unsloth--test" / "snapshots" / "model-commit"
+    model.mkdir(parents = True)
+    (model / "config.json").write_text(
+        json.dumps({"quantization_config": {"load_in_4bit": True}})
+    )
+    (model / "model.safetensors").write_bytes(b"x")
+    dataset = tmp_path / "datasets--org--dataset" / "snapshots" / "dataset-commit"
+    dataset.mkdir(parents = True)
+    (dataset / "train.parquet").write_bytes(b"x")
+    resume_run = {
+        "id": "source-run",
+        "model_name": "unsloth/test",
+        "config_json": {
+            "model_name": "unsloth/test",
+            "training_type": "LoRA/QLoRA",
+            "hf_dataset": "org/dataset",
+            "format_type": "alpaca",
+            "model_snapshot_path": str(model),
+            "dataset_snapshot_path": str(dataset),
+            "load_in_4bit": True,
+            "resource_provenance": {
+                "version": 1,
+                "status": "complete",
+                "model_status": "attested",
+                "dataset_status": "attested",
+                "reasons": [],
+            },
+        },
+    }
+    request = _request(resume_from_checkpoint = "/outputs/source-run")
+
+    with (
+        patch.object(route, "get_training_backend", return_value = _refusing_backend()),
+        patch.object(route, "normalize_resume_output_dir", return_value = "/outputs/source-run"),
+        patch.object(route, "get_resumable_run_by_output_dir", return_value = resume_run),
+        patch.object(route, "can_resume_run", return_value = True),
+        patch.object(
+            route,
+            "get_resume_checkpoint_path",
+            return_value = "/outputs/source-run/checkpoint-5",
+        ),
+        patch.object(route.asyncio, "to_thread", _inline_to_thread),
+        patch(
+            "utils.transformers_version.latest_tier_active_for",
+            return_value = True,
+        ),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            _start(route, request)
+
+    assert exc_info.value.status_code == 409
+    assert "original 4-bit model load mode" in exc_info.value.detail
 
 
 @pytest.mark.parametrize(
@@ -400,15 +587,7 @@ def test_resume_resource_provenance_rejects_identity_changes(request_overrides, 
     assert detail in exc_info.value.detail
 
 
-@pytest.mark.parametrize(
-    "marker",
-    [
-        None,
-        {"version": 1, "status": "pending"},
-        {"version": 1, "status": "incomplete"},
-    ],
-)
-def test_unattested_resume_config_cannot_inject_cache_pins(marker):
+def test_legacy_resume_config_cannot_inject_cache_pins():
     route = _load_route_module("training_route_resume_legacy_cache_pins")
     request = _request(
         hf_dataset = None,
@@ -432,8 +611,6 @@ def test_unattested_resume_config_cannot_inject_cache_pins(marker):
         "hf_dataset": "",
         "require_exact_resume_resources": True,
     }
-    if marker is not None:
-        source_config["resource_provenance"] = marker
     resume_run = {
         "model_name": "unsloth/test",
         "config_json": source_config,
@@ -454,6 +631,26 @@ def test_unattested_resume_config_cannot_inject_cache_pins(marker):
     from core.training.provenance import resource_provenance_is_complete
 
     assert resource_provenance_is_complete(source_config) is False
+
+
+@pytest.mark.parametrize("status", ["pending", "incomplete"])
+def test_unattested_current_hub_model_resume_is_rejected(status):
+    route = _load_route_module(f"training_route_unattested_hub_model_{status}")
+    request = _request(hf_dataset = None)
+    resume_run = {
+        "model_name": "unsloth/test",
+        "config_json": {
+            "model_name": "unsloth/test",
+            "training_type": "LoRA/QLoRA",
+            "hf_dataset": "",
+            "resource_provenance": {"version": 1, "status": status},
+        },
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        route._apply_resume_resource_provenance(request, resume_run)
+
+    assert exc_info.value.status_code == 409
 
 
 def test_foreign_absolute_resume_paths_are_rejected_on_native_host():
@@ -628,6 +825,52 @@ def test_training_model_load_target_rejects_evicted_strict_resume_pin(tmp_path):
                 "load_in_4bit": True,
             }
         )
+
+
+def test_backend_rechecks_exact_4bit_resume_after_sidecar_reservation(tmp_path):
+    from core.training.provenance import ExactResumeResourcesUnavailable
+    from core.training.training import TrainingBackend
+
+    model = tmp_path / "models--unsloth--test" / "snapshots" / "model-rev"
+    model.mkdir(parents = True)
+    (model / "config.json").write_text(
+        json.dumps({"quantization_config": {"load_in_4bit": True}})
+    )
+    (model / "model.safetensors").write_bytes(b"x")
+    dataset = tmp_path / "datasets--org--dataset" / "snapshots" / "dataset-rev"
+    dataset.mkdir(parents = True)
+    (dataset / "train.parquet").write_bytes(b"x")
+    before_spawn_called = False
+
+    def before_spawn():
+        nonlocal before_spawn_called
+        before_spawn_called = True
+
+    backend = TrainingBackend()
+    with (
+        patch(
+            "core.training.resume.get_resume_checkpoint_path",
+            return_value = "/outputs/run/checkpoint-5",
+        ),
+        patch("utils.transformers_version.sidecar_swap_in_progress", return_value = False),
+        patch("utils.transformers_version.latest_tier_active_for", return_value = True),
+    ):
+        with pytest.raises(ExactResumeResourcesUnavailable, match = "original 4-bit"):
+            backend.start_training(
+                job_id = "exact-resume",
+                before_spawn = before_spawn,
+                model_name = "unsloth/test",
+                training_type = "LoRA/QLoRA",
+                hf_dataset = "org/dataset",
+                model_snapshot_path = str(model),
+                dataset_snapshot_path = str(dataset),
+                resume_from_checkpoint = "/outputs/run/checkpoint-5",
+                require_exact_resume_resources = True,
+                load_in_4bit = True,
+            )
+
+    assert before_spawn_called is False
+    assert backend._spawn_in_progress is False
 
 
 def test_apply_cache_pins_fresh_ignores_client_pins(tmp_path):
@@ -915,6 +1158,65 @@ def test_worker_4bit_tier_check_uses_model_load_target():
     assert checked == [(snapshot, "hf_test")]
 
 
+def test_worker_strict_resume_rejects_4bit_tier_change():
+    from core.training import worker
+    from core.training.provenance import ExactResumeResourcesUnavailable
+
+    with patch(
+        "utils.transformers_version.latest_tier_active_for",
+        return_value = True,
+    ):
+        with pytest.raises(ExactResumeResourcesUnavailable, match = "original 4-bit"):
+            worker._effective_training_load_in_4bit(
+                {
+                    "load_in_4bit": True,
+                    "require_exact_resume_resources": True,
+                },
+                "/cache/models--org--model/snapshots/deadbeef",
+                None,
+            )
+
+
+def test_worker_model_cache_fallback_requires_same_transformers_tier():
+    from core.training import worker
+
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": "/cache/snapshot",
+        "actual_model_repo_id": "org/model",
+    }
+
+    with patch(
+        "utils.transformers_version.get_transformers_activation_tier",
+        side_effect = ["default", "530"],
+    ):
+        with pytest.raises(RuntimeError, match = "different Transformers runtime"):
+            worker._drop_model_pin_for_fallback(config, None)
+
+    assert config["model_snapshot_path"] == "/cache/snapshot"
+    assert config["actual_model_repo_id"] == "org/model"
+
+
+def test_worker_model_cache_fallback_drops_pin_for_matching_transformers_tier():
+    from core.training import worker
+
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": "/cache/snapshot",
+        "actual_model_repo_id": "org/model",
+    }
+
+    with patch(
+        "utils.transformers_version.get_transformers_activation_tier",
+        return_value = "530",
+    ):
+        target = worker._drop_model_pin_for_fallback(config, "hf_test")
+
+    assert target == "org/model"
+    assert config["model_snapshot_path"] is None
+    assert config["actual_model_repo_id"] is None
+
+
 def test_worker_cached_dataset_load_requires_verified_path():
     from core.training import worker
 
@@ -1079,18 +1381,62 @@ def test_worker_bootstrap_rejects_vanished_strict_resume_pins(tmp_path):
     ]
 
 
+def test_worker_enforces_exact_hub_model_with_local_dataset(tmp_path):
+    from core.training import worker
+
+    snapshot = tmp_path / "models--org--model" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}")
+    weights = snapshot / "model.safetensors"
+    weights.write_bytes(b"weights")
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": str(snapshot),
+        "local_datasets": ["/datasets/train.jsonl"],
+        "require_exact_model_resource": True,
+        "require_exact_dataset_resource": False,
+    }
+    events: list[dict] = []
+    queue = SimpleNamespace(put = events.append)
+
+    assert worker._verify_config_pins(config, queue) is True
+    assert config["model_snapshot_path"] == str(snapshot.resolve())
+    assert events == []
+
+    weights.unlink()
+    assert worker._verify_config_pins(config, queue) is False
+    assert "exact model snapshot" in events[-1]["error"]
+
+
 def test_strict_resume_disables_cache_artifact_fallback():
     from core.training import worker
 
     error = FileNotFoundError("evicted")
 
-    assert worker._cache_artifact_fallback_allowed({}, error) is True
+    assert worker._cache_artifact_fallback_allowed({}, error, "model") is True
     assert (
         worker._cache_artifact_fallback_allowed(
             {"require_exact_resume_resources": True},
             error,
+            "model",
         )
         is False
+    )
+    assert (
+        worker._cache_artifact_fallback_allowed(
+            {"require_exact_model_resource": True},
+            error,
+            "model",
+        )
+        is False
+    )
+    assert (
+        worker._cache_artifact_fallback_allowed(
+            {"require_exact_model_resource": True},
+            error,
+            "dataset",
+        )
+        is True
     )
 
 

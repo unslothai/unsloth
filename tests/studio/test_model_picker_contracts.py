@@ -771,6 +771,48 @@ def test_local_dataset_keyboard_commit_uses_canonical_path_identity():
     assert "cacheLocalPathMatchesSelection(item.path, query)" in model_view_model
 
 
+def test_cached_dataset_keyboard_commit_preserves_canonical_hub_identity():
+    selector = _read("features/dataset-picker/components/dataset-selector.tsx")
+    finder = selector.split("function findExactCachedDataset", 1)[1]
+    finder = finder.split("function hasExactDatasetMatch", 1)[0]
+    assert "hubResourceIdsEqual(item.repoId, query)" in finder
+
+    commit = selector.split("const commitExactQuery = useCallback", 1)[1]
+    commit = commit.split("const selectedLocalDatasetTitle", 1)[0]
+    cached_branch = commit.split(
+        "const cached = findExactCachedDataset(query, deviceItems)", 1
+    )[1].split("const item = findExactLocalDataset", 1)[0]
+    assert "selectHfDataset(cached.repoId," in cached_branch
+    assert "knownCached: true" in cached_branch
+    assert "localPath: cached.cachePath" in cached_branch
+    assert "closePicker();" in cached_branch
+
+
+def test_training_model_lookups_preserve_platform_path_identity():
+    lookup = _read("features/training/lib/training-picker-lookups.ts")
+    assert "map.set(normalizeModelIdentity(value), row);" in lookup
+    assert "value.toLowerCase()" not in lookup
+
+    selector = _read("features/model-picker/components/train-model-selector.tsx")
+    hub_pick = selector.split("function pickHubModel", 1)[1]
+    hub_pick = hub_pick.split("function pickFreeformModel", 1)[0]
+    device_pick = selector.split("function pickFreeformModel", 1)[1]
+    device_pick = device_pick.split("function pickDeviceModel", 1)[0]
+    assert "const key = normalizeModelIdentity(id);" in hub_pick
+    assert "const key = normalizeModelIdentity(id);" in device_pick
+
+    identity = _read("features/hub/lib/model-identity.ts")
+    normalizer = identity.split("export function normalizeModelIdentity", 1)[1]
+    normalizer = normalizer.split(
+        "export function normalizeGgufVariantIdentity", 1
+    )[0]
+    assert "return trimmed.toLowerCase();" in normalizer
+    assert "WINDOWS_DRIVE_PATH_RE.test(trimmed)" in normalizer
+    assert 'slashPath.startsWith("//")' in normalizer
+    assert "WSL_DRIVE_PATH_RE.test(slashPath)" in normalizer
+    assert normalizer.rstrip().endswith("return trimmed;\n}")
+
+
 def test_non_explicit_picker_tab_infers_both_connectivity_directions():
     source = _read("components/resource-picker/use-picker-state.ts")
     resolver = source.split("function resolvePickerTab", 1)[1]
@@ -782,6 +824,50 @@ def test_non_explicit_picker_tab_infers_both_connectivity_directions():
         "shouldUseDeviceTab ? PICKER_TAB.device : PICKER_TAB.hub;" in compact
     )
     assert "return lockedInferredTab ?? inferredTab;" in compact
+
+
+def test_inferred_picker_tab_is_locked_for_the_open_session():
+    source = _read("components/resource-picker/use-picker-state.ts")
+    close_picker = source.split("const closePicker = useCallback", 1)[1]
+    close_picker = close_picker.split("const getViewState", 1)[0]
+    assert "setLockedInferredTab(null);" in close_picker
+
+    view = source.split("const getViewState = useCallback", 1)[1]
+    view = view.split("return {", 1)[0]
+    open_change = view.split("const handleOpenChange", 1)[1]
+    assert "if (nextOpen)" in open_change
+    assert "if (!hasExplicitTabPreference)" in open_change
+    assert "hasExplicitTabPreference || isLoadingDevice" not in open_change
+    assert "setLockedInferredTab(tab);" in open_change
+    assert "closePicker();" in open_change
+
+
+def test_dataset_display_name_handles_cross_platform_trailing_separators():
+    source = _read("features/dataset-picker/lib/display.ts")
+    path_display = _read("components/resource-picker/path-display-name.ts")
+    assert 'import { pathDisplayName }' in source
+    assert "pathDisplayName(value)" in source
+    assert "const TRAILING_PATH_SEPARATOR_RE = /[\\\\/]+$/;" in path_display
+    assert "value.replace(" in path_display
+    assert "const candidate = withoutTrailingSeparators || value;" in path_display
+    assert "candidate.split(PATH_SEPARATOR_RE).pop() || candidate" in path_display
+
+
+def test_local_model_trigger_uses_cross_platform_device_display_name():
+    selector = _read("features/model-picker/components/train-model-selector.tsx")
+    view_model = _read(
+        "features/model-picker/components/train-model-picker-view-model.ts"
+    )
+    display = view_model.split(
+        "export function trainModelSelectionDisplayName", 1
+    )[1].split("export function toCachedTrainModelDeviceItem", 1)[0]
+
+    assert "isLocalTrainingModelSelection({" in display
+    assert "trainModelDeviceItemMatchesSelection({" in display
+    assert "selectedDeviceTitle ??" in display
+    assert "pathDisplayName(selectedLocalPath?.trim() || selectedModel)" in display
+    assert "return repoOf(selectedModel)" in display
+    assert "trainModelSelectionDisplayName({" in selector
 
 
 def test_s3_round_trip_restores_source_qualified_browse_dataset_selection():
@@ -867,6 +953,62 @@ def test_s3_training_payload_excludes_remembered_browse_sources():
         "? [config.uploadedEvalFile] : []" in mapper
     )
     assert "browseDatasetSelection" not in mapper
+
+
+def test_missing_dataset_cache_fallback_clears_remembered_browse_selection():
+    source = _read("features/training/lib/start-fresh-training-run.ts")
+    helper = source.split("function clearMissingDatasetCacheReference", 1)[1]
+    helper = helper.split("function getDatasetName", 1)[0]
+    for needle in (
+        "datasetKnownCached: false,",
+        "datasetLocalPath: null,",
+        "browseDatasetSelection:",
+        'source: "huggingface",',
+        "dataset: datasetName,",
+        "knownCached: false,",
+        "localPath: null,",
+    ):
+        assert needle in helper
+
+
+def test_start_cta_prioritizes_current_blockers_over_previous_start_errors():
+    source = _read("features/studio/wizard/start-training-cta.tsx")
+    resolver = source.split("function resolveStartTrainingError", 1)[1]
+    resolver = resolver.split("function resolveStartTrainingButtonLabel", 1)[0]
+    model_error = resolver.index("if (modelError)")
+    start_error = resolver.index("if (startError)")
+    dataset_warning = resolver.index(
+        'return datasetUnverified ? t("studio.training.datasetUnverified") : null;'
+    )
+    assert model_error < start_error < dataset_warning
+    assert "{modelError && (" in source
+    assert "modelError && !startError" not in source
+
+
+def test_training_config_changes_clear_previous_start_error():
+    source = _read(
+        "features/training/hooks/use-training-runtime-lifecycle.ts"
+    )
+    assert "useTrainingConfigStore.subscribe" in source
+    assert "runtime.startError !== null" in source
+    assert "runtime.setStartError(null)" in source
+
+
+def test_training_start_attempt_is_bound_to_checked_inputs():
+    source = _read("features/training/lib/start-fresh-training-run.ts")
+    assert "private expectedConfig: TrainingConfigStore;" in source
+    assert "useTrainingConfigStore.getState() === this.expectedConfig" in source
+    assert "getHfToken() === this.expectedHfToken" in source
+    assert source.count("abortIfInputsChanged()") >= 5
+    assert "this.expectedConfig = useTrainingConfigStore.getState();" in source
+    assert "buildTrainingStartPayload(attempt.config)" in source
+    assert "buildTrainingStartPayload(useTrainingConfigStore.getState())" not in source
+    assert "hasIncompatibleTrainingModalities(attempt.config)" in source
+
+    readiness = _read(
+        "features/training/hooks/use-training-readiness.ts"
+    )
+    assert "hasIncompatibleTrainingModalities(state)" in readiness
 
 
 def test_dataset_hub_list_retains_the_active_hf_selection():

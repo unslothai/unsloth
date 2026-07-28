@@ -22,6 +22,23 @@ START_TRAINING_CTA = (
 TRAINING_ACTIONS = (
     REPO / "studio/frontend/src/features/training/hooks/use-training-actions.ts"
 )
+FRESH_TRAINING_START = (
+    REPO
+    / "studio/frontend/src/features/training/lib/start-fresh-training-run.ts"
+)
+RESUME_TRAINING_START = (
+    REPO
+    / "studio/frontend/src/features/training/lib/resume-training-run.ts"
+)
+TRAINING_RUNTIME_STORE = (
+    REPO
+    / "studio/frontend/src/features/training/stores/training-runtime-store.ts"
+)
+TRAINING_START_RUNTIME = (
+    REPO
+    / "studio/frontend/src/features/training/lib/training-start-runtime.ts"
+)
+CONFIRM_TOKEN = REPO / "studio/frontend/src/features/hf-auth/confirm-token.ts"
 TRAIN_API = REPO / "studio/frontend/src/features/training/api/train-api.ts"
 
 
@@ -72,14 +89,18 @@ def test_model_defaults_error_blocks_readiness_and_offers_retry():
     assert 't("studio.training.modelUnverified")' in cta
     assert "ensureModelDefaultsLoaded: state.ensureModelDefaultsLoaded" in cta
     assert "onClick={ensureModelDefaultsLoaded}" in cta
-    assert "{modelError && !startError && (" in cta
+    assert "{modelError && (" in cta
 
 
 def test_training_start_prepares_token_once_before_transport():
     actions = TRAINING_ACTIONS.read_text(encoding = "utf-8")
+    fresh_start = FRESH_TRAINING_START.read_text(encoding = "utf-8")
+    resume_start = RESUME_TRAINING_START.read_text(encoding = "utf-8")
     api = TRAIN_API.read_text(encoding = "utf-8")
 
-    assert actions.count("await prepareHfTokenForUse(") == 2
+    assert "prepareHfTokenForUse" not in actions
+    assert fresh_start.count("await prepareHfTokenForUse(") == 1
+    assert resume_start.count("await prepareHfTokenForUse(") == 1
     assert "prepareHfTokenForUse" not in api
 
     start_transport = api.split("export async function startTraining", 1)[1]
@@ -89,18 +110,292 @@ def test_training_start_prepares_token_once_before_transport():
     assert "body: JSON.stringify(payload)" in start_transport
     assert "hf_token: preparedToken.token" not in start_transport
 
-    fresh_start = actions.split(
-        "const startTrainingRun = useCallback", 1
-    )[1].split("const resumeTrainingRunFromHistory = useCallback", 1)[0]
-    resume_start = actions.split(
-        "const resumeTrainingRunFromHistory = useCallback", 1
+    resume_entrypoint = resume_start.split(
+        "export async function resumeTrainingRun", 1
+    )[1].split("type ResumeAttemptPhase", 1)[0]
+    assert resume_entrypoint.index("await prepareResumeHfToken(") < (
+        resume_entrypoint.index("submitResumeTrainingRun(")
+    )
+    resume_token = resume_start.split(
+        "async function prepareResumeHfToken", 1
+    )[1].split("async function confirmResumeRemoteCode", 1)[0]
+    assert "await prepareHfTokenForUse(payload.hf_token)" in resume_token
+    resume_transport = resume_start.split(
+        "async function submitResumeTrainingRun", 1
     )[1]
-    for flow in (fresh_start, resume_start):
-        assert flow.index("await prepareHfTokenForUse(") < flow.index(
-            "await startTraining(payload)"
-        )
+    assert "await startTraining(payload)" in resume_transport
+    assert resume_transport.index("attempt.enterTransport()") < (
+        resume_transport.index("await startTraining(payload)")
+    )
 
-    assert "const actionHfToken = preparedToken.token;" in fresh_start
-    assert fresh_start.count("hfToken: actionHfToken") == 3
-    assert "hf_token: actionHfToken" in fresh_start
-    assert "hfToken: getHfToken()" not in fresh_start
+    prepare_attempt = fresh_start.split(
+        "async function prepareAttemptHfToken", 1
+    )[1].split("async function prepareSelectedDataset", 1)[0]
+    submit_attempt = fresh_start.split(
+        "async function submitFreshTrainingRun", 1
+    )[1].split("async function checkSelectedDataset", 1)[0]
+    assert "await prepareHfTokenForUse(attempt.hfToken)" in prepare_attempt
+    assert "buildTrainingStartPayload(attempt.config)" in submit_attempt
+    assert "payload.hf_token = hfToken" in submit_attempt
+    assert submit_attempt.index("attempt.enterTransport()") < submit_attempt.index(
+        "await startTraining(payload)"
+    )
+
+
+def test_training_start_claims_runtime_before_first_await():
+    fresh_start = FRESH_TRAINING_START.read_text(encoding = "utf-8")
+    resume_start = RESUME_TRAINING_START.read_text(encoding = "utf-8")
+    runtime_store = TRAINING_RUNTIME_STORE.read_text(encoding = "utf-8")
+    start_runtime = TRAINING_START_RUNTIME.read_text(encoding = "utf-8")
+
+    entrypoint = fresh_start.split(
+        "export async function startFreshTrainingRun", 1
+    )[1].split("type AttemptHfTokenResult", 1)[0]
+    assert entrypoint.index("FreshTrainingStartAttempt.begin()") < entrypoint.index(
+        "await prepareAttemptHfToken(attempt)"
+    )
+
+    begin = fresh_start.split(
+        "static begin(): FreshTrainingStartAttempt | null", 1
+    )[1].split("get config(): TrainingConfigStore", 1)[0]
+    assert "tryAcquireTrainingStart()" in begin
+
+    claim = runtime_store.split("tryBeginStarting: () =>", 1)[1].split(
+        "setStarting:", 1
+    )[0]
+    assert "state.isStarting" in claim
+    assert "state.isTrainingRunning" in claim
+    assert "state.stopRequested" in claim
+    assert "return { isStarting: true }" in claim
+    assert "runtime.tryBeginStarting()" in start_runtime
+
+    resume_entrypoint = resume_start.split(
+        "export async function resumeTrainingRun", 1
+    )[1].split("type ResumeAttemptPhase", 1)[0]
+    assert resume_entrypoint.index("ResumeTrainingStartAttempt.begin()") < (
+        resume_entrypoint.index("await loadResumePayload(runId, attempt)")
+    )
+    resume_begin = resume_start.split(
+        "static begin(): ResumeTrainingStartAttempt | null", 1
+    )[1].split("get hfToken(): string", 1)[0]
+    assert "tryAcquireTrainingStart()" in resume_begin
+
+
+def test_training_start_aborts_when_config_or_token_identity_changes():
+    source = FRESH_TRAINING_START.read_text(encoding = "utf-8")
+
+    identity_guard = source.split("abortIfInputsChanged(): boolean", 1)[1].split(
+        "enterTransport(): boolean", 1
+    )[0]
+    assert "useTrainingConfigStore.getState() === this.expectedConfig" in identity_guard
+    assert "getHfToken() === this.expectedHfToken" in identity_guard
+    assert "this.abortForChangedInputs()" in identity_guard
+    assert "TRAINING_SETUP_CHANGED_ERROR" in source
+
+    token_acceptance = source.split(
+        "acceptPreparedHfToken(token: string | null): boolean", 1
+    )[1].split("updateConfig(update: () => void): boolean", 1)[0]
+    assert "currentToken !== this.expectedHfToken" in token_acceptance
+    assert "currentToken !== nextToken" in token_acceptance
+    assert "useHfTokenStore.getState().setToken(nextToken)" in token_acceptance
+
+
+def test_anonymous_token_decision_does_not_erase_a_replacement_token():
+    source = CONFIRM_TOKEN.read_text(encoding = "utf-8")
+    anonymous = source.split('if (decision === "anonymous")', 1)[1].split(
+        'if (decision === "replace")', 1
+    )[0]
+
+    assert "const tokenStore = useHfTokenStore.getState()" in anonymous
+    assert "if (tokenStore.token === normalized)" in anonymous
+    assert "tokenStore.clearToken()" in anonymous
+
+
+def test_accepted_training_start_survives_runtime_resync_failure():
+    source = FRESH_TRAINING_START.read_text(encoding = "utf-8")
+    runtime = TRAINING_START_RUNTIME.read_text(encoding = "utf-8")
+    submit = source.split("async function submitFreshTrainingRun", 1)[1].split(
+        "async function checkSelectedDataset", 1
+    )[0]
+
+    accepted = source.split(
+        "settleAccepted(jobId: string, message: string)", 1
+    )[1].split("private abortForChangedInputs", 1)[0]
+    assert accepted.index('this.phase = "finished"') < accepted.index(
+        "settleAcceptedTrainingStart("
+    )
+    assert "return attempt.settleAccepted(response.job_id, response.message)" in submit
+    settle = runtime.split("export async function settleAcceptedTrainingStart", 1)[1]
+    assert "if (!isTrainingStartLeaseActive(lease))" in settle
+    assert "await cancelSupersededTrainingStart(jobId)" in settle
+    assert settle.index(".setStartQueued(") < settle.index("await Promise.allSettled([")
+    assert "Promise.resolve().then(emitTrainingRunsChanged)" in settle
+    assert "syncTrainingRuntimeFromBackend()" in settle
+
+    cleanup = runtime.split(
+        "async function resetSupersededBackendJob", 1
+    )[1].split("export async function settleAcceptedTrainingStart", 1)[0]
+    assert "await stopTraining(false, { expectedJobId: jobId })" in cleanup
+    assert "await resetTraining({ expectedJobId: jobId })" in cleanup
+    assert "resetRuntime()" not in cleanup
+    assert "syncTrainingRuntimeFromBackend().catch(() => undefined)" in cleanup
+    assert cleanup.index("await resetTraining(") < cleanup.index(
+        "await syncTrainingRuntimeFromBackend()"
+    )
+
+    resume = RESUME_TRAINING_START.read_text(encoding = "utf-8")
+    assert "attempt.settleAccepted(response.job_id, response.message)" in resume
+
+
+def test_superseded_start_cleanup_scopes_both_backend_mutations():
+    runtime = TRAINING_START_RUNTIME.read_text(encoding = "utf-8")
+    api = TRAIN_API.read_text(encoding = "utf-8")
+
+    cleanup = runtime.split(
+        "async function resetSupersededBackendJob", 1
+    )[1].split("export async function settleAcceptedTrainingStart", 1)[0]
+    assert "cancelSupersededTrainingStart(jobId: string)" in runtime
+    assert "stopTraining(false, { expectedJobId: jobId })" in cleanup
+    assert "resetTraining({ expectedJobId: jobId })" in cleanup
+
+    body_builder = api.split("function scopedTrainingBody", 1)[1].split(
+        "export async function stopTraining", 1
+    )[0]
+    assert "expected_job_id" in body_builder
+    assert "scope.expectedJobId" in body_builder
+    reset_transport = api.split("export async function resetTraining", 1)[1].split(
+        "export async function getTrainingStatus", 1
+    )[0]
+    assert "const hasScope = scope?.expectedJobId !== undefined" in reset_transport
+    assert "body: scopedTrainingBody({}, scope)" in reset_transport
+
+
+def test_resume_training_preserves_consent_and_error_contracts():
+    source = RESUME_TRAINING_START.read_text(encoding = "utf-8")
+
+    consent = source.split(
+        "async function confirmResumeRemoteCode", 1
+    )[1].split("async function submitResumeTrainingRun", 1)[0]
+    assert "await confirmRemoteCodeIfNeeded({" in consent
+    assert "trustRemoteCode = true" in consent
+    assert "approvedRemoteCodeFingerprint = fingerprint" in consent
+    assert "payload.trust_remote_code = trustRemoteCode" in consent
+    assert (
+        "payload.approved_remote_code_fingerprint = approvedRemoteCodeFingerprint"
+        in consent
+    )
+
+    failure = source.split("fail(error: unknown): false", 1)[1].split(
+        "async function loadResumePayload", 1
+    )[0]
+    assert 'this.phase === "preflight" && !this.isPreflightActive()' in failure
+    assert "normalizeTrainingStartError(rawMessage)" in failure
+    assert "this.cancel(safeMessage)" in failure
+    assert 'toast.error("Could not resume training"' in failure
+    assert "description: safeMessage" in failure
+
+
+def test_resume_token_identity_is_guarded_through_preflight():
+    source = RESUME_TRAINING_START.read_text(encoding = "utf-8")
+
+    attempt = source.split("class ResumeTrainingStartAttempt", 1)[1].split(
+        "async function loadResumePayload", 1
+    )[0]
+    assert "this.expectedHfToken = getHfToken()" in attempt
+    assert "getHfToken() !== this.expectedHfToken" in attempt
+    assert "this.cancel(TRAINING_SETUP_CHANGED_ERROR)" in attempt
+
+    load = source.split("async function loadResumePayload", 1)[1].split(
+        "function getResumeHfToken", 1
+    )[0]
+    assert load.index("await getTrainingRun(runId)") < load.index(
+        "attempt.isPreflightActive()"
+    )
+
+    token = source.split("async function prepareResumeHfToken", 1)[1].split(
+        "async function confirmResumeRemoteCode", 1
+    )[0]
+    assert token.index("await prepareHfTokenForUse(payload.hf_token)") < token.index(
+        "attempt.acceptPreparedHfToken(preparedToken.token)"
+    )
+
+    consent = source.split("async function confirmResumeRemoteCode", 1)[1].split(
+        "async function submitResumeTrainingRun", 1
+    )[0]
+    after_consent = consent.split("await confirmRemoteCodeIfNeeded({", 1)[1]
+    assert "attempt.isPreflightActive()" in after_consent
+
+    transport = source.split("async function submitResumeTrainingRun", 1)[1]
+    assert transport.index("attempt.enterTransport()") < transport.index(
+        "await startTraining(payload)"
+    )
+
+
+def test_accepted_training_stop_survives_runtime_resync_failure():
+    actions = TRAINING_ACTIONS.read_text(encoding = "utf-8")
+    stop = actions.split("const stopTrainingRun = useCallback", 1)[1]
+    stop = stop.split("const resumeTrainingRunFromHistory", 1)[0]
+    transport = stop.split(
+        "await syncTrainingRuntimeFromBackend().catch(() => undefined)", 1
+    )[0]
+    failure = stop.split("const message =", 1)[1].split(
+        "await syncTrainingRuntimeFromBackend()", 1
+    )[0]
+
+    assert "const expectedJobId = runtimeStore.jobId" in transport
+    assert "const expectedResetGeneration = runtimeStore.resetGeneration" in transport
+    assert "expectedJobId ? { expectedJobId } : undefined" in transport
+    assert "currentRuntime.jobId !== expectedJobId" in transport
+    assert "currentRuntime.resetGeneration !== expectedResetGeneration" in transport
+    assert "currentRuntime.setStopRequested(false)" in failure
+    assert "currentRuntime.setRuntimeError(message)" in failure
+    assert "await syncTrainingRuntimeFromBackend().catch(() => undefined)" in stop
+    assert "currentRuntime.jobId === expectedJobId" in stop
+    assert "currentRuntime.resetGeneration === expectedResetGeneration" in stop
+
+
+def test_superseded_training_reset_preserves_the_current_runtime():
+    actions = TRAINING_ACTIONS.read_text(encoding = "utf-8")
+    dismiss = actions.split("const dismissTrainingRun = useCallback", 1)[1]
+    dismiss = dismiss.split("return {", 1)[0]
+    guarded_reset = dismiss.split("const response = await resetTraining(", 1)[1].split(
+        "currentRuntime.resetRuntime()", 1
+    )[0]
+
+    assert "const expectedJobId = runtimeStore.jobId" in dismiss
+    assert "const expectedResetGeneration = runtimeStore.resetGeneration" in dismiss
+    assert "expectedJobId ? { expectedJobId } : undefined" in guarded_reset
+    assert 'response.status === "superseded"' in guarded_reset
+    assert "currentRuntime.jobId !== expectedJobId" in guarded_reset
+    assert "currentRuntime.resetGeneration !== expectedResetGeneration" in guarded_reset
+    assert "await syncTrainingRuntimeFromBackend().catch(() => undefined)" in guarded_reset
+    assert "return;" in guarded_reset
+
+
+def test_cancel_invalidates_fresh_and_resume_preflight_leases():
+    fresh = FRESH_TRAINING_START.read_text(encoding = "utf-8")
+    actions = TRAINING_ACTIONS.read_text(encoding = "utf-8")
+    resume = RESUME_TRAINING_START.read_text(encoding = "utf-8")
+    runtime_store = TRAINING_RUNTIME_STORE.read_text(encoding = "utf-8")
+    start_runtime = TRAINING_START_RUNTIME.read_text(encoding = "utf-8")
+
+    stop_setter = runtime_store.split("setStopRequested: (value)", 1)[1].split(
+        "setHydrating:", 1
+    )[0]
+    assert "value && !state.stopRequested" in stop_setter
+    assert "state.resetGeneration + 1" in stop_setter
+    assert "currentRuntime.setStopRequested(false)" in actions
+
+    lease_guard = start_runtime.split(
+        "export function isTrainingStartLeaseActive", 1
+    )[1].split("export function releaseTrainingStart", 1)[0]
+    assert "runtime.resetGeneration === lease.resetGeneration" in lease_guard
+    assert "runtime.isStarting" in lease_guard
+    assert "!runtime.stopRequested" in lease_guard
+    assert "isTrainingStartLeaseActive(this.lease)" in fresh
+
+    pretransport = resume.split("async function submitResumeTrainingRun", 1)[0]
+    assert pretransport.count("isTrainingStartLeaseActive(this.lease)") >= 2
+    transport = resume.split("async function submitResumeTrainingRun", 1)[1]
+    assert "attempt.enterTransport()" in transport
+    assert "attempt.settleAccepted(" in transport
