@@ -28,8 +28,9 @@ pandas==2.3.3
 # 15.1.0 is the newest release with a macosx_13_0 arm64 wheel; 17+ moves to cp311-abi3
 # at macosx_14_0 too.
 #
-# Last macOS-default package needing a toolchain: the other sdist-only ones there are
-# pure Python, hence allowlisted in .github/scripts/clean-machine-assert.sh instead.
+# The remaining sdist-only macOS defaults are pure Python, hence allowlisted in
+# .github/scripts/clean-machine-assert.sh instead; cryptography below is the one
+# other package that would compile.
 av<16
 
 # cryptography 49.0.0 dropped the macosx_10_9_universal2 wheel for arm64-only, so
