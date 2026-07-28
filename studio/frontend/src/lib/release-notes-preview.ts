@@ -14,9 +14,17 @@ const INDENTED_CODE_INDENT = 4;
 
 // At most three leading spaces: deeper is indented code, not a fence.
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
-const HEADING = /^#{1,6}\s+/;
+// An ATX heading needs an ASCII space or tab after the marker, the same rule
+// _HEADING_PATTERN uses. `\s` also matches a non-breaking space, so prose
+// beginning `## Important change` with one read as a heading and was dropped,
+// leaving a prose-only release with no collapsed preview at all.
+const HEADING = /^#{1,6}[ \t]+/;
 const BULLET = /^(?:[-*+]|(\d{1,9})[.)])[ \t]+(.*)$/;
-const BLOCKQUOTE = /^\s*>\s?/;
+// At most three leading spaces, as everywhere else: deeper is indented code.
+// Accepting any run let `    > - sample output` inside a code sample shed its
+// indentation and enter the collector, so a release with no real bullets
+// showed code as its summary.
+const BLOCKQUOTE = /^ {0,3}>[ \t]?/;
 // "- - -" and "***" are horizontal rules, not bullets and not notes.
 const THEMATIC_BREAK =
   /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
@@ -74,7 +82,7 @@ const HTML_BLOCK_TAGS = new Set(
 );
 // Only spaces and tabs may follow a closing fence.
 const NON_SPACE = /[^ \t]/;
-const HEADING_LINE = /^ {0,3}#{1,6}(?:\s|$)/;
+const HEADING_LINE = /^ {0,3}#{1,6}(?:[ \t]|$)/;
 const COMMENT_BLOCK_OPEN = /^ {0,3}<!--/;
 const COMMENT_OPEN = "<!--";
 const COMMENT_CLOSE = "-->";

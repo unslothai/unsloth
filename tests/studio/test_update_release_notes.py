@@ -1282,3 +1282,20 @@ def test_link_resolver_reads_comments_before_fences():
     # Commented ranges join the code spans, so a link the reader cannot see is
     # not rewritten either.
     assert "const spans = [...codeSpans(masked), ...comments].sort(" in links
+
+
+def test_preview_heading_and_quote_markers_follow_the_backend_rule():
+    """An ATX heading needs an ASCII space or tab after the marker, which is what
+    _HEADING_PATTERN requires; `\\s` also matches a non-breaking space, so prose
+    beginning "## Important change" with one was read as a heading and dropped,
+    leaving a prose-only release with no collapsed preview at all. A blockquote
+    marker takes at most three leading spaces for the same reason every other
+    marker here does: accepting any run let an indented code sample containing
+    "> - sample output" shed its indentation and be shown as the summary."""
+    src = PREVIEW.read_text(encoding = "utf-8")
+    assert "const HEADING = /^#{1,6}[ \\t]+/;" in src
+    assert "const HEADING_LINE = /^ {0,3}#{1,6}(?:[ \\t]|$)/;" in src
+    assert "const BLOCKQUOTE = /^ {0,3}>[ \\t]?/;" in src
+    # The backend rule this mirrors.
+    backend = (BACKEND / "utils" / "changelog.py").read_text(encoding = "utf-8")
+    assert "^ {0,3}##[ \\t]+" in backend
