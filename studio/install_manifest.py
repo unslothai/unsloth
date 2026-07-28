@@ -33,6 +33,13 @@ MANIFEST_SCHEMA = 1
 # Canonical truthy set for UNSLOTH_NO_TORCH, matching install.ps1 / install.sh.
 NO_TORCH_TRUTHY: Tuple[str, ...] = ("1", "true", "yes", "on")
 
+# Companion to the no_torch manifest key, next to setup.ps1's .unsloth-studio-owned.
+# The manifest is deliberately dropped before every dependency pass, so it cannot
+# answer for a run killed mid-pass; this marker is written before that pass and
+# outlives it. Without it an interrupted GGUF-only install reads as a stale venv on
+# the next update, which then tries to delete the venv it is running out of.
+NO_TORCH_MARKER = ".unsloth-no-torch"
+
 # Fingerprinted into the manifest, relative to studio/backend/requirements/.
 # Editing one (a --local install) invalidates it and forces a dependency pass.
 TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
@@ -169,22 +176,49 @@ def read_manifest(root: Optional[Path] = None) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
+def no_torch_marker_path(root: Optional[Path] = None) -> Path:
+    return (root or venv_root()) / NO_TORCH_MARKER
+
+
+def set_no_torch_marker(no_torch: bool, root: Optional[Path] = None) -> None:
+    """Record the mode outside the completion manifest. Never raises.
+
+    Written before the dependency pass so an interrupted install still knows what
+    it was building. Removed when torch is wanted, so migrating out of no-torch
+    does not leave a stale marker behind.
+    """
+    path = no_torch_marker_path(root)
+    try:
+        if no_torch:
+            path.write_text("", encoding = "utf-8")
+        else:
+            path.unlink(missing_ok = True)
+    except OSError:
+        pass
+
+
 def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
     """The mode this venv was installed with, or None when unknown.
 
-    None means the manifest is missing, unreadable, or predates the key. Callers
-    must fall back to their own detection on None and never to False, so an older
-    install is not silently switched out of no-torch mode.
+    None means nothing recorded it: no manifest key and no marker. Callers must
+    fall back to their own detection on None and never to False, so an install
+    made before either existed is not silently switched out of no-torch mode.
     """
     manifest = read_manifest(root)
-    if manifest is None:
-        return None
-    value = manifest.get("no_torch")
-    if isinstance(value, bool):
-        return value
-    # Tolerate a hand-edited manifest that used a string.
-    if isinstance(value, str):
-        return value.strip().lower() in NO_TORCH_TRUTHY
+    if manifest is not None:
+        value = manifest.get("no_torch")
+        if isinstance(value, bool):
+            return value
+        # Tolerate a hand-edited manifest that used a string.
+        if isinstance(value, str):
+            return value.strip().lower() in NO_TORCH_TRUTHY
+    # No manifest (dropped before the dependency pass, or the install was killed
+    # during it) or one predating the key: the marker is the durable answer.
+    try:
+        if no_torch_marker_path(root).exists():
+            return True
+    except OSError:
+        pass
     return None
 
 

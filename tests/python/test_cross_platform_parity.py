@@ -834,10 +834,21 @@ class TestNoTorchPersistenceParity:
         text = STACK_PY.read_text(encoding = "utf-8")
         assert "no_torch = NO_TORCH" in text
         assert "install_manifest.recorded_no_torch()" in text
+        # Written after the manifest is dropped and before the dependency pass, so
+        # a pass killed part-way still leaves the mode recorded somewhere.
+        assert text.index("install_manifest.set_no_torch_marker(NO_TORCH)") > text.index(
+            "if not install_manifest.remove_manifest():"
+        )
+
+    def test_both_sides_use_the_same_marker_filename(self):
+        manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
+        assert 'NO_TORCH_MARKER = ".unsloth-no-torch"' in manifest
+        assert '$NoTorchMarker = ".unsloth-no-torch"' in SETUP_PS1.read_text(encoding = "utf-8")
 
     def test_setup_ps1_recovers_the_mode_when_no_env_var_is_exported(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert "function Get-PersistedNoTorch" in text
+        assert "function Set-PersistedNoTorch" in text
         # setup.ps1 drops the manifest before running install_python_stack.py, so
         # the resolved answer has to be handed down through the environment.
         assert text.index("Get-PersistedNoTorch -VenvPath $VenvDir") < text.index(

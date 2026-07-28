@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """Regression tests for the native Windows setup path honouring --no-torch."""
 
 from __future__ import annotations
@@ -75,7 +78,9 @@ def _no_torch_resolution_script() -> str:
     production text the way a hand-copied predicate would.
     """
     source = SETUP_PS1.read_text(encoding = "utf-8")
-    helper = _extract(r"function Get-PersistedNoTorch \{.*?\n\}\n", source)
+    getter = _extract(r"function Get-PersistedNoTorch \{.*?\n\}\n", source)
+    setter = _extract(r"function Set-PersistedNoTorch \{.*?\n\}\n", source)
+    marker = _extract(r'\$NoTorchMarker = "[^"]+"', source)
     resolution = _extract(
         r"\$NoTorchMode = \$env:UNSLOTH_NO_TORCH -match .*?"
         r'\$env:UNSLOTH_NO_TORCH = if \(\$NoTorchMode\) \{ "true" \} else \{ "false" \}',
@@ -84,44 +89,60 @@ def _no_torch_resolution_script() -> str:
     # substep is defined ~1600 lines earlier; the resolution only uses it to log.
     return (
         "function substep { param($a, $b) }\n"
-        f"{helper}\n{resolution}\n"
+        f"{marker}\n{getter}\n{setter}\n{resolution}\n"
         'Write-Output "$NoTorchMode|$env:UNSLOTH_NO_TORCH"'
     )
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize(
-    ("env_value", "manifest", "expected"),
+    ("env_value", "manifest", "marker", "expected"),
     [
-        # `unsloth studio update` exports nothing, so the manifest decides. This is
-        # the case that made a GGUF-only venv look stale and get deleted.
-        (None, {"no_torch": True}, "True|true"),
-        (None, {"no_torch": False}, "False|false"),
-        # Manifests written before the key existed, and unreadable ones, keep the
-        # pre-existing behaviour rather than switching an install to no-torch.
-        (None, {}, "False|false"),
-        (None, None, "False|false"),
-        (None, "{not json", "False|false"),
-        # An explicit env var always wins over the recorded mode, in both
-        # directions, so `install.ps1 --no-torch` and a later migration out of
-        # no-torch both work regardless of what the venv used to be.
-        ("false", {"no_torch": True}, "False|false"),
-        ("1", {"no_torch": False}, "True|true"),
-        # Every spelling install.ps1 / install.sh accept collapses to one value.
-        ("true", None, "True|true"),
-        ("yes", None, "True|true"),
-        ("ON", None, "True|true"),
-        (" true ", None, "True|true"),
-        ("0", None, "False|false"),
-        ("", {"no_torch": True}, "True|true"),
+        # The completion manifest is dropped before every dependency pass, so an
+        # install killed mid-pass leaves only the marker. Without it that venv is
+        # read as stale and the next update tries to delete itself.
+        (None, None, True, "True|true"),
+        (None, {}, True, "True|true"),
+        # An explicit no_torch key still wins, so migrating out of no-torch is not
+        # blocked by a marker an earlier run left behind.
+        (None, {"no_torch": False}, True, "False|false"),
+        (None, {"no_torch": True}, False, "True|true"),
+    ]
+    + [
+        (env_value, manifest, False, expected)
+        for env_value, manifest, expected in [
+            # `unsloth studio update` exports nothing, so the manifest decides. This is
+            # the case that made a GGUF-only venv look stale and get deleted.
+            (None, {"no_torch": True}, "True|true"),
+            (None, {"no_torch": False}, "False|false"),
+            # Manifests written before the key existed, and unreadable ones, keep the
+            # pre-existing behaviour rather than switching an install to no-torch.
+            (None, {}, "False|false"),
+            (None, None, "False|false"),
+            (None, "{not json", "False|false"),
+            # An explicit env var always wins over the recorded mode, in both
+            # directions, so `install.ps1 --no-torch` and a later migration out of
+            # no-torch both work regardless of what the venv used to be.
+            ("false", {"no_torch": True}, "False|false"),
+            ("1", {"no_torch": False}, "True|true"),
+            # Every spelling install.ps1 / install.sh accept collapses to one value.
+            ("true", None, "True|true"),
+            ("yes", None, "True|true"),
+            ("ON", None, "True|true"),
+            (" true ", None, "True|true"),
+            ("0", None, "False|false"),
+            ("", {"no_torch": True}, "True|true"),
+        ]
     ],
 )
-def test_no_torch_mode_survives_a_studio_update(tmp_path, env_value, manifest, expected):
+def test_no_torch_mode_survives_a_studio_update(tmp_path, env_value, manifest, marker, expected):
     venv_dir = tmp_path / "unsloth_studio"
     venv_dir.mkdir()
     if manifest is not None:
         payload = manifest if isinstance(manifest, str) else json.dumps(manifest)
         (venv_dir / "unsloth_install_manifest.json").write_text(payload, encoding = "utf-8")
+    if marker:
+        (venv_dir / ".unsloth-no-torch").write_text("", encoding = "utf-8")
 
     env = os.environ.copy()
     env.pop("UNSLOTH_NO_TORCH", None)
@@ -144,3 +165,7 @@ def test_no_torch_mode_survives_a_studio_update(tmp_path, env_value, manifest, e
     # The exported value matters as much as $NoTorchMode: install_python_stack.py
     # drops the manifest before it runs, so the env var is all it has to go on.
     assert result.stdout.strip() == expected
+
+    # The resolution also persists what it decided, so the next run survives an
+    # install killed between here and the manifest being rewritten.
+    assert (venv_dir / ".unsloth-no-torch").exists() is expected.startswith("True")

@@ -2661,6 +2661,8 @@ $VenvDir = Join-Path $StudioHome "unsloth_studio"
 # the canonical comparison so an override pointing at the legacy default
 # still behaves like a default install.
 $StudioOwnedMarker = ".unsloth-studio-owned"
+# Mirrors install_manifest.NO_TORCH_MARKER; keep the two in step.
+$NoTorchMarker = ".unsloth-no-torch"
 $LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
 $_studioHomeCanon = $StudioHome
 if (Test-Path -LiteralPath $_studioHomeCanon -PathType Container) {
@@ -2704,22 +2706,45 @@ function Mark-StudioOwned {
     } catch {}
 }
 
-# The mode this venv was installed with, from install_python_stack.py's manifest.
-# install.ps1 exports UNSLOTH_NO_TORCH for its own run only, so a later
-# `unsloth studio update` (which exports nothing) has no other way to know. A
-# manifest written before the key existed, or none at all, reads as "install
-# torch" -- the pre-existing behavior.
+# The mode this venv was installed with. install.ps1 exports UNSLOTH_NO_TORCH for
+# its own run only, so a later `unsloth studio update` (which exports nothing) has
+# no other way to know. Two sources, because the completion manifest is dropped
+# before every dependency pass and so cannot answer for a run killed mid-pass:
+# the manifest key first, then .unsloth-no-torch, which outlives the pass. Neither
+# present reads as "install torch" -- the pre-existing behavior.
 function Get-PersistedNoTorch {
     param([Parameter(Mandatory = $true)][string]$VenvPath)
     $manifestPath = Join-Path $VenvPath "unsloth_install_manifest.json"
-    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return $false }
-    try {
-        $payload = Get-Content -LiteralPath $manifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
-    } catch {
-        return $false
+    if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+        $payload = $null
+        try {
+            $payload = Get-Content -LiteralPath $manifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        } catch {
+            $payload = $null
+        }
+        if ($null -ne $payload -and $null -ne $payload.no_torch) {
+            return ("$($payload.no_torch)" -match '^\s*(?i:true|1|yes|on)\s*$')
+        }
     }
-    if ($null -eq $payload) { return $false }
-    return ("$($payload.no_torch)" -match '^\s*(?i:true|1|yes|on)\s*$')
+    return (Test-Path -LiteralPath (Join-Path $VenvPath $NoTorchMarker) -PathType Leaf)
+}
+
+# Written before anything that could be interrupted, and cleared when torch is
+# wanted so migrating out of no-torch leaves nothing stale behind.
+function Set-PersistedNoTorch {
+    param(
+        [Parameter(Mandatory = $true)][string]$VenvPath,
+        [Parameter(Mandatory = $true)][bool]$NoTorch
+    )
+    if (-not (Test-Path -LiteralPath $VenvPath -PathType Container)) { return }
+    $markerPath = Join-Path $VenvPath $NoTorchMarker
+    try {
+        if ($NoTorch) {
+            [System.IO.File]::WriteAllText($markerPath, "")
+        } elseif (Test-Path -LiteralPath $markerPath -PathType Leaf) {
+            Remove-Item -LiteralPath $markerPath -Force -ErrorAction Stop
+        }
+    } catch {}
 }
 
 # Stale-venv detection: if the venv exists but its torch flavor no longer
@@ -2739,6 +2764,9 @@ if (-not $NoTorchMode -and [string]::IsNullOrWhiteSpace($env:UNSLOTH_NO_TORCH)) 
         substep "no-torch install detected -- keeping this environment GGUF-only." "Yellow"
     }
 }
+# Persist before the torch install and the dependency pass below, either of which
+# can be interrupted; install_python_stack.py refreshes the same marker.
+Set-PersistedNoTorch -VenvPath $VenvDir -NoTorch $NoTorchMode
 # install_python_stack.py drops the manifest before its dependency pass, so it
 # cannot repeat the lookup above; hand it the resolved answer. This also collapses
 # every accepted spelling to one value both sides parse identically.

@@ -2886,6 +2886,11 @@ def install_python_stack() -> int:
         )
         return 1
 
+    # The manifest just went away, so record the mode in a marker that survives a
+    # pass killed part-way. Otherwise the next update sees neither, reads the
+    # absent torch as a stale venv, and tries to delete the running environment.
+    install_manifest.set_no_torch_marker(NO_TORCH)
+
     # 1. Try uv for faster installs (before pip upgrade -- uv venvs don't
     #    include pip by default).
     USE_UV = _bootstrap_uv()
