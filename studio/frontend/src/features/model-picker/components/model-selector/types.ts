@@ -58,6 +58,16 @@ export interface ModelPickTarget {
    * Defaults to isGguf where a caller does not know.
    */
   apiLoadable?: boolean;
+  /**
+   * Identity the saved settings are keyed by, when that is not what loads.
+   *
+   * A repo cached outside the active HF cache loads by snapshot path, while the
+   * picker and the auto-switch index keep its settings under the repo id.
+   * Keying the save by the path would strand the settings where no load looks
+   * for them. Probes that need something openable (the chat template, the GGUF
+   * header) keep using `id`. Defaults to `id`.
+   */
+  configId?: string;
   meta: ModelSelectorChangeMeta;
 }
 

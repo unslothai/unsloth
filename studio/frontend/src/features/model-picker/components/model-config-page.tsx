@@ -611,8 +611,12 @@ export function ModelConfigPage({
   const loadedMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
   );
+  // What the settings are stored under, which is not always what loads: see
+  // ModelPickTarget.configId. Every read, write and mirror below uses it; the
+  // probes keep target.id, since they have to open the model.
+  const configId = target.configId ?? target.id;
   const resolveInitial = () => {
-    const resolved = resolveInitialConfig(target.id, target.ggufVariant);
+    const resolved = resolveInitialConfig(configId, target.ggufVariant);
     if (loadedConfig) {
       return { config: loadedConfig, remembered: resolved.remembered };
     }
@@ -873,13 +877,13 @@ export function ModelConfigPage({
     const evicted: { modelId: string; ggufVariant: string | null }[] = [];
     if (remember) {
       saveFailed = !savePerModelConfig(
-        target.id,
+        configId,
         target.ggufVariant,
         effectiveRuntimeConfig,
         evicted,
       );
     } else {
-      saveFailed = !deletePerModelConfig(target.id, target.ggufVariant);
+      saveFailed = !deletePerModelConfig(configId, target.ggufVariant);
     }
     // Mirror to the server so an OpenAI-compatible API request that loads this
     // model gets these exact settings, not app defaults. Best-effort and
@@ -895,7 +899,7 @@ export function ModelConfigPage({
     // list that no API request can ever apply.
     if (!saveFailed && (target.apiLoadable ?? target.isGguf)) {
       syncModelOverride(
-        target.id,
+        configId,
         target.ggufVariant,
         remember ? effectiveRuntimeConfig : null,
       );

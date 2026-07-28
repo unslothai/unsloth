@@ -109,7 +109,22 @@ import type {
   ModelsTab,
   ResourceTypeFilter,
   SelectedModelView,
+  SelectedResourceRef,
 } from "./types";
+
+// What per-model settings are keyed by, which is not always what the loader is
+// handed: a repo cached outside the active HF cache loads by snapshot path,
+// while the chat picker (toCachedModelRepo) and the auto-switch index both key
+// it by repo id. Saving under the path would leave the settings where no other
+// load looks for them. Local rows are keyed by their load id in both places, so
+// they keep it.
+function modelConfigIdentity(
+  kind: SelectedModelView["kind"],
+  resource: SelectedResourceRef,
+): string {
+  if (kind !== "cache") return resource.runId;
+  return resource.repoId ?? resource.runId;
+}
 
 const MODELS_TAB_STORAGE_KEY = "unsloth.hub.modelsTab";
 const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
@@ -1192,7 +1207,10 @@ export function ModelsPage() {
     (opts: ModelLoadOptions, isDownloaded: boolean) => {
       if (!selectedModel) return;
       const runId = selectedModel.resource.runId;
-      const resolvedConfig = resolveInitialConfig(runId, opts.ggufVariant);
+      const resolvedConfig = resolveInitialConfig(
+        modelConfigIdentity(selectedModel.kind, selectedModel.resource),
+        opts.ggufVariant,
+      );
       const rememberedConfig = resolvedConfig.remembered
         ? resolvedConfig.config
         : null;
@@ -1304,9 +1322,13 @@ export function ModelsPage() {
       if (settingsOpenSeq.current !== openSeq) {
         return;
       }
-      const leaf = id.split(/[\\/]/).filter(Boolean).pop() ?? id;
+      // A repo in a previous cache loads by snapshot path, so `id` ends in the
+      // revision hash; name the row by what the user calls it.
+      const configId = row.kind === "cache" ? row.repoId : id;
+      const leaf = configId.split(/[\\/]/).filter(Boolean).pop() ?? configId;
       setSettingsTarget({
         id,
+        configId,
         displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf,
         ggufVariant,
         isGguf: row.isGguf,
@@ -1389,9 +1411,14 @@ export function ModelsPage() {
       // still be pending, and it must not land on top of this one.
       settingsOpenSeq.current += 1;
       const id = selectedModel.resource.runId;
-      const leaf = id.split(/[\\/]/).filter(Boolean).pop() ?? id;
+      const configId = modelConfigIdentity(
+        selectedModel.kind,
+        selectedModel.resource,
+      );
+      const leaf = configId.split(/[\\/]/).filter(Boolean).pop() ?? configId;
       setSettingsTarget({
         id,
+        configId,
         displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf,
         ggufVariant,
         isGguf: selectedModel.isGguf,

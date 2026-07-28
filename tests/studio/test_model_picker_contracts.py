@@ -840,3 +840,37 @@ def test_ollama_models_are_not_advertised_as_api_loadable():
     assert (
         "Ollama's\n    scanner is skipped" in backend or "scanner is skipped" in backend
     ), "the rule this mirrors"
+
+
+def test_cached_repo_settings_are_keyed_by_the_repo_id():
+    """A repo cached outside the active HF cache reports load_id = the snapshot
+    path (hub/services/cache_inventory.py), while the chat picker and the
+    auto-switch index key it by repo_id. Keying the Hub's settings by the load id
+    saved them where no other load looks, so they silently never applied."""
+    config_page = " ".join(
+        _read("features/model-picker/components/model-config-page.tsx").split()
+    )
+    assert "const configId = target.configId ?? target.id;" in config_page
+    for call in (
+        "resolveInitialConfig(configId, target.ggufVariant)",
+        "savePerModelConfig( configId, target.ggufVariant,",
+        "deletePerModelConfig(configId, target.ggufVariant)",
+        "syncModelOverride( configId, target.ggufVariant,",
+    ):
+        assert call in config_page, call
+    # The probes have to open the model, so they keep the load id.
+    assert "useDefaultChatTemplate( target.id," in config_page
+    assert "model_path: target.id," in config_page
+
+    hub = " ".join(_read("features/hub/hub-page.tsx").split())
+    assert 'if (kind !== "cache") return resource.runId;' in hub
+    assert "return resource.repoId ?? resource.runId;" in hub
+    # Both openers and the Hub's own load resolve through it.
+    assert hub.count("modelConfigIdentity(") == 3
+    assert 'const configId = row.kind === "cache" ? row.repoId : id;' in hub
+    assert hub.count("configId,") >= 2
+
+    backend = (
+        WORKDIR / "studio" / "backend" / "hub" / "tests" / "test_model_services.py"
+    ).read_text(encoding = "utf-8")
+    assert 'fields["load_id"] == str(snapshot)' in backend, "the rule this mirrors"
