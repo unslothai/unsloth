@@ -571,7 +571,7 @@ echo "=== Apple Silicon x86_64 (Rosetta) venv rebuild ==="
 # Extract the real guard block from install.sh so we exercise the shipped logic
 # (comment header down to its column-0 closing fi).
 _GUARD_FILE=$(mktemp)
-awk '/Guard against two independent Apple Silicon venv problems/{f=1} f{print} f&&/^fi$/{exit}' \
+awk '/independent Apple Silicon venv/{f=1} f{print} f&&/^fi$/{exit}' \
     "$INSTALL_SH" > "$_GUARD_FILE"
 
 if [ ! -s "$_GUARD_FILE" ]; then
