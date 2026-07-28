@@ -1214,7 +1214,6 @@ class FastModel(FastBaseModel):
             if is_dist:
                 device_map = distributed_device_map
 
-
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
                 raise ImportError(
