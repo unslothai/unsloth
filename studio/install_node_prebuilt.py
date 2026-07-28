@@ -707,7 +707,12 @@ def existing_install_usable(install_dir: Path, host: HostInfo) -> bool:
     return npm_major is not None and npm_major >= NPM_MIN_MAJOR
 
 
-def _replace_with_retry(src: Path, dst: Path, *, attempts: int = 8) -> None:
+def _replace_with_retry(
+    src: Path,
+    dst: Path,
+    *,
+    attempts: int = 8,
+) -> None:
     """os.replace, retried against transient Windows sharing violations.
 
     Renaming a directory on Windows fails with WinError 5 (access denied) or WinError 32
@@ -733,8 +738,10 @@ def _replace_with_retry(src: Path, dst: Path, *, attempts: int = 8) -> None:
             transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
             if not transient or attempt == attempts - 1:
                 raise
-            log(f"rename blocked ({exc.winerror}), retrying in {delay:.2f}s "
-                f"-- a scanner is likely still holding the extracted files")
+            log(
+                f"rename blocked ({exc.winerror}), retrying in {delay:.2f}s "
+                f"-- a scanner is likely still holding the extracted files"
+            )
             time.sleep(delay)
             delay = min(delay * 2, 4.0)
 

@@ -800,7 +800,7 @@ def test_replace_gives_up_and_reports_the_real_error(monkeypatch, tmp_path):
     monkeypatch.setattr(M.os, "replace", lambda s, d: (_ for _ in ()).throw(_oserror(5)))
     # A scanner that never lets go must still surface as a failure, not a hang.
     with pytest.raises(OSError) as excinfo:
-        M._replace_with_retry(tmp_path / "src", tmp_path / "dst", attempts=3)
+        M._replace_with_retry(tmp_path / "src", tmp_path / "dst", attempts = 3)
     assert excinfo.value.winerror == 5
 
 
@@ -842,8 +842,8 @@ def test_swap_into_place_survives_a_transient_lock(monkeypatch, tmp_path):
     monkeypatch.setattr(M.os, "name", "nt")
     monkeypatch.setattr(M.time, "sleep", lambda _s: None)
     extracted = tmp_path / "extracted" / "node-v24"
-    extracted.mkdir(parents=True)
-    (extracted / "marker.txt").write_text("node", encoding="utf-8")
+    extracted.mkdir(parents = True)
+    (extracted / "marker.txt").write_text("node", encoding = "utf-8")
     install_dir = tmp_path / "node"
 
     real_replace = os.replace
@@ -857,4 +857,4 @@ def test_swap_into_place_survives_a_transient_lock(monkeypatch, tmp_path):
 
     monkeypatch.setattr(M.os, "replace", flaky)
     M._swap_into_place(extracted, install_dir)
-    assert (install_dir / "marker.txt").read_text(encoding="utf-8") == "node"
+    assert (install_dir / "marker.txt").read_text(encoding = "utf-8") == "node"
