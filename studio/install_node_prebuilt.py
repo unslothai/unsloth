@@ -715,19 +715,11 @@ def _replace_with_retry(
 ) -> None:
     """os.replace, retried against transient Windows sharing violations.
 
-    Renaming a directory on Windows fails with WinError 5 (access denied) or WinError 32
-    (sharing violation) while ANY process still holds a handle inside it -- and Defender
-    or the search indexer routinely does, having just been handed ~50MB of newly
-    extracted files. Observed in CI as
-
-        [node-prebuilt] unexpected error: [WinError 5] Access is denied:
-          '...\\node.staging-xs4_599k\\extracted\\node-v24.18.0-win-x64' -> '...\\node'
-
-    on a FRESH install, where there was no existing directory to conflict with. The
-    scanner releases the handles within a second or two, so a bounded backoff turns a
-    hard install failure into a pause. POSIX renames do not hit this, and a non-sharing
-    error (a real permissions problem, a cross-device move) still raises immediately
-    rather than being retried into a long stall.
+    A Windows directory rename fails with WinError 5/32 while any process holds a handle
+    inside it, and Defender or the indexer routinely does after ~50MB of fresh extraction
+    (seen in CI on a FRESH install, with no existing directory to conflict with). Handles
+    clear in a second or two, so a bounded backoff turns a failure into a pause. Other
+    errors raise immediately rather than stalling on a real problem.
     """
     delay = 0.25
     for attempt in range(attempts):

@@ -765,10 +765,8 @@ def test_pinned_target_wrong_sha_not_kept_when_download_fails(tmp_path: Path, mo
 
 
 # ── _replace_with_retry: transient Windows sharing violations ──────────────────
-# Renaming the extracted Node tree into place failed a real CI install with WinError 5
-# on a FRESH install (no existing directory to conflict with): a Windows directory
-# rename fails while any process holds a handle inside it, and Defender or the search
-# indexer routinely does, having just been handed ~50MB of new files.
+# A real CI install failed with WinError 5 renaming the extracted Node tree into place,
+# on a FRESH install: a scanner still held handles inside the new files.
 
 
 def _oserror(winerror: int) -> OSError:
@@ -797,15 +795,14 @@ def test_replace_gives_up_and_reports_the_real_error(monkeypatch, tmp_path):
     monkeypatch.setattr(M.os, "name", "nt")
     monkeypatch.setattr(M.time, "sleep", lambda _s: None)
     monkeypatch.setattr(M.os, "replace", lambda s, d: (_ for _ in ()).throw(_oserror(5)))
-    # A scanner that never lets go must still surface as a failure, not a hang.
+    # A scanner that never lets go must surface as a failure, not a hang.
     with pytest.raises(OSError) as excinfo:
         M._replace_with_retry(tmp_path / "src", tmp_path / "dst", attempts = 3)
     assert excinfo.value.winerror == 5
 
 
 def test_replace_does_not_retry_a_genuine_error(monkeypatch, tmp_path):
-    # A real permissions problem or cross-device move must fail immediately, not stall
-    # for seconds of retries that hide the cause.
+    # A cross-device move or real permissions problem must fail immediately.
     monkeypatch.setattr(M.os, "name", "nt")
     monkeypatch.setattr(M.time, "sleep", lambda _s: None)
     calls = {"n": 0}

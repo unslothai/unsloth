@@ -454,8 +454,7 @@ class TestKnown211SetParity:
             "$_pinCuLeaf" not in text
         ), "install.ps1 must bound companions on every index (no cu-family exemption)"
         # The bounded companions must actually be passed to the install command.
-        # The specs are built into a list and splatted, so check both halves: the
-        # bounded list is constructed, and it reaches the install command.
+        # Specs are splatted, so check both halves: the list is built, and it is passed.
         assert (
             '$_torchSpecs = @("torch>=2.4,<2.11.0", $_pinVisionSpec, $_pinAudioSpec)' in text
         ), "install.ps1 custom-pin install must build the bounded spec list"
@@ -708,9 +707,13 @@ class TestPinnedIndexClearsUvEnvParity:
         assert (
             "if ($TorchIndexPinned -and -not (Test-CudaFamilyLeaf $CuTag)) {" in text
         ), "the custom-leaf trio bounds must be gated on a pinned non-cu-family leaf"
+        # Specs are splatted, so check both halves: the list is built, and it is passed.
         assert (
-            "Fast-Install $cudaTorchSpec $cudaVisionSpec $cudaAudioSpec" in text
-        ), "setup.ps1's CUDA branch must install via the bounded spec variables"
+            "$_cudaTrio = @($cudaTorchSpec, $cudaVisionSpec, $cudaAudioSpec)" in text
+        ), "setup.ps1's CUDA branch must build the trio from the bounded spec variables"
+        assert (
+            "Fast-Install @_cudaTrio @cudaForce" in text
+        ), "setup.ps1's CUDA branch must install the trio it built"
 
     def test_setup_ps1_bounds_pinned_cpu_torch(self):
         """setup.ps1's CPU branch must bound the trio under an explicit pin (parity with

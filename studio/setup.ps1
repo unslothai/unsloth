@@ -887,13 +887,10 @@ function Test-VCRedistInstalled {
     return $false
 }
 
-# Install the VC++ 2015-2022 runtime if missing (non-fatal; usually a no-op).
-#
-# A RUNTIME redistributable, not the MSVC compiler: prebuilt llama-server and torch
-# link against it, so unlike CMake and VS Build Tools (detection-only) it must be
-# present or torch fails to import on a missing VCRUNTIME140.dll. winget is absent on
-# LTSC/Server/managed images, where this silently did nothing yet still reported
-# success, so fall back to the official direct download.
+# Install the VC++ 2015-2022 runtime if missing (non-fatal; usually a no-op). A runtime,
+# not the MSVC compiler: torch fails to import without VCRUNTIME140.dll, so unlike CMake
+# and VS Build Tools it must really be present. winget is absent on LTSC/Server/managed
+# images, where this silently did nothing, hence the direct-download fallback.
 function Ensure-VCRedist {
     if (Test-VCRedistInstalled) { step "vcredist" "present"; return }
     Write-Host "Microsoft Visual C++ Redistributable (2015-2022) is missing; the prebuilt llama.cpp and PyTorch need it. Installing the runtime..." -ForegroundColor Yellow
@@ -904,8 +901,8 @@ function Ensure-VCRedist {
         } catch { substep "VCRedist install failed: $($_.Exception.Message)" "Yellow" }
     }
     if (-not (Test-VCRedistInstalled)) {
-        # Microsoft's evergreen link for the current 2015-2022 runtime. /quiet
-        # /norestart so it never blocks or reboots an unattended install.
+        # Evergreen link for the current 2015-2022 runtime; /quiet /norestart so it
+        # never blocks or reboots an unattended install.
         $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
         $url = "https://aka.ms/vs/17/release/vc_redist.$arch.exe"
         $dst = Join-Path ([System.IO.Path]::GetTempPath()) "vc_redist.$arch.exe"
@@ -1679,14 +1676,24 @@ if ($LongPathsEnabled) {
 # ============================================
 # 1b. Git (only required for --local / source installs)
 # ============================================
-# Git was fatal here as "required by pip for git+https:// deps and by npm". Neither
-# holds on the consumer path: the unsloth-zoo git+https URL is STUDIO_LOCAL_INSTALL
-# only, node is a pinned prebuilt that never touches system npm, and the frontend
-# lockfile has no VCS deps. That blocked clean Windows boxes without winget over an
-# unused tool, the same over-requirement as the macOS Xcode CLT gate.
+# Git was fatal here as "required by pip and npm", but the consumer path uses neither:
+# the unsloth-zoo git+https URL is STUDIO_LOCAL_INSTALL only, node is a pinned prebuilt,
+# and the frontend lockfile has no VCS deps. That blocked clean no-winget Windows boxes.
 $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 if (-not $HasGit) {
+    # Fatal only where git is actually used: --local, and the llama.cpp source build,
+    # which git clones in Phase 4 after the multi-GB toolchain is already installed. A
+    # local llama.cpp dir overrides those opt-ins; the automatic source fallback after a
+    # failed prebuilt download is not knowable here, so it stays non-fatal.
     $gitNeeded = ($env:STUDIO_LOCAL_INSTALL -eq '1')
+    if (-not $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR) {
+        $_prForce = if ($env:UNSLOTH_LLAMA_PR_FORCE) { $env:UNSLOTH_LLAMA_PR_FORCE } else { $DefaultLlamaPrForce }
+        $_llamaSrc = $DefaultLlamaSource -replace '\.git$', ''
+        if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq '1') { $gitNeeded = $true }
+        if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_LLAMA_PR)) { $gitNeeded = $true }
+        if (-not [string]::IsNullOrWhiteSpace($_prForce)) { $gitNeeded = $true }
+        if ($_llamaSrc -ne "https://github.com/ggml-org/llama.cpp") { $gitNeeded = $true }
+    }
     Write-Host "Git not found -- attempting install via winget..." -ForegroundColor Yellow
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
@@ -1698,11 +1705,10 @@ if (-not $HasGit) {
     }
     if (-not $HasGit) {
         if ($gitNeeded) {
-            # --local installs unsloth-zoo from git+https://, so here it really is fatal.
-            Write-Host "[ERROR] Git is required for --local installs but could not be installed." -ForegroundColor Red
-            Write-Host "        --local installs unsloth-zoo from git+https://github.com/unslothai/unsloth-zoo." -ForegroundColor Red
+            Write-Host "[ERROR] Git is required for --local and llama.cpp source-build installs but could not be installed." -ForegroundColor Red
+            Write-Host "        --local clones unsloth-zoo, and a source build clones llama.cpp." -ForegroundColor Red
             Write-Host "        Install Git from https://git-scm.com/download/win and re-run." -ForegroundColor Red
-            Exit-SetupFailure "Git is required for --local installs but could not be installed"
+            Exit-SetupFailure "Git is required for --local / source-build installs but could not be installed"
         }
         step "git" "not found (not required)" "Yellow"
         substep "Unsloth installs prebuilt binaries and wheels, so git is not needed."
@@ -3255,18 +3261,32 @@ $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR
 # goes through $ROCmIndexUrl; on failure the fallback uses the CPU index, not the ROCm pin.
 $TorchInstallIndexUrl = if ($ROCmIndexUrl) { "$PyTorchWhlBase/cpu" } elseif ($PinnedTorchIndexUrl) { $PinnedTorchIndexUrl } else { "$PyTorchWhlBase/$CuTag" }
 
+# Windows on ARM has win_arm64 torch and torchvision wheels but no torchaudio on any
+# index, so every branch below drops it. Ask the interpreter uv resolves for, not
+# PROCESSOR_ARCHITECTURE, which describes the host process.
+$_setupPlatform = ""
+try {
+    $_setupPlatform = (& python -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
+} catch { $_setupPlatform = "" }
+$WinArm64NoAudio = ($_setupPlatform -eq "win-arm64")
+if ($WinArm64NoAudio) { substep "windows on arm: skipping torchaudio (no win_arm64 wheel upstream)" }
+
 $ROCmCpuFallback = $false
 if ($ROCmIndexUrl) {
     substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."
     if ($ROCmTorchSpec -ne "torch") {
         substep "  enforcing $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec (known _grouped_mm bug in older wheels)" "Cyan"
     }
+    # Every trio here is built above the verbose branch: a splat assigned inside it is
+    # unset on the other path.
+    $_rocmTrio = @($ROCmTorchSpec, $ROCmVisionSpec, $ROCmAudioSpec)
+    if ($WinArm64NoAudio) { $_rocmTrio = @($ROCmTorchSpec, $ROCmVisionSpec) }
     if ($script:UnslothVerbose) {
-        Fast-Install $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec --force-reinstall --index-url $ROCmIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+        Fast-Install @_rocmTrio --force-reinstall --index-url $ROCmIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec --force-reinstall --index-url $ROCmIndexUrl | Out-String
+        $output = Fast-Install @_rocmTrio --force-reinstall --index-url $ROCmIndexUrl | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
@@ -3302,19 +3322,8 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
         $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
         $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
     }
-    # Windows on ARM has torch and torchvision win_arm64 wheels but no torchaudio, so
-    # a bare trio aborts here even though install.ps1 already dropped it upstream. Same
-    # interpreter test, since the host's PROCESSOR_ARCHITECTURE is not what uv resolves
-    # for.
-    $_setupPlatform = ""
-    try {
-        $_setupPlatform = (& python -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
-    } catch { $_setupPlatform = "" }
     $_torchTrio = @($cpuTorchSpec, $cpuVisionSpec, $cpuAudioSpec)
-    if ($_setupPlatform -eq "win-arm64") {
-        substep "windows on arm: skipping torchaudio (no win_arm64 wheel upstream)"
-        $_torchTrio = @($cpuTorchSpec, $cpuVisionSpec)
-    }
+    if ($WinArm64NoAudio) { $_torchTrio = @($cpuTorchSpec, $cpuVisionSpec) }
     if ($script:UnslothVerbose) {
         Fast-Install @_torchTrio @cpuForce --index-url $TorchInstallIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
         $torchInstallExit = $LASTEXITCODE
@@ -3347,12 +3356,16 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
         $cudaVisionSpec = "torchvision>=0.19,<0.26.0"
         $cudaAudioSpec = "torchaudio>=2.4,<2.11.0"
     }
+    # A custom pin whose leaf is not cpu (a corporate /simple mirror) lands an ARM64 host
+    # here, so this branch drops torchaudio too.
+    $_cudaTrio = @($cudaTorchSpec, $cudaVisionSpec, $cudaAudioSpec)
+    if ($WinArm64NoAudio) { $_cudaTrio = @($cudaTorchSpec, $cudaVisionSpec) }
     if ($script:UnslothVerbose) {
-        Fast-Install $cudaTorchSpec $cudaVisionSpec $cudaAudioSpec @cudaForce --index-url $TorchInstallIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+        Fast-Install @_cudaTrio @cudaForce --index-url $TorchInstallIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install $cudaTorchSpec $cudaVisionSpec $cudaAudioSpec @cudaForce --index-url $TorchInstallIndexUrl | Out-String
+        $output = Fast-Install @_cudaTrio @cudaForce --index-url $TorchInstallIndexUrl | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
