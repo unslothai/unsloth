@@ -395,6 +395,75 @@ _SEPARATOR_CHARS = frozenset("".join(_SHELL_SEPARATORS))
 # of shlex's punctuation_chars, so the masked text splits into exactly the same
 # words and the two token lists line up index for index.
 _QUOTED_SEPARATOR_MARK = "\x00"
+# The characters shlex's punctuation_chars mode glues into one token. It emits a
+# RUN of them as a single word, so an operator spelled out of two (`|&`, `;;`,
+# `;&`, `&&(`) arrives as a token no membership test on _SHELL_SEPARATORS ever
+# matched, and the sed screen read straight past the end of the command:
+# `sed '1e rm -f victim' input |& grep -e safe` took grep's `-e safe` for the
+# real script and dropped the payload (verified: it runs rm). `{` and `}` are
+# NOT here -- they are not punctuation_chars, so find's `{}` placeholder stays
+# an ordinary word rather than becoming an end-of-command marker.
+_OPERATOR_TOKEN_CHARS = frozenset(";&|()`")
+# One shell redirection, as the lexer hands it over. The target may be glued on
+# (`2>/dev/null`) or be the next token (`> out.txt`); `&` splits off under
+# punctuation_chars, so `2>&1` arrives as three.
+_REDIRECTION_RE = re.compile(r"^(?:\d+|&)?(?:<<<|<<-|<<|<>|>>|>\||<&|>&|<|>)")
+
+
+def _looks_like_separator(token: str) -> bool:
+    """Whether a lexed token is a shell operator rather than a word a command
+    receives. Either one of the known separators, or a RUN of the characters
+    punctuation_chars groups -- bash builds `|&`, `;;` and `;&` out of exactly
+    those, and nothing else can reach a command unquoted."""
+    if token in _SHELL_SEPARATORS:
+        return True
+    return bool(token) and not (set(token) - _OPERATOR_TOKEN_CHARS)
+
+
+def _redirection_span(tokens: "list[str]", index: int) -> "tuple[int, ...]":
+    """The token indexes one shell redirection starting at ``index`` occupies,
+    or ``()`` when no redirection starts there.
+
+    The shell performs a redirection and REMOVES it before the command sees its
+    arguments, so leaving the words in place made the redirection itself look
+    like the command's first operand: `sed </dev/null '1e rm -f victim' input`
+    took `</dev/null` for the script and never read the payload behind it, and
+    `> out.txt rm -rf victim` put `out.txt` at command position so the `rm`
+    landed in argument position and reached the blocklist as nothing. Both were
+    verified to run for real.
+
+    A detached target is claimed only when it is an ordinary word: an operator
+    or an option there means the line is malformed, and consuming it would hide
+    whatever follows for no gain.
+    """
+    if tokens[index] == "&" and index + 1 < len(tokens) and tokens[index + 1][:1] in "<>":
+        # `&>out.txt` redirects both streams, but `&` is a punctuation_chars word
+        # of its own, so the two arrive split and the `&` read as a background
+        # operator ended the command early: `sed &>out.txt '1e touch MARKER'
+        # input` really runs the payload while nothing was screened past the
+        # `&`. Only a redirection may follow -- `echo hi & rm -rf victim` keeps
+        # its separator, and its rm keeps being blocked.
+        tail = _redirection_span(tokens, index + 1)
+        return (index, *tail) if tail else ()
+    match = _REDIRECTION_RE.match(tokens[index])
+    if not match:
+        return ()
+    if tokens[index][match.end() :]:
+        return (index,)  # target glued on: `2>/dev/null`, `>out.txt`
+    span = [index]
+    nxt = index + 1
+    if nxt >= len(tokens):
+        return tuple(span)
+    if tokens[nxt] in {"&", "|"}:
+        # The fd-duplicating `2>&1` and the force-clobber `>|out.txt` both hold
+        # a punctuation_chars character between the operator and its target, so
+        # each arrives as three tokens and the middle one was read as the end of
+        # the command (verified: both really run the payload behind them).
+        span.append(nxt)
+        nxt += 1
+    if nxt < len(tokens) and not tokens[nxt].startswith("-") and not _looks_like_separator(tokens[nxt]):
+        span.append(nxt)
+    return tuple(span)
 
 # `[` and `[[` are the test builtins, not patterns.
 _TEST_BUILTINS = frozenset({"[", "[[", "]", "]]"})
@@ -496,6 +565,7 @@ def _sed_invocation(
     start: int,
     limit: int = _MAX_SED_ARG_SCAN,
     stops: "frozenset[int]" = frozenset(),
+    skips: "frozenset[int]" = frozenset(),
 ) -> "tuple[str, bool]":
     """The sed invocation whose command word sits at ``start``, as
     ``(program, scan_overflowed)``.
@@ -547,6 +617,15 @@ def _sed_invocation(
     this sed belongs to, since the next predicate's words are not sed's. Working
     from indexes rather than from the token TEXT is what tells those apart from
     a sed operand that merely spells one (see _exec_scan_layout).
+
+    The indexes in ``skips`` are a redirection the shell performs and removes,
+    so sed never receives those words: `sed </dev/null '1e touch MARKER' input`
+    really runs the payload, while reading `</dev/null` as the first positional
+    made the script look like an input FILE and the screen came back empty. A
+    skip is honoured only where sed would take the word as an argument -- a
+    pending -e/-f/-l value is consumed first, so a script that merely begins
+    with `<` or `>` is still read (sed rejects such a script anyway; no sed
+    command or address starts with either character).
     """
     programs: "list[str]" = []
     first_positional = ""
@@ -572,6 +651,8 @@ def _sed_invocation(
                 programs.append(token)
             value_pending = ""
             continue
+        if start + 1 + offset in skips:
+            continue  # a redirection: the shell removed it before sed ran
         if not end_of_options and token == "--":
             end_of_options = True
             continue
@@ -888,7 +969,7 @@ def _quoted_separator_indexes(text: str, tokens: "list[str]", punctuation: str) 
     check rather than assumed, and anything unexpected reports nothing, which
     leaves the caller with the plain text-matching behaviour.
     """
-    if not any(token in _SHELL_SEPARATORS for token in tokens):
+    if not any(_looks_like_separator(token) for token in tokens):
         # Nothing to tell apart: skip the quote walk and the second lex.
         return frozenset()
     if _QUOTED_SEPARATOR_MARK in text:
@@ -911,15 +992,15 @@ def _quoted_separator_indexes(text: str, tokens: "list[str]", punctuation: str) 
     return frozenset(
         index
         for index, token in enumerate(marked)
-        if _QUOTED_SEPARATOR_MARK in token and tokens[index] in _SHELL_SEPARATORS
+        if _QUOTED_SEPARATOR_MARK in token and _looks_like_separator(tokens[index])
     )
 
 
 def _exec_scan_layout(
     tokens: "list[str]", quoted: "frozenset[int]"
-) -> "tuple[frozenset[int], frozenset[int]]":
-    """``(exec-flag indexes, invocation-stop indexes)`` for one token list, in a
-    single left-to-right pass.
+) -> "tuple[frozenset[int], frozenset[int], frozenset[int]]":
+    """``(exec-flag indexes, invocation-stop indexes, redirection indexes)`` for
+    one token list, in a single left-to-right pass.
 
     An exec-flag index is a `find`/`fd` option whose following words are a
     COMMAND that tool runs. find's own spellings are taken wherever they appear,
@@ -940,30 +1021,46 @@ def _exec_scan_layout(
     `find . -exec sed '1e rm -f victim' {} + -exec grep -e safe {} +` still
     stops at the `+` instead of letting the second predicate's `-e safe` replace
     the real script.
+
+    A redirection index is a word the shell consumes and never hands to the
+    command (see _redirection_span). They are taken FIRST, so the `&` in
+    `sed 2>&1 '1e rm -f victim' input` is read as part of that redirection
+    rather than as the end of the invocation -- which is what let the payload
+    behind it through.
     """
     exec_flags: "set[int]" = set()
     stops: "set[int]" = set()
+    redirects: "set[int]" = set()
     forwarding = False  # a find/fd command word is in scope
     in_action = False  # inside its `-exec CMD ...` action
-    for index, token in enumerate(tokens):
-        if token in _SHELL_SEPARATORS and index not in quoted:
-            stops.add(index)
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        span = _redirection_span(tokens, index)
+        if span:
+            redirects.update(span)
+            index = span[-1] + 1
+            continue
+        here = index
+        index += 1
+        if _looks_like_separator(token) and here not in quoted:
+            stops.add(here)
             forwarding = in_action = False
             continue
         if in_action and token in _FIND_EXEC_TERMINATORS:
-            stops.add(index)
+            stops.add(here)
             in_action = False
             continue
         flag = token.split("=", 1)[0]
         if flag in _FIND_EXEC_FLAGS or (
             forwarding and not in_action and flag in _EXEC_FORWARD_FLAGS
         ):
-            exec_flags.add(index)
+            exec_flags.add(here)
             in_action = True
             continue
         if os.path.basename(token.strip(";&|()`{}")).lower() in _EXEC_FLAG_FORWARDING_COMMANDS:
             forwarding = True
-    return frozenset(exec_flags), frozenset(stops)
+    return frozenset(exec_flags), frozenset(stops), frozenset(redirects)
 
 
 def _find_blocked_commands(command: str) -> set[str]:
@@ -1003,7 +1100,9 @@ def _find_blocked_commands(command: str) -> set[str]:
     quoted_separators = (
         _quoted_separator_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
     )
-    exec_flag_indexes, invocation_stops = _exec_scan_layout(tokens, quoted_separators)
+    exec_flag_indexes, invocation_stops, redirect_indexes = _exec_scan_layout(
+        tokens, quoted_separators
+    )
 
     def _token_basename(tok: str) -> str:
         # Strip glued-on meta-chars (`rm;`) so the basename still matches `rm`.
@@ -1086,8 +1185,15 @@ def _find_blocked_commands(command: str) -> set[str]:
         if prefix_pending and token == "-a":
             skip_operand = True
             continue
+        if token_index in redirect_indexes:
+            # The shell performs the redirection and hands the command neither
+            # word, so command position is unchanged by it: `> out.txt rm -rf
+            # victim` and `2>&1 rm -rf victim` both really delete, while reading
+            # `out.txt` (and the `1`) as the command word left the `rm` behind
+            # it in argument position and the blocklist came back empty.
+            continue
         # A keyword only separates where a COMMAND may start (see below).
-        if token in _SHELL_SEPARATORS or (token in _SHELL_KEYWORDS_AS_SEP and expect_command):
+        if _looks_like_separator(token) or (token in _SHELL_KEYWORDS_AS_SEP and expect_command):
             expect_command = True
             prefix_pending = False
             prefix_command = ""
@@ -1253,7 +1359,9 @@ def _find_blocked_commands(command: str) -> set[str]:
     for i in sorted(set(sed_indexes)):
         # A script --sandbox / --posix stops sed compiling is already left out of
         # the program (_sed_invocation), so a name inside one is never blocked.
-        program, scan_overflowed = _sed_invocation(tokens, i, sed_limit, invocation_stops)
+        program, scan_overflowed = _sed_invocation(
+            tokens, i, sed_limit, invocation_stops, redirect_indexes
+        )
         if scan_overflowed:
             # The script sits past the scan window, so an empty program here is
             # only ignorance: block the sed itself rather than let an
@@ -5009,6 +5117,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         # only once a sed is actually reached, so a line without one never pays
         # for the quote walk it needs (_quoted_separator_indexes).
         sed_stops: "frozenset[int] | None" = None
+        sed_skips: "frozenset[int]" = frozenset()
         if find_like and any(t.split("=", 1)[0] in _HIGH_RISK_FIND_FLAGS for t in tokens):
             return True
         # GNU tar runs --checkpoint-action=exec=CMD at each checkpoint, hiding a
@@ -5387,12 +5496,13 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                         # A quoted `';'` / `'+'` operand is a sed FILE, not the
                         # end of the invocation; reading it as one dropped the
                         # `-e` script behind it (`sed -n ';' -e '1e rm -f
-                        # victim' input` really runs rm).
-                        sed_stops = _exec_scan_layout(
+                        # victim' input` really runs rm). A redirection is the
+                        # other way round: those words never reach sed at all.
+                        _flags, sed_stops, sed_skips = _exec_scan_layout(
                             tokens, _quoted_separator_indexes(text, tokens, ";&|()")
-                        )[1]
+                        )
                     sed_program, sed_overflowed = _sed_invocation(
-                        tokens, _tok_idx, sed_scan_limit, sed_stops
+                        tokens, _tok_idx, sed_scan_limit, sed_stops, sed_skips
                     )
                     if sed_overflowed:
                         # The script was pushed past the scan window by padding

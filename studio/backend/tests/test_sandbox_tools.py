@@ -806,6 +806,49 @@ class TestBashBlocklistPosition:
         assert self._find()("sed -n ';' -e '1,3p' input") == set()
         assert self._find()("sed -n '+' -e '1,3p' input") == set()
 
+    def test_redirection_is_not_the_sed_script(self):
+        # The shell performs a redirection and removes it, so sed never receives
+        # those words -- but they stayed in the token list and the first of them
+        # was taken for the positional script, which left the real one unread.
+        # Verified on GNU sed 4.9 with a `touch MARKER` payload: every form
+        # below creates MARKER.
+        assert "rm" in self._find()("sed </dev/null '1e rm -f victim' input")
+        assert "rm" in self._find()("sed < /dev/null '1e rm -f victim' input")
+        assert "rm" in self._find()("sed > out.txt '1e rm -f victim' input")
+        assert "rm" in self._find()("sed 2>/dev/null '1e rm -f victim' input")
+        assert "rm" in self._find()("sed 2>&1 '1e rm -f victim' input")
+        assert "rm" in self._find()("sed &>out.txt '1e rm -f victim' input")
+        assert "rm" in self._find()("sed >|out.txt '1e rm -f victim' input")
+        assert "rm" in self._find()("sed <<< 'aaa' '1e rm -f victim'")
+        # A redirection may also precede a command word outright, and reading
+        # its target as that word left the real command in argument position:
+        # `> out.txt rm -rf victim` and `2>&1 rm -rf victim` both really delete.
+        assert "rm" in self._find()("> out.txt rm -rf victim")
+        assert "rm" in self._find()("2>&1 rm -rf victim")
+        assert "rm" in self._find()("echo hi; >log rm -rf victim")
+        # A bare `&` is still a separator wherever a redirection does not follow.
+        assert "rm" in self._find()("echo hi & rm -rf victim")
+        # Ordinary redirected work stays silent.
+        assert self._find()("sed -n '1,3p' input > out.txt") == set()
+        assert self._find()("sed 's/a/b/g' input 2>/dev/null") == set()
+        assert self._find()("sed -n '1,3p' < input") == set()
+
+    def test_compound_operator_ends_the_sed_scan(self):
+        # shlex's punctuation_chars emits a RUN of operator characters as one
+        # token, so bash's `|&` arrived as a word no separator test matched and
+        # the scan ran on into the NEXT command -- taking `grep -e safe` for the
+        # real script and dropping the payload. Verified: the line runs rm.
+        assert "rm" in self._find()("sed '1e rm -f victim' input |& grep -e safe")
+        assert "rm" in self._find()("sed -n '1,3p' f |& sed -e '1e rm -f victim' g")
+        assert "rm" in self._find()("echo hi |& rm -rf victim")
+        # ...while a quoted one is a sed FILE operand and must not end it, the
+        # same way a quoted `';'` does not (`sed -n '|&' -e '1e rm -f victim'
+        # input` really runs rm: with -e present the operand is just a file).
+        assert "rm" in self._find()("sed -n '|&' -e '1e rm -f victim' input")
+        # Benign pipelines keep running silently.
+        assert self._find()("sed -n '1,3p' input |& grep -e safe") == set()
+        assert self._find()("grep -r pattern . |& head -5") == set()
+
     def test_fd_exec_flags_reach_the_child_command(self):
         # fd runs its `-x` / `-X` / `--exec` / `--exec-batch` child directly,
         # exactly as find runs an `-exec` one, but only find's own spellings

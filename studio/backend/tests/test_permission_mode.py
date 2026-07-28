@@ -1152,6 +1152,34 @@ def test_terminal_classifier(command, unsafe):
         # a BARE separator still ends the invocation, so the next command's
         # words are not read as more sed arguments
         ("sed -n '1,3p' input; grep -e safe input", False),
+        # --- prompt: a redirection is performed and REMOVED by the shell, so
+        # sed never receives those words. Leaving them in place made the first
+        # of them the positional script and the real one went unread. Verified
+        # on GNU sed 4.9: every form below creates MARKER with a `touch MARKER`
+        # payload ---
+        ("sed </dev/null '1e rm -f victim' input", True),
+        ("sed < /dev/null '1e rm -f victim' input", True),
+        ("sed > out.txt '1e rm -f victim' input", True),
+        ("sed 2>/dev/null '1e rm -f victim' input", True),
+        ("sed 2>&1 '1e rm -f victim' input", True),
+        ("sed &>out.txt '1e rm -f victim' input", True),
+        ("sed >|out.txt '1e rm -f victim' input", True),
+        ("sed <<< 'aaa' '1e rm -f victim'", True),
+        # --- run: the same redirections around ordinary stream editing ---
+        ("sed -n '1,3p' input > out.txt", False),
+        ("sed 's/a/b/g' input 2>/dev/null", False),
+        ("sed -n '1,3p' < input", False),
+        ("sed -n '1,3p' </dev/null input", False),
+        # --- prompt: punctuation_chars emits a RUN of operator characters as
+        # one token, so bash's `|&` matched no separator and the scan ran on
+        # into the next command, taking ITS `-e` value for the real script ---
+        ("sed '1e rm -f victim' input |& grep -e safe", True),
+        ("sed -n '1,3p' f |& sed -e '1e rm -f victim' g", True),
+        # ...while a quoted one is a sed FILE operand and must not end the scan
+        ("sed -n '|&' -e '1e rm -f victim' input", True),
+        # --- run: benign pipelines through the same operator ---
+        ("sed -n '1,3p' input |& grep -e safe", False),
+        ("grep -r pattern . |& head -5", False),
         # --- prompt: fd runs its -x / -X / --exec / --exec-batch child
         # directly, the same way find runs an -exec one ---
         ("fd -x sed '1e rm -f victim' {}", True),
