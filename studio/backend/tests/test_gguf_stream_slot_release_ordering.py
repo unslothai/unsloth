@@ -104,7 +104,11 @@ class _FailsMidStreamBackend(_OneSlotBackend):
 class _CancelledMidStreamBackend(_OneSlotBackend):
     """Cancelled by the user halfway through, the Stop-button path."""
 
-    def generate_chat_completion(self, cancel_event = None, **kwargs):
+    def generate_chat_completion(
+        self,
+        cancel_event = None,
+        **kwargs,
+    ):
         self.cancel_event = cancel_event
         try:
             yield "a"
@@ -148,9 +152,7 @@ def _build_app(monkeypatch, backend):
 
 
 def _request_body() -> bytes:
-    return json.dumps(
-        {"messages": [{"role": "user", "content": "hi"}], "stream": True}
-    ).encode()
+    return json.dumps({"messages": [{"role": "user", "content": "hi"}], "stream": True}).encode()
 
 
 def test_slot_is_free_before_the_done_frame_reaches_send(monkeypatch):
@@ -308,9 +310,9 @@ def test_cancelled_stream_keeps_the_slot_until_the_generator_is_closed(monkeypat
                     break
                 await asyncio.sleep(0.01)
             assert backend.cancel_event is not None and backend.cancel_event.is_set()
-            assert not backend.closed.is_set(), (
-                "test setup: the generator should still be open here"
-            )
+            assert (
+                not backend.closed.is_set()
+            ), "test setup: the generator should still be open here"
             assert _active_slots() == 1, (
                 "slot freed on a cancelled stream whose llama-server request is "
                 "still open; the next request would exceed the configured "
