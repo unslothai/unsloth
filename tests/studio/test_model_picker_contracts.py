@@ -778,7 +778,10 @@ def test_override_writes_are_ordered_per_model():
     # Folded, not literal: the backfill uses a legacy casing while a UI save
     # uses the normalized one, and the backend resolves both to one row, so
     # raw strings would open two queues for one model and race again.
-    assert "const key = modelOverrideKey( normalizeModelIdentity(modelId), normalizeGgufVariantIdentity(ggufVariant), );" in src
+    assert (
+        "const key = modelOverrideKey( normalizeModelIdentity(modelId), normalizeGgufVariantIdentity(ggufVariant), );"
+        in src
+    )
     # Chained on the settled tail, so one failed write cannot cancel the next.
     assert "previous .catch(() => {}) .then(() => sendModelOverride(" in src
     # Only the last writer clears the slot, or a queue still building loses order.
