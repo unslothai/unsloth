@@ -25,6 +25,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { PanelResizeHandle } from "@/components/ui/panel-resize-handle"
+import { useT } from "@/i18n"
 import { useIsMobile } from "@/hooks/use-mobile"
 import {
   SIDEBAR_WIDTH_DEFAULT,
@@ -54,6 +55,7 @@ type SidebarContextProps = {
   setPinned: (value: boolean) => void
   togglePinned: () => void
   width: number
+  storedWidth: number
   maxWidth: number
   setWidth: (value: number) => void
   resetWidth: () => void
@@ -91,7 +93,13 @@ function SidebarProvider({
 }) {
   const isMobile = useIsMobile()
   const [openMobile, setOpenMobile] = React.useState(false)
-  const { width, max: maxWidth, setWidth, resetWidth } = useSidebarWidth()
+  const {
+    width,
+    max: maxWidth,
+    stored: storedWidth,
+    setWidth,
+    resetWidth,
+  } = useSidebarWidth()
 
   const prevIsMobileRef = React.useRef(isMobile)
   React.useEffect(() => {
@@ -176,11 +184,12 @@ function SidebarProvider({
       setPinned,
       togglePinned,
       width,
+      storedWidth,
       maxWidth,
       setWidth,
       resetWidth,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, width, maxWidth, setWidth, resetWidth]
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, width, storedWidth, maxWidth, setWidth, resetWidth]
   )
 
   return (
@@ -344,8 +353,10 @@ function SidebarResizeHandle({
   className?: string
   side?: "left" | "right"
 }) {
-  const { open, toggleSidebar, width, maxWidth, setWidth, resetWidth } = useSidebar()
+  const { open, toggleSidebar, width, storedWidth, maxWidth, setWidth, resetWidth } =
+    useSidebar()
   const ref = React.useRef<HTMLDivElement>(null)
+  const t = useT()
 
   return (
     <div ref={ref} className="contents">
@@ -353,6 +364,7 @@ function SidebarResizeHandle({
         edge={side === "right" ? "left" : "right"}
         open={open}
         width={width}
+        stored={storedWidth}
         min={SIDEBAR_WIDTH_MIN}
         max={maxWidth}
         clamp={clampSidebarWidth}
@@ -370,8 +382,11 @@ function SidebarResizeHandle({
             ?.closest<HTMLElement>('[data-slot="sidebar-container"]')
             ?.getBoundingClientRect().width ?? SIDEBAR_WIDTH_MIN
         }
-        label="Resize or collapse sidebar"
-        toggleLabel="Expand sidebar"
+        label={t("shell.aria.resizeSidebar")}
+        toggleLabel={t("shell.aria.openSidebar")}
+        collapseHint={t("shell.resize.collapse")}
+        expandHint={t("shell.resize.expand")}
+        dragHint={t("shell.resize.drag")}
         shortcut="ModB"
         dataSlot="sidebar-resize-handle"
         className={className}

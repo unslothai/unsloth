@@ -28,10 +28,18 @@ export const ja = {
     product: "Unsloth Studio",
     accountMenu: "{name} のアカウントメニュー",
     updateAvailable: "アップデートが利用可能です",
+    resize: {
+      collapse: "クリックで折りたたむ",
+      expand: "クリックで展開",
+      drag: "ドラッグでサイズ変更",
+    },
     aria: {
       home: "Unsloth ホーム",
       closeSidebar: "サイドバーを閉じる",
       openSidebar: "サイドバーを開く",
+      resizeSidebar: "サイドバーのサイズ変更または折りたたみ",
+      resizeRunSettings: "実行設定のサイズ変更または閉じる",
+      openRunSettings: "実行設定を開く",
       chatOptions: "チャットオプション",
       runOptions: "実行オプション",
     },

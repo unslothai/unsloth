@@ -12,6 +12,8 @@ export type PanelWidthStore = {
   useWidth: () => {
     width: number;
     max: number;
+    /** The uncapped stored preference. */
+    stored: number;
     setWidth: (value: number) => void;
     resetWidth: () => void;
   };
@@ -65,16 +67,29 @@ export function createPanelWidthStore({
   let effectiveMax = maxWidth();
   const listeners = new Set<() => void>();
 
+  let lastStored = storedWidth;
+
   function recompute() {
     const nextWidth = clamp(storedWidth);
     const nextMax = maxWidth();
-    if (nextWidth === effectiveWidth && nextMax === effectiveMax) return;
+    if (
+      nextWidth === effectiveWidth &&
+      nextMax === effectiveMax &&
+      storedWidth === lastStored
+    ) {
+      return;
+    }
     effectiveWidth = nextWidth;
     effectiveMax = nextMax;
+    lastStored = storedWidth;
     listeners.forEach((cb) => cb());
   }
 
   function subscribe(cb: () => void) {
+    // With no subscribers there is no resize listener, so the cache can be
+    // stale after a resize on a route that hides every panel. Refresh first;
+    // useSyncExternalStore re-reads the snapshot right after subscribing.
+    recompute();
     listeners.add(cb);
     if (typeof window === "undefined") {
       return () => listeners.delete(cb);
@@ -112,9 +127,11 @@ export function createPanelWidthStore({
     const width = useSyncExternalStore(subscribe, () => effectiveWidth, () => fallback);
     // What the viewport actually allows right now, for aria-valuemax.
     const panelMax = useSyncExternalStore(subscribe, () => effectiveMax, () => max);
+    // The uncapped preference, so a capped drag can avoid lowering it.
+    const preference = useSyncExternalStore(subscribe, () => storedWidth, () => fallback);
     const setWidth = useCallback((value: number) => setWidthGlobal(value), []);
     const resetWidth = useCallback(() => setWidthGlobal(fallback), []);
-    return { width, max: panelMax, setWidth, resetWidth };
+    return { width, max: panelMax, stored: preference, setWidth, resetWidth };
   }
 
   return { clamp, useWidth };

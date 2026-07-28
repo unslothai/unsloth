@@ -29,6 +29,8 @@ export type PanelResizeHandleProps = {
   edge: "left" | "right"
   open: boolean
   width: number
+  /** Uncapped stored preference, so a capped drag does not lower it. */
+  stored: number
   min: number
   max: number
   clamp: (px: number) => number
@@ -42,6 +44,10 @@ export type PanelResizeHandleProps = {
   measure: () => number
   label: string
   toggleLabel: string
+  /** Translated tooltip copy; the caller owns the translation layer. */
+  collapseHint: string
+  expandHint: string
+  dragHint: string
   /** Shown in the tooltip when the panel has a toggle shortcut. */
   shortcut?: string
   dataSlot?: string
@@ -59,6 +65,7 @@ export function PanelResizeHandle({
   edge,
   open,
   width,
+  stored,
   min,
   max,
   clamp,
@@ -70,6 +77,9 @@ export function PanelResizeHandle({
   measure,
   label,
   toggleLabel,
+  collapseHint,
+  expandHint,
+  dragHint,
   shortcut,
   dataSlot = "panel-resize-handle",
   className,
@@ -79,6 +89,7 @@ export function PanelResizeHandle({
   const dragRef = React.useRef<DragState | null>(null)
   const [dragging, setDragging] = React.useState(false)
   const [hovered, setHovered] = React.useState(false)
+  const [focused, setFocused] = React.useState(false)
   const [isMacPlatform] = React.useState(() => getClientPlatform().includes("mac"))
   const hint = shortcut ? shortcut.replace("Mod", isMacPlatform ? "⌘" : "Ctrl+") : null
 
@@ -189,6 +200,10 @@ export function PanelResizeHandle({
     }
     // A drag below the minimum leaves the stored width alone.
     if (!open) return
+    // Capped: the visible edge is already at the cap, so an outward pull cannot
+    // express intent beyond it. Committing would silently lower the larger
+    // hidden preference. A deliberate inward drag still commits.
+    if (stored > max && rawRef.current >= max) return
     // Commit what was asked for, not the capped paint, so a drag on a narrow
     // window cannot shrink a larger stored preference. setWidth clamps.
     setWidth(rawRef.current)
@@ -211,6 +226,7 @@ export function PanelResizeHandle({
         if (event.key === outward) onToggle()
         return
       }
+      if (event.key === outward && stored > max && width >= max) return
       setWidth(width + (event.key === outward ? RESIZE_STEP : -RESIZE_STEP))
       return
     }
@@ -224,7 +240,7 @@ export function PanelResizeHandle({
   React.useEffect(() => endDrag, [endDrag])
 
   return (
-    <Tooltip open={hovered && !dragging}>
+    <Tooltip open={(hovered || focused) && !dragging}>
       <TooltipTrigger asChild>
         <button
           ref={ref}
@@ -233,9 +249,9 @@ export function PanelResizeHandle({
           data-dragging={dragging || undefined}
           aria-label={open ? label : toggleLabel}
           aria-orientation="vertical"
-          aria-valuenow={open ? width : min}
-          aria-valuemin={min}
-          aria-valuemax={max}
+          {...(open
+            ? { "aria-valuenow": width, "aria-valuemin": min, "aria-valuemax": max }
+            : {})}
           role="separator"
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
@@ -244,6 +260,8 @@ export function PanelResizeHandle({
           onKeyDown={handleKeyDown}
           onPointerEnter={() => setHovered(true)}
           onPointerLeave={() => setHovered(false)}
+          onFocus={(event) => setFocused(event.target.matches(":focus-visible"))}
+          onBlur={() => setFocused(false)}
           className={cn(
             "absolute inset-y-0 z-30 hidden w-2 touch-none select-none sm:block",
             edge === "left" ? "-left-1" : "-right-1",
@@ -257,6 +275,8 @@ export function PanelResizeHandle({
             "after:absolute after:inset-y-0 after:w-px after:bg-transparent after:transition-colors after:duration-150",
             edge === "left" ? "after:left-1" : "after:right-1",
             "hover:after:bg-sidebar-ring/25 data-dragging:after:bg-sidebar-ring/25",
+            // The app zeroes the native outline on buttons, so mark focus here.
+            "focus-visible:outline-none focus-visible:after:bg-sidebar-ring/60",
             className,
           )}
         />
@@ -268,10 +288,10 @@ export function PanelResizeHandle({
       >
         <span className="flex flex-col gap-px">
           <span>
-            {open ? "Click to collapse" : "Click to expand"}
+            {open ? collapseHint : expandHint}
             {hint ? ` ${hint}` : ""}
           </span>
-          <span className="opacity-70">Drag to resize</span>
+          <span className="opacity-70">{dragHint}</span>
         </span>
       </TooltipContent>
     </Tooltip>

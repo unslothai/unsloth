@@ -24,10 +24,18 @@ export const en = {
     product: "Unsloth Studio",
     accountMenu: "{name} account menu",
     updateAvailable: "Update available",
+    resize: {
+      collapse: "Click to collapse",
+      expand: "Click to expand",
+      drag: "Drag to resize",
+    },
     aria: {
       home: "Unsloth home",
       closeSidebar: "Close sidebar",
       openSidebar: "Open sidebar",
+      resizeSidebar: "Resize or collapse sidebar",
+      resizeRunSettings: "Resize or close run settings",
+      openRunSettings: "Open run settings",
       chatOptions: "Chat options",
       runOptions: "Run options",
     },

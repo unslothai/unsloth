@@ -27,10 +27,18 @@ export const ar = {
     product: "Unsloth Studio",
     accountMenu: "قائمة حساب {name}",
     updateAvailable: "يتوفر تحديث",
+    resize: {
+      collapse: "انقر للطي",
+      expand: "انقر للتوسيع",
+      drag: "اسحب لتغيير الحجم",
+    },
     aria: {
       home: "الصفحة الرئيسية لـ Unsloth",
       closeSidebar: "إغلاق الشريط الجانبي",
       openSidebar: "فتح الشريط الجانبي",
+      resizeSidebar: "تغيير حجم الشريط الجانبي أو طيه",
+      resizeRunSettings: "تغيير حجم إعدادات التشغيل أو إغلاقها",
+      openRunSettings: "فتح إعدادات التشغيل",
       chatOptions: "خيارات المحادثة",
       runOptions: "خيارات التدريب",
     },
