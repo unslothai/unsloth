@@ -1088,9 +1088,11 @@ def test_a_backtick_in_a_fence_info_string_is_not_a_fence(changelog_module):
 
 def test_preview_follows_commonmark_paragraph_rules():
     """Only an ordered list starting at 1 may interrupt a paragraph, and an
-    unresolved reference keeps its brackets."""
-    src = PREVIEW.read_text(encoding = "utf-8")
+    unresolved reference keeps its brackets. A quote owns the paragraph its own
+    lines hold, so a marker written outside the quote interrupts nothing."""
+    src = " ".join(PREVIEW.read_text(encoding = "utf-8").split())
     assert "const interrupts = collector.current === null" in src
+    assert "!collector.quotedParagraph;" in src
     assert "definedLabel" in src, "a reference only renders as text when defined"
     # A comment written mid-sentence hides its own line at most.
     assert "COMMENT_BLOCK_OPEN" in src
@@ -1331,7 +1333,7 @@ def test_preview_collects_labels_only_from_real_definitions():
     prescan = " ".join(src[scan:collect].split())
     assert "let labelFence: string | null = null;" in prescan
     assert "if (line.indent - line.column >= INDENTED_CODE_INDENT) { continue; }" in prescan
-    assert "closesDeepFence(labelFence, line)" in prescan
+    assert "endsDeepFence(labelFence, labelColumn, line)" in prescan
 
 
 def test_an_html_block_to_the_left_of_a_list_item_closes_it(changelog_module):
@@ -1621,3 +1623,68 @@ def test_a_parenthesised_link_destination_still_resolves(run_scanner):
     unbalanced = run_scanner("links", "[x](a(b.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/a(b.md)" in unbalanced
     assert "<" not in unbalanced
+
+
+def test_an_underline_left_of_an_item_is_lazy_text_of_it(changelog_module, run_scanner):
+    """A setext underline may never be a lazy continuation line (spec 0.31.2
+    section 4.3), so `===` written left of an open list item is read as more of
+    the item's paragraph rather than as a block that closes it. Rejecting every
+    underline-shaped line ended the list there, which promoted the nested
+    "## 2.0" below it to a document-level heading and indexed a release the
+    renderer never shows."""
+    nested = "## 1.0\n- old note\n===\n  ## 2.0\n- new\n"
+    assert [e.version for e in changelog_module.parse_changelog(nested)] == ["1.0"]
+    # A row of dashes is a thematic break, which does close the item, so the
+    # heading below it really is the next release.
+    broken = "## 1.0\n- old note\n---\n  ## 2.0\n"
+    assert [e.version for e in changelog_module.parse_changelog(broken)] == ["1.0", "2.0"]
+    # Without a paragraph above it the underline opens one of its own, so the
+    # item is closed by the blank line and the heading stands at document level.
+    apart = "## 1.0\n- old note\n\n===\n  ## 2.0\n"
+    assert [e.version for e in changelog_module.parse_changelog(apart)] == ["1.0", "2.0"]
+    # The link scanner keeps the same item open, so the four-space line below is
+    # a paragraph two columns into the item and its destination resolves.
+    resolved = run_scanner("links", "- Details:\n===\n\n    [guide](docs/a.md)\n")
+    assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in resolved
+
+
+def test_a_quote_keeps_its_paragraph_to_itself(changelog_module, run_scanner):
+    """Lazy continuation runs the other way too: a marker written outside a
+    blockquote is not text of the quote's paragraph, so `2. item` under
+    `> quote` opens a list even though an ordered marker past 1 may not
+    interrupt a paragraph (spec 0.31.2 section 5.2). Lending the quote's
+    paragraph to the document left the list closed, so the heading indented to
+    the item's content column read as a release of its own."""
+    quoted = "## 1.0\n> quote\n2. item\n   ## 2.0\n- new\n"
+    assert [e.version for e in changelog_module.parse_changelog(quoted)] == ["1.0"]
+    # A quote holding a heading leaves no paragraph at all, and neither does an
+    # empty one, so the list below still opens.
+    heading = "## 1.0\n> # inner\n2. item\n   ## 2.0\n"
+    assert [e.version for e in changelog_module.parse_changelog(heading)] == ["1.0"]
+    # An unquoted line the quote's paragraph does swallow keeps it open, and the
+    # marker below is still outside the quote.
+    lazy = "## 1.0\n> quote\ntext\n2. item\n   ## 2.0\n"
+    assert [e.version for e in changelog_module.parse_changelog(lazy)] == ["1.0"]
+    # Under an ordinary paragraph the same marker is that paragraph's text, so
+    # the list never opens and the heading is a real boundary.
+    prose = "## 1.0\nprose\n2. item\n   ## 2.0\n"
+    assert [e.version for e in changelog_module.parse_changelog(prose)] == ["1.0", "2.0"]
+    # The preview reads the marker as a bullet for the same reason.
+    assert preview_leads(run_scanner("preview", "> quote\n2. item\n")) == ["item"]
+
+
+def test_indented_code_before_an_ordered_marker_still_opens_a_list(changelog_module):
+    """An indented code block ends at the first line that is not indented enough
+    to continue it, and no paragraph is open for the marker below to continue,
+    so `2. item` opens a list whatever its start number. Reading it as text of
+    the code block instead would leave the list closed and index the heading at
+    the item's content column as a release."""
+    joined = "## 1.0\n\n    code\n2. item\n   ## 2.0\n- new\n"
+    assert [e.version for e in changelog_module.parse_changelog(joined)] == ["1.0"]
+    # A blank line between the two changes nothing: the list opens either way.
+    apart = "## 1.0\n\n    code\n\n2. item\n   ## 2.0\n- new\n"
+    assert [e.version for e in changelog_module.parse_changelog(apart)] == ["1.0"]
+    # Four columns past its container the marker is code itself, so it opens no
+    # list and the heading below stands at document level.
+    inside = "## 1.0\n\n    code\n    - item\n  ## 2.0\n"
+    assert [e.version for e in changelog_module.parse_changelog(inside)] == ["1.0", "2.0"]

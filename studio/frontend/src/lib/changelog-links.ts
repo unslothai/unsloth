@@ -15,9 +15,12 @@ import {
 import {
   EMPTY_LIST_STATE,
   type ListState,
+  NO_QUOTE,
+  type QuoteState,
   hiddenStructure,
   indentWidth,
   openLists,
+  quoteState,
 } from "@/lib/markdown-list-columns";
 
 const LINK_BASE = "https://github.com/unslothai/unsloth/blob/main/";
@@ -268,19 +271,25 @@ function classify(lines: string[]): Classified {
   let inComment = false;
   let inCode = false;
   let afterParagraph = false;
+  let quote: QuoteState = NO_QUOTE;
   let lists: ListState = EMPTY_LIST_STATE;
   const comments: CodeSpan[] = [];
   let offset = 0;
 
   // The line as list tracking sees it: blank wherever nothing renders. Taken
   // with the paragraph state from the line above, as the renderer would.
-  const track = (structural: string): void => {
-    lists = openLists(structural, lists, afterParagraph);
+  const track = (structural: string, above: QuoteState): void => {
+    lists = openLists(structural, lists, afterParagraph, above.quoted);
   };
 
   lines.forEach((original, index) => {
     const start = offset;
     offset += original.length + 1;
+    // The quote state from the line above, which is the one list tracking
+    // asks about. Only a plain line of text below rewrites it, so every block
+    // that returns early leaves no quoted paragraph open behind it.
+    const above = quote;
+    quote = NO_QUOTE;
     // A fence inside a list item runs only to the end of that item, so a line
     // dedented out of the item closes both. Lazy continuation cannot reach
     // into a fence, so any content to the left of the item ends it.
@@ -297,14 +306,14 @@ function classify(lines: string[]): Classified {
     // resolve them in that order or a hidden delimiter opens a phantom fence.
     const fenceSource = inComment ? null : FENCE.exec(original);
     if (inRawHtml) {
-      track("");
+      track("", above);
       inRawHtml = !RAW_HTML_CLOSE.test(original);
       masked.push(" ".repeat(original.length));
       afterParagraph = false;
       return;
     }
     if (inHtmlBlock) {
-      track("");
+      track("", above);
       // Only a blank line ends a type 6 or 7 block, so nothing inside one is
       // a fence or a link.
       inHtmlBlock = !!original.trim();
@@ -315,7 +324,7 @@ function classify(lines: string[]): Classified {
     const fence = fenceSource;
     if (fence) {
       // A fence renders as nothing, but its indent still closes an item.
-      track(original);
+      track(original, above);
       const marker = fence[1] ?? "";
       if (openFence === null) {
         // A backtick fence's info string may not contain a backtick.
@@ -344,7 +353,7 @@ function classify(lines: string[]): Classified {
       return;
     }
     if (openFence !== null) {
-      track("");
+      track("", above);
       // Fenced content is literal, so a comment opener in it is not one.
       masked.push(" ".repeat(original.length));
       return;
@@ -362,6 +371,7 @@ function classify(lines: string[]): Classified {
     const opensRaw = RAW_HTML_OPEN.test(line);
     track(
       !hidden && (opensRaw || !line.trim()) ? hiddenStructure(original) : line,
+      above,
     );
     for (let at = 0; at < line.length; at += 1) {
       if (line[at] === " " && original[at] !== " ") {
@@ -407,6 +417,7 @@ function classify(lines: string[]): Classified {
     text.push(index);
     masked.push(line);
     afterParagraph = !blank && !BLOCK_LINE.test(line);
+    quote = quoteState(line, above.inQuote);
   });
 
   return { text, masked: masked.join("\n"), definition, comments };

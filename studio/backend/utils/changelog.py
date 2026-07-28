@@ -60,12 +60,14 @@ _RAW_BLOCKS = (
 # Type 6 blocks run to the next blank line, so `<details>` only holds Markdown
 # once a blank line has closed the block. Open and close tags both start one.
 _HTML_BLOCK_OPEN = re.compile(r"^ {0,3}</?([a-zA-Z][a-zA-Z0-9-]*)(?=[\s/>]|$)")
-# Lines that are blocks in their own right, so no paragraph is open after them.
-_NOT_PARAGRAPH = re.compile(
-    r"^ {0,3}(?:#{1,6}([ \t]|$)"
-    r"|(?:\*[ \t]*){3,}$|(?:-[ \t]*){3,}$|(?:_[ \t]*){3,}$"
-    r"|\[(?:[^\[\]\\]|\\.)+\]:)"
+# Blocks that break into an open paragraph, so no paragraph is open after them
+# and one they are written below is closed rather than continued.
+_INTERRUPTS = re.compile(
+    r"^ {0,3}(?:#{1,6}([ \t]|$)|(?:\*[ \t]*){3,}$|(?:-[ \t]*){3,}$|(?:_[ \t]*){3,}$)"
 )
+# A definition is a block of its own but may not interrupt a paragraph, so it
+# ends the one above it only when there is none to continue.
+_LINK_DEFINITION = re.compile(r"^ {0,3}\[(?:[^\[\]\\]|\\.)+\]:")
 # Blocks that are not paragraph text, so a following underline is not setext.
 _PARAGRAPH_TEXT = re.compile(r"^ {0,3}(?![-*+>]([ \t]|$)|\d{1,9}[.)]([ \t]|$))\S")
 # A line of = or - under a paragraph line makes that line a heading.
@@ -201,6 +203,7 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
     after_paragraph = False
     paragraph: list[str] = []
     in_quote = False
+    quoted = False
     lists = _ListState()
 
     def flush() -> None:
@@ -223,6 +226,9 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
         if open_fence and fence_column and line.strip() and _indent_width(line) < fence_column:
             open_fence = None
             fence_column = 0
+            # The paragraph the line could have continued is fenced content,
+            # so it closes the item rather than reading as more of it.
+            after_paragraph = False
         # Raw HTML first: its contents are literal, so a fence in it is not one.
         if in_raw_html is not None:
             visible, in_raw_html = _strip_raw_html(line, in_raw_html)
@@ -284,7 +290,8 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             after_paragraph = False
             continue
         # A dashed underline is not a list marker, so track lists after setext.
-        lists = _open_lists(structural, lists, after_paragraph)
+        lazy_marker = _lazy_marker(structural, lists, after_paragraph, quoted)
+        lists = _open_lists(structural, lists, after_paragraph, quoted)
         # Taken after the opening line closed the items it is dedented out of,
         # so the fence belongs to the item it is really written inside.
         if opened_fence:
@@ -303,26 +310,47 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
         # Only ordinary text continues a paragraph. Indented code counts four
         # spaces past the container, so an item's own indent does not count.
         indented_code = not after_paragraph and _indent_width(visible) - column >= 4
-        # `===` needs a paragraph above it; dashes are a break either way.
-        underline = _SETEXT_UNDERLINE.match(visible) is not None and (
-            after_paragraph or visible.strip()[:1] == "-"
+        # An underline ends the paragraph it underlines, so it needs one open
+        # in its own container: the quote above owns its own, and a row written
+        # left of an open item is lazy text of the item's paragraph rather than
+        # a heading. A row of three dashes is a thematic break either way, which
+        # `_INTERRUPTS` already ends the paragraph on.
+        underline = (
+            _SETEXT_UNDERLINE.match(visible) is not None
+            and after_paragraph
+            and not quoted
+            and _indent_width(visible) >= column
         )
         after_paragraph = (
-            bool(visible.strip())
+            # Read inside its container, so an empty item and a fence written
+            # as an item's own content leave no paragraph open below them. A
+            # marker the paragraph above swallows is its text, not an item.
+            (bool(content.strip()) or lazy_marker)
             and match is None
             and _HEADING_PATTERN.match(content) is None
+            and _FENCE_PATTERN.match(content) is None
             and not indented_code
-            and _NOT_PARAGRAPH.match(visible) is None
+            and _INTERRUPTS.match(visible) is None
+            and (after_paragraph or _LINK_DEFINITION.match(visible) is None)
             and not underline
         )
         # A quote's paragraph runs on over plain text and owns every line of it.
         # An empty quote holds none, so the line below starts the document's.
         flush_left = visible.lstrip(" \t")
+        quote_line = _BLOCK_QUOTE.match(visible) is not None
         in_quote = (
             _may_be_lazy(_quote_content(visible))
-            if _BLOCK_QUOTE.match(visible)
-            else in_quote and _may_be_lazy(flush_left)
+            if quote_line
+            else in_quote and _continues_paragraph(visible, column)
         )
+        if quote_line:
+            # The only paragraph a quote line leaves open is the quote's own,
+            # and a quote holding a heading or nothing at all leaves none.
+            after_paragraph = in_quote
+        # Whose paragraph the line below would continue. A quote owns the one
+        # its own lines hold, so a marker written outside the quote is a block
+        # of its own rather than more of the text above it.
+        quoted = quote_line or in_quote
         # The lines a later underline turns into one heading. A paragraph opens
         # only on plain text and then runs on until something interrupts it.
         continues = (
@@ -330,7 +358,9 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             if paragraph
             else _PARAGRAPH_TEXT.match(flush_left) is not None
         )
-        if after_paragraph and not in_quote and continues:
+        # A paragraph inside an open item is that item's, and only one written
+        # at document level can be the heading a later underline makes of it.
+        if after_paragraph and not in_quote and not lists.columns and continues:
             paragraph = [*paragraph, visible.strip()]
         else:
             paragraph = []
@@ -761,12 +791,15 @@ def _quote_content(line: str) -> str:
 def _may_be_lazy(line: str) -> bool:
     """Whether `line` can continue a paragraph it is indented out of.
 
-    Only plain text can: a heading, a fence, a break, an underline or an HTML
-    block starts a block of its own, which closes the item instead."""
+    Only plain text can: a heading, a fence, a break or an HTML block starts a
+    block of its own, which closes the item instead. An underline is not one of
+    them: it may never be lazy, so `===` written left of an open item is read as
+    more of the item's paragraph. Nor is a definition, which is a block of its
+    own but may not interrupt a paragraph. A row of dashes still closes the
+    item, as `_INTERRUPTS` reads three or more as the thematic break they are."""
     return (
         _PARAGRAPH_TEXT.match(line) is not None
-        and _NOT_PARAGRAPH.match(line) is None
-        and _SETEXT_UNDERLINE.match(line) is None
+        and _INTERRUPTS.match(line) is None
         and _FENCE_PATTERN.match(line) is None
         # Types 1 to 6 interrupt a paragraph, so a `<div>` left of an open item
         # closes it. Type 7 cannot, and is deliberately excluded here.
@@ -774,11 +807,69 @@ def _may_be_lazy(line: str) -> bool:
     )
 
 
-def _open_lists(line: str, state: _ListState, after_paragraph: bool) -> _ListState:
+def _continues_paragraph(line: str, column: int) -> bool:
+    """Whether `line` reads as more of a paragraph open in its container.
+
+    Measured from `column`, where that container's content starts: four columns
+    past it the line is an indented code block, which may not interrupt a
+    paragraph, so indentation alone never closes the one above it."""
+    inner = _strip_indent(line, column)
+    return _indent_width(inner) >= 4 or _may_be_lazy(inner)
+
+
+def _close_dedented(
+    columns: tuple[int, ...],
+    line: str,
+    indent: int,
+    after_paragraph: bool,
+) -> tuple[int, ...]:
+    """`columns` with every item `line` is written to the left of closed.
+
+    Read inside the container the item sits in, not from the margin: a line that
+    only looks indented there is lazy text of the item's paragraph, which leaves
+    the item open rather than closing it."""
+    while columns and indent < columns[-1]:
+        outer = columns[-2] if len(columns) > 1 else 0
+        if after_paragraph and _continues_paragraph(line, outer):
+            break
+        columns = columns[:-1]
+    return columns
+
+
+def _lazy_marker(
+    line: str,
+    state: _ListState,
+    after_paragraph: bool,
+    quoted: bool,
+) -> bool:
+    """Whether a marker-shaped `line` is really text of the paragraph above it.
+
+    Only a marker inside the paragraph's own item interrupts it; one to the left
+    closes that item and opens a sibling. A quote owns the paragraph its lines
+    hold, so a marker written outside the quote opens a list of its own."""
+    item = None if _THEMATIC_BREAK.match(line) else _LIST_ITEM.match(line)
+    columns = state.columns
+    return (
+        item is not None
+        and after_paragraph
+        and not quoted
+        and (not columns or _indent_width(line) >= columns[-1])
+        and not _interrupts_paragraph(line)
+    )
+
+
+def _open_lists(
+    line: str,
+    state: _ListState,
+    after_paragraph: bool,
+    quoted: bool = False,
+) -> _ListState:
     """The list items still open after `line`.
 
     A dedented line closes an item, unless it is a lazy paragraph continuation.
-    A new marker nests under a deeper column and replaces a sibling.
+    A new marker nests under a deeper column and replaces a sibling. `quoted`
+    marks a paragraph the blockquote above owns: a marker written outside the
+    quote is not text of it, so it opens a list of its own.
     """
     columns = state.columns
     if not line.strip():
@@ -788,20 +879,13 @@ def _open_lists(line: str, state: _ListState, after_paragraph: bool) -> _ListSta
     indent = _indent_width(line)
     item = None if _THEMATIC_BREAK.match(line) else _LIST_ITEM.match(line)
     empty = item is not None and not line[item.end() :].strip()
-    # Only a marker inside the paragraph's item interrupts it; one to the left
-    # closes that item and opens a sibling.
-    if (
-        item is not None
-        and after_paragraph
-        and (not columns or indent >= columns[-1])
-        and not _interrupts_paragraph(line)
-    ):
+    if _lazy_marker(line, state, after_paragraph, quoted):
         # A lazy continuation or an underline, so the open items are untouched.
         return state
-    if not (after_paragraph and _may_be_lazy(line)):
-        while columns and indent < columns[-1]:
-            columns = columns[:-1]
-    if item is None:
+    columns = _close_dedented(columns, line, indent, after_paragraph)
+    # Four columns past its container the marker is an indented code block, or
+    # lazy text of the paragraph above it, so it opens no list of its own.
+    if item is None or indent - (columns[-1] if columns else 0) >= 4:
         return _ListState(columns)
     marker = item.group("marker")
     padding = _indent_width(item.group("space"))

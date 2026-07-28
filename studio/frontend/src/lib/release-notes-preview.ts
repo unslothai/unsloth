@@ -6,9 +6,12 @@ import { codeSpans, parkCodeSpans } from "@/lib/markdown-code-spans";
 import {
   EMPTY_LIST_STATE,
   type ListState,
+  NO_QUOTE,
+  type QuoteState,
   hiddenStructure,
   indentWidth,
   openLists,
+  quoteState,
 } from "@/lib/markdown-list-columns";
 
 export const RELEASE_NOTES_PREVIEW_ITEMS = 4;
@@ -437,6 +440,20 @@ function opensDeepFence(line: ContentLine): string | null {
   return fence ? (fence[1] ?? null) : null;
 }
 
+/**
+ * True when `line` is the first one outside the deep fence opened with
+ * `marker` at `column`. A fence inside a list item runs only to the end of that
+ * item, so a line written left of the item's content column closes both, as
+ * `fence_column` does on the backend.
+ */
+function endsDeepFence(
+  marker: string,
+  column: number,
+  line: ContentLine,
+): boolean {
+  return line.indent < column || closesDeepFence(marker, line);
+}
+
 /** True when `line` closes the deep fence opened with `marker`. */
 function closesDeepFence(marker: string, line: ContentLine): boolean {
   const fence = FENCE.exec(line.text);
@@ -616,14 +633,20 @@ function contentLines(markdown: string): ContentLine[] {
     afterParagraph: false,
   };
   let lists: ListState = EMPTY_LIST_STATE;
+  let quote: QuoteState = NO_QUOTE;
 
   for (const rawLine of markdown.split("\n")) {
     const line = rawLine.replace(/\t/g, " ".repeat(TAB_WIDTH));
     closeDedentedFence(line, state);
     const wasFenced = state.openFence !== null;
     const { text: visible, structural } = visibleText(line, state);
+    // The quote state from the line above, which is the one list tracking asks
+    // about. Only a line of text below rewrites it, so a fenced, blank or
+    // hidden line leaves no quoted paragraph open behind it.
+    const above = quote;
+    quote = NO_QUOTE;
     // Taken with the paragraph state from the line above, as a renderer would.
-    lists = openLists(structural, lists, state.afterParagraph);
+    lists = openLists(structural, lists, state.afterParagraph, above.quoted);
     scopeFence(state, wasFenced, lists);
     if (visible === null) {
       continue;
@@ -645,6 +668,7 @@ function contentLines(markdown: string): ContentLine[] {
     const startsCode =
       !state.afterParagraph && indent - column >= INDENTED_CODE_INDENT;
     state.afterParagraph = !HEADING_LINE.test(stripped) && !startsCode;
+    quote = quoteState(visible, above.inQuote);
     lines.push({ text: stripped.trim(), indent, quoted, column });
   }
   return lines;
@@ -677,6 +701,9 @@ interface Collector {
   // Wrapped bullets continue on following lines and belong to one item.
   current: Bullet | null;
   paragraph: string;
+  // True while the open paragraph is a quote's, which owns its own text: a
+  // marker written outside the quote opens a list rather than continuing it.
+  quotedParagraph: boolean;
 }
 
 function flush(collector: Collector): void {
@@ -691,6 +718,7 @@ function flush(collector: Collector): void {
     collector.prose.push(truncate(collector.paragraph));
     collector.paragraph = "";
   }
+  collector.quotedParagraph = false;
 }
 
 function takeBullet(
@@ -713,6 +741,7 @@ function takeText(
   collector: Collector,
   text: string,
   labels: Set<string>,
+  quoted: boolean,
 ): void {
   const plain = toPlainText(text, labels);
   if (!plain) {
@@ -723,6 +752,7 @@ function takeText(
     collector.paragraph = collector.paragraph
       ? `${collector.paragraph} ${plain}`
       : plain;
+    collector.quotedParagraph = quoted;
     return;
   }
   collector.current = {
@@ -740,6 +770,7 @@ function collectBullets(markdown: string): {
     prose: [],
     current: null,
     paragraph: "",
+    quotedParagraph: false,
   };
 
   const lines = contentLines(markdown);
@@ -747,16 +778,23 @@ function collectBullets(markdown: string): {
   // Skips the same code the pass below skips: a definition-shaped line inside
   // code is literal, and a real definition never indents past three spaces.
   let labelFence: string | null = null;
+  let labelColumn = 0;
   for (const line of lines) {
-    if (labelFence !== null) {
-      if (closesDeepFence(labelFence, line)) {
-        labelFence = null;
-      }
+    if (labelFence !== null && !endsDeepFence(labelFence, labelColumn, line)) {
       continue;
+    }
+    if (labelFence !== null) {
+      const dedented = line.indent < labelColumn;
+      labelFence = null;
+      // Its own closing line is code too; only a dedented one is a new block.
+      if (!dedented) {
+        continue;
+      }
     }
     const opener = opensDeepFence(line);
     if (opener !== null) {
       labelFence = opener;
+      labelColumn = line.column;
       continue;
     }
     if (line.indent - line.column >= INDENTED_CODE_INDENT) {
@@ -772,6 +810,7 @@ function collectBullets(markdown: string): {
 
   const tables = tableLines(lines);
   let deepFence: string | null = null;
+  let deepColumn = 0;
   for (const [index, line] of lines.entries()) {
     if (!line.text || HEADING.test(line.text)) {
       flush(collector);
@@ -789,15 +828,21 @@ function collectBullets(markdown: string): {
     }
     // A fence indented past three spaces belongs to a list item, so the line
     // scanner missed it. Its contents are code either way.
-    if (deepFence !== null) {
-      if (closesDeepFence(deepFence, line)) {
-        deepFence = null;
-      }
+    if (deepFence !== null && !endsDeepFence(deepFence, deepColumn, line)) {
       continue;
+    }
+    if (deepFence !== null) {
+      const dedented = line.indent < deepColumn;
+      deepFence = null;
+      // Its own closing line is code too; only a dedented one is a new block.
+      if (!dedented) {
+        continue;
+      }
     }
     const opener = opensDeepFence(line);
     if (opener !== null) {
       deepFence = opener;
+      deepColumn = line.column;
       continue;
     }
     // An indented code block renders as code, so a "- cmd" line in one is not
@@ -810,7 +855,10 @@ function collectBullets(markdown: string): {
     const bullet = BULLET.exec(line.text);
     // Only an ordered list starting at 1 may interrupt a paragraph, so
     // "2. Restart Studio" under prose is prose. A list item is not a paragraph.
-    const interrupts = collector.current === null && collector.paragraph !== "";
+    const interrupts =
+      collector.current === null &&
+      collector.paragraph !== "" &&
+      !collector.quotedParagraph;
     if (
       bullet &&
       !(interrupts && bullet[1] !== undefined && bullet[1] !== "1")
@@ -818,7 +866,7 @@ function collectBullets(markdown: string): {
       takeBullet(collector, bullet[2] ?? "", line, labels);
       continue;
     }
-    takeText(collector, line.text, labels);
+    takeText(collector, line.text, labels, line.quoted);
   }
   flush(collector);
 
