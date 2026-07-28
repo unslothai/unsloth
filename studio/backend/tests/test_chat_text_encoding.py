@@ -85,9 +85,7 @@ def test_remote_code_scan_reads_non_ascii_sources(tmp_path: Path) -> None:
     # Windows would otherwise translate the line ends on the way out and the read
     # back would differ by \r, which is the writer's doing and not the encoding
     # this is about.
-    (tmp_path / "modeling_custom.py").write_text(
-        source, encoding = "utf-8", newline = ""
-    )
+    (tmp_path / "modeling_custom.py").write_text(source, encoding = "utf-8", newline = "")
 
     files = remote_code_scan.repo_remote_code_files(str(tmp_path))
 
