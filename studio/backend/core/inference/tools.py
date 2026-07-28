@@ -1122,10 +1122,7 @@ def _sed_program_unresolved(variants: "list[str]", live: "set[str]") -> bool:
     # which can only ever make a spelling MATCH, so the error is fail-closed.
     keys = {_expansion_key(found) for found in live}
     return not any(
-        all(
-            _expansion_key(found) not in keys
-            for found in _shell_expansions(variant, quoted = False)
-        )
+        all(_expansion_key(found) not in keys for found in _shell_expansions(variant, quoted = False))
         for variant in variants
     )
 

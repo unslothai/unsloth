@@ -1031,9 +1031,7 @@ class TestBashBlocklistPosition:
             "terminal", {"command": 'sed "`printf \\"1e rm -f victim\\"`" input'}
         )
         # An escaped expansion is data the program merely quotes, and stays out.
-        assert not is_high_risk_tool_call(
-            "terminal", {"command": 'sed "s/\\$(CC)/gcc/" Makefile'}
-        )
+        assert not is_high_risk_tool_call("terminal", {"command": 'sed "s/\\$(CC)/gcc/" Makefile'})
 
     def test_fd_exec_flags_reach_the_child_command(self):
         # fd runs its `-x` / `-X` / `--exec` / `--exec-batch` child directly,
