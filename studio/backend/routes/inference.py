@@ -4683,10 +4683,13 @@ def _guard_chat_load_against_training(
             vulkan_free_vram_gb = {
                 index: free_mib / 1024.0 for index, free_mib, _total_mib in gpu_memory
             }
-        elif is_vulkan_backend and diffusion_kind is None:
+        elif is_vulkan_backend and diffusion_kind is None and requested_gpu_ids:
             # Until the header is available, the model may use either the Vulkan
-            # llama-server or the CUDA-only diffusion runner. Neither device
-            # namespace can safely stand in for the other.
+            # llama-server or the CUDA-only diffusion runner, so an explicit pin
+            # cannot be budgeted: neither device namespace can stand in for the
+            # other. Automatic placement has no ordinal to mis-map, so it keeps
+            # the torch view below rather than refusing every uncached remote
+            # GGUF while training runs.
             vulkan_free_vram_gb = {}
 
     ok, info = can_load_chat_during_training(

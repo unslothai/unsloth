@@ -206,6 +206,18 @@ def _source_backend_choice_block() -> str:
         (None, None, "auto"),
         ("cpu", "vulkan", "cpu"),
         ("vulkan", None, "vulkan"),
+        # install_llama_prebuilt.py's llama_backend_from_env() consults the legacy
+        # var whenever the new one is not an explicit backend name, so an explicit
+        # "auto" (or a typo) beside a legacy UNSLOTH_LLAMA_BACKEND=vulkan must
+        # resolve to vulkan here too. Otherwise setup leaves _explicit_vulkan_backend
+        # false while the installer it launches plans Vulkan, and a failed Vulkan
+        # install silently degrades to a CUDA/ROCm/CPU build instead of failing closed.
+        ("auto", "vulkan", "vulkan"),
+        ("banana", "vulkan", "vulkan"),
+        ("auto", "cpu", "cpu"),
+        # An unrecognized value with no legacy backend is preserved so the
+        # "Ignoring ..." warning can still name what the user actually set.
+        ("banana", None, "banana"),
     ],
 )
 def test_legacy_llama_backend_env_falls_back_in_setup_sh(cpp_backend, legacy_backend, expected):
@@ -228,6 +240,48 @@ def test_legacy_llama_backend_env_falls_back_in_setup_sh(cpp_backend, legacy_bac
         ["bash", "-c", harness], capture_output = True, text = True, env = env, check = True
     )
     assert out.stdout == expected
+
+
+@_SKIP_NO_PWSH
+@pytest.mark.parametrize(
+    "cpp_backend, legacy_backend, expected",
+    [
+        (None, "vulkan", "vulkan"),
+        (None, "VULKAN", "vulkan"),
+        (None, None, ""),
+        ("cpu", "vulkan", "cpu"),
+        ("vulkan", None, "vulkan"),
+        ("auto", "vulkan", "vulkan"),
+        ("banana", "vulkan", "vulkan"),
+        ("auto", "cpu", "cpu"),
+        ("banana", None, "banana"),
+    ],
+)
+def test_legacy_llama_backend_env_falls_back_in_setup_ps1(cpp_backend, legacy_backend, expected):
+    # setup.ps1 must resolve the legacy var exactly like setup.sh and
+    # install_llama_prebuilt.py's llama_backend_from_env(), so a Windows host with
+    # an inherited UNSLOTH_LLAMA_BACKEND=vulkan still fails closed on Vulkan.
+    normalize = _ps1_search(
+        r'\$sourceLlamaBackend = "\$\(\$env:UNSLOTH_LLAMA_CPP_BACKEND\)".*?\n\}\n',
+        re.DOTALL,
+    )
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("UNSLOTH_LLAMA_CPP_BACKEND", "UNSLOTH_LLAMA_BACKEND")
+    }
+    if cpp_backend is not None:
+        env["UNSLOTH_LLAMA_CPP_BACKEND"] = cpp_backend
+    if legacy_backend is not None:
+        env["UNSLOTH_LLAMA_BACKEND"] = legacy_backend
+    out = subprocess.run(
+        ["pwsh", "-NoProfile", "-Command", f'{normalize}\n"RESULT:$sourceLlamaBackend"'],
+        capture_output = True,
+        text = True,
+        env = env,
+        check = True,
+    )
+    assert out.stdout.strip() == f"RESULT:{expected}"
 
 
 def _ps1_search(pattern: str, flags = 0) -> str:

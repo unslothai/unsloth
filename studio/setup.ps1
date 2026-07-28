@@ -3482,11 +3482,22 @@ $ResolvedSourceRef = $RequestedLlamaTag
 $ResolvedSourceRefKind = "tag"
 $ResolvedLlamaTag = $RequestedLlamaTag
 $sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
+$sourceLegacyLlamaBackend = "$($env:UNSLOTH_LLAMA_BACKEND)".Trim().ToLowerInvariant()
 if (-not $sourceLlamaBackend) {
     # Legacy pre-consolidation var name; still honored so an existing
     # UNSLOTH_LLAMA_BACKEND=vulkan environment keeps forcing Vulkan instead of
     # silently reverting to auto-detected CUDA/ROCm/CPU.
-    $sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_BACKEND)".Trim().ToLowerInvariant()
+    $sourceLlamaBackend = $sourceLegacyLlamaBackend
+} elseif (
+    $sourceLlamaBackend -notin @("cpu", "vulkan") -and
+    $sourceLegacyLlamaBackend -in @("cpu", "vulkan")
+) {
+    # Same rule install_llama_prebuilt.py's llama_backend_from_env() applies:
+    # "auto" (or a typo) is not an explicit backend, so the legacy var is still
+    # consulted. Without this the installer plans Vulkan from the inherited
+    # environment while setup keeps $explicitVulkanBackend false, silently
+    # substituting a non-Vulkan build for a request meant to fail closed.
+    $sourceLlamaBackend = $sourceLegacyLlamaBackend
 }
 $sourceLegacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()
 $explicitVulkanSourceBuild = (

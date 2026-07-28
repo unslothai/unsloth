@@ -1241,11 +1241,23 @@ _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
 _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
 _source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" | awk '{$1=$1; print tolower($0)}')"
+_source_legacy_backend="$(printf '%s' "${UNSLOTH_LLAMA_BACKEND:-}" | awk '{$1=$1; print tolower($0)}')"
 if [ -z "$_source_backend_choice" ]; then
     # Legacy pre-consolidation var name; still honored so an existing
     # UNSLOTH_LLAMA_BACKEND=vulkan environment keeps forcing Vulkan instead of
     # silently reverting to auto-detected CUDA/ROCm/CPU.
-    _source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
+    _source_backend_choice="${_source_legacy_backend:-auto}"
+elif [ "$_source_backend_choice" != "cpu" ] && [ "$_source_backend_choice" != "vulkan" ]; then
+    # install_llama_prebuilt.py's llama_backend_from_env() also consults the
+    # legacy var when the new one is SET but is not an explicit backend name
+    # ("auto", or a typo). Mirror it: the installer inherits this environment
+    # and plans Vulkan either way, so without this setup leaves
+    # _explicit_vulkan_backend/_explicit_vulkan_source_build false and silently
+    # substitutes a CUDA/ROCm/CPU build for a request meant to fail closed.
+    # An unrecognized value with no legacy backend is preserved for the warning.
+    case "$_source_legacy_backend" in
+        cpu|vulkan) _source_backend_choice="$_source_legacy_backend" ;;
+    esac
 fi
 _source_legacy_force_vulkan="$(printf '%s' "${UNSLOTH_FORCE_VULKAN:-}" | awk '{$1=$1; print tolower($0)}')"
 _explicit_vulkan_source_build=false

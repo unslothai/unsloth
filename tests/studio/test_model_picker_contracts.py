@@ -624,6 +624,25 @@ def test_compare_classifies_gguf_before_reconciling_gpu_ids():
     assert "onRun(effectiveLoadConfig, classifiedIsDiffusion)" in page
 
 
+def test_chat_load_prepares_hf_token_before_gguf_metadata_preflight():
+    """The single-model load path classifies a GGUF via fetchGgufStagedMetadata
+    before validateModel/loadModel run. The Hub rejects an invalid Authorization
+    header with 401 even for a PUBLIC repo, so that preflight must prepare the
+    token like every other caller; otherwise a stale saved token aborts the whole
+    load instead of offering the "continue anonymously / replace token" recovery.
+    """
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    prepare = runtime.index("prepareHfTokenForUse(")
+    metadata = runtime.index("fetchGgufStagedMetadata({", prepare)
+    assert prepare < metadata
+    # The raw store token must not be handed to the preflight.
+    assert "hf_token: preparedToken.token" in runtime
+    assert (
+        "hf_token: useChatRuntimeStore.getState().hfToken" not in runtime
+    ), "GGUF metadata preflight must not send the unprepared stored token"
+    assert 'throw new Error("Model load cancelled.")' in runtime
+
+
 def test_cpu_only_llama_build_hides_gpu_picker():
     src = (WORKDIR / "studio" / "backend" / "main.py").read_text(encoding = "utf-8")
     assert "and not LlamaCppBackend._backend_lacks_gpu_lib()" in src

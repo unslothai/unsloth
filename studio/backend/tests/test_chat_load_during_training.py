@@ -653,6 +653,61 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             )
         self.assertEqual(captured[0]["vulkan_free_vram_gb"], {1: 2.0})
 
+    def test_unclassified_gguf_without_pin_keeps_the_torch_budget(self):
+        # An uncached remote GGUF that neither the header nor the name can
+        # classify may still turn out to be the CUDA-only diffusion runner, so
+        # the Vulkan free-VRAM map cannot stand in for it. With no gpu_ids there
+        # is no ordinal to mis-map, so the guard must fall back to the torch view
+        # (vulkan_free_vram_gb = None) instead of handing down an empty map, which
+        # reads as "no free VRAM anywhere" and 409s every such load during
+        # training.
+        captured = []
+        config = SimpleNamespace(is_gguf = True)
+        with (
+            patch.object(self.route, "_classify_diffusion_gguf", return_value = None),
+            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_find_llama_server_binary",
+                return_value = "/tmp/llama-server",
+            ),
+            patch.object(self.route.LlamaCppBackend, "_is_vulkan_backend", return_value = True),
+        ):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {"mode": "single_device"}),
+            )
+        self.assertEqual(len(captured), 1)
+        self.assertIsNone(captured[0]["vulkan_free_vram_gb"])
+
+    def test_unclassified_gguf_with_pin_refuses_to_budget(self):
+        # An explicit pin on an unclassified GGUF is the opposite case: the
+        # ordinal belongs to exactly one of the two device namespaces and neither
+        # can stand in for the other, so the guard must fail closed.
+        captured = []
+        config = SimpleNamespace(is_gguf = True)
+        with (
+            patch.object(self.route, "_classify_diffusion_gguf", return_value = None),
+            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_find_llama_server_binary",
+                return_value = "/tmp/llama-server",
+            ),
+            patch.object(self.route.LlamaCppBackend, "_is_vulkan_backend", return_value = True),
+        ):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {"mode": "gguf_vulkan"}),
+                requested_gpu_ids = [1],
+            )
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["vulkan_free_vram_gb"], {})
+
     def test_refuses_with_headroom_number(self):
         info = {"required_gb": 30.0, "usable_gb": 6.0, "needed_gb": 39.0, "mode": "auto"}
         with self.assertRaises(HTTPException) as exc:

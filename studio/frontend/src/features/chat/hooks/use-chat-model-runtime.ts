@@ -9,6 +9,7 @@ import {
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
 import { consumeNativePathToken } from "@/features/native-intents/api";
+import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   notifyNative,
   primeNativeNotificationPermission,
@@ -617,11 +618,22 @@ export function useChatModelRuntime() {
           const pendingLoadConfig =
             typeof selection !== "string" ? selection.config : undefined;
           if (isGguf && isDiffusion === undefined) {
+            // Prepare the token exactly as validateModel/loadModel do (and as
+            // the compare path does): the Hub rejects an invalid Authorization
+            // header with 401 even for a public repo, so sending the raw stored
+            // token here would abort the load before the existing "continue
+            // anonymously / replace token" recovery flow could run.
+            const preparedToken = await prepareHfTokenForUse(
+              useChatRuntimeStore.getState().hfToken || null,
+            );
+            if (!preparedToken.proceed) {
+              throw new Error("Model load cancelled.");
+            }
             isDiffusion = (
               await fetchGgufStagedMetadata({
                 model_path: modelId,
                 gguf_variant: ggufVariant ?? null,
-                hf_token: useChatRuntimeStore.getState().hfToken || null,
+                hf_token: preparedToken.token,
                 nativePathToken: nativePathToken ?? null,
               })
             ).isDiffusion;
