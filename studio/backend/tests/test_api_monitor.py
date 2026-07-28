@@ -260,6 +260,63 @@ def test_api_monitor_append_reply_exact_cap_then_more_marks_truncated():
     assert len(reply) == m._MAX_REPLY_CHARS and reply.endswith("...")
 
 
+def test_api_monitor_disabled_is_noop():
+    monitor = ApiMonitor(max_entries = 3, enabled = False)
+
+    request_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+        context_length = 100,
+    )
+    load_id = monitor.record_lifecycle(
+        event = "load",
+        model = "local-model",
+        running = True,
+    )
+    unload_id = monitor.record_lifecycle(
+        event = "unload",
+        model = "local-model",
+    )
+    assert request_id == load_id == unload_id == ""
+
+    # Every mutator must be a safe no-op on the falsy id.
+    monitor.append_reply(request_id, "hi")
+    monitor.set_reply(request_id, "hi")
+    monitor.set_usage(request_id, prompt_tokens = 4, completion_tokens = 6)
+    monitor.relabel(load_id, "renamed-model")
+    monitor.set_progress(load_id, 50)
+    monitor.finish(load_id)
+    monitor.fail_open(load_id, "boom")
+    monitor.fail(request_id, "boom")
+    monitor.discard(unload_id)
+
+    assert monitor.snapshot() == []
+    assert monitor.active_count() == 0
+    assert monitor.get(request_id) is None
+
+
+def test_api_monitor_disable_env_var_truthy(monkeypatch):
+    import core.inference.api_monitor as m
+    for value in ("1", "true", "yes", "on", "TRUE", "On", " yes "):
+        monkeypatch.setenv(m._DISABLE_ENV, value)
+        assert m._api_monitor_disabled() is True, value
+
+
+def test_api_monitor_disable_env_var_falsy(monkeypatch):
+    import core.inference.api_monitor as m
+    for value in ("", "0", "false", "no", "off", "disabled"):
+        monkeypatch.setenv(m._DISABLE_ENV, value)
+        assert m._api_monitor_disabled() is False, value
+
+
+def test_api_monitor_disable_env_var_unset(monkeypatch):
+    import core.inference.api_monitor as m
+    monkeypatch.delenv(m._DISABLE_ENV, raising = False)
+    assert m._api_monitor_disabled() is False
+
+
 # ── model lifecycle rows (load / unload) ────────────────────────────
 
 

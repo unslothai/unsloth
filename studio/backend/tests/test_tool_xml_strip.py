@@ -668,7 +668,8 @@ def test_route_history_and_passthrough_forward_the_display_gate():
     blocks = {
         "safetensors history": r"Strip stale tool-call XML from prior assistant turns.*?\.strip\(\)",
         "anthropic history": r"Strip stale tool-call XML via the protected display helper.*?\.strip\(\)",
-        "anthropic passthrough": r"gated on the declared tools so an\n.*?\.strip\(\)",
+        # Anchored on the code, not the comment above it, so rewrapping prose cannot break this.
+        "anthropic passthrough": r"if not healing_active:.*?\.strip\(\)",
     }
     for label, pat in blocks.items():
         m = _re.search(pat, _src, _re.DOTALL)

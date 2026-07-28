@@ -1075,7 +1075,9 @@ async def liveness_check():
         "status": "alive",
         "service": "Unsloth UI Backend",
         "desktop_protocol_version": 1,
-        "desktop_manageability_version": 1,
+        # Lockstep with DESKTOP_MANAGEABILITY_VERSION in
+        # studio/src-tauri/src/preflight/version.rs and `desktop-capabilities`.
+        "desktop_manageability_version": 2,
         "supports_desktop_auth": True,
         "supports_desktop_backend_ownership": True,
         "studio_root_id": _studio_root_id(),
@@ -1098,7 +1100,8 @@ async def health_check(request: Request):
         "service": "Unsloth UI Backend",
         "chat_only": _hw_module.CHAT_ONLY,
         "desktop_protocol_version": 1,
-        "desktop_manageability_version": 1,
+        # Lockstep: see the note in /api/liveness above.
+        "desktop_manageability_version": 2,
         "supports_desktop_auth": True,
         "supports_desktop_backend_ownership": True,
         # Opaque per-install id; launchers reject sibling Studios on the same port.

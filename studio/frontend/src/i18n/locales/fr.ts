@@ -37,6 +37,8 @@ export const fr = {
     navigation: {
       newChat: "Nouvelle discussion",
       returnToChat: "Retour à la discussion",
+      returnToChats: "Retour à {count} discussions",
+      chatGenerating: "Génération en cours",
       compare: "Comparer",
       search: "Rechercher",
       hub: "Hub de modèles",

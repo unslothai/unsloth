@@ -35,6 +35,11 @@ export interface ListLorasResponse {
 
 export interface LoadModelRequest {
   model_path: string;
+  /**
+     * Stop any chats still generating instead of getting a 409: a load replaces the single
+     * llama-server they all decode on. Set only after the user confirms.
+     */
+  force_cancel_active?: boolean;
   nativePathLease?: string | null;
   hf_token: string | null;
   max_seq_length: number;
@@ -202,6 +207,9 @@ export interface LoadModelResponse {
 
 export interface UnloadModelRequest {
   model_path: string;
+  /** Stop any chats still generating instead of getting a 409: the unload takes down the
+   * llama-server they all decode on. */
+  force_cancel_active?: boolean;
 }
 
 export interface InferenceStatusResponse {

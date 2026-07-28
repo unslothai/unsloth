@@ -38,6 +38,8 @@ export const ja = {
     navigation: {
       newChat: "新規チャット",
       returnToChat: "チャットに戻る",
+      returnToChats: "{count} 件のチャットに戻る",
+      chatGenerating: "生成中",
       compare: "比較",
       search: "検索",
       hub: "モデルハブ",
