@@ -928,6 +928,41 @@ def test_a_comment_marker_in_prose_cannot_swallow_later_releases(changelog_modul
     assert [e.version for e in changelog_module.parse_changelog(hidden)] == ["2.0"]
 
 
+def test_a_base_exception_releases_the_single_flight_flag(changelog_module, monkeypatch):
+    """The flag was cleared only after `except Exception`, so a BaseException
+    (KeyboardInterrupt, SystemExit, CancelledError) stranded it and every later
+    caller then waited out the full deadline for the life of the process."""
+    changelog_module.reset_changelog_cache()
+
+    def explode():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(changelog_module, "_fetch_remote_changelog", explode)
+    with pytest.raises(KeyboardInterrupt):
+        changelog_module.get_remote_changelog()
+    assert changelog_module._remote_fetching is False
+    changelog_module.reset_changelog_cache()
+
+
+@pytest.mark.parametrize("marker", ["<!-->", "<!--->"])
+def test_an_empty_comment_does_not_swallow_later_releases(changelog_module, marker):
+    """`<!-->` and `<!--->` are complete comments in CommonMark: the closer
+    overlaps the opener. Searching for `-->` past the opener missed them, so an
+    empty comment used as a section marker hid every release below it."""
+    text = f"## 2.0\n\n- new stuff\n\n{marker}\n\n## 1.0\n\n- old stuff\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["2.0", "1.0"]
+    assert changelog_module.find_release_notes(text, "1.0") is not None
+    assert "old stuff" not in changelog_module.find_release_notes(text, "2.0").body
+    # The frontend scanner has to agree, or the preview and the body disagree.
+    assert "!line.includes(COMMENT_CLOSE)" in PREVIEW.read_text(encoding = "utf-8")
+
+
+def test_an_unterminated_comment_still_hides_the_rest(changelog_module):
+    """The fix must not turn every `<!--` line into a no-op block."""
+    text = "## 2.0\n\n<!-- never closed\n\n## 1.0\n\n- old stuff\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["2.0"]
+
+
 def test_a_closing_delimiter_takes_its_whole_line(changelog_module):
     """CommonMark keeps the closing line inside the block, so a heading glued
     after `-->` or `</pre>` is not a release."""

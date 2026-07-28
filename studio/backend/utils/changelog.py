@@ -409,20 +409,28 @@ def get_remote_changelog(refresh: bool = False) -> ChangelogSource:
             _cache_condition.wait(timeout = deadline - now)
 
     try:
-        source = _fetch_remote_changelog()
-    except Exception:
-        source = ChangelogSource(
-            text = None,
-            source = None,
-            error = "Could not fetch release notes.",
-        )
+        try:
+            source = _fetch_remote_changelog()
+        except Exception:
+            source = ChangelogSource(
+                text = None,
+                source = None,
+                error = "Could not fetch release notes.",
+            )
 
-    ttl = CHANGELOG_SUCCESS_TTL_SECONDS if source.text else CHANGELOG_FAILURE_TTL_SECONDS
-    with _cache_condition:
-        _remote_cache = _ChangelogCacheEntry(source = source, expires_at = time.monotonic() + ttl)
-        _remote_fetching = False
-        _cache_condition.notify_all()
-    return source
+        ttl = CHANGELOG_SUCCESS_TTL_SECONDS if source.text else CHANGELOG_FAILURE_TTL_SECONDS
+        with _cache_condition:
+            _remote_cache = _ChangelogCacheEntry(
+                source = source, expires_at = time.monotonic() + ttl
+            )
+        return source
+    finally:
+        # Releasing the single-flight flag only on the Exception path would
+        # strand it on BaseException (KeyboardInterrupt, CancelledError), and
+        # every later caller would then wait out the full deadline forever.
+        with _cache_condition:
+            _remote_fetching = False
+            _cache_condition.notify_all()
 
 
 def _fetch_remote_changelog() -> ChangelogSource:
@@ -625,8 +633,10 @@ def _strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
         return ("", False) if close != -1 else ("", True)
 
     if _COMMENT_BLOCK_OPEN.match(line):
-        close = line.find(_COMMENT_CLOSE, line.find(_COMMENT_OPEN) + len(_COMMENT_OPEN))
-        return ("", False) if close != -1 else ("", True)
+        # `<!-->` and `<!--->` are complete comments, so the closer may overlap
+        # the opener. Searching past the opener would miss them and swallow
+        # every later release.
+        return ("", _COMMENT_CLOSE not in line)
 
     visible: list[str] = []
     index = 0

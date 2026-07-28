@@ -262,11 +262,10 @@ function stripCommentSpans(
     return ["", !line.includes(COMMENT_CLOSE)];
   }
   if (COMMENT_BLOCK_OPEN.test(line)) {
-    const close = line.indexOf(
-      COMMENT_CLOSE,
-      line.indexOf(COMMENT_OPEN) + COMMENT_OPEN.length,
-    );
-    return ["", close === -1];
+    // `<!-->` and `<!--->` are complete comments, so the closer may overlap the
+    // opener. Searching past the opener would miss them and hide every later
+    // release, and would also disagree with the branch above.
+    return ["", !line.includes(COMMENT_CLOSE)];
   }
 
   let visible = "";
