@@ -41,11 +41,9 @@ export function hashArtifactCode(code: string): string {
   return (hash >>> 0).toString(36);
 }
 
-// The canvas source view keys its Streamdown on this. Streamdown memoizes a
-// fenced code block on its hast node's line/column span, which ignores the text
-// inside the fence, so two canvases of equal line count leave the old source on
-// screen; a changed key remounts instead. Tool artifact IDs are not derived from
-// the code, so hash the code in as well.
+// The canvas source view keys its Streamdown on this. Streamdown memoizes a code
+// fence on its node's line/column span, ignoring the text, so equal-line-count
+// canvases keep the old source. Tool artifact IDs omit the code, so hash it in.
 export function buildArtifactSourceKey(
   artifact: Pick<ChatArtifact, "id" | "code">,
 ): string {

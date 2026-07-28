@@ -15,7 +15,7 @@ import {
   hashArtifactCode,
 } from "../src/features/chat/artifacts/types.ts";
 
-// Exercises the shipped helper the component keys on, not a copy of it.
+// The shipped helper the component keys on, not a copy of it.
 const sourceKey = buildArtifactSourceKey;
 
 const toolInput = (code: string) => ({
@@ -59,8 +59,7 @@ test("the source key is stable for an unchanged artifact, so no needless remount
   );
 });
 
-// The exact shape that triggers the upstream bail-out: equal line count, so
-// Streamdown's position-only comparator sees no change.
+// Equal line count, the shape where Streamdown's comparator sees no change.
 test("the source key changes for two canvases with the same shape", () => {
   const first = createChatArtifact(
     toolInput("<html>\n<body>\n<h1>Alpha</h1>\n</body>\n</html>"),
@@ -122,9 +121,8 @@ function readStreamdownKey(): string | null {
   return key;
 }
 
-// Without this, the suite passes even with the key deleted from the component,
-// which is the regression itself. No DOM renderer is available here, so assert
-// the wiring in the source instead.
+// Without this the suite passes with the key deleted, which is the regression.
+// No DOM renderer is available here, so assert the wiring in the source.
 test("the source view's Streamdown is keyed by the shipped helper", () => {
   const key = readStreamdownKey();
   assert.ok(key, "source view <Streamdown> has no key prop");
