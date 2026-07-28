@@ -701,7 +701,13 @@ def _mock_override_store(monkeypatch):
 
     store = {}
 
-    def _merge_entry(key, entry_key, entry_value, *, only_if_absent = False):
+    def _merge_entry(
+        key,
+        entry_key,
+        entry_value,
+        *,
+        only_if_absent = False,
+    ):
         current = dict(store.get(key) or {})
         if only_if_absent:
             # Create only: an entry already there wins and nothing is deleted.
@@ -5196,9 +5202,7 @@ def test_only_if_absent_put_never_replaces_a_newer_server_entry(monkeypatch):
     _mock_override_store(monkeypatch)
 
     # The other tab's save lands first.
-    newer = settings_route.ModelOverridePayload(
-        model_id = "unsloth/B-GGUF", max_seq_length = 8192
-    )
+    newer = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF", max_seq_length = 8192)
     settings_route.update_openai_auto_switch_override(newer, "tester")
 
     # The backfill's write, carrying this browser's older localStorage value.
@@ -5261,9 +5265,7 @@ def test_only_if_absent_does_not_break_the_empty_payload_removal(monkeypatch):
 
     _mock_override_store(monkeypatch)
 
-    stored = settings_route.ModelOverridePayload(
-        model_id = "unsloth/B-GGUF", max_seq_length = 4096
-    )
+    stored = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF", max_seq_length = 4096)
     settings_route.update_openai_auto_switch_override(stored, "tester")
     empty = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF")
     resp = settings_route.update_openai_auto_switch_override(empty, "tester")

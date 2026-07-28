@@ -942,9 +942,7 @@ def test_the_chat_picker_marks_ollama_targets_unloadable_by_the_api():
     advertised a load the API can never make."""
     picker = " ".join(_read("features/model-picker/components/model-selector.tsx").split())
     assert "apiLoadable: isGguf && !isOllamaLinkPath(id)," in picker
-    sidebar = " ".join(
-        _read("features/model-picker/components/sidebar-model-config.tsx").split()
-    )
+    sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
     assert "apiLoadable: isGguf && !isOllamaLinkPath(modelId)," in sidebar
     # The same classification gates the one-time backfill, or a config saved before
     # the upgrade still reaches the server on the next start.
@@ -974,9 +972,7 @@ def test_the_backfill_writes_are_creates_not_replacements():
     # Ordinary saves must stay unconditional, or a settings edit would never land.
     assert "syncModelOverride" in api and "only_if_absent: true" in api
 
-    route = (WORKDIR / "studio" / "backend" / "routes" / "settings.py").read_text(
-        encoding = "utf-8"
-    )
+    route = (WORKDIR / "studio" / "backend" / "routes" / "settings.py").read_text(encoding = "utf-8")
     assert "only_if_absent: bool = False" in route, "the rule this mirrors"
     assert "only_if_absent = payload.only_if_absent," in route
     # A write mode must not leak into the saved fields, or "only model_id means
@@ -1000,9 +996,9 @@ def test_the_hub_settings_page_matches_a_resident_path_loaded_model():
     identity = _read("features/hub/lib/model-identity.ts")
     assert "export function publicModelId(" in identity
     assert "models--" in identity and "snapshots" in identity
-    backend = (
-        WORKDIR / "studio" / "backend" / "core" / "inference" / "model_ids.py"
-    ).read_text(encoding = "utf-8")
+    backend = (WORKDIR / "studio" / "backend" / "core" / "inference" / "model_ids.py").read_text(
+        encoding = "utf-8"
+    )
     assert "def public_model_id(" in backend, "the rule this mirrors"
 
 
@@ -1018,13 +1014,7 @@ def test_a_standalone_gguf_has_one_settings_key():
     assert 'row.kind === "local" && row.path.toLowerCase().endsWith(".gguf")' in helper
 
     common = (
-        WORKDIR
-        / "studio"
-        / "backend"
-        / "hub"
-        / "services"
-        / "models"
-        / "common.py"
+        WORKDIR / "studio" / "backend" / "hub" / "services" / "models" / "common.py"
     ).read_text(encoding = "utf-8")
     # The rule this mirrors: a variant is derived only for a single scanned file.
     assert "extract_quant_label(gguf_files[0].name)" in common
