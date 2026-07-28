@@ -134,6 +134,8 @@ export async function clearApiMonitor(): Promise<void> {
     method: "DELETE",
   });
   await parseJsonOrThrow<{ cleared: boolean }>(response);
+}
+
 export interface ActiveGenerationsResponse {
   count: number;
   /** Conversations with a generation in flight. Shorter than `count` when a
