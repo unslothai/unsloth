@@ -79,7 +79,12 @@ def test_completed_execution_clears_a_stale_transport_error():
 
 def test_legacy_import_has_an_indexeddb_claim_when_web_locks_are_unavailable():
     assert 'typeof navigator.locks === "undefined"' in LEGACY_IMPORT
-    assert "return claimLegacyBrowserDataWithIndexedDb(owner)" in LEGACY_IMPORT
+    assert "const claimed = await claimLegacyBrowserDataWithIndexedDb(owner)" in LEGACY_IMPORT
+    assert "return claimDurably()" in LEGACY_IMPORT
+    assert (
+        'DEVICE_IMPORT_LOCK_NAME,\n      { mode: "exclusive" },\n      claimDurably'
+        in LEGACY_IMPORT
+    )
     assert "database.transaction(" in LEGACY_IMPORT
     assert '"readwrite"' in LEGACY_IMPORT
 
@@ -87,6 +92,12 @@ def test_legacy_import_has_an_indexeddb_claim_when_web_locks_are_unavailable():
 def test_recipe_editor_waits_for_authoritative_record_before_rendering():
     assert "getCachedRecipe" not in EDIT_RECIPE_PAGE
     assert 'status: "loading"' in EDIT_RECIPE_PAGE
+
+
+def test_recipe_editor_refetches_after_a_partial_legacy_import():
+    assert "let legacyImportError: unknown = null;" in EDIT_RECIPE_PAGE
+    assert "legacyImportError = error;" in EDIT_RECIPE_PAGE
+    assert "if (!record && legacyImportError)" in EDIT_RECIPE_PAGE
 
 
 def test_equal_event_snapshots_preserve_current_nonterminal_scalars():

@@ -91,6 +91,7 @@ export function EditRecipePage({
           signal: controller.signal,
         });
         if (!record) {
+          let legacyImportError: unknown = null;
           try {
             await importLegacyUserAssetsFromIndexedDb({
               readRecipes: readLegacyRecipes,
@@ -100,15 +101,18 @@ export function EditRecipePage({
           } catch (error) {
             if (!controller.signal.aborted) {
               console.warn("Legacy recipe import failed:", error);
-              throw new Error(
-                "We couldn't import this local recipe. Check your connection and try again.",
-              );
+              legacyImportError = error;
             }
           }
           if (!controller.signal.aborted) {
             record = await getRecipe(recipeId, {
               signal: controller.signal,
             });
+          }
+          if (!record && legacyImportError) {
+            throw new Error(
+              "We couldn't import this local recipe. Check your connection and try again.",
+            );
           }
         }
         if (!active || controller.signal.aborted) return;

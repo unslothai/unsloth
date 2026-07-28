@@ -158,23 +158,23 @@ function rejectedItems(
 
 async function claimLegacyBrowserData(owner: string): Promise<boolean> {
   if (typeof window === "undefined") return true;
+  const claimDurably = async (): Promise<boolean> => {
+    const legacyOwner = window.localStorage.getItem(DEVICE_IMPORT_OWNER_KEY);
+    if (legacyOwner && legacyOwner !== owner) return false;
+    const claimed = await claimLegacyBrowserDataWithIndexedDb(owner);
+    if (claimed && !legacyOwner) {
+      window.localStorage.setItem(DEVICE_IMPORT_OWNER_KEY, owner);
+    }
+    return claimed;
+  };
   if (typeof navigator.locks === "undefined") {
-    return claimLegacyBrowserDataWithIndexedDb(owner);
+    return claimDurably();
   }
   try {
     return await navigator.locks.request(
       DEVICE_IMPORT_LOCK_NAME,
       { mode: "exclusive" },
-      () => {
-        const claimedOwner = window.localStorage.getItem(
-          DEVICE_IMPORT_OWNER_KEY,
-        );
-        if (claimedOwner && claimedOwner !== owner) return false;
-        if (!claimedOwner) {
-          window.localStorage.setItem(DEVICE_IMPORT_OWNER_KEY, owner);
-        }
-        return window.localStorage.getItem(DEVICE_IMPORT_OWNER_KEY) === owner;
-      },
+      claimDurably,
     );
   } catch {
     throw new Error("Could not confirm ownership of browser-saved recipes.");

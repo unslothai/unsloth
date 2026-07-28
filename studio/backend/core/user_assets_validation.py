@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, TypeAlias, TypeVar, overload
+from typing import Any, Tuple, TypeVar, Union, overload
 
 
 MAX_ID_CHARS = 128
@@ -66,8 +66,8 @@ _FIRST_CAMEL_BOUNDARY_RE = re.compile(r"(.)([A-Z][a-z]+)")
 _SECOND_CAMEL_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
 _NON_WORD_RE = re.compile(r"[^a-z0-9]+")
 
-JsonPathPart: TypeAlias = str | int
-JsonPath: TypeAlias = tuple[JsonPathPart, ...]
+JsonPathPart = Union[str, int]
+JsonPath = Tuple[JsonPathPart, ...]
 T = TypeVar("T")
 
 
