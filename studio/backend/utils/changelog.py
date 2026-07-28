@@ -104,6 +104,10 @@ _CHECKOUT_MARKERS = ("pyproject.toml", ".git")
 _COMMENT_BLOCK_OPEN = re.compile(r"^ {0,3}<!--")
 _COMMENT_OPEN = "<!--"
 _COMMENT_CLOSE = "-->"
+# Stands in for a line the renderer hides. `#` is a block of its own, so list
+# tracking reads it the way it reads a comment: never a marker, never a lazy
+# paragraph continuation.
+_HIDDEN_BLOCK = "#"
 _VERSION_TOKEN_PATTERN = re.compile(r"^[\[(]?v?(?P<version>[0-9][0-9A-Za-z.!+-]*?)[\])]?$")
 _SAFE_VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.!+-]{0,63}$")
 
@@ -236,13 +240,21 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
         elif open_fence:
             visible = ""
         else:
+            # A block already open owns this line, so the line is its content
+            # rather than a block written at the column it happens to start in.
+            hidden = in_comment or in_raw_html is not None
             # Commented-out sections are not rendered, so they are not releases.
             visible, in_comment = _strip_comments(line, in_comment)
             # Nor is anything inside a raw HTML block such as <pre>.
             visible, in_raw_html = _strip_raw_html(visible, in_raw_html)
             # Taken before the opener is hidden: it renders as nothing, but its
-            # indentation still closes a list item it sits to the left of.
-            structural = visible
+            # indentation still closes a list item it sits to the left of. A
+            # comment keeps only its column, since the text it hides is not
+            # Markdown and must not open a list of its own.
+            if visible.strip():
+                structural = visible
+            elif not hidden:
+                structural = _hidden_structure(line)
             if visible and in_raw_html is None and _opens_html_block(visible, after_paragraph):
                 in_html_block = True
                 visible = ""
@@ -685,6 +697,18 @@ def _strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
             break
         index = close + len(_COMMENT_CLOSE)
     return "".join(visible), False
+
+
+def _hidden_structure(line: str) -> str:
+    """`line` as list tracking sees it once the renderer hides its text.
+
+    A comment or a raw HTML block renders nothing, but it is still a block
+    written at its own column, so it closes the items it sits to the left of.
+    Only the indentation survives: what is inside the block is not Markdown and
+    must not open a list of its own."""
+    if not line.strip():
+        return ""
+    return line[: len(line) - len(line.lstrip(" \t"))] + _HIDDEN_BLOCK
 
 
 def _indent_width(line: str) -> int:

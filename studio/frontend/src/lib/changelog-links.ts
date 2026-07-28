@@ -15,6 +15,7 @@ import {
 import {
   EMPTY_LIST_STATE,
   type ListState,
+  hiddenStructure,
   indentWidth,
   openLists,
 } from "@/lib/markdown-list-columns";
@@ -23,10 +24,18 @@ const LINK_BASE = "https://github.com/unslothai/unsloth/blob/main/";
 const IMAGE_BASE = "https://raw.githubusercontent.com/unslothai/unsloth/main/";
 
 // Inline `](dest)` plus the `[label]: dest` reference form. The destination is
-// either <bracketed> or runs to whitespace or the closing paren.
+// either <bracketed> or runs to whitespace or the closing paren. It may hold
+// parentheses when they balance, so `[x]((draft).md)` points at `(draft).md`;
+// one nesting level is all a file name needs, as in the preview's DESTINATION.
 const NESTED_LABEL = String.raw`((?:[^[\]\\]|\\.|\[(?:[^[\]\\]|\\.)*\])*)`;
+const BALANCED_DESTINATION = String.raw`(?:\\.|[^\s()]|\((?:\\.|[^\s()])*\))*`;
+const PLAIN_DESTINATION = String.raw`(?:\\.|[^\s()])*`;
+// A balanced pair counts only while a `)` or a title still closes the link
+// after it. Otherwise the paren in `[x](a(b.md)` is the closer, which is how
+// CommonMark reads it, and swallowing it would invent a link across lines.
+const CLOSES_LINK = String.raw`(?=[ \t]*[)'"])`;
 const INLINE_TARGET = new RegExp(
-  String.raw`(!?)\[${NESTED_LABEL}\]\(\s*(<[^<>\n]*>|(?:\\.|[^\s()])*)`,
+  String.raw`(!?)\[${NESTED_LABEL}\]\(\s*(<[^<>\n]*>|${BALANCED_DESTINATION}${CLOSES_LINK}|${PLAIN_DESTINATION})`,
   "g",
 );
 const REFERENCE_TARGET = /^( {0,3}\[((?:[^[\]\\]|\\.)*)\]:\s*)(<[^<>\n]*>|\S+)/;
@@ -340,12 +349,20 @@ function classify(lines: string[]): Classified {
       masked.push(" ".repeat(original.length));
       return;
     }
+    // A block already open owns this line, so the line is its content rather
+    // than a block written at the column it happens to start in.
+    const hidden = inComment;
     // Only now, outside every fence, does a comment hide what follows.
     const [line, stillInComment] = maskComments(original, inComment);
     inComment = stillInComment;
     // Taken before an HTML opener is hidden: it renders as nothing, but its
-    // indentation still closes a list item it sits to the left of.
-    track(line);
+    // indentation still closes a list item it sits to the left of. A comment
+    // or a <pre> keeps only its column, since the text it hides is not
+    // Markdown and must not open a list of its own.
+    const opensRaw = RAW_HTML_OPEN.test(line);
+    track(
+      !hidden && (opensRaw || !line.trim()) ? hiddenStructure(original) : line,
+    );
     for (let at = 0; at < line.length; at += 1) {
       if (line[at] === " " && original[at] !== " ") {
         const from = at;
@@ -355,7 +372,7 @@ function classify(lines: string[]): Classified {
         comments.push({ start: start + from, end: start + at, content: "" });
       }
     }
-    if (RAW_HTML_OPEN.test(line)) {
+    if (opensRaw) {
       inRawHtml = !RAW_HTML_CLOSE.test(line.replace(RAW_HTML_OPEN, ""));
       masked.push(" ".repeat(line.length));
       afterParagraph = false;

@@ -1568,3 +1568,56 @@ def test_a_bare_level_two_marker_ends_the_release(changelog_module, run_scanner)
     # nothing, so it ends the bullet instead of being appended to it.
     preview = run_scanner("preview", "- new thing\n##\nUnrelated scratch notes\n")
     assert preview_leads(preview) == ["new thing"]
+
+
+def test_a_comment_between_bullets_closes_the_list(changelog_module, run_scanner):
+    """A comment is an HTML block (spec 0.31.2 section 4.6, type 2), so one
+    written at the margin under a bullet is not indented enough to continue that
+    item and closes the list. The scanners blanked the line before list tracking
+    saw it, which reads as a blank line and leaves the item open, so the release
+    heading below it looked like nested item content and the new release was
+    merged into the one above."""
+    text = "## 1.0\n\n- old item\n<!-- separator -->\n  ## 2.0\n\n- new item\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0", "2.0"]
+    assert "new item" not in changelog_module.find_release_notes(text, "1.0").body
+    assert "new item" in changelog_module.find_release_notes(text, "2.0").body
+    # Written at the item's own content column the comment stays inside it, so
+    # the heading under it really is nested and indexes nothing.
+    nested = "## 1.0\n\n- old item\n  <!-- separator -->\n  ## 2.0\n\n- new item\n"
+    assert [e.version for e in changelog_module.parse_changelog(nested)] == ["1.0"]
+    # The link resolver reads the same column: with the list closed, four spaces
+    # is an indented code block, whose sample text must survive untouched.
+    code = run_scanner("links", "- old item\n<!-- separator -->\n    [guide](docs/a.md)\n")
+    assert "[guide](docs/a.md)" in code and "github.com" not in code
+    # Inside the item those four spaces are only two columns in, so it is prose
+    # holding a link and the destination still resolves.
+    prose = run_scanner("links", "- old item\n  <!-- separator -->\n    [guide](docs/a.md)\n")
+    assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in prose
+    # The preview reads it the same way: the fence is indented code, not a fence
+    # that swallows the bullet below it.
+    preview = run_scanner(
+        "preview",
+        "- Details:\n<!-- separator -->\n    ```\n    - hidden sample\n- Real second item\n",
+    )
+    assert preview_leads(preview) == ["Details:", "Real second item"]
+
+
+def test_a_parenthesised_link_destination_still_resolves(run_scanner):
+    """A destination may hold parentheses while they balance (spec 0.31.2
+    section 6.3), so `[x]((draft).md)` points at `(draft).md`. The resolver's
+    destination expression stopped at the first paren, matched an empty
+    destination and left the markdown alone, so the link resolved against
+    Studio's own origin instead of the repository."""
+    leading = run_scanner("links", "[details]((draft).md)\n")
+    assert "https://github.com/unslothai/unsloth/blob/main/(draft).md" in leading
+    # An image resolves against the raw host the same way.
+    image = run_scanner("links", "![shield]((badge).png)\n")
+    assert "https://raw.githubusercontent.com/unslothai/unsloth/main/(badge).png" in image
+    # A pair in the middle of a path balances too.
+    middle = run_scanner("links", "[api](docs/(v2)/api.md)\n")
+    assert "https://github.com/unslothai/unsloth/blob/main/docs/(v2)/api.md" in middle
+    # An unbalanced paren is the link's own closer, so the destination ends at
+    # it and the stray text stays exactly where the renderer leaves it.
+    unbalanced = run_scanner("links", "[x](a(b.md)\n")
+    assert "https://github.com/unslothai/unsloth/blob/main/a(b.md)" in unbalanced
+    assert "<" not in unbalanced

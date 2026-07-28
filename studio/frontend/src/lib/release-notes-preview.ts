@@ -6,6 +6,7 @@ import { codeSpans, parkCodeSpans } from "@/lib/markdown-code-spans";
 import {
   EMPTY_LIST_STATE,
   type ListState,
+  hiddenStructure,
   indentWidth,
   openLists,
 } from "@/lib/markdown-list-columns";
@@ -328,6 +329,24 @@ function opensHtmlBlock(line: string, afterParagraph: boolean): boolean {
   return !afterParagraph && HTML_TAG_ONLY_LINE.test(line);
 }
 
+/**
+ * The line as list tracking sees it. A comment or a raw block renders nothing,
+ * but the line that opens one is still a block written at its own column, so it
+ * closes a list item it sits to the left of. Only the column survives, since
+ * the text it hides is not Markdown. A line inside a block already open is that
+ * block's content rather than a block of its own, so it keeps neither.
+ */
+function structuralLine(
+  line: string,
+  visible: string,
+  hidden: boolean,
+): string {
+  if (visible.trim() || hidden) {
+    return visible;
+  }
+  return hiddenStructure(line);
+}
+
 interface ScanState {
   openFence: string | null;
   // Content column of the list item an open fence belongs to, 0 at document
@@ -377,6 +396,9 @@ function visibleText(line: string, state: ScanState): ScannedLine {
   if (state.openFence !== null) {
     return { text: null, structural: "" };
   }
+  // A block already open owns this line, so the line is its content rather
+  // than a block written at the column it happens to start in.
+  const hidden = state.inComment || state.inRawHtml !== null;
   // Commented-out notes are not rendered, so they are not previewed either.
   const [uncommented, stillInComment] = stripCommentSpans(
     line,
@@ -385,17 +407,18 @@ function visibleText(line: string, state: ScanState): ScannedLine {
   state.inComment = stillInComment;
   const [visible, stillInRaw] = stripRawHtml(uncommented, state.inRawHtml);
   state.inRawHtml = stillInRaw;
+  // Taken before the opener is hidden: it renders as nothing, but its
+  // indentation still closes a list item it sits to the left of.
+  const structural = structuralLine(line, visible, hidden);
   if (
     stillInRaw === null &&
     visible.trim() &&
     opensHtmlBlock(visible, state.afterParagraph)
   ) {
     state.inHtmlBlock = true;
-    // Taken before the opener is hidden: it renders as nothing, but its
-    // indentation still closes a list item it sits to the left of.
-    return { text: "", structural: visible };
+    return { text: "", structural };
   }
-  return { text: visible, structural: visible };
+  return { text: visible, structural };
 }
 
 /**

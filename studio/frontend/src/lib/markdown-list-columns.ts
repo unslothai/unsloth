@@ -43,6 +43,23 @@ const HTML_BLOCK_TAGS = new Set(
 // Content indented more than this after a marker is an indented code block, so
 // the item's content starts one column past the marker instead.
 const MAX_ITEM_PADDING = 4;
+// Stands in for a line the renderer hides. `#` is a block in its own right, so
+// list tracking reads it the way it reads a comment: never a marker, never a
+// lazy paragraph continuation.
+const HIDDEN_BLOCK = "#";
+const LEADING_SPACE = /^[ \t]*/;
+
+/**
+ * `line` as list tracking sees it once the renderer hides its text. A comment
+ * or a raw HTML block renders nothing, but it is still a block written at its
+ * own column, so it closes the items it sits to the left of. Only the
+ * indentation survives: what the block hides is not Markdown and must not open
+ * a list of its own. Ported from `_hidden_structure` on the backend.
+ */
+export function hiddenStructure(line: string): string {
+  const indent = LEADING_SPACE.exec(line)?.[0] ?? "";
+  return line.trim() ? `${indent}${HIDDEN_BLOCK}` : "";
+}
 
 /** Columns of leading whitespace, counting a tab to the next stop of four. */
 export function indentWidth(line: string): number {
