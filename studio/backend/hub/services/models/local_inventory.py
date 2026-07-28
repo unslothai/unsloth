@@ -127,10 +127,13 @@ def _scan_models_dir(
     if not models_dir.exists() or not models_dir.is_dir():
         return []
 
+    # _scan_custom_folder runs this and _scan_lmstudio_dir over the same path, so
+    # a split export registered directly as a scan folder has to collapse here
+    # too, or the standalone-.gguf pass fans it out into a row per shard.
     _is_self_model = _is_model_directory_for_scan(
         models_dir,
         entry_limit = entry_limit,
-    )
+    ) or _dir_is_sharded_gguf(models_dir)
 
     if _is_self_model:
         try:

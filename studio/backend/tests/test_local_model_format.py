@@ -138,6 +138,26 @@ def test_scan_lmstudio_dir_collapses_split_export_as_scan_root(tmp_path):
     assert rows[0].shard_count == 3
 
 
+def test_scan_models_dir_collapses_split_export_as_scan_root(tmp_path):
+    # A custom folder is scanned by _scan_models_dir *and* _scan_lmstudio_dir, so
+    # the split root has to collapse in both. Otherwise this scanner's standalone
+    # -.gguf pass emits a row per shard and the picker offers a non-first part.
+    _touch_split(tmp_path, "Qwen3.5-2B.BF16")
+    rows = models_route._scan_models_dir(tmp_path)
+    assert [m.display_name for m in rows] == [tmp_path.name]
+    assert rows[0].shard_count == 3
+    assert rows[0].model_format == "gguf"
+
+
+def test_scan_models_dir_standalone_ggufs_at_root_stay_separate(tmp_path):
+    # The collapse is keyed on a split, not on "root holds GGUFs": loose whole
+    # GGUFs at a scan root are still one model each.
+    _touch(tmp_path / "model-Q4_K_M.gguf")
+    _touch(tmp_path / "other-Q8_0.gguf")
+    names = {m.display_name for m in models_route._scan_models_dir(tmp_path)}
+    assert names == {"model-Q4_K_M", "other-Q8_0"}
+
+
 def test_scan_lmstudio_dir_publisher_of_whole_ggufs_still_descends(tmp_path):
     # Only a *split* collapses. A publisher holding several whole GGUFs keeps
     # yielding one row per model.

@@ -290,7 +290,12 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
     if not models_dir.exists() or not models_dir.is_dir():
         return []
 
-    _is_self_model = _is_model_directory(models_dir)
+    # models_dir may itself be the model: a normal model directory, or a
+    # config-less split export registered directly as a scan folder. The custom
+    # scan runs this alongside _scan_lmstudio_dir on the same path, so it needs
+    # the same collapse, otherwise the standalone-.gguf pass below fans a split
+    # out into a row per shard and lets the user pick a non-first part.
+    _is_self_model = _is_model_directory(models_dir) or _dir_gguf_shard_count(models_dir) > 0
 
     if _is_self_model:
         try:

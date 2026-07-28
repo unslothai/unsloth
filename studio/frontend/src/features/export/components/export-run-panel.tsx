@@ -120,12 +120,17 @@ const SHARD_SIZE_DEFAULT = "2GB";
 // than an hour in, after the 16-bit merge, inside the converter subprocess.
 const SHARD_SIZE_RE = /^\d+\s*[KMG]B?$/i;
 
+/** The payload sentinels for "don't split" — these serialize to null. */
+function isUnsetShardSize(value: string): boolean {
+  const size = value.trim();
+  return !size || size === "0" || size.toLowerCase() === "none";
+}
+
 /** True when the resolved shard size is safe to send. "0" (single file) and the
  * presets always are; only free-text custom input can be wrong. */
 function isValidShardSize(value: string): boolean {
-  const size = value.trim();
-  if (!size || size === "0" || size.toLowerCase() === "none") return true;
-  return SHARD_SIZE_RE.test(size);
+  if (isUnsetShardSize(value)) return true;
+  return SHARD_SIZE_RE.test(value.trim());
 }
 
 export interface ExportRunPanelProps {
@@ -197,9 +202,15 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
         ggufShardSize.trim() as (typeof SHARD_SIZE_PRESETS)[number],
       ),
   );
-  // Only free-text custom input can be malformed; presets and "0" are always fine.
+  // Blank is only meaningful in single-file mode. Left empty under "Split into
+  // shards" it would serialize to null, quietly land on the converter's 50GB
+  // default, and write shards into a folder whose name says single file, so
+  // require an actual size there.
+  const shardSizeMissing =
+    splitMode === "split" && isUnsetShardSize(ggufShardSize);
   const shardSizeValid =
-    exportMethod !== "gguf" || isValidShardSize(ggufShardSize);
+    exportMethod !== "gguf" ||
+    (isValidShardSize(ggufShardSize) && !shardSizeMissing);
 
   const run = useExportRuntimeStore(
     useShallow((s) => ({
@@ -465,6 +476,11 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                       ) : (
                         "Each file will be at most this size. A k-quant (Q4_K_M etc.) splits its full-precision base but is written as one file itself; a lone F16/BF16/Q8_0 export splits directly."
                       )
+                    ) : shardSizeMissing ? (
+                      <>
+                        Enter a shard size, or switch to{" "}
+                        <span className="font-medium">Single file</span>.
+                      </>
                     ) : (
                       <>
                         Not a valid size. Use a whole number plus{" "}
