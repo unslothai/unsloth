@@ -1640,3 +1640,67 @@ def test_table_nested_in_a_header_inside_a_cell_keeps_its_columns():
 def test_truncated_header_and_blockquote_keep_source_order():
     out = html_to_markdown("<body><main><header><h1>Title</h1><blockquote>Quote", main_content = True)
     assert out.index("Title") < out.index("Quote")
+
+
+# Header content interacts with every other buffer the renderer keeps, and each
+# pairing has a well-formed and a malformed case, so the grid is enumerated
+# rather than sampled: that is where the one-off bugs in this area have lived.
+_GRID_HEADINGS = {
+    "h1": "<h1>Page Title</h1>",
+    "aria": "<div role='heading'>Page Title</div>",
+    "in_quote": "<blockquote><h1>Page Title</h1></blockquote>",
+    "is_link": "<a role='heading' href='/t'>Page Title</a>",
+    "none": "",
+}
+_GRID_WRAPPERS = {
+    "bare": ("", ""),
+    "quote": ("<blockquote>", "</blockquote>"),
+    "cell": ("<table><tr><td>", "</td></tr></table>"),
+    "link": ("<a href='/x'>", "</a>"),
+    "item": ("<ul><li>", "</li></ul>"),
+    "pre": ("<pre>", "</pre>"),
+}
+_GRID_NESTED = {
+    "bare": ("", ""),
+    "quote": ("<blockquote>", "</blockquote>"),
+    "cell": ("<table><tr><td>", "</td></tr></table>"),
+    "pre": ("<pre>", "</pre>"),
+}
+_GRID_BODY = "Article body sentence. " * 30
+
+
+@pytest.mark.parametrize("heading", sorted(_GRID_HEADINGS))
+@pytest.mark.parametrize("wrapper", sorted(_GRID_WRAPPERS))
+@pytest.mark.parametrize("nested", sorted(_GRID_NESTED))
+@pytest.mark.parametrize("inner", ("link_dense", "content"))
+@pytest.mark.parametrize("close_header", (True, False))
+@pytest.mark.parametrize("close_nested", (True, False))
+def test_header_survives_every_buffer_combination(
+    heading, wrapper, nested, inner, close_header, close_nested
+):
+    open_wrap, close_wrap = _GRID_WRAPPERS[wrapper]
+    open_nest, close_nest = _GRID_NESTED[nested]
+    payload = (
+        f"<ul>{_interlanguage_list(300)}</ul>"
+        if inner == "link_dense"
+        else "<p>By Jane Doe, 12 July 2026</p><p>A summary of the argument.</p>"
+    )
+    header = (
+        f"<header>{_GRID_HEADINGS[heading]}{open_nest}{payload}"
+        f"{close_nest if close_nested else ''}{'</header>' if close_header else ''}"
+    )
+    html = (
+        f"<body><main>{open_wrap}{header}{close_wrap if close_header else ''}"
+        f"<p>{_GRID_BODY}</p></main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    # These hold for every shape, however malformed.
+    assert "Article body sentence." in out, "body lost"
+    assert out.strip(), "empty output"
+    assert out.index("Article body sentence.") < 16000, "body pushed past the fetch cap"
+    # The title is only guaranteed where the markup closes and no <pre> is
+    # involved: inside <pre> a heading is verbatim text, and unclosed shapes are
+    # recovered on a best-effort basis that predates this pass.
+    well_formed = close_header and close_nested and "pre" not in (wrapper, nested)
+    if _GRID_HEADINGS[heading] and well_formed:
+        assert out.count("Page Title") == 1, "title duplicated or lost"

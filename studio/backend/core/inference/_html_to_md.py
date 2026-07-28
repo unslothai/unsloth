@@ -212,20 +212,21 @@ class _HeaderFrame:
         "heading_parts",
         "text_chars",
         "link_chars",
-        "outer_in_link",
+        "outer_link_seq",
         "outer_cell_seq",
         "outer_in_pre",
         "outer_bq_depth",
     )
 
-    def __init__(self, depth: int, in_link: bool, cell_seq: int, in_pre: bool, bq_depth: int):
+    def __init__(self, depth: int, link_seq: int, cell_seq: int, in_pre: bool, bq_depth: int):
         self.depth = depth
         self.parts: list[str] = []
         # Heading output, teed so a heading routed through a nested buffer survives.
         self.heading_parts: list[str] = []
         # Side buffers open at this point enclose the frame; later ones are nested.
-        # The cell is held by sequence number, so a nested table's cells differ.
-        self.outer_in_link = in_link
+        # Links and cells are held by sequence number, not a flag: an inner one
+        # replaces the outer in the renderer's single slot, so identity is needed.
+        self.outer_link_seq = link_seq
         self.outer_cell_seq = cell_seq
         self.outer_in_pre = in_pre
         self.outer_bq_depth = bq_depth
@@ -299,6 +300,7 @@ class _MarkdownRenderer(HTMLParser):
         self._link_href: str | None = None
         self._link_text_parts: list[str] = []
         self._in_link: bool = False
+        self._link_seq: int = 0
         # Text under the open <a>, credited only at </a>: an <a> left open adopts
         # body prose, which is not furniture.
         self._link_header_chars: int = 0
@@ -331,19 +333,27 @@ class _MarkdownRenderer(HTMLParser):
 
         Such a buffer emits into the frame when it closes; an enclosing one
         (already open at ``<header>``) must not capture it."""
-        return (
-            (self._in_link and not frame.outer_in_link)
-            or (self._in_cell and self._cell_seq != frame.outer_cell_seq)
-            or (self._in_pre and not frame.outer_in_pre)
-            or len(self._bq_stack) > frame.outer_bq_depth
-        )
+        # Only the buffer _emit would actually pick matters, and in its order: a
+        # blockquote inside a cell-enclosed header still routes to the cell, so
+        # OR-ing across all of them would wrongly call that nested.
+        if self._in_link:
+            return self._link_seq != frame.outer_link_seq
+        if self._in_cell:
+            return self._cell_seq != frame.outer_cell_seq
+        if self._in_pre:
+            return not frame.outer_in_pre
+        return len(self._bq_stack) > frame.outer_bq_depth
 
     def _emit(self, text: str) -> None:
         frame = self._header_stack[-1] if self._header_stack else None
         # Tee wherever the text is routed, so a heading inside a nested buffer is
-        # captured. Link text arrives twice (raw, then formatted by _finish_link with
-        # _in_link cleared), so the _in_link guard tees only the formatted form.
-        if frame is not None and self._heading_marks and not self._in_link:
+        # captured. A link opened inside the frame delivers its text twice (raw,
+        # then formatted by _finish_link), so only the formatted form is teed; a
+        # link that encloses the frame never re-delivers, so it is teed as it comes.
+        in_nested_link = (
+            self._in_link and self._link_seq != frame.outer_link_seq if frame else False
+        )
+        if frame is not None and self._heading_marks and not in_nested_link:
             frame.heading_parts.append(text)
         if frame is not None and not self._nested_buffer_open(frame):
             frame.parts.append(text)
@@ -470,7 +480,7 @@ class _MarkdownRenderer(HTMLParser):
 
         Their content is the header's, so it has to land in the frame before the
         strip is judged; otherwise it is emitted afterwards and escapes."""
-        if self._in_link and not frame.outer_in_link:
+        if self._in_link and self._link_seq != frame.outer_link_seq:
             self._finish_link()
         if self._in_inline_code:
             self._in_inline_code = False
@@ -518,7 +528,7 @@ class _MarkdownRenderer(HTMLParser):
                 self._header_stack.append(
                     _HeaderFrame(
                         len(self._open_tags) - 1,
-                        self._in_link,
+                        self._link_seq if self._in_link else -1,
                         self._cell_seq if self._in_cell else -1,
                         self._in_pre,
                         len(self._bq_stack),
@@ -604,6 +614,7 @@ class _MarkdownRenderer(HTMLParser):
             self._link_href = attr_dict.get("href")
             self._link_text_parts = []
             self._in_link = True
+            self._link_seq += 1
             self._link_header_chars = 0
 
         elif tag in _INLINE_EMPHASIS:
