@@ -374,7 +374,15 @@ elif DEVICE_TYPE == "hip":
     # NO-OP for rocm device
     pass
 elif DEVICE_TYPE == "xpu":
-    import bitsandbytes as bnb
+    # Same degradation as the cuda branch above: no bnb means no 4bit, not a
+    # failed `import unsloth`.
+    try:
+        import bitsandbytes as bnb
+    except Exception:
+        print(
+            "Unsloth: `bitsandbytes` is not installed - 4bit QLoRA unallowed, but 16bit and full finetuning works!"
+        )
+        bnb = None
 
     # TODO: check triton for intel installed properly.
     pass

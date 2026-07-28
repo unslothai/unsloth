@@ -133,11 +133,28 @@ def calculate_settings(
 
 
 HAS_CUDA_STREAM = False
-import bitsandbytes as bnb
+try:
+    import bitsandbytes as bnb
+except Exception:
+    # device_type.py already degrades to 16bit/full finetuning when bnb is missing
+    # (e.g. gfx906, whose generic wheel has no kernels). Keep the import working and
+    # fail only if a 4bit path is actually entered.
+    bnb = None
 
-# https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
-HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
-get_ptr = bnb.functional.get_ptr
+
+def _bnb_required(*args, **kwargs):
+    raise RuntimeError(
+        "Unsloth: 4bit QLoRA needs `bitsandbytes`, which is not installed. "
+        "16bit LoRA and full finetuning work without it."
+    )
+
+
+if bnb is not None:
+    # https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
+    HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
+    get_ptr = bnb.functional.get_ptr
+else:
+    get_ptr = _bnb_required
 
 if DEVICE_TYPE == "xpu":
     HAS_XPU_STREAM = True
@@ -235,18 +252,25 @@ else:
 # Bitsandbytes operations
 ctypes_c_int = ctypes.c_int
 ctypes_c_int32 = ctypes.c_int32
-cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
-cdequantize_blockwise_fp16_nf4 = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
-cdequantize_blockwise_bf16_nf4 = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
-
-if DEVICE_TYPE == "xpu":
-    # https://github.com/bitsandbytes-foundation/bitsandbytes/blob/c3b8de268fdb55a88f92feada23fc811a1e6877a/bitsandbytes/backends/xpu/ops.py#L115
-    # for xpu, inference gemv using above link
-    cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemv_4bit_inference_fp16
-    cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemv_4bit_inference_bf16
+if bnb is None:
+    cdequantize_blockwise_fp32 = _bnb_required
+    cdequantize_blockwise_fp16_nf4 = _bnb_required
+    cdequantize_blockwise_bf16_nf4 = _bnb_required
+    cgemm_4bit_inference_naive_fp16 = _bnb_required
+    cgemm_4bit_inference_naive_bf16 = _bnb_required
 else:
-    cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
-    cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
+    cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+    cdequantize_blockwise_fp16_nf4 = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
+    cdequantize_blockwise_bf16_nf4 = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
+
+    if DEVICE_TYPE == "xpu":
+        # https://github.com/bitsandbytes-foundation/bitsandbytes/blob/c3b8de268fdb55a88f92feada23fc811a1e6877a/bitsandbytes/backends/xpu/ops.py#L115
+        # for xpu, inference gemv using above link
+        cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemv_4bit_inference_fp16
+        cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemv_4bit_inference_bf16
+    else:
+        cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
+        cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
 
 
 torch_device_stream = (
