@@ -662,6 +662,39 @@ def test_route_to_vulkan_prebuilt_cpu_fallback_wins():
     assert routed is host
 
 
+@pytest.mark.parametrize("backend", ["hip", "rocm", "cpu"])
+def test_explicit_non_vulkan_backend_suppresses_intel_auto_route(monkeypatch, backend):
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", backend)
+    host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
+
+    routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(
+        host, FORK, "b9596-mix-abc", force_cpu = False
+    )
+
+    assert routed is host
+    assert repo == FORK
+    assert tag == "b9596-mix-abc"
+    assert persist is None
+
+
+@pytest.mark.parametrize("backend", ["hip", "rocm", "cpu"])
+def test_non_vulkan_backend_argument_suppresses_intel_auto_route(backend):
+    host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
+
+    routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(
+        host,
+        FORK,
+        "b9596-mix-abc",
+        force_cpu = False,
+        llama_backend = backend,
+    )
+
+    assert routed is host
+    assert repo == FORK
+    assert tag == "b9596-mix-abc"
+    assert persist is None
+
+
 @pytest.mark.parametrize("cpu_flag", ["--cpu-fallback", "--force-cpu"])
 def test_resolve_prebuilt_cpu_fallback_overrides_intel_vulkan(monkeypatch, capsys, cpu_flag):
     """Either CPU flag via CLI must suppress Vulkan even on an Intel GPU host: both

@@ -6444,7 +6444,12 @@ def _route_to_vulkan_prebuilt(
     )
     # No PHYSICAL NVIDIA, not merely no usable one: Vulkan ignores CUDA_VISIBLE_DEVICES, so
     # auto-routing a host that hides its NVIDIA card would let it grab the reserved GPU.
-    auto_intel = host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm
+    auto_intel = (
+        explicit_backend is None
+        and host.has_intel_gpu
+        and not host.has_physical_nvidia
+        and not host.has_rocm
+    )
     if force_cpu or not (forced or auto_intel or auto_no_hip):
         return host, published_repo, published_release_tag, None
     if host.is_macos:
