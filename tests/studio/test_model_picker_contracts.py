@@ -737,6 +737,11 @@ def test_vulkan_inference_devices_are_the_pickable_set():
         '(d.index_kind === "vulkan" || '
         '(data?.device_backend !== "xpu" && d.index_kind === "physical")),' in src
     )
-    # Only a physical CUDA index is ever handed to the diffusion runner.
-    assert 'const diffusionBackend = data?.device_backend === "cuda";' in src
+    # Only a physical index is ever handed to the diffusion runner, and ROCm
+    # counts: it reuses torch.cuda.* and the same physical-ID path, so excluding
+    # it would hide the picker on every multi-GPU ROCm host.
+    assert (
+        "const diffusionBackend = "
+        'data?.device_backend === "cuda" || data?.device_backend === "rocm";' in src
+    )
     assert 'diffusionPinnable: diffusionBackend && d.index_kind === "physical",' in src

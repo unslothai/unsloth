@@ -172,7 +172,10 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
   // must hide every pick surface: the backend reports gguf_gpu_ids_supported,
   // and absent support info defaults to pinnable (older backend).
   const pinnableBackend = data?.gpu?.gguf_gpu_ids_supported !== false;
-  const diffusionBackend = data?.device_backend === "cuda";
+  // ROCm reuses torch.cuda.* and the same physical-ID path, so the runner takes
+  // its indices too; only the reported label differs (_backend_label swaps it).
+  const diffusionBackend =
+    data?.device_backend === "cuda" || data?.device_backend === "rocm";
   return (data?.gpu?.devices ?? [])
     .filter((d) => typeof d.index === "number")
     .map((d) => ({
