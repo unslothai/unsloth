@@ -8,6 +8,7 @@ mod desktop_update_policy;
 mod diagnostics;
 mod install;
 mod native_backend_lease;
+mod native_clipboard;
 mod native_file_dialogs;
 mod native_intents;
 mod native_path_policy;
@@ -218,6 +219,8 @@ fn main() {
             desktop_update_policy::check_desktop_manual_update,
             desktop_update_policy::desktop_update_policy,
             diagnostics::collect_support_diagnostics,
+            native_clipboard::read_native_clipboard_files,
+            native_clipboard::read_native_clipboard_png,
             native_file_dialogs::save_native_file,
             native_file_dialogs::pick_native_chat_import,
             native_intents::drain_native_intents,

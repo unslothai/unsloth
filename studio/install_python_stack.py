@@ -28,6 +28,9 @@ _BACKEND_DIR = Path(__file__).resolve().parent / "backend"
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(1, str(_BACKEND_DIR))
 
+# setup.sh/setup.ps1 invoke this by path, so its directory is sys.path[0].
+import install_manifest  # noqa: E402
+
 from backend.utils.wheel_utils import (
     flash_attn_package_version,
     flash_attn_wheel_url,
@@ -92,6 +95,40 @@ def _strix_needs_amd_arch_index(ver: tuple[int, int]) -> bool:
     future 7.3+), never one at/above the floor."""
     key = next((k for k in sorted(_ROCM_TORCH_INDEX, reverse = True) if ver >= k), None)
     return key is not None and key < _ROCM_ARCH_INDEX_FLOOR
+
+
+# MI50 / Radeon VII (gfx906, Vega 20): rocm6.4+/7.x wheels bundle ROCm libraries
+# whose Tensile kernels dropped gfx906 (rocBLAS "TensileLibrary.dat ... not read
+# for gfx906", ROCm/TheRock#1844), failing at the first BLAS call. The rocm6.3
+# index is the last one whose wheels run on gfx906 (torch 2.7.0 verified on MI50
+# 32GB; up to 2.9 in community use). Uses the _default (<2.11) pkg specs -- the
+# rocm7.2 floor of 2.11 cannot be satisfied there. Mirrors install.sh.
+_GFX906_LEGACY_TAG = "rocm6.3"
+
+
+def _gfx906_needs_legacy_index(ver: tuple[int, int]) -> bool:
+    """True when the generic tag picked for the host ROCm version is newer than
+    rocm6.3, i.e. its wheels lack gfx906 kernels and must be rerouted."""
+    key = next((k for k in sorted(_ROCM_TORCH_INDEX, reverse = True) if ver >= k), None)
+    return key is not None and key > (6, 3)
+
+
+def _runtime_target_is_gfx906() -> bool:
+    """True when the runtime GPU target is gfx906 (MI50 / Radeon VII).
+
+    An explicit UNSLOTH_ROCM_GFX_ARCH wins (mirrors _infer_linux_amd_gfx_arch /
+    the display path), so a host whose rocminfo/amd-smi emit no gfx token can
+    still opt in. Otherwise report gfx906 only when it is the SOLE distinct arch:
+    _detect_amd_gfx_codes() de-duplicates arches, which loses per-device ordinals
+    on a mixed host, so a non-gfx906 selection is never mis-identified as gfx906
+    (and downgraded to rocm6.3). Mixed gfx906+dGPU hosts opt in with the env var.
+    """
+    # Normalize a copied HIP gcnArchName (gfx906:sramecc-:xnack- -> gfx906) so the
+    # feature-flag suffix does not defeat the exact comparison (mirrors device_type.py).
+    override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":")[0]
+    if override:
+        return override == "gfx906"
+    return set(_detect_amd_gfx_codes()) == {"gfx906"}
 
 
 # AMD per-arch leaves needing the torch 2.11 floor (the _grouped_mm <2.11 bug).
@@ -776,7 +813,7 @@ def _linux_amd_gfx_from_cpuinfo() -> "str | None":
     """Infer gfx arch from /proc/cpuinfo on integrated AMD APUs (Strix Halo/Point)."""
     try:
         text = Path("/proc/cpuinfo").read_text(encoding = "utf-8", errors = "replace")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     if re.search(r"Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo", text, re.IGNORECASE):
         return "gfx1151"
@@ -828,7 +865,7 @@ def _is_wsl() -> bool:
     try:
         with open("/proc/version", encoding = "utf-8", errors = "replace") as fh:
             return "microsoft" in fh.read().lower()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return False
 
 
@@ -856,7 +893,7 @@ def _linux_amd_display_device_present() -> bool:
                     continue
                 if (dev / "class").read_text(encoding = "utf-8").strip().startswith("0x03"):
                     return True
-            except OSError:
+            except (OSError, UnicodeDecodeError):
                 continue
     except OSError:
         pass
@@ -937,6 +974,34 @@ def _detect_bnb_rocm_dll_ver() -> str | None:
     # Highest numeric suffix wins (e.g. "713" over "72"); glob order is not
     # guaranteed, so sort rather than take the first match.
     return max(all_vers, key = lambda v: int(v)) if all_vers else None
+
+
+# Set right before the base unsloth install (which resolves its unconditional
+# bitsandbytes dependency); read by _ensure_rocm_torch to drop a freshly pulled
+# generic wheel on gfx906 while leaving a pre-existing source build untouched.
+_GFX906_BNB_ABSENT_BEFORE_BASE = False
+
+
+def _bitsandbytes_installed() -> bool:
+    """True if bitsandbytes is importable in the target venv. Runs a fresh
+    subprocess so a package installed earlier this run is seen; only checks the
+    spec (does NOT import bitsandbytes)."""
+    try:
+        return (
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import importlib.util, sys; "
+                    "sys.exit(0 if importlib.util.find_spec('bitsandbytes') else 1)",
+                ],
+                capture_output = True,
+                timeout = 60,
+            ).returncode
+            == 0
+        )
+    except Exception:
+        return False
 
 
 _BNB_ROCM_SITECUSTOMIZE_BEGIN = "# BEGIN Unsloth BNB_ROCM_VERSION"
@@ -1069,7 +1134,7 @@ def _has_rocm_gpu() -> bool:
                     try:
                         with open(gpu_id_path, encoding = "utf-8") as fh:
                             gpu_id = fh.read().strip()
-                    except OSError:
+                    except (OSError, UnicodeDecodeError):
                         continue
                     if not gpu_id or gpu_id == "0":  # gpu_id 0 = CPU node
                         continue
@@ -1081,7 +1146,7 @@ def _has_rocm_gpu() -> bool:
                     try:
                         with open(props_path, encoding = "utf-8") as fh:
                             props = fh.read()
-                    except OSError:
+                    except (OSError, UnicodeDecodeError):
                         continue  # can't confirm vendor -- skip
                     if not re.search(r"\bvendor_id\s+4098\b", props):
                         continue
@@ -1890,13 +1955,25 @@ def _ensure_rocm_torch() -> None:
             )
             rocm_torch_ready = True
 
+    # An explicit UNSLOTH_ROCM_GFX_ARCH=gfx906 pins the runtime target to the
+    # MI50 / Radeon VII path; it must win over the Strix probe-order detection
+    # below (a mixed Strix + MI50 host could otherwise route to gfx1151), so the
+    # Strix override is skipped when it is set.
+    _gfx906_arch_override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(
+        ":"
+    )[0] == "gfx906"
+
     # Strix Halo / Point (gfx1151 / gfx1150) need torch from AMD's per-gfx index
     # (2.11+rocm7.13); any generic pytorch.org rocm index lacks the fixes (ROCm 7.1
     # segfaults in _grouped_mm). See _strix_needs_amd_arch_index for the floor gate.
     _strix_override_url: "str | None" = None
     _strix_override_pkgs: "tuple[str, str, str] | None" = None
     # An explicit ROCm pin is authoritative: never auto-reroute it.
-    if _strix_needs_amd_arch_index(ver) and _explicit_rocm_torch_index_url() is None:
+    if (
+        _strix_needs_amd_arch_index(ver)
+        and _explicit_rocm_torch_index_url() is None
+        and not _gfx906_arch_override
+    ):
         gfx_codes = _detect_amd_gfx_codes()
         _strix_gfx = {"gfx1151", "gfx1150", "gfx1152"}
         _detected_strix = _strix_gfx.intersection(gfx_codes)
@@ -1933,6 +2010,34 @@ def _ensure_rocm_torch() -> None:
                     f"   skipping AMD per-gfx index override.\n"
                 )
 
+    # gfx906 (MI50 / Radeon VII): is this the runtime GPU target? Used below to skip
+    # the generic bitsandbytes wheel (no gfx906 kernels). This must hold even under
+    # an explicit torch-index pin: a gfx906 host that pins rocm6.3 (without also
+    # setting UNSLOTH_ROCM_GFX_ARCH) would otherwise reinstall the prebuilt bnb wheel
+    # over the user's source-built gfx906 bnb. So a pin suppresses only the torch
+    # reroute (_gfx906_override below), NOT the gfx906 detection for the bnb skip.
+    _runtime_is_gfx906 = _gfx906_arch_override or _runtime_target_is_gfx906()
+    # Reroute torch to the last gfx906-capable wheel family (rocm6.3) only when the
+    # host ROCm version would otherwise pick a newer, kernel-less index -- and never
+    # over an explicit pin or an active Strix reroute (the pin/Strix path installs
+    # its own index; only the bnb skip must still apply on those paths).
+    _gfx906_override = (
+        _runtime_is_gfx906
+        and _gfx906_needs_legacy_index(ver)
+        and _explicit_rocm_torch_index_url() is None
+        and _strix_override_url is None
+    )
+    if _gfx906_override:
+        print(
+            f"\n   gfx906 (MI50 / Radeon VII / Vega 20) is the runtime target with ROCm "
+            f"{ver[0]}.{ver[1]}.\n"
+            f"   Routing torch install to the {_GFX906_LEGACY_TAG} index: the last wheel\n"
+            f"   family that runs on gfx906 (newer rocm wheels ship without gfx906 BLAS\n"
+            f"   kernels and fail at first use). gfx906 is a community-maintained legacy\n"
+            f"   path: 16-bit LoRA and full finetuning work; bitsandbytes 4-bit QLoRA\n"
+            f"   requires a source build of bitsandbytes for gfx906 (see docs.unsloth.ai/amd).\n"
+        )
+
     # The Strix override must fire even when has_hip_torch is True: an existing
     # torch.version.hip == "7.1" is exactly the broken combo it repairs.
     if _strix_override_url is not None and _strix_override_pkgs is not None:
@@ -1944,6 +2049,29 @@ def _ensure_rocm_torch() -> None:
         )
         pip_install(
             "ROCm torch (Strix arch-specific)",
+            "--force-reinstall",
+            "--no-cache-dir",
+            _torch_pkg,
+            _vision_pkg,
+            _audio_pkg,
+            "--index-url",
+            index_url,
+            constrain = False,
+        )
+        rocm_torch_ready = True
+    # gfx906 fires even when has_hip_torch is True: a +rocm7.x build IS the broken
+    # combo it repairs. A torch already on rocm6.3 wheels is left alone (the tag
+    # check below is False, and rocm_torch_ready is already True from has_hip_torch,
+    # so the generic fallback is skipped).
+    elif _gfx906_override and _GFX906_LEGACY_TAG not in _installed_torch_ver:
+        index_url = f"{_PYTORCH_WHL_BASE}/{_GFX906_LEGACY_TAG}"
+        _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS["_default"]
+        print(
+            f"   gfx906 legacy override -- installing torch from "
+            f"{_strip_index_url_credentials(index_url)}"
+        )
+        pip_install(
+            f"ROCm torch (gfx906, {_GFX906_LEGACY_TAG})",
             "--force-reinstall",
             "--no-cache-dir",
             _torch_pkg,
@@ -2002,11 +2130,33 @@ def _ensure_rocm_torch() -> None:
             )
             rocm_torch_ready = True
 
+    # gfx906 has no prebuilt bitsandbytes: the continuous-release/PyPI wheels ship
+    # no gfx906 kernels, and force-reinstalling them would clobber a user's
+    # source-built bnb (the only 4-bit path on this arch) on every `studio update`.
+    # Skip the auto-install and leave whatever bnb is present.
+    if rocm_torch_ready and _runtime_is_gfx906:
+        print(
+            _dim(
+                "   gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels). "
+                "Build bitsandbytes from source for 4-bit QLoRA -- "
+                "see docs.unsloth.ai/get-started/install-and-update/amd."
+            )
+        )
+        # The base install resolves unsloth's unconditional bitsandbytes dep to a
+        # generic CUDA wheel with no gfx906 kernels ("invalid device function" at
+        # 4-bit use). Drop it if this run pulled it in; a pre-existing source build
+        # (present before the base install) is left untouched.
+        if _GFX906_BNB_ABSENT_BEFORE_BASE and _bitsandbytes_installed():
+            print(_dim("   gfx906: removing generic bitsandbytes pulled in as a dependency"))
+            subprocess.run(
+                [sys.executable, "-m", "pip", "uninstall", "-y", "bitsandbytes"],
+                capture_output = True,
+            )
     # Install bitsandbytes only when torch links against ROCm. Prefers the
     # continuous-release_main wheel (bnb PR #1887 4-bit GEMV fix), falling back
     # to PyPI when the pre-release wheel won't install. Use pip for the
     # pre-release wheel because uv rejects its filename/metadata version mismatch.
-    if rocm_torch_ready:
+    elif rocm_torch_ready:
         _bnb_url = _bnb_rocm_prerelease_url()
         _bnb_installed = False
         if _bnb_url is not None:
@@ -2709,6 +2859,18 @@ def install_python_stack() -> int:
             base_total += 2  # flash-attn + torch final repair (step 13), Linux
     _TOTAL = (base_total - 1) if skip_base else base_total
 
+    # Drop it up front: a missing manifest is what tells the CLI, setup.sh and
+    # the preflight that an interrupted run left the venv half-built. Stop if it
+    # survives rather than mutate the venv behind a marker that still verifies.
+    if not install_manifest.remove_manifest():
+        print(
+            f"error: could not remove the stale {install_manifest.MANIFEST_NAME} in "
+            f"{install_manifest.venv_root()}; refusing to install behind a marker "
+            "that would still report this venv as complete",
+            file = sys.stderr,
+        )
+        return 1
+
     # 1. Try uv for faster installs (before pip upgrade -- uv venvs don't
     #    include pip by default).
     USE_UV = _bootstrap_uv()
@@ -2766,6 +2928,13 @@ def install_python_stack() -> int:
             f"mlx-lm{MLX_LM_BAD_VERSION_EXCLUSION}",
             "mlx-vlm",
         )
+
+    # gfx906: the base install below resolves unsloth's unconditional bitsandbytes
+    # dep to a generic CUDA wheel (no gfx906 kernels). Record bnb's presence now so
+    # _ensure_rocm_torch can drop a freshly pulled wheel while keeping a source build.
+    global _GFX906_BNB_ABSENT_BEFORE_BASE
+    if not skip_base:
+        _GFX906_BNB_ABSENT_BEFORE_BASE = not _bitsandbytes_installed()
 
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:
@@ -3079,6 +3248,23 @@ def install_python_stack() -> int:
         stderr = subprocess.DEVNULL,
         **_windows_hidden_subprocess_kwargs(),
     )
+
+    # 15. Record success. Written last so an earlier kill leaves none. Exiting 0
+    # without it reports a finished install every later check calls unfinished.
+    if (
+        install_manifest.write_manifest(
+            req_root = REQ_ROOT,
+            steps_total = _TOTAL,
+            package_name = package_name,
+        )
+        is None
+    ):
+        print(
+            f"error: could not write {install_manifest.MANIFEST_NAME} to "
+            f"{install_manifest.venv_root()}",
+            file = sys.stderr,
+        )
+        return 1
 
     _step(_LABEL, "installed")
     return 0

@@ -114,7 +114,7 @@ def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
                 snapshot = repo_dir / "snapshots" / commit
                 if snapshot.is_dir():
                     return snapshot
-            except OSError:
+            except (OSError, UnicodeDecodeError):
                 continue
     return None
 

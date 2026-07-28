@@ -35,6 +35,11 @@ export interface ListLorasResponse {
 
 export interface LoadModelRequest {
   model_path: string;
+  /**
+     * Stop any chats still generating instead of getting a 409: a load replaces the single
+     * llama-server they all decode on. Set only after the user confirms.
+     */
+  force_cancel_active?: boolean;
   nativePathLease?: string | null;
   hf_token: string | null;
   max_seq_length: number;
@@ -201,6 +206,9 @@ export interface LoadModelResponse {
 
 export interface UnloadModelRequest {
   model_path: string;
+  /** Stop any chats still generating instead of getting a 409: the unload takes down the
+   * llama-server they all decode on. */
+  force_cancel_active?: boolean;
 }
 
 export interface InferenceStatusResponse {
@@ -291,6 +299,12 @@ export interface ApiMonitorEntry {
   completion_tokens?: number | null;
   total_tokens?: number | null;
   error?: string | null;
+  // "lifecycle" is a model load/unload/download: event/reason instead of a prompt.
+  kind?: "request" | "lifecycle";
+  event?: "load" | "unload" | "download" | null;
+  reason?: "manual" | "idle" | "api" | null;
+  // 0-100 while a download row is running.
+  progress?: number | null;
 }
 
 export interface ApiMonitorResponse {

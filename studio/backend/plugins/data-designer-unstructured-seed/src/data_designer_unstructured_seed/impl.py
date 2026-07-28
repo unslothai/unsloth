@@ -29,7 +29,7 @@ class UnstructuredSeedReader(SeedReader[UnstructuredSeedSource]):
                 try:
                     meta = json_mod.loads(meta_path.read_text(encoding = "utf-8"))
                     orig_name = meta.get("original_filename", path_obj.name)
-                except (json_mod.JSONDecodeError, OSError):
+                except (json_mod.JSONDecodeError, OSError, UnicodeDecodeError):
                     pass
             file_entries.append((path_obj, orig_name))
 

@@ -903,7 +903,7 @@ def _rocm_kfd_gpu_pci_ids() -> list[str]:
                             props[parts[0]] = int(parts[1])
                         except ValueError:
                             continue
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return []  # unreadable node could be a GPU: fail closed, don't shift
         if props.get("simd_count", 0) <= 0:
             continue  # CPU node, not a GPU
@@ -1706,7 +1706,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
         "backend": _backend_label(device),
         "parent_visible_gpu_ids": [],
         "devices": [],
-        "index_kind": "relative",
+        "index_kind": "vulkan",
     }
 
 
@@ -2600,22 +2600,35 @@ def get_vulkan_inference_gpu_info() -> Optional[Dict[str, Any]]:
         "backend_cuda_visible_devices": None,
         "parent_visible_gpu_ids": [],
         "devices": [],
-        "index_kind": "relative",
+        "index_kind": "vulkan",
     }
+    # Identity (real device description, explicit iGPU flag) comes from the
+    # inventory; the memory numbers stay on _get_gpu_memory, which applies the
+    # iGPU host reserve and zeroes a shared total. Budgeting an APU off the raw
+    # shared total instead would hand out the whole machine's RAM with no OS
+    # headroom. Join by ordinal; a probe failure just leaves names unresolved.
+    identity: Dict[int, Dict[str, Any]] = {}
+    try:
+        identity = {row["index"]: row for row in LlamaCppBackend.vulkan_device_inventory()}
+    except Exception as e:
+        logger.debug("Vulkan device inventory failed, falling back to ordinals: %s", e)
+
     try:
         for ordinal, free_mib, total_mib in LlamaCppBackend._get_gpu_memory():
-            # Integrated Vulkan GPUs report total=0 because their memory is
-            # shared. Publish the capped free value as their usable inference
-            # budget and mark it so clients do not add system RAM again.
-            shared_memory = total_mib == 0
+            info = identity.get(ordinal, {})
+            # _get_gpu_memory reports total 0 for a shared pool; prefer the
+            # explicit flag when the inventory resolved this ordinal.
+            shared_memory = bool(info["is_igpu"]) if "is_igpu" in info else total_mib == 0
             budget_mib = total_mib or free_mib
             used_mib = max(0, total_mib - free_mib) if total_mib else None
             result["devices"].append(
                 {
                     "index": ordinal,
-                    "index_kind": "relative",
+                    # ggml Vulkan ordinals are the space `--device Vulkan<i>` pins,
+                    # so unlike a torch-xpu relative ordinal these are selectable.
+                    "index_kind": "vulkan",
                     "visible_ordinal": ordinal,
-                    "name": f"Vulkan{ordinal}",
+                    "name": info.get("name") or f"Vulkan{ordinal}",
                     "memory_total_gb": round(budget_mib / 1024, 2),
                     "vram_used_gb": round(used_mib / 1024, 2) if used_mib is not None else None,
                     "vram_free_gb": round(free_mib / 1024, 2),
@@ -2727,7 +2740,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
         "backend_cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         "parent_visible_gpu_ids": [],
         "devices": [],
-        "index_kind": "relative",
+        "index_kind": "vulkan",
     }
 
 

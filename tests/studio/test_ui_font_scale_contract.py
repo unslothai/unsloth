@@ -39,6 +39,17 @@ def _frontend_sources():
             yield path
 
 
+def _rel(path):
+    """Source-relative path with forward slashes on every OS.
+
+    The allowlists above are written with "/", so a plain str(relative_to(SRC))
+    silently stops matching on Windows and every allowlisted file reports as an
+    offender. Keeping the separator normalised here also keeps failure messages
+    identical across platforms.
+    """
+    return path.relative_to(SRC).as_posix()
+
+
 def test_preference_writes_a_scale_not_the_root_font_size():
     assert 'setVar("--ui-font-scale"' in STORE
     assert 'el.setAttribute("data-ui-font-size"' in STORE
@@ -136,7 +147,7 @@ def test_no_raw_pixel_text_utilities():
     for path in _frontend_sources():
         text = path.read_text(encoding = "utf-8")
         for m in re.finditer(r"(?<![\w-])(?:text|leading)-\[[0-9.]+px\]", text):
-            offenders.append(f"{path.relative_to(SRC)}: {m.group(0)}")
+            offenders.append(f"{_rel(path)}: {m.group(0)}")
     assert offenders == [], (
         "Raw px text utilities ignore the UI font size preference; use the "
         f"text-ui-* / leading-ui-* tokens in index.css instead: {offenders[:10]}"
@@ -157,7 +168,7 @@ def test_css_font_sizes_reference_the_scale():
                 continue
             if "1px" in decl:
                 continue  # library layout tricks (KaTeX-style), not text
-            offenders.append(f"{path.relative_to(SRC)}: {decl.strip()[:80]}")
+            offenders.append(f"{_rel(path)}: {decl.strip()[:80]}")
     assert offenders == [], (
         "CSS typography must multiply by var(--ui-font-scale, 1) or be "
         f"allowlisted here with a reason: {offenders[:10]}"
@@ -167,7 +178,7 @@ def test_css_font_sizes_reference_the_scale():
 def test_inline_font_size_styles_reference_the_scale():
     offenders = []
     for path in _frontend_sources():
-        rel = str(path.relative_to(SRC))
+        rel = _rel(path)
         if rel in FONTSIZE_STYLE_ALLOWLIST:
             continue
         text = path.read_text(encoding = "utf-8")

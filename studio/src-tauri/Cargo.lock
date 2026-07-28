@@ -5566,10 +5566,15 @@ checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 name = "unsloth-studio"
 version = "2026.4.8"
 dependencies = [
+ "arboard",
  "base64 0.22.1",
  "dirs",
  "elevated-command",
  "fix-path-env",
+ "gdk",
+ "gdk-pixbuf",
+ "glib",
+ "gtk",
  "hmac",
  "libc",
  "log",
