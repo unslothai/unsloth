@@ -97,7 +97,7 @@ def clear_bootstrap_password() -> None:
             # Removal failed (Windows AV, read-only auth dir). The hash is already
             # committed, so don't fail the change -- but truncate the file so its
             # stale plaintext can't be re-seeded by generate_bootstrap_password()
-            # if a later reset-password deletes auth.db and re-validates it.
+            # if auth.db is ever recreated.
             try:
                 _BOOTSTRAP_PW_PATH.write_text("", encoding = "utf-8")
                 cleared = True

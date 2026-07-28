@@ -502,6 +502,9 @@ def _connect_auth_db() -> sqlite3.Connection:
     auth_dir = STUDIO_HOME / "auth"
     auth_dir.mkdir(parents = True, exist_ok = True)
     conn = sqlite3.connect(auth_dir / "auth.db")
+    # A live server writes this DB (refresh tokens, api-key usage) while the CLI
+    # runs, and SQLite's default lock wait is zero. Match backend get_connection.
+    conn.execute("PRAGMA busy_timeout=5000")
     # Mirror backend storage.get_connection: this path can create auth/ and
     # auth.db (the pre-exposure gate writes here first), and sqlite3.connect
     # makes the DB 0644 under a 022 umask. Keep both private.
@@ -697,12 +700,32 @@ def _bootstrap_deadline_active() -> bool:
         return True
 
 
-def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: str) -> None:
+def _generate_reset_password() -> str:
+    """Readable 4-word passphrase; the user has to type this one back in."""
+    try:
+        import diceware
+
+        return diceware.get_passphrase(
+            options = diceware.handle_options(args = ["-n", "4", "-d", "", "-c"])
+        )
+    except Exception:
+        return secrets.token_urlsafe(24)
+
+
+def _cli_update_password(
+    conn: sqlite3.Connection,
+    username: str,
+    new_password: str,
+    *,
+    revoke_api_keys: bool = False,
+) -> None:
     """CLI mirror of backend update_password + change-password route effects.
 
     One transaction: rehash, rotate the JWT secret, clear must_change_password,
-    revoke refresh tokens (PR #6651 finding), and drop the desktop secret. File
-    cleanup happens after commit; a failed unlink must not roll the change back.
+    revoke refresh tokens (PR #6651 finding), drop the desktop secret, and (for a
+    reset) the API keys the old credential could have minted -- a separate delete
+    could commit and then leave the password unchanged. File cleanup happens after
+    commit; a failed unlink must not roll the change back.
     """
     password_salt, password_hash = _hash_password(new_password)
     with conn:
@@ -719,6 +742,8 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
             "DELETE FROM app_secrets WHERE key IN (?, ?)",
             (DESKTOP_SECRET_HASH_KEY, DESKTOP_SECRET_CREATED_AT_KEY),
         )
+        if revoke_api_keys:
+            conn.execute("DELETE FROM api_keys")
     for stale in (BOOTSTRAP_PASSWORD_FILE, DESKTOP_SECRET_FILE):
         stale_path = STUDIO_HOME / "auth" / stale
         try:
@@ -728,8 +753,8 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
             # change back. But a locked-yet-writable file (Windows AV, read-only
             # auth dir) must be truncated: otherwise its stale plaintext survives
             # and generate_bootstrap_password() would re-validate this revoked
-            # credential after a later reset-password deletes auth.db. Mirrors
-            # backend clear_bootstrap_password().
+            # credential if auth.db is ever recreated. Mirrors backend
+            # clear_bootstrap_password().
             try:
                 stale_path.write_text("", encoding = "utf-8")
                 cleared = True
@@ -787,8 +812,8 @@ def _apply_supplied_password_before_launch(supplied_password: "str | None") -> N
         if not row[2]:
             typer.echo(
                 "Error: an Unsloth admin password is already set; --password only sets "
-                "the initial password. Run `unsloth studio reset-password` first "
-                "(or change it in the UI).",
+                "the initial password. Change it in the UI, or run `unsloth studio "
+                "reset-password` for a new one.",
                 err = True,
             )
             raise typer.Exit(1)
@@ -2888,59 +2913,33 @@ def provision_desktop_auth():
 def reset_password():
     """Reset the Unsloth admin password.
 
-    Deletes the auth database so that a fresh admin account with a new
-    random password is created on the next server start.  The Unsloth
-    server must be restarted after running this command.
+    Rotates the credential in place, so a running server authenticates with the
+    new password on its next request -- no restart, and no window in which the
+    correct password is rejected.
     """
-    auth_dir = STUDIO_HOME / "auth"
-    db_file = auth_dir / "auth.db"
-    stale_files = [
-        auth_dir / BOOTSTRAP_PASSWORD_FILE,
-        auth_dir / DESKTOP_SECRET_FILE,
-    ]
-    had_db = db_file.exists()
-
-    # Delete auth.db FIRST and prove it is gone before touching the seeded
-    # credential files. If it cannot be removed (a running Unsloth or Windows
-    # holds it open, or a read-only auth dir), abort with the credential files
-    # untouched: deleting them while an un-resettable DB (must_change_password=1)
-    # survives would lock a forgotten-password reset out of any recovery
-    # credential. Failing here leaves a consistent, still-recoverable state.
+    new_password = _generate_reset_password()
     try:
-        db_file.unlink(missing_ok = True)
-    except OSError as exc:
+        conn = _connect_auth_db()
+    except sqlite3.Error as exc:
         typer.echo(
-            f"Error: could not delete the auth database ({exc}). Stop any running "
-            "Unsloth and retry; no credential files were changed.",
+            f"Error: could not open the auth database ({exc}). Stop Unsloth, delete "
+            f"{STUDIO_HOME / 'auth' / 'auth.db'}, and start it again to re-seed.",
             err = True,
         )
         raise typer.Exit(1)
 
-    # The DB is gone, so the next start re-seeds. Invalidate the seeded plaintext
-    # credential files so that re-seed generates a FRESH password instead of
-    # reusing a stale one: unlink only ignores FileNotFoundError, so a
-    # locked/undeletable file (Windows AV, read-only dir) would otherwise survive
-    # and generate_bootstrap_password() would read it back and re-validate the
-    # credential this reset revoked. Truncate on unlink failure; if a file can be
-    # neither removed nor truncated, fail closed -- the DB is already gone, so a
-    # surviving plaintext would be reused, and the user must remove it manually.
-    for path in stale_files:
-        try:
-            path.unlink(missing_ok = True)
-        except OSError:
-            try:
-                path.write_text("", encoding = "utf-8")
-            except OSError as exc:
-                typer.echo(
-                    f"Error: could not remove or clear {path.name} ({exc}); delete "
-                    "it manually before restarting Unsloth or the old password may "
-                    "be reused.",
-                    err = True,
-                )
-                raise typer.Exit(1)
+    try:
+        _ensure_cli_default_admin(conn)
+        # Rehashes, rotates the JWT secret, revokes refresh tokens and API keys,
+        # drops the desktop secret, and clears the seeded plaintext files.
+        _cli_update_password(
+            conn, DEFAULT_ADMIN_USERNAME, new_password, revoke_api_keys = True
+        )
+    except sqlite3.Error as exc:
+        typer.echo(f"Error: could not reset the password ({exc}).", err = True)
+        raise typer.Exit(1)
+    finally:
+        conn.close()
 
-    if not had_db:
-        typer.echo("No auth database found -- nothing to reset.")
-        raise typer.Exit(0)
-
-    typer.echo("Auth database deleted. Restart Unsloth Studio to get a new password.")
+    typer.echo(f"New password for '{DEFAULT_ADMIN_USERNAME}': {new_password}")
+    typer.echo("Sessions and API keys revoked. A running Unsloth uses it immediately.")
