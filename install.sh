@@ -400,6 +400,14 @@ tauri_log() {
     fi
 }
 
+rollback_substep() {
+    if [ "$TAURI_MODE" = true ]; then
+        tauri_log "PROGRESS" "$1"
+    else
+        substep "$@"
+    fi
+}
+
 tauri_clear_install_error() {
     if [ "$TAURI_MODE" = true ]; then
         tauri_log "ERROR_CLEAR" "$1"
@@ -567,10 +575,10 @@ _restore_studio_venv_replacement() {
         _VENV_ROLLBACK_ACTIVE=false
         return 0
     }
-    substep "restoring previous environment after failed install..." "$C_WARN"
+    rollback_substep "restoring previous environment after failed install..." "$C_WARN"
     rm -rf "$_VENV_ROLLBACK_TARGET"
     if mv "$_VENV_ROLLBACK_DIR" "$_VENV_ROLLBACK_TARGET"; then
-        substep "restored previous environment"
+        rollback_substep "restored previous environment"
         _VENV_ROLLBACK_ACTIVE=false
         _VENV_ROLLBACK_DIR=""
     else
@@ -4118,6 +4126,7 @@ if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     UNSLOTH_LOCAL_LLAMA_CPP_DIR="$_WITH_LLAMA_CPP_DIR" \
+    UNSLOTH_TAURI_MODE="$TAURI_MODE" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 else
     # Explicitly reset STUDIO_LOCAL_INSTALL / STUDIO_LOCAL_REPO so a stale
@@ -4133,6 +4142,7 @@ else
     STUDIO_LOCAL_REPO= \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     UNSLOTH_LOCAL_LLAMA_CPP_DIR="$_WITH_LLAMA_CPP_DIR" \
+    UNSLOTH_TAURI_MODE="$TAURI_MODE" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 fi
 

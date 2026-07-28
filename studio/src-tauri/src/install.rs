@@ -65,7 +65,6 @@ struct InstallFailureContext {
     explicit_error: Option<String>,
     default_error: Option<String>,
     output_tail: VecDeque<InstallOutputLine>,
-    failure_tail: VecDeque<InstallOutputLine>,
 }
 
 impl InstallFailureContext {
@@ -107,7 +106,6 @@ impl InstallFailureContext {
 
     fn clear_stream(&mut self, stream: InstallOutputStream) {
         self.output_tail.retain(|line| line.stream != stream);
-        self.failure_tail.retain(|line| line.stream != stream);
     }
 
     fn push_output(&mut self, stream: InstallOutputStream, text: &str) {
@@ -116,15 +114,6 @@ impl InstallFailureContext {
             return;
         }
         let text = Self::bounded_line(text);
-        if Self::is_specific_failure(&text) {
-            self.failure_tail.push_back(InstallOutputLine {
-                stream,
-                text: text.clone(),
-            });
-            while self.failure_tail.len() > FAILURE_CONTEXT_LINES {
-                self.failure_tail.pop_front();
-            }
-        }
         self.output_tail
             .push_back(InstallOutputLine { stream, text });
         while self.output_tail.len() > FAILURE_CONTEXT_LINES {
@@ -140,54 +129,12 @@ impl InstallFailureContext {
         text
     }
 
-    fn is_recovery_output(lower: &str) -> bool {
-        lower.contains("cleanup") || lower.contains("rollback") || lower.contains("restoring")
-    }
-
-    fn is_specific_failure(text: &str) -> bool {
-        let lower = text.to_ascii_lowercase();
-        !Self::is_recovery_output(&lower)
-            && !lower.contains("continuing")
-            && !lower.contains("falling back")
-            && !lower.contains("retrying")
-            && !lower.contains("remain available")
-            && !lower.contains("keeping existing")
-            // Studio setup treats every whisper.cpp failure as fail-open.
-            && !lower.contains("whisper.cpp")
-            && (lower.contains("error")
-                || lower.contains("fail")
-                || lower.contains("fatal")
-                || lower.contains("invalid")
-                || lower.contains("cannot")
-                || lower.contains("could not")
-                || lower.contains("unable to")
-                || lower.contains("denied")
-                || lower.contains("traceback")
-                || lower.contains("exception")
-                || lower.contains("blocked")
-                || lower.contains("not found")
-                || lower.contains("does not exist")
-                || lower.contains("not enough disk")
-                || lower.contains("no space left"))
-    }
-
     fn message(&self, code: i32) -> String {
         let detail = self
             .explicit_error
             .as_deref()
-            .or_else(|| self.failure_tail.back().map(|line| line.text.as_str()))
             .or(self.default_error.as_deref())
-            .or_else(|| {
-                self.output_tail
-                    .iter()
-                    .rev()
-                    .find(|line| {
-                        let lower = line.text.to_ascii_lowercase();
-                        !Self::is_recovery_output(&lower)
-                    })
-                    .or_else(|| self.output_tail.back())
-                    .map(|line| line.text.as_str())
-            });
+            .or_else(|| self.output_tail.back().map(|line| line.text.as_str()));
         match detail {
             Some(detail) => format!("Installation failed: {}", detail),
             None => generic_failure_message(code),
@@ -1125,9 +1072,10 @@ mod tests {
     }
 
     #[test]
-    fn setup_failure_uses_specific_output_before_default() {
+    fn setup_failure_uses_explicit_producer_error_before_default() {
         let mut context = InstallFailureContext::default();
-        context.observe_stdout("UNSLOTH_LLAMA_PR=invalid is not a valid PR number");
+        context.observe_stdout("CMake not found -- installing via winget");
+        context.observe_stdout("[TAURI:ERROR] UNSLOTH_LLAMA_PR=invalid is not a valid PR number");
         assert!(context.observe_stdout("[TAURI:ERROR_DEFAULT] studio setup failed (exit code 4)"));
         assert_eq!(
             context.message(4),
@@ -1148,9 +1096,9 @@ mod tests {
     }
 
     #[test]
-    fn setup_failure_preserves_cause_past_footer_and_ignores_optional_failure() {
+    fn explicit_setup_error_survives_optional_output_and_footer() {
         let mut context = InstallFailureContext::default();
-        context.observe_stdout("llama.cpp      not enough disk space to install llama.cpp");
+        context.observe_stdout("[TAURI:ERROR] llama.cpp setup did not produce a usable server");
         context.observe_stderr("whisper.cpp source build failed (exit code 1)");
         context.observe_stdout(
             "whisper.cpp    prebuilt install failed; browser and Transformers dictation remain available",
@@ -1161,29 +1109,44 @@ mod tests {
         assert!(context.observe_stdout("[TAURI:ERROR_DEFAULT] studio setup failed (exit code 1)"));
         assert_eq!(
             context.message(1),
-            "Installation failed: llama.cpp      not enough disk space to install llama.cpp"
+            "Installation failed: llama.cpp setup did not produce a usable server"
         );
     }
 
     #[test]
-    fn setup_failure_recognizes_blocked_install() {
+    fn setup_default_outranks_nonfatal_failure_output() {
         let mut context = InstallFailureContext::default();
-        context.observe_stdout("llama.cpp      install blocked by active llama.cpp process");
+        context.observe_stdout("long paths failed to enable");
+        context.observe_stderr("Triton install failed; torch.compile may not work");
         assert!(context.observe_stdout("[TAURI:ERROR_DEFAULT] studio setup failed (exit code 3)"));
         assert_eq!(
             context.message(3),
-            "Installation failed: llama.cpp      install blocked by active llama.cpp process"
+            "Installation failed: studio setup failed (exit code 3)"
         );
     }
 
     #[test]
-    fn latest_terminal_output_beats_tolerated_setup_failure() {
+    fn latest_output_is_used_without_structured_context() {
         let mut context = InstallFailureContext::default();
-        context.observe_stderr("optional llama-quantize build failed");
+        context.observe_stderr("first diagnostic");
         context.observe_stderr("mv: cannot move build: Permission denied");
         assert_eq!(
             context.message(1),
             "Installation failed: mv: cannot move build: Permission denied"
+        );
+    }
+
+    #[test]
+    fn structured_rollback_progress_does_not_replace_failure_output() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("ln: cannot create symbolic link: Permission denied");
+        context.observe_stdout(
+            "[TAURI:PROGRESS] restoring previous environment after failed install...",
+        );
+        context.observe_stdout("[TAURI:PROGRESS] restored previous environment");
+        assert_eq!(
+            context.message(1),
+            "Installation failed: ln: cannot create symbolic link: Permission denied"
         );
     }
 
@@ -1200,15 +1163,13 @@ mod tests {
     }
 
     #[test]
-    fn stderr_fallback_prefers_failure_line_and_redacts_secrets() {
+    fn stderr_fallback_redacts_secrets() {
         let mut context = InstallFailureContext::default();
         context.observe_stderr("ERROR: download failed for https://user:pass@example.com/package");
-        context.observe_stderr("rollback cleanup failed");
         let message = context.message(1);
         assert!(message.contains("ERROR: download failed"));
         assert!(message.contains("https://<redacted>@example.com/package"));
         assert!(!message.contains("user:pass"));
-        assert!(!message.contains("rollback cleanup failed"));
     }
 
     #[test]
@@ -1226,7 +1187,6 @@ mod tests {
         assert!(explicit_error.is_char_boundary(explicit_error.len()));
         assert!(!explicit_error.contains("secret"));
         assert_eq!(context.output_tail.len(), FAILURE_CONTEXT_LINES);
-        assert!(context.failure_tail.len() <= FAILURE_CONTEXT_LINES);
         assert!(context
             .output_tail
             .iter()

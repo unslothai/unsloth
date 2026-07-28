@@ -6,6 +6,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 INSTALL_PS1="$SCRIPT_DIR/../../install.ps1"
+SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
+SETUP_PS1="$SCRIPT_DIR/../../studio/setup.ps1"
 
 _FUNC_FILE=$(mktemp)
 {
@@ -166,6 +168,63 @@ if [ "$_exit_code" -ne 1 ] ||
 fi
 echo "  PASS: missing verbose status defaults before reporting the failure"
 
+_SETUP_FUNC_FILE=$(mktemp)
+sed -n '/^setup_fail()/,/^}/p' "$SETUP_SH" > "$_SETUP_FUNC_FILE"
+# shellcheck disable=SC1090
+. "$_SETUP_FUNC_FILE"
+rm -f "$_SETUP_FUNC_FILE"
+
+set +e
+(
+    UNSLOTH_TAURI_MODE=1
+    setup_fail 7 "specific setup failure"
+) >"$_stdout_file" 2>"$_stderr_file"
+_exit_code=$?
+set -e
+if [ "$_exit_code" -ne 7 ] ||
+    ! grep -qxF '[TAURI:ERROR] specific setup failure' "$_stdout_file"; then
+    echo "  FAIL: Tauri setup failure did not emit its explicit error and exit code"
+    exit 1
+fi
+
+set +e
+(
+    UNSLOTH_TAURI_MODE=0
+    setup_fail 7 "specific setup failure"
+) >"$_stdout_file" 2>"$_stderr_file"
+_exit_code=$?
+set -e
+if [ "$_exit_code" -ne 7 ] || [ -s "$_stdout_file" ] || [ -s "$_stderr_file" ]; then
+    echo "  FAIL: non-Tauri setup failure emitted desktop protocol output"
+    exit 1
+fi
+echo "  PASS: setup failures emit explicit context only in Tauri mode"
+
+_setup_mode_count=$(grep -c 'UNSLOTH_TAURI_MODE="$TAURI_MODE"' "$INSTALL_SH")
+if [ "$_setup_mode_count" -ne 2 ]; then
+    echo "  FAIL: Unix installer does not pass Tauri mode to both setup invocations"
+    exit 1
+fi
+
+_setup_exit_count=$(grep -Ec '^[[:space:]]*exit[[:space:]]+' "$SETUP_SH")
+if [ "$_setup_exit_count" -ne 1 ] ||
+    ! grep -q '^[[:space:]]*exit "\$exit_code"$' "$SETUP_SH"; then
+    echo "  FAIL: Unix setup has explicit exits outside setup_fail"
+    exit 1
+fi
+echo "  PASS: Unix setup routes explicit exits through setup_fail"
+
+_rollback_block=$(sed -n \
+    '/^_restore_studio_venv_replacement()/,/^}/p' \
+    "$INSTALL_SH")
+_rollback_progress_count=$(printf '%s\n' "$_rollback_block" |
+    grep -c 'rollback_substep')
+if [ "$_rollback_progress_count" -ne 2 ]; then
+    echo "  FAIL: successful Unix rollback output can replace failure context"
+    exit 1
+fi
+echo "  PASS: successful Unix rollback remains structured progress"
+
 _setup_success_block=$(sed -n \
     '/^if \[ "$_SETUP_EXIT" -eq 0 \]; then$/,/^mkdir -p "\$_LOCAL_BIN"$/p' \
     "$INSTALL_SH")
@@ -195,6 +254,19 @@ if ! printf '%s\n' "$_ps_setup_block" | grep -q -- '-UseOutputContext' ||
     exit 1
 fi
 echo "  PASS: Windows setup uses the same failure-context boundaries"
+
+if ! grep -q '\$env:UNSLOTH_TAURI_MODE = if (\$TauriMode)' "$INSTALL_PS1"; then
+    echo "  FAIL: Windows installer does not pass Tauri mode to setup"
+    exit 1
+fi
+
+_ps_setup_exit_count=$(grep -Ec '^[[:space:]]*exit[[:space:]]+' "$SETUP_PS1")
+if [ "$_ps_setup_exit_count" -ne 1 ] ||
+    ! grep -q '^[[:space:]]*exit \$Code$' "$SETUP_PS1"; then
+    echo "  FAIL: Windows setup has explicit exits outside Exit-SetupFailure"
+    exit 1
+fi
+echo "  PASS: Windows setup routes explicit exits through Exit-SetupFailure"
 
 _ps_retry_block=$(sed -n \
     '/function Invoke-InstallCommandRetry {/,/function New-StudioShortcuts {/p' \

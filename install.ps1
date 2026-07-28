@@ -2658,6 +2658,9 @@ exit 0
     # an inherited value would put llama.cpp in the wrong place.
     $previousUnslothStudioHome = $env:UNSLOTH_STUDIO_HOME
     $hadPreviousUnslothStudioHome = ($null -ne $previousUnslothStudioHome)
+    $previousTauriMode = $env:UNSLOTH_TAURI_MODE
+    $hadPreviousTauriMode = ($null -ne $previousTauriMode)
+    $env:UNSLOTH_TAURI_MODE = if ($TauriMode) { "1" } else { "0" }
     if ($StudioRedirectMode -eq 'env') {
         $env:UNSLOTH_STUDIO_HOME = $StudioHome
     } else {
@@ -2686,6 +2689,11 @@ exit 0
             $env:UNSLOTH_STUDIO_HOME = $previousUnslothStudioHome
         } else {
             Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousTauriMode) {
+            $env:UNSLOTH_TAURI_MODE = $previousTauriMode
+        } else {
+            Remove-Item Env:UNSLOTH_TAURI_MODE -ErrorAction SilentlyContinue
         }
         Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
