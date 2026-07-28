@@ -36,6 +36,7 @@ import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
+  pasteClipboardFiles,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
 } from "@/features/chat";
@@ -177,6 +178,7 @@ import {
   type ChangeEvent,
   type ComponentProps,
   type CompositionEvent,
+  type ClipboardEvent,
   type FC,
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
@@ -1524,6 +1526,24 @@ const Composer: FC<{
   );
   const { inputProps, isComposing, isComposingRef } =
     useImeComposerInputHandlers({ submitOnEnter: true });
+  const handleFilePaste = useCallback(
+    (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      pasteClipboardFiles(
+        event,
+        async (files) => {
+          await Promise.all(
+            files.map((file) => aui.composer().addAttachment(file)),
+          );
+        },
+        () =>
+          toast.error("Could not paste files.", {
+            description: "The clipboard item is unsupported, unreadable, or over 20 MB.",
+          }),
+      );
+    },
+    [aui],
+  );
+
   const composerText = useAuiState(({ composer }) => composer.text);
   // Expand only once the input wraps to a second line, not on first keystroke.
   // Latch until cleared so it can't flip-flop at the wrap boundary.
@@ -2017,6 +2037,8 @@ const Composer: FC<{
               // no effect on Latin / CJK / Devanagari.
               dir="auto"
               {...inputProps}
+              addAttachmentOnPaste={false}
+              onPaste={handleFilePaste}
             />
             <ComposerRightControls
               disabled={
