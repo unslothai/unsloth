@@ -699,6 +699,6 @@ def test_backfill_compares_server_keys_by_normalized_identity():
     assert "if (known.has(key)) { continue; }" in src
     # A variant never holds a colon, so the last one splits the key. Splitting on
     # the first would cut a Windows drive letter off every path id.
-    assert "key.lastIndexOf(\":\")" in src
+    assert 'key.lastIndexOf(":")' in src
     # Repo ids fold and POSIX paths do not, which is exactly what these do.
     assert "normalizeModelIdentity(" in src and "normalizeGgufVariantIdentity(" in src
