@@ -93,8 +93,7 @@ def test_model_config_reads_do_not_rely_on_the_locale_encoding(tmp_path: Path) -
     the Windows bug on Linux and macOS. ``-X warn_default_encoding`` makes
     CPython flag any text I/O that falls back to the locale, so this fails on
     every platform if an ``encoding`` argument goes missing again."""
-    # The readers swallow exceptions to stay resilient, so record the warnings
-    # rather than raising on them.
+    # The readers swallow exceptions, so record the warnings instead of raising.
     script = textwrap.dedent(
         f"""
         import sys, warnings

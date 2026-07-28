@@ -27,8 +27,8 @@ def _locale_encoding() -> str:
     return preferred
 
 
-# Legacy Windows codepages whose trail bytes can land on JSON punctuation, so a
-# single-byte fallback cannot read them. Tried only to recover dedup keys.
+# Codepages whose trail bytes can land on JSON punctuation, so a single-byte
+# fallback cannot read them. Tried only to recover dedup keys.
 _DOUBLE_BYTE_ENCODINGS = ("cp932", "cp936", "cp949", "cp950")
 
 
@@ -78,9 +78,9 @@ def _read_line(raw: bytes, codepage: str) -> _Reading:
 class _Scan(NamedTuple):
     """What a pass over an existing shard established about it."""
 
-    legacy: bool  # enough evidence to trust keys from the codepage reading
+    legacy: bool  # enough evidence to trust the codepage reading's keys
     readable: bool  # the file could be read at all
-    saw_non_ascii: bool  # some line carries bytes whose reading depends on encoding
+    saw_non_ascii: bool  # some line's meaning depends on the encoding
     utf8_keys: set  # keys from lines UTF-8 could read
     legacy_keys: set  # keys only the codepage reading yields
 
@@ -91,9 +91,8 @@ class StateStore:
         self.path.parent.mkdir(parents = True, exist_ok = True)
         self._lock = threading.Lock()
         self._data: Dict[str, Any] = {}
-        # Small single-document file, so a whole read is fine here. Older
-        # releases wrote it in the locale codepage; _flush() rewrites the whole
-        # file as UTF-8, so it can never end up half in one encoding.
+        # Small single document, so read it whole. Older releases wrote it in
+        # the locale codepage; _flush() always rewrites all of it as UTF-8.
         if self.path.exists():
             try:
                 raw = self.path.read_bytes()
@@ -151,14 +150,11 @@ class JsonlWriter:
             if scan.legacy:
                 self._count_seen_keys |= scan.legacy_keys
             if scan.saw_non_ascii or not scan.readable:
-                # The file holds bytes whose meaning depends on the encoding, or
-                # we could not look.
-                # It is never converted: the encoding that wrote it cannot be
-                # recovered from its bytes, and guessing mojibakes the records.
-                # Appending UTF-8 would add a second encoding, so append pure
-                # ASCII, which every codepage stores identically. json.loads
-                # turns the \uXXXX escapes back into the exact characters, so
-                # the file keeps decoding as it did and nothing is lost.
+                # Encoding-dependent bytes, or we could not look. Never convert:
+                # the writing encoding is unrecoverable and guessing mojibakes
+                # the records. UTF-8 would add a second encoding, so append pure
+                # ASCII, stored identically by every codepage; json.loads turns
+                # the \uXXXX escapes back into the exact characters.
                 encoding = "ascii"
                 self._ensure_ascii = True
         self._fh = self.path.open("a", buffering = 1, encoding = encoding, errors = "strict")
@@ -198,17 +194,16 @@ class JsonlWriter:
                 for raw in handle:
                     line = raw.strip()
                     reading = _read_line(line, self._codepage)
-                    # An ASCII line reads the same under every encoding, so it
-                    # neither votes nor constrains what may be appended.
+                    # ASCII reads the same under every encoding, so it neither
+                    # votes nor constrains what may be appended.
                     if not line.isascii():
                         saw_non_ascii = True
                         if reading.as_utf8 is None and reading.as_legacy is not None:
                             legacy_votes += 1
                         elif reading.as_utf8 is not None:
                             utf8_votes += 1
-                    # Keys are kept apart so a damaged line in a healthy shard
-                    # does not mark its record seen and block the retry that
-                    # would replace it.
+                    # Keys stay apart so a damaged line does not mark its record
+                    # seen and block the retry that would replace it.
                     if isinstance(reading.as_utf8, dict):
                         key = self._key(reading.as_utf8)
                         if key is not None:

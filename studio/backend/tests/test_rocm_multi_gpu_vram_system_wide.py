@@ -242,10 +242,8 @@ def test_kfd_fails_closed_when_a_node_is_unreadable(monkeypatch, tmp_path):
 
 
 def test_kfd_fails_closed_when_a_node_does_not_decode(monkeypatch, tmp_path):
-    # Pinning the read to utf-8 turns an undecodable byte into
-    # UnicodeDecodeError, which is a ValueError and so slips past `except
-    # OSError`. It would then escape a helper that documents failing closed,
-    # and every later HIP ordinal would shift.
+    # A utf-8 read raises UnicodeDecodeError, a ValueError, which slips past
+    # `except OSError` and would shift every later HIP ordinal.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     paths = _fake_kfd(
         tmp_path,

@@ -23,13 +23,12 @@ import pytest
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
-# Not Studio's own runtime source. Shipped plugins under plugins/*/src are, so
-# only their build artifacts are skipped.
+# Not Studio's own runtime source. Shipped plugins under plugins/*/src are,
+# so only their build artifacts are skipped.
 _SKIPPED_DIRS = ("node_modules", "build", "tests", "__pycache__")
 
-# Path.open() takes a mode first and only these keywords. fitz.open(stream=...)
-# and av.open(..., metadata_errors=...) are other libraries' open(), so matching
-# the signature is what separates them.
+# Matching Path.open()'s signature is what tells it apart from other libraries'
+# open(), e.g. fitz.open(stream=...) and av.open(..., metadata_errors=...).
 _FILE_MODE_CHARS = set("rwxabt+")
 _PATH_OPEN_ARGS = ("mode", "buffering", "encoding", "errors", "newline")
 _PATH_OPEN_KWARGS = set(_PATH_OPEN_ARGS)
@@ -220,8 +219,8 @@ def test_resuming_a_legacy_jsonl_keeps_one_encoding(
     finally:
         writer.close()
 
-    # The shard is never converted, so it still reads in its own codepage, and
-    # the appended record is ASCII, which that codepage stores identically.
+    # Never converted, so it still reads in its own codepage, and the appended
+    # record is ASCII, which that codepage stores identically.
     blob = path.read_bytes()
     assert blob.startswith(before)
     assert blob[len(before) :].isascii()
@@ -260,8 +259,8 @@ def test_a_moved_shard_is_not_rewritten_by_guesswork(
 ) -> None:
     """Off the writing machine there is no codepage to attribute the file to."""
     path = tmp_path / "out.jsonl"
-    # Two records: a lone non-UTF-8 line is treated as damage instead, since it
-    # cannot be told apart from a stray byte in an otherwise healthy shard.
+    # Two records: a lone non-UTF-8 line is indistinguishable from a stray byte
+    # in a healthy shard, so it counts as damage instead.
     path.write_bytes(
         b"".join(
             json.dumps({"id": i, "author": word}, ensure_ascii = False).encode(codepage) + b"\n"

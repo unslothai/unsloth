@@ -13,10 +13,8 @@ import pytest
 
 from core.training import worker
 
-# The runtime install only ever runs on Linux, as the threshold test below
-# asserts, so the two tests that drive it past that gate cannot pass anywhere
-# else: the call returns before it reports a status. They were written on
-# Linux and only fail once the suite is actually run on Windows or macOS.
+# The runtime install is Linux-only, so tests that drive it past that gate
+# return before reporting a status and cannot pass elsewhere.
 linux_only = pytest.mark.skipif(
     not sys.platform.startswith("linux"),
     reason = "the runtime flash-attn install is gated to Linux",
@@ -1580,8 +1578,7 @@ def test_install_respects_user_gcc_install_dir(monkeypatch):
         release_base_url = "https://example.com",
     )
 
-    # The user already set HIPCC_COMPILE_FLAGS_APPEND with --gcc-install-dir,
-    # so their value is inherited untouched: no second --gcc-install-dir.
+    # The user's HIPCC_COMPILE_FLAGS_APPEND is inherited untouched.
     assert captured["HIPCC_COMPILE_FLAGS_APPEND"] == "--gcc-install-dir=/opt/custom/gcc-13"
 
 
@@ -1629,6 +1626,5 @@ def test_install_does_not_inject_env_on_cuda(monkeypatch):
         release_base_url = "https://example.com",
     )
 
-    # CUDA branch never injects the HIP flag, never invokes the gcc helper.
-    # The env itself is always passed now, to force the pip child to UTF-8.
+    # env is always passed (to force UTF-8), but never the HIP flag.
     assert "HIPCC_COMPILE_FLAGS_APPEND" not in captured

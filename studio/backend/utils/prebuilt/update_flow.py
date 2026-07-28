@@ -308,8 +308,7 @@ def stream_installer(
         text = True,
         encoding = "utf-8",
         errors = "replace",
-        # The installer is a Python child, so tell it to emit UTF-8 rather than
-        # the ANSI codepage we would otherwise misread.
+        # A Python child, so tell it to emit the UTF-8 we decode above.
         env = utf8_child_env(env),
         **child_popen_kwargs(),
     )

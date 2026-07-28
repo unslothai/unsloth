@@ -388,7 +388,7 @@ def _install_package_wheel_first(
         "text": True,
         "encoding": "utf-8",
         "errors": "replace",
-        # pip runs under sys.executable, so tell it to emit what we decode.
+        # A Python child, so tell it to emit the UTF-8 we decode above.
         "env": utf8_child_env(),
     }
     if is_hip:
