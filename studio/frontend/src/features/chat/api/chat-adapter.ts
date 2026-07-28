@@ -86,9 +86,15 @@ import {
 } from "../utils/last-local-model-load";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
-  hasClosedThinkTag,
+  extractDeltaText,
+  hasUnclosedThinkTag,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
+import {
+  countReasoningGroups,
+  createReasoningDurationTracker,
+  lastReasoningGroupTextLength,
+} from "../utils/reasoning-duration";
 import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
   generateAudio,
@@ -615,67 +621,6 @@ function estimateTokenCount(text: string): number | undefined {
     return undefined;
   }
   return Math.max(1, Math.round(trimmed.length / 4));
-}
-
-/**
- * Normalize a streamed `delta.content` to a plain text string.
- *
- * OpenAI Chat Completions originally typed `delta.content` as a string, but
- * some providers now emit an array of structured content parts; concatenating
- * those directly would stringify each as `[object Object]`. This guards that.
- *
- * Handled part shapes:
- *   { type: "text" | "output_text", text | content: "..." }   → text body
- *   { type: "thinking" | "reasoning", thinking | text: "..." } → wrapped as
- *       inline `<think>...</think>` so `parseAssistantContent` lifts it into
- *       a reasoning part (else Mistral magistral and similar reasoning-part
- *       providers lose their thinking panel).
- *
- * Unknown part types are skipped — better to drop a stray field than
- * stringify an object into the rendered chat.
- */
-function extractDeltaText(delta: unknown): string {
-  const extractReasoningText = (payload: unknown): string => {
-    if (typeof payload === "string") return payload;
-    if (Array.isArray(payload)) {
-      return payload.map((item) => extractReasoningText(item)).join("");
-    }
-    if (!payload || typeof payload !== "object") return "";
-
-    const obj = payload as Record<string, unknown>;
-    for (const key of ["thinking", "text", "content", "reasoning", "summary"]) {
-      if (key in obj) {
-        const text = extractReasoningText(obj[key]);
-        if (text) return text;
-      }
-    }
-    return "";
-  };
-
-  if (typeof delta === "string") return delta;
-  if (!Array.isArray(delta)) return "";
-  let out = "";
-  for (const part of delta) {
-    if (typeof part === "string") {
-      out += part;
-      continue;
-    }
-    if (!part || typeof part !== "object") continue;
-    const obj = part as {
-      type?: string;
-      text?: string;
-      content?: string;
-      thinking?: string;
-    };
-    if (obj.type === "text" || obj.type === "output_text") {
-      if (typeof obj.text === "string") out += obj.text;
-      else if (typeof obj.content === "string") out += obj.content;
-    } else if (obj.type === "thinking" || obj.type === "reasoning") {
-      const thinking = extractReasoningText(obj);
-      if (thinking) out += `<think>${thinking}</think>`;
-    }
-  }
-  return out;
 }
 
 function buildTiming(
@@ -2932,8 +2877,7 @@ export function createOpenAIStreamAdapter(
         owner: serverCancel,
       });
       let cumulativeText = "";
-      let reasoningStartAt: number | null = null;
-      let reasoningDuration = 0;
+      const reasoningDurationTracker = createReasoningDurationTracker();
       // True while wrapping a `delta.reasoning_content` stream in
       // <think>...</think> for parseAssistantContent. Lives outside the
       // SSE loop because the close tag fires when content arrives.
@@ -3073,9 +3017,11 @@ export function createOpenAIStreamAdapter(
         return merged;
       };
       const closeReasoningContent = () => {
-        if (!reasoningContentOpen) return;
-        cumulativeText += "</think>";
-        reasoningContentOpen = false;
+        if (reasoningContentOpen) {
+          cumulativeText += "</think>";
+          reasoningContentOpen = false;
+        }
+        reasoningDurationTracker.finishGroup();
       };
       // Anthropic document_citations payload, converted to Sources-panel
       // parts at end-of-stream so inline [N] markers have matching entries.
@@ -3631,8 +3577,9 @@ export function createOpenAIStreamAdapter(
               const reasoningMs = (
                 chunk as { _reasoningDurationMs?: number } | null | undefined
               )?._reasoningDurationMs;
-              if (typeof reasoningMs === "number" && Number.isFinite(reasoningMs)) {
-                reasoningDuration = Math.max(0, Math.round(reasoningMs / 1000));
+              if (
+                reasoningDurationTracker.recordServerDuration(reasoningMs)
+              ) {
                 continue;
               }
 
@@ -3776,7 +3723,7 @@ export function createOpenAIStreamAdapter(
                             totalChunks,
                             firstTokenTime,
                           ),
-                          custom: { reasoningDuration },
+                          custom: reasoningDurationTracker.metadata(),
                         },
                       };
                     }
@@ -4071,7 +4018,7 @@ export function createOpenAIStreamAdapter(
                       totalChunks,
                       firstTokenTime,
                     ),
-                    custom: { reasoningDuration },
+                    custom: reasoningDurationTracker.metadata(),
                   },
                 };
                 continue;
@@ -4110,7 +4057,10 @@ export function createOpenAIStreamAdapter(
               }
               const rawDelta = chunk.choices?.[0]?.delta?.content;
               // Normalize structured delta.content (mistral magistral).
-              const delta = extractDeltaText(rawDelta);
+              const {
+                text: delta,
+                structuredReasoningContinues,
+              } = extractDeltaText(rawDelta);
               // Latest Gemini text-part thoughtSignature for next-turn replay.
               const deltaExtraContent = (
                 chunk.choices?.[0]?.delta as
@@ -4264,7 +4214,7 @@ export function createOpenAIStreamAdapter(
                       totalChunks,
                       firstTokenTime,
                     ),
-                    custom: { reasoningDuration },
+                    custom: reasoningDurationTracker.metadata(),
                   },
                 };
                 continue;
@@ -4281,6 +4231,7 @@ export function createOpenAIStreamAdapter(
 
               if (reasoning) {
                 if (!reasoningContentOpen) {
+                  reasoningDurationTracker.startGroup();
                   cumulativeText += `<think>${reasoning}`;
                   reasoningContentOpen = true;
                 } else {
@@ -4288,7 +4239,9 @@ export function createOpenAIStreamAdapter(
                 }
               }
               if (delta) {
-                closeReasoningContent();
+                if (reasoningContentOpen) {
+                  closeReasoningContent();
+                }
                 cumulativeText += delta;
               }
               // Strip a trailing ${...} template-literal fragment from
@@ -4299,35 +4252,48 @@ export function createOpenAIStreamAdapter(
                   "",
                 );
               }
-              const textParts = parseAssistantContent(cumulativeText);
+              const assistantContent = buildAssistantContent(cumulativeText);
 
               // Fallback when no server-side reasoning_summary arrives.
+              const parsedReasoningGroupCount =
+                countReasoningGroups(assistantContent);
               if (
-                textParts.some((part) => part.type === "reasoning") &&
-                !reasoningStartAt
+                parsedReasoningGroupCount >
+                reasoningDurationTracker.groupCount
               ) {
-                reasoningStartAt = Date.now();
-              }
-              if (
-                hasClosedThinkTag(cumulativeText) &&
-                reasoningStartAt &&
-                !reasoningDuration
-              ) {
-                reasoningDuration = Math.round(
-                  (Date.now() - reasoningStartAt) / 1000,
+                reasoningDurationTracker.startGroup(
+                  parsedReasoningGroupCount - 1,
                 );
               }
+              if (parsedReasoningGroupCount > 0) {
+                // Providers that close every reasoning block atomically
+                // (structured parts wrapped as <think>..</think>) end the group
+                // on each chunk. Reopen while the reasoning text is still
+                // growing so the timer spans the whole pass.
+                reasoningDurationTracker.resumeGroup(
+                  parsedReasoningGroupCount - 1,
+                  lastReasoningGroupTextLength(assistantContent),
+                );
+              }
+              if (
+                reasoningDurationTracker.hasActiveGroup &&
+                !reasoningContentOpen &&
+                !structuredReasoningContinues &&
+                !hasUnclosedThinkTag(cumulativeText)
+              ) {
+                reasoningDurationTracker.finishGroup();
+              }
 
-              if (textParts.length > 0 || toolCallParts.length > 0) {
+              if (assistantContent.length > 0) {
                 yield {
-                  content: buildAssistantContent(cumulativeText),
+                  content: assistantContent,
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
                       totalChunks,
                       firstTokenTime,
                     ),
-                    custom: { reasoningDuration },
+                    custom: reasoningDurationTracker.metadata(),
                   },
                 };
               }
@@ -4430,12 +4396,7 @@ export function createOpenAIStreamAdapter(
         );
 
         // Finalize reasoning-only streams.
-        if (reasoningStartAt && !reasoningDuration) {
-          reasoningDuration = Math.max(
-            0,
-            Math.round((Date.now() - reasoningStartAt) / 1000),
-          );
-        }
+        reasoningDurationTracker.finishGroup();
         yield {
           content: [
             ...buildAssistantContent(cumulativeText),
@@ -4445,7 +4406,7 @@ export function createOpenAIStreamAdapter(
           metadata: {
             timing: finalTiming,
             custom: {
-              reasoningDuration,
+              ...reasoningDurationTracker.metadata(),
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
               serverTimings: meta?.timings ?? undefined,
@@ -4502,6 +4463,30 @@ export function createOpenAIStreamAdapter(
             toast.error("Generation failed", {
               description: msg || "Unknown error",
             });
+          }
+        }
+        if (!abortSignal.aborted) {
+          closeReasoningContent();
+          const partialContent = buildAssistantContent(cumulativeText);
+          if (partialContent.length > 0) {
+            const partialTiming = buildTiming(
+              streamStartTime,
+              totalChunks,
+              firstTokenTime,
+              Date.now() - streamStartTime,
+              estimateTokenCount(cumulativeText),
+              toolCallParts.length,
+            );
+            yield {
+              content: partialContent,
+              metadata: {
+                timing: partialTiming,
+                custom: {
+                  ...reasoningDurationTracker.metadata(),
+                  timing: partialTiming,
+                },
+              },
+            };
           }
         }
         throw err;
