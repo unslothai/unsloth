@@ -20,9 +20,14 @@ THREAD_SIDEBAR = FRONTEND / "features/chat/thread-sidebar.tsx"
 SHARED_COMPOSER = FRONTEND / "features/chat/shared-composer.tsx"
 TITLEBAR = FRONTEND / "components/tauri/window-titlebar.tsx"
 NATIVE_DIALOGS = REPO / "studio/src-tauri/src/native_file_dialogs.rs"
+NATIVE_CLIPBOARD = REPO / "studio/src-tauri/src/native_clipboard.rs"
+TAURI_MAIN = REPO / "studio/src-tauri/src/main.rs"
 
 
 APP_PROVIDER = FRONTEND / "app/provider.tsx"
+
+CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
+TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
 
 
 def test_file_actions_route_through_native_commands_only_in_tauri():
@@ -96,6 +101,85 @@ def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
     assert "onExport={exportMessageMarkdown}" in thread
     assert '"text/markdown"' in thread
     assert "downloadFile(" in thread
+
+
+def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
+    helper = CLIPBOARD_FILES.read_text(encoding = "utf-8")
+    thread = THREAD.read_text(encoding = "utf-8")
+    shared_composer = SHARED_COMPOSER.read_text(encoding = "utf-8")
+    capabilities = TAURI_CAPABILITIES.read_text(encoding = "utf-8")
+
+    for contract in (
+        "clipboardData.files",
+        "clipboardData.items",
+        "item.getAsFile()",
+        "file.size > 0",
+        'clipboardData.getData("text/plain")',
+        "event.isTrusted",
+        "event.defaultPrevented",
+        'types.includes("files")',
+        'type.includes("uri-list")',
+        '"read_native_clipboard_files"',
+        "globalThis.atob(file.base64)",
+        "new File([bytes], file.name",
+        "MAX_CLIPBOARD_BYTES",
+        'import("@tauri-apps/plugin-clipboard-manager")',
+        "await readImage()",
+        "rgba.byteLength !== expectedRgbaBytes",
+        "await image.close()",
+    ):
+        assert contract in helper
+
+    assert "addAttachmentOnPaste={false}" in thread
+    assert "onPaste={handleFilePaste}" in thread
+    assert "pasteClipboardFiles" in thread
+    assert "aui.composer().addAttachment(file)" in thread
+    assert "onPaste={handleFilePaste}" in shared_composer
+    assert "pasteClipboardFiles" in shared_composer
+    assert "addFiles(files)" in shared_composer
+    assert capabilities.count('"clipboard-manager:allow-read-image"') == 1
+    assert '"clipboard-manager:allow-read-text"' not in capabilities
+
+
+def test_native_clipboard_bridge_is_bounded_and_registered():
+    native_clipboard = NATIVE_CLIPBOARD.read_text(encoding = "utf-8")
+    tauri_main = TAURI_MAIN.read_text(encoding = "utf-8")
+
+    for contract in (
+        "MAX_CLIPBOARD_FILES",
+        "MAX_CLIPBOARD_URI_BYTES",
+        "MAX_CLIPBOARD_TOTAL_BYTES",
+        "MAX_CLIPBOARD_SOURCE_BYTES",
+        "MAX_CLIPBOARD_RGBA_BYTES",
+        ".take(limit + 1)",
+        ".wait_for_uris()",
+        ".wait_for_targets()",
+        'contains("copied-files")',
+        "open_regular_clipboard_file(&path)",
+        '"/proc/self/fd/{}"',
+        ".wait_for_image()",
+        "glib::filename_from_uri",
+        "glib::MainContext::default().invoke",
+        "arboard::Clipboard::new()",
+        "BASE64.encode(bytes)",
+        "tauri::ipc::Response::new(png)",
+    ):
+        assert contract in native_clipboard
+
+    assert "native_clipboard::read_native_clipboard_files" in tauri_main
+    assert "native_clipboard::read_native_clipboard_png" in tauri_main
+
+
+def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
+    source = APP_PROVIDER.read_text(encoding = "utf-8")
+
+    assert 'const showApp = status === "running" && desktopAuthReady;' in source
+    assert "Preparing Unsloth" not in source
+    assert "Signing in to desktop session" not in source
+    assert "desktopBooting" not in source
+    assert "showInteractiveApp" not in source
+    assert "<NativeIntentDrain />" in source
+    assert "{children}" in source
 
 
 def test_full_app_layout_uses_its_own_initialized_marker():

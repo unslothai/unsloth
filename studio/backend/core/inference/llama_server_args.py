@@ -80,9 +80,10 @@ _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
 def _flag_name(token: str) -> Optional[str]:
     """Flag name for ``token``, or None if it isn't a flag.
 
-    Peels `--key=value` to `--key`, treats `-1`/`-0.5` as values (shorts
-    always start with a letter), and normalises attached `-np8` / `-np-1` /
-    `-np8x` to `-np`. Mirrors the CLI's `_expand_attached_np_short`.
+    Peels `--key=value` to `--key`, normalises long-option underscores like
+    llama.cpp, treats `-1`/`-0.5` as values (shorts always start with a letter),
+    and normalises attached `-np8` / `-np-1` / `-np8x` to `-np`. Mirrors the
+    CLI's `_expand_attached_np_short`.
     """
     token = token.strip()
     if not token.startswith("-") or token in {"-", "--"}:
@@ -90,6 +91,8 @@ def _flag_name(token: str) -> Optional[str]:
     if len(token) >= 2 and (token[1].isdigit() or token[1] == "."):
         return None
     name = token.split("=", 1)[0]
+    if name.startswith("--"):
+        name = name.replace("_", "-")
     if len(name) > 3 and name.startswith("-np"):
         suffix = name[3:]
         if suffix[0].isdigit() or (
