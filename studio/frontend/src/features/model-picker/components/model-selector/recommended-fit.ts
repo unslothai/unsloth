@@ -97,13 +97,21 @@ export function fitsDevice(opts: {
   estimatedVramGb?: number;
   gpuGb?: number;
   systemRamGb?: number;
+  budgetKnown?: boolean;
   requireKnown?: boolean;
 }): boolean {
-  const { sizeBytes, estimatedVramGb, gpuGb, systemRamGb, requireKnown } = opts;
+  const {
+    sizeBytes,
+    estimatedVramGb,
+    gpuGb,
+    systemRamGb,
+    budgetKnown,
+    requireKnown,
+  } = opts;
   // Unified-memory hosts (Mac / no discrete GPU) report system RAM but no GPU,
   // so the budget must include RAM. Only an entirely unknown budget fits freely.
   const budgetGb = Math.max(0, gpuGb ?? 0) * 0.7 + Math.max(0, systemRamGb ?? 0) * 0.7;
-  if (budgetGb <= 0) return true;
+  if (budgetGb <= 0) return !budgetKnown;
   if (sizeBytes && sizeBytes > 0) {
     return sizeBytes / 1024 ** 3 <= budgetGb;
   }
@@ -129,9 +137,18 @@ export function hfModelFitsDevice(
     estimatedSizeBytes?: number;
     isGguf?: boolean;
   },
-  gpu: { memoryTotalGb: number; systemRamAvailableGb: number },
+  gpu: {
+    memoryTotalGb: number;
+    systemRamAvailableGb: number;
+    budgetKnown?: boolean;
+  },
 ): boolean {
-  if (gpu.memoryTotalGb <= 0 && gpu.systemRamAvailableGb <= 0) return true;
+  if (
+    gpu.memoryTotalGb <= 0 &&
+    gpu.systemRamAvailableGb <= 0 &&
+    !gpu.budgetKnown
+  )
+    return true;
   const params = model.totalParams ?? paramsFromId(model.id);
   const quantBytes = params ? estimateQuantBytes(params) : undefined;
   const sizeBytes = isGgufId(model.id, model.isGguf)
@@ -141,6 +158,7 @@ export function hfModelFitsDevice(
     sizeBytes,
     gpuGb: gpu.memoryTotalGb,
     systemRamGb: gpu.systemRamAvailableGb,
+    budgetKnown: gpu.budgetKnown,
     requireKnown: true,
   });
 }

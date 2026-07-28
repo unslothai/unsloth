@@ -37,6 +37,8 @@ export const ptBR = {
     navigation: {
       newChat: "Novo Chat",
       returnToChat: "Retornar ao Chat",
+      returnToChats: "Retornar a {count} chats",
+      chatGenerating: "Gerando",
       compare: "Comparar",
       search: "Buscar",
       hub: "Hub de modelos",

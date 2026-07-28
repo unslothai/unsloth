@@ -296,7 +296,7 @@ def detect_hardware() -> DeviceType:
         CHAT_ONLY_REASON = "intel_mac"  # Intel Mac: no PyTorch/MLX -> GGUF-only by design.
     else:
         CHAT_ONLY_REASON = "no_gpu"
-    print("Hardware detected: CPU (no GPU backend available)")
+    print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
 
 
@@ -1710,7 +1710,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
         "backend": _backend_label(device),
         "parent_visible_gpu_ids": [],
         "devices": [],
-        "index_kind": "relative",
+        "index_kind": "vulkan",
     }
 
 
@@ -2581,8 +2581,78 @@ def _backend_visible_devices_env() -> Optional[str]:
     return os.environ.get("CUDA_VISIBLE_DEVICES")
 
 
+def get_vulkan_inference_gpu_info() -> Optional[Dict[str, Any]]:
+    """Return llama.cpp Vulkan devices, or None when Vulkan is not installed."""
+    # Vulkan is a llama.cpp inference backend, not a PyTorch training device, so
+    # keep it separate from the PyTorch/MLX training-device report.
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+    except Exception as e:
+        logger.debug("Could not inspect the llama.cpp Vulkan backend: %s", e)
+        return None
+
+    try:
+        if not LlamaCppBackend._is_vulkan_backend():
+            return None
+    except Exception as e:
+        logger.debug("Could not identify the llama.cpp Vulkan backend: %s", e)
+        return None
+
+    result = {
+        "available": False,
+        "backend": "vulkan",
+        "backend_cuda_visible_devices": None,
+        "parent_visible_gpu_ids": [],
+        "devices": [],
+        "index_kind": "vulkan",
+    }
+    # Identity (real device description, explicit iGPU flag) comes from the
+    # inventory; the memory numbers stay on _get_gpu_memory, which applies the
+    # iGPU host reserve and zeroes a shared total. Budgeting an APU off the raw
+    # shared total instead would hand out the whole machine's RAM with no OS
+    # headroom. Join by ordinal; a probe failure just leaves names unresolved.
+    identity: Dict[int, Dict[str, Any]] = {}
+    try:
+        identity = {row["index"]: row for row in LlamaCppBackend.vulkan_device_inventory()}
+    except Exception as e:
+        logger.debug("Vulkan device inventory failed, falling back to ordinals: %s", e)
+
+    try:
+        for ordinal, free_mib, total_mib in LlamaCppBackend._get_gpu_memory():
+            info = identity.get(ordinal, {})
+            # _get_gpu_memory reports total 0 for a shared pool; prefer the
+            # explicit flag when the inventory resolved this ordinal.
+            shared_memory = bool(info["is_igpu"]) if "is_igpu" in info else total_mib == 0
+            budget_mib = total_mib or free_mib
+            used_mib = max(0, total_mib - free_mib) if total_mib else None
+            result["devices"].append(
+                {
+                    "index": ordinal,
+                    # ggml Vulkan ordinals are the space `--device Vulkan<i>` pins,
+                    # so unlike a torch-xpu relative ordinal these are selectable.
+                    "index_kind": "vulkan",
+                    "visible_ordinal": ordinal,
+                    "name": info.get("name") or f"Vulkan{ordinal}",
+                    "memory_total_gb": round(budget_mib / 1024, 2),
+                    "vram_used_gb": round(used_mib / 1024, 2) if used_mib is not None else None,
+                    "vram_free_gb": round(free_mib / 1024, 2),
+                    "vram_utilization_pct": round((used_mib / total_mib) * 100, 1)
+                    if used_mib is not None and total_mib > 0
+                    else None,
+                    "shared_memory": shared_memory,
+                }
+            )
+    except Exception as e:
+        logger.debug("Vulkan GPU visibility query failed: %s", e)
+        return result
+
+    result["available"] = bool(result["devices"])
+    return result
+
+
 def get_backend_visible_gpu_info() -> Dict[str, Any]:
     device = get_device()
+
     if device in (DeviceType.CUDA, DeviceType.XPU):
         parent_visible_ids = get_parent_visible_gpu_ids()
         # Try native SMI first (nvidia-smi; skipped for ROCm).
@@ -2674,7 +2744,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
         "backend_cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         "parent_visible_gpu_ids": [],
         "devices": [],
-        "index_kind": "relative",
+        "index_kind": "vulkan",
     }
 
 
