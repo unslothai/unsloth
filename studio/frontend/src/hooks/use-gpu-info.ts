@@ -3,12 +3,29 @@
 
 import { useEffect, useState } from "react";
 import {
+  type GpuIndexKind,
+  type PinnableGpuContext,
+  type ReconciledGpuSelection,
+  type SystemGpuDevice,
+  reconcileGpuSelection,
+  resolveGpuSelectionContext,
+} from "./gpu-selection";
+import {
+  type SystemInfoResponse,
   aggregateGpuMemoryTotalGb,
   fetchSystemInfo,
   getCachedSystemInfo,
   subscribeSystemInfo,
-  type SystemInfoResponse,
 } from "./use-system";
+
+export {
+  pinnableGpuContext,
+  reconcileGpuSelection,
+  type GpuIndexKind,
+  type PinnableGpuContext,
+  type ReconciledGpuSelection,
+  type SystemGpuDevice,
+} from "./gpu-selection";
 
 export interface GpuInfo {
   available: boolean;
@@ -18,86 +35,7 @@ export interface GpuInfo {
   cpuCore: number;
   cpuThread: number;
   systemRamAvailableGb: number;
-  systemRamTotalGb: number
-}
-
-export interface SystemGpuDevice {
-  index: number;
-  indexKind: GpuIndexKind | null;
-  name: string;
-  memoryTotalGb: number;
-  /** Free VRAM at fetch time, or total VRAM when usage is unavailable. */
-  memoryFreeGb: number;
-  /** Whether `index` is safe to send as gpu_ids. */
-  pinnable: boolean;
-  /** Whether the separate DiffusionGemma runner can use this physical ID. */
-  diffusionPinnable: boolean;
-}
-
-export type GpuIndexKind = "physical" | "vulkan";
-
-export interface ReconciledGpuSelection {
-  ids: number[] | null;
-  indexKind: GpuIndexKind | null;
-}
-
-export interface PinnableGpuContext {
-  devices: SystemGpuDevice[] | null;
-  ids: number[] | null;
-  indexKind: GpuIndexKind | null | undefined;
-}
-
-export function pinnableGpuContext(
-  devices: SystemGpuDevice[] | null,
-  forDiffusion = false,
-): PinnableGpuContext {
-  if (devices === null) {
-    return { devices: null, ids: null, indexKind: undefined };
-  }
-  const pinnable = devices.filter((device) =>
-    forDiffusion ? device.diffusionPinnable : device.pinnable,
-  );
-  const indexKind = pinnable[0]?.indexKind ?? null;
-  if (
-    pinnable.length <= 1 ||
-    indexKind === null ||
-    !pinnable.every((device) => device.indexKind === indexKind)
-  ) {
-    return { devices: pinnable, ids: [], indexKind: null };
-  }
-  return {
-    devices: pinnable,
-    ids: pinnable.map((device) => device.index),
-    indexKind,
-  };
-}
-
-export function reconcileGpuSelection(
-  ids: number[] | null,
-  savedIndexKind: GpuIndexKind | null | undefined,
-  currentIndexKind: GpuIndexKind | null | undefined,
-  pinnableIds: number[] | null,
-): ReconciledGpuSelection {
-  if (ids == null) return { ids: null, indexKind: null };
-  if (currentIndexKind === undefined || pinnableIds === null) {
-    return {
-      ids,
-      indexKind:
-        savedIndexKind === undefined ? "physical" : savedIndexKind,
-    };
-  }
-  const expectedIndexKind =
-    savedIndexKind === undefined ? "physical" : savedIndexKind;
-  if (
-    currentIndexKind === null ||
-    (expectedIndexKind !== null && expectedIndexKind !== currentIndexKind)
-  ) {
-    return { ids: null, indexKind: null };
-  }
-  const kept = ids.filter((id) => pinnableIds.includes(id));
-  return kept.length
-    ? { ids: kept, indexKind: currentIndexKind }
-    : { ids: null, indexKind: null };
+  systemRamTotalGb: number;
 }
 
 const DEFAULT_GPU: GpuInfo = {
@@ -108,7 +46,7 @@ const DEFAULT_GPU: GpuInfo = {
   cpuCore: 0,
   cpuThread: 0,
   systemRamAvailableGb: 0,
-  systemRamTotalGb: 0
+  systemRamTotalGb: 0,
 };
 
 function toGpuInfo(
@@ -124,9 +62,7 @@ function toGpuInfo(
     systemRamTotalGb: data?.memory?.total_gb ?? 0,
   };
   const gpuData =
-    source === "inference_gpu"
-      ? (data?.inference_gpu ?? data?.gpu)
-      : data?.gpu;
+    source === "inference_gpu" ? (data?.inference_gpu ?? data?.gpu) : data?.gpu;
   const devices = gpuData?.devices ?? [];
   if (!gpuData?.available || !devices.length) {
     return { ...DEFAULT_GPU, ...base, budgetKnown: data !== null };
@@ -201,8 +137,7 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
         pinnableBackend &&
         (d.index_kind === "vulkan" ||
           (data?.device_backend !== "xpu" && d.index_kind === "physical")),
-      diffusionPinnable:
-        diffusionBackend && d.index_kind === "physical",
+      diffusionPinnable: diffusionBackend && d.index_kind === "physical",
     }));
 }
 
@@ -294,10 +229,7 @@ export function gpuDeviceCacheReady(): boolean {
     return false;
   }
   const inferenceGpu = cachedSystem.inference_gpu;
-  return !(
-    inferenceGpu?.backend === "vulkan" &&
-    !inferenceGpu.available
-  );
+  return !(inferenceGpu?.backend === "vulkan" && !inferenceGpu.available);
 }
 
 /** Warm the shared system cache before validating persisted GPU IDs. */
@@ -309,22 +241,33 @@ export async function ensureGpuDeviceCache(): Promise<void> {
 export function cachedPinnableGpuIndices(
   forDiffusion = false,
 ): number[] | null {
-  const cachedSystem = getCachedSystemInfo();
-  return pinnableGpuContext(
-    cachedSystem ? toGpuDevices(cachedSystem) : null,
-    forDiffusion,
-  ).ids;
+  return cachedPinnableGpuContext(forDiffusion).ids;
 }
 
 /** Cached index namespace, undefined before fetch and null when unavailable. */
 export function cachedPinnableGpuIndexKind(
   forDiffusion = false,
 ): GpuIndexKind | null | undefined {
+  return cachedPinnableGpuContext(forDiffusion).indexKind;
+}
+
+/**
+ * Cached namespace and membership are separate: an unavailable Vulkan probe
+ * leaves membership unknown while the Vulkan namespace remains authoritative.
+ */
+export function cachedPinnableGpuContext(
+  forDiffusion = false,
+  devices?: SystemGpuDevice[],
+): PinnableGpuContext {
   const cachedSystem = getCachedSystemInfo();
-  return pinnableGpuContext(
-    cachedSystem ? toGpuDevices(cachedSystem) : null,
+  const unavailableVulkan =
+    cachedSystem?.inference_gpu?.backend === "vulkan" &&
+    !cachedSystem.inference_gpu.available;
+  return resolveGpuSelectionContext(
+    cachedSystem ? (devices ?? toGpuDevices(cachedSystem)) : null,
     forDiffusion,
-  ).indexKind;
+    unavailableVulkan ? "vulkan" : undefined,
+  );
 }
 
 export function reconcileCachedGpuSelection(
@@ -332,22 +275,7 @@ export function reconcileCachedGpuSelection(
   savedIndexKind?: GpuIndexKind | null,
   forDiffusion = false,
 ): ReconciledGpuSelection {
-  const cachedSystem = getCachedSystemInfo();
-  if (!gpuDeviceCacheReady()) {
-    return {
-      ids,
-      indexKind:
-        ids == null
-          ? null
-          : savedIndexKind === undefined
-            ? "physical"
-            : savedIndexKind,
-    };
-  }
-  const context = pinnableGpuContext(
-    cachedSystem ? toGpuDevices(cachedSystem) : null,
-    forDiffusion,
-  );
+  const context = cachedPinnableGpuContext(forDiffusion);
   return reconcileGpuSelection(
     ids,
     savedIndexKind,

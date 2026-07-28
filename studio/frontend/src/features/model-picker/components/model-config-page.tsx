@@ -23,7 +23,7 @@ import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   type GpuIndexKind,
   type SystemGpuDevice,
-  gpuDeviceCacheReady,
+  cachedPinnableGpuContext,
   pinnableGpuContext,
   reconcileGpuSelection,
   useGpuDevices,
@@ -81,14 +81,16 @@ const SELECT_TRIGGER_CLASS = `grid h-8 min-w-0 grid-cols-[minmax(0,1fr)_auto] it
 const NUMBER_INPUT_CLASS = `h-8 w-[92px] ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-right text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
 
 const KV_CACHE_DTYPE_DEFAULT = "f16";
-const SPECULATIVE_TYPE_LABELS: Record<(typeof SPECULATIVE_TYPES)[number], string> =
-  {
-    auto: "Auto",
-    mtp: "MTP",
-    ngram: "Ngram",
-    "mtp+ngram": "MTP+Ngram",
-    off: "Off",
-  };
+const SPECULATIVE_TYPE_LABELS: Record<
+  (typeof SPECULATIVE_TYPES)[number],
+  string
+> = {
+  auto: "Auto",
+  mtp: "MTP",
+  ngram: "Ngram",
+  "mtp+ngram": "MTP+Ngram",
+  off: "Off",
+};
 
 function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
   return (
@@ -138,19 +140,12 @@ function withoutUnsupportedDiffusionSettings(
 
 function reconcileConfigGpuSelection(
   config: PerModelConfig,
-  gpuDevices: SystemGpuDevice[],
   isDiffusion: boolean,
-  devicesReady: boolean,
+  gpuDevices?: SystemGpuDevice[],
 ): PerModelConfig {
-  const context = pinnableGpuContext(
-    devicesReady ? gpuDevices : null,
-    isDiffusion,
-  );
+  const context = cachedPinnableGpuContext(isDiffusion, gpuDevices);
   const supported = isDiffusion
-    ? withoutUnsupportedDiffusionSettings(
-        config,
-        context.indexKind ?? null,
-      )
+    ? withoutUnsupportedDiffusionSettings(config, context.indexKind ?? null)
     : config;
   if (supported.selectedGpuIds == null) {
     return supported;
@@ -350,8 +345,7 @@ function GpuMemorySettings({
   const gpuContext = pinnableGpuContext(gpuDevices, isDiffusion);
   const pinnableDevices = gpuContext.devices ?? [];
   const gpuIndexKind = gpuContext.indexKind ?? null;
-  const singleGpuInUse =
-    (selectedGpuIds ?? gpuContext.ids ?? []).length <= 1;
+  const singleGpuInUse = (selectedGpuIds ?? gpuContext.ids ?? []).length <= 1;
   // Multi-GPU only, with one backend-declared index namespace. null = automatic.
   const showGpuPicker = (gpuContext.ids?.length ?? 0) > 1;
   const isGpuChecked = (index: number) =>
@@ -431,8 +425,8 @@ function GpuMemorySettings({
             info={
               <>
                 Layers to keep on the GPU (--gpu-layers); the rest run on CPU.
-                Auto lets llama.cpp size the split (and the context) to fit VRAM.
-                At the maximum, the whole model is on the GPU.
+                Auto lets llama.cpp size the split (and the context) to fit
+                VRAM. At the maximum, the whole model is on the GPU.
               </>
             }
           />
@@ -689,7 +683,6 @@ export function ModelConfigPage({
     (s) => s.ggufMaxContextLength,
   );
   const gpuDevices = useGpuDevices();
-  const gpuDevicesReady = gpuDeviceCacheReady();
   const resolveInitial = () => {
     const resolved = resolveInitialConfig(target.id, target.ggufVariant);
     if (loadedConfig) {
@@ -707,12 +700,7 @@ export function ModelConfigPage({
   };
   const [initial] = useState(resolveInitial);
   const [config, setConfig] = useState<PerModelConfig>(() =>
-    reconcileConfigGpuSelection(
-      initial.config,
-      gpuDevices,
-      isDiffusion,
-      gpuDevicesReady,
-    ),
+    reconcileConfigGpuSelection(initial.config, isDiffusion, gpuDevices),
   );
   const [remember, setRemember] = useState(() => initial.remembered);
   const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
@@ -807,23 +795,16 @@ export function ModelConfigPage({
   const stagedMetadataPending =
     contextFetchKey != null &&
     stagedDims == null &&
-    (config.gpuMemoryMode === "manual" ||
-      config.selectedGpuIds != null);
-  const classifiedIsDiffusion =
-    isDiffusion ? true : stagedDims?.isDiffusion;
+    (config.gpuMemoryMode === "manual" || config.selectedGpuIds != null);
+  const classifiedIsDiffusion = isDiffusion ? true : stagedDims?.isDiffusion;
   const resolvedIsDiffusion = classifiedIsDiffusion === true;
   const gpuIndexKind =
     pinnableGpuContext(gpuDevices, resolvedIsDiffusion).indexKind ?? null;
   useEffect(() => {
     setConfig((current) =>
-      reconcileConfigGpuSelection(
-        current,
-        gpuDevices,
-        resolvedIsDiffusion,
-        gpuDevicesReady,
-      ),
+      reconcileConfigGpuSelection(current, resolvedIsDiffusion, gpuDevices),
     );
-  }, [gpuDevices, gpuDevicesReady, resolvedIsDiffusion]);
+  }, [gpuDevices, resolvedIsDiffusion]);
 
   const isMtp =
     config.speculativeType != null &&
@@ -851,8 +832,7 @@ export function ModelConfigPage({
     ),
     maxContext,
   );
-  const setContextLength = (v: number) =>
-    update({ customContextLength: v });
+  const setContextLength = (v: number) => update({ customContextLength: v });
   const rawBaseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
   const baseline = resolvedIsDiffusion
     ? withoutUnsupportedDiffusionSettings(rawBaseline, gpuIndexKind)
