@@ -14,6 +14,11 @@ Two gaps it misses:
    future rename): reading them with ``[]`` raises ``KeyError`` into the bare ``except``,
    taking the 4bit half, the probe's whole purpose, down with it.
 
+Both of the above only reach the block table. The last two tests take the row branch, which
+``load_in_fp8 = True`` plus ``UNSLOTH_HAS_FBGEMM`` selects ahead of block: deleting that branch,
+or dropping ``_resolve_with_mappers``' ``fp8_row`` argument so it falls back to the installed
+table, both leave every other test here green.
+
 ``loader_utils`` imports torch, so ast-extract the resolvers and run them against a stubbed
 ``requests``, as in ``tests/test_bad_mappings_redirect.py``.
 """
@@ -33,6 +38,8 @@ _NEW_OFFICIAL = "zeta-org/Zeta-9B-Only-On-Main-FP8"
 _NEW_BLOCK = "unsloth/Zeta-9B-Only-On-Main-FP8-Block"
 _NEW_ROW = "unsloth/Zeta-9B-Only-On-Main-FP8-Row"
 _ANCHOR = '    "unsloth/Kimi-K2-Instruct-BF16" : ('
+# Row table only, so the block branch cannot answer for it and mask a row-path regression.
+_ROW_ONLY = "zeta-org/Zeta-9B-Row-Only-FP8"
 
 
 def _mapper_source():
@@ -49,6 +56,11 @@ def _with_extra_fp8_model(source):
         f"    }},\n"
     )
     return source.replace(_ANCHOR, entry + _ANCHOR, 1)
+
+
+def _with_row_only_fp8_model(source):
+    """Fetched row table only. Block must not know it, or the block branch answers instead."""
+    return source + f'\nFLOAT_TO_FP8_ROW_MAPPER["{_ROW_ONLY.lower()}"] = "{_NEW_ROW}"\n'
 
 
 def _without_fp8_tables(source):
@@ -153,3 +165,44 @@ def test_probe_survives_a_fetched_mapper_without_the_fp8_tables(monkeypatch):
     assert (
         int_to_float and float_to_int and map_to_16bit
     ), "a fetched mapper.py without the fp8 tables must not take the 4bit upgrade check down"
+
+
+def test_fbgemm_prefers_the_row_table_over_the_block_one(monkeypatch):
+    """With FBGEMM, `load_in_fp8 = True` must resolve row-scaled, not blockwise."""
+    monkeypatch.setenv("UNSLOTH_HAS_FBGEMM", "1")
+    namespace = _load_resolver(_mapper_source())
+    row = namespace["FLOAT_TO_FP8_ROW_MAPPER"]
+    block = namespace["FLOAT_TO_FP8_BLOCK_MAPPER"]
+
+    key = next(k for k in row if k in block and row[k] != block[k])
+    resolved = namespace["get_model_name"](key, load_in_4bit = False, load_in_fp8 = True)
+
+    assert resolved == row[key], (
+        f"FBGEMM must take the row branch for {key!r}, got {resolved!r} "
+        f"(the blockwise answer is {block[key]!r})"
+    )
+
+
+def test_probe_answers_for_a_row_only_repo_the_fetched_mapper_knows(monkeypatch):
+    """The row half of the probe needs the FETCHED row table, same as the block half."""
+    monkeypatch.setenv("UNSLOTH_HAS_FBGEMM", "1")
+    installed = _mapper_source()
+    namespace = _load_resolver(installed)
+    installed_row = namespace["FLOAT_TO_FP8_ROW_MAPPER"]
+    key = _ROW_ONLY.lower()
+    assert key not in installed_row, "the installed row table must not know it"
+    assert key not in namespace["FLOAT_TO_FP8_BLOCK_MAPPER"], "no block entry, or block answers"
+
+    _install_fake_requests(monkeypatch, _with_row_only_fp8_model(installed))
+    _install_fake_vllm_absent(monkeypatch, namespace)
+
+    try:
+        resolved = namespace["get_model_name"](_ROW_ONLY, load_in_4bit = False, load_in_fp8 = True)
+    except NotImplementedError as error:
+        assert "not supported in your current Unsloth version" in str(error)
+    else:
+        raise AssertionError(
+            f"a fetched-only row-scaled repo must raise the upgrade error, got {resolved!r}"
+        )
+
+    assert namespace["FLOAT_TO_FP8_ROW_MAPPER"] is installed_row

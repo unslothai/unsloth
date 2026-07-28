@@ -207,18 +207,37 @@ run_install_cmd() {
         # command's exit code across the pipe without relying on pipefail
         # (this script runs under plain sh).
         _rcf=$(mktemp)
-        { "$@" 2>&1; printf '%s' "$?" > "$_rcf"; } | _redact_install_output
+        tauri_stream_log stdout "OUTPUT_CLEAR" "$_label"
+        {
+            if "$@" 2>&1; then
+                _cmd_rc=0
+            else
+                _cmd_rc=$?
+            fi
+            printf '%s' "$_cmd_rc" > "$_rcf"
+        } | _redact_install_output
         _rc=$(cat "$_rcf" 2>/dev/null || echo 1)
         rm -f "$_rcf"
-        [ "${_rc:-1}" -eq 0 ] 2>/dev/null && return 0
+        _rc=${_rc:-1}
+        if [ "$_rc" -eq 0 ] 2>/dev/null; then
+            tauri_clear_install_error "$_label recovered"
+            return 0
+        fi
+        tauri_stream_log stdout "ERROR_OUTPUT" "$_label failed (exit code $_rc)"
         step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
         return "$_rc"
     fi
     _log=$(mktemp)
-    "$@" >"$_log" 2>&1 && { rm -f "$_log"; return 0; }
+    tauri_stream_log stderr "OUTPUT_CLEAR" "$_label"
+    "$@" >"$_log" 2>&1 && {
+        rm -f "$_log"
+        tauri_clear_install_error "$_label recovered"
+        return 0
+    }
     _rc=$?
     step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
     _redact_install_output "$_log" >&2
+    tauri_stream_log stderr "ERROR_OUTPUT" "$_label failed (exit code $_rc)"
     rm -f "$_log"
     return $_rc
 }
@@ -383,6 +402,34 @@ tauri_log() {
     fi
 }
 
+tauri_stream_log() {
+    _tsl_stream="$1"
+    _tsl_tag="$2"
+    shift 2
+    if [ "$TAURI_MODE" = true ]; then
+        if [ "$_tsl_stream" = stderr ]; then
+            printf '[TAURI:%s] %s\n' "$_tsl_tag" "$*" >&2
+        else
+            printf '[TAURI:%s] %s\n' "$_tsl_tag" "$*"
+        fi
+    fi
+}
+
+rollback_substep() {
+    if [ "$TAURI_MODE" = true ]; then
+        tauri_log "PROGRESS" "$1"
+    else
+        substep "$@"
+    fi
+}
+
+tauri_clear_install_error() {
+    if [ "$TAURI_MODE" = true ]; then
+        tauri_log "ERROR_CLEAR" "$1"
+        printf '[TAURI:ERROR_CLEAR] %s\n' "$1" >&2
+    fi
+}
+
 tauri_diag_marker() {
     _diag_gpu_branch="${1:-unknown}"
     _diag_torch_index_family="${2:-none}"
@@ -543,10 +590,10 @@ _restore_studio_venv_replacement() {
         _VENV_ROLLBACK_ACTIVE=false
         return 0
     }
-    substep "restoring previous environment after failed install..." "$C_WARN"
+    rollback_substep "restoring previous environment after failed install..." "$C_WARN"
     rm -rf "$_VENV_ROLLBACK_TARGET"
     if mv "$_VENV_ROLLBACK_DIR" "$_VENV_ROLLBACK_TARGET"; then
-        substep "restored previous environment"
+        rollback_substep "restored previous environment"
         _VENV_ROLLBACK_ACTIVE=false
         _VENV_ROLLBACK_DIR=""
     else
@@ -4055,6 +4102,7 @@ if [ -n "$VENV_ABS_BIN" ]; then
 fi
 
 if ! command -v bash >/dev/null 2>&1; then
+    tauri_log "ERROR" "bash is required to run studio setup"
     step "setup" "bash is required to run studio setup" "$C_ERR"
     substep "Please install bash and re-run install.sh"
     exit 1
@@ -4093,6 +4141,7 @@ if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     UNSLOTH_LOCAL_LLAMA_CPP_DIR="$_WITH_LLAMA_CPP_DIR" \
+    UNSLOTH_TAURI_MODE="$TAURI_MODE" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 else
     # Explicitly reset STUDIO_LOCAL_INSTALL / STUDIO_LOCAL_REPO so a stale
@@ -4108,7 +4157,12 @@ else
     STUDIO_LOCAL_REPO= \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     UNSLOTH_LOCAL_LLAMA_CPP_DIR="$_WITH_LLAMA_CPP_DIR" \
+    UNSLOTH_TAURI_MODE="$TAURI_MODE" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
+fi
+
+if [ "$_SETUP_EXIT" -eq 0 ]; then
+    tauri_clear_install_error "studio setup completed"
 fi
 
 # ── Make 'unsloth' available via $_LOCAL_BIN (resolved earlier) ──
@@ -4166,7 +4220,11 @@ fi
 # PATH and shortcuts are already set up so the user can fix and retry.
 if [ "$_SETUP_EXIT" -ne 0 ]; then
     echo ""
-    step "error" "studio setup failed (exit code $_SETUP_EXIT)" "$C_ERR"
+    if [ "$TAURI_MODE" = true ]; then
+        tauri_log "ERROR_DEFAULT" "studio setup failed (exit code $_SETUP_EXIT)"
+    else
+        step "error" "studio setup failed (exit code $_SETUP_EXIT)" "$C_ERR"
+    fi
     echo ""
     exit "$_SETUP_EXIT"
 fi

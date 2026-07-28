@@ -15,6 +15,9 @@ export function DownloadSection({
   canRun = true,
   isActive,
   activeQuant,
+  preferredGgufFile = null,
+
+  preferredGgufFileIntent = 0,
   isLoadingThisModel,
   gpuGb,
   systemRamGb,
@@ -35,6 +38,9 @@ export function DownloadSection({
   canRun?: boolean;
   isActive: boolean;
   activeQuant: string | null;
+  preferredGgufFile?: string | null;
+
+  preferredGgufFileIntent?: number;
   isLoadingThisModel: boolean;
   gpuGb?: number;
   systemRamGb?: number;
@@ -46,12 +52,15 @@ export function DownloadSection({
   onTrain?: () => void;
   onChange?: () => void;
 }) {
-  if (isGguf) {
+  if (isGguf || preferredGgufFile) {
     return (
       <GgufDownloadCard
         repoId={repoId}
         isActive={isActive}
         activeQuant={activeQuant}
+        preferredFile={preferredGgufFile}
+
+        preferredFileIntent={preferredGgufFileIntent}
         isLoadingThisModel={isLoadingThisModel}
         gpuGb={gpuGb}
         systemRamGb={systemRamGb}
