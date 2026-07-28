@@ -8093,14 +8093,14 @@ class LlamaCppBackend:
                     thinking_default = True
                     mid = (model_identifier or "").lower()
                     if "qwen3.5" in mid or "qwen3.6" in mid:
-                        # First "Xb" / "X.Xb" size in the model id, anchored
-                        # to start-of-string or after [-_/.] so the version
-                        # literal in "qwen3.5" / "qwen3.6" doesn't match first.
-                        # For "Qwen3.5-35B-A3B" this returns 35 (total params),
-                        # not 3 (MoE active params) -- see also the frontends'
-                        # mirrored regex in use-chat-model-runtime.ts and
-                        # apply-inference-status-to-store.ts.
-                        size_match = re.search(r"(?:^|[-_/.])(\d+\.?\d*)b", mid)
+                        # Extract just the model name from any directory path
+                        # so a size-like directory (e.g. /8bit/) doesn't match
+                        # before the actual model size.  Trailing boundary after
+                        # "b" prevents matching substrings like "8bit".
+                        model_name = mid.replace("\\", "/").split("/")[-1]
+                        size_match = re.search(
+                            r"(?:^|[-_/.])(\d+\.?\d*)b(?:$|[-_/.])", model_name
+                        )
                         if size_match and float(size_match.group(1)) < 9:
                             thinking_default = False
                     self._reasoning_default = thinking_default

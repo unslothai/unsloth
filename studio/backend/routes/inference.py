@@ -15209,7 +15209,8 @@ def _drop_empty_assistant_sentinels(messages: list[dict]) -> list[dict]:
         if m.get("role") == "assistant":
             has_content = bool(m.get("content"))
             has_tool_calls = bool(m.get("tool_calls"))
-            if not has_content and not has_tool_calls:
+            has_reasoning = bool(m.get("reasoning_content"))
+            if not has_content and not has_tool_calls and not has_reasoning:
                 continue
         out.append(m)
     return out
