@@ -575,7 +575,9 @@ def test_the_kwargs_guard_only_judges_dicts_that_reach_a_call(tmp_path: Path) ->
     assert flagged == {"offender.py", "annotated.py", "inline.py"}, flagged
 
 
-def test_an_undecodable_bootstrap_password_does_not_stop_startup(tmp_path: Path, monkeypatch) -> None:
+def test_an_undecodable_bootstrap_password_does_not_stop_startup(
+    tmp_path: Path, monkeypatch
+) -> None:
     """ensure_default_admin calls _load_bootstrap_password for every existing
     admin and the lifespan calls that with no handler, so a raise here takes the
     whole backend down instead of ignoring an unusable file."""
