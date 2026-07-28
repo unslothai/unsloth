@@ -136,10 +136,7 @@ def _live_capacity(current: "LlamaAdmissionQueue") -> int:
     with _QUEUES_LOCK:
         queues = list(_QUEUES.values())
     # is_idle takes each queue's own lock, so never while holding _QUEUES_LOCK.
-    total = sum(
-        queue._capacity for queue in queues
-        if queue is current or not queue.is_idle()
-    )
+    total = sum(queue._capacity for queue in queues if queue is current or not queue.is_idle())
     return total if any(queue is current for queue in queues) else total + current._capacity
 
 
