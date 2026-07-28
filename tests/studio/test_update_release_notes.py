@@ -1309,7 +1309,7 @@ def test_preview_collects_labels_only_from_real_definitions():
     pre-scan skips the same code the collector pass skips; a real definition
     takes at most three spaces of indentation, so the indent test cannot reject
     one."""
-    src = PREVIEW.read_text(encoding = "utf-8")
+    src = PREVIEW.read_text(encoding="utf-8")
     scan = src.index("const labels = new Set<string>();")
     collect = src.index("let deepFence: string | null = null;")
     prescan = " ".join(src[scan:collect].split())
