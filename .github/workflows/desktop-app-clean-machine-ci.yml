@@ -4,29 +4,26 @@
 # Installs and launches the SHIPPED desktop app on a machine stripped of developer
 # tooling, on all three platforms.
 #
-# studio-tauri-smoke.yml compiles the Tauri crate; release-desktop.yml produces the
-# bundles. Neither takes a published artifact, puts it on a clean machine, and checks
-# that it starts -- which is exactly the gap the reported failures fell through: both
-# came from the packaged app running its bundled
-# Contents/Resources/install.sh, a path no CI job exercised.
+# studio-tauri-smoke.yml compiles the Tauri crate and release-desktop.yml produces the
+# bundles, but neither puts a published artifact on a clean machine and checks that it
+# starts -- the gap the reported failures fell through: both came from the packaged app
+# running its bundled Contents/Resources/install.sh, which no CI job exercised.
 #
-# What "runs" means here, given hosted runners have no interactive desktop session:
-#   - the bundle installs / mounts / extracts
-#   - the binary is present, of the right architecture, and passes the OS gatekeeper
-#     checks a user would hit (macOS quarantine + codesign, Windows installer exit)
-#   - the process starts and STAYS UP past its preflight (it does not exit or crash),
-#     which is where an unhappy app dies
-#   - it writes tauri.log, and that log shows the preflight disposition -- the same
-#     field that read `ManagedReady` over an unbootable venv in the bug report
-# Linux gets the strongest check: a real webview under Xvfb.
+# Hosted runners have no interactive desktop session, so "runs" means: the bundle
+# installs / mounts / extracts, the binary is present, of the right architecture, and
+# passes the gatekeeper checks a user would hit (macOS quarantine + codesign, Windows
+# installer exit), the process STAYS UP past its preflight (where an unhappy app dies),
+# and it writes tauri.log showing the preflight disposition -- the field that read
+# `ManagedReady` over an unbootable venv in the bug report. Linux gets the strongest
+# check: a real webview under Xvfb.
 
 name: Desktop app clean machine
 
 on:
-  # Also on PRs that touch this job or the machine-stripping scripts. workflow_dispatch
-  # alone is not enough to validate a change to the job itself: dispatch resolves the
+  # Also on PRs touching this job or the machine-stripping scripts: workflow_dispatch
+  # alone cannot validate a change to the job itself, because dispatch resolves the
   # workflow from the DEFAULT branch, so a new or edited file on a feature branch can
-  # never be dispatched, and the job would first run only after merging blind.
+  # never be dispatched and would first run only after merging blind.
   pull_request:
     paths:
       - '.github/workflows/desktop-app-clean-machine-ci.yml'
@@ -59,8 +56,8 @@ permissions:
 
 env:
   REL_REPO: ${{ inputs.release_repo || 'unsloth-test/unsloth-test' }}
-  # Empty unless dispatched. A pinned tag is an immutable fixture, so a nightly
-  # against it can never catch a newly published broken bundle; each download step
+  # Empty unless dispatched: a pinned tag is an immutable fixture, so a nightly
+  # against it could never catch a newly published broken bundle. Each download step
   # resolves the newest desktop-v* release when this is empty.
   REL_TAG: ${{ inputs.release_tag || '' }}
   UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
@@ -91,8 +88,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          # Desktop releases are prereleases (release-desktop.yml keeps them off
-          # repo-wide "latest"), so resolve the newest desktop-v* tag explicitly.
+          # Desktop releases are prereleases (never repo-wide "latest"), so the
+          # newest desktop-v* tag has to be resolved explicitly.
           if [ -z "$REL_TAG" ]; then
             REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 --exclude-drafts \
               --json tagName,createdAt \
@@ -107,11 +104,10 @@ jobs:
           ls -la dl
 
       - name: Strip the developer toolchain
-        # `inputs` exists only for workflow_dispatch, so on pull_request and
-        # schedule `inputs.strip_toolchain` is the empty string -- and loose
-        # equality coerces both '' and false to 0, making `!= false` FALSE. The
-        # automatic runs would keep the hosted toolchain, which is the one thing
-        # this workflow exists to remove. Gate on the event instead.
+        # `inputs` exists only for workflow_dispatch, so on pull_request and schedule
+        # `inputs.strip_toolchain` is '' -- and loose equality coerces both '' and
+        # false to 0, making `!= false` FALSE, so automatic runs would keep the hosted
+        # toolchain this workflow exists to remove. Gate on the event instead.
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
         run: |
           bash .github/scripts/clean-machine-env.sh mask --remove
@@ -121,8 +117,8 @@ jobs:
       - name: Mount and install
         run: |
           DMG="$(ls dl/*.dmg | head -1)"
-          # A real download is quarantined; Gatekeeper treats it differently from a
-          # locally built bundle, and that difference is a genuine failure mode.
+          # A real download is quarantined, and Gatekeeper treats that differently
+          # from a locally built bundle: a genuine failure mode.
           xattr -w com.apple.quarantine \
             "0081;$(printf %x $(date +%s));Safari;" "$DMG" 2>/dev/null || true
           hdiutil attach "$DMG" -nobrowse -quiet -mountpoint /Volumes/UnslothCI
@@ -145,7 +141,7 @@ jobs:
             echo "::warning::Gatekeeper assessment failed -- users see 'cannot be opened' unless notarised"
           # The bundled installer is what actually failed for users. `::error::` is
           # only an annotation and `echo` exits 0, so the old `|| echo` form let a
-          # bundle with no installer pass this step.
+          # bundle with no installer pass.
           if [ -f "$APP/Contents/Resources/install.sh" ]; then
             echo "bundled install.sh present"
           else
@@ -158,22 +154,22 @@ jobs:
           set -a; [ -f ./clean-machine.env ] && . ./clean-machine.env; set +a
           set -o pipefail
           APP="$(ls -d /Applications/*Unsloth*.app | head -1)"
-          # A headless runner never clicks Install: preflight sets `not_installed`
-          # and returns (studio/frontend/src/hooks/use-tauri-backend.ts:252-254) and
-          # startup-screen.tsx:388-389 waits for the button. Launching alone would
-          # therefore sit on that screen for 90s and pass without ever running the
-          # bundled installer. Invoke it the way studio/src-tauri/src/install.rs
-          # does: --tauri, stdin closed, no tty. --tauri rejects a custom studio
-          # home (install.sh:102-114), so drop the workspace-scoped override.
+          # A headless runner never clicks Install: preflight sets `not_installed` and
+          # returns (studio/frontend/src/hooks/use-tauri-backend.ts:252-254) while
+          # startup-screen.tsx:388-389 waits for the button, so launching alone would
+          # sit on that screen for 90s and pass without ever running the bundled
+          # installer. Invoke it as studio/src-tauri/src/install.rs does: --tauri,
+          # stdin closed, no tty. --tauri rejects a custom studio home
+          # (install.sh:102-114), so drop the workspace-scoped override.
           env -u UNSLOTH_STUDIO_HOME \
             bash "$APP/Contents/Resources/install.sh" --tauri \
             < /dev/null 2>&1 | tee logs/bundled-install.log
           PY="$HOME/.unsloth/studio/unsloth_studio/bin/python"
           [ -x "$PY" ] || { echo "::error::bundled installer left no venv at $PY"; exit 1; }
           "$PY" -V
-          # install.rs passes only --tauri, so torch is part of first launch. Dropping
-          # --no-torch here and asserting torch keeps the venv check from passing over
-          # a bundle whose only failure is the torch install.
+          # install.rs passes only --tauri, so torch is part of first launch:
+          # asserting it stops the venv check passing a bundle whose only failure is
+          # the torch install.
           "$PY" -c "import torch; print('torch', torch.__version__)"
 
       - name: Launch and prove it stays up
@@ -210,8 +206,8 @@ jobs:
             grep -E "disposition=|can_auto_repair=|Xcode Command Line|ModuleNotFoundError" "$f" || true
             found=1
           done
-          # Everything above is `|| true`, so on its own this step could not fail while
-          # the header sells the tauri.log disposition as an acceptance criterion.
+          # Everything above is `|| true`, so this step could not fail while the
+          # header sells the tauri.log disposition as an acceptance criterion.
           # setup_logging (src-tauri/src/main.rs:50-67) opens tauri.log unconditionally
           # at process start, so no log at all means the binary never got that far.
           [ "${found:-0}" = "1" ] || { echo "::error::the app wrote no tauri.log; it never reached setup_logging"; exit 1; }
@@ -252,8 +248,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          # Desktop releases are prereleases (release-desktop.yml keeps them off
-          # repo-wide "latest"), so resolve the newest desktop-v* tag explicitly.
+          # Desktop releases are prereleases (never repo-wide "latest"), so the
+          # newest desktop-v* tag has to be resolved explicitly.
           if [ -z "$REL_TAG" ]; then
             REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 --exclude-drafts \
               --json tagName,createdAt \
@@ -270,9 +266,9 @@ jobs:
       - name: Install with NO dev tooling, only runtime libs
         run: |
           # Deliberately not build-essential/cmake/git: a user installing a .deb has
-          # none of that. WebKit + Xvfb are runtime requirements of the app itself,
-          # and apt pulls the .deb's declared deps -- if that list is wrong, this
-          # step is what catches it.
+          # none of that. WebKit + Xvfb are runtime requirements of the app, and apt
+          # pulls the .deb's declared deps -- if that list is wrong, this step catches
+          # it.
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends xvfb
           if [ "${{ matrix.kind }}" = "deb" ]; then
@@ -293,8 +289,8 @@ jobs:
       - name: Launch under Xvfb and prove it stays up
         run: |
           # Linux is the one platform where a hosted runner can give the app a real
-          # display, so this is the strongest "does the UI actually come up" check
-          # available without self-hosted hardware.
+          # display, so this is the strongest "does the UI come up" check available
+          # without self-hosted hardware.
           xvfb-run -a --server-args="-screen 0 1440x900x24" \
             "$BIN" > logs/app-stdout.log 2>&1 &
           APP_PID=$!
@@ -348,8 +344,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          # Desktop releases are prereleases (release-desktop.yml keeps them off
-          # repo-wide "latest"), so resolve the newest desktop-v* tag explicitly.
+          # Desktop releases are prereleases (never repo-wide "latest"), so the
+          # newest desktop-v* tag has to be resolved explicitly.
           if [ -z "$REL_TAG" ]; then
             REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 --exclude-drafts \
               --json tagName,createdAt \
@@ -363,11 +359,10 @@ jobs:
           ls -la dl
 
       - name: Strip developer tooling from PATH
-        # `inputs` exists only for workflow_dispatch, so on pull_request and
-        # schedule `inputs.strip_toolchain` is the empty string -- and loose
-        # equality coerces both '' and false to 0, making `!= false` FALSE. The
-        # automatic runs would keep the hosted toolchain, which is the one thing
-        # this workflow exists to remove. Gate on the event instead.
+        # `inputs` exists only for workflow_dispatch, so on pull_request and schedule
+        # `inputs.strip_toolchain` is '' -- and loose equality coerces both '' and
+        # false to 0, making `!= false` FALSE, so automatic runs would keep the hosted
+        # toolchain this workflow exists to remove. Gate on the event instead.
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
         shell: pwsh
         run: |
@@ -382,8 +377,8 @@ jobs:
         shell: pwsh
         run: |
           $exe = (Get-ChildItem dl/*setup.exe | Select-Object -First 1).FullName
-          # /S is the NSIS silent switch. A user double-clicks, but an installer that
-          # cannot run unattended also cannot be scripted or MDM-deployed.
+          # /S is the NSIS silent switch: a user double-clicks, but an installer that
+          # cannot run unattended cannot be scripted or MDM-deployed either.
           $p = Start-Process -FilePath $exe -ArgumentList '/S' -Wait -PassThru
           Write-Host "installer exit: $($p.ExitCode)"
           if ($p.ExitCode -ne 0) { Write-Host "::error::silent install failed"; exit 1 }

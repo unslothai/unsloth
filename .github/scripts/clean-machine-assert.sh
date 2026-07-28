@@ -4,15 +4,14 @@
 #
 # Assert the clean-machine contract after an install attempt.
 #
-#   absent   The toolchain really was absent for the whole run. Guards against a
-#            leg that "passed" only because masking silently failed, or because
-#            the installer quietly installed Xcode CLT behind our back.
+#   absent   The toolchain really was absent for the whole run. Guards against a leg
+#            that "passed" only because masking silently failed, or because the
+#            installer quietly installed Xcode CLT behind our back.
 #   notools  The trace recorded no compiler/git/brew invocation (trace mode).
-#   nobuild  The install log shows no source build (no sdist, no cmake, no
-#            "Building wheel" from pip and no "Building <pkg>==<ver>" from uv).
-#            This is the wheels-only contract. It needs UNSLOTH_VERBOSE=1 on the
-#            installer, otherwise run_install_cmd (install.sh:193-243) throws the
-#            uv output away on success and there is nothing here to read.
+#   nobuild  The wheels-only contract: no "Building wheel" from pip, no
+#            "Building <pkg>==<ver>" from uv. Needs UNSLOTH_VERBOSE=1, else
+#            run_install_cmd (install.sh:193-243) discards the uv output on success
+#            and there is nothing here to read.
 #
 # Usage: bash .github/scripts/clean-machine-assert.sh absent notools nobuild
 set -uo pipefail
@@ -28,11 +27,9 @@ for check in "$@"; do
   case "$check" in
 
     absent)
-      # Deliberately NOT a `command -v` check. On a real virgin Mac /usr/bin/git and
-      # /usr/bin/cc EXIST as Xcode CLT stubs, so `command -v git` SUCCEEDS -- running
-      # it is what fails ("xcrun: error: invalid active developer path"). Asserting on
-      # `command -v` would therefore be unfaithful and would fail on a correctly masked
-      # runner. The honest invariant is: the tool must not WORK.
+      # Deliberately NOT `command -v`: on a virgin Mac /usr/bin/{git,cc} EXIST as CLT
+      # stubs, so `command -v` succeeds and only RUNNING them fails ("xcrun: error:
+      # invalid active developer path"). The honest invariant is: must not WORK.
       if xcode-select -p >/dev/null 2>&1; then
         fail "xcode-select -p still resolves to $(xcode-select -p 2>/dev/null); not a clean Mac"
       else
@@ -41,10 +38,10 @@ for check in "$@"; do
       for tool in git cc clang cmake; do
         command -v "$tool" >/dev/null 2>&1 || { ok "$tool not on PATH"; continue; }
         if "$tool" --version >/dev/null 2>&1; then
-          # On Intel runners /usr/bin/git keeps working once the CLT are gone, so it
-          # is not CLT-provided there and no masking can remove it. cc and clang do
-          # become stubs, and the consumer path needs no git on macOS, so report it
-          # rather than calling the simulation broken.
+          # On Intel runners /usr/bin/git is not CLT-provided and keeps working once
+          # the CLT are gone, so no masking can remove it. cc and clang do become
+          # stubs and the macOS consumer path needs no git, so report rather than
+          # call the simulation broken.
           case " ${UNSLOTH_CLEAN_ALLOW_WORKING:-} " in
             *" $tool "*)
               echo "[assert] NOTE $tool still works ($(command -v "$tool")); allowed on this runner"
@@ -68,19 +65,18 @@ for check in "$@"; do
       if [ -z "$TRACE" ] || [ ! -f "$TRACE" ]; then
         fail "notools requested but no trace file (\$UNSLOTH_TOOL_TRACE=$TRACE)"
       else
-        # git is legitimate under --local (it installs unsloth-zoo from a git URL);
-        # UNSLOTH_ALLOW_TOOLS lets that leg allow-list it explicitly.
+        # git is legitimate under --local (unsloth-zoo comes from a git URL), so that
+        # leg allow-lists it via UNSLOTH_ALLOW_TOOLS.
         allow="${UNSLOTH_ALLOW_TOOLS:-}"
         hits=""
         while IFS=$'\t' read -r tool rest; do
           [ -n "$tool" ] || continue
           case " $allow " in *" $tool "*) continue ;; esac
-          # `xcode-select -p` ASKS whether a toolchain is selected; it cannot build
-          # anything. The installer has to ask in order to tell the user whether a
-          # source build is available, and the whole point of the fix is that it then
-          # carries on without one. Treating the question as toolchain USE would fail
-          # the very leg that proves the toolchain was never used. `--install`, which
-          # pops the CLT installer, stays a hit.
+          # `xcode-select -p` only ASKS whether a toolchain is selected; the installer
+          # has to ask, and the point of the fix is that it carries on without one.
+          # Counting the question as toolchain USE would fail the very leg that proves
+          # the toolchain was never used. `--install`, which pops the CLT installer,
+          # stays a hit.
           if [ "$tool" = "xcode-select" ]; then
             case "$rest" in
               -p|--print-path|-v|--version|"") continue ;;
@@ -98,25 +94,21 @@ for check in "$@"; do
       ;;
 
     nobuild)
-      # "Built an sdist" is NOT the same as "needed a compiler". Four packages on the
-      # macOS path are sdist-only PURE PYTHON projects that build fine with no
-      # toolchain (verified by resolving each against cp313/macos-arm64):
+      # "Built an sdist" is NOT "needed a compiler". Four packages on the macOS path
+      # are sdist-only PURE PYTHON (verified against cp313/macos-arm64):
       #   openai-whisper, argbind, randomname  -- no version ever ships a wheel
       #   antlr4-python3-runtime==4.9.3        -- pinned below the 4.13.2 wheel
-      # Failing on those would be a false alarm, so the contract asserted here is
-      # "nothing that needs a COMPILER was built", with that allowlist subtracted.
-      # UNSLOTH_ALLOW_SDIST can extend it.
+      # Failing on those is a false alarm, so the contract is "nothing needing a
+      # COMPILER was built". UNSLOTH_ALLOW_SDIST extends the allowlist.
       _allow="openai-whisper argbind randomname antlr4-python3-runtime ${UNSLOTH_ALLOW_SDIST:-}"
       if [ ! -f "$LOG" ]; then
         fail "nobuild requested but $LOG is missing"
       else
-        # The installer runs `uv pip install`, and uv does NOT use pip's phrasing.
-        # It prints `   Building <name>==<version>` and `      Built <name>==<version>`
-        # to stderr, as plain lines once stderr is not a TTY (astral-sh/uv#11165), so
-        # the pip-only pattern left _built empty on every uv source build. Match both
-        # spellings. Requiring `==` or ` @ ` after the name keeps this off the
-        # installer's own lowercase "building frontend..." progress text. Strip ANSI
-        # first so a coloured run (FORCE_COLOR) still parses.
+        # uv does NOT use pip's phrasing: it prints `Building <name>==<version>` to
+        # stderr (astral-sh/uv#11165), so the pip-only pattern left _built empty on
+        # every uv source build. Match both spellings. Requiring `==` or ` @ ` after
+        # the name keeps this off the installer's own lowercase "building frontend..."
+        # progress text. Strip ANSI first so a coloured run (FORCE_COLOR) parses.
         _esc=$(printf '\033')
         _built="$(sed -E "s/${_esc}\[[0-9;]*[A-Za-z]//g" "$LOG" 2>/dev/null \
                   | grep -oiE "building wheel for [a-z0-9._-]+|building [a-z0-9._-]+(==| @ )" \
