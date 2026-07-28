@@ -622,15 +622,17 @@ def test_chat_adapter_times_reasoning_from_the_deferred_close(tmp_path):
     src = ADAPTER_TS.read_text(encoding = "utf-8")
     assert "deferredCloseTimes" in src
     assert "onDeferredClose" in src
-    assert "structuralThinkCloseIndex" in src
+    assert "lastStructuralThinkCloseIndex" in src
     # The end-of-stream fallback must prefer the confirmed deferred instant.
-    assert "closedAt - reasoningStartAt" in src
+    assert "deferredCloseTimes.get(confirmedClose)" in src
     # The timer starts when raw reasoning arrives, not when the holdback emits:
     # a first delta that is only a marker prefix emits nothing (#7334).
     start_at = src.index("if (reasoning) {")
-    assert "reasoningStartAt = Date.now();" in src[start_at : start_at + 600]
+    assert (
+        "reasoningDurationTracker.startGroup();" in src[start_at : start_at + 600]
+    )
     assert src.index("reasoningMarkupBuffer += reasoning;") > src.index(
-        "reasoningStartAt = Date.now();", start_at
+        "reasoningDurationTracker.startGroup();", start_at
     )
 
 

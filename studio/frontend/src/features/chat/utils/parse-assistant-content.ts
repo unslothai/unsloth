@@ -14,6 +14,87 @@ const THINK_CLOSE_TAG = "</think>";
  */
 const THINK_NEUTRAL_ZW = "\u2060";
 
+/**
+ * Normalize streamed string or structured delta content to inline text.
+ * Structured reasoning-only chunks remain distinguishable so their fallback
+ * timer can span consecutive chunks even though each chunk carries closed tags.
+ *
+ * `closeOffsets` reports where each wrapper `</think>` starts so the caller can
+ * register it as a known boundary. They are ours, not model markers: left to the
+ * raw-marker heuristics they kept answer deltas in the drawer (#7334).
+ */
+export function extractDeltaText(delta: unknown): {
+  text: string;
+  structuredReasoningContinues: boolean;
+  closeOffsets: number[];
+} {
+  const extractReasoningText = (payload: unknown): string => {
+    if (typeof payload === "string") return payload;
+    if (Array.isArray(payload)) {
+      return payload.map((item) => extractReasoningText(item)).join("");
+    }
+    if (!payload || typeof payload !== "object") return "";
+
+    const obj = payload as Record<string, unknown>;
+    for (const key of ["thinking", "text", "content", "reasoning", "summary"]) {
+      if (key in obj) {
+        const text = extractReasoningText(obj[key]);
+        if (text) return text;
+      }
+    }
+    return "";
+  };
+
+  if (typeof delta === "string") {
+    return { text: delta, structuredReasoningContinues: false, closeOffsets: [] };
+  }
+  if (!Array.isArray(delta)) {
+    return { text: "", structuredReasoningContinues: false, closeOffsets: [] };
+  }
+
+  let text = "";
+  let structuredReasoningContinues = false;
+  const closeOffsets: number[] = [];
+  for (const part of delta) {
+    if (typeof part === "string") {
+      text += part;
+      if (part) {
+        structuredReasoningContinues = false;
+      }
+      continue;
+    }
+    if (!part || typeof part !== "object") continue;
+    const obj = part as {
+      type?: string;
+      text?: string;
+      content?: string;
+      thinking?: string;
+    };
+    if (obj.type === "text" || obj.type === "output_text") {
+      const visibleText =
+        typeof obj.text === "string"
+          ? obj.text
+          : typeof obj.content === "string"
+            ? obj.content
+            : "";
+      text += visibleText;
+      if (visibleText) {
+        structuredReasoningContinues = false;
+      }
+    } else if (obj.type === "thinking" || obj.type === "reasoning") {
+      const thinking = extractReasoningText(obj);
+      // A literal </think> here must not close the wrapper early (#7066).
+      if (thinking) {
+        text += `${THINK_OPEN_TAG}${neutralizeThinkMarkup(thinking)}`;
+        closeOffsets.push(text.length);
+        text += THINK_CLOSE_TAG;
+        structuredReasoningContinues = true;
+      }
+    }
+  }
+  return { text, structuredReasoningContinues, closeOffsets };
+}
+
 // ContentPart from @assistant-ui/react has readonly fields, so coalescing via
 // `last.text += text` fails (TS2540). Instead replace the last element with a
 // fresh merged object: same allocation cost as mutation but type-safe.
@@ -605,5 +686,54 @@ export function structuralThinkCloseIndex(
     options?.isKnownClose,
     options?.onDeferredClose,
     options?.resume,
+  );
+}
+
+/**
+ * Structural close of the LAST reasoning block, or -1 when the block is still
+ * open (or there is none). Walks every block, so the reasoning timer reads the
+ * close that ended the group it is still timing (#7334).
+ */
+export function lastStructuralThinkCloseIndex(
+  raw: string,
+  options?: ParseOptions,
+): number {
+  let cursor = 0;
+  let lastClose = -1;
+  for (;;) {
+    const openIndex = raw.indexOf(THINK_OPEN_TAG, cursor);
+    if (openIndex === -1) {
+      return lastClose;
+    }
+    const spanStart = openIndex + THINK_OPEN_TAG.length;
+    const closeIndex = findStructuralThinkClose(
+      raw,
+      spanStart,
+      spanStart,
+      options?.streaming ?? false,
+      options?.isKnownClose,
+      options?.onDeferredClose,
+      options?.resume,
+    );
+    if (closeIndex === -1) {
+      return -1;
+    }
+    lastClose = closeIndex;
+    cursor = closeIndex + THINK_CLOSE_TAG.length;
+  }
+}
+
+/**
+ * True while a reasoning block is open, i.e. the last `<think>` has no close
+ * after it. Structural, not `lastIndexOf`: a literal `</think>` quoted inside
+ * the thought would otherwise read as the block end and stop the timer (#7066).
+ */
+export function hasUnclosedThinkTag(
+  raw: string,
+  options?: ParseOptions,
+): boolean {
+  return (
+    raw.includes(THINK_OPEN_TAG) &&
+    lastStructuralThinkCloseIndex(raw, options) === -1
   );
 }
