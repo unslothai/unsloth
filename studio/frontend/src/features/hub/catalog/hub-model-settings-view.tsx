@@ -10,9 +10,9 @@
 
 import { ModelConfigPage, type ModelPickTarget } from "@/features/model-picker";
 import type { PerModelConfig } from "@/features/model-picker";
+import { cn } from "@/lib/utils";
 import { ArrowLeft01Icon, Globe02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { cn } from "@/lib/utils";
 import { useEffect, useRef, useState } from "react";
 
 export function HubModelSettingsView({
@@ -109,10 +109,10 @@ export function HubModelSettingsView({
               />
             </span>
             <p className="min-w-0 text-ui-12 leading-[1.5] text-muted-foreground">
-              {/* Only a GGUF is mirrored to the server, because API auto-switch
-                  indexes GGUFs only, so promising the API case for anything
-                  else describes a load that cannot happen. */}
-              {target.isGguf
+              {/* Only what auto-switch can reach is mirrored to the server: it
+                  indexes GGUFs and skips Ollama, so promising the API case for
+                  anything else describes a load that cannot happen. */}
+              {(target.apiLoadable ?? target.isGguf)
                 ? "Saved settings apply everywhere this model loads, including when an OpenAI-compatible API request asks for it."
                 : "Saved settings apply everywhere Studio loads this model."}{" "}
               Turn on{" "}

@@ -660,7 +660,7 @@ def test_only_gguf_configs_are_mirrored_to_the_server():
     loads safetensors models and must honour their config.
     """
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "if (!saveFailed && target.isGguf) { syncModelOverride(" in src
+    assert "if (!saveFailed && (target.apiLoadable ?? target.isGguf)) { syncModelOverride(" in src
     # The local save is not behind the same gate.
     assert "if (remember) { saveFailed = !savePerModelConfig(" in src
 
@@ -731,7 +731,7 @@ def test_api_reach_copy_is_limited_to_gguf_models():
     apply to an API request describes a load that cannot happen.
     """
     src = " ".join(_read("features/hub/catalog/hub-model-settings-view.tsx").split())
-    assert "{target.isGguf ?" in src
+    assert "{(target.apiLoadable ?? target.isGguf)" in src
     assert "Saved settings apply everywhere Studio loads this model." in src
 
 
@@ -822,3 +822,23 @@ def test_a_failed_detail_fetch_is_retried():
     assert "const DETAIL_FETCH_ATTEMPTS = 3;" in src
     assert "const detailInFlight = selectedId_ != null && loadingDetails.has(selectedId_);" in src
     assert "if (attemptsRef.current.count >= DETAIL_FETCH_ATTEMPTS) { return; }" in src
+
+
+def test_ollama_models_are_not_advertised_as_api_loadable():
+    """local_model_resolver skips Ollama's scanner, so an Ollama GGUF is never in
+    the auto-switch index and no OpenAI request can resolve it. target.isGguf is
+    still true for one, so gating on that alone mirrored settings the API can
+    never apply and told the user the opposite."""
+    types_src = " ".join(
+        _read("features/model-picker/components/model-selector/types.ts").split()
+    )
+    assert "apiLoadable?: boolean;" in types_src
+    hub = " ".join(_read("features/hub/hub-page.tsx").split())
+    assert 'row.source !== LOCAL_MODEL_SOURCE.OLLAMA' in hub
+    assert 'apiLoadable:' in hub
+    backend = (
+        WORKDIR / "studio" / "backend" / "core" / "inference" / "local_model_resolver.py"
+    ).read_text(encoding = "utf-8")
+    assert "Ollama's\n    scanner is skipped" in backend or "scanner is skipped" in backend, (
+        "the rule this mirrors"
+    )

@@ -32,6 +32,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { syncModelOverride } from "../api/model-overrides";
 import {
   useDefaultChatTemplate,
   useModelMaxPositionEmbeddings,
@@ -55,7 +56,6 @@ import {
   resolveInitialConfig,
   savePerModelConfig,
 } from "../model-config/per-model-config";
-import { syncModelOverride } from "../api/model-overrides";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import type { ModelPickTarget } from "./model-selector/types";
 import {
@@ -74,14 +74,16 @@ const SELECT_TRIGGER_CLASS = `grid h-8 min-w-0 grid-cols-[minmax(0,1fr)_auto] it
 const NUMBER_INPUT_CLASS = `h-8 w-[92px] ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-right text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
 
 const KV_CACHE_DTYPE_DEFAULT = "f16";
-const SPECULATIVE_TYPE_LABELS: Record<(typeof SPECULATIVE_TYPES)[number], string> =
-  {
-    auto: "Auto",
-    mtp: "MTP",
-    ngram: "Ngram",
-    "mtp+ngram": "MTP+Ngram",
-    off: "Off",
-  };
+const SPECULATIVE_TYPE_LABELS: Record<
+  (typeof SPECULATIVE_TYPES)[number],
+  string
+> = {
+  auto: "Auto",
+  mtp: "MTP",
+  ngram: "Ngram",
+  "mtp+ngram": "MTP+Ngram",
+  off: "Off",
+};
 
 function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
   return (
@@ -352,8 +354,8 @@ function GpuMemorySettings({
             info={
               <>
                 Layers to keep on the GPU (--gpu-layers); the rest run on CPU.
-                Auto lets llama.cpp size the split (and the context) to fit VRAM.
-                At the maximum, the whole model is on the GPU.
+                Auto lets llama.cpp size the split (and the context) to fit
+                VRAM. At the maximum, the whole model is on the GPU.
               </>
             }
           />
@@ -738,8 +740,7 @@ export function ModelConfigPage({
     ),
     maxContext,
   );
-  const setContextLength = (v: number) =>
-    update({ customContextLength: v });
+  const setContextLength = (v: number) => update({ customContextLength: v });
   const baseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
   const atBaseline = perModelConfigsEqual(config, baseline);
   // An explicit customContextLength equal to the native ceiling is still an
@@ -888,10 +889,11 @@ export function ModelConfigPage({
     // Skipped when the local write failed (quota, a future-schema entry): the
     // browser and the server would otherwise permanently disagree about this
     // model, with no way for the user to tell which one the next load used.
-    // GGUF only: the API auto-switch resolver indexes GGUFs, so mirroring a
-    // safetensors config to the server would advertise settings on the monitor's
-    // "applied on API load" list that no API request can ever apply.
-    if (!saveFailed && target.isGguf) {
+    // Auto-switch reach, not just GGUF-ness: the resolver indexes GGUFs and
+    // skips Ollama's scanner, so mirroring either a safetensors config or an
+    // Ollama one would advertise settings on the monitor's "applied on API load"
+    // list that no API request can ever apply.
+    if (!saveFailed && (target.apiLoadable ?? target.isGguf)) {
       syncModelOverride(
         target.id,
         target.ggufVariant,

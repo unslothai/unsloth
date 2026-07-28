@@ -69,6 +69,7 @@ import type {
 import { useHubModelVram } from "./hooks/use-hub-model-vram";
 import { useModelsSelection } from "./hooks/use-models-selection";
 import { useHubInventory } from "./inventory";
+import { LOCAL_MODEL_SOURCE } from "./inventory/constants";
 import {
   CHANNEL_TO_SECTION,
   type ChannelId,
@@ -1309,6 +1310,9 @@ export function ModelsPage() {
         displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf,
         ggufVariant,
         isGguf: row.isGguf,
+        apiLoadable:
+          row.isGguf &&
+          (row.kind !== "local" || row.source !== LOCAL_MODEL_SOURCE.OLLAMA),
         meta: {
           source: "local",
           isLora: row.modelFormat === "adapter",

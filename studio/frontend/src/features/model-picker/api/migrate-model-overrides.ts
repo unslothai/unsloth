@@ -80,7 +80,8 @@ export async function backfillModelOverrides(): Promise<void> {
     // that test despite being exactly what auto-switch does resolve; the flag
     // is then set and its settings stay browser-only for good.
     (entry) =>
-      (entry.ggufVariant != null || entry.modelId.toLowerCase().endsWith(".gguf")) &&
+      (entry.ggufVariant != null ||
+        entry.modelId.toLowerCase().endsWith(".gguf")) &&
       !isDefaultConfig(entry.config),
   );
   if (local.length === 0) {
@@ -110,8 +111,26 @@ export async function backfillModelOverrides(): Promise<void> {
     if (known.has(key)) {
       continue;
     }
+    // Re-read rather than trusting the snapshot taken before the fetch above.
+    // A save or a forget during that round trip would otherwise be undone by
+    // this write, since it is queued behind the interactive one and commits
+    // last: the browser would show the new settings while an API load applied
+    // the old ones.
+    const current = listPerModelConfigs().find(
+      (candidate) =>
+        normalizedOverrideKey(
+          modelOverrideKey(candidate.modelId, candidate.ggufVariant),
+        ) === key,
+    );
+    if (!current || isDefaultConfig(current.config)) {
+      continue;
+    }
     try {
-      await putModelOverride(entry.modelId, entry.ggufVariant, entry.config);
+      await putModelOverride(
+        current.modelId,
+        current.ggufVariant,
+        current.config,
+      );
     } catch {
       failed = true;
     }
