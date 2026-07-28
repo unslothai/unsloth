@@ -5343,9 +5343,9 @@ def test_map_entry_fill_reads_and_writes_in_one_transaction(tmp_path, monkeypatc
         "a": {"v": 1}
     }
     assert db.get_app_setting(key) == {"a": {"v": 1}}
-    assert db.upsert_app_setting_map_entry(
-        key, "a", {"v": 2, "w": 7}, fill_absent_fields = True
-    ) == {"a": {"v": 1, "w": 7}}
+    assert db.upsert_app_setting_map_entry(key, "a", {"v": 2, "w": 7}, fill_absent_fields = True) == {
+        "a": {"v": 1, "w": 7}
+    }
     assert db.get_app_setting(key) == {"a": {"v": 1, "w": 7}}
     # Absent: created.
     assert db.upsert_app_setting_map_entry(key, "b", {"v": 3}, fill_absent_fields = True) == {

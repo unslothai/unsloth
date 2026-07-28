@@ -969,7 +969,9 @@ def test_the_backfill_fills_in_fields_rather_than_skipping_known_keys():
     assert "{ fillAbsentFields: true }," in backfill
     # Key presence alone is not "done": what the server lacks decides.
     assert "const stored = known.get(key);" in backfill
-    assert "if (stored && absentFields(stored, current.config).length === 0) { continue; }" in backfill
+    assert (
+        "if (stored && absentFields(stored, current.config).length === 0) { continue; }" in backfill
+    )
     assert "const fields = Object.keys(toApiOverride(config));" in backfill
     assert "return fields.filter((field) => !(field in stored));" in backfill
 
