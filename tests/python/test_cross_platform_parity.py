@@ -917,3 +917,21 @@ class TestAmdBnbFloorParity:
             assert (
                 "4-bit decode will be broken on ROCm" not in text
             ), f"{path.name} still reports the repaired PyPI fallback as broken"
+
+    def test_aarch64_is_not_told_it_has_a_rocm_backend(self):
+        """bitsandbytes ships no ROCm kernels in its aarch64 wheel at any version, so
+        neither installer may hand aarch64 the x86_64 "carries the ROCm 4-bit fix"
+        message, and both must warn that 4-bit needs a source build there."""
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        assert "_bnb_rocm_arch_has_binary()" in sh
+        assert "_warn_bnb_no_rocm_binary()" in sh
+        assert sh.count("_warn_bnb_no_rocm_binary\n") >= 2, (
+            "install.sh must warn on aarch64 after both the pre-release and the fallback install"
+        )
+        py = STACK_PY.read_text(encoding = "utf-8")
+        assert "def _bnb_rocm_arch_has_binary(" in py
+        assert "_bnb_rocm_arch_has_binary()" in py
+        for text, name in ((sh, "install.sh"), (py, "install_python_stack.py")):
+            assert "4-bit QLoRA needs a source build" in text, (
+                f"{name} must tell aarch64 users 4-bit needs a source build"
+            )
