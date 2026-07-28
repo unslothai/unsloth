@@ -130,15 +130,15 @@ def test_recorded_records_prune_dead_entries(tmp_path, monkeypatch):
 def test_own_studio_blocking_the_port_is_recognised(tmp_path):
     (tmp_path / "studio-8901-8550.pid").write_text("8550", encoding = "utf-8")
 
-    assert run._blocker_is_own_studio([(8550, "python")]) == 8550
+    assert run._blocker_is_own_studio([(8550, "python", "127.0.0.1")], "127.0.0.1") == 8550
 
 
 def test_a_foreign_blocker_still_falls_back(tmp_path):
     # jupyter-lab on 8888 must keep the fallback, not abort the launch.
     (tmp_path / "studio-8901-8550.pid").write_text("8550", encoding = "utf-8")
 
-    assert run._blocker_is_own_studio([(117, "jupyter-lab")]) is None
-    assert run._blocker_is_own_studio([]) is None
+    assert run._blocker_is_own_studio([(117, "jupyter-lab", "127.0.0.1")], "127.0.0.1") is None
+    assert run._blocker_is_own_studio([], "127.0.0.1") is None
 
 
 def test_our_studio_is_found_behind_a_foreign_listener(tmp_path):
@@ -146,7 +146,12 @@ def test_our_studio_is_found_behind_a_foreign_listener(tmp_path):
     # decision depend on psutil's ordering.
     (tmp_path / "studio-8889-8550.pid").write_text("8550", encoding = "utf-8")
 
-    assert run._blocker_is_own_studio([(117, "jupyter-lab"), (8550, "python")]) == 8550
+    assert (
+        run._blocker_is_own_studio(
+            [(117, "jupyter-lab", "127.0.0.1"), (8550, "python", "127.0.0.1")], "127.0.0.1"
+        )
+        == 8550
+    )
 
 
 def test_a_reused_pid_is_not_treated_as_our_studio(tmp_path, monkeypatch):
@@ -154,7 +159,7 @@ def test_a_reused_pid_is_not_treated_as_our_studio(tmp_path, monkeypatch):
     monkeypatch.setattr(run, "_pid_is_studio_backend", lambda pid, created_times = (): False)
     (tmp_path / "studio-8901-8550.pid").write_text("8550", encoding = "utf-8")
 
-    assert run._blocker_is_own_studio([(8550, "postgres")]) is None
+    assert run._blocker_is_own_studio([(8550, "postgres", "127.0.0.1")], "127.0.0.1") is None
 
 
 def test_start_time_mismatch_rejects_a_reused_pid(monkeypatch):
@@ -218,6 +223,36 @@ def test_legacy_records_do_not_match_a_training_run(monkeypatch):
     assert run._pid_is_studio_backend(9999) is False
 
 
+def test_our_studio_on_another_bind_address_does_not_abort(tmp_path):
+    # Jupyter holds 127.0.0.1:8889, our server holds ::1:8889. Binding 127.0.0.1
+    # conflicts with Jupyter, not with us, so fall through to the next port.
+    (tmp_path / "studio-8889-8550.pid").write_text("8550", encoding = "utf-8")
+
+    blockers = [(117, "jupyter-lab", "127.0.0.1"), (8550, "python", "::1")]
+
+    assert run._blocker_is_own_studio(blockers, "127.0.0.1") is None
+    assert run._blocker_is_own_studio(blockers, "::1") == 8550
+
+
+def test_a_wildcard_listener_blocks_any_bind(tmp_path):
+    (tmp_path / "studio-8889-8550.pid").write_text("8550", encoding = "utf-8")
+
+    assert run._blocker_is_own_studio([(8550, "python", "0.0.0.0")], "127.0.0.1") == 8550
+
+
+def test_a_wildcard_bind_is_blocked_by_any_listener(tmp_path):
+    (tmp_path / "studio-8889-8550.pid").write_text("8550", encoding = "utf-8")
+
+    assert run._blocker_is_own_studio([(8550, "python", "127.0.0.1")], "0.0.0.0") == 8550
+
+
+def test_listener_address_matching(monkeypatch):
+    assert run._listener_blocks_host("0.0.0.0", "127.0.0.1") is True
+    assert run._listener_blocks_host("127.0.0.1", "0.0.0.0") is True
+    assert run._listener_blocks_host("127.0.0.1", "127.0.0.1") is True
+    assert run._listener_blocks_host("::1", "127.0.0.1") is False
+
+
 def test_fallback_aborts_on_our_own_server_further_up_the_range(tmp_path, monkeypatch):
     # jupyter holds 8888, our server holds 8889: skipping to 8890 is the duplicate.
     (tmp_path / "studio-8889-8550.pid").write_text("8550", encoding = "utf-8")
@@ -225,7 +260,9 @@ def test_fallback_aborts_on_our_own_server_further_up_the_range(tmp_path, monkey
     monkeypatch.setattr(
         run,
         "_get_pids_on_port",
-        lambda p: [(8550, "python")] if p == 8889 else [(117, "jupyter-lab")],
+        lambda p: (
+            [(8550, "python", "127.0.0.1")] if p == 8889 else [(117, "jupyter-lab", "127.0.0.1")]
+        ),
     )
 
     with pytest.raises(SystemExit) as excinfo:
@@ -236,6 +273,6 @@ def test_fallback_aborts_on_our_own_server_further_up_the_range(tmp_path, monkey
 
 def test_fallback_still_skips_foreign_processes(monkeypatch):
     monkeypatch.setattr(run, "_is_port_free", lambda host, p: p >= 8890)
-    monkeypatch.setattr(run, "_get_pids_on_port", lambda p: [(117, "jupyter-lab")])
+    monkeypatch.setattr(run, "_get_pids_on_port", lambda p: [(117, "jupyter-lab", "127.0.0.1")])
 
     assert run._find_free_port("127.0.0.1", 8889, avoid_own_studio = True) == 8890

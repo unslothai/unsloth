@@ -184,6 +184,38 @@ def test_pid_identity_check_accepts_an_in_process_studio(monkeypatch):
     assert studio_mod._pid_is_studio_server(8550) is True
 
 
+def test_a_timestamped_record_is_not_trusted_without_psutil(monkeypatch):
+    # psutil is not a base CLI dependency. A start time only exists if psutil was
+    # present when the server started, so without it now the record is unverifiable
+    # and must not get a reused PID killed.
+    studio_mod = _studio()
+    monkeypatch.setitem(sys.modules, "psutil", None)
+
+    assert studio_mod._pid_is_studio_server(8550, [111.5]) is False
+    assert studio_mod._pid_is_studio_server(8550, [None]) is True
+
+
+def test_a_legacy_record_survives_a_stale_timestamp_for_the_same_pid(monkeypatch):
+    # Stale per-port file + live legacy studio.pid sharing a reused PID: judging
+    # only by the stale timestamp would drop the live server.
+    studio_mod = _studio()
+
+    class _FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def create_time(self):
+            return 999.0
+
+        def cmdline(self):
+            return ["/venv/bin/unsloth", "studio", "-p", "8901"]
+
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process = _FakeProcess))
+
+    assert studio_mod._pid_is_studio_server(8550, [111.5, None]) is True
+    assert studio_mod._pid_is_studio_server(8550, [111.5]) is False
+
+
 def test_pid_identity_check_trusts_the_record_without_psutil(monkeypatch):
     # No psutil: fall back to trusting the record rather than never stopping.
     studio_mod = _studio()

@@ -2472,22 +2472,34 @@ def _pid_file_entries() -> "list[tuple[int, list[float | None], list[Path]]]":
 
 
 def _pid_is_studio_server(pid: int, created_times: "Sequence[float | None]" = ()) -> bool:
-    """Guard against PID reuse: a stale record must not get an unrelated process
-    killed. Any recorded start time matching is enough. The cmdline check only
-    covers legacy records -- and the in-venv path runs run_server() in-process, so
-    its argv is `unsloth studio ...` with no run.py."""
+    """Guard against PID reuse: a stale record must not get an unrelated process killed.
+
+    A start time only exists if psutil was available when the server started, so
+    without psutil now such a record cannot be trusted -- but untimed (legacy)
+    records must keep working, or `stop` stops nothing on a psutil-less install.
+    The cmdline check covers those: the in-venv path runs run_server() in-process,
+    so its argv is `unsloth studio ...` with no run.py.
+    """
     known = [c for c in created_times if c is not None]
+    untimed = not created_times or len(known) < len(created_times)
     try:
         import psutil
-
         proc = psutil.Process(pid)
-        if known:
+    except Exception:
+        return untimed
+    if known:
+        try:
             actual = proc.create_time()
-            return any(abs(actual - c) < 1.0 for c in known)
+        except Exception:
+            return untimed
+        if any(abs(actual - c) < 1.0 for c in known):
+            return True
+        if not untimed:
+            return False
+    try:
         cmdline = " ".join(proc.cmdline()).lower()
     except Exception:
-        # Unknowable without psutil: trust the record rather than never stopping.
-        return True
+        return untimed
     return "studio" in cmdline and ("run.py" in cmdline or "unsloth" in cmdline)
 
 

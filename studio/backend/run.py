@@ -689,27 +689,47 @@ def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
     return None
 
 
-def _get_pids_on_port(port: int) -> "list[tuple[int, str]]":
-    """Every listener on *port*. A port can have one per bind address, and
-    checking only the first makes the own-Studio decision arbitrary."""
+def _get_pids_on_port(port: int) -> "list[tuple[int, str, str]]":
+    """(pid, name, bind address) for every listener on *port*. A port can have one
+    per address, and checking only the first makes the own-Studio call arbitrary."""
     try:
         import psutil
     except ImportError:
         return []
-    found: "dict[int, str]" = {}
+    found: "dict[tuple[int, str], tuple[int, str, str]]" = {}
     try:
         for conn in psutil.net_connections(kind = "tcp"):
             if conn.status != "LISTEN" or conn.laddr.port != port or conn.pid is None:
                 continue
-            if conn.pid in found:
+            key = (conn.pid, conn.laddr.ip)
+            if key in found:
                 continue
             try:
-                found[conn.pid] = psutil.Process(conn.pid).name()
+                name = psutil.Process(conn.pid).name()
             except (psutil.NoSuchProcess, psutil.AccessDenied):
-                found[conn.pid] = "<unknown>"
+                name = "<unknown>"
+            found[key] = (conn.pid, name, conn.laddr.ip)
     except (psutil.AccessDenied, OSError) as e:
         logger.debug("Failed to scan network connections for port %s: %s", port, e)
-    return list(found.items())
+    return list(found.values())
+
+
+def _listener_blocks_host(listen_ip: str, host: str) -> bool:
+    """Would a listener on *listen_ip* block a bind to *host*?
+
+    Wildcards on either side collide with everything; otherwise compare resolved
+    addresses. Unresolvable means assume a collision rather than start a duplicate.
+    """
+    wildcards = ("0.0.0.0", "::", "")
+    if listen_ip in wildcards or host in wildcards:
+        return True
+    import socket
+
+    try:
+        host_ips = {info[4][0] for info in socket.getaddrinfo(host, None)}
+    except OSError:
+        return True
+    return listen_ip in host_ips
 
 
 def _is_port_free(host: str, port: int) -> bool:
@@ -768,7 +788,7 @@ def _find_free_port(
         if _is_port_free(host, candidate):
             return candidate
         if avoid_own_studio:
-            own = _blocker_is_own_studio(_get_pids_on_port(candidate))
+            own = _blocker_is_own_studio(_get_pids_on_port(candidate), host)
             if own is not None:
                 _abort_already_running(own, candidate)
     raise RuntimeError(f"Could not find a free port in range {start}-{start + max_attempts - 1}")
@@ -836,22 +856,35 @@ def _pid_is_studio_backend(pid: int, created_times: "Sequence[float | None]" = (
     in-venv path runs run_server() in-process, so its argv is `unsloth studio ...`.
     """
     known = [c for c in created_times if c is not None]
+    untimed = not created_times or len(known) < len(created_times)
     if known:
         actual = _process_create_time(pid)
-        # Unknowable without psutil: trust the record rather than guess.
-        return actual is None or any(abs(actual - c) < 1.0 for c in known)
+        if actual is None:
+            return untimed
+        if any(abs(actual - c) < 1.0 for c in known):
+            return True
+        if not untimed:
+            return False
     try:
         import psutil
         cmdline = " ".join(psutil.Process(pid).cmdline()).lower()
     except Exception:
-        return True
+        return untimed
     return "studio" in cmdline and ("run.py" in cmdline or "unsloth" in cmdline)
 
 
-def _blocker_is_own_studio(blockers: "list[tuple[int, str]]") -> "int | None":
-    """PID of one of our recorded servers holding the port, if any."""
+def _blocker_is_own_studio(
+    blockers: "list[tuple[int, str, str]]", host: "str | None" = None
+) -> "int | None":
+    """PID of one of our recorded servers actually blocking *host*, if any.
+
+    Address-matched: Jupyter on 127.0.0.1:8889 and our server on ::1:8889 is not a
+    conflict for `-H 127.0.0.1`, and must still fall through to the next port.
+    """
     recorded = _recorded_studio_records()
-    for pid, _name in blockers:
+    for pid, _name, listen_ip in blockers:
+        if host is not None and not _listener_blocks_host(listen_ip, host):
+            continue
         if pid in recorded and _pid_is_studio_backend(pid, recorded[pid]):
             return pid
     return None
@@ -1691,7 +1724,7 @@ def run_server(
         original_port = port
         blocker = _get_pid_on_port(port)
         # Falling back past our own server is what creates the orphan.
-        own = _blocker_is_own_studio(_get_pids_on_port(port))
+        own = _blocker_is_own_studio(_get_pids_on_port(port), host)
         if own is not None:
             _abort_already_running(own, port)
         port = _find_free_port(host, port + 1, avoid_own_studio = True)
