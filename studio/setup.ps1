@@ -3302,7 +3302,6 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
         $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
         $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
     }
-    if ($script:UnslothVerbose) {
     # Windows on ARM publishes torch and torchvision win_arm64 wheels but no
     # torchaudio, so a bare trio aborts here even though install.ps1 already dropped
     # it upstream. Same interpreter-based test, since the PowerShell host's
@@ -3313,9 +3312,10 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     } catch { $_setupPlatform = "" }
     $_torchTrio = @($cpuTorchSpec, $cpuVisionSpec, $cpuAudioSpec)
     if ($_setupPlatform -eq "win-arm64") {
-        Write-Host "windows on arm: skipping torchaudio (no win_arm64 wheel upstream)"
+        substep "windows on arm: skipping torchaudio (no win_arm64 wheel upstream)"
         $_torchTrio = @($cpuTorchSpec, $cpuVisionSpec)
     }
+    if ($script:UnslothVerbose) {
         Fast-Install @_torchTrio @cpuForce --index-url $TorchInstallIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
         $torchInstallExit = $LASTEXITCODE
         $output = ""

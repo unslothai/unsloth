@@ -454,9 +454,13 @@ class TestKnown211SetParity:
             "$_pinCuLeaf" not in text
         ), "install.ps1 must bound companions on every index (no cu-family exemption)"
         # The bounded companions must actually be passed to the install command.
-        assert re.search(
-            r'"torch>=2\.4,<2\.11\.0" \$_pinVisionSpec \$_pinAudioSpec --default-index \$TorchIndexUrl',
-            text,
+        # The specs are built into a list and splatted now, so the guard checks both
+        # halves: the bounded list is constructed, and it reaches the install command.
+        assert (
+            '$_torchSpecs = @("torch>=2.4,<2.11.0", $_pinVisionSpec, $_pinAudioSpec)' in text
+        ), "install.ps1 custom-pin install must build the bounded spec list"
+        assert (
+            "@_torchSpecs --default-index $TorchIndexUrl" in text
         ), "install.ps1 custom-pin install must pass the bounded companion specs to uv"
 
     def test_gfx_allowlist_matches_across_installers(self):
@@ -724,8 +728,11 @@ class TestPinnedIndexClearsUvEnvParity:
             "if ($TorchIndexPinned) {" in text
         ), "the CPU trio bounds must be gated on an explicit pin"
         assert (
-            "Fast-Install $cpuTorchSpec $cpuVisionSpec $cpuAudioSpec @cpuForce" in text
-        ), "setup.ps1's CPU branch must install via the spec variables"
+            "$_torchTrio = @($cpuTorchSpec, $cpuVisionSpec, $cpuAudioSpec)" in text
+        ), "setup.ps1's CPU branch must build the trio from the spec variables"
+        assert (
+            "Fast-Install @_torchTrio @cpuForce" in text
+        ), "setup.ps1's CPU branch must install the trio it built"
         # The ceilings mirror the Python repair spec exactly.
         stack = STACK_PY.read_text(encoding = "utf-8")
         spec_block = re.search(r"_CUDA_TORCH_PKG_SPEC[^(]*\(\s*(.*?)\)", stack, re.DOTALL)
