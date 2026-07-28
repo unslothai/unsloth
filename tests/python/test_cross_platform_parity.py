@@ -832,15 +832,15 @@ class TestAmdBnbFloorParity:
 
     def test_install_sh_pypi_fallback_floor(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        assert f'"bitsandbytes>={self.FLOOR}"' in text, (
-            f"install.sh _install_bnb_rocm PyPI fallback must floor at {self.FLOOR}"
-        )
+        assert (
+            f'"bitsandbytes>={self.FLOOR}"' in text
+        ), f"install.sh _install_bnb_rocm PyPI fallback must floor at {self.FLOOR}"
 
     def test_stack_py_pypi_fallback_floor(self):
         text = STACK_PY.read_text(encoding = "utf-8")
-        assert f'_BNB_ROCM_PYPI_FALLBACK = "bitsandbytes>={self.FLOOR}"' in text, (
-            f"install_python_stack.py PyPI fallback must floor at {self.FLOOR}"
-        )
+        assert (
+            f'_BNB_ROCM_PYPI_FALLBACK = "bitsandbytes>={self.FLOOR}"' in text
+        ), f"install_python_stack.py PyPI fallback must floor at {self.FLOOR}"
 
     def test_amd_extra_floor_when_present(self):
         """The amd extra is not on this branch yet (#7278). Assert it only once it is,
@@ -852,9 +852,9 @@ class TestAmdBnbFloorParity:
         specs = re.findall(r'"(bitsandbytes[^"]*)"', amd.group(1))
         assert specs, "the amd extra must pin bitsandbytes"
         for spec in specs:
-            assert spec.startswith(f"bitsandbytes>={self.FLOOR}"), (
-                f"amd extra bitsandbytes floor must be >={self.FLOOR}, got {spec!r}"
-            )
+            assert spec.startswith(
+                f"bitsandbytes>={self.FLOOR}"
+            ), f"amd extra bitsandbytes floor must be >={self.FLOOR}, got {spec!r}"
 
     def test_no_installer_still_allows_the_broken_range(self):
         for path in (INSTALL_SH, INSTALL_PS1, SETUP_PS1, STACK_PY, self.PYPROJECT):
