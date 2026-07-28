@@ -1130,12 +1130,14 @@ def test_research_prompts_define_quality_and_citation_contracts():
     assert "prior conversation context and chat instructions as private" in planner
     assert "only concise public research terms" in planner
     assert "Do not assume the user's premise is correct" in planner
+    assert "Do not use generic topic-only queries" in planner
 
     assert "[Source Title](exact URL)" in _REPORT_SYSTEM_PROMPT
     assert "Corroborate consequential claims" in _REPORT_SYSTEM_PROMPT
     assert "Surface material disagreement" in _REPORT_SYSTEM_PROMPT
     assert "Do not add a Sources or References section" in _REPORT_SYSTEM_PROMPT
     assert "approved plan is guidance, not a script" in _AGENT_SYSTEM_PROMPT
+    assert "Do not issue generic topic-only queries" in _AGENT_SYSTEM_PROMPT
     assert "<untrusted_web_evidence>" in _AGENT_SYSTEM_PROMPT
     assert "<untrusted_query_history_json>" in _AGENT_SYSTEM_PROMPT
     assert "<untrusted_research_state_json>" in _AGENT_SYSTEM_PROMPT
