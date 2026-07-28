@@ -44,7 +44,6 @@ permissions:
   contents: read
 
 env:
-  UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
   UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK: '1'
 
 jobs:
@@ -101,11 +100,25 @@ jobs:
           bash .github/scripts/interrupt-install.sh \
             '${{ matrix.marker }}' logs/install.log -- --tauri --local
 
+      - name: The kill must have landed where it was aimed
+        run: |
+          . logs/interrupt.env
+          echo "reason=$interrupt_reason killed=$interrupt_killed exit=$installer_exit"
+          if [ "$interrupt_reason" != "marker-hit" ]; then
+            echo "::error::installer never reached '${{ matrix.marker }}' (reason=$interrupt_reason)."
+            echo "::error::This leg proves nothing. Without this check it passes via the"
+            echo "::error::NO_CLI 'safe' path, which is how a --tauri/UNSLOTH_STUDIO_HOME"
+            echo "::error::conflict once made all 11 POSIX legs vacuously green."
+            tail -30 logs/install.log || true
+            exit 1
+          fi
+
       - name: What state is the install in?
         id: probe
         run: |
-          BIN="$UNSLOTH_STUDIO_HOME/unsloth_studio/bin/unsloth"
-          [ -x "$BIN" ] || BIN="$UNSLOTH_STUDIO_HOME/bin/unsloth"
+          # --tauri refuses a custom UNSLOTH_STUDIO_HOME, so it installs here.
+          BIN="$HOME/.unsloth/studio/unsloth_studio/bin/unsloth"
+          [ -x "$BIN" ] || BIN="$HOME/.unsloth/studio/bin/unsloth"
           if [ ! -x "$BIN" ]; then
             # No CLI at all is a SAFE outcome: preflight reports NotInstalled and the
             # app offers a normal install. Nothing to assert beyond that.
@@ -133,8 +146,8 @@ jobs:
             echo "::error::re-run reported the venv up to date without repairing it"
             exit 1
           fi
-          BIN="$UNSLOTH_STUDIO_HOME/unsloth_studio/bin/unsloth"
-          [ -x "$BIN" ] || BIN="$UNSLOTH_STUDIO_HOME/bin/unsloth"
+          BIN="$HOME/.unsloth/studio/unsloth_studio/bin/unsloth"
+          [ -x "$BIN" ] || BIN="$HOME/.unsloth/studio/bin/unsloth"
           python3 .github/scripts/interrupted_install_probe.py "$BIN" --out probe-after || true
           v="$(python3 -c "import json;print(json.load(open('probe-after/verdict.json'))['verdict'])")"
           if [ "$v" != "HEALTHY" ]; then
@@ -157,6 +170,10 @@ jobs:
   # ── Windows: no process groups, so the kill path differs ──────────────────
   interrupt-windows:
     name: windows kill@${{ matrix.label }}
+    env:
+      # install.ps1 has no equivalent of install.sh's --tauri guard, so the
+      # workspace-scoped root still works here.
+      UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
     runs-on: windows-latest
     timeout-minutes: 60
     continue-on-error: true
