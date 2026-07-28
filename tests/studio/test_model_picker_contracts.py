@@ -680,6 +680,55 @@ def test_parallel_slots_setting_wired_end_to_end():
     assert 'config.nParallel ?? "",' in sidebar
 
 
+def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
+    """`nParallel` is the editable control ("blank = follow the server default")
+    and `loadedNParallel` the rollback baseline. Every success path that does
+    NOT send a slot count must therefore blank the control, or a value staged
+    for some other model shows as applied, is persisted into that model's
+    per-model config (`isDefaultConfig` keys on nParallel, so a phantom count
+    turns a Save-nothing click into a stored override) and is re-sent by the
+    next Apply. Three paths were missing the clear; each assertion below is the
+    only thing pinning one of them."""
+    status = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    # A model/variant swap underneath this tab (another client, the CLI) must
+    # reset the control like performLoad's cross-model reset does, or model A's
+    # explicit count follows onto model B.
+    assert (
+        "...(seedLoadParams && hydratingExistingModel && { nParallel: null }),"
+        in status
+    )
+    # ... while still never adopting the RESOLVED echo into the control.
+    assert "nParallel: status.requested_parallel_slots," not in status
+
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    # Slice the two success branches of loadAutoLoadCandidate apart, and bound
+    # the second one at the shared tail, or it would swallow the fresh-default
+    # path below and stay green when this branch loses its clear.
+    candidate = adapter.split("async function loadAutoLoadCandidate", 1)[1]
+    gguf_branch, non_gguf_rest = candidate.split(
+        'if (candidate.kind === "gguf") {', 1
+    )[1].split("\n    } else {\n", 1)
+    non_gguf_branch = non_gguf_rest.split("if (!(loadResp.is_lora ?? false)) {", 1)[0]
+    # The cached-GGUF branch keeps the remembered override (it sends it)...
+    assert "nParallel: config.nParallel ?? null," in gguf_branch
+    assert "nParallel: null," not in gguf_branch
+    # ... the safetensors fallback sends no slots, so it clears both. Without
+    # this the count survives on a model whose run-settings form does not even
+    # render the field, leaving it unreachable and unclearable from the UI.
+    assert "nParallel: null," in non_gguf_branch
+    assert "loadedNParallel: null," in non_gguf_branch
+
+    fresh_default = adapter.split("No downloaded models found. Fetching", 1)[1].split(
+        'showAutoLoadSuccess("Loaded Qwen', 1
+    )[0]
+    # The fresh-default download deliberately omits n_parallel from its request,
+    # so its success state must clear both too; otherwise the control reads as
+    # an unapplied edit forever against the baseline the status seed fills in.
+    assert "n_parallel" not in fresh_default.split("saveSpeculativeType", 1)[0]
+    assert "nParallel: null," in fresh_default
+    assert "loadedNParallel: null," in fresh_default
+
+
 def test_vulkan_inference_devices_are_the_pickable_set():
     """GGUF loads run through llama-server, so on a Vulkan build the picker must
     offer the inference inventory (ggml ordinals, the space `--device Vulkan<i>`

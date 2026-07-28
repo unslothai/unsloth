@@ -4765,7 +4765,11 @@ def _guard_chat_load_against_training(
             hf_token = hf_token,
             max_seq_length = max_seq_length,
             llama_extra_args = llama_extra_args,
-            n_parallel = n_parallel,
+            # The diffusion runner never receives --parallel (load_model hands off
+            # to _start_diffusion_server before the slot plumbing), so its cache is
+            # always single-slot; sizing it for more would 409 a load that fits. An
+            # unclassified GGUF keeps the requested count, which is the safe side.
+            n_parallel = 1 if diffusion_kind is True else n_parallel,
             cache_type_kv = cache_type_kv,
             tensor_parallel = (
                 _effective_tensor_parallel(llama_extra_args, tensor_parallel)

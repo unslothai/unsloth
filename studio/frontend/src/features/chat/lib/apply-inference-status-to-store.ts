@@ -332,6 +332,12 @@ export function applyActiveModelStatusToStore(
       (prevState.loadedNParallel === null || hydratingExistingModel) && {
         loadedNParallel: status.requested_parallel_slots,
       }),
+    // Slots are per-model, so a model/variant change underneath this tab blanks
+    // the control the way performLoad's cross-model reset does. Without it the
+    // previous model's explicit count follows onto the new model, and saving or
+    // reloading there pins it. The baseline above still carries the new model's
+    // resolved count for the rollback.
+    ...(seedLoadParams && hydratingExistingModel && { nParallel: null }),
     // Re-seed on first hydration, model/variant changes, or a same-model backend
     // placement change. gpuStatusFields preserves dirty local edits in the last
     // case while advancing their loaded baselines.

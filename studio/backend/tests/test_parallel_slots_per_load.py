@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import inspect
 import re
+import struct
 import sys
 import types as _types
 from pathlib import Path
@@ -397,3 +398,112 @@ def test_clamp_sits_between_the_echo_and_the_fit():
     assert pending < clamp, "the requested count is captured before the clamp"
     assert clamp < estimate, "the fit must be estimated from the effective slot count"
     assert clamp < commit, "the committed effective count is the clamped one"
+
+
+# ── Training-guard sizing ────────────────────────────────────────────
+
+
+def _write_swa_gguf(path: Path) -> str:
+    """Smallest DiffusionGemma-shaped header the KV estimator can size: the
+    canvas marker that routes it to the diffusion runner, plus the sliding-window
+    dims that make llama.cpp's SWA cache slot-scaled (it allocates
+    ``n_swa * n_seq_max + n_ubatch`` cells, or one such cache per stream)."""
+
+    def _kv_str(key: str, value: str) -> bytes:
+        kb, vb = key.encode(), value.encode()
+        return (
+            struct.pack("<Q", len(kb)) + kb + struct.pack("<I", 8) + struct.pack("<Q", len(vb)) + vb
+        )
+
+    def _kv_u32(key: str, value: int) -> bytes:
+        kb = key.encode()
+        return struct.pack("<Q", len(kb)) + kb + struct.pack("<I", 4) + struct.pack("<I", value)
+
+    arch = "diffusion-gemma"
+    kvs = [
+        _kv_str("general.architecture", arch),
+        _kv_u32("diffusion.canvas_length", 256),
+        _kv_u32(f"{arch}.context_length", 32768),
+        _kv_u32(f"{arch}.block_count", 30),
+        _kv_u32(f"{arch}.attention.head_count", 16),
+        _kv_u32(f"{arch}.attention.head_count_kv", 8),
+        _kv_u32(f"{arch}.attention.key_length", 512),
+        _kv_u32(f"{arch}.attention.value_length", 512),
+        _kv_u32(f"{arch}.attention.sliding_window", 1024),
+        _kv_u32(f"{arch}.attention.key_length_swa", 256),
+        _kv_u32(f"{arch}.attention.value_length_swa", 256),
+    ]
+    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, len(kvs)) + b"".join(kvs))
+    return str(path)
+
+
+def _guard_required_gb(monkeypatch, gguf_path: str, *, n_parallel: int, diffusion) -> float:
+    """Run the training guard over a local GGUF and return the size it budgeted."""
+    import routes.inference as inf
+
+    seen = {}
+
+    core_training = _types.ModuleType("core.training")
+    core_training.get_training_backend = lambda: _types.SimpleNamespace(
+        is_training_active = lambda: True
+    )
+
+    def _can_load(**kwargs):
+        seen.update(kwargs)
+        return True, {"mode": "single_device"}
+
+    training_vram = _types.ModuleType("routes.training_vram")
+    training_vram.can_load_chat_during_training = _can_load
+    monkeypatch.setitem(sys.modules, "core.training", core_training)
+    monkeypatch.setitem(sys.modules, "routes.training_vram", training_vram)
+
+    monkeypatch.setattr(inf, "_classify_diffusion_gguf", lambda _config: diffusion)
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda *a, **k: False))
+    monkeypatch.setattr(LlamaCppBackend, "_effective_gpu_count", staticmethod(lambda *a, **k: 1))
+    monkeypatch.setattr(LlamaCppBackend, "_diffusion_gpu_arg", staticmethod(lambda *a, **k: "0"))
+    # Pin the --kv-unified probe so the estimate cannot depend on whether this
+    # machine happens to have a llama-server binary installed.
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: {}),
+    )
+
+    inf._guard_chat_load_against_training(
+        _types.SimpleNamespace(is_gguf = True, gguf_file = gguf_path, identifier = "local/model"),
+        model_identifier = "local/model",
+        hf_token = None,
+        load_in_4bit = False,
+        max_seq_length = 8192,
+        requested_gpu_ids = None,
+        n_parallel = n_parallel,
+        gpu_memory_mode = "auto",
+    )
+    return seen["required_override_gb"]
+
+
+def test_training_guard_sizes_a_diffusion_gguf_at_one_slot(monkeypatch, tmp_path):
+    # The diffusion runner ignores --parallel, so slots must not inflate the
+    # coexistence estimate and 409 a load that would have fitted beside training.
+    gguf = _write_swa_gguf(tmp_path / "diffusion.gguf")
+    one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = True)
+    many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = True)
+    assert one == many
+
+
+def test_training_guard_still_sizes_slots_for_an_ordinary_gguf(monkeypatch, tmp_path):
+    # llama-server really does allocate per-slot SWA cells, so the reduction
+    # above must be scoped to diffusion and not flatten every GGUF to one slot.
+    gguf = _write_swa_gguf(tmp_path / "chat.gguf")
+    one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = False)
+    many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = False)
+    assert many > one
+
+
+def test_training_guard_keeps_slots_for_an_unclassified_gguf(monkeypatch, tmp_path):
+    # None means the header was inconclusive: it may still be a llama-server
+    # GGUF, so keep the larger estimate rather than under-size against training.
+    gguf = _write_swa_gguf(tmp_path / "unknown.gguf")
+    one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = None)
+    many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = None)
+    assert many > one

@@ -1735,6 +1735,11 @@ async function autoLoadSmallestModel(): Promise<{
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        // Slots are GGUF-only and this branch never sends them, so clear the
+        // control and its baseline like the interactive/compare load paths: a
+        // staged override would otherwise be saved for a model it cannot reach.
+        nParallel: null,
+        loadedNParallel: null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
@@ -2008,6 +2013,12 @@ async function autoLoadSmallestModel(): Promise<{
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        // The request above deliberately omits n_parallel, so clear both: a
+        // staged override left over from a preset would otherwise read as
+        // applied and make the next Apply reload at a count this load never
+        // sent, against a baseline the status seed fills with the default.
+        nParallel: null,
+        loadedNParallel: null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         ...loadedGpuMemoryFields(loadResp),
