@@ -167,8 +167,7 @@ jobs:
       # ── boot the server under test (factored helper) ──────────────────
       - name: Serve unsloth run --disable-tools (gemma-4-E4B)
         run: |
-          # Wipe (not reset-password): boot the server from a pristine auth state.
-          rm -rf ~/.unsloth/studio/auth
+          unsloth studio reset-password
           bash .github/scripts/serve-unsloth-run.sh \
             --gguf-file "$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}" \
             --port "$STUDIO_PORT" --log-dir logs \
@@ -372,7 +371,7 @@ jobs:
 
       - name: Serve unsloth run --disable-tools (gemma-4-E4B)
         run: |
-          rm -rf ~/.unsloth/studio/auth
+          unsloth studio reset-password
           bash .github/scripts/serve-unsloth-run.sh \
             --gguf-file "$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}" \
             --port "$STUDIO_PORT" --log-dir logs \
@@ -555,7 +554,7 @@ jobs:
 
       - name: Serve unsloth run --disable-tools (gemma-4-E4B)
         run: |
-          rm -rf ~/.unsloth/studio/auth
+          unsloth studio reset-password
           bash .github/scripts/serve-unsloth-run.sh \
             --gguf-file "$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}" \
             --port "$STUDIO_PORT" --log-dir logs \
@@ -719,7 +718,7 @@ jobs:
 
       - name: Serve unsloth run --disable-tools (gemma-3-270m)
         run: |
-          rm -rf ~/.unsloth/studio/auth
+          unsloth studio reset-password
           bash .github/scripts/serve-unsloth-run.sh \
             --model "$GGUF_REPO" --gguf-variant "$GGUF_VARIANT" \
             --port "$STUDIO_PORT" --log-dir logs \
