@@ -234,7 +234,12 @@ def _neutralize_schema_dependency_map(value):
     return out if changed else value
 
 
-def neutralize_control_markup_deep(value, *, schema: bool = False, named_keys: bool = False):
+def neutralize_control_markup_deep(
+    value,
+    *,
+    schema: bool = False,
+    named_keys: bool = False,
+):
     """Recursively neutralize control markers in every string *value* of a
     nested dict/list structure (tool schemas / tool-call argument JSON).
 

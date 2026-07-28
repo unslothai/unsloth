@@ -2092,9 +2092,7 @@ def test_reasoning_blocks_after_a_held_close_still_parse():
     The tail after it was emitted with every marker stripped, so a second
     reasoning block landed in the visible answer instead of the drawer.
     """
-    held = _drain_reasoning_extractor(
-        ["<think>draft ```</think>answer<think>second</think>end"]
-    )
+    held = _drain_reasoning_extractor(["<think>draft ```</think>answer<think>second</think>end"])
     # The same text with no unclosed fence takes the ordinary feed() path.
     normal = _drain_reasoning_extractor(["<think>draft</think>answer<think>second</think>end"])
 
@@ -2119,10 +2117,7 @@ def test_held_close_tail_handles_more_blocks_and_stray_markers():
         ["<think>a ```</think>x<think>b</think>y<think>c</think>z"]
     ) == ("a ```bc", "xyz")
     # A block still open at EOF stays reasoning.
-    assert _drain_reasoning_extractor(["<think>a ```</think>x<think>tail"]) == (
-        "a ```tail",
-        "x",
-    )
+    assert _drain_reasoning_extractor(["<think>a ```</think>x<think>tail"]) == ("a ```tail", "x")
     # A stray close in the tail is dropped, its text kept.
     assert _drain_reasoning_extractor(["<think>a ```</think>x</think>y"]) == ("a ```", "xy")
 
@@ -2277,16 +2272,23 @@ def test_schema_control_markup_conflict_boundary():
     assert schema_control_markup_conflict(None) is None
     assert schema_control_markup_conflict([]) is None
     # Property key and the name list mirroring it.
-    assert schema_control_markup_conflict(
-        _tools({"type": "object", "properties": {_POISONED_PROPERTY: {"type": "string"}}})
-    ) == _POISONED_PROPERTY
-    assert schema_control_markup_conflict(
-        _tools({"type": "object", "required": ["a<turn|>b"]})
-    ) == "a<turn|>b"
+    assert (
+        schema_control_markup_conflict(
+            _tools({"type": "object", "properties": {_POISONED_PROPERTY: {"type": "string"}}})
+        )
+        == _POISONED_PROPERTY
+    )
+    assert (
+        schema_control_markup_conflict(_tools({"type": "object", "required": ["a<turn|>b"]}))
+        == "a<turn|>b"
+    )
     # A grammar-constrained value is forwarded byte-exact too.
-    assert schema_control_markup_conflict(
-        _tools({"type": "object", "properties": {"q": {"enum": ["a<turn|>b"]}}})
-    ) == "a<turn|>b"
+    assert (
+        schema_control_markup_conflict(
+            _tools({"type": "object", "properties": {"q": {"enum": ["a<turn|>b"]}}})
+        )
+        == "a<turn|>b"
+    )
     # Prose is rewritten, so it never trips the check.
     assert (
         schema_control_markup_conflict(

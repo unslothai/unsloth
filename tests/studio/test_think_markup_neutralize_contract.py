@@ -628,9 +628,7 @@ def test_chat_adapter_times_reasoning_from_the_deferred_close(tmp_path):
     # The timer starts when raw reasoning arrives, not when the holdback emits:
     # a first delta that is only a marker prefix emits nothing (#7334).
     start_at = src.index("if (reasoning) {")
-    assert (
-        "reasoningDurationTracker.startGroup();" in src[start_at : start_at + 600]
-    )
+    assert "reasoningDurationTracker.startGroup();" in src[start_at : start_at + 600]
     assert src.index("reasoningMarkupBuffer += reasoning;") > src.index(
         "reasoningDurationTracker.startGroup();", start_at
     )
