@@ -762,3 +762,99 @@ def test_pinned_target_wrong_sha_not_kept_when_download_fails(tmp_path: Path, mo
     monkeypatch.setattr(M, "download_file_verified", _offline)  # transient download failure
     with pytest.raises(OSError):
         M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False)
+
+
+# ── _replace_with_retry: transient Windows sharing violations ──────────────────
+# Renaming the extracted Node tree into place failed a real CI install with
+#   [WinError 5] Access is denied: '...node.staging-xs4_599k\extracted\...' -> '...\node'
+# on a FRESH install (no existing directory to conflict with). On Windows a directory
+# rename fails while any process still holds a handle inside it, and Defender or the
+# search indexer routinely does, having just been handed ~50MB of new files.
+
+
+def _oserror(winerror: int) -> OSError:
+    exc = OSError(winerror, "mock")
+    exc.winerror = winerror
+    return exc
+
+
+@pytest.mark.parametrize("winerror", [5, 32, 145])
+def test_replace_retries_transient_windows_errors(monkeypatch, tmp_path, winerror):
+    monkeypatch.setattr(M.os, "name", "nt")
+    monkeypatch.setattr(M.time, "sleep", lambda _s: None)  # no real backoff in tests
+    calls = {"n": 0}
+
+    def flaky(src, dst):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise _oserror(winerror)
+
+    monkeypatch.setattr(M.os, "replace", flaky)
+    M._replace_with_retry(tmp_path / "src", tmp_path / "dst")
+    assert calls["n"] == 3, "should have retried until the handle was released"
+
+
+def test_replace_gives_up_and_reports_the_real_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(M.os, "name", "nt")
+    monkeypatch.setattr(M.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(M.os, "replace", lambda s, d: (_ for _ in ()).throw(_oserror(5)))
+    # A scanner that never lets go must still surface as a failure, not a hang.
+    with pytest.raises(OSError) as excinfo:
+        M._replace_with_retry(tmp_path / "src", tmp_path / "dst", attempts=3)
+    assert excinfo.value.winerror == 5
+
+
+def test_replace_does_not_retry_a_genuine_error(monkeypatch, tmp_path):
+    # A real permissions problem or a cross-device move must fail immediately rather
+    # than being retried into a multi-second stall that hides the cause.
+    monkeypatch.setattr(M.os, "name", "nt")
+    monkeypatch.setattr(M.time, "sleep", lambda _s: None)
+    calls = {"n": 0}
+
+    def hard_fail(src, dst):
+        calls["n"] += 1
+        raise _oserror(17)  # ERROR_NOT_SAME_DEVICE
+
+    monkeypatch.setattr(M.os, "replace", hard_fail)
+    with pytest.raises(OSError):
+        M._replace_with_retry(tmp_path / "src", tmp_path / "dst")
+    assert calls["n"] == 1
+
+
+def test_replace_is_a_plain_rename_on_posix(monkeypatch, tmp_path):
+    # POSIX renames do not hit sharing violations, so the retry must not add latency
+    # or swallow anything there.
+    monkeypatch.setattr(M.os, "name", "posix")
+    calls = {"n": 0}
+
+    def once(src, dst):
+        calls["n"] += 1
+        raise _oserror(5)
+
+    monkeypatch.setattr(M.os, "replace", once)
+    with pytest.raises(OSError):
+        M._replace_with_retry(tmp_path / "src", tmp_path / "dst")
+    assert calls["n"] == 1
+
+
+def test_swap_into_place_survives_a_transient_lock(monkeypatch, tmp_path):
+    # End-to-end through the function the installer actually calls.
+    monkeypatch.setattr(M.os, "name", "nt")
+    monkeypatch.setattr(M.time, "sleep", lambda _s: None)
+    extracted = tmp_path / "extracted" / "node-v24"
+    extracted.mkdir(parents=True)
+    (extracted / "marker.txt").write_text("node", encoding="utf-8")
+    install_dir = tmp_path / "node"
+
+    real_replace = os.replace
+    state = {"failed": False}
+
+    def flaky(src, dst):
+        if not state["failed"]:
+            state["failed"] = True
+            raise _oserror(32)
+        real_replace(src, dst)
+
+    monkeypatch.setattr(M.os, "replace", flaky)
+    M._swap_into_place(extracted, install_dir)
+    assert (install_dir / "marker.txt").read_text(encoding="utf-8") == "node"

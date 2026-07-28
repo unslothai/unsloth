@@ -888,6 +888,12 @@ function Test-VCRedistInstalled {
 }
 
 # Install the VC++ 2015-2022 runtime if missing (non-fatal; usually a no-op).
+#
+# A RUNTIME redistributable, not the MSVC compiler: prebuilt llama-server and torch
+# link against it, so unlike CMake and VS Build Tools (detection-only) it must be
+# present, or torch fails to import on a missing VCRUNTIME140.dll. winget is absent
+# on LTSC/Server/managed images, where this silently did nothing while the install
+# still reported success, so fall back to the official direct download.
 function Ensure-VCRedist {
     if (Test-VCRedistInstalled) { step "vcredist" "present"; return }
     Write-Host "Microsoft Visual C++ Redistributable (2015-2022) is missing; the prebuilt llama.cpp and PyTorch need it. Installing the runtime..." -ForegroundColor Yellow
@@ -896,6 +902,27 @@ function Ensure-VCRedist {
             Invoke-SetupCommand { winget install --id Microsoft.VCRedist.2015+.x64 --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
             Refresh-Environment
         } catch { substep "VCRedist install failed: $($_.Exception.Message)" "Yellow" }
+    }
+    if (-not (Test-VCRedistInstalled)) {
+        # Microsoft's evergreen link for the current 2015-2022 runtime.
+        # /quiet /norestart so it never blocks or reboots an unattended install.
+        $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+        $url = "https://aka.ms/vs/17/release/vc_redist.$arch.exe"
+        $dst = Join-Path ([System.IO.Path]::GetTempPath()) "vc_redist.$arch.exe"
+        substep "winget unavailable or failed; downloading the runtime directly..."
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $dst -UseBasicParsing -TimeoutSec 300
+            $p = Start-Process -FilePath $dst -ArgumentList '/quiet', '/norestart' -Wait -PassThru
+            # 3010 = success, reboot required. The runtime is usable either way.
+            if ($p.ExitCode -notin @(0, 3010)) {
+                substep "VC++ runtime installer exited $($p.ExitCode)" "Yellow"
+            }
+            Refresh-Environment
+        } catch {
+            substep "Direct VC++ runtime download failed: $($_.Exception.Message)" "Yellow"
+        } finally {
+            Remove-Item -LiteralPath $dst -Force -ErrorAction SilentlyContinue
+        }
     }
     if (Test-VCRedistInstalled) { step "vcredist" "installed" }
     else {
@@ -1650,11 +1677,17 @@ if ($LongPathsEnabled) {
 }
 
 # ============================================
-# 1b. Git (required by pip for git+https:// deps and by npm)
+# 1b. Git (only required for --local / source installs)
 # ============================================
+# Git was fatal here as "required by pip for git+https:// deps and by npm". Neither
+# holds on the consumer path: the unsloth-zoo git+https URL is STUDIO_LOCAL_INSTALL
+# only, node is a pinned prebuilt that never touches system npm, and the frontend
+# lockfile has no VCS deps. That blocked clean Windows boxes without winget over an
+# unused tool, the same over-requirement macOS had with the Xcode CLT.
 $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 if (-not $HasGit) {
-    Write-Host "Git not found -- installing via winget..." -ForegroundColor Yellow
+    $gitNeeded = ($env:STUDIO_LOCAL_INSTALL -eq '1')
+    Write-Host "Git not found -- attempting install via winget..." -ForegroundColor Yellow
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         try {
@@ -1664,11 +1697,19 @@ if (-not $HasGit) {
         } catch { }
     }
     if (-not $HasGit) {
-        Write-Host "[ERROR] Git is required but could not be installed automatically." -ForegroundColor Red
-        Write-Host "        Install Git from https://git-scm.com/download/win and re-run." -ForegroundColor Red
-        Exit-SetupFailure "Git is required but could not be installed automatically"
+        if ($gitNeeded) {
+            # --local installs unsloth-zoo from git+https://, so here it really is fatal.
+            Write-Host "[ERROR] Git is required for --local installs but could not be installed." -ForegroundColor Red
+            Write-Host "        --local installs unsloth-zoo from git+https://github.com/unslothai/unsloth-zoo." -ForegroundColor Red
+            Write-Host "        Install Git from https://git-scm.com/download/win and re-run." -ForegroundColor Red
+            Exit-SetupFailure "Git is required for --local installs but could not be installed"
+        }
+        step "git" "not found (not required)" "Yellow"
+        substep "Unsloth installs prebuilt binaries and wheels, so git is not needed."
+        substep "Install it only for --local/source installs: https://git-scm.com/download/win"
+    } else {
+        step "git" "$(git --version)"
     }
-    step "git" "$(git --version)"
 } else {
     step "git" "$(git --version)"
 }

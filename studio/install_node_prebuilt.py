@@ -707,15 +707,47 @@ def existing_install_usable(install_dir: Path, host: HostInfo) -> bool:
     return npm_major is not None and npm_major >= NPM_MIN_MAJOR
 
 
+def _replace_with_retry(src: Path, dst: Path, *, attempts: int = 8) -> None:
+    """os.replace, retried against transient Windows sharing violations.
+
+    Renaming a directory on Windows fails with WinError 5 (access denied) or WinError 32
+    (sharing violation) while ANY process still holds a handle inside it -- and Defender
+    or the search indexer routinely does, having just been handed ~50MB of newly
+    extracted files. Observed in CI as
+
+        [node-prebuilt] unexpected error: [WinError 5] Access is denied:
+          '...\\node.staging-xs4_599k\\extracted\\node-v24.18.0-win-x64' -> '...\\node'
+
+    on a FRESH install, where there was no existing directory to conflict with. The
+    scanner releases the handles within a second or two, so a bounded backoff turns a
+    hard install failure into a pause. POSIX renames do not hit this, and a non-sharing
+    error (a real permissions problem, a cross-device move) still raises immediately
+    rather than being retried into a long stall.
+    """
+    delay = 0.25
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except OSError as exc:
+            transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
+            if not transient or attempt == attempts - 1:
+                raise
+            log(f"rename blocked ({exc.winerror}), retrying in {delay:.2f}s "
+                f"-- a scanner is likely still holding the extracted files")
+            time.sleep(delay)
+            delay = min(delay * 2, 4.0)
+
+
 def _swap_into_place(extracted_root: Path, install_dir: Path) -> None:
     """Atomically replace install_dir with extracted_root (same filesystem)."""
     install_dir.parent.mkdir(parents = True, exist_ok = True)
     backup: Path | None = None
     if install_dir.exists():
         backup = install_dir.parent / f".{install_dir.name}.old-{os.getpid()}"
-        os.replace(install_dir, backup)
+        _replace_with_retry(install_dir, backup)
     try:
-        os.replace(extracted_root, install_dir)
+        _replace_with_retry(extracted_root, install_dir)
     except OSError:
         if backup is not None and not install_dir.exists():
             os.replace(backup, install_dir)
