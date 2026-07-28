@@ -249,22 +249,42 @@ class TestTorchIndexOverrideParity:
 
 
 class TestGfx211AllowlistParity:
-    """The gfx per-arch 2.11-floor leaves (gfx120X-all / gfx1151 / gfx1150) must be the
-    SAME set in every installer and its stale/mismatch check. When they diverged, a
-    pinned gfx110X-all / gfx90a / gfx908 wheel (<2.11) was force-reinstalled every update."""
+    """The gfx per-arch 2.11-floor leaves must be the SAME set in every installer
+    and its stale/mismatch check. When they diverged, a pinned gfx110X-all /
+    gfx90a / gfx908 wheel (<2.11) was force-reinstalled every update.
 
-    EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150"}
+    Each test extracts the set each installer actually holds and compares it
+    against EXPECTED, rather than matching one hardcoded ordering. Order and
+    spacing are free; membership is not. The earlier literal-string form had to
+    be edited in four places whenever a leaf was added, which is how adding
+    gfx1152 (Krackan Point) turned this class red without any installer
+    actually disagreeing with another."""
+
+    EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152"}
+
+    @staticmethod
+    def _leaves(blob: str) -> set[str]:
+        """The gfx leaves named in an allowlist literal, quoting-agnostic."""
+        return set(re.findall(r"gfx[0-9a-z-]+", blob.lower()))
 
     def test_install_sh_allowlist(self):
         text = INSTALL_SH.read_text(encoding = "utf-8").lower()
-        # install.sh: the TORCH_CONSTRAINT case (rocm7.2|gfx120x-all|gfx1151|gfx1150).
-        m = re.search(r"rocm7\.2\|gfx120x-all\|gfx1151\|gfx1150", text)
+        # install.sh: the TORCH_CONSTRAINT case (rocm7.2|gfx...|gfx...).
+        m = re.search(r"^\s*(rocm7\.2\|[a-z0-9|.\-]*)\)", text, re.MULTILINE)
         assert m, "install.sh gfx-2.11 allowlist case not found / changed"
+        assert self._leaves(m.group(1)) == self.EXPECTED, (
+            f"install.sh gfx-2.11 allowlist is {sorted(self._leaves(m.group(1)))}, "
+            f"expected {sorted(self.EXPECTED)}"
+        )
 
     def test_install_ps1_allowlist(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8").lower()
-        m = re.search(r"@\('gfx120x-all',\s*'gfx1151',\s*'gfx1150'\)", text)
+        m = re.search(r"\$_pingfx211\s*=\s*@\(([^)]*)\)", text)
         assert m, "install.ps1 $_pinGfx211 allowlist not found / changed"
+        assert self._leaves(m.group(1)) == self.EXPECTED, (
+            f"install.ps1 $_pinGfx211 is {sorted(self._leaves(m.group(1)))}, "
+            f"expected {sorted(self.EXPECTED)}"
+        )
 
     def test_setup_ps1_defines_single_allowlist_helper(self):
         # setup.ps1 must define the allowlist once (Test-RocmGfx211Leaf) and reuse it, so
@@ -273,9 +293,12 @@ class TestGfx211AllowlistParity:
         assert (
             "function Test-RocmGfx211Leaf" in text
         ), "setup.ps1 should define a single Test-RocmGfx211Leaf allowlist helper"
-        assert re.search(
-            r"@\('gfx120x-all',\s*'gfx1151',\s*'gfx1150'\)", text.lower()
-        ), "Test-RocmGfx211Leaf should hold the gfx-2.11 allowlist"
+        m = re.search(r"function test-rocmgfx211leaf[\s\S]{0,400}?@\(([^)]*)\)", text.lower())
+        assert m, "Test-RocmGfx211Leaf should hold the gfx-2.11 allowlist"
+        assert self._leaves(m.group(1)) == self.EXPECTED, (
+            f"Test-RocmGfx211Leaf holds {sorted(self._leaves(m.group(1)))}, "
+            f"expected {sorted(self.EXPECTED)}"
+        )
         assert "$_pinGfx211 = Test-RocmGfx211Leaf" in text, (
             "setup.ps1 install-spec path should reuse Test-RocmGfx211Leaf, not "
             "re-hardcode the allowlist (they must not diverge)"
@@ -283,9 +306,12 @@ class TestGfx211AllowlistParity:
 
     def test_stack_py_allowlist(self):
         text = STACK_PY.read_text(encoding = "utf-8").lower()
-        assert (
-            '"gfx120x-all", "gfx1151", "gfx1150"' in text
-        ), "install_python_stack.py _ROCM_GFX_TORCH211_LEAVES not found / changed"
+        m = re.search(r"_rocm_gfx_torch211_leaves[^=]*=\s*frozenset\(\s*\{([^}]*)\}", text)
+        assert m, "install_python_stack.py _ROCM_GFX_TORCH211_LEAVES not found / changed"
+        assert self._leaves(m.group(1)) == self.EXPECTED, (
+            f"_ROCM_GFX_TORCH211_LEAVES is {sorted(self._leaves(m.group(1)))}, "
+            f"expected {sorted(self.EXPECTED)}"
+        )
 
 
 class TestCudaLeafDigitParity:
@@ -351,15 +377,21 @@ class TestCudaLeafDigitParity:
 
 class TestKnown211SetParity:
     """The KNOWN-2.11 rocm/gfx set must be identical across all four installers:
-    exactly {rocm7.2} plus the gfx allowlist {gfx120x-all, gfx1151, gfx1150}.
+    exactly {rocm7.2} plus TestGfx211AllowlistParity.EXPECTED.
     rocm7.3 / torch 2.12 do not exist, so no side may floor them speculatively."""
 
     def test_install_sh_known_211_leaf_is_rocm72_and_gfx_allowlist(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        # The 2.11 floor case matches exactly rocm7.2 + the three gfx leaves.
-        assert re.search(
-            r"rocm7\.2\|gfx120x-all\|gfx1151\|gfx1150\)", text
-        ), "install.sh 2.11 floor must be exactly rocm7.2|gfx120x-all|gfx1151|gfx1150"
+        # The 2.11 floor case matches exactly rocm7.2 + the gfx allowlist, in
+        # any order: it is the same set as TestGfx211AllowlistParity.EXPECTED,
+        # asserted here so the rocm-version half cannot drift on its own.
+        m = re.search(r"^\s*(rocm7\.2\|[a-zA-Z0-9|.\-]*)\)", text, re.MULTILINE)
+        assert m, "install.sh 2.11 floor case (rocm7.2|gfx...) not found / changed"
+        alternatives = set(m.group(1).lower().split("|"))
+        assert alternatives == {"rocm7.2"} | TestGfx211AllowlistParity.EXPECTED, (
+            f"install.sh 2.11 floor is {sorted(alternatives)}, expected "
+            f"{sorted({'rocm7.2'} | TestGfx211AllowlistParity.EXPECTED)}"
+        )
         # No speculative rocm7.3 anywhere.
         assert "rocm7.3" not in text, "install.sh must not reference a non-existent rocm7.3"
 
@@ -786,3 +818,47 @@ class TestPipNoIndexScrubParity:
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert "'PIP_NO_INDEX'" in text
         assert "'PIP_INDEX_URL'" in text
+
+
+class TestNoTorchPersistenceParity:
+    """No-torch mode must outlive the process that requested it.
+
+    install.sh / install.ps1 export UNSLOTH_NO_TORCH for their own run only.
+    `unsloth studio update` exports nothing, so both the PowerShell setup and the
+    shared Python stack have to recover the mode from the install manifest, or an
+    update reinstalls PyTorch into a GGUF-only venv. On Windows it is worse than
+    cosmetic: setup.ps1 reads the missing torch as a stale venv and tries to delete
+    the venv it is itself running out of, which fails on a locked python.exe."""
+
+    def test_the_stack_records_the_mode_it_installed(self):
+        text = STACK_PY.read_text(encoding = "utf-8")
+        assert "no_torch = NO_TORCH" in text
+        assert "install_manifest.recorded_no_torch()" in text
+        # Written after the manifest is dropped and before the dependency pass, so
+        # a pass killed part-way still leaves the mode recorded somewhere.
+        assert text.index("install_manifest.set_no_torch_marker(NO_TORCH)") > text.index(
+            "if not install_manifest.remove_manifest():"
+        )
+
+    def test_both_sides_use_the_same_marker_filename(self):
+        manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
+        assert 'NO_TORCH_MARKER = ".unsloth-no-torch"' in manifest
+        assert '$NoTorchMarker = ".unsloth-no-torch"' in SETUP_PS1.read_text(encoding = "utf-8")
+
+    def test_setup_ps1_recovers_the_mode_when_no_env_var_is_exported(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "function Get-PersistedNoTorch" in text
+        assert "function Set-PersistedNoTorch" in text
+        # setup.ps1 drops the manifest before running install_python_stack.py, so
+        # the resolved answer has to be handed down through the environment.
+        assert text.index("Get-PersistedNoTorch -VenvPath $VenvDir") < text.index(
+            '$env:UNSLOTH_NO_TORCH = if ($NoTorchMode) { "true" } else { "false" }'
+        )
+
+    def test_both_sides_accept_the_same_spellings(self):
+        # install.ps1 / install.sh accept 1|true|yes|on; the two consumers must not
+        # be narrower, or a value one layer honours another silently ignores.
+        assert "'^\\s*(?i:true|1|yes|on)\\s*$'" in SETUP_PS1.read_text(encoding = "utf-8")
+        manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
+        assert 'NO_TORCH_TRUTHY: Tuple[str, ...] = ("1", "true", "yes", "on")' in manifest
+        assert "install_manifest.NO_TORCH_TRUTHY" in STACK_PY.read_text(encoding = "utf-8")

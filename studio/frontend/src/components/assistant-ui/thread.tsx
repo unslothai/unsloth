@@ -36,6 +36,7 @@ import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
+  pasteClipboardFiles,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
 } from "@/features/chat";
@@ -79,6 +80,16 @@ import {
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
+import { ResearchMessage } from "@/features/chat/components/research-message";
+import {
+  DeepResearchComposerButton,
+  DeepResearchWebsiteAccessDialog,
+} from "@/features/chat/components/deep-research-composer-button";
+import { cancelResearchRun } from "@/features/chat/api/research-api";
+import {
+  ingestResearchUpdate,
+  useResearchRunStore,
+} from "@/features/chat/stores/research-run-store";
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
@@ -140,6 +151,7 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  Telescope02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -166,6 +178,7 @@ import {
   type ChangeEvent,
   type ComponentProps,
   type CompositionEvent,
+  type ClipboardEvent,
   type FC,
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
@@ -713,10 +726,10 @@ function startPromptQueue(
   }
 }
 
-function stopPromptQueueRun() {
+function stopPromptQueueRun(cancelActiveRun = true) {
   const activeItem = promptQueueItems[Math.max(promptQueueIndex, 0)];
   const activeTarget = activeItem?.target;
-  const shouldCancelActiveRun = Boolean(activeItem?.dispatched);
+  const shouldCancelActiveRun = cancelActiveRun && Boolean(activeItem?.dispatched);
   resetPromptQueue();
   if (!shouldCancelActiveRun) {
     return;
@@ -729,7 +742,11 @@ function stopPromptQueueRun() {
 }
 
 if (typeof window !== "undefined") {
-  window.addEventListener(PROMPT_QUEUE_STOP_EVENT, () => stopPromptQueueRun());
+  window.addEventListener(PROMPT_QUEUE_STOP_EVENT, (event) => {
+    // Navigation leaves the dispatched prompt streaming; an explicit stop cancels it too.
+    const detail = (event as CustomEvent<{ cancelActiveRun?: boolean }>).detail;
+    stopPromptQueueRun(detail?.cancelActiveRun ?? true);
+  });
 }
 
 interface PromptQueueCallbacks {
@@ -1455,23 +1472,82 @@ const Composer: FC<{
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const deepResearchEnabled = useChatRuntimeStore(
+    (s) => s.deepResearchEnabled,
+  );
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const researchThreadId = threadId ?? activeThreadId ?? null;
+  const researchThreadClaimed = useResearchRunStore((state) =>
+    researchThreadId ? Boolean(state.claimedThreadIds[researchThreadId]) : false,
+  );
+  const activeResearchRun = useResearchRunStore((state) => {
+    const runId = researchThreadId
+      ? state.latestRunByThreadId[researchThreadId]
+      : undefined;
+    return runId ? state.sessions[runId]?.run : undefined;
+  });
+  const isResearchActive = Boolean(
+    activeResearchRun &&
+      !["completed", "failed", "cancelled"].includes(activeResearchRun.status),
+  );
+  const hasResearchMessage = useAuiState(({ thread }) =>
+    thread.messages.some((message) => {
+      const custom = (
+        message.metadata as
+          | { custom?: { researchRunId?: unknown } }
+          | undefined
+      )?.custom;
+      return typeof custom?.researchRunId === "string";
+    }),
+  );
+  const researchUsed = researchThreadClaimed || hasResearchMessage;
+  const effectiveDeepResearchEnabled = deepResearchEnabled && !researchUsed;
+  const [researchWebsiteAccessOpen, setResearchWebsiteAccessOpen] =
+    useState(false);
+  useEffect(() => {
+    if (!researchUsed) return;
+    if (hasResearchMessage && researchThreadId) {
+      useResearchRunStore.getState().setThreadClaimed(researchThreadId, true);
+    }
+    if (deepResearchEnabled) {
+      useChatRuntimeStore.getState().setDeepResearchEnabled(false);
+    }
+  }, [deepResearchEnabled, hasResearchMessage, researchThreadId, researchUsed]);
   // More than 4 pills: collapse to icons only. Search, Code, and permissions
-  // always show; Images, RAG, Canvas and MCP are conditional. Narrow viewports
-  // collapse too: the labelled row is wider than a phone-width composer.
+  // always show; Images, RAG, Canvas, MCP and Deep Research are conditional.
+  // Narrow viewports collapse too: the labelled row is wider than a phone composer.
   const isMobile = useIsMobile();
   const pillCount =
     3 +
     (ragEnabled ? 1 : 0) +
     (supportsBuiltinImageGeneration ? 1 : 0) +
     (artifactsEnabled ? 1 : 0) +
-    (mcpEnabledForChat ? 1 : 0);
+    (mcpEnabledForChat ? 1 : 0) +
+    (effectiveDeepResearchEnabled ? 1 : 0);
   const pillsCompact = isMobile || pillCount > 4;
-  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
   );
   const { inputProps, isComposing, isComposingRef } =
     useImeComposerInputHandlers({ submitOnEnter: true });
+  const handleFilePaste = useCallback(
+    (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      pasteClipboardFiles(
+        event,
+        async (files) => {
+          await Promise.all(
+            files.map((file) => aui.composer().addAttachment(file)),
+          );
+        },
+        () =>
+          toast.error("Could not paste files.", {
+            description: "The clipboard item is unsupported, unreadable, or over 20 MB.",
+          }),
+      );
+    },
+    [aui],
+  );
+
   const composerText = useAuiState(({ composer }) => composer.text);
   // Expand only once the input wraps to a second line, not on first keystroke.
   // Latch until cleared so it can't flip-flop at the wrap boundary.
@@ -1760,6 +1836,10 @@ const Composer: FC<{
 
   const handleSubmit = useCallback(
     (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
+      if (isResearchActive) {
+        event.preventDefault();
+        return;
+      }
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
         return;
@@ -1859,6 +1939,7 @@ const Composer: FC<{
       hasAttachments,
       hasPendingAudio,
       interceptSend,
+      isResearchActive,
       overlay,
       promptQueueActive,
       referenceThreadId,
@@ -1913,13 +1994,21 @@ const Composer: FC<{
           className="unsloth-composer-left"
           data-pill-compact={pillsCompact ? "true" : undefined}
         >
-          <ComposerToolsMenu side={effectiveMenuSide} />
+          <ComposerToolsMenu
+            side={effectiveMenuSide}
+            researchAvailable={!researchUsed}
+          />
           {/* While dictating, show only the "+"; hide the pill and tool toggles
               so the waveform is the sole status indicator. */}
           {!isDictating ? (
             <>
               {/* Permission-level pill: always visible, opens the level dropdown. */}
               <PermissionModeComposerPill side={effectiveMenuSide} />
+              {effectiveDeepResearchEnabled ? (
+                <DeepResearchComposerButton
+                  onConfigure={() => setResearchWebsiteAccessOpen(true)}
+                />
+              ) : null}
               <WebSearchToggle />
               <CodeToolsToggle />
               <ImagesToggle />
@@ -1952,6 +2041,8 @@ const Composer: FC<{
               // no effect on Latin / CJK / Devanagari.
               dir="auto"
               {...inputProps}
+              addAttachmentOnPaste={false}
+              onPaste={handleFilePaste}
             />
             <ComposerRightControls
               disabled={
@@ -1984,6 +2075,10 @@ const Composer: FC<{
           </>
         )}
       </div>
+      <DeepResearchWebsiteAccessDialog
+        open={researchWebsiteAccessOpen && effectiveDeepResearchEnabled}
+        onOpenChange={setResearchWebsiteAccessOpen}
+      />
     </>
   );
 
@@ -2691,9 +2786,28 @@ const ArtifactsToggle: FC = () => {
 };
 
 const ToolStatusDisplay: FC = () => {
-  const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
+  // This conversation's tool call only: a global status would put one chat's "Running
+  // Python..." above every composer. remoteId, not id: the adapter keys this map by
+  // unstable_threadId, so reading id lost the status of every restored chat.
+  const threadListItemId = useAuiState(
+    ({ threadListItem }) => threadListItem.remoteId,
+  );
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
-  const [elapsed, setElapsed] = useState(0);
+  const entry = useChatRuntimeStore((s) => {
+    // A first turn starts before its id is persisted, so the adapter files it under
+    // "__default"; only this thread's own run may claim it. Two first turns share that key
+    // with nothing to tell them apart, so claim it only when it holds one run.
+    const unresolved = s.toolStatusByThreadId.__default;
+    const own =
+      s.toolStatusByThreadId[threadListItemId ?? ""] ??
+      (isThreadRunning && unresolved?.length === 1 ? unresolved : undefined);
+    // Newest of the runs behind this key: separate entries, so one finishing cannot blank
+    // a sibling still running a tool.
+    return own?.[own.length - 1];
+  });
+  const toolStatus = entry?.status ?? null;
+  const startedAt = entry?.startedAt ?? null;
+  const [now, setNow] = useState(() => Date.now());
   const [visible, setVisible] = useState(false);
   const visibleRef = useRef(false);
 
@@ -2702,15 +2816,14 @@ const ToolStatusDisplay: FC = () => {
   }, [visible]);
 
   useEffect(() => {
-    if (!toolStatus) {
-      setElapsed(0);
+    if (!startedAt) {
       if (!isThreadRunning) {
         setVisible(false);
       }
       return;
     }
 
-    setElapsed(0);
+    setNow(Date.now());
 
     // Debounce visibility by 300ms when the badge isn't already on screen.
     // Once visible from a prior tool, later tools show immediately so it
@@ -2720,24 +2833,27 @@ const ToolStatusDisplay: FC = () => {
       showTimer = setTimeout(() => setVisible(true), 300);
     }
 
-    const interval = setInterval(() => {
-      setElapsed((prev) => prev + 1);
-    }, 1000);
+    const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => {
       clearInterval(interval);
       if (showTimer) {
         clearTimeout(showTimer);
       }
     };
-  }, [toolStatus, isThreadRunning]);
+  }, [startedAt, isThreadRunning]);
 
-  if (!(toolStatus && visible)) {
+  if (!(toolStatus && startedAt && visible)) {
     return null;
   }
+  // From the store's start time, so returning to the conversation resumes rather than restarting.
+  const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000));
   const isRunning = toolStatus.startsWith("Running");
   const StatusIcon = isRunning ? TerminalIcon : GlobeIcon;
   return (
-    <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
+    <div
+      data-testid="composer-tool-status"
+      className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1"
+    >
       <div className="flex animate-pulse items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary">
         <StatusIcon className="size-3.5" />
         <span>{toolStatus}</span>
@@ -2763,9 +2879,10 @@ function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): strin
   return filtered || accept;
 }
 
-const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
-  side = "bottom",
-}) => {
+const ComposerToolsMenu: FC<{
+  side?: "top" | "bottom";
+  researchAvailable: boolean;
+}> = ({ side = "bottom", researchAvailable }) => {
   const navigate = useNavigate();
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
@@ -2778,6 +2895,9 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
   );
+  const deepResearchEnabled = useChatRuntimeStore((s) => s.deepResearchEnabled);
+  const setDeepResearchEnabled = useChatRuntimeStore((s) => s.setDeepResearchEnabled);
+  const incognito = useChatRuntimeStore((s) => s.incognito);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   // Shared gate so the menu row agrees with the RAG pill.
@@ -2831,6 +2951,9 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const imageDisabled = !modelLoaded;
   // Like Search/Code: disabled only when a loaded model lacks tool support.
   const mcpDisabled = modelLoaded && !supportsTools;
+  // Match Search and Code: allow pre-selection before a local model loads.
+  const researchDisabled =
+    !researchAvailable || Boolean(externalSelection) || incognito;
   // Three most recently updated projects for the quick-access submenu.
   const { projects } = useChatProjects();
   const recentProjects = [...projects]
@@ -2856,7 +2979,6 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const incognito = useChatRuntimeStore((s) => s.incognito);
   const aui = useAui();
   const composerCanAddAttachments = useAuiState(
     ({ composer }) => composer.isEditing,
@@ -3167,6 +3289,27 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             />
           ) : null}
         </DropdownMenuItem>
+        {researchAvailable ? (
+          <DropdownMenuItem
+            disabled={researchDisabled && !deepResearchEnabled}
+            className={
+              deepResearchEnabled && !researchDisabled
+                ? "text-primary font-medium"
+                : undefined
+            }
+            onSelect={() => setDeepResearchEnabled(!deepResearchEnabled)}
+          >
+            <HugeiconsIcon icon={Telescope02Icon} strokeWidth={2} />
+            Deep research
+            {deepResearchEnabled && !researchDisabled ? (
+              <HugeiconsIcon
+                icon={Tick02Icon}
+                strokeWidth={2}
+                className="ml-auto"
+              />
+            ) : null}
+          </DropdownMenuItem>
+        ) : null}
         {supportsBuiltinImageGeneration && (
           <DropdownMenuItem
             disabled={imageDisabled}
@@ -3416,6 +3559,60 @@ const ComposerRightControls: FC<{
     findPromptQueueEntry(s, queueThreadIds),
   );
   const isQueueRunning = Boolean(queueEntry);
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const activeResearchRun = useResearchRunStore((state) => {
+    const runId = activeThreadId
+      ? state.latestRunByThreadId[activeThreadId]
+      : undefined;
+    return runId ? state.sessions[runId]?.run : undefined;
+  });
+  const isResearchActive = Boolean(
+    activeResearchRun &&
+      !["completed", "failed", "cancelled"].includes(activeResearchRun.status),
+  );
+  const [stoppingResearchRunId, setStoppingResearchRunId] = useState<
+    string | null
+  >(null);
+  const stoppingResearchRunIdRef = useRef<string | null>(null);
+  const researchStopping = Boolean(
+    activeResearchRun &&
+      (activeResearchRun.status === "cancelling" ||
+        stoppingResearchRunId === activeResearchRun.id),
+  );
+  useEffect(() => {
+    if (
+      !isResearchActive ||
+      (stoppingResearchRunIdRef.current &&
+        stoppingResearchRunIdRef.current !== activeResearchRun?.id)
+    ) {
+      stoppingResearchRunIdRef.current = null;
+      setStoppingResearchRunId(null);
+    }
+  }, [activeResearchRun?.id, isResearchActive]);
+  const stop = () => {
+    if (isResearchActive && activeResearchRun) {
+      if (
+        activeResearchRun.status === "cancelling" ||
+        stoppingResearchRunIdRef.current === activeResearchRun.id
+      ) {
+        return;
+      }
+      if (isQueueRunning) onStopClick?.();
+      stoppingResearchRunIdRef.current = activeResearchRun.id;
+      setStoppingResearchRunId(activeResearchRun.id);
+      void cancelResearchRun(activeResearchRun.id)
+        .then((run) => ingestResearchUpdate(run))
+        .catch((error) => {
+          stoppingResearchRunIdRef.current = null;
+          setStoppingResearchRunId(null);
+          toast.error("Could not stop research", {
+            description: error instanceof Error ? error.message : undefined,
+          });
+        });
+      return;
+    }
+    if (isQueueRunning) onStopClick?.();
+  };
   const aui = useAui();
   // Keep the mic clickable: if the engine can't run here, explain and point to
   // the local model instead of disabling the button.
@@ -3447,7 +3644,11 @@ const ComposerRightControls: FC<{
           <MicIcon className="size-5" />
         </TooltipIconButton>
       </ComposerPrimitive.If>
-      <AuiIf condition={({ thread }) => !thread.isRunning && !isQueueRunning}>
+      <AuiIf
+        condition={({ thread }) =>
+          !thread.isRunning && !isQueueRunning && !isResearchActive
+        }
+      >
         <ComposerPrimitive.Send asChild={true}>
           <TooltipIconButton
             tooltip={pendingSend ? "Waiting for documents…" : "Send message"}
@@ -3470,7 +3671,7 @@ const ComposerRightControls: FC<{
           </TooltipIconButton>
         </ComposerPrimitive.Send>
       </AuiIf>
-      {isQueueRunning ? (
+      {isQueueRunning && !isResearchActive ? (
         <AuiIf condition={({ thread }) => !thread.isRunning}>
           <TooltipIconButton
             tooltip="Queue message"
@@ -3487,9 +3688,26 @@ const ComposerRightControls: FC<{
           </TooltipIconButton>
         </AuiIf>
       ) : null}
-      <AuiIf condition={({ thread }) => thread.isRunning}>
-        <div className="ml-1.5 flex items-center">
-          {queueDisabled ? (
+      {isResearchActive ? (
+        <Button
+          type="button"
+          variant="default"
+          size="icon"
+          className="aui-composer-cancel ml-1.5 size-8 rounded-full"
+          aria-label={researchStopping ? "Stopping research" : "Stop research"}
+          disabled={researchStopping}
+          onClick={stop}
+        >
+          {researchStopping ? (
+            <Spinner className="size-3.5" />
+          ) : (
+            <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+          )}
+        </Button>
+      ) : (
+        <AuiIf condition={({ thread }) => thread.isRunning}>
+          <div className="ml-1.5 flex items-center">
+            {queueDisabled ? (
             <ComposerPrimitive.Cancel asChild={true}>
               <Button
                 type="button"
@@ -3497,12 +3715,12 @@ const ComposerRightControls: FC<{
                 size="icon"
                 className="aui-composer-cancel size-8 rounded-full"
                 aria-label="Stop generating"
-                onClick={isQueueRunning ? onStopClick : undefined}
+                onClick={stop}
               >
                 <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
               </Button>
             </ComposerPrimitive.Cancel>
-          ) : (
+            ) : (
             <TooltipIconButton
               tooltip="Queue message"
               side="bottom"
@@ -3516,28 +3734,33 @@ const ComposerRightControls: FC<{
             >
               <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
             </TooltipIconButton>
-          )}
-        </div>
-      </AuiIf>
+            )}
+          </div>
+        </AuiIf>
+      )}
     </div>
   );
 };
 
 const MessageError: FC = () => {
+  const researchRunId = useResearchMessageRunId();
+  const researchActive = useThreadResearchActive();
   return (
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="aui-message-error-root mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
         <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2 min-w-0 flex-1" />
         {/* Recovery path for interrupted/failed turns: regenerate in place. */}
-        <ActionBarPrimitive.Reload asChild={true}>
-          <button
-            type="button"
-            className="aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-destructive/15"
-          >
-            <RefreshCwIcon strokeWidth={1.75} className="size-3.5" />
-            Retry
-          </button>
-        </ActionBarPrimitive.Reload>
+        {!researchRunId && !researchActive && (
+          <ActionBarPrimitive.Reload asChild={true}>
+            <button
+              type="button"
+              className="aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-destructive/15"
+            >
+              <RefreshCwIcon strokeWidth={1.75} className="size-3.5" />
+              Retry
+            </button>
+          </ActionBarPrimitive.Reload>
+        )}
       </ErrorPrimitive.Root>
     </MessagePrimitive.Error>
   );
@@ -3593,9 +3816,15 @@ const DiffusionCanvas: FC = () => {
   const isRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
-  // A non-null canvas is set only by diffusion_frame events (diffusion models only),
-  // so it is a sufficient gate; loadedIsDiffusion can lag the first frame on a fresh load.
-  const canvas = useChatRuntimeStore((s) => s.activeDiffusionCanvas);
+  // Only this conversation's own frames render here; a first turn has no id yet, so it reads
+  // "__default", which is where its run files them until the thread persists.
+  const threadKey =
+    useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? "__default";
+  // A canvas is set only by diffusion_frame events, so its presence is a sufficient gate;
+  // loadedIsDiffusion can lag the first frame on a fresh load.
+  const canvas = useChatRuntimeStore(
+    (s) => s.activeDiffusionCanvasByThreadId[threadKey],
+  );
   if (!isRunning || !canvas) {
     return null;
   }
@@ -3628,6 +3857,16 @@ const AssistantMessage: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) => message.content);
+  const researchRunId = useAuiState(({ message }) => {
+    const custom = (
+      message.metadata as
+        | { custom?: { researchRunId?: unknown } }
+        | undefined
+    )?.custom;
+    return typeof custom?.researchRunId === "string"
+      ? custom.researchRunId
+      : null;
+  });
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
   // Use global store for editing state to ensure a single source of truth
@@ -3716,16 +3955,20 @@ const AssistantMessage: FC = () => {
             <div className="pointer-events-none relative h-0 min-w-0">
               <MessageResponseModelBadge className="absolute -top-6 left-0 max-w-[min(22rem,100%)]" />
             </div>
-            <GeneratingIndicator />
-            <CancelledIndicator />
-            <DiffusionCanvas />
+            {researchRunId ? (
+              <ResearchMessage />
+            ) : (
+              <>
+                <GeneratingIndicator />
+                <CancelledIndicator />
+                <DiffusionCanvas />
 
             {/*
                 We use the standard MessagePrimitive.Parts. This ensures that
                 edited messages maintain the same professional styling,
                 Markdown rendering, and tool-call components as original responses.
             */}
-            <MessagePrimitive.Parts
+                <MessagePrimitive.Parts
               components={{
                 Text: MarkdownText,
                 Reasoning: Reasoning,
@@ -3745,10 +3988,12 @@ const AssistantMessage: FC = () => {
                   Fallback: ToolFallbackConfirmable,
                 },
               }}
-            />
-            <SourcesGroup />
-            <RagSourcesGroup />
-            <MessageHtmlArtifacts />
+                />
+                <SourcesGroup />
+                <RagSourcesGroup />
+                <MessageHtmlArtifacts />
+              </>
+            )}
             <MessageError />
           </>
         )}
@@ -3869,10 +4114,64 @@ const ForkMessageButton: FC = () => {
   );
 };
 
+const getResearchRunId = (metadata: unknown): string | null => {
+  const custom = (
+    metadata as
+      | {
+          custom?: {
+            researchRunId?: unknown;
+            researchRun?: { id?: unknown };
+          };
+        }
+      | undefined
+  )?.custom;
+  const runId = custom?.researchRunId ?? custom?.researchRun?.id;
+  return typeof runId === "string" ? runId : null;
+};
+
+const useResearchMessageRunId = () => {
+  return useAuiState(({ message }) => getResearchRunId(message.metadata));
+};
+
+const useOwnsResearchMessage = () => {
+  const aui = useAui();
+  const messageId = useAuiState(({ message }) => message.id);
+  const messages = useAuiState(({ thread }) => thread.messages);
+  if (messages.length === 0) {
+    return false;
+  }
+  return aui
+    .thread()
+    .export()
+    .messages.some(
+      ({ parentId, message }) =>
+        parentId === messageId && Boolean(getResearchRunId(message.metadata)),
+    );
+};
+
+// Whether the active thread has a non-terminal durable research run. After a reload the
+// research store follows the run instead of an assistant-ui run, so `thread.isRunning` is
+// false while research is active; edit/reload/branch must also gate on this to keep
+// one run per chat.
+const useThreadResearchActive = (): boolean => {
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  return useResearchRunStore((state) => {
+    const runId = activeThreadId
+      ? state.latestRunByThreadId[activeThreadId]
+      : undefined;
+    const run = runId ? state.sessions[runId]?.run : undefined;
+    return Boolean(
+      run && !["completed", "failed", "cancelled"].includes(run.status),
+    );
+  });
+};
+
 const DeleteMessageButton: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const researchRunId = useResearchMessageRunId();
+  const ownsResearchMessage = useOwnsResearchMessage();
 
   const handleDelete = async () => {
     const thread = aui.thread();
@@ -3916,6 +4215,10 @@ const DeleteMessageButton: FC = () => {
       toast.error("Failed to delete message");
     }
   };
+
+  if (researchRunId || ownsResearchMessage) {
+    return null;
+  }
 
   return (
     <TooltipIconButton
@@ -3965,13 +4268,17 @@ const CopyButton: FC = () => {
 
 const EditAssistantMessageButton: FC = () => {
   const messageId = useAuiState(({ message }) => message.id);
+  const researchRunId = useResearchMessageRunId();
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const researchActive = useThreadResearchActive();
   const setEditingId = useChatRuntimeStore((s) => s.setEditingMessageId);
+
+  if (researchRunId) return null;
 
   return (
     <TooltipIconButton
       tooltip="Edit response"
-      disabled={isRunning}
+      disabled={isRunning || researchActive}
       onClick={() => setEditingId(messageId)}
     >
       <HugeiconsIcon
@@ -4000,6 +4307,8 @@ async function exportMessageMarkdown(content: string): Promise<void> {
 }
 const AssistantActionBar: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
+  const researchRunId = useResearchMessageRunId();
+  const researchActive = useThreadResearchActive();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   // hideWhenRunning is thread-level, so a new run would hide this bar and its
@@ -4014,11 +4323,13 @@ const AssistantActionBar: FC = () => {
       >
         <CopyButton />
         <EditAssistantMessageButton />
-        <ActionBarPrimitive.Reload asChild={true}>
-          <TooltipIconButton tooltip="Refresh">
-            <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
-          </TooltipIconButton>
-        </ActionBarPrimitive.Reload>
+        {!researchRunId && !researchActive && (
+          <ActionBarPrimitive.Reload asChild={true}>
+            <TooltipIconButton tooltip="Refresh">
+              <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
+            </TooltipIconButton>
+          </ActionBarPrimitive.Reload>
+        )}
         <ForkCountBadge />
         <DeleteMessageButton />
         {ttsEnabled && (
@@ -4142,21 +4453,25 @@ const UserMessage: FC = () => {
 };
 
 const UserActionBar: FC = () => {
+  const ownsResearchMessage = useOwnsResearchMessage();
+  const researchActive = useThreadResearchActive();
   return (
     <ActionBarPrimitive.Root
       autohide="always"
       className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
-      <ActionBarPrimitive.Edit asChild={true}>
-        <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
-          <HugeiconsIcon
-            icon={Edit03Icon}
-            strokeWidth={1.75}
-            className="size-icon"
-          />
-        </TooltipIconButton>
-      </ActionBarPrimitive.Edit>
+      {!ownsResearchMessage && !researchActive && (
+        <ActionBarPrimitive.Edit asChild={true}>
+          <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
+            <HugeiconsIcon
+              icon={Edit03Icon}
+              strokeWidth={1.75}
+              className="size-icon"
+            />
+          </TooltipIconButton>
+        </ActionBarPrimitive.Edit>
+      )}
       <ForkCountBadge />
       <ForkMessageButton />
       <DeleteMessageButton />
@@ -4168,6 +4483,7 @@ const EditComposer: FC = () => {
   const aui = useAui();
   const { inputProps, isComposingRef } = useImeComposerInputHandlers();
   const resendAfterCancelRef = useRef(false);
+  const researchActive = useThreadResearchActive();
 
   useAuiEvent("thread.runEnd", () => {
     if (!resendAfterCancelRef.current) {
@@ -4196,6 +4512,7 @@ const EditComposer: FC = () => {
           <Button
             type="button"
             size="sm"
+            disabled={researchActive}
             onClick={(event) => {
               if (isComposingRef.current) {
                 event.preventDefault();

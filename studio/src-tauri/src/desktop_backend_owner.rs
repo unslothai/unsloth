@@ -528,7 +528,7 @@ fn lifecycle_control_block_reason(liveness: &DesktopLiveness) -> Option<String> 
         return Some("desktop_auth_unsupported".to_string());
     }
     if liveness.desktop_manageability_version.unwrap_or(0)
-        < crate::preflight::DESKTOP_MANAGEABILITY_VERSION
+        < crate::preflight::DESKTOP_BACKEND_MANAGEABILITY_VERSION
     {
         return Some("desktop_manageability_unsupported".to_string());
     }
@@ -1014,14 +1014,12 @@ mod tests {
         assert!(!metadata_is_well_formed(&metadata));
     }
 
-    #[test]
-    fn liveness_verification_requires_root_kind_and_token_sha() {
-        let metadata = metadata(1, Some(8888));
-        let liveness = DesktopLiveness {
+    fn owned_liveness(manageability: u16) -> DesktopLiveness {
+        DesktopLiveness {
             status: Some("alive".to_string()),
             service: Some("Unsloth UI Backend".to_string()),
             desktop_protocol_version: Some(1),
-            desktop_manageability_version: Some(1),
+            desktop_manageability_version: Some(manageability),
             supports_desktop_auth: Some(true),
             supports_desktop_backend_ownership: Some(true),
             studio_root_id: Some(ROOT_ID.to_string()),
@@ -1029,7 +1027,57 @@ mod tests {
                 kind: Some(OWNER_KIND_TAURI.to_string()),
                 token_sha256: Some(token_sha256(TOKEN)),
             }),
-        };
+        }
+    }
+
+    #[test]
+    fn legacy_manageability_backend_stays_lifecycle_controllable() {
+        // A backend from the previous app version reports manageability 1.
+        // studio_install_ok is CLI-side, not part of this backend's HTTP
+        // contract: blocking makes preflight answer ExternalConflict and never
+        // adopt a process the root id and token already prove is ours.
+        assert_eq!(lifecycle_control_block_reason(&owned_liveness(1)), None);
+        assert_eq!(
+            lifecycle_control_block_reason(&owned_liveness(
+                crate::preflight::DESKTOP_MANAGEABILITY_VERSION
+            )),
+            None
+        );
+
+        // The bits a live backend really must carry are still enforced.
+        let mut no_ownership = owned_liveness(1);
+        no_ownership.supports_desktop_backend_ownership = Some(false);
+        assert_eq!(
+            lifecycle_control_block_reason(&no_ownership).as_deref(),
+            Some("desktop_backend_ownership_unsupported")
+        );
+
+        let mut no_auth = owned_liveness(1);
+        no_auth.supports_desktop_auth = Some(false);
+        assert_eq!(
+            lifecycle_control_block_reason(&no_auth).as_deref(),
+            Some("desktop_auth_unsupported")
+        );
+
+        let mut old_protocol = owned_liveness(1);
+        old_protocol.desktop_protocol_version = Some(0);
+        assert_eq!(
+            lifecycle_control_block_reason(&old_protocol).as_deref(),
+            Some("desktop_protocol_incompatible")
+        );
+
+        let mut no_manageability = owned_liveness(1);
+        no_manageability.desktop_manageability_version = None;
+        assert_eq!(
+            lifecycle_control_block_reason(&no_manageability).as_deref(),
+            Some("desktop_manageability_unsupported")
+        );
+    }
+
+    #[test]
+    fn liveness_verification_requires_root_kind_and_token_sha() {
+        let metadata = metadata(1, Some(8888));
+        let liveness = owned_liveness(1);
         assert!(liveness_verifies_metadata(&liveness, &metadata));
 
         let mut wrong_root = liveness;

@@ -374,7 +374,7 @@ class TestRouteCompleteness:
     def _load_source(self):
         """Read routes/inference.py source once."""
         routes_path = Path(__file__).resolve().parent.parent / "routes" / "inference.py"
-        self._source = routes_path.read_text()
+        self._source = routes_path.read_text(encoding = "utf-8")
 
     def _find_construction_blocks(self, class_name: str) -> list[str]:
         """Extract all code blocks that construct a given response class."""

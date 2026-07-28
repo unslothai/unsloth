@@ -207,18 +207,37 @@ run_install_cmd() {
         # command's exit code across the pipe without relying on pipefail
         # (this script runs under plain sh).
         _rcf=$(mktemp)
-        { "$@" 2>&1; printf '%s' "$?" > "$_rcf"; } | _redact_install_output
+        tauri_stream_log stdout "OUTPUT_CLEAR" "$_label"
+        {
+            if "$@" 2>&1; then
+                _cmd_rc=0
+            else
+                _cmd_rc=$?
+            fi
+            printf '%s' "$_cmd_rc" > "$_rcf"
+        } | _redact_install_output
         _rc=$(cat "$_rcf" 2>/dev/null || echo 1)
         rm -f "$_rcf"
-        [ "${_rc:-1}" -eq 0 ] 2>/dev/null && return 0
+        _rc=${_rc:-1}
+        if [ "$_rc" -eq 0 ] 2>/dev/null; then
+            tauri_clear_install_error "$_label recovered"
+            return 0
+        fi
+        tauri_stream_log stdout "ERROR_OUTPUT" "$_label failed (exit code $_rc)"
         step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
         return "$_rc"
     fi
     _log=$(mktemp)
-    "$@" >"$_log" 2>&1 && { rm -f "$_log"; return 0; }
+    tauri_stream_log stderr "OUTPUT_CLEAR" "$_label"
+    "$@" >"$_log" 2>&1 && {
+        rm -f "$_log"
+        tauri_clear_install_error "$_label recovered"
+        return 0
+    }
     _rc=$?
     step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
     _redact_install_output "$_log" >&2
+    tauri_stream_log stderr "ERROR_OUTPUT" "$_label failed (exit code $_rc)"
     rm -f "$_log"
     return $_rc
 }
@@ -255,6 +274,51 @@ run_install_cmd_retry() {
         _ricr_attempt=$((_ricr_attempt + 1))
         _ricr_delay=$((_ricr_delay * 2))
     done
+}
+
+# True when the runtime target is gfx906 (MI50/Radeon VII): the prebuilt AMD
+# bitsandbytes wheel carries no gfx906 kernels, and force-reinstalling it would
+# clobber a user's source-built bnb (the only 4-bit path on this arch) on every
+# `studio update`. So skip the auto-install and leave whatever bnb is present.
+# _gfx906_target is set during torch-index resolution; also honor an explicit
+# UNSLOTH_ROCM_GFX_ARCH so a pinned-index install still skips. The override is
+# normalized (gfx906:sramecc-:xnack- -> gfx906) so a copied HIP gcnArchName counts.
+_is_gfx906_bnb_skip() {
+    [ "${_gfx906_target:-false}" = true ] && return 0
+    _bnb_gfx_env=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+    _bnb_gfx_env=${_bnb_gfx_env%%:*}
+    [ "$_bnb_gfx_env" = "gfx906" ] && return 0
+    # A pinned index (UNSLOTH_TORCH_INDEX_URL/_FAMILY) skips the reroute block that
+    # sets _gfx906_target, so a real gfx906 host with a pinned rocm6.3 index and no
+    # UNSLOTH_ROCM_GFX_ARCH would otherwise clobber a source-built bnb. Probe here
+    # in that gap; skip only when gfx906 is the SOLE distinct arch (mixed hosts
+    # opt in via the env var, mirroring the reroute block's de-dup rule).
+    if [ -z "$_bnb_gfx_env" ] && [ "${_torch_index_pinned:-false}" = true ]; then
+        _bnb_gfx_probe=$(_probe_amd_gfx_arch | awk 'NF && !seen[$0]++')
+        [ "$_bnb_gfx_probe" = "gfx906" ] && return 0
+    fi
+    return 1
+}
+
+# `pip install unsloth` resolves its unconditional bitsandbytes dep to a generic
+# CUDA wheel (no gfx906 kernels) once we skip the prebuilt one. Snapshot bnb before
+# the unsloth install, then drop a freshly pulled wheel afterwards while leaving a
+# pre-existing source build in place.
+_gfx906_bnb_installed() {
+    "$_VENV_PY" -c "import importlib.util as u, sys; sys.exit(0 if u.find_spec('bitsandbytes') else 1)" >/dev/null 2>&1
+}
+_gfx906_bnb_snapshot() {
+    _gfx906_bnb_absent_before=false
+    _is_gfx906_bnb_skip || return 0
+    _gfx906_bnb_installed || _gfx906_bnb_absent_before=true
+}
+_gfx906_bnb_prune() {
+    _is_gfx906_bnb_skip || return 0
+    [ "${_gfx906_bnb_absent_before:-false}" = true ] || return 0
+    _gfx906_bnb_installed || return 0
+    substep "gfx906: removing generic bitsandbytes pulled in as a dependency (no gfx906 kernels; build from source for 4-bit QLoRA)" "$C_WARN"
+    uv pip uninstall --python "$_VENV_PY" bitsandbytes >/dev/null 2>&1 \
+        || "$_VENV_PY" -m pip uninstall -y bitsandbytes >/dev/null 2>&1 || true
 }
 
 # Install bitsandbytes on AMD ROCm hosts. Uses the continuous-release_main
@@ -335,6 +399,34 @@ esac
 tauri_log() {
     if [ "$TAURI_MODE" = true ]; then
         echo "[TAURI:$1] $2"
+    fi
+}
+
+tauri_stream_log() {
+    _tsl_stream="$1"
+    _tsl_tag="$2"
+    shift 2
+    if [ "$TAURI_MODE" = true ]; then
+        if [ "$_tsl_stream" = stderr ]; then
+            printf '[TAURI:%s] %s\n' "$_tsl_tag" "$*" >&2
+        else
+            printf '[TAURI:%s] %s\n' "$_tsl_tag" "$*"
+        fi
+    fi
+}
+
+rollback_substep() {
+    if [ "$TAURI_MODE" = true ]; then
+        tauri_log "PROGRESS" "$1"
+    else
+        substep "$@"
+    fi
+}
+
+tauri_clear_install_error() {
+    if [ "$TAURI_MODE" = true ]; then
+        tauri_log "ERROR_CLEAR" "$1"
+        printf '[TAURI:ERROR_CLEAR] %s\n' "$1" >&2
     fi
 }
 
@@ -498,10 +590,10 @@ _restore_studio_venv_replacement() {
         _VENV_ROLLBACK_ACTIVE=false
         return 0
     }
-    substep "restoring previous environment after failed install..." "$C_WARN"
+    rollback_substep "restoring previous environment after failed install..." "$C_WARN"
     rm -rf "$_VENV_ROLLBACK_TARGET"
     if mv "$_VENV_ROLLBACK_DIR" "$_VENV_ROLLBACK_TARGET"; then
-        substep "restored previous environment"
+        rollback_substep "restored previous environment"
         _VENV_ROLLBACK_ACTIVE=false
         _VENV_ROLLBACK_DIR=""
     else
@@ -655,6 +747,15 @@ _apt_distro_description() {
     )
 }
 
+# ── Helper: can the controlling terminal actually be opened for reading? ──
+# `test -r` only checks permission bits, which look fine in containers and
+# systemd units where open() then fails with ENXIO. Probe with a real open.
+# The subshell is required: in dash a failed redirection on the special
+# builtin `:` exits the whole script.
+_can_read_tty() {
+    ( : </dev/tty ) >/dev/null 2>&1
+}
+
 # ── Helper: install packages via apt, escalating to sudo only if needed ──
 # Usage: _smart_apt_install pkg1 pkg2 pkg3 ...
 _smart_apt_install() {
@@ -695,24 +796,63 @@ _smart_apt_install() {
         echo "    from your distro's official repositories (not a third-party tarball)."
         echo "    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         echo ""
-        printf "    Accept? [Y/n] "
-        if [ -r /dev/tty ]; then
-            read -r REPLY </dev/tty || REPLY="y"
-        else
-            REPLY="y"
-        fi
-        case "$REPLY" in
-            [nN]*)
+        if _can_read_tty; then
+            printf "    Accept? [Y/n] "
+            # The device opened, so a failed read is EOF, not consent: decline,
+            # as the autostart prompt below does. Enter is still yes (a
+            # successful read of an empty line).
+            read -r REPLY </dev/tty || REPLY="n"
+            case "$REPLY" in
+                [nN]*)
+                    echo ""
+                    echo "    Please install these packages first, then re-run Unsloth Studio setup:"
+                    echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                    exit 1
+                    ;;
+            esac
+            # Mirror the headless branch: on a sudoers denial, a wrong password
+            # or an apt error, say what to run by hand instead of letting set -e
+            # abort on a bare sudo/apt message.
+            if sudo apt-get update -y </dev/null &&
+                sudo apt-get install -y $_STILL_MISSING </dev/null; then
+                :
+            else
                 echo ""
-                echo "    Please install these packages first, then re-run Unsloth Studio setup:"
+                echo "    Could not install these packages: $_STILL_MISSING"
+                echo "    See the error above."
+                echo "    Please install them first, then re-run Unsloth Studio setup:"
                 echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
                 exit 1
-                ;;
-            *)
-                sudo apt-get update -y </dev/null
-                sudo apt-get install -y $_STILL_MISSING </dev/null
-                ;;
-        esac
+            fi
+        else
+            # Nobody can answer a prompt or type a password here. -n makes sudo
+            # refuse rather than prompt into a closed stdin, which is how #7307
+            # died. Probe with the real commands: `sudo -l` answers whether they
+            # are *authorized*, not whether running them needs authentication.
+            # -k ignores any cached timestamp, so only a real NOPASSWD rule gets
+            # through, not someone's sudo in another shell minutes ago. Per
+            # sudo(8), -k alongside a command ignores the cached credentials and
+            # "will not update" them, so other sessions keep theirs.
+            echo "    No terminal to confirm on; trying passwordless sudo."
+            if sudo -n -k apt-get update -y </dev/null &&
+                sudo -n -k apt-get install -y $_STILL_MISSING </dev/null; then
+                echo "    Installed with passwordless sudo."
+            else
+                echo ""
+                echo "    Could not install these packages: $_STILL_MISSING"
+                echo "    Detected ${_ad_desc}."
+                # Either sudo refused, or apt failed on a bad repo, dpkg lock or
+                # network outage. sudo exits 1 on an auth/config problem and
+                # when the command cannot be executed, but otherwise passes the
+                # command's own status through, so state both causes.
+                echo "    Either sudo needs a password here, or apt-get itself"
+                echo "    failed; see the error above. With no terminal to"
+                echo "    authenticate on, this cannot be done unattended."
+                echo "    Please install them first, then re-run Unsloth Studio setup:"
+                echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                exit 1
+            fi
+        fi
     else
         echo ""
         echo "    sudo is not available on this system."
@@ -2260,6 +2400,7 @@ _amd_arch_index_family_for_gfx() {
         gfx1201|gfx1200) echo gfx120X-all ;;
         gfx1151) echo gfx1151 ;;
         gfx1150) echo gfx1150 ;;
+        gfx1152) echo gfx1152 ;;
         gfx1103|gfx1102|gfx1101|gfx1100) echo gfx110X-all ;;
         gfx1036|gfx1035|gfx1034|gfx1033|gfx1032|gfx1031|gfx1030) echo gfx103X-all ;;
         gfx90a) echo gfx90a ;;
@@ -2271,12 +2412,14 @@ _amd_arch_index_family_for_gfx() {
 # Map a GPU marketing name to gfx arch (kept in sync with install.ps1 nameArchTable).
 _infer_amd_gfx_arch_from_gpu_name() {
     case "$1" in
-        *"9070 XT"*|*9080*) echo gfx1201 ;;
-        *9070*|*9060*) echo gfx1200 ;;
+        *9070*|*9080*) echo gfx1201 ;;
+        *9060*) echo gfx1200 ;;
         *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) echo gfx1151 ;;
-        *"890M"*|*"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) echo gfx1150 ;;
-        *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"PRO V710"*) echo gfx1102 ;;
-        *"RX 7900"*|*"RX 7800"*|*"RX 7700"*|*"PRO W7900"*|*"PRO W7800"*|*"PRO W7700"*) echo gfx1100 ;;
+        *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) echo gfx1150 ;;
+        *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) echo gfx1152 ;;
+        *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*) echo gfx1102 ;;
+        *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*) echo gfx1101 ;;
+        *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*) echo gfx1100 ;;
         *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*) echo gfx1103 ;;
         *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*) echo gfx1030 ;;
         *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*) echo gfx1032 ;;
@@ -2316,8 +2459,12 @@ _infer_linux_amd_gfx_arch() {
         echo gfx1151
         return 0
     fi
-    if [ -n "$_gpu_evidence" ] && grep -qiE '890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33' /proc/cpuinfo 2>/dev/null; then
+    if [ -n "$_gpu_evidence" ] && grep -qiE '890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]' /proc/cpuinfo 2>/dev/null; then
         echo gfx1150
+        return 0
+    fi
+    if [ -n "$_gpu_evidence" ] && grep -qiE '860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33' /proc/cpuinfo 2>/dev/null; then
+        echo gfx1152
         return 0
     fi
     if command -v lspci >/dev/null 2>&1; then
@@ -3055,7 +3202,7 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
                     # whole handoff (a user-set override re-exports unchanged).
                     export UNSLOTH_ROCM_GFX_ARCH="$_linux_inferred_gfx"
                     case "$_linux_inferred_gfx" in
-                        gfx1201|gfx1200|gfx1151|gfx1150)
+                        gfx1201|gfx1200|gfx1151|gfx1150|gfx1152)
                             TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
                             TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
                             TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
@@ -3124,7 +3271,7 @@ fi
 # and a bare name can resolve a 2.12 ABI-mismatched wheel. Match on the FINAL leaf so a
 # custom mirror with a gfx/rocm7.2 path segment but a cu*/cpu family isn't forced.
 case "$_torch_index_leaf" in
-    rocm7.2|gfx120x-all|gfx1151|gfx1150)
+    rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152)
         TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
         TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
         TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
@@ -3241,10 +3388,20 @@ case "$_torch_index_leaf" in
                     if (n > 0) print vals[idx]
                 }')
         fi
+        # An explicit UNSLOTH_ROCM_GFX_ARCH=gfx906 pins the runtime target to the
+        # MI50 / Radeon VII path and must win over Strix probe-order detection on a
+        # mixed Strix + MI50 host, so the Strix reroute is suppressed when it is set.
+        # Normalize a copied HIP gcnArchName (gfx906:sramecc-:xnack- -> gfx906) and
+        # trim whitespace (mirrors the Python .strip()) so the feature-flag suffix or
+        # a stray newline does not defeat the exact gfx906 comparisons below.
+        _gfx906_env=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+        _gfx906_env=${_gfx906_env%%:*}
         _strix_gfx=""
-        case "$_runtime_gfx" in
-            gfx1151|gfx1150) _strix_gfx="$_runtime_gfx" ;;
-        esac
+        if [ "$_gfx906_env" != "gfx906" ]; then
+            case "$_runtime_gfx" in
+                gfx1151|gfx1150|gfx1152) _strix_gfx="$_runtime_gfx" ;;
+            esac
+        fi
         # Skip rocm7.13+ generic indexes: they already ship the fixes, so the
         # arch build (rocm7.13) would be a downgrade rather than a rescue.
         if [ -n "$_strix_gfx" ] && _rocm_leaf_below "$_torch_index_leaf" 7 13; then
@@ -3271,6 +3428,57 @@ case "$_torch_index_leaf" in
             TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
             TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
             _amd_gpu_radeon=false
+        fi
+        # ── MI50 / Radeon VII (gfx906, Vega 20): legacy community-supported path ──
+        # Newer rocm wheel families bundle ROCm libraries whose Tensile kernels
+        # dropped gfx906 (rocBLAS "TensileLibrary.dat ... not read for gfx906",
+        # ROCm/TheRock#1844), so a rocm6.4+/7.x index installs a torch that fails
+        # at the first BLAS call. The rocm6.3 index is the last one whose wheels
+        # run on gfx906 (torch 2.7.0 verified on MI50 32GB; up to 2.9 in community
+        # use). Reroute any newer picked index; leave rocm6.0-6.3 alone.
+        #
+        # Target resolution: an explicit UNSLOTH_ROCM_GFX_ARCH wins (lets a host
+        # whose rocminfo/amd-smi emit no gfx token still opt in; _gfx906_env was
+        # lowercased above, before the Strix block it suppresses). Otherwise only
+        # treat gfx906 as the target when it is the SOLE distinct arch present:
+        # _gfx_all is de-duplicated by visible index, which loses per-device
+        # ordinals on a mixed host, so a non-gfx906 selection must never be
+        # downgraded to rocm6.3 -- such hosts set UNSLOTH_ROCM_GFX_ARCH to opt in.
+        _gfx906_target=false
+        if [ -n "$_gfx906_env" ]; then
+            [ "$_gfx906_env" = "gfx906" ] && _gfx906_target=true
+        elif [ -n "$_gfx_all" ]; then
+            _gfx906_uniq=$(printf '%s\n' "$_gfx_all" | awk 'NF && !seen[$0]++')
+            [ "$_gfx906_uniq" = "gfx906" ] && _gfx906_target=true
+        fi
+        # gfx906 always trains from the PyTorch rocm6.3 wheels, never the Radeon repo
+        # (repo.radeon.com wheels carry no gfx906 BLAS kernels). Clear the Radeon
+        # marketing-name flag as soon as gfx906 is the target -- even when the host
+        # already picks rocm6.0-6.3 and the reroute below is a no-op -- so a Radeon VII
+        # does not divert to the radeon branch on those versions.
+        if [ "$_gfx906_target" = true ]; then
+            _amd_gpu_radeon=false
+        fi
+        if [ "$_gfx906_target" = true ] && ! _rocm_leaf_below "$_torch_index_leaf" 6 4; then
+            echo "" >&2
+            echo "  [WARN] gfx906 (MI50 / Radeon VII / Vega 20) detected -- routing torch to the" >&2
+            echo "  [WARN] rocm6.3 index: it is the last wheel family that runs on gfx906 (newer" >&2
+            echo "  [WARN] rocm wheels ship without gfx906 BLAS kernels and fail at first use)." >&2
+            echo "  [WARN] gfx906 is a community-maintained legacy path: 16-bit LoRA and full" >&2
+            echo "  [WARN] finetuning work out of the box; bitsandbytes 4-bit QLoRA requires a" >&2
+            echo "  [WARN] source build of bitsandbytes for gfx906 (see docs.unsloth.ai/amd)." >&2
+            echo "" >&2
+            _amd_gfx906_base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
+            while [ "${_amd_gfx906_base%/}" != "$_amd_gfx906_base" ]; do
+                _amd_gfx906_base="${_amd_gfx906_base%/}"
+            done
+            TORCH_INDEX_URL="${_amd_gfx906_base}/rocm6.3"
+            # Reset to the default (<2.11) window: a rocm7.2 pick raised the floor
+            # to 2.11 above, which the rocm6.3 index (torch <= 2.9.x) cannot satisfy.
+            TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
+            TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"
+            TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
+            # (_amd_gpu_radeon already cleared above for every gfx906 target.)
         fi
         ;;
 esac
@@ -3339,12 +3547,14 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         # gfx1102 matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
         # gfx1102 (bash case has no negative lookahead like the PS tables).
         case "$_gpu_disp_mkt" in
-            *"9070 XT"*|*9080*)                                                                            _gpu_disp_gfx="gfx1201" ;;  # RDNA 4
-            *9070*|*9060*)                                                                                 _gpu_disp_gfx="gfx1200" ;;  # RDNA 4
+            *9070*|*9080*)                                                                                 _gpu_disp_gfx="gfx1201" ;;  # RDNA 4 (Navi 48)
+            *9060*)                                                                                        _gpu_disp_gfx="gfx1200" ;;  # RDNA 4 (Navi 44)
             *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _gpu_disp_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
-            *"890M"*|*"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _gpu_disp_gfx="gfx1150" ;;  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
-            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"PRO V710"*)                  _gpu_disp_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
-            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*|*"PRO W7900"*|*"PRO W7800"*|*"PRO W7700"*)                  _gpu_disp_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
+            *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) _gpu_disp_gfx="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
+            *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _gpu_disp_gfx="gfx1152" ;;  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
+            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*)                              _gpu_disp_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
+            *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _gpu_disp_gfx="gfx1101" ;;  # RDNA 3 (Navi 32)
+            *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _gpu_disp_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
             *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _gpu_disp_gfx="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
             *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _gpu_disp_gfx="gfx1030" ;;  # RDNA 2 (Navi 21)
             *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _gpu_disp_gfx="gfx1032" ;;  # RDNA 2 (Navi 23)
@@ -3496,6 +3706,7 @@ for _p in ('torch', 'torchvision', 'torchaudio'):
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo for a clean state, preserving
     # existing torch/CUDA unless the ROCm repair below fires.
+    _gfx906_bnb_snapshot
     substep "upgrading unsloth in migrated environment..."
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: install unsloth + unsloth-zoo with --no-deps (current
@@ -3537,13 +3748,18 @@ if [ "$_MIGRATED" = true ]; then
     # existing ROCm installs gain the AMD bitsandbytes build without a
     # fresh reinstall.
     if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = true ]; then
-        _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
+        if _is_gfx906_bnb_skip; then
+            substep "gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels); build from source for 4-bit QLoRA -- https://docs.unsloth.ai/get-started/install-and-update/amd" "$C_WARN"
+        else
+            _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
+        fi
         # Repair ROCm torch if overwritten during migrated install
         _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
         if [ -z "$_has_hip" ]; then
             substep "repairing ROCm torch (overwritten by dependency resolution)..."
             _install_torch_default_index --force-reinstall
         fi
+        _gfx906_bnb_prune
     fi
 elif [ -n "$TORCH_INDEX_URL" ]; then
     # Fresh: Step 1 - install torch from explicit index (skip when --no-torch or Intel Mac)
@@ -3734,8 +3950,13 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     # host stays in GGUF-only mode rather than pulling in bitsandbytes,
     # which is only useful once torch is present for training.
     if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = true ]; then
-        _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
+        if _is_gfx906_bnb_skip; then
+            substep "gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels); build from source for 4-bit QLoRA -- https://docs.unsloth.ai/get-started/install-and-update/amd" "$C_WARN"
+        else
+            _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
+        fi
     fi
+    _gfx906_bnb_snapshot
     # Fresh: Step 2 - install unsloth, preserving the torch Step 1 installed
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
@@ -3786,6 +4007,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
             substep "repairing ROCm torch (overwritten by dependency resolution)..."
             _install_torch_default_index --force-reinstall
         fi
+        _gfx906_bnb_prune
     fi
 else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
@@ -3880,6 +4102,7 @@ if [ -n "$VENV_ABS_BIN" ]; then
 fi
 
 if ! command -v bash >/dev/null 2>&1; then
+    tauri_log "ERROR" "bash is required to run studio setup"
     step "setup" "bash is required to run studio setup" "$C_ERR"
     substep "Please install bash and re-run install.sh"
     exit 1
@@ -3918,6 +4141,7 @@ if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     UNSLOTH_LOCAL_LLAMA_CPP_DIR="$_WITH_LLAMA_CPP_DIR" \
+    UNSLOTH_TAURI_MODE="$TAURI_MODE" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 else
     # Explicitly reset STUDIO_LOCAL_INSTALL / STUDIO_LOCAL_REPO so a stale
@@ -3933,7 +4157,12 @@ else
     STUDIO_LOCAL_REPO= \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
     UNSLOTH_LOCAL_LLAMA_CPP_DIR="$_WITH_LLAMA_CPP_DIR" \
+    UNSLOTH_TAURI_MODE="$TAURI_MODE" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
+fi
+
+if [ "$_SETUP_EXIT" -eq 0 ]; then
+    tauri_clear_install_error "studio setup completed"
 fi
 
 # ── Make 'unsloth' available via $_LOCAL_BIN (resolved earlier) ──
@@ -3991,7 +4220,11 @@ fi
 # PATH and shortcuts are already set up so the user can fix and retry.
 if [ "$_SETUP_EXIT" -ne 0 ]; then
     echo ""
-    step "error" "studio setup failed (exit code $_SETUP_EXIT)" "$C_ERR"
+    if [ "$TAURI_MODE" = true ]; then
+        tauri_log "ERROR_DEFAULT" "studio setup failed (exit code $_SETUP_EXIT)"
+    else
+        step "error" "studio setup failed (exit code $_SETUP_EXIT)" "$C_ERR"
+    fi
     echo ""
     exit "$_SETUP_EXIT"
 fi
@@ -4046,9 +4279,11 @@ echo ""
 # In non-interactive environments (Docker, CI, cloud-init) just print instructions.
 if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     echo ""
-    printf "  Start Unsloth Studio now? [Y/n] "
     # No readable answer (closed/EOF tty) defaults to no; Enter is still yes.
-    if [ -r /dev/tty ]; then
+    # Prompt only when something can answer: `test -r` passes on the unopenable
+    # /dev/tty found in containers, leaving a dangling question in the log.
+    if _can_read_tty; then
+        printf "  Start Unsloth Studio now? [Y/n] "
         read -r _reply </dev/tty || _reply="n"
     else
         _reply="n"
