@@ -830,6 +830,39 @@ def test_parallel_slots_are_never_recorded_for_a_diffusion_load():
     assert "loadedNParallel: committedSlots," in composer
 
 
+def test_hydration_restores_a_remembered_slot_override_on_a_fresh_store():
+    """The control is deliberately never seeded from the status echo, so after a
+    browser reload a model running on its remembered override shows a BLANK
+    slot control. `ModelConfigPage.resolveInitial` prefers the live store over
+    storage for the active model, so the blank is what the form edits: the next
+    Apply sends `n_parallel: null` (reloading at the server default) and a Save
+    writes the blank over the remembered count.
+
+    The seed is deliberately narrow. It reads storage only while the store is
+    still unseeded, so a poll cannot re-pin a control the user just blanked, and
+    it adopts the value only when the server is already running that exact
+    count, which proves it belongs to this model rather than fabricating a pin.
+    """
+    src = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    status = " ".join(src.split())
+    assert (
+        "resolveInitialConfig(checkpointId, status.gguf_variant ?? null)" in status
+    ), "the remembered override comes from per-model storage, not the echo"
+    assert (
+        "status.is_gguf && prevState.loadedNParallel === null && prevState.nParallel === null"
+        in status
+    ), "storage is read only on a fresh store, or a poll would fight a live edit"
+    assert (
+        "rememberedNParallel != null && rememberedNParallel === "
+        "status.requested_parallel_slots && { nParallel: rememberedNParallel, }" in status
+    )
+    # A fresh mount has no checkpoint to match, so it trips the model-change
+    # clear too; the seed only survives by being spread after it.
+    assert src.index("slotsModelChanged && { nParallel: null }") < src.index(
+        "nParallel: rememberedNParallel,"
+    )
+
+
 def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count():
     """`loadedNParallel` holds a RESOLVED count even for a load that sent no
     slots (hydration seeds it from the echo, which falls back to the server-wide

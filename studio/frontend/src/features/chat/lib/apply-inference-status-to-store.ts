@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// Barrel import (the lint rule's requirement); the cycle it forms with
+// model-picker is fine because the call happens at runtime, not module eval.
+import { resolveInitialConfig } from "@/features/model-picker";
 import { getInferenceStatus } from "../api/chat-api";
 import {
   mergeBackendRecommendedInference,
@@ -212,6 +215,17 @@ export function applyActiveModelStatusToStore(
   // the server-wide default", so the new model can echo the old one's count.
   const slotsModelChanged =
     hydratingExistingModel && !options.readoptingSameModel;
+  // This model's remembered slot override, read only while the store is still
+  // unseeded (a fresh mount) so the poll does not touch storage every tick.
+  const remembered =
+    status.is_gguf &&
+    prevState.loadedNParallel === null &&
+    prevState.nParallel === null
+      ? resolveInitialConfig(checkpointId, status.gguf_variant ?? null)
+      : null;
+  const rememberedNParallel = remembered?.remembered
+    ? (remembered.config.nParallel ?? null)
+    : null;
   // A Manual + Auto-layers load sent its positive context pin as max_seq_length,
   // and status only exposes the RESOLVED context; re-seed the pin from the
   // requested value (parity with the load paths' keepCustomCtx). Baselines
@@ -358,6 +372,20 @@ export function applyActiveModelStatusToStore(
     // reloading there pins it. The baseline above still carries the new model's
     // resolved count for the rollback.
     ...(seedLoadParams && slotsModelChanged && { nParallel: null }),
+    // AFTER that clear, which a first hydration also trips (an empty store has
+    // no checkpoint to match): a browser reload leaves the control blank while
+    // the model runs on a remembered override, so the config form (which
+    // prefers the live store over storage for the ACTIVE model) shows blank and
+    // the next Apply sends null and reloads at the server default, saving the
+    // blank over the override. Only adopted when the running count matches the
+    // remembered one, which proves it is this model's own and not a new pin.
+    ...(seedLoadParams &&
+      prevState.loadedNParallel === null &&
+      prevState.nParallel === null &&
+      rememberedNParallel != null &&
+      rememberedNParallel === status.requested_parallel_slots && {
+        nParallel: rememberedNParallel,
+      }),
     // Re-seed on first hydration, model/variant changes, or a same-model backend
     // placement change. gpuStatusFields preserves dirty local edits in the last
     // case while advancing their loaded baselines.
