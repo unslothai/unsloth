@@ -2452,7 +2452,10 @@ exit 0
                 substep "a problem with this machine."
                 substep "GGUF chat and inference do work here (llama.cpp publishes a"
                 substep "windows-arm64 prebuilt). Re-run with --no-torch to install"
-                substep "that path:"
+                substep "that path. irm | iex cannot forward flags, so for the web"
+                substep "install set the env var instead:"
+                substep "  `$env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex"
+                substep "From a downloaded copy of this script:"
                 substep "  .\install.ps1 --no-torch"
                 return (Exit-InstallFailure "PyTorch has no Windows ARM64 wheels; re-run with --no-torch" 1)
             }
