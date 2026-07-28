@@ -13092,15 +13092,19 @@ class _ResponsesReasoningExtractor:
                 buf = buf[consumed:]
                 continue
             reasoning_parts.append(buf[:close_idx].replace(_RESPONSES_THINK_OPEN, ""))
-            # Strip the OPEN marker too: feed() consumes it by re-entering
-            # reasoning, but this tail is emitted as-is, so a `<think>` after the
-            # structural close reached the answer body raw (#7334).
-            visible_parts.append(
-                buf[close_idx + len(_RESPONSES_THINK_CLOSE) :]
-                .replace(_RESPONSES_THINK_CLOSE, "")
-                .replace(_RESPONSES_THINK_OPEN, "")
-            )
             closed = True
+            tail = buf[close_idx + len(_RESPONSES_THINK_CLOSE) :]
+            if tail:
+                # The block ended here, so the tail is ordinary markup again and a
+                # later <think> opens a new one. Stripping every marker instead
+                # flattened a second thought into the visible answer (#7334).
+                # Nothing more can arrive for this text, so run it through the
+                # normal machine and finalize, exactly as a live parse would.
+                self._in_reasoning = False
+                self._reset_span()
+                for part_reasoning, part_visible in (self.feed(tail), self.finish()):
+                    reasoning_parts.append(part_reasoning)
+                    visible_parts.append(part_visible)
             break
         return "".join(reasoning_parts), "".join(visible_parts), closed
 

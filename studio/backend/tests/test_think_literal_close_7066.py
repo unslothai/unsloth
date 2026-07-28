@@ -2069,3 +2069,59 @@ def test_split_marker_seam_survives_the_bounded_lookahead():
     out = neutralize_message_content_for_role("user", ["x <", "", "/thi", "nk> y"])
     assert "".join(out).replace(_ZW, "@").count("@") >= 1
     assert "</think>" not in "".join(out)
+
+
+def _drain_reasoning_extractor(chunks):
+    """Feed ``chunks`` through the streaming extractor, returning (reasoning, visible)."""
+    extractor = _ResponsesReasoningExtractor(parse_think_markers = True)
+    reasoning, visible = [], []
+    for chunk in chunks:
+        got_reasoning, got_visible = extractor.feed(chunk)
+        reasoning.append(got_reasoning)
+        visible.append(got_visible)
+    got_reasoning, got_visible = extractor.finish()
+    reasoning.append(got_reasoning)
+    visible.append(got_visible)
+    return "".join(reasoning), "".join(visible)
+
+
+def test_reasoning_blocks_after_a_held_close_still_parse():
+    """A later <think> block must not flatten into the answer (#7334).
+
+    An unclosed reasoning-side ``` fence holds the first close tag until EOF.
+    The tail after it was emitted with every marker stripped, so a second
+    reasoning block landed in the visible answer instead of the drawer.
+    """
+    held = _drain_reasoning_extractor(
+        ["<think>draft ```</think>answer<think>second</think>end"]
+    )
+    # The same text with no unclosed fence takes the ordinary feed() path.
+    normal = _drain_reasoning_extractor(["<think>draft</think>answer<think>second</think>end"])
+
+    assert held == ("draft ```second", "answerend")
+    assert normal == ("draftsecond", "answerend")
+    # The held path must agree with the live one on where each block landed.
+    assert held[1] == normal[1]
+    assert "second" not in held[1]
+
+    # Split across deltas, which is how it actually arrives.
+    assert (
+        _drain_reasoning_extractor(
+            ["<think>draft ```", "</think>ans", "wer<think>sec", "ond</think>end"]
+        )
+        == held
+    )
+
+
+def test_held_close_tail_handles_more_blocks_and_stray_markers():
+    """The resumed tail runs the normal machine, not a blanket strip (#7334)."""
+    assert _drain_reasoning_extractor(
+        ["<think>a ```</think>x<think>b</think>y<think>c</think>z"]
+    ) == ("a ```bc", "xyz")
+    # A block still open at EOF stays reasoning.
+    assert _drain_reasoning_extractor(["<think>a ```</think>x<think>tail"]) == (
+        "a ```tail",
+        "x",
+    )
+    # A stray close in the tail is dropped, its text kept.
+    assert _drain_reasoning_extractor(["<think>a ```</think>x</think>y"]) == ("a ```", "xy")
