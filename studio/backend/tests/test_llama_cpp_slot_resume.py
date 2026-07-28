@@ -514,6 +514,8 @@ def test_save_estimate_uses_total_context_and_active_cache_settings(monkeypatch,
 def test_compact_swa_slot_save_is_skipped(monkeypatch, tmp_path):
     backend = _resume_backend(tmp_path)
     backend._sliding_window = 4096
+    backend._kv_key_length = 256
+    backend._kv_value_length = 256
     backend._swa_full = False
     backend._estimate_kv_cache_bytes = lambda *a, **k: (_ for _ in ()).throw(AssertionError)
     monkeypatch.setattr(
@@ -523,6 +525,26 @@ def test_compact_swa_slot_save_is_skipped(monkeypatch, tmp_path):
         raising = False,
     )
     assert backend.save_slots_for_resume() is None
+
+
+def test_window_without_kv_dims_still_saves(monkeypatch, tmp_path):
+    # phi3 reports a window but no key/value length, and llama.cpp runs it
+    # non-SWA, so the compact-SWA skip must not catch it.
+    backend = _resume_backend(tmp_path)
+    backend._sliding_window = 262144
+    backend._kv_key_length = None
+    backend._kv_value_length = None
+    backend._swa_full = False
+    posted = []
+    monkeypatch.setattr(
+        llama_cpp.httpx,
+        "post",
+        lambda *a, **k: posted.append(a)
+        or SimpleNamespace(status_code = 200, json = lambda: {"filename": "slot.bin"}),
+        raising = False,
+    )
+    backend.save_slots_for_resume()
+    assert posted
 
 
 def test_save_skipped_when_model_file_changed_since_load(monkeypatch, tmp_path):
