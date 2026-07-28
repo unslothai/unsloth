@@ -31,3 +31,9 @@ pandas==2.3.3
 # Last macOS-default package needing a toolchain: the other sdist-only ones there are
 # pure Python, hence allowlisted in .github/scripts/clean-machine-assert.sh instead.
 av<16
+
+# cryptography 49.0.0 dropped the macosx_10_9_universal2 wheel for arm64-only, so
+# x86_64 macOS has no wheel and builds the sdist, needing Rust plus a working
+# linker. 48.0.1 is the newest release with a universal2 wheel. Lift when
+# cryptography ships an x86_64-capable macOS wheel again.
+cryptography<49; sys_platform == "darwin" and platform_machine == "x86_64"
