@@ -1501,3 +1501,21 @@ def test_the_three_scanners_share_one_list_column_rule():
     backend = (BACKEND / "utils" / "changelog.py").read_text(encoding="utf-8")
     assert "_indent_width(visible) - column >= 4" in backend
     assert "indentWidth(line) - column >= INDENTED_CODE_INDENT" in LINKS.read_text(encoding="utf-8")
+
+
+def test_a_failed_fetch_keeps_retry_reachable():
+    """The fallback stands in for "no section for this version", which the hook
+    reports as ready. A failed fetch is reported as error and is retryable, and on
+    desktop the fallback is the updater's static install blurb, so taking it there
+    replaced the Retry button with generic text until the cache expired."""
+    src = " ".join(PANEL.read_text(encoding = "utf-8").split())
+    assert 'notes?.matched ? notes.markdown : state === "error" ? null' in src
+    # NotesStatus is the only thing that renders retry, and it is the else of the
+    # markdown branch, so an error must not produce markdown.
+    assert "{markdown ? (" in src
+    assert "retry={retry}" in src
+
+    hook = " ".join((FRONTEND / "hooks" / "use-release-notes.ts").read_text(encoding = "utf-8").split())
+    assert "const failed = !next || (!next.matched && next.error !== null);" in hook, (
+        "the distinction this relies on"
+    )

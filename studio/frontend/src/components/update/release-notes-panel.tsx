@@ -68,7 +68,16 @@ export function ReleaseNotesPanel({
   const { state, notes, retry } = useReleaseNotes({ version, enabled: true });
   const scrollRef = useRef<HTMLElement | null>(null);
 
-  const source = notes?.matched ? notes.markdown : (fallbackMarkdown ?? null);
+  // The fallback stands in for "this version has no section in the changelog",
+  // which the hook reports as ready. A fetch that failed is reported as error and
+  // is retryable, and on desktop the fallback is the updater's static install
+  // blurb, so taking it there would replace a Retry button with generic text
+  // until the cache expires.
+  const source = notes?.matched
+    ? notes.markdown
+    : state === "error"
+      ? null
+      : (fallbackMarkdown ?? null);
   // Notes target the repository, so relative links must point back at it.
   const markdown = useMemo(
     () => (source === null ? null : resolveChangelogLinks(source)),
