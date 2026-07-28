@@ -5,17 +5,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildArtifactSourceKey,
   createArtifactId,
   createChatArtifact,
   hashArtifactCode,
 } from "../src/features/chat/artifacts/types.ts";
 
-// The source view keys its Streamdown on `${artifact.id}:${hashArtifactCode(artifact.code)}`.
-// Streamdown never revises a block it has already committed, so that key must
-// change whenever the rendered code does, or the panel keeps showing the
-// previous artifact's source.
-const sourceKey = (artifact: { id: string; code: string }): string =>
-  `${artifact.id}:${hashArtifactCode(artifact.code)}`;
+// Exercises the shipped helper the component keys on, not a copy of it.
+const sourceKey = buildArtifactSourceKey;
 
 const toolInput = (code: string) => ({
   code,
@@ -56,6 +53,20 @@ test("the source key is stable for an unchanged artifact, so no needless remount
     sourceKey(createChatArtifact(toolInput(code))),
     sourceKey(createChatArtifact(toolInput(code))),
   );
+});
+
+// The exact shape that triggers the upstream bail-out: equal line count, so
+// Streamdown's position-only comparator sees no change.
+test("the source key changes for two canvases with the same shape", () => {
+  const first = createChatArtifact(
+    toolInput("<html>\n<body>\n<h1>Alpha</h1>\n</body>\n</html>"),
+  );
+  const second = createChatArtifact(
+    toolInput("<html>\n<body>\n<h1>Bravo</h1>\n</body>\n</html>"),
+  );
+  assert.equal(first.code.length, second.code.length);
+  assert.equal(first.code.split("\n").length, second.code.split("\n").length);
+  assert.notEqual(sourceKey(first), sourceKey(second));
 });
 
 test("hashArtifactCode separates same-length codes and empty from whitespace", () => {
