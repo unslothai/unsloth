@@ -562,8 +562,7 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
         payload_snapshot = _newest_snapshot_dir(
             snapshot
             for snapshot, flags in revision_flags
-            if _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = True)
-            == model_format
+            if _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = True) == model_format
         ),
     )
 

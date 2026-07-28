@@ -402,9 +402,9 @@ def test_load_id_names_the_snapshot_holding_the_safetensors_payload(tmp_path, mo
     load_dir = Path(rows[0]["load_id"])
     # Behavioural: from_pretrained(load_id) has to find the weights the row
     # advertised, otherwise auto-load fails on a model that is fully cached.
-    assert any(entry.suffix == ".safetensors" for entry in load_dir.iterdir()), (
-        f"load_id {load_dir.name} holds no weights; payload is in {OLDER[:8]}"
-    )
+    assert any(
+        entry.suffix == ".safetensors" for entry in load_dir.iterdir()
+    ), f"load_id {load_dir.name} holds no weights; payload is in {OLDER[:8]}"
     assert load_dir == repo_dir / "snapshots" / OLDER
 
 
@@ -425,9 +425,9 @@ def test_load_id_names_the_snapshot_holding_the_advertised_gguf_quant(tmp_path, 
     assert rows[0]["size_bytes"] == 32
     load_dir = Path(rows[0]["load_id"])
     variants, _has_vision = list_local_gguf_variants(str(load_dir))
-    assert [v.quant for v in variants] == ["Q4_K_M"], (
-        f"no variant resolves under load_id {load_dir.name}; the quant is in {OLDER[:8]}"
-    )
+    assert [v.quant for v in variants] == [
+        "Q4_K_M"
+    ], f"no variant resolves under load_id {load_dir.name}; the quant is in {OLDER[:8]}"
     assert load_dir == repo_dir / "snapshots" / OLDER
 
 
