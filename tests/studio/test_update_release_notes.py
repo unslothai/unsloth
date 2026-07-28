@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -922,6 +923,18 @@ def test_a_comment_marker_in_prose_cannot_swallow_later_releases(changelog_modul
     # A comment that starts a line is still a block and still hides its body.
     hidden = "## 2.0\n\n<!--\n## 9.9.9\n-->\n\n- note\n"
     assert [e.version for e in changelog_module.parse_changelog(hidden)] == ["2.0"]
+
+
+def test_unmatched_backtick_runs_stay_linear(changelog_module):
+    """Rescanning the suffix for every opener was quadratic: a line of runs of
+    1, 2, 3 ... backticks, none of which ever closes, took 7.7s at 321 KB and
+    is reparsed on every popup request, so one malformed remote changelog could
+    tie up backend workers."""
+    line = "".join("`" * (i + 1) + "x" for i in range(800))
+    assert len(line) > 300_000
+    started = time.monotonic()
+    assert changelog_module._code_span_ranges(line) == []
+    assert time.monotonic() - started < 2.0
 
 
 def test_a_base_exception_releases_the_single_flight_flag(changelog_module, monkeypatch):

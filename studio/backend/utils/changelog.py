@@ -578,28 +578,44 @@ def _next_fence_state(open_fence: str | None, marker: str, rest: str) -> str | N
 
 def _code_span_ranges(line: str) -> list[tuple[int, int]]:
     """Code span bounds. A run of backticks closes only on a run of its length."""
-    spans: list[tuple[int, int]] = []
+    # Collect the runs once. Rescanning the rest of the line for every opener
+    # made a line of distinct unmatched runs quadratic in its length: 321 KB of
+    # runs of 1, 2, 3 ... backticks took 7.7s, and notes are reparsed per
+    # request, so one malformed remote changelog could tie up backend workers.
+    runs: list[tuple[int, int]] = []
     index = 0
     while index < len(line):
         if line[index] != "`" or _is_escaped(line, index):
             index += 1
             continue
         ticks = _run_length(line, index)
-        cursor = index + ticks
-        while cursor < len(line):
-            if line[cursor] != "`" or _is_escaped(line, cursor):
-                cursor += 1
-                continue
-            candidate = _run_length(line, cursor)
-            if candidate == ticks:
-                spans.append((index, cursor + ticks))
-                break
-            cursor += candidate
-        else:
+        runs.append((index, ticks))
+        index += ticks
+
+    # A run only ever closes on a later run of the same length, so walking one
+    # cursor per length is enough: a length that runs out stays out.
+    by_length: dict[int, list[int]] = {}
+    for position, (_, ticks) in enumerate(runs):
+        by_length.setdefault(ticks, []).append(position)
+
+    spans: list[tuple[int, int]] = []
+    cursors: dict[int, int] = {}
+    current = 0
+    while current < len(runs):
+        start, ticks = runs[current]
+        same = by_length[ticks]
+        cursor = cursors.get(ticks, 0)
+        while cursor < len(same) and same[cursor] <= current:
+            cursor += 1
+        cursors[ticks] = cursor
+        if cursor >= len(same):
             # Nothing closes this run, so it is literal text.
-            index += ticks
+            current += 1
             continue
-        index = spans[-1][1]
+        closer = same[cursor]
+        cursors[ticks] = cursor + 1
+        spans.append((start, runs[closer][0] + ticks))
+        current = closer + 1
     return spans
 
 
