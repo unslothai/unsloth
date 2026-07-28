@@ -779,10 +779,9 @@ _smart_apt_install() {
     fi
 
     if [ "$TAURI_MODE" = true ]; then
-        # Optional callers never elevate: the desktop turns NEED_SUDO into a mandatory
-        # "Permission needed" dialog whose Cancel leaves the user not-installed, which
-        # would re-impose the build-tool requirement this gate removes. Nothing here is
-        # needed to run; the caller falls through to prebuilt llama.cpp.
+        # Optional callers never elevate: NEED_SUDO raises a mandatory desktop
+        # permission dialog whose Cancel leaves the user not installed, over tools
+        # nothing needs. The caller falls through to prebuilt llama.cpp.
         if [ "${_SMART_APT_OPTIONAL:-false}" = true ]; then
             return 2
         fi
@@ -1983,33 +1982,26 @@ _maybe_reroute_strixhalo_to_2404() {
 _maybe_reroute_strixhalo_to_2404 || true
 
 # ── Check system dependencies ──
-# cmake/git are only needed to *build* llama.cpp from source. Unsloth downloads a
-# prebuilt by default, and setup.sh self-skips the source build when they're
-# absent -- so macOS doesn't block on cmake (requiring it would force a manual
-# Homebrew install). Linux keeps requiring them; its package manager has them.
 tauri_log "STEP" "Checking system dependencies"
 
-# A working git, not merely a present one: without the Xcode CLT, macOS still has
-# /usr/bin/git as a stub that errors "invalid active developer path" and pops a GUI
-# dialog. `command -v git` answers the wrong question; only running it tells the truth.
+# Without the Xcode CLT, macOS still ships /usr/bin/git as a stub that errors and pops
+# a GUI dialog, so `command -v git` is not enough -- only running it tells the truth.
 _has_working_git() {
     command -v git >/dev/null 2>&1 || return 1
     git --version >/dev/null 2>&1
 }
 
-# macOS system-dependency check. Kept a function so tests/sh can sed-extract it; the
-# old inline form was untestable, which is why this gate shipped broken.
+# macOS system-dependency check. A function so tests/sh can sed-extract it; the old
+# inline form was untestable, which is why this gate shipped broken.
 #
 # The consumer install needs no developer toolchain: uv is a prebuilt binary, CPython
 # is uv-managed, llama.cpp/whisper.cpp/Node are prebuilt downloads, and triton is
-# skipped on macOS. Requiring Xcode CLT blocked every brand-new Mac for a toolchain
-# nothing used. Only `--local` needs git, for the unsloth-zoo git+https URL.
+# skipped on macOS. Only `--local` needs git, for the unsloth-zoo git+https URL.
 _check_macos_deps() {
     _clt_missing=false
     xcode-select -p >/dev/null 2>&1 || _clt_missing=true
 
     if [ "$STUDIO_LOCAL_INSTALL" = true ] && ! _has_working_git; then
-        # Developer install only: pip needs git for the unsloth-zoo git+https URL.
         echo ""
         step "deps" "git is required for --local installs" "$C_ERR"
         substep "--local installs unsloth-zoo from git+https://github.com/unslothai/unsloth-zoo,"
@@ -2022,16 +2014,15 @@ _check_macos_deps() {
     fi
 
     if [ "$_clt_missing" = true ]; then
-        # Not fatal: nothing on the consumer path needs it. Say so instead of firing a
-        # GUI dialog and exiting, which is what stranded clean Macs.
+        # Not fatal, and no GUI dialog: firing xcode-select --install and exiting is
+        # what stranded clean Macs.
         step "deps" "no Xcode Command Line Tools (not required)" "$C_WARN"
         substep "Unsloth installs prebuilt binaries and wheels, so no compiler is needed."
         substep "Install them only for a llama.cpp source build: xcode-select --install"
     elif command -v cmake >/dev/null 2>&1; then
         step "deps" "all system dependencies found"
     else
-        # cmake is only needed for a source build; the default prebuilt path
-        # doesn't use it, so its absence is not fatal -- no Homebrew prerequisite.
+        # cmake is only for a source build, so its absence is not fatal.
         step "deps" "using prebuilt llama.cpp (cmake not found)" "$C_WARN"
         substep "Install cmake only if you want a source build: brew install cmake"
     fi
@@ -2042,27 +2033,25 @@ _check_macos_deps() {
 # reason: tests/sh can extract it.
 #
 # Only a download transport is required. cmake, gcc and the libcurl headers exist
-# solely for a llama.cpp source build, which the consumer path never does --
-# unslothai/llama.cpp publishes linux-x64/arm64 prebuilts for cpu, cuda12, cuda13,
-# rocm and vulkan. Requiring them turned every non-apt distro into a hard exit 1 over
-# unused tooling, the same defect as the macOS gate. git follows macOS: --local only.
+# solely for a llama.cpp source build the consumer path never does -- unslothai/
+# llama.cpp publishes linux-x64/arm64 prebuilts for cpu, cuda12, cuda13, rocm and
+# vulkan. Requiring them turned every non-apt distro into a hard exit 1 over unused
+# tooling. git follows macOS: --local only.
 _check_linux_deps() {
     _transport_missing=false
     if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
         _transport_missing=true
     fi
 
-    # Wanted but never required: git fetches the triton_kernels git+https requirement
-    # (a training speedup, skipped without it), the rest are for an optional llama.cpp
-    # source build. Auto-installed on apt, a warning elsewhere, never a stop.
+    # Wanted, never required: git fetches the triton_kernels git+https requirement (a
+    # training speedup), the rest serve the optional source build. Warn, never stop.
     _optional_missing=""
     command -v cmake       >/dev/null 2>&1 || _optional_missing="$_optional_missing cmake"
     _has_working_git                       || _optional_missing="$_optional_missing git"
     command -v gcc         >/dev/null 2>&1 || _optional_missing="$_optional_missing build-essential"
     command -v curl-config >/dev/null 2>&1 || _optional_missing="$_optional_missing libcurl4-openssl-dev"
-    # Parameter expansion, not `sed`: this runs before anything is installed and sed
-    # may not exist on a minimal image. A failed `$(... | sed ...)` yields "", which
-    # would report "all system dependencies found" on a machine that has none.
+    # Parameter expansion, not `sed`: sed may be absent on a minimal image, and a
+    # failed `$(... | sed ...)` yields "" -- "all found" on a machine that has none.
     _optional_missing="${_optional_missing# }"
 
     if [ "$STUDIO_LOCAL_INSTALL" = true ] && ! _has_working_git; then
@@ -2074,8 +2063,8 @@ _check_linux_deps() {
         return 1
     fi
 
-    # The one fatal case: nothing can be downloaded. Try apt first, the only distro
-    # family we can drive unattended.
+    # The one fatal case: nothing can be downloaded. apt is the only distro family we
+    # can drive unattended.
     if [ "$_transport_missing" = true ]; then
         if command -v apt-get >/dev/null 2>&1; then
             echo ""
@@ -2095,14 +2084,13 @@ _check_linux_deps() {
         fi
     fi
 
-    # Try apt for the optional set too. A failure only costs the features named below,
-    # but on Debian/Ubuntu we can just get them.
+    # Try apt for the optional set too; failing only costs the features warned about
+    # below.
     if [ -n "$_optional_missing" ] && command -v apt-get >/dev/null 2>&1; then
         step "deps" "installing optional build tools: $_optional_missing" "$C_DIM"
-        # Subshell: _smart_apt_install exits rather than returns, so `|| true` alone
-        # would not catch it and a missing optional tool aborted the install. And
-        # _SMART_APT_OPTIONAL suppresses the NEED_SUDO handshake, so no install hinges
-        # on a permission prompt for tools nothing here needs.
+        # Subshell because _smart_apt_install exits rather than returns, so `|| true`
+        # alone would not catch it. _SMART_APT_OPTIONAL suppresses the NEED_SUDO
+        # handshake, so no install hinges on a prompt for tools nothing here needs.
         ( _SMART_APT_OPTIONAL=true; _smart_apt_install $_optional_missing ) || true
         _optional_missing=""
         command -v cmake       >/dev/null 2>&1 || _optional_missing="$_optional_missing cmake"

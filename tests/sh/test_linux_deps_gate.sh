@@ -6,9 +6,7 @@
 #
 # History: the gate hard-required cmake, git, gcc and libcurl4-openssl-dev, installing
 # them on apt distros and `exit 1`-ing everywhere else. Nothing on the consumer path
-# builds anything (unslothai/llama.cpp publishes linux-x64/arm64 prebuilts for cpu,
-# cuda12, cuda13, rocm and vulkan), so it stranded every non-apt distro over unused
-# tooling, the same defect the macOS Xcode CLT gate had.
+# builds anything, so it stranded every non-apt distro over unused tooling.
 #
 # The contract now: only a download transport (curl or wget) is fatal, build tooling
 # is a warning, and git is required for --local only (unsloth-zoo git+https URL).
@@ -59,16 +57,15 @@ C_WARN=''; C_ERR=''; C_OK=''; C_DIM=''; C_RST=''
 step()    { echo "STEP $1 $2"; }
 substep() { echo "SUBSTEP $1"; }
 tauri_log() { echo "[TAURI:$1] $2"; }
-# Stand-in for the real apt path, recording what it was called with so a test can
-# tell "asked apt for curl" from "asked apt for the whole build toolchain".
+# Records its args so a test can tell "asked apt for curl" from "asked for everything".
 _smart_apt_install() { echo "APT_CALLED: $*"; }
 HARNESS
 
 _BIN=$(mktemp -d)
 _mk() { printf '#!/bin/sh\n%s\n' "$2" > "$_BIN/$1"; chmod +x "$_BIN/$1"; }
 
-# PATH is the sandbox and ONLY the sandbox, so an unstocked tool is genuinely absent
-# and the host's /usr/bin/cmake cannot leak in. bash must then be invoked absolutely.
+# PATH is the sandbox and ONLY the sandbox, so unstocked tools are genuinely absent and
+# the host's /usr/bin/cmake cannot leak in. bash must therefore be invoked absolutely.
 _SH="${BASH:-/bin/bash}"
 
 _run_gate() {
@@ -111,8 +108,7 @@ _out="$(_run_gate false)"
 assert_contains "install proceeds"                       "$_out" "RC=0"
 assert_contains "asks apt for curl"                      "$_out" "APT_CALLED: curl"
 assert_not_contains "does not ask apt for cmake"         "$_out" "APT_CALLED: curl cmake"
-# Only the transport goes to apt. Build tooling still appears in the warning line, so
-# match the apt call itself rather than the package names.
+# Build tooling still appears in the warning line, so match the apt call, not names.
 assert_contains    "apt asked for exactly curl"          "$_out" "APT_CALLED: curl
 "
 assert_contains    "build tooling only warned about"     "$_out" "using prebuilt llama.cpp"
@@ -126,8 +122,8 @@ assert_contains "reports everything found"               "$_out" "all system dep
 assert_not_contains "no prebuilt fallback warning"       "$_out" "using prebuilt llama.cpp"
 
 echo "=== apt present: git is auto-installed, because triton_kernels needs it ==="
-# Regression: making git optional without this left ubuntu root/arm-root failing at
-# "6/14 triton kernels", whose requirement is a git+https URL.
+# Regression: making git optional without this failed at "6/14 triton kernels", whose
+# requirement is a git+https URL.
 rm -f "$_BIN"/*
 _mk curl 'exit 0'
 _mk apt-get 'exit 0'

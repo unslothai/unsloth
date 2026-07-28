@@ -2841,9 +2841,8 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
 def _has_working_git() -> bool:
     """Match install.sh's _has_working_git: on PATH *and* actually runnable.
 
-    A git that is present but broken (a bare xcrun shim, a masked toolchain) is
-    what install.sh already classifies as missing. Testing only shutil.which
-    disagreed with it, so the installer promised to skip the git+https triton
+    A present-but-broken git (a bare xcrun shim) counts as missing there too. Testing
+    only shutil.which disagreed, so the installer promised to skip the git+https triton
     requirement and then tried to fetch it anyway.
     """
     exe = shutil.which("git")
@@ -3164,8 +3163,8 @@ def install_python_stack() -> int:
         )
 
     # 5. Triton kernels (no-deps, from source). Skipped on Windows/macOS (no support)
-    #    and without git, since the requirement is a git+https URL. A training speedup
-    #    only, so warn and continue rather than fail the install.
+    #    and without git (the requirement is a git+https URL); a training speedup
+    #    only, so warn rather than fail the install.
     if not IS_WINDOWS and not IS_MACOS:
         if not _has_working_git():
             _progress("triton kernels (skipped, no git)")

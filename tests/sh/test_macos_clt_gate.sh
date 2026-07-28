@@ -7,13 +7,13 @@
 # History: the gate was inline top-level code running
 #   xcode-select -p || { xcode-select --install; exit 1; }
 # so a brand-new Mac could not install at all, and being inline rather than a function
-# it was out of reach of the tests/sh sed-extraction convention, which is why it
-# shipped broken and stayed broken.
+# it was out of reach of the tests/sh sed-extraction convention that would have caught
+# it.
 #
 # The contract now: a consumer install must SUCCEED with no Xcode Command Line Tools
-# (uv is a prebuilt binary, CPython is uv-managed, llama.cpp/whisper.cpp/Node are
-# prebuilt downloads, triton is skipped on macOS), while `--local` must still fail
-# loudly because it installs unsloth-zoo from a git+https URL.
+# (uv, CPython, llama.cpp/whisper.cpp/Node are all prebuilt, triton is skipped on
+# macOS), while `--local` must still fail loudly: unsloth-zoo comes from a git+https
+# URL.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -76,12 +76,12 @@ HARNESS
 
 _BIN=$(mktemp -d)
 
-# Stock the sandbox PATH: each tool is absent, a working stub, or a broken stub
-# mimicking the Xcode CLT shim (exists, exits non-zero).
+# Each tool is absent, a working stub, or a broken stub mimicking the Xcode CLT shim
+# (exists, exits non-zero).
 _mk() { printf '#!/bin/sh\n%s\n' "$2" > "$_BIN/$1"; chmod +x "$_BIN/$1"; }
 
-# PATH is the sandbox and ONLY the sandbox, so an unstocked tool is genuinely absent
-# and the host's /usr/bin/git cannot leak in. bash must then be invoked absolutely.
+# PATH is the sandbox and ONLY the sandbox, so unstocked tools are genuinely absent and
+# the host's /usr/bin/git cannot leak in. bash must therefore be invoked absolutely.
 _SH="${BASH:-/bin/bash}"
 
 _run_gate() {
@@ -98,8 +98,8 @@ assert_contains "says CLT are not required"          "$_out" "not required"
 assert_not_contains "never claims CLT are required"  "$_out" "are required"
 
 echo "=== clean Mac: CLT stubs present but non-functional (the real virgin-Mac shape) ==="
-# With no CLT, /usr/bin/git and /usr/bin/cc EXIST and fail when run, so `command -v
-# git` succeeds. The gate must not be fooled by that.
+# With no CLT, /usr/bin/git EXISTS and fails when run, so `command -v git` succeeds.
+# The gate must not be fooled by that.
 rm -f "$_BIN"/*
 _mk xcode-select 'exit 1'
 _mk git 'echo "xcrun: error: invalid active developer path" >&2; exit 1'
@@ -140,8 +140,7 @@ assert_contains "uses prebuilt llama.cpp"            "$_out" "using prebuilt lla
 assert_contains "rc 0"                               "$_out" "RC=0"
 
 echo "=== the gate never fires the GUI installer on the consumer path ==="
-# Firing `xcode-select --install` and exiting is what stranded users: the dialog needs
-# a GUI session that a curl-piped or Tauri-spawned install does not have.
+# The dialog needs a GUI session a curl-piped or Tauri-spawned install does not have.
 rm -f "$_BIN"/*
 _mk xcode-select 'if [ "$1" = "--install" ]; then echo "GUI-DIALOG-FIRED"; fi; exit 1'
 _out="$(_run_gate false)"
