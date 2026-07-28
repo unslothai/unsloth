@@ -93,6 +93,7 @@ from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS as _MAX_REPROMPTS,
     REPROMPT_MAX_CHARS as _REPROMPT_MAX_CHARS,
     is_reprompt_repeat as _is_reprompt_repeat,
+    is_reprompt_restatement as _is_reprompt_restatement,
     is_short_intent_without_action as _is_short_intent_without_action,
     reprompt_to_act_message as _reprompt_to_act_message,
 )
@@ -340,12 +341,14 @@ _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
 # loop). Structured delta.tool_calls are grammar-bounded by llama-server; text
 # parsed from content is not, so one runaway turn could fan out unbounded.
 _MAX_TOOL_CALLS_PER_TURN = 8
-# Obligation phrasing INTENT_SIGNAL leaves alone ("I need to call ...", "I should
+# Obligation phrasing INTENT_SIGNAL leaves alone ("I need to call ...", "I must
 # call ..."), paired with an action verb: the bare topic words this replaced ate
-# real answers. "should" is its own alternative -- folding it into the
-# need|have|ought group would demand "I should to call".
+# real answers. Two shapes, not one list: the semi-modals take a "to"
+# ("I need to call"), the plain modals take a bare infinitive ("I must call") --
+# folding "should"/"must" into the need|have|ought group would demand
+# "I should to call".
 _FORCED_PLAN_INTENT = re.compile(
-    r"(?:\bi\s+(?:(?:need|have|ought)\s+to|should)|^need\s+to|^going\s+to)"
+    r"(?:\bi\s+(?:(?:need|have|ought)\s+to|should|must)|^need\s+to|^going\s+to)"
     r"\s+(?:\w+\s+){0,2}?(?:call|use|run|search|fetch|render|invoke|query)\b",
     re.I,
 )
@@ -442,16 +445,27 @@ def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
     return len(tail) if tail and _is_rehearsal_prefix(tail, active_tools) else 0
 
 
-def _should_suppress_forced_no_tool_output(text: str) -> bool:
-    """Suppress only repeated forced-turn planning text, not final answers."""
+def _should_suppress_forced_no_tool_output(text: str, previous: str = "") -> bool:
+    """Suppress only repeated forced-turn planning text, not final answers.
+
+    ``previous`` is the stall text that triggered the nudge, so a retry that
+    moved on can be told from one that just said the same thing again.
+    """
     stripped = text.strip()
     if not stripped or len(stripped) >= _REPROMPT_MAX_CHARS:
         return False
     if _FINAL_ANSWER_SIGNAL.search(stripped):
         return False
-    if _is_short_intent_without_action(stripped):
+    if _FORCED_PLAN_INTENT.search(stripped) is not None:
         return True
-    return _FORCED_PLAN_INTENT.search(stripped) is not None
+    if not _is_short_intent_without_action(stripped):
+        return False
+    # INTENT_SIGNAL also fires on lead-ins that introduce a real answer ("Now I
+    # have the results. The capital is Tokyo."), which _FORCED_REPEAT_PLAN_SIGNAL
+    # used to let through. Dropping those loses the answer outright, so a bare
+    # intent match only counts as a stall once the retry adds nothing to what we
+    # nudged; no ``previous`` keeps the standalone "is this a stall?" contract.
+    return not previous or _is_reprompt_restatement(stripped, previous)
 
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
@@ -11903,7 +11917,13 @@ class LlamaCppBackend:
                         )
                         # A stall after a tool ran still deserves a nudge, but
                         # each retry re-runs tools, so allow only one.
-                        _already_acted = any(record.executed for record in tool_controller.history)
+                        # RAG autoinject retrieves before the controller exists, so it
+                        # never lands in history; without _auto a doc-grounded turn
+                        # would still be read as pre-tool and get the full budget.
+                        # Mirrors the safetensors loop's rag_autoinjected.
+                        _already_acted = bool(_auto) or any(
+                            record.executed for record in tool_controller.history
+                        )
                         if _already_acted:
                             _reprompt_used, _reprompt_cap = _post_tool_reprompts, 1
                         else:
@@ -11958,7 +11978,10 @@ class LlamaCppBackend:
 
                         if _forced_tool_call_pending:
                             _forced_tool_call_pending = False
-                            if not _should_suppress_forced_no_tool_output(_stripped):
+                            if not _should_suppress_forced_no_tool_output(
+                                _stripped,
+                                _last_reprompt_text,
+                            ):
                                 if cumulative_display:
                                     forced_visible_text = _strip_tool_markup(
                                         cumulative_display,

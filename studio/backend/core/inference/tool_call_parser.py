@@ -216,6 +216,19 @@ def is_reprompt_repeat(text: str, previous: str) -> bool:
     return len(wa & wb) / len(wa | wb) >= REPROMPT_REPEAT_SIMILARITY
 
 
+# Stricter sibling of ``is_reprompt_repeat``: nothing at all was added. Near-repeat
+# is the right test for "stop nudging, it isn't working", but not for "throw the
+# turn away" -- a retry that restates the plan and appends the answer ("... for
+# you: Tokyo.") clears the similarity bar, and dropping it loses the answer.
+def is_reprompt_restatement(text: str, previous: str) -> bool:
+    if not previous:
+        return False
+    a, b = _normalize_for_repeat(text), _normalize_for_repeat(previous)
+    if not a or not b:
+        return False
+    return set(a.split()) <= set(b.split())
+
+
 def reprompt_to_act_message(tool_hint: str) -> str:
     """The user message appended when re-prompting a plan-without-action turn."""
     return (
