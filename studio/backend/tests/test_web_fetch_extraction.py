@@ -1549,3 +1549,50 @@ def test_short_article_still_beats_a_card_after_its_header_goes():
     out = html_to_markdown(f"<body>{real}{card}</body>", main_content = True)
     assert "Short real body." in out
     assert "Related card teaser" not in out
+
+
+def test_unclosed_nested_buffer_inside_a_header_is_still_stripped():
+    # The page omits </blockquote>, so the frame must claim its content before
+    # the strip is judged or the links escape and eat the fetch budget.
+    body = "<main><header><h1>T</h1><blockquote><ul>%s</ul></header><p>%s</p></main>" % (
+        _interlanguage_list(300),
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Lang0" not in out
+    assert out.index("Article body.") < 16000
+
+
+def test_unclosed_table_cell_inside_a_header_is_still_stripped():
+    body = "<main><header><h1>T</h1><table><tr><td><ul>%s</ul></header><p>%s</p></main>" % (
+        _interlanguage_list(300),
+        "Article body. " * 30,
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Lang0" not in out
+    assert out.index("Article body.") < 16000
+
+
+def test_a_long_heading_href_does_not_condemn_the_rest_of_the_header():
+    # The heading is kept either way, so its size must not clear the floor for
+    # the metadata beside it.
+    body = (
+        "<article><header><h1><a href='/p?%s'>Title</a></h1>"
+        "<a href='/author/jane'>Jane</a></header><p>%s</p></article>"
+        % ("q" * 900, "Article body. " * 30)
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Title" in out
+    assert "Jane" in out
+
+
+def test_a_preserved_heading_is_terminated():
+    # The closing tag's blank line lands after the heading mark is popped, so
+    # the render has to supply it or the body joins the heading line.
+    body = "<main><header><h1>Title</h1><ul>%s</ul></header>Article body text here.</main>" % (
+        _interlanguage_list(300)
+    )
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "# TitleArticle" not in out
+    assert out.startswith("# Title")
+    assert "Article body text here." in out

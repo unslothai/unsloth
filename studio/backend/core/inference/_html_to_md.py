@@ -238,12 +238,15 @@ class _HeaderFrame:
         body, so keep it whole."""
         if not closed_by_own_tag:
             return "".join(self.parts)
-        big_enough = (
-            self.text_chars >= _HEADER_MIN_CHARS
-            or sum(len(part) for part in self.parts) >= _HEADER_MAX_RENDERED_CHARS
-        )
+        headings = "".join(self.heading_parts)
+        # Both sizes measure only the droppable part: a heading is kept either
+        # way, so a long one must not make the rest look big enough to drop.
+        droppable = sum(len(part) for part in self.parts) - len(headings)
+        big_enough = self.text_chars >= _HEADER_MIN_CHARS or droppable >= _HEADER_MAX_RENDERED_CHARS
         if big_enough and self.link_chars >= _HEADER_LINK_DENSITY * self.text_chars:
-            return "".join(self.heading_parts)
+            # The closing tag's blank line is emitted after the heading mark is
+            # popped, so terminate the heading or the body runs into it.
+            return headings + "\n\n" if headings.strip() else headings
         return "".join(self.parts)
 
 
@@ -445,6 +448,7 @@ class _MarkdownRenderer(HTMLParser):
         innermost frame can be the one its own ``</header>`` closed."""
         closed_by_own_tag = own_tag
         while self._header_stack and self._header_stack[-1].depth >= depth:
+            self._finalize_nested_buffers(self._header_stack[-1])
             frame = self._header_stack.pop()
             if self._header_stack:
                 # Roll the tally outward so an enclosing header is judged whole.
@@ -455,6 +459,28 @@ class _MarkdownRenderer(HTMLParser):
             self._dropped_chars += sum(len(part) for part in frame.parts) - len(out)
             self._emit(out)
             closed_by_own_tag = False
+
+    def _finalize_nested_buffers(self, frame: _HeaderFrame) -> None:
+        """Close side buffers opened inside *frame* whose end tags the page omitted.
+
+        Their content is the header's, so it has to land in the frame before the
+        strip is judged; otherwise it is emitted afterwards and escapes."""
+        if self._in_link:
+            self._finish_link()
+        if self._in_inline_code:
+            self._in_inline_code = False
+            self._emit("`")
+        if self._in_cell and not frame.outer_in_cell:
+            self._finish_cell()
+            self._finish_row()
+        if self._in_pre and not frame.outer_in_pre:
+            raw = "".join(self._pre_parts)
+            self._in_pre = False
+            self._emit("\n\n```\n" + raw + "\n```\n\n")
+        while len(self._bq_stack) > frame.outer_bq_depth:
+            prefixed = self._prefix_blockquote("".join(self._bq_stack.pop()))
+            if prefixed:
+                self._emit("\n\n" + prefixed + "\n\n")
 
     def _flush_header_frames(self) -> None:
         """Emit every open header unchanged, abandoning the strip."""
