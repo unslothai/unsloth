@@ -85,12 +85,9 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-/// Ask before quitting on top of a running install. Returns true to proceed.
-///
-/// `cleanup_child_processes` SIGTERMs the installer mid dependency-pass, leaving a venv
-/// whose CLI works but whose server stack is missing (next launch dies on `import
-/// structlog`). Tray Quit only: RunEvent::Exit (OS shutdown, SIGTERM) must never block
-/// on a dialog nobody can answer.
+/// Ask before quitting mid-install (true to proceed): `cleanup_child_processes` SIGTERMs the
+/// installer, leaving a venv that looks healthy but cannot start. Tray Quit only, since
+/// RunEvent::Exit must never block on a dialog nobody can answer.
 fn confirm_quit_during_install(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 

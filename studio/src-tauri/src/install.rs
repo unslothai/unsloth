@@ -783,7 +783,7 @@ pub fn record_install_intentional_stop(state: &InstallState, diagnostics: &Diagn
     }
 }
 
-/// True while an installer runs, so callers can warn before quitting leaves a broken venv.
+/// True while an installer runs; quitting now would leave a broken venv.
 pub fn is_install_running(state: &InstallState) -> bool {
     state
         .lock()
