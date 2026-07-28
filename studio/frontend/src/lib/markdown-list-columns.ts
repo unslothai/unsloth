@@ -185,15 +185,49 @@ export function continuesParagraph(line: string, column: number): boolean {
   return indentWidth(inner) >= INDENTED_CODE || mayBeLazy(inner);
 }
 
-/** What a blockquote line holds, with its markers stripped. */
-function quoteContent(line: string): string {
+/** `line` with up to `depth` blockquote markers removed, and how many went. */
+function stripQuotes(line: string, depth: number): [string, number] {
   let rest = line;
-  let marker = QUOTE_MARKER.exec(rest);
+  let removed = 0;
+  let marker = removed < depth ? QUOTE_MARKER.exec(rest) : null;
   while (marker !== null) {
     rest = rest.slice(marker[0].length);
-    marker = QUOTE_MARKER.exec(rest);
+    removed += 1;
+    marker = removed < depth ? QUOTE_MARKER.exec(rest) : null;
   }
-  return rest;
+  return [rest, removed];
+}
+
+/** What a blockquote line holds, with its markers stripped. */
+function quoteContent(line: string): string {
+  return stripQuotes(line, Number.POSITIVE_INFINITY)[0];
+}
+
+/** How many blockquotes `line` is written inside. */
+export function quoteDepth(line: string): number {
+  return stripQuotes(line, Number.POSITIVE_INFINITY)[1];
+}
+
+/**
+ * `line` as the container it is written in sees it, with `quotes` blockquote
+ * markers and the open item's content column removed. CommonMark measures a
+ * block from its container rather than from the margin (spec 0.31.2 sections
+ * 5.1 and 5.2), so `> ~~~` and a fence under a nested bullet are openers even
+ * though neither sits within three columns of the margin.
+ */
+export function containerContent(
+  line: string,
+  state: ListState,
+  quotes: number,
+): string {
+  const [inner] = stripQuotes(line, quotes);
+  if (quotes > 0) {
+    // A list written inside a quote is the quote's own, which this tracker
+    // follows at document level only, so its columns do not apply here.
+    return inner;
+  }
+  const columns = dropDeeper(state.columns, indentWidth(inner));
+  return stripIndent(inner, columns.at(-1) ?? 0);
 }
 
 /** Whether a blockquote owns the paragraph the line below could continue. */

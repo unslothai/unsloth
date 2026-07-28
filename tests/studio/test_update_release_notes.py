@@ -1237,8 +1237,9 @@ def test_link_resolver_reads_html_containers_the_way_the_others_do():
     for source in (PREVIEW, LINKS):
         text = source.read_text(encoding = "utf-8")
         assert "HTML_BLOCK_TAGS" in text and "HTML_TAG_ONLY_LINE" in text
-    # A blank line, not the closing tag, is what ends the block.
-    assert "inHtmlBlock = !!original.trim()" in links
+    # A blank line, not the closing tag, is what ends the block, and the line is
+    # read from the container so a quote marker alone counts as blank.
+    assert "inHtmlBlock = !!container.trim()" in links
     # Type 7 cannot interrupt a paragraph, so prose above it keeps its links.
     assert "return !afterParagraph && HTML_TAG_ONLY_LINE.test(line);" in links
 
@@ -1293,7 +1294,7 @@ def test_link_resolver_reads_comments_before_fences():
     links = LINKS.read_text(encoding="utf-8")
     # Fence state is read before comments are masked and suppressed while one
     # is open, the same order the collapsed preview uses.
-    assert "const fenceSource = inComment ? null : FENCE.exec(original);" in links
+    assert "const fenceSource = inComment ? null : FENCE.exec(container);" in links
     # Masking happens only after the in-fence early return.
     fence_return = links.index("// Fenced content is literal")
     assert links.index("const [line, stillInComment] = maskComments(") > fence_return
@@ -1623,6 +1624,68 @@ def test_a_parenthesised_link_destination_still_resolves(run_scanner):
     unbalanced = run_scanner("links", "[x](a(b.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/a(b.md)" in unbalanced
     assert "<" not in unbalanced
+    # Pairs nest, and one level was all the expression allowed, so a path
+    # holding two was left relative and resolved against Studio's own origin.
+    nested = run_scanner("links", "[x](((draft)).md)\n")
+    assert "https://github.com/unslothai/unsloth/blob/main/((draft)).md" in nested
+    deep = run_scanner("links", "![shot](((((v2))))).png)\n")
+    assert "https://raw.githubusercontent.com/unslothai/unsloth/main/((((v2))))" in deep
+    # The closer still has to be there: an unbalanced run below a nested pair is
+    # not a link, so nothing is swallowed across the line break.
+    across = run_scanner("links", "[x](((a).md\n[y](docs/y.md)\n")
+    assert "https://github.com/unslothai/unsloth/blob/main/docs/y.md" in across
+    assert "[x](((a).md" in across
+
+
+def test_a_fence_inside_a_container_still_hides_its_sample(run_scanner):
+    """A fence is measured from its container and not from the margin (spec
+    0.31.2 section 4.5), so `> ~~~` and a fence three columns under a nested
+    bullet open one. Reading the margin instead never saw them, so the sample
+    inside was treated as prose and a relative link written in a code block was
+    rewritten into the text the reader sees verbatim."""
+    quoted = run_scanner("links", "> ~~~\n> [guide](docs/a.md)\n> ~~~\n")
+    assert "[guide](docs/a.md)" in quoted and "github.com" not in quoted
+    nested = run_scanner("links", "- a\n  - b\n    ~~~\n    [x](docs/x.md)\n    ~~~\n")
+    assert "[x](docs/x.md)" in nested and "github.com" not in nested
+    # A longer closer is still a closer, so the pair is not what a code span
+    # happened to hide.
+    uneven = run_scanner("links", "> ```\n> [guide](docs/a.md)\n> ````\n")
+    assert "[guide](docs/a.md)" in uneven and "github.com" not in uneven
+    # The fence ends with its container: a line written outside the quote, or
+    # to the left of the item, is Markdown again.
+    left = run_scanner("links", "> ~~~\n[guide](docs/a.md)\n")
+    assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in left
+    dedented = run_scanner("links", "- a\n  ~~~\n[guide](docs/a.md)\n")
+    assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in dedented
+    # A fence at document level owns the quoted lines below it, so the marker
+    # does not turn its content back into Markdown.
+    document = run_scanner("links", "~~~\n> [guide](docs/a.md)\n~~~\n")
+    assert "[guide](docs/a.md)" in document and "github.com" not in document
+    # Four columns past the item's content column it is an indented code block
+    # rather than a fence, and the sample stays literal for that reason.
+    code = run_scanner("links", "- Details:\n\n      ~~~\n      [guide](docs/a.md)\n")
+    assert "[guide](docs/a.md)" in code and "github.com" not in code
+
+
+def test_an_html_block_inside_a_container_is_literal_too(run_scanner):
+    """Type 1 and type 6 blocks are measured from their container the same way,
+    so a `<details>` under a nested bullet and a `<pre>` inside a quote both
+    show their contents verbatim. Missing the opener treated the body as
+    Markdown and rewrote the literal examples in it."""
+    nested = run_scanner(
+        "links", "- a\n  - b\n    <details>\n    [x](docs/x.md)\n    </details>\n"
+    )
+    assert "[x](docs/x.md)" in nested and "github.com" not in nested
+    quoted = run_scanner("links", "> <pre>\n> [x](docs/x.md)\n> </pre>\n")
+    assert "[x](docs/x.md)" in quoted and "github.com" not in quoted
+    # The block ends with its container, so a line dedented out of the item is
+    # Markdown again even though no blank line closed the block.
+    dedented = run_scanner("links", "- a\n  - b\n    <details>\n[x](docs/x.md)\n")
+    assert "https://github.com/unslothai/unsloth/blob/main/docs/x.md" in dedented
+    # Inside a quote a bare marker holds nothing, which is the blank line that
+    # ends a type 6 block.
+    blank = run_scanner("links", "> <details>\n>\n> [x](docs/x.md)\n")
+    assert "https://github.com/unslothai/unsloth/blob/main/docs/x.md" in blank
 
 
 def test_an_underline_left_of_an_item_is_lazy_text_of_it(changelog_module, run_scanner):

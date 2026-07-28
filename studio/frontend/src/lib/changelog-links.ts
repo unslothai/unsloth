@@ -17,9 +17,11 @@ import {
   type ListState,
   NO_QUOTE,
   type QuoteState,
+  containerContent,
   hiddenStructure,
   indentWidth,
   openLists,
+  quoteDepth,
   quoteState,
 } from "@/lib/markdown-list-columns";
 
@@ -27,12 +29,26 @@ const LINK_BASE = "https://github.com/unslothai/unsloth/blob/main/";
 const IMAGE_BASE = "https://raw.githubusercontent.com/unslothai/unsloth/main/";
 
 // Inline `](dest)` plus the `[label]: dest` reference form. The destination is
-// either <bracketed> or runs to whitespace or the closing paren. It may hold
-// parentheses when they balance, so `[x]((draft).md)` points at `(draft).md`;
-// one nesting level is all a file name needs, as in the preview's DESTINATION.
+// either <bracketed> or runs to whitespace or the closing paren.
 const NESTED_LABEL = String.raw`((?:[^[\]\\]|\\.|\[(?:[^[\]\\]|\\.)*\])*)`;
-const BALANCED_DESTINATION = String.raw`(?:\\.|[^\s()]|\((?:\\.|[^\s()])*\))*`;
-const PLAIN_DESTINATION = String.raw`(?:\\.|[^\s()])*`;
+const DESTINATION_CHAR = String.raw`\\.|[^\s()]`;
+// A destination may hold parentheses while they balance, and a path may nest
+// them, so `[x](((draft)).md)` points at `((draft)).md`. An expression cannot
+// count, so the pairs are unrolled to the depth cmark stops counting at, which
+// is the depth GitHub renders.
+const MAX_DESTINATION_NESTING = 32;
+
+/** A balanced parenthesised run nested up to `depth` levels deep. */
+function nestedParens(depth: number): string {
+  let group = String.raw`\((?:${DESTINATION_CHAR})*\)`;
+  for (let left = depth - 1; left > 0; left -= 1) {
+    group = String.raw`\((?:${DESTINATION_CHAR}|${group})*\)`;
+  }
+  return group;
+}
+
+const BALANCED_DESTINATION = String.raw`(?:${DESTINATION_CHAR}|${nestedParens(MAX_DESTINATION_NESTING)})*`;
+const PLAIN_DESTINATION = String.raw`(?:${DESTINATION_CHAR})*`;
 // A balanced pair counts only while a `)` or a title still closes the link
 // after it. Otherwise the paren in `[x](a(b.md)` is the closer, which is how
 // CommonMark reads it, and swallowing it would invent a link across lines.
@@ -139,6 +155,23 @@ function maskComments(line: string, inComment: boolean): [string, boolean] {
     index = close + COMMENT_CLOSE.length;
   }
   return [out, false];
+}
+
+/**
+ * Whether `line` is written outside the container an open block belongs to. A
+ * fence and an HTML block hold no lazy continuation line, so content to the
+ * left of the item, or outside the quote, ends the block with its container.
+ */
+function leavesContainer(
+  line: string,
+  quotes: number,
+  column: number,
+  blockQuotes: number,
+): boolean {
+  if (quotes < blockQuotes) {
+    return true;
+  }
+  return column > 0 && !!line.trim() && indentWidth(line) < column;
 }
 
 /** True if `line` starts a CommonMark type 6 or type 7 HTML block. */
@@ -263,11 +296,15 @@ function classify(lines: string[]): Classified {
   const definition = new Set<number>();
   const masked: string[] = [];
   let openFence: string | null = null;
-  // Content column of the list item an open fence belongs to, 0 at document
-  // level. A fence is scoped to its container, so the item's end closes it.
-  let fenceColumn = 0;
   let inRawHtml = false;
   let inHtmlBlock = false;
+  // Where the open block was written: the content column of the list item it
+  // belongs to, 0 at document level, and the blockquotes it sits inside. Only
+  // one of the three is ever open, and none of them holds a lazy continuation
+  // line, so a line written to the left of the item or outside the quote ends
+  // the block along with its container instead of reading as more content.
+  let blockColumn = 0;
+  let blockQuotes = 0;
   let inComment = false;
   let inCode = false;
   let afterParagraph = false;
@@ -281,6 +318,16 @@ function classify(lines: string[]): Classified {
   const track = (structural: string, above: QuoteState): void => {
     lists = openLists(structural, lists, afterParagraph, above.quoted);
   };
+  // Where a block just opened sits, read after the opener closed the items it
+  // is dedented out of, so it belongs to the container it is really in.
+  const startBlock = (quotes: number): void => {
+    blockColumn = lists.columns.at(-1) ?? 0;
+    blockQuotes = quotes;
+  };
+  const endBlock = (): void => {
+    blockColumn = 0;
+    blockQuotes = 0;
+  };
 
   lines.forEach((original, index) => {
     const start = offset;
@@ -290,24 +337,39 @@ function classify(lines: string[]): Classified {
     // that returns early leaves no quoted paragraph open behind it.
     const above = quote;
     quote = NO_QUOTE;
-    // A fence inside a list item runs only to the end of that item, so a line
-    // dedented out of the item closes both. Lazy continuation cannot reach
-    // into a fence, so any content to the left of the item ends it.
+    // A fence or an HTML block runs only to the end of the container it was
+    // written in, so a line dedented out of that item or written outside that
+    // quote closes both.
+    const quotes = quoteDepth(original);
+    let inBlock = openFence !== null || inRawHtml || inHtmlBlock;
     if (
-      openFence !== null &&
-      fenceColumn > 0 &&
-      original.trim() &&
-      indentWidth(original) < fenceColumn
+      inBlock &&
+      leavesContainer(original, quotes, blockColumn, blockQuotes)
     ) {
       openFence = null;
-      fenceColumn = 0;
+      inRawHtml = false;
+      inHtmlBlock = false;
+      endBlock();
+      inBlock = false;
     }
+    // Read from the container the line is written in, so a fence three columns
+    // past a nested bullet or behind a quote marker still opens one. A block
+    // already open keeps only its own quote stripped, or a deeper marker in its
+    // content would read as a closer.
+    const container = containerContent(
+      original,
+      lists,
+      inBlock ? blockQuotes : quotes,
+    );
     // A comment cannot open a fence and a fence hides a comment opener, so
     // resolve them in that order or a hidden delimiter opens a phantom fence.
-    const fenceSource = inComment ? null : FENCE.exec(original);
+    const fenceSource = inComment ? null : FENCE.exec(container);
     if (inRawHtml) {
       track("", above);
-      inRawHtml = !RAW_HTML_CLOSE.test(original);
+      inRawHtml = !RAW_HTML_CLOSE.test(container);
+      if (!inRawHtml) {
+        endBlock();
+      }
       masked.push(" ".repeat(original.length));
       afterParagraph = false;
       return;
@@ -315,8 +377,12 @@ function classify(lines: string[]): Classified {
     if (inHtmlBlock) {
       track("", above);
       // Only a blank line ends a type 6 or 7 block, so nothing inside one is
-      // a fence or a link.
-      inHtmlBlock = !!original.trim();
+      // a fence or a link. A quote marker on its own holds nothing, so the
+      // block written under it ends there too.
+      inHtmlBlock = !!container.trim();
+      if (!inHtmlBlock) {
+        endBlock();
+      }
       masked.push(" ".repeat(original.length));
       afterParagraph = false;
       return;
@@ -336,9 +402,7 @@ function classify(lines: string[]): Classified {
           afterParagraph = true;
           return;
         }
-        // Taken after the opener closed the items it is dedented out of, so
-        // the fence belongs to the item it is really written inside.
-        fenceColumn = lists.columns.at(-1) ?? 0;
+        startBlock(quotes);
       } else if (
         // A closer matches the opening character and carries nothing after it.
         marker[0] === openFence[0] &&
@@ -346,7 +410,7 @@ function classify(lines: string[]): Classified {
         !NON_SPACE.test(fence[2] ?? "")
       ) {
         openFence = null;
-        fenceColumn = 0;
+        endBlock();
       }
       masked.push(" ".repeat(original.length));
       afterParagraph = false;
@@ -364,11 +428,13 @@ function classify(lines: string[]): Classified {
     // Only now, outside every fence, does a comment hide what follows.
     const [line, stillInComment] = maskComments(original, inComment);
     inComment = stillInComment;
+    // The same container reading as above, now that the comments are masked.
+    const visible = containerContent(line, lists, quotes);
     // Taken before an HTML opener is hidden: it renders as nothing, but its
     // indentation still closes a list item it sits to the left of. A comment
     // or a <pre> keeps only its column, since the text it hides is not
     // Markdown and must not open a list of its own.
-    const opensRaw = RAW_HTML_OPEN.test(line);
+    const opensRaw = RAW_HTML_OPEN.test(visible);
     track(
       !hidden && (opensRaw || !line.trim()) ? hiddenStructure(original) : line,
       above,
@@ -383,13 +449,17 @@ function classify(lines: string[]): Classified {
       }
     }
     if (opensRaw) {
-      inRawHtml = !RAW_HTML_CLOSE.test(line.replace(RAW_HTML_OPEN, ""));
+      inRawHtml = !RAW_HTML_CLOSE.test(visible.replace(RAW_HTML_OPEN, ""));
+      if (inRawHtml) {
+        startBlock(quotes);
+      }
       masked.push(" ".repeat(line.length));
       afterParagraph = false;
       return;
     }
-    if (line.trim() && opensHtmlBlock(line, afterParagraph)) {
+    if (visible.trim() && opensHtmlBlock(visible, afterParagraph)) {
       inHtmlBlock = true;
+      startBlock(quotes);
       masked.push(" ".repeat(line.length));
       afterParagraph = false;
       return;
