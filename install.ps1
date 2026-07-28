@@ -2438,27 +2438,21 @@ exit 0
             }
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
-            # Windows on ARM has no PyTorch. Measured with uv against
-            # download.pytorch.org/whl/cpu and PyPI for aarch64-pc-windows-msvc /
-            # cp313: torch, torchvision and torchaudio all resolve to nothing.
-            # Without this we burn three uv retries on an unsatisfiable resolution
-            # and report a bare "Failed to install PyTorch", reading as a network
-            # fault rather than a platform upstream does not build for.
-            if ((Get-TauriDiagArch) -eq "arm64") {
-                Write-Host "[ERROR] PyTorch does not publish Windows ARM64 wheels" -ForegroundColor Red
-                substep "torch, torchvision and torchaudio ship win_amd64 and Linux"
-                substep "wheels only, so the training and GPU inference stack cannot"
-                substep "be installed on Windows on ARM. This is an upstream gap, not"
-                substep "a problem with this machine."
-                substep "GGUF chat and inference do work here (llama.cpp publishes a"
-                substep "windows-arm64 prebuilt). Re-run with --no-torch to install"
-                substep "that path. irm | iex cannot forward flags, so for the web"
-                substep "install set the env var instead:"
-                substep "  `$env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex"
-                substep "From a downloaded copy of this script:"
-                substep "  .\install.ps1 --no-torch"
-                return (Exit-InstallFailure "PyTorch has no Windows ARM64 wheels; re-run with --no-torch" 1)
-            }
+            # Windows on ARM: torchaudio only. Counted against
+            # download.pytorch.org/whl/cpu: torch 42 win_arm64 wheels, torchvision 60,
+            # torchaudio 0 (PyTorch has shipped Arm-native Windows builds since April
+            # 2025). Aborting the whole install here would block a platform that mostly
+            # works, so drop the one unsatisfiable pin instead.
+            #
+            # Ask the interpreter uv will resolve for, not the PowerShell host: an x64
+            # CPython under emulation gets working win_amd64 wheels on an ARM64 box, and
+            # powershell.exe inherits PROCESSOR_ARCHITECTURE from its parent. An
+            # unreadable platform falls through to the normal path rather than changing
+            # a resolution that may well be satisfiable.
+            $VenvPlatform = ""
+            try {
+                $VenvPlatform = (& $VenvPython -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
+            } catch { $VenvPlatform = "" }
             substep "installing PyTorch ($(Remove-IndexUrlCredentials $TorchIndexUrl))..."
             # Bound the companions to the capped torch on EVERY index, cu<digits>
             # families included: torchaudio 2.11 dropped its exact torch pin from
@@ -2466,7 +2460,13 @@ exit 0
             # resolve a mismatched 2.11.0 build. Mirrors install.sh.
             $_pinVisionSpec = "torchvision>=0.19,<0.26.0"
             $_pinAudioSpec = "torchaudio>=2.4,<2.11.0"
-            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" $_pinVisionSpec $_pinAudioSpec --default-index $TorchIndexUrl }
+            $_torchSpecs = @("torch>=2.4,<2.11.0", $_pinVisionSpec, $_pinAudioSpec)
+            if ($VenvPlatform -eq "win-arm64") {
+                substep "windows on arm: skipping torchaudio (upstream publishes no"
+                substep "win_arm64 wheel); torch and torchvision install normally."
+                $_torchSpecs = @("torch>=2.4,<2.11.0", $_pinVisionSpec)
+            }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython @_torchSpecs --default-index $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
