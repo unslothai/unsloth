@@ -1508,14 +1508,16 @@ def test_a_failed_fetch_keeps_retry_reachable():
     reports as ready. A failed fetch is reported as error and is retryable, and on
     desktop the fallback is the updater's static install blurb, so taking it there
     replaced the Retry button with generic text until the cache expired."""
-    src = " ".join(PANEL.read_text(encoding = "utf-8").split())
+    src = " ".join(PANEL.read_text(encoding="utf-8").split())
     assert 'notes?.matched ? notes.markdown : state === "error" ? null' in src
     # NotesStatus is the only thing that renders retry, and it is the else of the
     # markdown branch, so an error must not produce markdown.
     assert "{markdown ? (" in src
     assert "retry={retry}" in src
 
-    hook = " ".join((FRONTEND / "hooks" / "use-release-notes.ts").read_text(encoding = "utf-8").split())
-    assert "const failed = !next || (!next.matched && next.error !== null);" in hook, (
-        "the distinction this relies on"
+    hook = " ".join(
+        (FRONTEND / "hooks" / "use-release-notes.ts").read_text(encoding="utf-8").split()
     )
+    assert (
+        "const failed = !next || (!next.matched && next.error !== null);" in hook
+    ), "the distinction this relies on"
