@@ -130,6 +130,25 @@ assert_contains "install proceeds"                       "$_out" "RC=0"
 assert_contains "reports everything found"               "$_out" "all system dependencies found"
 assert_not_contains "no prebuilt fallback warning"       "$_out" "using prebuilt llama.cpp"
 
+echo "=== apt present: git is auto-installed, because triton_kernels needs it ==="
+# Regression: making git optional without this left ubuntu root/arm-root failing at
+# "6/14 triton kernels", whose requirement is a git+https URL.
+rm -f "$_BIN"/*
+_mk curl 'exit 0'
+_mk apt-get 'exit 0'
+_out="$(_run_gate false)"
+assert_contains "install proceeds"                       "$_out" "RC=0"
+assert_contains "apt is asked for git"                   "$_out" "git"
+assert_contains "apt is actually called"                 "$_out" "APT_CALLED"
+
+echo "=== no apt and no git: warn about the triton skip, do not fail ==="
+rm -f "$_BIN"/*
+_mk curl 'exit 0'
+_out="$(_run_gate false)"
+assert_contains "install proceeds"                       "$_out" "RC=0"
+assert_contains "names the consequence of no git"        "$_out" "triton kernels"
+assert_not_contains "does not call it required to run"   "$_out" "is required"
+
 echo "=== --local without git: must fail loudly (matches macOS) ==="
 rm -f "$_BIN"/*
 _mk curl 'exit 0'

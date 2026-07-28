@@ -3139,16 +3139,21 @@ def install_python_stack() -> int:
         )
 
     # 5. Triton kernels (no-deps, from source). Skip on Windows and macOS
-    #    (no support).
+    #    (no support), and on any machine without git: the requirement is a
+    #    git+https URL, so pip cannot fetch it. These are a training speedup, not
+    #    a boot requirement, so warn and continue rather than fail the install.
     if not IS_WINDOWS and not IS_MACOS:
-        _progress("triton kernels")
-        pip_install(
-            "Installing triton kernels",
-            "--no-deps",
-            "--no-cache-dir",
-            req = REQ_ROOT / "triton-kernels.txt",
-            constrain = False,
-        )
+        if shutil.which("git") is None:
+            _safe_print("   git not found -- skipping triton kernels (training speedup only)")
+        else:
+            _progress("triton kernels")
+            pip_install(
+                "Installing triton kernels",
+                "--no-deps",
+                "--no-cache-dir",
+                req = REQ_ROOT / "triton-kernels.txt",
+                constrain = False,
+            )
 
     if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
         _progress("flash-attn")

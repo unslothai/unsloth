@@ -1982,18 +1982,25 @@ _maybe_reroute_strixhalo_to_2404 || true
 # Homebrew install). Linux keeps requiring them; its package manager has them.
 tauri_log "STEP" "Checking system dependencies"
 
-# Without the Xcode CLT, /usr/bin/git exists but is a stub that errors and pops a
-# GUI dialog, so `command -v git` answers the wrong question. Run it instead.
+# A working git, as opposed to a git that merely exists. On a Mac without the Xcode
+# Command Line Tools, /usr/bin/git IS present -- it is a stub that errors with
+# "invalid active developer path" and pops a GUI dialog. So `command -v git`
+# answers the wrong question here; only running it tells the truth.
 _has_working_git() {
     command -v git >/dev/null 2>&1 || return 1
     git --version >/dev/null 2>&1
 }
 
-# The consumer install needs no toolchain: uv, CPython, llama.cpp, whisper.cpp and
-# Node all arrive prebuilt, and triton is skipped on macOS. Requiring the Xcode CLT
-# blocked every new Mac over tooling nothing used. Only --local needs git, for the
-# unsloth-zoo git+https URL. A function so tests/sh can extract it; the old inline
-# form was untestable, which is why this shipped broken.
+# macOS system-dependency check. A function, not inline code, so tests/sh can extract
+# and exercise it the way tests/sh/test_mac_intel_compat.sh does -- the old inline
+# form was untestable, which is why this gate shipped broken.
+#
+# The consumer install needs NO developer toolchain: uv arrives as a prebuilt binary,
+# CPython comes from uv's managed python-build-standalone, llama.cpp and whisper.cpp
+# are prebuilt downloads, Node is a pinned nodejs.org archive, and triton is skipped
+# on macOS. Requiring Xcode CLT here therefore blocked every brand-new Mac for a
+# toolchain nothing downstream used. Only `--local` genuinely needs git, because it
+# installs unsloth-zoo from a git+https URL.
 _check_macos_deps() {
     _clt_missing=false
     xcode-select -p >/dev/null 2>&1 || _clt_missing=true
@@ -2012,7 +2019,8 @@ _check_macos_deps() {
     fi
 
     if [ "$_clt_missing" = true ]; then
-        # Not fatal. Firing a GUI dialog and exiting is what stranded clean Macs.
+        # Not fatal: nothing on the consumer path needs it. Say so plainly instead of
+        # firing a GUI dialog and exiting, which is what stranded clean Macs.
         step "deps" "no Xcode Command Line Tools (not required)" "$C_WARN"
         substep "Unsloth installs prebuilt binaries and wheels, so no compiler is needed."
         substep "Install them only for a llama.cpp source build: xcode-select --install"
@@ -2027,24 +2035,35 @@ _check_macos_deps() {
     return 0
 }
 
-# Same split as macOS. Only a download transport is required: cmake, gcc and the
-# libcurl headers exist solely for a llama.cpp source build, which the consumer path
-# never does (unslothai/llama.cpp publishes linux-x64 and linux-arm64 prebuilts for
-# cpu, cuda12, cuda13, rocm and vulkan). Requiring them made every non-apt distro a
-# hard exit 1 over unused tooling, exactly as the macOS gate did.
+# Linux/WSL system-dependency check. Same split as macOS, and a function for the same
+# reason: tests/sh can extract it, the old inline form could not be reached.
+#
+# Only a download transport is genuinely required. cmake, gcc and the libcurl headers
+# exist solely for a llama.cpp SOURCE build, and the consumer path never does one --
+# unslothai/llama.cpp publishes linux-x64 and linux-arm64 prebuilts covering cpu,
+# cuda12, cuda13, rocm and vulkan. Requiring them turned every non-apt distro into a
+# hard exit 1 (the Fedora/Arch/openSUSE message below) for tooling nothing downstream
+# used, which is the same defect the macOS Xcode CLT gate had. git follows macOS too:
+# needed only for --local, which installs unsloth-zoo from a git+https URL.
 _check_linux_deps() {
     _transport_missing=false
     if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
         _transport_missing=true
     fi
 
-    # Source-build-only tooling. Absence is a warning, never a stop.
+    # Not required to boot, but wanted when we can get them: git fetches the
+    # triton_kernels git+https requirement (a training speedup, skipped without it),
+    # the rest are for an optional llama.cpp source build. Auto-installed on apt,
+    # a warning everywhere else, never a stop.
     _optional_missing=""
     command -v cmake       >/dev/null 2>&1 || _optional_missing="$_optional_missing cmake"
+    _has_working_git                       || _optional_missing="$_optional_missing git"
     command -v gcc         >/dev/null 2>&1 || _optional_missing="$_optional_missing build-essential"
     command -v curl-config >/dev/null 2>&1 || _optional_missing="$_optional_missing libcurl4-openssl-dev"
-    # Parameter expansion, not sed: this runs before anything is installed, and on a
-    # minimal image a failed $(... | sed ...) yields "" -> "all dependencies found".
+    # Parameter expansion, not `sed`: this gate runs before anything is installed, and
+    # on a minimal container image sed may not exist. A failed `$(... | sed ...)` yields
+    # the empty string, which would report "all system dependencies found" on a machine
+    # that has none of them.
     _optional_missing="${_optional_missing# }"
 
     if [ "$STUDIO_LOCAL_INSTALL" = true ] && ! _has_working_git; then
@@ -2056,8 +2075,8 @@ _check_linux_deps() {
         return 1
     fi
 
-    # The one fatal case: nothing can be downloaded. apt first, the family we can
-    # drive unattended.
+    # The one genuinely fatal case: nothing can be downloaded. Try apt first, since
+    # that is the distro family we can drive unattended.
     if [ "$_transport_missing" = true ]; then
         if command -v apt-get >/dev/null 2>&1; then
             echo ""
@@ -2077,10 +2096,25 @@ _check_linux_deps() {
         fi
     fi
 
+    # Try apt for the optional set too. Nothing here is fatal, so a failure only
+    # costs the features named below, but on Debian/Ubuntu we can just get them.
+    if [ -n "$_optional_missing" ] && command -v apt-get >/dev/null 2>&1; then
+        step "deps" "installing optional build tools: $_optional_missing" "$C_DIM"
+        _smart_apt_install $_optional_missing || true
+        _optional_missing=""
+        command -v cmake       >/dev/null 2>&1 || _optional_missing="$_optional_missing cmake"
+        _has_working_git                       || _optional_missing="$_optional_missing git"
+        command -v gcc         >/dev/null 2>&1 || _optional_missing="$_optional_missing build-essential"
+        command -v curl-config >/dev/null 2>&1 || _optional_missing="$_optional_missing libcurl4-openssl-dev"
+        _optional_missing="${_optional_missing# }"
+    fi
+
     if [ -n "$_optional_missing" ]; then
         step "deps" "using prebuilt llama.cpp (missing: $_optional_missing)" "$C_WARN"
-        substep "Not required: Unsloth downloads a prebuilt inference engine."
-        substep "Install them only for a llama.cpp source build."
+        substep "Not required to run: Unsloth downloads a prebuilt inference engine."
+        case " $_optional_missing " in
+            *" git "*) substep "Without git the triton kernels training speedup is skipped." ;;
+        esac
     else
         step "deps" "all system dependencies found"
     fi
