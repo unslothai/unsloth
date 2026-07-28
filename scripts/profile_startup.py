@@ -47,6 +47,7 @@ import socket
 import statistics
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -85,6 +86,17 @@ def profile_imports(python: str, top: int = 15) -> dict:
             rows.append((int(m.group(1)), int(m.group(2)), m.group(4).strip()))
     if not rows:
         return {"ok": False, "error": (proc.stderr or proc.stdout)[-2000:]}
+    if proc.returncode != 0:
+        # -X importtime still prints a row for every module that finished
+        # importing before the failure -- including `main` itself when its own
+        # body raises. The surviving rows therefore describe a partial graph,
+        # and the largest cumulative one need not be `import main` at all, so
+        # reporting a total here would publish a plausible but wrong number.
+        return {
+            "ok": False,
+            "error": (proc.stderr or proc.stdout)[-2000:],
+            "partial_rows": len(rows),
+        }
 
     by_cum = sorted(rows, key = lambda r: -r[1])
     self_by_pkg: dict[str, int] = {}
@@ -93,7 +105,7 @@ def profile_imports(python: str, top: int = 15) -> dict:
         self_by_pkg[pkg] = self_by_pkg.get(pkg, 0) + self_us
 
     return {
-        "ok": proc.returncode == 0,
+        "ok": True,
         # The largest cumulative figure is the whole graph: `import main` itself.
         "total_seconds": round(by_cum[0][1] / 1e6, 3),
         "top_cumulative": [
@@ -112,6 +124,7 @@ def profile_launch(
 ) -> dict:
     """Spawn the backend the way the desktop app does and time it to first 200."""
     log_lines: list[str] = []
+    first_byte: list[float] = []
     t0 = time.perf_counter()
     proc = subprocess.Popen(
         [bin_path, "studio", "--api-only", "-H", "127.0.0.1", "-p", str(port)],
@@ -121,15 +134,26 @@ def profile_launch(
         text = True,
         bufsize = 1,
     )
-    t_first_byte = None
+
+    def _drain() -> None:
+        # Has to run concurrently with the health polling, for two reasons: the
+        # first read is what timestamps the spawn phase, and nothing else reads
+        # this pipe, so a backend that logs more than the OS pipe buffer (64 KiB
+        # on Linux) would block in write() before it ever binds the port.
+        for line in proc.stdout:
+            if not first_byte:
+                first_byte.append(time.perf_counter() - t0)
+            log_lines.append(line.rstrip("\n"))
+
+    reader = threading.Thread(target = _drain, daemon = True)
+    reader.start()
+
     t_healthz = None
     deadline = t0 + timeout_s
     try:
         while time.perf_counter() < deadline:
             if proc.poll() is not None:
                 break
-            # Drain whatever is available without blocking the health polling; a
-            # full readline() would stall until the backend happens to log.
             if t_healthz is None:
                 for url in (
                     f"http://127.0.0.1:{port}/api/health",
@@ -148,28 +172,50 @@ def profile_launch(
     finally:
         proc.terminate()
         try:
-            out, _ = proc.communicate(timeout = 30)
+            # Safe to wait() rather than communicate(): the reader thread is
+            # already draining the pipe, so the child cannot block on write().
+            proc.wait(timeout = 30)
         except subprocess.TimeoutExpired:
             proc.kill()
-            out, _ = proc.communicate()
-        if out:
-            log_lines = out.splitlines()
-            if t_first_byte is None and log_lines:
-                # Cannot time the first byte retroactively; report None rather than
-                # a number that would be wrong.
-                t_first_byte = None
+            proc.wait()
+        reader.join(timeout = 10)
 
+    t_first_byte = first_byte[0] if first_byte else None
     lifespan_ms = None
     for line in log_lines:
         m = re.search(r"lifespan startup completed in ([\d.]+)ms", line)
         if m:
             lifespan_ms = float(m.group(1))
     return {
+        "spawn_seconds": round(t_first_byte, 3) if t_first_byte is not None else None,
         "healthz_seconds": round(t_healthz, 3) if t_healthz is not None else None,
         "lifespan_ms": lifespan_ms,
         "reached_healthz": t_healthz is not None,
         "log_tail": log_lines[-25:],
     }
+
+
+def python_version_of(python: str) -> str:
+    """Version of the interpreter that runs the imports, not the one running us.
+
+    The workflow deliberately points --python at the installed Studio venv while
+    the script itself runs under the runner's system python, so reporting
+    platform.python_version() would label the timings with the wrong version.
+    """
+    if python == sys.executable:
+        return platform.python_version()
+    try:
+        proc = subprocess.run(
+            [python, "-c", "import platform; print(platform.python_version())"],
+            capture_output = True,
+            text = True,
+            timeout = 60,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "unknown"
 
 
 def find_bin() -> str | None:
@@ -216,14 +262,14 @@ def main(argv: list[str]) -> int:
     report: dict = {
         "platform": platform.system().lower(),
         "machine": platform.machine(),
-        "python": platform.python_version(),
+        "python": python_version_of(a.python),
         "cpu_count": os.cpu_count(),
     }
 
     print("== import graph ==")
     report["imports"] = profile_imports(a.python)
     imp = report["imports"]
-    if imp.get("ok") or imp.get("total_seconds"):
+    if imp.get("ok"):
         print(f"  import main: {imp['total_seconds']}s")
         for row in imp["top_cumulative"][:8]:
             print(f"    {row['seconds']:7.3f}s  {row['module']}")
@@ -254,6 +300,7 @@ def main(argv: list[str]) -> int:
             got = [r["healthz_seconds"] for r in runs if r["healthz_seconds"] is not None]
             report["launch"] = {
                 "runs": runs,
+                "failed_runs": sum(1 for r in runs if not r["reached_healthz"]),
                 "healthz_median_seconds": round(statistics.median(got), 3) if got else None,
                 "healthz_max_seconds": round(max(got), 3) if got else None,
             }
@@ -267,7 +314,19 @@ def main(argv: list[str]) -> int:
         print(f"\nwrote {a.json}")
 
     if a.max_healthz_seconds is not None:
-        med = (report.get("launch") or {}).get("healthz_median_seconds")
+        launch = report.get("launch") or {}
+        med = launch.get("healthz_median_seconds")
+        failed = launch.get("failed_runs") or 0
+        if failed:
+            # A launch that never became healthy has to fail the budget, not be
+            # filtered out of it: dropping it would leave the median and max
+            # computed from the surviving (faster) runs, and dropping all of
+            # them would make the gate exit 0 no matter how broken startup is.
+            print(
+                f"::error::startup regression: {failed} of {len(launch.get('runs') or [])} "
+                f"launches never became healthy within the timeout"
+            )
+            return 1
         if med is None:
             print("::warning::no healthz measurement; not enforcing the budget")
         elif med > a.max_healthz_seconds:

@@ -74,10 +74,16 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p logs
+          # --local is load-bearing: without it install.sh resolves
+          # `unsloth>=2026.7.5` from PyPI, so the venv gets the PUBLISHED backend
+          # and the launch phase measures released code. Every healthz/lifespan
+          # number would then be identical no matter what a PR does to main.py,
+          # run.py or routes/**. --local overlays the checkout editable, and
+          # pyproject ships studio.backend*, so the profiled server is this diff.
           if [ "${{ runner.os }}" = "Windows" ]; then
-            pwsh -NoProfile -File ./install.ps1 2>&1 | tee logs/install.log
+            pwsh -NoProfile -File ./install.ps1 --local 2>&1 | tee logs/install.log
           else
-            bash install.sh 2>&1 | tee logs/install.log
+            bash install.sh --local 2>&1 | tee logs/install.log
           fi
 
       - name: Profile startup
@@ -108,13 +114,18 @@ jobs:
           d = json.load(open(sys.argv[1]))
           print(f"### {d['platform']} / {d['machine']} (py {d['python']}, {d['cpu_count']} cpu)\n")
           imp = d.get("imports", {})
-          if imp.get("total_seconds"):
+          # Gate on ok, not on total_seconds: a failed `import main` still leaves
+          # importtime rows behind, so total_seconds can be present and wrong.
+          if imp.get("ok"):
               print(f"**`import main`: {imp['total_seconds']}s**\n")
               print("| package | self ms |")
               print("|---|---:|")
               for k, v in list(imp.get("self_by_package_ms", {}).items())[:8]:
                   print(f"| {k} | {v} |")
               print()
+          else:
+              print("**`import main` failed - no valid import profile**\n")
+              print("```\n" + (imp.get("error") or "")[-1500:] + "\n```\n")
           lau = d.get("launch") or {}
           if lau.get("healthz_median_seconds") is not None:
               print(f"**time to a healthy port: {lau['healthz_median_seconds']}s median, "
