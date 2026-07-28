@@ -1341,9 +1341,9 @@ def test_the_download_panel_can_shrink_inside_the_capped_stack():
     header and actions are fixed, rather than by the download list, which
     scrolls. Only the shared-stack branch needs it; standalone is positioned
     fixed and is not a flex item at all."""
-    panel = (
-        FRONTEND / "features/hub/download-manager/download-manager-panel.tsx"
-    ).read_text(encoding = "utf-8")
+    panel = (FRONTEND / "features/hub/download-manager/download-manager-panel.tsx").read_text(
+        encoding="utf-8"
+    )
     assert 'positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end"' in panel
-    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding="utf-8")
     assert "max-h-[calc(100dvh_-_2rem)]" in provider, "the cap this has to absorb"
