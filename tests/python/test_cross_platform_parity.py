@@ -912,9 +912,9 @@ class TestAmdBnbFloorParity:
         still tell the user it leaves 4-bit decode broken on ROCm."""
         for path in (INSTALL_SH, STACK_PY):
             text = path.read_text(encoding = "utf-8")
-            assert "4-bit decode broken on ROCm" not in text, (
-                f"{path.name} still reports the repaired PyPI fallback as broken"
-            )
-            assert "4-bit decode will be broken on ROCm" not in text, (
-                f"{path.name} still reports the repaired PyPI fallback as broken"
-            )
+            assert (
+                "4-bit decode broken on ROCm" not in text
+            ), f"{path.name} still reports the repaired PyPI fallback as broken"
+            assert (
+                "4-bit decode will be broken on ROCm" not in text
+            ), f"{path.name} still reports the repaired PyPI fallback as broken"
