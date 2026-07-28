@@ -77,9 +77,8 @@ validate_extra_args = _lsa.validate_extra_args
         ["--reasoning-format", "deepseek"],
         ["-rea", "auto"],
         # Soft-managed: user flags last-wins over Unsloth's auto-set version.
-        # --parallel / -np / --n-parallel are hard-denied (KV-cache + slot
-        # count would desync); use the Studio run settings (Parallel Slots /
-        # LoadRequest.n_parallel) or `unsloth studio run --parallel N` instead.
+        # --parallel / -np / --n-parallel are hard-denied (KV-cache + slot count
+        # would desync); use the Parallel Slots run setting instead.
         ["-c", "131072"],
         ["--ctx-size", "8192"],
         ["--flash-attn", "off"],
@@ -129,8 +128,7 @@ def test_non_flag_token_passes_through():
 @pytest.mark.parametrize(
     "denied",
     [
-        # Parallel slots -- owned by the typer --parallel flag and the
-        # per-load LoadRequest.n_parallel field.
+        # Parallel slots -- owned by typer --parallel and LoadRequest.n_parallel.
         "-np",
         "--parallel",
         "--n-parallel",
@@ -203,10 +201,9 @@ def test_denylist_rejects_all_aliases(denied):
 @pytest.mark.parametrize(
     "args,offending",
     [
-        # Pass-through --parallel would last-wins-override the real slot
-        # count while Unsloth's KV-cache fit and committed slot bookkeeping
-        # stay at the per-load resolved value (LoadRequest.n_parallel, else
-        # the typer --parallel default) -- plan vs. process disagree.
+        # Pass-through --parallel would last-wins-override the real slot count
+        # while the KV-cache fit and slot bookkeeping stay at the resolved value
+        # (LoadRequest.n_parallel, else the typer default): plan vs. process.
         (["--parallel", "8"], "--parallel"),
         (["--parallel=8"], "--parallel"),
         (["--n-parallel", "16"], "--n-parallel"),
@@ -216,8 +213,7 @@ def test_denylist_rejects_all_aliases(denied):
         # `["-np8"]` must still resolve to managed.
         (["-np8"], "-np"),
         (["-np64"], "-np"),
-        # Out-of-range values that would bypass the shared PARALLEL_MIN/MAX
-        # bounds (typer guard + LoadRequest.n_parallel validation).
+        # Out-of-range values that would bypass the PARALLEL_MIN/MAX bounds.
         (["--parallel", "999"], "--parallel"),
         (["-np", "0"], "-np"),
         (["-np999"], "-np"),
@@ -304,8 +300,7 @@ def test_is_managed_flag_true_for_denied():
     assert is_managed_flag("--api-key") is True
     assert is_managed_flag("-m") is True
     assert is_managed_flag("--model") is True
-    # Parallel slots owned by the typer --parallel flag and the per-load
-    # LoadRequest.n_parallel field.
+    # Parallel slots owned by typer --parallel and LoadRequest.n_parallel.
     assert is_managed_flag("--parallel") is True
     assert is_managed_flag("--n-parallel") is True
     assert is_managed_flag("-np") is True

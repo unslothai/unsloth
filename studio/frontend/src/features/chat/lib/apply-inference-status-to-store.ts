@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Barrel import (the lint rule's requirement); the cycle it forms with
-// model-picker is fine because the call happens at runtime, not module eval.
+// Barrel import (lint rule); the model-picker cycle is fine because the call
+// happens at runtime, not module eval.
 import { resolveInitialConfig } from "@/features/model-picker";
 import { getInferenceStatus } from "../api/chat-api";
 import {
@@ -135,7 +135,7 @@ export type ApplyInferenceStatusOptions = {
    * steady state and the hydration reseed keeps the old quant's baselines. */
   previousGgufVariant?: string | null;
   /** The caller verified the status is the model this tab just picked, so the
-   * per-model slot control it holds belongs to that model and must survive. */
+   * slot control it holds belongs to that model and must survive. */
   readoptingSameModel?: boolean;
 };
 
@@ -208,15 +208,13 @@ export function applyActiveModelStatusToStore(
   // from a stale poll here would clobber the values the load dialog just set.
   const seedLoadParams = !prevState.modelLoading;
   // A model/variant change underneath this tab, as opposed to re-adopting the
-  // model the tab itself just picked (the resident-model pick below an external
-  // provider), where hydratingExistingModel fires on the stale checkpoint but
-  // the slot control holds THIS model's own count. Slot counts cannot stand in
-  // for that check: requested_parallel_slots is "the per-load n_parallel, else
-  // the server-wide default", so the new model can echo the old one's count.
+  // model the tab just picked, where hydratingExistingModel fires on the stale
+  // checkpoint but the control holds THIS model's count. The echo cannot stand
+  // in for the check: a new model can report the old one's count.
   const slotsModelChanged =
     hydratingExistingModel && !options.readoptingSameModel;
-  // This model's remembered slot override, read only while the store is still
-  // unseeded (a fresh mount) so the poll does not touch storage every tick.
+  // This model's remembered override, read only on a fresh store so the poll
+  // does not touch storage every tick.
   const remembered =
     status.is_gguf &&
     prevState.loadedNParallel === null &&
@@ -347,38 +345,32 @@ export function applyActiveModelStatusToStore(
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
-    // Baseline only, never the nParallel control: the echo is the RESOLVED
-    // slot count, and adopting it would pin a blank "follow the server
-    // default" control to an explicit number. The baseline is what the
-    // failed-switch rollback re-sends, so without this seed a rollback after
-    // a tab reload would restore the model at the server default slots.
+    // Baseline only, never the control: the echo is the RESOLVED count and
+    // would pin a blank "server default" control to a number. The rollback
+    // re-sends the baseline, so without this seed a rollback after a tab
+    // reload would restore the model at the server default slots.
     ...(seedLoadParams &&
       status.requested_parallel_slots != null &&
       (prevState.loadedNParallel === null || hydratingExistingModel) && {
         loadedNParallel: status.requested_parallel_slots,
       }),
-    // A slotless active model must not keep the previous GGUF's baseline: the
-    // rollback re-sends it and preset capture would claim slots the model never
-    // used. /status omits the echo entirely for non-GGUF and sends an explicit
-    // null for the diffusion runner, so an absent field on a GGUF is an older
-    // backend and leaves the baseline alone.
+    // A slotless model must not keep the previous GGUF's baseline: the rollback
+    // re-sends it and preset capture would claim slots it never used. /status
+    // omits the echo for non-GGUF and sends an explicit null for diffusion, so
+    // an absent field on a GGUF is an older backend and is left alone.
     ...(seedLoadParams &&
       (status.is_gguf === false || status.requested_parallel_slots === null) && {
         loadedNParallel: null,
       }),
-    // Slots are per-model, so a model/variant change underneath this tab blanks
-    // the control the way performLoad's cross-model reset does. Without it the
-    // previous model's explicit count follows onto the new model, and saving or
-    // reloading there pins it. The baseline above still carries the new model's
-    // resolved count for the rollback.
+    // Per-model, so a change underneath this tab blanks the control the way
+    // performLoad's cross-model reset does, or the previous model's count
+    // follows onto the new one. The baseline above still carries the rollback.
     ...(seedLoadParams && slotsModelChanged && { nParallel: null }),
-    // AFTER that clear, which a first hydration also trips (an empty store has
-    // no checkpoint to match): a browser reload leaves the control blank while
-    // the model runs on a remembered override, so the config form (which
-    // prefers the live store over storage for the ACTIVE model) shows blank and
-    // the next Apply sends null and reloads at the server default, saving the
-    // blank over the override. Only adopted when the running count matches the
-    // remembered one, which proves it is this model's own and not a new pin.
+    // AFTER that clear, which a first hydration also trips: a browser reload
+    // would otherwise leave the control blank while the model runs on a
+    // remembered override, so the form shows blank and the next Apply reloads
+    // at the server default, saving the blank over the override. Adopted only
+    // when the running count matches, which proves it is this model's own.
     ...(seedLoadParams &&
       prevState.loadedNParallel === null &&
       prevState.nParallel === null &&

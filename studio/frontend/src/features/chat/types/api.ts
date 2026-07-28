@@ -66,9 +66,8 @@ export interface LoadModelRequest {
    */
   spec_draft_n_max?: number | null;
   /**
-   * Parallel decode slots for llama-server (--parallel) for this load
-   * (1..64). Omit/null = the server-wide default set at launch. The VRAM
-   * fitter may launch fewer slots to keep the model fully on GPU.
+   * Parallel decode slots for llama-server (--parallel), 1..64. Omit/null =
+   * the launch default. The VRAM fitter may launch fewer to stay on GPU.
    */
   n_parallel?: number | null;
   /**
@@ -208,11 +207,11 @@ export interface LoadModelResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
-  /** Slot count the load was invoked with (per-load n_parallel, else the
-   * server-wide --parallel default). Null for non-GGUF loads. */
+  /** Slots the load was invoked with (else the --parallel default). Null for
+   * non-GGUF loads. */
   requested_parallel_slots?: number | null;
-  /** Serving slots the llama-server actually runs, after any fit-time slot
-   * reduction. Null for non-GGUF loads. */
+  /** Slots llama-server actually runs, after any fit-time reduction. Null for
+   * non-GGUF loads. */
   parallel_slots?: number | null;
 }
 
@@ -275,11 +274,11 @@ export interface InferenceStatusResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
-  /** Slot count the active load was invoked with (per-load n_parallel, else
-   * the server-wide --parallel default). Null when no GGUF model is loaded. */
+  /** Slots the active load was invoked with (else the --parallel default).
+   * Null when no GGUF model is loaded. */
   requested_parallel_slots?: number | null;
-  /** Serving slots the llama-server actually runs, after any fit-time slot
-   * reduction. Null when no GGUF model is loaded. */
+  /** Slots llama-server actually runs, after any fit-time reduction. Null when
+   * no GGUF model is loaded. */
   parallel_slots?: number | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */

@@ -2181,8 +2181,7 @@ class LlamaCppBackend:
         self._effective_context_length: Optional[int] = None
         self._max_context_length: Optional[int] = None
         self._effective_parallel_slots: int = 1
-        # --parallel count the last load was invoked with, before any fit-time
-        # slot reduction (mirrors _requested_n_ctx for the reload dedupe).
+        # --parallel the last load asked for, before any fit-time reduction.
         self._requested_n_parallel: int = 1
         self._chat_template: Optional[str] = None
         self._chat_template_override: Optional[str] = None
@@ -2458,8 +2457,7 @@ class LlamaCppBackend:
 
     def _reset_effective_parallel_slots(self) -> None:
         self._effective_parallel_slots = 1
-        # Requested count shares the effective lifecycle: cleared on unload /
-        # kill so a stale value can't poison the next load's dedupe.
+        # Cleared with the effective count so a stale value can't skew the dedupe.
         self._requested_n_parallel = 1
 
     @staticmethod
@@ -9086,8 +9084,7 @@ class LlamaCppBackend:
                     self._extra_args = list(extra_args)
                     self._extra_args_source = (model_identifier, hf_variant)
                 self._requested_n_ctx = int(n_ctx)
-                # The local n_parallel may have been rebound by the slot
-                # reduction above; the pending snapshot holds the invoked value.
+                # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(_pending_load_kwargs["n_parallel"]))
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
                 # watch this load for a mid-generation crash.
@@ -9566,9 +9563,8 @@ class LlamaCppBackend:
             # A GPU-memory-mode flip (Unsloth / manual) must always reload.
             if self._gpu_memory_mode != gpu_memory_mode:
                 return False
-            # Requested-vs-requested (like n_ctx above): the fitter may launch
-            # fewer slots, so comparing the effective count would reload
-            # forever. The diffusion runner ignores --parallel entirely.
+            # Requested-vs-requested (like n_ctx): comparing the effective count
+            # would reload forever whenever the fitter launched fewer slots.
             if self._requested_n_parallel != max(1, int(n_parallel)):
                 return False
             # Manual: a layer-count change always reloads (covers Auto(-1) <-> a

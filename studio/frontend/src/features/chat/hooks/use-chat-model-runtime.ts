@@ -567,8 +567,7 @@ export function useChatModelRuntime() {
           applyActiveModelStatusToStore(residentStatus, {
             previousCheckpoint: selectedCheckpoint,
             previousGgufVariant,
-            // Id and variant were matched above: the model is unchanged, only
-            // the tab's checkpoint was elsewhere.
+            // Id and variant matched above: same model, only the tab moved.
             readoptingSameModel: true,
           });
           syncModelCapabilities(modelId, residentStatus);
@@ -674,7 +673,7 @@ export function useChatModelRuntime() {
             typeof selection !== "string" ? selection.config : undefined;
           // The outgoing model's slot INTENT, read before the staged config
           // overwrites it: blank means "follow the server default", which the
-          // resolved baseline the rollback re-sends cannot express.
+          // resolved rollback baseline cannot express.
           const previousNParallel = useChatRuntimeStore.getState().nParallel;
           if (pendingLoadConfig) {
             applyPerModelConfigToRuntime(pendingLoadConfig);
@@ -801,8 +800,7 @@ export function useChatModelRuntime() {
             const validateGpuLayers = resetsPerModelSettings
               ? GPU_LAYERS_AUTO
               : loadGpuLayers;
-            // Slots are per-model; the reset re-baselines them to the staged
-            // config (else the server default), like the load below.
+            // Per-model: the reset re-baselines to the staged config, like the load.
             const validateNParallel = resetsPerModelSettings
               ? (pendingLoadConfig?.nParallel ?? null)
               : loadNParallel;
@@ -922,8 +920,8 @@ export function useChatModelRuntime() {
                 loadedSpeculativeType: persistedSpeculativeType,
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
-                // Parallel slots are per-model too; a different model follows
-                // the server default unless its staged config overrides it.
+                // Per-model too: a different model follows the server default
+                // unless its staged config overrides it.
                 nParallel: null,
                 loadedNParallel: null,
                 // Per-model GPU knobs must not follow onto a different model
@@ -1008,8 +1006,7 @@ export function useChatModelRuntime() {
               cache_type_kv: loadKvCacheDtype,
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
-              // GGUF-only, like the compare pane: slots have no meaning for a
-              // transformers load and must not record a phantom override.
+              // GGUF-only: slots mean nothing for a transformers load.
               n_parallel: isGguf ? loadNParallel : null,
               tensor_parallel: loadTensorParallel,
               gpu_memory_mode: loadGpuMemoryMode,
@@ -1061,11 +1058,10 @@ export function useChatModelRuntime() {
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
             );
-            // Slots the load actually committed. Non-GGUF loads never send
-            // them, and the diffusion runner ignores --parallel (the backend
-            // echoes null slots for it), so recording the click-time count on
-            // either would mint a phantom override -- one a saved preset then
-            // carries onto a text GGUF as a real count the user never chose.
+            // Slots the load actually committed. Non-GGUF loads never send them
+            // and the diffusion runner ignores --parallel, so recording the
+            // click-time count on either would mint a phantom override that a
+            // saved preset then carries onto a text GGUF.
             const committedSlots =
               (loadResponse.is_gguf ?? false) &&
               !(loadResponse.is_diffusion ?? false)
@@ -1146,9 +1142,8 @@ export function useChatModelRuntime() {
               loadedSpeculativeType: loadedSpec,
               specDraftNMax: loadResponse.spec_draft_n_max ?? null,
               loadedSpecDraftNMax: loadResponse.spec_draft_n_max ?? null,
-              // Keep the click-time value, not the backend echo: the echo is
-              // the resolved count, and adopting it would pin a blank "follow
-              // the server default" control to an explicit number.
+              // Keep the click-time value: the echo is the resolved count, and
+              // adopting it would pin a blank "server default" control.
               nParallel: committedSlots,
               loadedNParallel: committedSlots,
               customContextLength: keepCustomCtx,
@@ -1280,8 +1275,7 @@ export function useChatModelRuntime() {
                   // model's; the loaded baselines below come from its reload echo.
                   speculativeType: stateBeforeUnload.loadedSpeculativeType ?? null,
                   specDraftNMax: stateBeforeUnload.loadedSpecDraftNMax ?? null,
-                  // Control keeps its blank-or-explicit intent; only the
-                  // baseline takes the resolved count the reload re-sent.
+                  // Control keeps its intent; only the baseline takes the echo.
                   nParallel: previousNParallel,
                   loadedNParallel: stateBeforeUnload.loadedNParallel ?? null,
                   loadedSpeculativeType: rollbackSpeculativeType,

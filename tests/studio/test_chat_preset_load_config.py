@@ -71,8 +71,7 @@ def test_backend_chat_preset_accepts_load_config():
 
 
 def test_preset_load_config_carries_parallel_slots():
-    # The per-load parallel-slots knob participates in presets end-to-end:
-    # captured, clamped on read, applied, and accepted by the extra="forbid"
+    # Captured, clamped on read, applied, and accepted by the extra="forbid"
     # backend model (a missing backend field would 422 every settings sync).
     source = _read("studio/frontend/src/features/chat/presets/preset-load-config.ts")
     assert '| "nParallel"' in source

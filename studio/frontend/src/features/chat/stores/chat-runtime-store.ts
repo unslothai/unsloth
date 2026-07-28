@@ -970,11 +970,10 @@ type ChatRuntimeStore = {
   loadedSpecDraftNMax: number | null;
   /** User --parallel slots override for GGUF loads (null = server default).
    *  Deliberately NOT re-seeded from backend echoes: the echo is the resolved
-   *  count, and adopting it would silently pin a blank "follow the server
-   *  default" control. */
+   *  count and would silently pin a blank control. */
   nParallel: number | null;
-  /** The nParallel value the last successful load sent (null = default);
-   *  rollback re-sends it so a failed switch can't lose the override. */
+  /** Slots the last successful load sent (null = default); the rollback
+   *  re-sends it so a failed switch can't lose the override. */
   loadedNParallel: number | null;
   /** Tensor-parallel split (--split-mode tensor) toggle, GGUF multi-GPU only. */
   tensorParallel: boolean;

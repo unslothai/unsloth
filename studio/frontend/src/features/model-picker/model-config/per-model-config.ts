@@ -39,8 +39,8 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   chatTemplateOverride: null,
 };
 
-// Matches studio/backend/core/inference/llama_server_args.py PARALLEL_MIN/MAX
-// (the LoadRequest.n_parallel bounds). null = follow the server-wide default.
+// Mirrors llama_server_args.py PARALLEL_MIN/MAX (LoadRequest.n_parallel
+// bounds). null = follow the server-wide default.
 export const N_PARALLEL_MIN = 1;
 export const N_PARALLEL_MAX = 64;
 

@@ -1638,8 +1638,8 @@ async function autoLoadSmallestModel(): Promise<{
             gpu_layers: effectiveGpuLayers,
             n_cpu_moe: effectiveNCpuMoe,
             gpu_ids: effectiveGpuIds ?? undefined,
-            // Parallel slots are per-model too; without this the auto-load
-            // silently reverts a remembered override to the server default.
+            // Per-model too: without this the auto-load reverts a remembered
+            // override to the server default.
             n_parallel: config.nParallel ?? null,
           }
         : {}),
@@ -1693,10 +1693,9 @@ async function autoLoadSmallestModel(): Promise<{
         effectiveGpuLayers,
         config.customContextLength ?? null,
       );
-      // Slots this auto-load committed. The diffusion runner ignores --parallel
-      // (the backend echoes null slots for it), so recording a remembered count
-      // there would mint a phantom override a saved preset then carries onto a
-      // text GGUF.
+      // Slots this auto-load committed. The diffusion runner ignores --parallel,
+      // so recording a count there would mint a phantom override that a saved
+      // preset then carries onto a text GGUF.
       const committedSlots = (loadResp.is_diffusion ?? false)
         ? null
         : (config.nParallel ?? null);
@@ -1742,9 +1741,8 @@ async function autoLoadSmallestModel(): Promise<{
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
-        // Slots are GGUF-only and this branch never sends them, so clear the
-        // control and its baseline like the interactive/compare load paths: a
-        // staged override would otherwise be saved for a model it cannot reach.
+        // Slots are GGUF-only and this branch never sends them, so clear both:
+        // a staged override would be saved for a model it cannot reach.
         nParallel: null,
         loadedNParallel: null,
         tensorParallel: loadResp.tensor_parallel ?? false,
@@ -2020,10 +2018,9 @@ async function autoLoadSmallestModel(): Promise<{
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
-        // The request above deliberately omits n_parallel, so clear both: a
-        // staged override left over from a preset would otherwise read as
-        // applied and make the next Apply reload at a count this load never
-        // sent, against a baseline the status seed fills with the default.
+        // The request above omits n_parallel, so clear both: a staged override
+        // left from a preset would read as applied and make the next Apply
+        // reload at a count this load never sent.
         nParallel: null,
         loadedNParallel: null,
         tensorParallel: loadResp.tensor_parallel ?? false,

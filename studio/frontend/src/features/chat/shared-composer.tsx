@@ -1233,9 +1233,8 @@ export function SharedComposer({
             )
           : null;
         // Slots this compare load committed. The diffusion runner ignores
-        // --parallel (the backend echoes null slots for it), so recording the
-        // click-time count would mint a phantom override a saved preset then
-        // carries onto a text GGUF.
+        // --parallel, so recording the click-time count would mint a phantom
+        // override that a saved preset then carries onto a text GGUF.
         const committedSlots =
           targetIsGguf && !(resp.is_diffusion ?? false)
             ? (ownConfig.nParallel ?? null)
@@ -1248,8 +1247,7 @@ export function SharedComposer({
           supportsTools: resp.supports_tools ?? false,
           kvCacheDtype: resp.cache_type_kv ?? null,
           loadedKvCacheDtype: resp.cache_type_kv ?? null,
-          // Click-time value, not the resolved backend echo (see the single-
-          // model load path).
+          // Click-time value, not the resolved echo (see the single-model load).
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
           tensorParallel: resp.tensor_parallel ?? false,

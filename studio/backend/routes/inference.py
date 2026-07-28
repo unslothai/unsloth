@@ -3331,9 +3331,8 @@ def _request_matches_loaded_settings(
     if request.max_seq_length != llama_backend.requested_n_ctx:
         return False
     # Requested-vs-requested for the same reason: the fitter may launch fewer
-    # slots than invoked, and comparing the effective count would reload
-    # forever. The diffusion runner ignores --parallel, so a slots change must
-    # not reload it.
+    # slots than invoked. The diffusion runner ignores --parallel, so a slots
+    # change must not reload it.
     if (
         requested_parallel_slots is not None
         and not llama_backend.is_diffusion
@@ -4760,11 +4759,9 @@ def _guard_chat_load_against_training(
         )
 
     # Size with the slot count that will actually launch, or a load that fits
-    # gets a 409. The diffusion runner never receives --parallel (load_model
-    # hands off to _start_diffusion_server before the slot plumbing), and
-    # load_model clamps a multi-slot request to 1 on an llama-server without
-    # --kv-unified, where every slot gets its own SWA stream. An unclassified
-    # GGUF keeps the requested count, which is the safe side.
+    # gets a 409: the diffusion runner never receives --parallel, and load_model
+    # clamps a multi-slot request to 1 on an llama-server without --kv-unified.
+    # An unclassified GGUF keeps the requested count, which is the safe side.
     if is_gguf and n_parallel > 1:
         if diffusion_kind is True:
             n_parallel = 1
@@ -5318,11 +5315,10 @@ async def _load_model_impl(
         backend = get_inference_backend()
         llama_backend = get_llama_cpp_backend()
 
-        # Resolve the slot count once: the per-load field wins, else the
-        # server-wide --parallel launch default. Used by the dedupe below, the
-        # training-coexistence guard, and the GGUF load kwargs, so every sizing
-        # path sees the value the launch will use. app.state itself is never
-        # mutated: it stays the launch intent / admission fallback. Reached via
+        # Resolve the slot count once (per-load field, else the server-wide
+        # --parallel default) so the dedupe, the training guard and the load
+        # kwargs all size against the value the launch will use. app.state stays
+        # untouched as the launch intent / admission fallback, and is read via
         # getattr because direct callers pass a request without an app.
         _app_state = getattr(getattr(fastapi_request, "app", None), "state", None)
         _n_parallel = (
