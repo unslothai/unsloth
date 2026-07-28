@@ -24,12 +24,11 @@ import pytest
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
-# Not Studio's own runtime source. Shipped plugins under plugins/*/src are,
-# so only their build artifacts are skipped.
+# Not runtime source. Shipped plugins under plugins/*/src are, so only builds are skipped.
 _SKIPPED_DIRS = ("node_modules", "build", "tests", "__pycache__")
 
-# Matching Path.open()'s signature is what tells it apart from other libraries'
-# open(), e.g. fitz.open(stream=...) and av.open(..., metadata_errors=...).
+# Path.open()'s signature is what tells it apart from other libraries' open(),
+# e.g. fitz.open(stream=...) and av.open(..., metadata_errors=...).
 _FILE_MODE_CHARS = set("rwxabt+")
 _PATH_OPEN_ARGS = ("mode", "buffering", "encoding", "errors", "newline")
 _PATH_OPEN_KWARGS = set(_PATH_OPEN_ARGS)
@@ -248,8 +247,7 @@ def test_resuming_a_legacy_jsonl_keeps_one_encoding(
     finally:
         writer.close()
 
-    # Never converted, so it still reads in its own codepage, and the appended
-    # record is ASCII, which that codepage stores identically.
+    # Never converted, so it still reads in its own codepage; the append is ASCII.
     blob = path.read_bytes()
     assert blob.startswith(before)
     assert blob[len(before) :].isascii()
@@ -288,8 +286,7 @@ def test_a_moved_shard_is_not_rewritten_by_guesswork(
 ) -> None:
     """Off the writing machine there is no codepage to attribute the file to."""
     path = tmp_path / "out.jsonl"
-    # Two records: a lone non-UTF-8 line is indistinguishable from a stray byte
-    # in a healthy shard, so it counts as damage instead.
+    # Two records: a lone non-UTF-8 line would count as damage, not legacy.
     path.write_bytes(
         b"".join(
             json.dumps({"id": i, "author": word}, ensure_ascii = False).encode(codepage) + b"\n"
@@ -449,8 +446,7 @@ def test_an_undecodable_transport_marker_reads_as_unknown(tmp_path: Path) -> Non
     marker = tmp_path / ".transport"
     marker.write_bytes(b"\x80\xffnative\n")
     assert registry._read_marker_value(marker) is None
-    # A readable but unknown value takes the same path, which is the behaviour
-    # this is restoring rather than a new one.
+    # A readable but unknown value takes the same path (the behaviour restored).
     marker.write_text("something-else\n", encoding = "utf-8")
     assert registry._read_marker_value(marker) is None
 
@@ -477,8 +473,7 @@ def test_a_torn_cache_ref_reads_as_not_cached(tmp_path: Path, monkeypatch) -> No
 
     monkeypatch.setattr(backend_utils, "_hf_cache_roots", lambda: [torn_root])
     assert backend_utils.hf_cache_snapshot_dir("Org/Model") is None
-    # The torn root must be skipped, not abort the search: a second cache root
-    # holding a healthy copy still answers.
+    # The torn root is skipped, not fatal: a healthy second root still answers.
     monkeypatch.setattr(backend_utils, "_hf_cache_roots", lambda: [torn_root, good_root])
     found = backend_utils.hf_cache_snapshot_dir("Org/Model")
     assert found is not None and found.name == "abc123"

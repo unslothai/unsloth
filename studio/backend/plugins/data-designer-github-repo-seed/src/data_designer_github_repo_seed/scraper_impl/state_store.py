@@ -27,8 +27,7 @@ def _locale_encoding() -> str:
     return preferred
 
 
-# Codepages whose trail bytes can land on JSON punctuation, so a single-byte
-# fallback cannot read them. Tried only to recover dedup keys.
+# Trail bytes can land on JSON punctuation, so a single-byte fallback misreads these.
 _DOUBLE_BYTE_ENCODINGS = ("cp932", "cp936", "cp949", "cp950")
 
 
@@ -91,8 +90,8 @@ class StateStore:
         self.path.parent.mkdir(parents = True, exist_ok = True)
         self._lock = threading.Lock()
         self._data: Dict[str, Any] = {}
-        # Small single document, so read it whole. Older releases wrote it in
-        # the locale codepage; _flush() always rewrites all of it as UTF-8.
+        # Small enough to read whole. Older releases used the locale codepage;
+        # _flush() always rewrites all of it as UTF-8.
         if self.path.exists():
             try:
                 raw = self.path.read_bytes()
@@ -151,10 +150,9 @@ class JsonlWriter:
                 self._count_seen_keys |= scan.legacy_keys
             if scan.saw_non_ascii or not scan.readable:
                 # Encoding-dependent bytes, or we could not look. Never convert:
-                # the writing encoding is unrecoverable and guessing mojibakes
-                # the records. UTF-8 would add a second encoding, so append pure
-                # ASCII, stored identically by every codepage; json.loads turns
-                # the \uXXXX escapes back into the exact characters.
+                # the writing encoding is unrecoverable and guessing mojibakes the
+                # records. Pure ASCII appends store identically under every
+                # codepage, and json.loads turns the \uXXXX escapes back.
                 encoding = "ascii"
                 self._ensure_ascii = True
         self._fh = self.path.open("a", buffering = 1, encoding = encoding, errors = "strict")
@@ -194,16 +192,15 @@ class JsonlWriter:
                 for raw in handle:
                     line = raw.strip()
                     reading = _read_line(line, self._codepage)
-                    # ASCII reads the same under every encoding, so it neither
-                    # votes nor constrains what may be appended.
+                    # ASCII reads the same everywhere, so it neither votes nor
+                    # constrains what may be appended.
                     if not line.isascii():
                         saw_non_ascii = True
                         if reading.as_utf8 is None and reading.as_legacy is not None:
                             legacy_votes += 1
                         elif reading.as_utf8 is not None:
                             utf8_votes += 1
-                    # Keys stay apart so a damaged line does not mark its record
-                    # seen and block the retry that would replace it.
+                    # Kept apart so a damaged line does not block its own retry.
                     if isinstance(reading.as_utf8, dict):
                         key = self._key(reading.as_utf8)
                         if key is not None:

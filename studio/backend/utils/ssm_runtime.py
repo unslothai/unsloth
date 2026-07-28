@@ -255,13 +255,11 @@ def _install_kernel(
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
         "text": True,
-        # pip and the compilers it drives write UTF-8 down this pipe. Left to the
-        # Windows ANSI codepage, a non-ASCII path or a compiler diagnostic in the
-        # build log either mojibakes or raises UnicodeDecodeError over an install
-        # that was going fine. install_wheel above already pins the same pair.
+        # pip and the compilers it drives write UTF-8 down this pipe; the Windows
+        # ANSI codepage would mojibake or raise over a fine install.
         "encoding": "utf-8",
         "errors": "replace",
-        # A Python child, so ask it for the UTF-8 being decoded here.
+        # Make the Python child emit the UTF-8 we decode above.
         "env": utf8_child_env(),
     }
     if is_hip:

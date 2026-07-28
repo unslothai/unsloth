@@ -13,8 +13,7 @@ import pytest
 
 from core.training import worker
 
-# The runtime install is Linux-only, so tests that drive it past that gate
-# return before reporting a status and cannot pass elsewhere.
+# The runtime install is Linux-only, so elsewhere these return before any status.
 linux_only = pytest.mark.skipif(
     not sys.platform.startswith("linux"),
     reason = "the runtime flash-attn install is gated to Linux",

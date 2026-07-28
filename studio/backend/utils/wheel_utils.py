@@ -222,7 +222,7 @@ def install_wheel(
         text = True,
         encoding = "utf-8",
         errors = "replace",
-        # A Python child, so tell it to emit the UTF-8 we decode above.
+        # Make the Python child emit the UTF-8 we decode above.
         env = utf8_child_env(child_env_without_native_path_secret()),
     )
     attempts.append(("pip", result))

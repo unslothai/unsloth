@@ -42,8 +42,8 @@ class LogConfig:
         log_level_name = os.getenv("LOG_LEVEL", "INFO").upper()
         log_level = getattr(logging, log_level_name, logging.INFO)
 
-        # Non-ASCII on a non-UTF-8 stream raises UnicodeEncodeError. Windows is
-        # the usual case, LANG=C too, so key off the stream, not the platform.
+        # Non-ASCII on a non-UTF-8 stream raises UnicodeEncodeError (Windows,
+        # LANG=C), so key off the stream, not the platform.
         for stream in (sys.stdout, sys.stderr):
             if getattr(stream, "encoding", "") and not str(stream.encoding).lower().replace(
                 "-", ""

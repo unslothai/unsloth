@@ -115,9 +115,7 @@ def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
                 if snapshot.is_dir():
                     return snapshot
             # UnicodeDecodeError is a ValueError, not an OSError: a torn refs
-            # file used to decode as codepage nonsense and miss, and must keep
-            # meaning "not cached here" rather than failing the offline check
-            # that asks whether the model is loadable.
+            # file must keep meaning "not cached here", not fail the offline check.
             except (OSError, UnicodeDecodeError):
                 continue
     return None
