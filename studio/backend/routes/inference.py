@@ -8648,6 +8648,7 @@ async def openai_chat_completions(
                         param = "tools",
                     ),
                 )
+        _reject_schema_control_markup(payload.tools)
 
     # Reject a system-only chat before any automatic load so an invalid request
     # never swaps or reloads the resident model (as /responses and /messages
@@ -14660,6 +14661,7 @@ async def openai_responses(
                     param = "tool_choice",
                 ),
             )
+    _reject_schema_control_markup(payload.tools)
     # After input validation so a 400 never triggers a load. Switches the
     # streaming path; non-streaming re-checks via the idempotent chat handler.
     # require_vision rejects a swap to a text-only target before it runs, so an
@@ -14984,6 +14986,9 @@ async def anthropic_messages(
         (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
         or anthropic_schema_client_tool_kind(t) is not None
         for t in payload.tools or []
+    )
+    _reject_schema_control_markup(
+        [t if isinstance(t, dict) else t.model_dump() for t in payload.tools or []]
     )
     _explicit_server_tools = bool(requested_studio_tools) or (
         payload.enable_tools is True and _effective_enable_tools(payload) is not False
@@ -16162,6 +16167,33 @@ def _llama_compatible_tools(openai_tools):
             }
         )
     return compatible_tools
+
+
+def _reject_schema_control_markup(tools) -> None:
+    """400 on a tool schema whose byte-exact parts carry a turn sentinel (#7066).
+
+    Property keys, ``required`` and the grammar-constrained values reach the
+    template unchanged by design -- rewriting one would name a property the
+    schema no longer declares, or make the decoder emit a value nothing maps
+    back. gemma-4.jinja splices them straight into its ``<|tool>`` block, so a
+    raw ``<tool|>`` there ends the declaration and the rest forges a model turn.
+    Refuse before any load, like the other tool validation on this path.
+    """
+    from core.inference.chat_template_helpers import schema_control_markup_conflict
+
+    offender = schema_control_markup_conflict(tools)
+    if offender is None:
+        return
+    raise HTTPException(
+        status_code = 400,
+        detail = openai_error_body(
+            "Invalid 'tools': a schema name or constrained value contains a reserved "
+            f"chat-template marker and cannot be forwarded safely: {offender[:120]!r}.",
+            status = 400,
+            code = "invalid_value",
+            param = "tools",
+        ),
+    )
 
 
 def _align_forced_tool_choice(tool_choice, tools):

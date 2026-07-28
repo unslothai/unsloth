@@ -309,6 +309,48 @@ def neutralize_tools_control_markup(tools):
     return neutralize_control_markup_deep(tools, schema = True)
 
 
+# A think tag in a schema only ever reaches the PROMPT, and the think parser reads
+# model OUTPUT, so one there is inert and must not fail a request. Every other
+# marker is a turn / tool / channel boundary and does change how the prompt parses.
+_SCHEMA_REJECTED_MARKERS: tuple[str, ...] = tuple(
+    src for src, _ in _NON_ASSISTANT_CONTROL_MARKERS if src not in (_THINK_OPEN, _THINK_CLOSE)
+)
+
+
+def _string_with_rejected_markup(value) -> Optional[str]:
+    """First string in ``value`` (keys included) still carrying a turn sentinel."""
+    if isinstance(value, str):
+        return value if any(src in value for src in _SCHEMA_REJECTED_MARKERS) else None
+    if isinstance(value, dict):
+        for key, item in value.items():
+            hit = _string_with_rejected_markup(key) or _string_with_rejected_markup(item)
+            if hit is not None:
+                return hit
+        return None
+    if isinstance(value, list):
+        for item in value:
+            hit = _string_with_rejected_markup(item)
+            if hit is not None:
+                return hit
+    return None
+
+
+def schema_control_markup_conflict(tools) -> Optional[str]:
+    """First tool-schema string that keeps a raw turn sentinel, or None.
+
+    Identifiers (property keys, ``required`` and friends) and grammar-constrained
+    values (``enum`` and friends) are forwarded byte-exact, so anything the
+    neutralizer leaves is what actually reaches the prompt. gemma-4.jinja splices
+    both straight into its ``<|tool>`` declaration block, where a raw ``<tool|>``
+    ends the declaration and the rest of the name forges a whole model turn.
+    Neither can be rewritten without breaking the schema contract, so a request
+    carrying one is refused instead (#7066).
+    """
+    if not tools:
+        return None
+    return _string_with_rejected_markup(neutralize_tools_control_markup(tools))
+
+
 def _neutralize_tool_arguments_json(args: str) -> str:
     """Neutralize a JSON-string argument payload, keeping its object keys.
 
