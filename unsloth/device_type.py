@@ -118,10 +118,16 @@ DEVICE_COUNT: int = get_device_count()
 ALLOW_PREQUANTIZED_MODELS: bool = True
 # HSA_STATUS_ERROR_EXCEPTION checks - sometimes AMD fails for BnB
 ALLOW_BITSANDBYTES: bool = True
-# No bitsandbytes at all: 4bit is unavailable on every backend, not just hip, so
-# clear the flags the loader reads before it selects a 4bit checkpoint. find_spec
-# rather than import, so a working install pays nothing here.
-if importlib.util.find_spec("bitsandbytes") is None:
+# Unusable bitsandbytes on any backend, not just hip: clear the flags the loader
+# reads before it selects a 4bit checkpoint. Same guarded import the fallbacks in
+# _gpu_init.py and kernels/utils.py use rather than a find_spec probe, so an
+# installed-but-broken wheel (missing .so, wrong ROCm/CUDA build) is treated as
+# unavailable by all three, not only by the ones that import it.
+try:
+    import bitsandbytes as _bnb_probe
+
+    del _bnb_probe
+except Exception:
     ALLOW_PREQUANTIZED_MODELS = False
     ALLOW_BITSANDBYTES = False
 # gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this

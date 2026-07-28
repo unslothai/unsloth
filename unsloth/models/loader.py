@@ -472,13 +472,17 @@ class FastLanguageModel(FastLlamaModel):
                         fast_inference = False
                         break
 
-        # Check if 4bit is allowed specifically for AMD
+        # bitsandbytes unusable (absent, or unstable as on some AMD stacks)
         if not ALLOW_BITSANDBYTES and not use_exact_model_name:
             if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
                 print(
-                    "Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now."
+                    "Unsloth: `bitsandbytes` is unavailable here - disabling 4bit/8bit. "
+                    "16bit LoRA and full finetuning still work."
                 )
+            # 8bit is bitsandbytes too: leaving it set sends the request on to
+            # Transformers, which builds the bnb quantizer and fails there.
             load_in_4bit = False
+            load_in_8bit = False
 
         # Find FP8, BnB 4bit, other mapped names
         old_model_name = model_name
@@ -1142,13 +1146,17 @@ class FastModel(FastBaseModel):
             if is_dist:
                 device_map = distributed_device_map
 
-        # Check if 4bit is allowed specifically for AMD
+        # bitsandbytes unusable (absent, or unstable as on some AMD stacks)
         if not ALLOW_BITSANDBYTES and not use_exact_model_name:
             if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
                 print(
-                    "Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now."
+                    "Unsloth: `bitsandbytes` is unavailable here - disabling 4bit/8bit. "
+                    "16bit LoRA and full finetuning still work."
                 )
+            # 8bit is bitsandbytes too: leaving it set sends the request on to
+            # Transformers, which builds the bnb quantizer and fails there.
             load_in_4bit = False
+            load_in_8bit = False
 
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:

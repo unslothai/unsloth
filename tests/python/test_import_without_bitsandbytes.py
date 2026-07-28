@@ -125,3 +125,44 @@ def test_missing_bnb_leaves_a_callable_that_reports_the_real_cause():
         "cgemm_4bit_inference_naive_bf16",
     ):
         assert f"{name} = _bnb_required" in src, f"{name} has no bnb-less fallback"
+
+
+def test_capability_flags_come_from_a_guarded_import_not_find_spec():
+    """kernels/utils.py and _gpu_init.py treat any import failure as unavailable.
+    device_type.py must agree, or an installed-but-unusable wheel leaves
+    ALLOW_BITSANDBYTES true while the kernels fall back to the stub."""
+    src = (REPO_ROOT / "unsloth" / "device_type.py").read_text(encoding = "utf-8")
+    head = src.split('if DEVICE_TYPE == "hip":')[0]
+    assert "import bitsandbytes as _bnb_probe" in head
+    assert 'find_spec("bitsandbytes")' not in head, "find_spec cannot see a broken wheel"
+    assert head.count("ALLOW_BITSANDBYTES = False") >= 1
+
+
+def test_bitsandbytes_guard_clears_8bit_as_well_as_4bit():
+    """8bit is bitsandbytes too: leaving load_in_8bit set sends the request to
+    Transformers, which builds the bnb quantizer and fails there instead."""
+    src = (REPO_ROOT / "unsloth" / "models" / "loader.py").read_text(encoding = "utf-8")
+    tree = ast.parse(src)
+    guards = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(n, ast.Name) and n.id == "ALLOW_BITSANDBYTES"
+            for n in ast.walk(node.test)
+        )
+    ]
+    assert len(guards) == 2, f"expected both loader guards, found {len(guards)}"
+    for guard in guards:
+        cleared = {
+            target.id
+            for stmt in guard.body
+            if isinstance(stmt, ast.Assign)
+            for target in stmt.targets
+            if isinstance(target, ast.Name)
+            and isinstance(stmt.value, ast.Constant)
+            and stmt.value.value is False
+        }
+        assert {"load_in_4bit", "load_in_8bit"} <= cleared, (
+            f"guard at line {guard.lineno} clears only {sorted(cleared)}"
+        )
