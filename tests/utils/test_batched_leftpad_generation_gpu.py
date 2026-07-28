@@ -12,12 +12,11 @@ import pytest
 import torch
 
 cuda_available = torch.cuda.is_available()
-# hasattr: torch builds predating the xpu namespace still have to import this file.
 xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
 device = "cuda" if cuda_available else "xpu" if xpu_available else "cpu"
 
-# XPU currently diverges here, so run it non-strict rather than hiding the gap
-# behind a CUDA-only guard: the xfail turns green the moment XPU is fixed.
+# Non-strict rather than CUDA-only: keeps the XPU divergence visible, and goes
+# green by itself once XPU generation is fixed.
 pytestmark = [
     pytest.mark.skipif(not (cuda_available or xpu_available), reason = "requires a CUDA or XPU GPU"),
     pytest.mark.xfail(

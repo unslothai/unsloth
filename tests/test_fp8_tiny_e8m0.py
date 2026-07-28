@@ -12,7 +12,6 @@ import pytest
 import torch
 
 cuda_available = torch.cuda.is_available()
-# hasattr: torch builds predating the xpu namespace still have to import this file.
 xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
 dev = "cuda" if cuda_available else "xpu" if xpu_available else "cpu"
 
