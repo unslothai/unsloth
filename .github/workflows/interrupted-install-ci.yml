@@ -70,7 +70,10 @@ jobs:
           - {os: macos-14, label: setup,       marker: '\[TAURI:STEP\] Running Unsloth setup',        experimental: false}
           # Other dependency-pass steps around the named one.
           - {os: macos-14, label: pip-bootstrap,  marker: 'pip bootstrap',     experimental: false}
-          - {os: macos-14, label: base-packages, marker: 'base packages',     experimental: false}
+          # No base-packages cell: install.sh --local sets skip_base, so
+          # install_python_stack returns before any "base packages" label is
+          # printed and the kill can never land. It ran to completion instead,
+          # proving nothing.
           - {os: macos-14, label: unsloth-extras, marker: 'unsloth extras',    experimental: true}
           - {os: macos-14, label: data-designer,  marker: 'data designer deps', experimental: true}
           # Linux: same teardown path, different package manager and process semantics.
