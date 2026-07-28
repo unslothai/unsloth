@@ -5148,3 +5148,31 @@ def test_two_local_paths_differing_only_in_case_are_not_the_same_model(monkeypat
     alias = _FakeBackend(loaded_id = "unsloth/Qwen3-4B-GGUF")
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: alias)
     assert inference_route._loaded_satisfies("unsloth/qwen3-4b-gguf") is True
+
+
+def test_abs_path_ids_are_recognised_in_either_platform_spelling():
+    """Path() follows the running OS, so a Windows host read "/home/me/x.gguf" as
+    relative and a POSIX host read "C:\\models\\x.gguf" the same way, and either
+    then reached /v1/models as a published host path. Ids outlive the machine
+    that wrote them (settings sync, WSL, a copied config), and the model-override
+    identity already folds both spellings."""
+    from types import SimpleNamespace
+
+    for spelling in ("/home/me/models/x.gguf", "C:\\models\\x.gguf", "//host/share/x.gguf"):
+        assert resolver._is_abs_path_id(spelling) is True, spelling
+        # An alias wins, and with none the path is stripped to a public id.
+        assert (
+            resolver._advertised_loader_id(
+                SimpleNamespace(id = spelling, model_id = "org/X-GGUF", display_name = "X")
+            )
+            == "org/X-GGUF"
+        )
+        advertised = resolver._advertised_loader_id(
+            SimpleNamespace(id = spelling, model_id = None, display_name = None)
+        )
+        assert advertised is not None
+        assert "/" not in advertised and "\\" not in advertised, advertised
+
+    # A repo id has no leading separator, drive or UNC prefix under either reading.
+    for repo_id in ("org/Repo-GGUF", "Repo", "org/Repo-GGUF:Q4_K_M"):
+        assert resolver._is_abs_path_id(repo_id) is False, repo_id
