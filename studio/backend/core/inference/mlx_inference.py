@@ -313,6 +313,10 @@ def _build_generation_stats(
 PROMPT_CACHE_ENTRIES = 6
 PROMPT_CACHE_MEMORY_FRACTION = 0.15
 PROMPT_CACHE_FALLBACK_BYTES = 2 * 1024**3
+MLX_VLM_PREFILL_STEP_SIZE = 2048
+MLX_VLM_PROMPT_CACHE_MIN_VERSION = "0.6.8"
+# mlx-vlm 0.6.8 produces different warm and stable-cold cache bytes for these.
+_NONEXACT_MLX_VLM_CACHE_TYPES = frozenset({"idefics2", "kimi_vl", "llava", "llava_next"})
 
 
 def _mlx_prompt_cache_api():
@@ -365,6 +369,19 @@ def _kv_prefix_coverage(cache):
         elif covered != offset:
             return None
     return covered
+
+
+def _exact_vlm_cache_coverage(cache):
+    offsets = []
+    try:
+        for entry in _flatten_kv_entries(cache):
+            if hasattr(entry, "offset"):
+                offsets.append(int(entry.offset))
+    except Exception:
+        return None
+    if not offsets or any(offset != offsets[0] for offset in offsets[1:]):
+        return None
+    return offsets[0]
 
 
 class _MLXPromptCacheHistory:
@@ -422,15 +439,6 @@ class _MLXPromptCacheHistory:
         self._lru.insert_cache(key, tokens, cache)
 
 
-# Multimodal-RoPE architectures whose warm reuse was measured to produce output
-# text identical to a cold run — the sampled tokens match, and there is no output
-# difference across long generations (the residual last-token logit divergence,
-# 0.04, is below the plain-cache control). Other multimodal-position architectures
-# — recurrent gated-delta, Falcon-style spatial state, and unmeasured families —
-# stay refused.
-_MROPE_BYTE_EXACT_ARCHS = frozenset({"qwen2_vl", "qwen2_5_vl"})
-
-
 def _runtime_primes_rope():
     """True when the runtime exposes the whole-prompt RoPE priming entry point.
 
@@ -450,22 +458,9 @@ def _runtime_primes_rope():
 
 
 def _vlm_mrope_reuse_arch(model):
-    """Name of the byte-exact multimodal-RoPE architecture for ``model``, else None.
-
-    A model qualifies only when its architecture is one measured byte-exact, it
-    keeps Qwen-style position state (``_rope_deltas`` plus a callable
-    ``get_rope_index``), it carries none of the Falcon-style spatial fields this
-    design neither preserves nor validates, and the runtime primes. Continuation
-    for these is byte-identical once the suffix-derived RoPE recomputation is
-    suppressed (see ``_temporary_mlx_vlm_rope_suppression``).
-    """
-    arch = getattr(getattr(model, "config", None), "model_type", None)
-    if arch not in _MROPE_BYTE_EXACT_ARCHS:
-        return None
+    """Return the model type when the runtime exposes Qwen-style MRoPE priming."""
+    _, arch = _mlx_vlm_model_config(model)
     language_model = getattr(model, "language_model", None)
-    # `_position_ids` is required too: reuse is recognised by comparing the primed
-    # whole-prompt map against the trimmed ids, so a model without it would be admitted
-    # while that signal never appears, leaving the suffix-derived state in place.
     if not all(hasattr(language_model, attr) for attr in ("_rope_deltas", "_position_ids")):
         return None
     if not callable(getattr(language_model, "get_rope_index", None)):
@@ -477,8 +472,17 @@ def _vlm_mrope_reuse_arch(model):
     return arch
 
 
+def _mlx_vlm_prompt_cache_version_supported():
+    try:
+        import mlx_vlm
+        from packaging.version import Version
+        return Version(mlx_vlm.__version__) >= Version(MLX_VLM_PROMPT_CACHE_MIN_VERSION)
+    except Exception:
+        return False
+
+
 def _mlx_vlm_prompt_cache_api(model = None):
-    """Return the upstream state class only when cached continuation is safe.
+    """Return the latest exact-cache capabilities when continuation is safe.
 
     Some VLM language models keep multimodal position, attention, image, or
     generation metadata on the model object rather than in the KV cache.
@@ -487,11 +491,25 @@ def _mlx_vlm_prompt_cache_api(model = None):
     before trimming to the uncached suffix. Unknown or older combinations
     deliberately fall back to cold prefill.
     """
+    if not _mlx_vlm_prompt_cache_version_supported():
+        return None
     try:
-        from mlx_vlm import PromptCacheState, stream_generate
+        from mlx_vlm import PromptCacheState
+        from mlx_vlm.apc import _clone_prompt_cache_for_apc, model_apc_mode
     except (ImportError, AttributeError):
         return None
     language_model = getattr(model, "language_model", None)
+    if language_model is None:
+        return None
+    _, model_type = _mlx_vlm_model_config(model)
+    if model_type in _NONEXACT_MLX_VLM_CACHE_TYPES:
+        return None
+    try:
+        cache_mode = model_apc_mode(language_model)
+    except Exception:
+        return None
+    if cache_mode not in ("block", "exact"):
+        return None
     has_unrestorable_generation_state = any(
         hasattr(language_model, attr)
         for attr in (
@@ -514,15 +532,10 @@ def _mlx_vlm_prompt_cache_api(model = None):
         )
     )
     if has_multimodal_position_state and _vlm_mrope_reuse_arch(model) is None:
-        # Multimodal-position models are admitted only for the measured
-        # byte-exact multimodal-RoPE architectures on a priming runtime; those
-        # decode identically to a cold run once Studio suppresses the
-        # suffix-derived RoPE recomputation (see the generation path). Every
-        # other multimodal-position architecture — recurrent gated-delta,
-        # Falcon-style spatial state, unmeasured families, and older runtimes
-        # that do not prime — falls back to cold prefill.
+        # Qwen-style position state is restorable through whole-prompt priming.
+        # Other state layouts remain cold because Studio cannot reconstruct them.
         return None
-    return PromptCacheState
+    return PromptCacheState, cache_mode, _clone_prompt_cache_for_apc
 
 
 def _vlm_media_fingerprint(media):
@@ -688,11 +701,19 @@ def _studio_prompt_cache_state_cls(base_cls, _cache = {}):
                 prefix = int(super().find_prefix_length(new_ids))
                 self.observed_prefix = 0
                 self.prefix_checked = True
-                if 0 < prefix < len(new_ids) and self.cache:
+                prefix = prefix // MLX_VLM_PREFILL_STEP_SIZE * MLX_VLM_PREFILL_STEP_SIZE
+                if len(new_ids) - prefix <= MLX_VLM_PREFILL_STEP_SIZE:
+                    prefix -= MLX_VLM_PREFILL_STEP_SIZE
+                if (
+                    0 < prefix < len(new_ids)
+                    and len(new_ids) - prefix > MLX_VLM_PREFILL_STEP_SIZE
+                    and self.cache
+                ):
                     if not _cut_vlm_cache_to_prefix(self.cache, prefix):
                         return 0
                     self.observed_prefix = prefix
-                return prefix
+                    return prefix
+                return 0
 
         cls = _cache[base_cls] = _StudioPromptCacheState
     return cls
@@ -714,9 +735,15 @@ class _MLXVLMPromptCacheHistory:
     memory can be measured before it enters the pool.
     """
 
-    def __init__(self, max_entries, max_bytes):
+    def __init__(
+        self,
+        max_entries,
+        max_bytes,
+        step_size = None,
+    ):
         self._max_entries = max_entries
         self._max_bytes = max_bytes
+        self._step_size = step_size
         self._nbytes = 0
         self._entries = OrderedDict()
         self._next_id = 0
@@ -728,25 +755,82 @@ class _MLXVLMPromptCacheHistory:
                 continue
             if prompt.startswith(entry_prompt):
                 matched_id, matched_length = entry_id, len(entry_prompt)
+        continued_id = matched_id
+        if matched_id is None:
+            matched_id = next(
+                (
+                    entry_id
+                    for entry_id, (_, _, entry_scope, _) in reversed(self._entries.items())
+                    if entry_scope == scope
+                ),
+                None,
+            )
         if matched_id is None:
             return state_cls(), [], None
         state = copy.deepcopy(self._entries[matched_id][0])
         self._entries.move_to_end(matched_id)
-        return state, list(getattr(state, "token_ids", None) or ()), matched_id
+        return state, list(getattr(state, "token_ids", None) or ()), continued_id
 
-    def insert(self, commit, state):
+    def fetch_exact(self, scope, token_ids, min_prefix_tokens, clone):
+        matched_id, matched_length = None, 0
+        for entry_id, (state, _, entry_scope, _) in self._entries.items():
+            stored = list(getattr(state, "token_ids", None) or ())
+            if (
+                entry_scope == scope
+                and min_prefix_tokens <= len(stored) < len(token_ids)
+                and len(stored) > matched_length
+                and list(token_ids[: len(stored)]) == stored
+            ):
+                matched_id, matched_length = entry_id, len(stored)
+        if matched_id is None:
+            return None, 0, None
+        state = self._entries[matched_id][0]
+        if getattr(state, "_refresh_required", False):
+            self._entries.move_to_end(matched_id)
+            return None, matched_length, matched_id
+        try:
+            cache = clone(
+                state.cache,
+                min_capacity_tokens = len(token_ids) + 1,
+            )
+        except Exception:
+            return None, 0, None
+        if cache is None:
+            return None, 0, None
+        self._entries.move_to_end(matched_id)
+        return cache, matched_length, matched_id
+
+    def mark_exact_refresh(self, entry_id):
+        entry = self._entries.get(entry_id)
+        if entry is None:
+            return False
+        entry[0]._refresh_required = True
+        return True
+
+    def insert(
+        self,
+        commit,
+        state,
+        prompt_tokens = None,
+        exact = False,
+    ):
         scope, prompt, continued_id = commit
         tokens = list(getattr(state, "token_ids", None) or ())
-        covered = _kv_prefix_coverage(getattr(state, "cache", None) or ())
+        cache = getattr(state, "cache", None) or ()
+        covered = _exact_vlm_cache_coverage(cache) if exact else _kv_prefix_coverage(cache)
         if covered is None or covered <= 0 or covered > len(tokens):
             logger.debug("MLX VLM prompt cache: skipping unverifiable prefix coverage")
             return False
-        if not _vlm_cache_is_retainable(
-            getattr(state, "cache", None) or (),
-            allow_rotating = hasattr(state, "observed_prefix"),
+        if not exact and not _vlm_cache_is_retainable(
+            cache, allow_rotating = hasattr(state, "observed_prefix")
         ):
             logger.debug("MLX VLM prompt cache: skipping cache Studio cannot cut to a prefix")
             return False
+        if not exact and self._step_size is not None:
+            prompt_tokens = min(int(prompt_tokens or 0), covered)
+            covered = ((prompt_tokens - 1) // self._step_size) * self._step_size
+            if covered <= 0 or not _cut_vlm_cache_to_prefix(cache, covered):
+                return False
         state.token_ids = tokens[:covered]
         nbytes = _vlm_prompt_cache_state_nbytes(state)
         if nbytes is None or nbytes > self._max_bytes:
@@ -766,6 +850,99 @@ class _MLXVLMPromptCacheHistory:
             _, (_, evicted_bytes, _, _) = self._entries.popitem(last = False)
             self._nbytes -= evicted_bytes
         return True
+
+
+class _StudioVLMExactSnapshot:
+    pass
+
+
+class _StudioVLMExactCacheManager:
+    """Stage aligned recurrent snapshots until the request completes."""
+
+    def __init__(self, history, scope, prompt, clone, step_size):
+        self._history = history
+        self._scope = scope
+        self._prompt = prompt
+        self._clone = clone
+        self._step_size = step_size
+        self._token_ids = []
+        self._watermark = 0
+        self._continued_id = None
+        self._pending = None
+        self._coordinate_valid = True
+        self.observed_prefix = 0
+
+    @property
+    def exact_cache_guard_tokens(self):
+        if self._watermark <= 0:
+            return 0
+        return len(self._token_ids) - self._watermark
+
+    def lookup_exact_cache(
+        self,
+        token_ids,
+        extra_hash = 0,
+        max_prefix_tokens = None,
+        min_prefix_tokens = 0,
+    ):
+        del extra_hash, max_prefix_tokens
+        self._token_ids = list(token_ids)
+        self._watermark = (
+            (len(self._token_ids) - self._step_size - 1) // self._step_size
+        ) * self._step_size
+        self.observed_prefix = 0
+        cache, prefix, entry_id = self._history.fetch_exact(
+            self._scope,
+            self._token_ids,
+            min_prefix_tokens,
+            self._clone,
+        )
+        self._continued_id = entry_id
+        if cache is None or len(self._token_ids) - prefix <= self._step_size:
+            return None, 0
+        self.observed_prefix = prefix
+        return cache, prefix
+
+    def store_exact_cache(
+        self,
+        token_ids,
+        prompt_cache,
+        extra_hash = 0,
+    ):
+        del extra_hash
+        token_ids = list(token_ids)
+        is_watermark = len(token_ids) == self._watermark and self._watermark > 0
+        # The full-prompt callback runs after its first decoded token updates KV.
+        expected_coverage = len(token_ids) if is_watermark else len(token_ids) + 1
+        if _exact_vlm_cache_coverage(prompt_cache) != expected_coverage:
+            self._pending = None
+            self._coordinate_valid = False
+            return False
+        if not self._coordinate_valid:
+            return False
+        if not is_watermark:
+            return False
+        try:
+            cache = self._clone(prompt_cache)
+        except Exception:
+            return False
+        if cache is None:
+            return False
+        state = _StudioVLMExactSnapshot()
+        state.token_ids, state.cache = token_ids, cache
+        self._pending = state
+        return True
+
+    def commit(self):
+        if self._pending is not None:
+            return self._history.insert(
+                (self._scope, self._prompt, self._continued_id),
+                self._pending,
+                exact = True,
+            )
+        if self.observed_prefix > 0 and self._continued_id is not None:
+            return self._history.mark_exact_refresh(self._continued_id)
+        return False
 
 
 def _legacy_vlm_cached_tokens(previous_ids, state, response):
@@ -961,32 +1138,42 @@ class MLXInferenceBackend:
         cold request succeeds.
         """
         if not prompt or not self.active_model_name:
-            return None, None, []
+            return None, None, [], None
+        if self._vlm_prompt_cache_unavailable:
+            return None, None, [], None
         media_fingerprint = _vlm_media_fingerprint(image)
         if media_fingerprint is None:
-            return None, None, []
-        state_cls = _mlx_vlm_prompt_cache_api(self._model)
-        if state_cls is not None:
-            state_cls = _studio_prompt_cache_state_cls(state_cls)
-        if state_cls is None:
+            return None, None, [], None
+        api = _mlx_vlm_prompt_cache_api(self._model)
+        if api is None:
             self._vlm_prompt_cache_unavailable = True
-            return None, None, []
-        if self._vlm_prompt_cache_unavailable:
-            return None, None, []
+            return None, None, [], None
+        state_cls, cache_mode, clone = api
+        state_cls = _studio_prompt_cache_state_cls(state_cls)
         if self._vlm_prompt_cache_history is None:
             max_bytes = _prompt_cache_max_bytes(self._memory_limits_applied.get("recommended_gb"))
             if max_bytes <= 0:
                 self._vlm_prompt_cache_unavailable = True
-                return None, None, []
+                return None, None, [], None
             self._vlm_prompt_cache_history = _MLXVLMPromptCacheHistory(
                 PROMPT_CACHE_ENTRIES,
                 max_bytes,
+                MLX_VLM_PREFILL_STEP_SIZE,
             )
         scope = (
             self.active_model_name,
             repr(adapter_state),
             media_fingerprint,
         )
+        if cache_mode == "exact":
+            manager = _StudioVLMExactCacheManager(
+                self._vlm_prompt_cache_history,
+                scope,
+                prompt,
+                clone,
+                MLX_VLM_PREFILL_STEP_SIZE,
+            )
+            return None, None, [], manager
         try:
             state, previous_ids, continued_id = self._vlm_prompt_cache_history.fetch(
                 state_cls,
@@ -998,9 +1185,9 @@ class MLXInferenceBackend:
             try:
                 state = state_cls()
             except Exception:
-                return None, None, []
-            return state, None, []
-        return state, (scope, prompt, continued_id), previous_ids
+                return None, None, [], None
+            return state, None, [], None
+        return state, (scope, prompt, continued_id), previous_ids, None
 
     def _prepare_prompt_cache(self, prompt, adapter_state):
         history = self._prompt_cache()
@@ -1689,16 +1876,18 @@ class MLXInferenceBackend:
                 # Upstream seeds history-based logits processors only from the
                 # uncached suffix. Reuse would therefore change penalty semantics.
                 if _rep_active or presence_penalty:
-                    cache_state, cache_commit, previous_ids = None, None, []
+                    cache_state, cache_commit, previous_ids, exact_manager = None, None, [], None
                 else:
-                    cache_state, cache_commit, previous_ids = self._prepare_vlm_prompt_cache(
-                        prompt,
-                        image,
-                        _adapter_state,
+                    cache_state, cache_commit, previous_ids, exact_manager = (
+                        self._prepare_vlm_prompt_cache(prompt, image, _adapter_state)
                     )
                 request_kwargs = dict(vlm_kwargs)
                 if cache_state is not None:
                     request_kwargs["prompt_cache_state"] = cache_state
+                if exact_manager is not None:
+                    request_kwargs["apc_manager"] = exact_manager
+                if cache_state is not None or exact_manager is not None:
+                    request_kwargs["prefill_step_size"] = MLX_VLM_PREFILL_STEP_SIZE
                 final_response = None
                 cached_n = 0
                 completed = False
@@ -1709,7 +1898,8 @@ class MLXInferenceBackend:
                     # before any output escapes.
                     if cumulative:
                         yield cumulative
-                    with _temporary_mlx_vlm_rope_suppression(self._model, cache_state):
+                    reuse_state = cache_state if cache_state is not None else exact_manager
+                    with _temporary_mlx_vlm_rope_suppression(self._model, reuse_state):
                         for response in vlm_stream(
                             self._model,
                             self._processor,
@@ -1750,9 +1940,18 @@ class MLXInferenceBackend:
                         history = self._vlm_prompt_cache_history
                         if history is not None:
                             try:
-                                history.insert(cache_commit, cache_state)
+                                history.insert(
+                                    cache_commit,
+                                    cache_state,
+                                    prompt_tokens = getattr(final_response, "prompt_tokens", 0),
+                                )
                             except Exception as exc:
                                 logger.debug("MLX VLM prompt cache insert failed: %s", exc)
+                    if completed and not cancelled and exact_manager is not None:
+                        try:
+                            exact_manager.commit()
+                        except Exception as exc:
+                            logger.debug("MLX VLM exact prompt cache insert failed: %s", exc)
                 finally:
                     # mlx_vlm exposes the same stats fields as mlx_lm.
                     if final_response is not None:

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import copy
 import json
 import subprocess
 import sys
@@ -1051,7 +1052,7 @@ def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
 
 # Turn 2 literally extends turn 1 as an append-only chat render does; the fork
 # shares only the opening turn and the unrelated prompt shares no prefix.
-_VLM_TURN1, _VLM_TURN2, _VLM_FORK, _VLM_OTHER = "P1", "P1 A1 P2", "P1 A1 P3", "Q1"
+_VLM_TURN1, _VLM_TURN2, _VLM_FORK, _VLM_OTHER = "P11", "P11 A1 P2", "P11 A1 P3", "Q11"
 
 
 class _FakeKV:
@@ -1078,6 +1079,25 @@ def _fake_vlm_cache_backend(monkeypatch):
         control["state"] = state
         control["seeded"] = list(getattr(state, "token_ids", None) or ())
         ids = [ord(character) for character in prompt]
+        manager = kwargs.get("apc_manager")
+        if manager is not None:
+            cache, prefix = manager.lookup_exact_cache(ids)
+            control["returned"] = prefix
+            if cache is None:
+                checkpoint = len(ids) - manager.exact_cache_guard_tokens
+                if 0 < checkpoint < len(ids):
+                    manager.store_exact_cache(
+                        ids[:checkpoint], _fake_entries(checkpoint, checkpoint)
+                    )
+                manager.store_exact_cache(ids, _fake_entries(len(ids) + 1, len(ids) + 1))
+            if control["mode"] == "error":
+                raise RuntimeError("vlm failed")
+            yield SimpleNamespace(
+                text = "x", prompt_tokens = len(ids), generation_tokens = 1, cached_tokens = prefix
+            )
+            if control["mode"] == "cancel_after_update":
+                control["cancel"].set()
+            return
         cache = state.cache if state and state.cache else _fake_entries(64)
         if state is not None:
             control["returned"] = state.find_prefix_length(ids)
@@ -1113,7 +1133,12 @@ def _fake_vlm_cache_backend(monkeypatch):
 
     package.PromptCacheState = _State
     package.stream_generate = stream
+    package.__version__ = "0.6.8"
     monkeypatch.setitem(sys.modules, "mlx_vlm", package)
+    apc = types.ModuleType("mlx_vlm.apc")
+    apc.model_apc_mode = lambda _model: "block"
+    apc._clone_prompt_cache_for_apc = lambda cache, **_kwargs: copy.deepcopy(cache)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.apc", apc)
     sample_utils = types.ModuleType("mlx_lm.sample_utils")
     sample_utils.make_logits_processors = lambda **_kwargs: []
     monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
@@ -1122,8 +1147,10 @@ def _fake_vlm_cache_backend(monkeypatch):
         lambda _target, messages, **_kwargs: messages[-1]["content"][-1]["text"],
     )
     backend = mlx_inference.MLXInferenceBackend()
+    monkeypatch.setattr(mlx_inference, "MLX_VLM_PREFILL_STEP_SIZE", 1)
     backend._model = SimpleNamespace(
         config = SimpleNamespace(image_token_id = 99),
+        language_model = SimpleNamespace(),
         named_modules = lambda: (),
     )
     backend._processor = SimpleNamespace(chat_template = "x", apply_chat_template = lambda: None)
@@ -1147,7 +1174,7 @@ def test_mlx_vlm_cache_reuses_only_compatible_state_and_reports_timing(monkeypat
     _cached_vlm_turn(backend, _VLM_TURN1, image)
     _cached_vlm_turn(backend, _VLM_TURN2, image)
     timings = backend.last_generation_stats["timings"]
-    assert timings["cache_n"] == 2 and timings["prompt_n"] == 6 and control["seeded"]
+    assert timings["cache_n"] == 2 and timings["prompt_n"] == 7 and control["seeded"]
     entries = backend._vlm_prompt_cache_history._entries
     # Continuing supersedes the entry it grew from; a branch is retained beside it.
     assert len(entries) == 1
@@ -1155,7 +1182,7 @@ def test_mlx_vlm_cache_reuses_only_compatible_state_and_reports_timing(monkeypat
         control["cut"] == [(2, 2, 2)] * 2 and control["idx"] == [0, 2] and control["returned"] == 2
     )
     _cached_vlm_turn(backend, _VLM_TURN2, image)
-    assert control["seeded"] and backend.last_generation_stats["timings"]["cache_n"] == 0
+    assert control["seeded"] and backend.last_generation_stats["timings"]["cache_n"] == 7
     _cached_vlm_turn(backend, _VLM_FORK, image)
     assert {_VLM_TURN2, _VLM_FORK} <= {entry[3] for entry in entries.values()}
     for kwargs in (
@@ -1169,7 +1196,7 @@ def test_mlx_vlm_cache_reuses_only_compatible_state_and_reports_timing(monkeypat
         media, prompt = kwargs.pop("image", image), kwargs.pop("prompt", _VLM_TURN2)
         backend.active_model_name = kwargs.pop("model", backend.active_model_name)
         _cached_vlm_turn(backend, prompt, media, **kwargs)
-        assert not control["seeded"] and backend.last_generation_stats["timings"]["cache_n"] == 0
+        assert backend.last_generation_stats["timings"]["cache_n"] == 0
 
 
 def test_mlx_vlm_cache_rolls_back_failures_cancellation_and_cleans_up(monkeypatch):
@@ -1189,7 +1216,7 @@ def test_mlx_vlm_cache_rolls_back_failures_cancellation_and_cleans_up(monkeypatc
     next(closing), closing.close()
     monkeypatch.setattr(history, "insert", lambda *_: (_ for _ in ()).throw(ValueError("insert")))
     _cached_vlm_turn(backend, _VLM_TURN2, image)
-    assert next(iter(history._entries.values()))[0] is retained and retained.cache[0].offset == 3
+    assert next(iter(history._entries.values()))[0] is retained and retained.cache[0].offset == 2
     history.fetch = lambda *_: (_ for _ in ()).throw(ValueError("lookup"))
     assert _cached_vlm_turn(backend, _VLM_TURN2, image) == ["x"]
     assert next(iter(history._entries.values()))[0] is retained
@@ -1209,6 +1236,7 @@ def test_mlx_vlm_cache_rolls_back_failures_cancellation_and_cleans_up(monkeypatc
         for prompt, tokens in insertion_order:
             picker.insert((scope, prompt, None), kv(64, tokens))
         assert picker.fetch(SimpleNamespace, scope, "abc")[1] == [1, 2]
+        assert picker.fetch(SimpleNamespace, scope, "ab rewritten suffix")[1]
     for unsupported in ({"keys": None}, {"window_size": 8}, {"offset": 9}, {"values": _FakeKV(0)}):
         entry = SimpleNamespace(**{**vars(kv(64).cache[0]), **unsupported})
         state = SimpleNamespace(token_ids = [1] * 9, cache = [entry], observed_prefix = 0)
@@ -1232,9 +1260,86 @@ def test_mlx_vlm_cache_rolls_back_failures_cancellation_and_cleans_up(monkeypatc
     assert module._vlm_cache_entry_shape(ring) is None
     backend._model.language_model = SimpleNamespace(_rope_deltas = None)
     assert module._mlx_vlm_prompt_cache_api(backend._model) is None
+    backend._model.language_model = SimpleNamespace()
+    package = sys.modules["mlx_vlm"]
+    package.__version__ = "0.6.7"
+    assert module._mlx_vlm_prompt_cache_api(backend._model) is None
+    package.__version__ = "0.6.8"
+    for config in (
+        SimpleNamespace(model_type = "idefics2"),
+        {"model_type": "kimi_vl"},
+        SimpleNamespace(model_type = "llava"),
+        {"model_type": "llava_next"},
+    ):
+        backend._model.config = config
+        assert module._mlx_vlm_prompt_cache_api(backend._model) is None
+    backend._model.config, backend._model._config = SimpleNamespace(), {"model_type": "kimi_vl"}
+    assert module._mlx_vlm_prompt_cache_api(backend._model) is None
+    del backend._model._config
     del sys.modules["mlx_vlm"].PromptCacheState
     _cached_vlm_turn(backend, _VLM_TURN1, image)
     assert control["state"] is None
+    monkeypatch.setattr(
+        module,
+        "_vlm_media_fingerprint",
+        lambda _media: (_ for _ in ()).throw(AssertionError("fingerprinted after disable")),
+    )
+    _cached_vlm_turn(backend, _VLM_TURN1, image)
+
+
+def test_mlx_vlm_exact_manager_commits_only_aligned_completed_snapshots():
+    from core.inference import mlx_inference as module
+
+    history = module._MLXVLMPromptCacheHistory(2, 1000, step_size = 4)
+    scope = ("model", "adapter", "media")
+    clone = lambda cache, **_kwargs: copy.deepcopy(cache)
+    manager = module._StudioVLMExactCacheManager(history, scope, "first", clone, 4)
+    tokens = list(range(13))
+    assert (manager.lookup_exact_cache(tokens), manager.exact_cache_guard_tokens) == ((None, 0), 5)
+    cache = [SimpleNamespace(nbytes = 32, state = [1], meta_state = ()) for _ in range(2)]
+    cache[0].offset = 8
+    full_cache = copy.deepcopy(cache)
+    full_cache[0].offset = len(tokens) + 1
+    assert manager.store_exact_cache(tokens[:8], cache)
+    assert not manager.store_exact_cache(tokens, full_cache)
+    assert manager.commit() and len(history._entries) == 1
+
+    mismatched = module._StudioVLMExactCacheManager(
+        type(history)(2, 1000, step_size = 4), scope, "expanded", clone, 4
+    )
+    assert mismatched.lookup_exact_cache(tokens) == (None, 0)
+    assert mismatched.store_exact_cache(tokens[:8], cache)
+    expanded_cache = copy.deepcopy(full_cache)
+    expanded_cache[0].offset = len(tokens) + 2
+    assert not mismatched.store_exact_cache(tokens, expanded_cache)
+    assert not mismatched.commit()
+    short = module._StudioVLMExactCacheManager(history, scope, "short", clone, 4)
+    assert (short.lookup_exact_cache(list(range(7))), short.exact_cache_guard_tokens) == (
+        (None, 0),
+        0,
+    )
+
+
+def test_mlx_vlm_exact_cache_refreshes_after_completed_warm_turn(monkeypatch):
+    backend, control = _fake_vlm_cache_backend(monkeypatch)
+    sys.modules["mlx_vlm.apc"].model_apc_mode = lambda _model: "exact"
+    image = bytearray(b"a")
+    turn3, turn4 = _VLM_TURN2 + " A2 P3", _VLM_TURN2 + " A2 P3 A3 P4"
+    _cached_vlm_turn(backend, _VLM_TURN1, image)
+    _cached_vlm_turn(backend, _VLM_TURN2, image)
+    history = backend._vlm_prompt_cache_history
+    retained = next(iter(history._entries.values()))[0]
+    assert backend.last_generation_stats["timings"]["cache_n"] == 1
+    cancel = __import__("threading").Event()
+    control.update(mode = "cancel_after_update", cancel = cancel)
+    _cached_vlm_turn(backend, turn3, image, cancel_event = cancel)
+    assert next(iter(history._entries.values()))[0] is retained
+    control["mode"] = "ok"
+    _cached_vlm_turn(backend, turn3, image)
+    assert backend.last_generation_stats["timings"]["cache_n"] == 0
+    assert len(next(iter(history._entries.values()))[0].token_ids) == len(turn3) - 2
+    _cached_vlm_turn(backend, turn4, image)
+    assert backend.last_generation_stats["timings"]["cache_n"] == len(turn3) - 2
 
 
 def _mrope_model(arch = "qwen2_vl", **lm):
@@ -1255,10 +1360,13 @@ def test_mlx_vlm_mrope_admission_and_rope_suppression(monkeypatch):
     from core.inference import mlx_inference as module
 
     monkeypatch.setattr(module, "_runtime_primes_rope", lambda: True)
-    assert module._vlm_mrope_reuse_arch(_mrope_model("qwen2_vl")) == "qwen2_vl"
-    assert module._vlm_mrope_reuse_arch(_mrope_model("qwen2_5_vl")) == "qwen2_5_vl"
-    # Refused: unmeasured architecture, missing Qwen-style state, Falcon spatial state.
-    assert module._vlm_mrope_reuse_arch(_mrope_model("qwen3_5")) is None
+    for arch in ("qwen2_vl", "qwen2_5_vl", "qwen3_5"):
+        assert module._vlm_mrope_reuse_arch(_mrope_model(arch)) == arch
+    dict_config = SimpleNamespace(
+        config = {"model_type": "qwen2_vl"}, language_model = _mrope_model().language_model
+    )
+    assert module._vlm_mrope_reuse_arch(dict_config) == "qwen2_vl"
+    # Refused: missing Qwen-style state or Falcon spatial state.
     assert module._vlm_mrope_reuse_arch(_mrope_model(_rope_deltas = None)) is None
     assert module._vlm_mrope_reuse_arch(_mrope_model(_position_ids = None)) is None
     assert module._vlm_mrope_reuse_arch(_mrope_model(get_rope_index = None)) is None
