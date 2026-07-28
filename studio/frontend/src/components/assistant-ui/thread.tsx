@@ -2864,7 +2864,9 @@ const ToolStatusDisplay: FC = () => {
         )}
       >
         {isNudging ? (
-          <Spinner className="size-3.5" />
+          // label, not the default "Loading": the spinner is the badge's only
+          // role="status" region, so its name is what gets announced.
+          <Spinner className="size-3.5" label={toolStatus} />
         ) : (
           <StatusIcon className="size-3.5" />
         )}
