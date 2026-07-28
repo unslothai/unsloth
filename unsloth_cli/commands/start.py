@@ -2555,27 +2555,65 @@ def _wsl_shim_env(command: list, env: dict, unset_env: tuple) -> tuple[dict, tup
     return env, (*wsl_env_bridge, "PWD/p")
 
 
+_NPM_CMD_SHIM_HEAD = (
+    "@ECHO off\n"
+    "GOTO start\n"
+    ":find_dp0\n"
+    "SET dp0=%~dp0\n"
+    "EXIT /b\n"
+    ":start\n"
+    "SETLOCAL\n"
+    "CALL :find_dp0\n"
+)
+_NPM_NODE_CMD_SHIM = re.compile(
+    re.escape(
+        _NPM_CMD_SHIM_HEAD
+        + '\nIF EXIST "%dp0%\\node.exe" (\n'
+        + '  SET "_prog=%dp0%\\node.exe"\n'
+        + ") ELSE (\n"
+        + '  SET "_prog=node"\n'
+        + "  SET PATHEXT=%PATHEXT:;.JS;=;%\n"
+        + ")\n"
+        + "\n"
+        + 'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"'
+    )
+    + r'[ \t]+"%dp0%\\(?P<target>[^"\r\n]+)"[ \t]+%\*',
+    re.IGNORECASE,
+)
+_NPM_NATIVE_CMD_SHIM = re.compile(
+    re.escape(_NPM_CMD_SHIM_HEAD)
+    + r'"%dp0%\\(?P<target>[^"\r\n]+)"[ \t]+%\*',
+    re.IGNORECASE,
+)
+
+
 def _resolved_launch_command(executable: str, arguments: list) -> list:
     """Return an argv that preserves arguments through Windows npm shims."""
     if os.name == "nt" and Path(executable).suffix.lower() in {".cmd", ".bat"}:
         # cmd.exe treats CR/LF inside `%*` as command separators, and Windows
-        # PowerShell's native-command bridge also rewrites embedded quotes. npm's
-        # generated shim names its real entry point explicitly, so bypass the shell
-        # and let subprocess apply Windows argv quoting directly.
+        # PowerShell's native-command bridge also rewrites embedded quotes. Match
+        # cmd-shim's complete generated structure so a custom wrapper that happens
+        # to invoke a node_modules entry point keeps its setup behavior.
         with contextlib.suppress(OSError, UnicodeError):
             shim = Path(executable)
-            contents = shim.read_text(encoding = "utf-8")
-            matches = re.findall(r'"%dp0%[\\/](?P<target>[^"]+)"\s+%\*', contents)
-            for relative in reversed(matches):
-                if not relative.replace("/", "\\").lower().startswith("node_modules\\"):
+            contents = shim.read_text(encoding = "utf-8").replace("\r\n", "\n").strip()
+            for pattern, uses_node in (
+                (_NPM_NODE_CMD_SHIM, True),
+                (_NPM_NATIVE_CMD_SHIM, False),
+            ):
+                match = pattern.fullmatch(contents)
+                if match is None:
                     continue
-                target = shim.parent / Path(relative)
-                if not target.is_file():
+                relative = Path(*re.split(r"[\\/]+", match.group("target")))
+                target = (shim.parent / relative).resolve()
+                if not target.is_file() or not any(
+                    part.casefold() == "node_modules" for part in target.parts
+                ):
                     continue
                 suffix = target.suffix.lower()
-                if suffix in {".exe", ".com"}:
+                if not uses_node and suffix in {".exe", ".com"}:
                     return [str(target), *arguments]
-                if suffix in {".js", ".cjs", ".mjs"}:
+                if uses_node and suffix in {".js", ".cjs", ".mjs"}:
                     bundled_node = shim.parent / "node.exe"
                     node = str(bundled_node) if bundled_node.is_file() else shutil.which("node")
                     if node:
