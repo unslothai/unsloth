@@ -163,7 +163,9 @@ def test_force_compile_sets_need_source_build_before_vulkan_guard():
     # _NEED_LLAMA_SOURCE_BUILD/$NeedLlamaSourceBuild is already true by the time
     # the explicit-Vulkan elif guard runs, i.e. set earlier in the script.
     sh = _SETUP_SH.read_text(encoding = "utf-8")
-    force_compile_set = sh.index('if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then\n    _NEED_LLAMA_SOURCE_BUILD=true')
+    force_compile_set = sh.index(
+        'if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then\n    _NEED_LLAMA_SOURCE_BUILD=true'
+    )
     vulkan_guard = sh.index('elif [ "$_explicit_vulkan_source_build" = true ] && ')
     assert force_compile_set < vulkan_guard
 
@@ -206,9 +208,7 @@ def _source_backend_choice_block() -> str:
         ("vulkan", None, "vulkan"),
     ],
 )
-def test_legacy_llama_backend_env_falls_back_in_setup_sh(
-    cpp_backend, legacy_backend, expected
-):
+def test_legacy_llama_backend_env_falls_back_in_setup_sh(cpp_backend, legacy_backend, expected):
     # UNSLOTH_LLAMA_BACKEND was the documented override before setup.sh moved to
     # UNSLOTH_LLAMA_CPP_BACKEND; an environment that still sets only the legacy
     # name must resolve the same as if the new var had been set directly.
@@ -222,9 +222,7 @@ def test_legacy_llama_backend_env_falls_back_in_setup_sh(
     if legacy_backend is not None:
         env["UNSLOTH_LLAMA_BACKEND"] = legacy_backend
     harness = (
-        "set -u\n"
-        f"{_source_backend_choice_block()}\n"
-        'printf "%s" "$_source_backend_choice"'
+        "set -u\n" f"{_source_backend_choice_block()}\n" 'printf "%s" "$_source_backend_choice"'
     )
     out = subprocess.run(
         ["bash", "-c", harness], capture_output = True, text = True, env = env, check = True
@@ -242,8 +240,7 @@ def _run_ps1(value: str | None) -> str:
     # The override is normalized (assign + warn) at the top of the prebuilt block and
     # applied to $prebuiltArgs lower down; compose both real snippets.
     normalize = _ps1_search(
-        r"\$llamaBackend = \$sourceLlamaBackend.*?"
-        r"Ignoring UNSLOTH_LLAMA_CPP_BACKEND.*?\n\s*\}",
+        r"\$llamaBackend = \$sourceLlamaBackend.*?Ignoring UNSLOTH_LLAMA_CPP_BACKEND.*?\n\s*\}",
         re.DOTALL,
     )
     apply_flag = _ps1_search(
