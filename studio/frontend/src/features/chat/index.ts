@@ -88,6 +88,7 @@ export { StopRunningChatsDialog } from "./components/stop-running-chats-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
+export { pasteClipboardFiles } from "./utils/clipboard-files";
 export { listStoredChatThreads } from "./utils/chat-history-storage";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
 export { ArtifactCard } from "./artifacts/artifact-card";
