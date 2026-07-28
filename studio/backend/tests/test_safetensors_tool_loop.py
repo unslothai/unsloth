@@ -3661,6 +3661,8 @@ class TestGGUFSafetensorsHealingParity:
             "The first step is to search the web",
             "First, my plan is to search the web.",
             "First: search the web for release notes.",
+            "First - search the web for release notes.",
+            "First \u2013 search the web for release notes.",
             "First, our approach is to check the docs.",
             "Here's my plan",
             "Now I need to call web_search",
@@ -3708,6 +3710,18 @@ class TestGGUFSafetensorsHealingParity:
         assert not is_reprompt_repeat("I will search for C#.", "I will search for C++.")
         # A leading mark is part of the term too.
         assert not is_reprompt_repeat("I will search for .NET", "I will search for NET")
+
+    def test_reprompt_repeat_respects_word_order(self):
+        # Set overlap scores a reordered query as identical, and no threshold can
+        # tell those apart, so the comparison is sequence-based.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+
+        assert not is_reprompt_repeat(
+            "I will search for dogs not cats", "I will search for cats not dogs"
+        )
+        assert is_reprompt_repeat(
+            "I will search for cats not dogs", "I will search for cats not dogs"
+        )
         assert is_reprompt_repeat("I will search for C++!", "I will search for C++.")
 
     def test_reprompt_repeat_keeps_a_changed_query_token(self):

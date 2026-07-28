@@ -1721,6 +1721,9 @@ def test_forced_turn_suppression_covers_obligation_phrasing():
         # Subjectless plans open a new sentence just as often as a new line.
         "Okay. Need to call web_search now.",
         "Understood. Going to search now.",
+        # Subjectless modals, not just subjectless semi-modals.
+        "Must call web_search now.",
+        "Should search the web now.",
     ):
         assert suppress(stall), f"leaked {stall!r}"
 

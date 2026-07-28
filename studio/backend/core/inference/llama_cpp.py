@@ -352,7 +352,7 @@ _MAX_TOOL_CALLS_PER_TURN = 8
 #    more often than as a stall.
 _FORCED_PLAN_INTENT = re.compile(
     r"(?:^|[.!?]\s+)\s*"
-    r"(?:i\s+(?:(?:need|have|ought)\s+to|should|must)|need\s+to|going\s+to)"
+    r"(?:i\s+(?:(?:need|have|ought)\s+to|should|must)|need\s+to|going\s+to|must|should)"
     r"\s+(?:\w+\s+){0,2}?(?:call|use|run|search|fetch|render)\b",
     re.I | re.M,
 )

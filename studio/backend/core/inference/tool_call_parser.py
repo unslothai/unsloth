@@ -26,6 +26,7 @@ Missing closing tags / brackets are tolerated: models often truncate mid-stream.
 from __future__ import annotations
 
 import json
+import difflib
 import re
 from typing import Any, Optional
 
@@ -180,8 +181,8 @@ INTENT_SIGNAL = re.compile(
     # is prose) and not be followed by a determiner, which is how factual
     # openings read ("First, the answer is 42").
     r"(?:^|[.!?]\s+)\s*(?:the\s+)?first\s+step\b"
-    r"|(?:^|[.!?]\s+)\s*first[,:]?\s+(?:my|our)\s+(?:plan|approach|step)\b"
-    r"|(?:^|[.!?]\s+)\s*first[,:]?\s+"
+    r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+(?:my|our)\s+(?:plan|approach|step)\b"
+    r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+"
     r"(?!(?:the|a|an|this|that|it|there|my|your|our|his|her|their)\b)\w+"
     r"|"
     r"\b(?:step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
@@ -226,10 +227,12 @@ def is_reprompt_repeat(text: str, previous: str) -> bool:
         return False
     if a == b:
         return True
-    wa, wb = set(a.split()), set(b.split())
-    if len(wa) < 4 or len(wb) < 4:
+    ta, tb = a.split(), b.split()
+    if len(ta) < 4 or len(tb) < 4:
         return False  # too short for overlap to mean anything
-    return len(wa & wb) / len(wa | wb) >= REPROMPT_REPEAT_SIMILARITY
+    # Order-sensitive: a set ratio scores "cats not dogs" and "dogs not cats" as
+    # identical, and no threshold can tell those apart.
+    return difflib.SequenceMatcher(None, ta, tb).ratio() >= REPROMPT_REPEAT_SIMILARITY
 
 
 # Stricter sibling of ``is_reprompt_repeat``: exact equality, because this decides
