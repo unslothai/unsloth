@@ -32,9 +32,25 @@ except ImportError:
     import sys
     IS_WINDOWS = sys.platform == "win32"
     LLAMA_CPP_DEFAULT_DIR = "llama.cpp"
-from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
-from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+try:
+    from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+except Exception:
+    # bitsandbytes is optional; sentinel keeps isinstance() checks working.
+    class Bnb_Linear4bit:  # noqa: N801 - matches the imported name
+        pass
+
+
 from peft.tuners.lora import Linear as Peft_Linear
+
+try:
+    from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+except Exception:
+    # peft may not re-export Linear4bit when bnb is absent; sentinel keeps the
+    # import working.
+    class Peft_Linear4bit:  # noqa: N801 - matches the imported name
+        pass
+
+
 from typing import Optional, Callable, Union, List
 import sys
 import requests

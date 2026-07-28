@@ -133,11 +133,26 @@ def calculate_settings(
 
 
 HAS_CUDA_STREAM = False
-import bitsandbytes as bnb
+# bitsandbytes is optional (EXL3 is an alternative backend), so its import
+# must never be fatal.
+HAS_BITSANDBYTES = False
+try:
+    import bitsandbytes as bnb
 
-# https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
-HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
-get_ptr = bnb.functional.get_ptr
+    # https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
+    HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
+    get_ptr = bnb.functional.get_ptr
+    HAS_BITSANDBYTES = True
+except Exception:
+    bnb = None
+
+    def get_ptr(x):
+        # Stub: only reached on the bnb path (guarded by HAS_BITSANDBYTES).
+        import ctypes as _ctypes
+        if x is None:
+            return _ctypes.c_void_p(0)
+        return _ctypes.c_void_p(x.data_ptr())
+
 
 if DEVICE_TYPE == "xpu":
     HAS_XPU_STREAM = True
@@ -235,18 +250,27 @@ else:
 # Bitsandbytes operations
 ctypes_c_int = ctypes.c_int
 ctypes_c_int32 = ctypes.c_int32
-cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
-cdequantize_blockwise_fp16_nf4 = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
-cdequantize_blockwise_bf16_nf4 = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
+# Only bound when bitsandbytes is installed; consumers are guarded by
+# HAS_BITSANDBYTES.
+if HAS_BITSANDBYTES:
+    cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+    cdequantize_blockwise_fp16_nf4 = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
+    cdequantize_blockwise_bf16_nf4 = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
 
-if DEVICE_TYPE == "xpu":
-    # https://github.com/bitsandbytes-foundation/bitsandbytes/blob/c3b8de268fdb55a88f92feada23fc811a1e6877a/bitsandbytes/backends/xpu/ops.py#L115
-    # for xpu, inference gemv using above link
-    cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemv_4bit_inference_fp16
-    cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemv_4bit_inference_bf16
+    if DEVICE_TYPE == "xpu":
+        # https://github.com/bitsandbytes-foundation/bitsandbytes/blob/c3b8de268fdb55a88f92feada23fc811a1e6877a/bitsandbytes/backends/xpu/ops.py#L115
+        # for xpu, inference gemv using above link
+        cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemv_4bit_inference_fp16
+        cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemv_4bit_inference_bf16
+    else:
+        cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
+        cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
 else:
-    cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
-    cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
+    cdequantize_blockwise_fp32 = None
+    cdequantize_blockwise_fp16_nf4 = None
+    cdequantize_blockwise_bf16_nf4 = None
+    cgemm_4bit_inference_naive_fp16 = None
+    cgemm_4bit_inference_naive_bf16 = None
 
 
 torch_device_stream = (
@@ -308,7 +332,10 @@ def get_lora_parameters(proj):
     W = base_layer.weight
 
     # Optionally apply fake quantization to base layer weights for QAT
-    if hasattr(base_layer, "weight_fake_quantizer"):
+    # (skipped for EXL3: its weight is a placeholder, already quantized+frozen).
+    if hasattr(base_layer, "weight_fake_quantizer") and not _is_exl3_quant_state(
+        getattr(W, "quant_state", None)
+    ):
         weight_fake_quantizer = getattr(base_layer, "weight_fake_quantizer", None)
         if weight_fake_quantizer is not None:
             W = weight_fake_quantizer(W)
@@ -1042,6 +1069,70 @@ else:
         return out
 
     pass
+
+
+# EXL3 fast-path: wrap fast_dequantize/fast_gemv so an Exl3QuantState is
+# reconstructed from its trellis; everything else falls through to bnb.
+try:
+    from ..exllama.quant_linear import Exl3QuantState as _Exl3QuantState
+    from ..exllama.quant_linear import exl3_fast_dequantize as _exl3_fast_dequantize
+except Exception:
+    _Exl3QuantState = None
+    _exl3_fast_dequantize = None
+
+
+def _is_exl3_quant_state(quant_state) -> bool:
+    return _Exl3QuantState is not None and isinstance(quant_state, _Exl3QuantState)
+
+
+_bnb_fast_dequantize = fast_dequantize
+_bnb_fast_gemv = fast_gemv
+
+
+@torch.inference_mode
+def fast_dequantize(
+    W,
+    quant_state = None,
+    out = None,
+    use_global_buffer = False,
+):
+    # EXL3: reconstruct from the trellis quant_state (W is a [out, 1]
+    # placeholder). W.shape[0] == 1 is the bnb transpose signal (caller passed
+    # W.t()), so honour it to return [in, out] vs [out, in].
+    if _is_exl3_quant_state(quant_state):
+        dtype = getattr(quant_state, "dtype", None)
+        transpose = (
+            W is not None
+            and getattr(W, "dim", None) is not None
+            and W.dim() >= 1
+            and W.shape[0] == 1
+        )
+        result = _exl3_fast_dequantize(quant_state, transpose = transpose, dtype = dtype)
+        # Keep the weight on the placeholder's device (multi-GPU device_map).
+        if W is not None and getattr(W, "device", None) is not None and result.device != W.device:
+            result = result.to(W.device)
+        if out is not None:
+            out.copy_(result)
+            return out
+        return result
+    return _bnb_fast_dequantize(W, quant_state, out = out, use_global_buffer = use_global_buffer)
+
+
+@torch.inference_mode
+def fast_gemv(
+    X,
+    W,
+    quant_state,
+    out = None,
+):
+    # EXL3: reconstruct the weight and do a plain matmul (LoRA path needs a
+    # materialized weight to fuse the adapter).
+    if _is_exl3_quant_state(quant_state):
+        dtype = X.dtype
+        W_full = _exl3_fast_dequantize(quant_state, transpose = True, dtype = dtype).to(X.device)
+        result = torch_matmul(X, W_full, out = out)
+        return result
+    return _bnb_fast_gemv(X, W, quant_state, out = out)
 
 
 def fast_linear_forward(
