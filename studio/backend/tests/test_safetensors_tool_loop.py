@@ -3660,6 +3660,7 @@ class TestGGUFSafetensorsHealingParity:
             "First, analyze the attached data",
             "The first step is to search the web",
             "First, my plan is to search the web.",
+            "First: search the web for release notes.",
             "First, our approach is to check the docs.",
             "Here's my plan",
             "Now I need to call web_search",
@@ -3705,6 +3706,8 @@ class TestGGUFSafetensorsHealingParity:
         # different search plans compared equal and the retry lost its nudge.
         from core.inference.tool_call_parser import is_reprompt_repeat
         assert not is_reprompt_repeat("I will search for C#.", "I will search for C++.")
+        # A leading mark is part of the term too.
+        assert not is_reprompt_repeat("I will search for .NET", "I will search for NET")
         assert is_reprompt_repeat("I will search for C++!", "I will search for C++.")
 
     def test_reprompt_repeat_keeps_a_changed_query_token(self):

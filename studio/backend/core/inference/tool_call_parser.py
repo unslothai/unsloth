@@ -181,8 +181,8 @@ INTENT_SIGNAL = re.compile(
     # determiner, which is what factual openings look like ("First, the answer
     # is 42"). Everything else after it announces an action.
     r"(?:^|[.!?]\s+)\s*(?:the\s+)?first\s+step\b"
-    r"|(?:^|[.!?]\s+)\s*first,?\s+(?:my|our)\s+(?:plan|approach|step)\b"
-    r"|(?:^|[.!?]\s+)\s*first,?\s+"
+    r"|(?:^|[.!?]\s+)\s*first[,:]?\s+(?:my|our)\s+(?:plan|approach|step)\b"
+    r"|(?:^|[.!?]\s+)\s*first[,:]?\s+"
     r"(?!(?:the|a|an|this|that|it|there|my|your|our|his|her|their)\b)\w+"
     r"|"
     r"\b(?:step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
@@ -201,7 +201,10 @@ def is_short_intent_without_action(text: str) -> bool:
     return 0 < len(stripped) < REPROMPT_MAX_CHARS and INTENT_SIGNAL.search(stripped) is not None
 
 
-_REPEAT_EDGE_PUNCT = ".,;:!?\"'`()[]{}<>‘’“”"
+# Trailing sentence punctuation always goes; leading punctuation only when it is a
+# quote or bracket, so a token that starts with a mark (".NET") keeps it.
+_REPEAT_TRAIL_PUNCT = ".,;:!?\"'`()[]{}<>‘’“”"
+_REPEAT_LEAD_PUNCT = "\"'`([{‘“"
 # Tight on purpose. At 0.85 a single changed token in a 15-word plan still scores
 # ~0.87, so a corrected query ("CUDA 12.4" -> "12.5") read as a repeat and cost the
 # model its remaining nudge. At 0.95 only filler drift survives the comparison.
@@ -209,11 +212,14 @@ REPROMPT_REPEAT_SIMILARITY = 0.95
 
 
 # Only sentence punctuation is stripped, and only from the token edges. Removing
-# every non-word character collapsed "C++" and "C#" to the same token, so two
-# different search plans compared equal and the second one lost its nudge.
+# every non-word character collapsed "C++" and "C#" to the same token, and
+# stripping leading marks too collapsed ".NET" into "NET", so two different search
+# plans compared equal and the second one lost its nudge.
 def _normalize_for_repeat(text: str) -> str:
     return " ".join(
-        stripped for word in text.lower().split() if (stripped := word.strip(_REPEAT_EDGE_PUNCT))
+        stripped
+        for word in text.lower().split()
+        if (stripped := word.rstrip(_REPEAT_TRAIL_PUNCT).lstrip(_REPEAT_LEAD_PUNCT))
     )
 
 

@@ -350,11 +350,13 @@ _MAX_TOOL_CALLS_PER_TURN = 8
 # Sentence-initial only. An announced action is its own sentence ("I must call
 # web_search now"); the same words mid-sentence are ordinary prose that happens
 # to name a tool ("The API I should invoke is foo() because ..."), and dropping
-# that loses a real answer.
+# that loses a real answer. The verb list stays at the pre-existing six: "invoke"
+# and "query" read as ordinary technical prose ("I should invoke foo() because
+# ..."), so adding them here cost more answers than they caught stalls.
 _FORCED_PLAN_INTENT = re.compile(
     r"(?:^|[.!?]\s+)\s*"
     r"(?:i\s+(?:(?:need|have|ought)\s+to|should|must)|need\s+to|going\s+to)"
-    r"\s+(?:\w+\s+){0,2}?(?:call|use|run|search|fetch|render|invoke|query)\b",
+    r"\s+(?:\w+\s+){0,2}?(?:call|use|run|search|fetch|render)\b",
     re.I | re.M,
 )
 _FINAL_ANSWER_SIGNAL = re.compile(

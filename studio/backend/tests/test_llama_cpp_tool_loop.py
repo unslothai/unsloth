@@ -1734,6 +1734,9 @@ def test_forced_turn_suppression_covers_obligation_phrasing():
         # Obligation phrasing mid-sentence is prose that happens to name a tool.
         "The API I should invoke is foo() because it supports streaming.",
         "The tool I need to use is documented here.",
+        # "invoke"/"query" read as technical prose far more often than as a stall.
+        "I should invoke foo() because it supports streaming.",
+        "I should query the cache first for a faster path.",
         "You should call your bank about the charge.",
         # Second person is the user's obligation, not the model's plan.
         "You must call your bank about the charge.",
