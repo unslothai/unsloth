@@ -156,7 +156,7 @@ def test_show_and_embed_prefers_kernel_port_iframe(monkeypatch):
     monkeypatch.setattr(
         colab,
         "_embed_html_iframe",
-        lambda url, port: calls.append("html_iframe") or True,
+        lambda url, port, **_kwargs: calls.append("html_iframe") or True,
     )
 
     colab._show_and_embed(8888)
@@ -178,7 +178,7 @@ def test_show_and_embed_falls_back_to_html_iframe(monkeypatch):
     monkeypatch.setattr(
         colab,
         "_embed_html_iframe",
-        lambda url, port: calls.append((url, port)) or True,
+        lambda url, port, **_kwargs: calls.append((url, port)) or True,
     )
 
     colab._show_and_embed(8888)
@@ -502,7 +502,7 @@ def test_show_and_embed_skips_iframe_on_colab_when_cloudflare_ready(monkeypatch)
     monkeypatch.setattr(
         colab,
         "_embed_html_iframe",
-        lambda url, port: calls.append("html_iframe") or True,
+        lambda url, port, **_kwargs: calls.append("html_iframe") or True,
     )
 
     colab._show_and_embed(8888, cloudflare_url = "https://share.trycloudflare.com")
@@ -533,7 +533,7 @@ def test_show_and_embed_uses_kernel_helper_on_colab_runtime_despite_localhost(mo
     monkeypatch.setattr(
         colab,
         "_embed_html_iframe",
-        lambda url, port: calls.append("html_iframe") or True,
+        lambda url, port, **_kwargs: calls.append("html_iframe") or True,
     )
 
     colab._show_and_embed(8888)
@@ -564,7 +564,7 @@ def test_show_and_embed_skips_kernel_helper_for_localhost_outside_colab(monkeypa
     monkeypatch.setattr(
         colab,
         "_embed_html_iframe",
-        lambda url, port: calls.append("html_iframe") or True,
+        lambda url, port, **_kwargs: calls.append("html_iframe") or True,
     )
 
     colab._show_and_embed(8888)
@@ -590,7 +590,7 @@ def test_show_and_embed_still_embeds_when_show_link_fails(monkeypatch):
     monkeypatch.setattr(
         colab,
         "_embed_html_iframe",
-        lambda url, port: calls.append("html_iframe") or True,
+        lambda url, port, **_kwargs: calls.append("html_iframe") or True,
     )
 
     colab._show_and_embed(8888)
