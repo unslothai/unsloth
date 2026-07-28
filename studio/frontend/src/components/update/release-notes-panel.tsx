@@ -19,8 +19,7 @@ interface ReleaseNotesPanelProps {
   version: string;
   // Collapsed previews the top bullets; expanded scrolls the full notes.
   open: boolean;
-  // Desktop updater's release body. Used only when CHANGELOG.md has no
-  // section for `version`.
+  // Desktop updater's body, used only if CHANGELOG.md has no section here.
   fallbackMarkdown?: string | null;
   releaseNotesUrl?: string | null;
   className?: string;
@@ -70,15 +69,13 @@ export function ReleaseNotesPanel({
   const scrollRef = useRef<HTMLElement | null>(null);
 
   const source = notes?.matched ? notes.markdown : (fallbackMarkdown ?? null);
-  // Notes are written for the repository, so relative links have to point back
-  // at it instead of resolving against Studio's own origin.
+  // Notes target the repository, so relative links must point back at it.
   const markdown = useMemo(
     () => (source === null ? null : resolveChangelogLinks(source)),
     [source],
   );
 
-  // Notes that are only a code block or a table preview as nothing, and an
-  // empty surface is worse than no surface.
+  // Notes that are only a code block or a table preview as nothing.
   const preview = useMemo(
     () => (markdown === null ? null : releaseNotesPreview(markdown)),
     [markdown],
@@ -91,13 +88,12 @@ export function ReleaseNotesPanel({
     }
   }, [open, markdown]);
 
-  // Caller's URL wins: the API only ever returns the generic changelog, while
-  // the desktop banner passes the exact release page for this version.
+  // Caller's URL wins: the API only returns the generic changelog, while the
+  // desktop banner passes this version's release page.
   const notesUrl = releaseNotesUrl ?? notes?.releaseNotesUrl;
   const link = notesUrl ? <ChangelogLink href={notesUrl} /> : null;
 
-  // Nothing to preview yet, or nothing previewable at all: keep the collapsed
-  // popup compact.
+  // Nothing previewable yet or ever: keep the collapsed popup compact.
   if (
     !open &&
     (!markdown ||
@@ -125,17 +121,14 @@ export function ReleaseNotesPanel({
               // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-scrollable region
               tabIndex={0}
               aria-label={`Release notes for version ${version}`}
-              // Long notes scroll here instead of pushing the buttons off
-              // screen; hover-scrollbar hides the thumb at rest.
+              // Long notes scroll here instead of pushing the buttons off screen.
               className="hover-scrollbar max-h-64 min-h-0 flex-1 overflow-y-auto overscroll-contain py-3 pr-1"
               data-testid="update-release-notes-scroll"
             >
               <MarkdownPreview
                 markdown={markdown}
-                // Streamdown ships headings at mt-6 (first one clips against
-                // the scroller edge) and code at text-sm. Scale both to fit.
-                // It also clears max-width on every descendant, which lets a
-                // wide image and the link dialog escape the card.
+                // Streamdown ships headings at mt-6 and code at text-sm, and
+                // clears max-width on descendants, so rescale and re-cap both.
                 className="max-h-none overflow-visible border-0 bg-transparent p-0 text-ui-11 [&_[data-streamdown=link-safety-modal]>*]:max-w-md [&_img]:h-auto [&_img]:max-w-full [&>*:first-child]:mt-0 [&>*>*:first-child]:mt-0 [&_code]:text-[0.92em] [&_h1]:mt-4 [&_h1]:font-heading [&_h1]:text-ui-13 [&_h2]:mt-4 [&_h2]:font-heading [&_h2]:text-ui-13 [&_h3]:mt-4 [&_h3]:font-heading [&_h3]:text-ui-11 [&_pre]:text-[0.92em]"
               />
               {notes?.truncated ? (
@@ -223,8 +216,7 @@ function NotesStatus({
     return (
       <NotesMessage
         action={
-          // The changelog page can be reachable even when the lookup is not,
-          // so keep it beside the retry rather than replacing it.
+          // The changelog page may be reachable when the lookup is not.
           <span className="flex shrink-0 items-center gap-3">
             <button
               type="button"

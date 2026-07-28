@@ -23,8 +23,7 @@ interface UpdateBannerProps {
   isExternalServer?: boolean;
   updatePolicyMode: DesktopUpdatePolicyMode;
   manualReleaseUrl: string | null;
-  // Release page for this version; the notes link prefers it over the
-  // generic changelog.
+  // Release page for this version, preferred over the generic changelog.
   releasePageUrl?: string | null;
   // false fills a shared overlay stack; true self-anchors.
   positioned?: boolean;
@@ -70,8 +69,7 @@ export function UpdateBanner({
   const currentVersion = formatVersion(info?.currentVersion);
   const latestVersion = formatVersion(info?.version);
   const Icon = showFailure ? CircleAlert : Download;
-  // Keyed by the backend release, not the app's SemVer, and CHANGELOG.md
-  // headings use plain versions.
+  // Keyed by the backend release, not the app's SemVer; headings drop the v.
   const notesTargetVersion =
     (info?.pypiVersion ?? info?.version)?.replace(LEADING_V, "") ?? null;
   const notesOpen =
@@ -179,8 +177,7 @@ export function UpdateBanner({
               <ReleaseNotesPanel
                 version={notesTargetVersion}
                 open={notesOpen}
-                // Updater's release body, used only if CHANGELOG.md has no
-                // section for this version.
+                // Used only if CHANGELOG.md has no section for this version.
                 fallbackMarkdown={info?.body ?? null}
                 className="min-h-0 flex-1"
                 releaseNotesUrl={releasePageUrl ?? manualReleaseUrl}
@@ -242,8 +239,7 @@ export function UpdateBanner({
                   </Button>
                 </>
               ) : (
-                // wrap + right-align so the action pair stays together when the
-                // release-notes toggle shares the row
+                // wrap + right-align so the action pair stays together
                 <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
                   <Button
                     size="sm"

@@ -47,15 +47,13 @@ _FENCE_PATTERN = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
 # which the spec says need not be the one that opened the block.
 _RAW_HTML_OPEN = re.compile(r"^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)", re.IGNORECASE)
 _RAW_HTML_CLOSE = re.compile(r"</(pre|script|style|textarea)\s*>", re.IGNORECASE)
-# Types 3 to 5 are literal too: processing instructions, declarations such as
-# <!DOCTYPE, and CDATA. Each ends on its own delimiter. Comments (type 2) are
-# handled separately because they can also open mid-line.
+# Types 3 to 5 (processing instructions, declarations, CDATA) are literal too,
+# each ending on its own delimiter. Comments open mid-line, so are separate.
 _RAW_BLOCKS = (
     (_RAW_HTML_OPEN, _RAW_HTML_CLOSE),
     (re.compile(r"^ {0,3}<\?"), re.compile(r"\?>")),
     (re.compile(r"^ {0,3}<!\[CDATA\["), re.compile(r"\]\]>")),
-    # A declaration needs an uppercase letter, so `<!note` stays ordinary text
-    # rather than hiding every release below it.
+    # A declaration needs an uppercase letter, so `<!note` stays ordinary text.
     (re.compile(r"^ {0,3}<![A-Z]"), re.compile(r">")),
 )
 # Type 6 blocks run to the next blank line, so `<details>` only holds Markdown
@@ -71,13 +69,11 @@ _NOT_PARAGRAPH = re.compile(
 _PARAGRAPH_TEXT = re.compile(r"^ {0,3}(?![-*+>]([ \t]|$)|\d{1,9}[.)]([ \t]|$))\S")
 # A line of = or - under a paragraph line makes that line a heading.
 _SETEXT_UNDERLINE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
-# A paragraph inside a blockquote can be continued by lines without the marker,
-# so those lines belong to the quote rather than to the document.
+# A quoted paragraph continues on unmarked lines, which belong to the quote.
 _BLOCK_QUOTE = re.compile(r"^ {0,3}>")
 _QUOTE_MARKER = re.compile(r"^ {0,3}>[ \t]?")
-# A list item holds the lines indented to where its own content starts, so a
-# heading at that column belongs to the item, not to the document. The marker
-# needs whitespace after it, so `2.0` is a version rather than an item.
+# A heading at an item's content column belongs to that item, not the document.
+# The marker needs whitespace after it, so `2.0` is a version, not an item.
 _LIST_ITEM = re.compile(r"^[ \t]*(?P<marker>[-*+]|\d{1,9}[.)])(?P<space>[ \t]+|$)")
 _THEMATIC_BREAK = re.compile(r"^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
 # Content indented more than this after a marker is an indented code block, so
@@ -92,8 +88,8 @@ menuitem nav noframes ol optgroup option p param search section summary table
 tbody td tfoot th thead title tr track ul
 """.split()
 )
-# Type 7: any other complete tag alone on a line, which also runs to a blank
-# line. It cannot interrupt a paragraph, so it only counts after a break.
+# Type 7: any other complete tag alone on a line. It cannot interrupt a
+# paragraph, so it only counts after a break.
 _HTML_ATTRIBUTE = (
     r"""(?:\s+[a-zA-Z_:][a-zA-Z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)"""
 )
@@ -210,11 +206,9 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             )
 
     for line in _markdown_lines(text):
-        # The line as list tracking sees it: blank where the renderer shows
-        # nothing, so hidden lines neither open nor close an item.
+        # The line as list tracking sees it: blank wherever nothing renders.
         structural = ""
-        # Raw HTML first: its contents are literal, so a fence inside it is not
-        # a fence. Only the text after the closing tag can carry a heading.
+        # Raw HTML first: its contents are literal, so a fence in it is not one.
         if in_raw_html is not None:
             visible, in_raw_html = _strip_raw_html(line, in_raw_html)
         elif in_html_block:
@@ -223,8 +217,7 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             visible = ""
         elif (fence := _FENCE_PATTERN.match(line)) and not in_comment:
             open_fence = _next_fence_state(open_fence, fence.group("marker"), fence.group("rest"))
-            # Hidden from heading matching, but its indent still closes a list
-            # item it sits to the left of.
+            # Hidden from heading matching, but its indent still closes items.
             visible = ""
             structural = line
         elif open_fence:
@@ -234,11 +227,8 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             visible, in_comment = _strip_comments(line, in_comment)
             # Nor is anything inside a raw HTML block such as <pre>.
             visible, in_raw_html = _strip_raw_html(visible, in_raw_html)
-            # Taken before the block opener is hidden: like a fence opener, it
-            # renders as nothing but its indentation still closes a list item it
-            # sits to the left of. Blanking it first made the tracker read the
-            # whole block as blank, so the item stayed open and a release
-            # heading below it was suppressed as nested content.
+            # Taken before the opener is hidden: it renders as nothing, but its
+            # indentation still closes a list item it sits to the left of.
             structural = visible
             if visible and in_raw_html is None and _opens_html_block(visible, after_paragraph):
                 in_html_block = True
@@ -252,30 +242,25 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             and paragraph != []
             and _SETEXT_UNDERLINE.match(visible) is not None
             and (visible.strip()[:1] == "-")
-            # Never a release boundary while a list item is open: dedented out
-            # of it the dashes are a thematic break, and at its content column
-            # the heading belongs to the item.
+            # Never a boundary inside a list item: dedented the dashes are a
+            # thematic break, and at the content column the heading is nested.
             and not lists.columns
         )
         if setext:
             if version is not None:
-                # The whole paragraph is the heading, and it was read as body
-                # as it arrived.
+                # The whole paragraph is the heading, read as body on arrival.
                 del body[len(body) - len(paragraph) :]
             flush()
-            # A wrapped heading keeps every line, so its first token is still
-            # the version.
+            # A wrapped heading keeps every line, so token one is the version.
             heading = "\n".join(paragraph)
             version = _version_from_heading(heading)
             body = []
             paragraph = []
             after_paragraph = False
             continue
-        # A dashed underline is not a list marker, so lists are tracked only
-        # once setext is ruled out.
+        # A dashed underline is not a list marker, so track lists after setext.
         lists = _open_lists(structural, lists, after_paragraph)
-        # Indented to an open item's content column, a heading belongs to that
-        # item and is not a release boundary.
+        # At an open item's content column a heading is nested, not a boundary.
         if lists.columns and _indent_width(visible) >= lists.columns[0]:
             match = None
         # The line at its own nesting level: past the container's indentation
@@ -284,12 +269,10 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
         content = _strip_indent(visible, column)
         if (item := _LIST_ITEM.match(content)) is not None:
             content = content[item.end() :]
-        # Only ordinary text continues a paragraph. A heading, a block or an
-        # indented code line ends one. Four spaces past the container, not past
-        # the margin: inside a list item the item's own indent does not count.
+        # Only ordinary text continues a paragraph. Indented code counts four
+        # spaces past the container, so an item's own indent does not count.
         indented_code = not after_paragraph and _indent_width(visible) - column >= 4
-        # `===` with no paragraph above it is ordinary text, not an underline.
-        # A row of dashes there is a thematic break either way.
+        # `===` needs a paragraph above it; dashes are a break either way.
         underline = _SETEXT_UNDERLINE.match(visible) is not None and (
             after_paragraph or visible.strip()[:1] == "-"
         )
@@ -301,19 +284,16 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             and _NOT_PARAGRAPH.match(visible) is None
             and not underline
         )
-        # A quote's paragraph runs on until something other than plain text, and
-        # every line of it belongs to the quote. An empty quote holds no
-        # paragraph, so the line below it starts one of the document's own.
+        # A quote's paragraph runs on over plain text and owns every line of it.
+        # An empty quote holds none, so the line below starts the document's.
         flush_left = visible.lstrip(" \t")
         in_quote = (
             _may_be_lazy(_quote_content(visible))
             if _BLOCK_QUOTE.match(visible)
             else in_quote and _may_be_lazy(flush_left)
         )
-        # The lines a later underline turns into one heading. A paragraph starts
-        # only on plain text, so `- first` over dashes is a list and a rule.
-        # Once open it runs on until something interrupts it, at whatever
-        # indentation the wrapped lines carry.
+        # The lines a later underline turns into one heading. A paragraph opens
+        # only on plain text and then runs on until something interrupts it.
         continues = (
             not _interrupts_paragraph(flush_left)
             if paragraph
@@ -345,8 +325,7 @@ def find_release_notes(text: str, version: str) -> ChangelogEntry | None:
     """
     entries = parse_changelog(text)
     for entry in entries:
-        # An exact heading wins wherever it sits, so `## 1.0` is never shadowed
-        # by an earlier `## 1.0.0`.
+        # An exact heading wins, so `## 1.0` is never shadowed by `## 1.0.0`.
         if entry.version == version:
             return entry
 
@@ -387,9 +366,8 @@ def get_release_notes(version: str, refresh: bool = False) -> dict[str, Any]:
                 source = candidate.source,
             )
 
-    # Nothing matched: a remote failure still matters, since the bundled copy
-    # cannot know a version newer than the install. Reporting it lets the UI
-    # offer a retry instead of claiming no notes were published.
+    # Nothing matched: the bundled copy cannot know a version newer than the
+    # install, so report a remote failure and let the UI offer a retry.
     return _notes_response(version = version, error = remote.error)
 
 
@@ -398,15 +376,13 @@ def get_remote_changelog(refresh: bool = False) -> ChangelogSource:
     global _remote_cache, _remote_fetching
 
     if refresh:
-        # Only a cached failure is dropped: a successful fetch stays cached so
-        # retries cannot be used to hammer the remote.
+        # Only a cached failure is dropped, so retries cannot hammer the remote.
         with _cache_condition:
             if _remote_cache and _remote_cache.source.text is None:
                 _remote_cache = None
 
-    # A caller waits for an in-flight fetch only as long as that fetch may
-    # take. Past that the request is answered from the local copy instead of
-    # holding a worker behind a stalled upstream.
+    # A caller waits for an in-flight fetch only as long as it may take, then
+    # answers locally rather than holding a worker behind a stalled upstream.
     deadline = time.monotonic() + CHANGELOG_TIMEOUT_SECONDS + 1
     while True:
         now = time.monotonic()
@@ -439,9 +415,8 @@ def get_remote_changelog(refresh: bool = False) -> ChangelogSource:
             _remote_cache = _ChangelogCacheEntry(source = source, expires_at = time.monotonic() + ttl)
         return source
     finally:
-        # Releasing the single-flight flag only on the Exception path would
-        # strand it on BaseException (KeyboardInterrupt, CancelledError), and
-        # every later caller would then wait out the full deadline forever.
+        # Released here, not on the Exception path: stranding the single-flight
+        # flag on BaseException makes every later caller wait out the deadline.
         with _cache_condition:
             _remote_fetching = False
             _cache_condition.notify_all()
@@ -456,8 +431,7 @@ def _fetch_remote_changelog() -> ChangelogSource:
         url,
         headers = {
             "User-Agent": "unsloth-studio-update-check",
-            # A compressing proxy would otherwise hand back bytes we decode as
-            # text and serve as notes.
+            # Or a compressing proxy hands back bytes we would decode as notes.
             "Accept-Encoding": "identity",
         },
     )
@@ -474,8 +448,7 @@ def _fetch_remote_changelog() -> ChangelogSource:
                         source = None,
                         error = "Release notes took too long to load.",
                     )
-                # One read must not outlast the deadline either: the socket
-                # timeout is per operation and would otherwise restart it.
+                # The socket timeout is per operation, so re-cap it each read.
                 _limit_read(response, remaining)
                 chunk = response.read1(_CHANGELOG_CHUNK_BYTES)
                 if not chunk:
@@ -549,10 +522,9 @@ def _local_changelog_candidates() -> list[Path]:
     if override:
         candidates.append(Path(override).expanduser())
 
-    # changelog.py -> utils -> backend -> studio -> repo root. Repo root first:
-    # in a source checkout the editable file must win over the build snapshot
-    # that packaging writes into studio/. Installed, those outer levels are
-    # site-packages, so they are only used when a checkout marker is there.
+    # changelog.py -> utils -> backend -> studio -> repo root. Repo root first
+    # so a checkout's editable file beats the snapshot packaging writes into
+    # studio/. Installed, those outer levels are site-packages, hence the marker.
     parents = Path(__file__).resolve().parents
     for index in (3, 2, 1, 4):
         if index >= len(parents):
@@ -594,10 +566,8 @@ def _next_fence_state(open_fence: str | None, marker: str, rest: str) -> str | N
 
 def _code_span_ranges(line: str) -> list[tuple[int, int]]:
     """Code span bounds. A run of backticks closes only on a run of its length."""
-    # Collect the runs once. Rescanning the rest of the line for every opener
-    # made a line of distinct unmatched runs quadratic in its length: 321 KB of
-    # runs of 1, 2, 3 ... backticks took 7.7s, and notes are reparsed per
-    # request, so one malformed remote changelog could tie up backend workers.
+    # Collect the runs once: rescanning per opener is quadratic on a line of
+    # distinct unmatched runs, and notes are reparsed on every request.
     runs: list[tuple[int, int]] = []
     index = 0
     while index < len(line):
@@ -608,8 +578,7 @@ def _code_span_ranges(line: str) -> list[tuple[int, int]]:
         runs.append((index, ticks))
         index += ticks
 
-    # A run only ever closes on a later run of the same length, so walking one
-    # cursor per length is enough: a length that runs out stays out.
+    # A run closes only on a later run of its length, so one cursor per length.
     by_length: dict[int, list[int]] = {}
     for position, (_, ticks) in enumerate(runs):
         by_length.setdefault(ticks, []).append(position)
@@ -664,8 +633,7 @@ def _strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
 
     if _COMMENT_BLOCK_OPEN.match(line):
         # `<!-->` and `<!--->` are complete comments, so the closer may overlap
-        # the opener. Searching past the opener would miss them and swallow
-        # every later release.
+        # the opener; searching past it would swallow every later release.
         return ("", _COMMENT_CLOSE not in line)
 
     visible: list[str] = []
@@ -686,8 +654,7 @@ def _strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
         visible.append(line[index:opening])
         close = line.find(_COMMENT_CLOSE, opening + len(_COMMENT_OPEN))
         if close == -1:
-            # Unterminated inline comment: a heading or a blank line below
-            # ends the paragraph, so nothing beyond this line is hidden.
+            # Unterminated inline comment: it hides this line and no more.
             break
         index = close + len(_COMMENT_CLOSE)
     return "".join(visible), False
@@ -750,11 +717,8 @@ def _may_be_lazy(line: str) -> bool:
         and _NOT_PARAGRAPH.match(line) is None
         and _SETEXT_UNDERLINE.match(line) is None
         and _FENCE_PATTERN.match(line) is None
-        # Types 1 to 6 interrupt a paragraph, so a `<div>` to the left of an
-        # open item closes it. Reading it as lazy text kept the item open and
-        # suppressed a release heading below the block as nested content.
-        # Type 7 cannot interrupt, and after_paragraph is the only case this
-        # helper is asked about, so it is deliberately not included here.
+        # Types 1 to 6 interrupt a paragraph, so a `<div>` left of an open item
+        # closes it. Type 7 cannot, and is deliberately excluded here.
         and not _opens_html_block(line, True)
     )
 
@@ -767,15 +731,14 @@ def _open_lists(line: str, state: _ListState, after_paragraph: bool) -> _ListSta
     """
     columns = state.columns
     if not line.strip():
-        # A blank line leaves the list open, unless the item is still empty:
-        # an item may begin with one blank line, and content after that is
-        # outside it.
+        # A blank line leaves the list open, unless the item is still empty: an
+        # item may begin with one blank line, and later content is outside it.
         return _ListState(columns[:-1] if state.empty_item else columns)
     indent = _indent_width(line)
     item = None if _THEMATIC_BREAK.match(line) else _LIST_ITEM.match(line)
     empty = item is not None and not line[item.end() :].strip()
-    # Only a marker inside the item holding the paragraph has to interrupt it;
-    # one to the left closes that item and opens a sibling instead.
+    # Only a marker inside the paragraph's item interrupts it; one to the left
+    # closes that item and opens a sibling.
     if (
         item is not None
         and after_paragraph
@@ -874,8 +837,7 @@ def _notes_response(
     source: str | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
-    # A section staged as only an HTML comment renders as nothing, so it counts
-    # as unpublished rather than as empty notes.
+    # A section that renders as nothing counts as unpublished, not as empty.
     if markdown and not _renders_visibly(markdown):
         markdown = None
         source = None

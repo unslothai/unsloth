@@ -20,8 +20,7 @@ export interface ReleaseNotes {
 export type ReleaseNotesState = "idle" | "loading" | "ready" | "error";
 
 // Desktop auto-auth installs its token after first paint, so a popup shown at
-// startup can ask before one exists. Wait briefly instead of recording a
-// failure the user would have to clear by hand.
+// startup can ask before one exists. Wait briefly rather than fail.
 const AUTH_POLL_MS = 250;
 const AUTH_POLL_LIMIT = 40;
 
@@ -64,8 +63,7 @@ async function fetchReleaseNotes(
   refresh = false,
 ): Promise<ReleaseNotes | null> {
   const query = `version=${encodeURIComponent(version)}${refresh ? "&refresh=true" : ""}`;
-  // authFetch, not fetch: an expired access token is refreshed and retried
-  // instead of leaving the panel stuck on its error state.
+  // authFetch, not fetch: an expired token is refreshed and retried.
   const res = await authFetch(apiUrl(`/api/studio/release-notes?${query}`));
   if (!res.ok) {
     throw new Error(`Release notes request failed: ${res.status}`);
@@ -82,8 +80,7 @@ export function useReleaseNotes({
   const [notes, setNotes] = useState<ReleaseNotes | null>(null);
   // Version the current state belongs to; a change invalidates it.
   const requestedVersionRef = useRef<string | null>(null);
-  // Identifies one request, so an earlier response cannot overwrite a later
-  // one when two are in flight for the same version.
+  // Identifies one request, so an earlier response cannot overwrite a later one.
   const requestIdRef = useRef(0);
 
   const load = useCallback((target: string, refresh = false) => {
@@ -134,14 +131,12 @@ export function useReleaseNotes({
   const retry = useCallback(() => {
     if (version) {
       requestedVersionRef.current = null;
-      // Bypass the cached remote failure, or retry cannot recover until it
-      // expires.
+      // Bypass the cached remote failure, or retry waits for it to expire.
       load(version, true);
     }
   }, [version, load]);
 
-  // Never hand back another version's notes: on the render where `version`
-  // changes, state still describes the previous one until the effect runs.
+  // Never hand back another version's notes: state lags `version` by a render.
   const matchesVersion = notes !== null && notes.version === version;
   return {
     state: notes !== null && !matchesVersion ? "loading" : state,

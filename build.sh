@@ -104,8 +104,7 @@ else
 fi
 
 # 4. Build wheel/sdist. The build backend snapshots CHANGELOG.md into the
-# studio package (see _changelog_build.py), so release notes still render
-# offline. CHANGELOG.md at the repo root stays the one file to edit.
+# studio package (see _changelog_build.py) so release notes render offline.
 python -m build
 
 # Drop the snapshot so a source checkout never serves a stale copy.

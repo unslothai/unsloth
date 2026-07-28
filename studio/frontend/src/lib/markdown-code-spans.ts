@@ -2,10 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Code span boundaries, the way CommonMark defines them: a run of backticks is
- * closed only by a run of exactly the same length. A regular expression cannot
- * express that without lookbehind, which older Safari refuses to parse, so the
- * runs are scanned by hand.
+ * CommonMark code span boundaries: a backtick run is closed only by a run of
+ * the same length. Expressing that needs lookbehind, which older Safari
+ * refuses to parse, so runs are scanned by hand.
  */
 
 export interface CodeSpan {
@@ -16,7 +15,6 @@ export interface CodeSpan {
   content: string;
 }
 
-/** Length of the backtick run starting at `index`. */
 function runLength(text: string, index: number): number {
   let end = index;
   while (text[end] === "`") {
@@ -25,7 +23,7 @@ function runLength(text: string, index: number): number {
   return end - index;
 }
 
-/** True when the character at `index` is escaped by an odd run of slashes. */
+/** True when `index` is escaped by an odd run of backslashes. */
 function escaped(text: string, index: number): boolean {
   let slashes = 0;
   while (text[index - 1 - slashes] === "\\") {
@@ -34,10 +32,7 @@ function escaped(text: string, index: number): boolean {
   return slashes % 2 === 1;
 }
 
-/**
- * CommonMark strips one leading and trailing space when the content has both
- * and is not all spaces, so `` ` a ` `` renders as "a".
- */
+/** CommonMark drops one space of padding, so `` ` a ` `` renders as "a". */
 function stripPadding(content: string): string {
   if (
     content.length > 1 &&
@@ -66,8 +61,7 @@ export function codeSpans(text: string): CodeSpan[] {
     let cursor = contentStart;
     let closed = false;
     while (cursor < text.length) {
-      // Escapes do not apply inside a span, so a run after a backslash still
-      // closes it.
+      // Escapes do not apply inside a span, so a run after a backslash closes it.
       if (text[cursor] !== "`") {
         cursor += 1;
         continue;
@@ -86,7 +80,7 @@ export function codeSpans(text: string): CodeSpan[] {
       cursor += candidate;
     }
     if (!closed) {
-      // Nothing closes this run, so it is literal text: carry on after it.
+      // Nothing closes this run: it is literal text, carry on after it.
       index = contentStart;
     }
   }

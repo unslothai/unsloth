@@ -14,16 +14,12 @@ const INDENTED_CODE_INDENT = 4;
 
 // At most three leading spaces: deeper is indented code, not a fence.
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
-// An ATX heading needs an ASCII space or tab after the marker, the same rule
-// _HEADING_PATTERN uses. `\s` also matches a non-breaking space, so prose
-// beginning `## Important change` with one read as a heading and was dropped,
-// leaving a prose-only release with no collapsed preview at all.
+// An ATX heading needs an ASCII space or tab after the marker, as in
+// _HEADING_PATTERN. `\s` would also match a non-breaking space and eat prose.
 const HEADING = /^#{1,6}[ \t]+/;
 const BULLET = /^(?:[-*+]|(\d{1,9})[.)])[ \t]+(.*)$/;
-// At most three leading spaces, as everywhere else: deeper is indented code.
-// Accepting any run let `    > - sample output` inside a code sample shed its
-// indentation and enter the collector, so a release with no real bullets
-// showed code as its summary.
+// At most three leading spaces, as everywhere else: deeper is indented code,
+// so a quoted line inside a code sample cannot reach the collector.
 const BLOCKQUOTE = /^ {0,3}>[ \t]?/;
 // "- - -" and "***" are horizontal rules, not bullets and not notes.
 const THEMATIC_BREAK =
@@ -53,20 +49,18 @@ const AUTOLINK = /<([a-zA-Z][a-zA-Z0-9+.-]*:[^\s<>]*|[^\s<>@]+@[^\s<>@]+)>/g;
 // the spec says need not be the one that opened the block.
 const RAW_HTML_OPEN = /^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)/i;
 const RAW_HTML_CLOSE = /<\/(pre|script|style|textarea)\s*>/i;
-// Types 3 to 5 are literal too: processing instructions, declarations such as
-// <!DOCTYPE, and CDATA. Each ends on its own delimiter. Comments (type 2) are
-// handled separately because they can also open mid-line.
+// Types 3 to 5 (processing instructions, declarations, CDATA) are literal too,
+// each ending on its own delimiter. Comments open mid-line, so are handled
+// separately.
 const RAW_BLOCKS: [RegExp, RegExp][] = [
   [RAW_HTML_OPEN, RAW_HTML_CLOSE],
   [/^ {0,3}<\?/, /\?>/],
   [/^ {0,3}<!\[CDATA\[/, /\]\]>/],
-  // A declaration needs an uppercase letter, so `<!note` stays ordinary text
-  // rather than emptying the preview of every bullet below it.
+  // A declaration needs an uppercase letter, so `<!note` stays ordinary text.
   [/^ {0,3}<![A-Z]/, />/],
 ];
 // Type 6 and 7 blocks run to the next blank line, so `<details>` holds Markdown
-// only once a blank line has closed the block. Type 7 (any other complete tag
-// alone on a line) cannot interrupt a paragraph.
+// only after one. Type 7 (any complete tag alone) cannot interrupt a paragraph.
 const HTML_BLOCK_OPEN = /^ {0,3}<\/?([a-zA-Z][a-zA-Z0-9-]*)(?=[\s/>]|$)/;
 const HTML_ATTRIBUTE =
   "(?:\\s+[a-zA-Z_:][a-zA-Z0-9_.:-]*(?:\\s*=\\s*(?:[^\\s\"'=<>`]+|'[^']*'|\"[^\"]*\"))?)";
@@ -94,8 +88,7 @@ const ITALIC_STAR = /\*(?=\S)([^*\n]*?\S)\*/g;
 const ITALIC_UNDERSCORE = /(^|[^\w])_(?=\S)([^_\n]*?\S)_(?=[^\w]|$)/g;
 const BACKTICK = /`/g;
 // A closer is a run of the same length, so `` `x` `` keeps its backticks.
-// Streamdown renders `AT&amp;T` as "AT&T", so the collapsed preview decodes
-// entities too. Parked code spans are restored afterwards and stay literal.
+// Streamdown renders `AT&amp;T` as "AT&T", so the preview decodes entities too.
 const NAMED_ENTITIES: Record<string, string> = {
   amp: "&",
   lt: "<",
@@ -135,10 +128,7 @@ const ABBREVIATIONS = new Set([
 const INITIAL = /^[A-Za-z]\.$/;
 const MIN_LEAD_CHARS = 12;
 
-/**
- * Strip tags until stable. The result is rendered as text, never as HTML, so
- * this is defence in depth against a removal re-forming a tag.
- */
+/** Strip tags until stable, so a removal cannot re-form a tag. */
 function stripHtmlTags(text: string): string {
   let out = text;
   let previous: string;
@@ -167,7 +157,6 @@ interface Bullet {
   indent: number;
 }
 
-/** One space of padding is dropped when a code span has it on both sides. */
 /** Whether a reference points at a definition the document actually has. */
 function definedLabel(
   labels: Set<string> | undefined,
@@ -201,15 +190,13 @@ function decodeEntity(match: string, body: string): string {
 
 /** Inline markdown stripped to plain text. */
 function toPlainText(markdown: string, labels?: Set<string>): string {
-  // Park code spans first: their contents are literal, so tags, links and
-  // emphasis inside them must survive every transformation below.
+  // Park code spans first: their contents are literal and must survive below.
   const codes: string[] = [];
   const park = (text: string): string => {
     codes.push(text);
     return `\uE000${codes.length - 1}\uE001`;
   };
-  // Escaped punctuation is literal too, so `\*not italic\*` keeps its stars
-  // and `\`` stays a backtick instead of being stripped as a delimiter.
+  // Escaped punctuation is literal too, so `\*not italic\*` keeps its stars.
   const parked = parkCodeSpans(markdown, park).replace(ESCAPE, (_match, char) =>
     park(char),
   );
@@ -253,26 +240,20 @@ interface ContentLine {
   quoted: boolean;
 }
 
-/**
- * Lines outside fenced code blocks, with list indentation preserved. Only a
- * same-character run at least as long closes a fence, so a ``` sample inside a
- * ```` block does not end it early.
- */
+/** `line` with its comments removed, and whether a comment stays open. */
 function stripCommentSpans(
   line: string,
   startInComment: boolean,
 ): [string, boolean] {
-  // Only a comment that starts a line opens a block. One written mid-sentence
-  // is inline HTML: a heading or a blank line below ends the paragraph, so it
-  // hides its own line at most.
+  // Only a comment starting a line opens a block; one written mid-sentence is
+  // inline HTML and hides its own line at most.
   if (startInComment) {
     // The closing line belongs to the block, tail included.
     return ["", !line.includes(COMMENT_CLOSE)];
   }
   if (COMMENT_BLOCK_OPEN.test(line)) {
     // `<!-->` and `<!--->` are complete comments, so the closer may overlap the
-    // opener. Searching past the opener would miss them and hide every later
-    // release, and would also disagree with the branch above.
+    // opener; searching past it would hide every later release.
     return ["", !line.includes(COMMENT_CLOSE)];
   }
 
@@ -348,8 +329,7 @@ interface ScanState {
  * for fenced content, which is skipped so it cannot split a bullet.
  */
 function visibleText(line: string, state: ScanState): string | null {
-  // Raw HTML first: its contents are literal, so a fence inside it is not a
-  // fence. Only the text after the closing tag is a note.
+  // Raw HTML first: its contents are literal, so a fence inside it is not one.
   if (state.inRawHtml !== null) {
     const [after, stillInRaw] = stripRawHtml(line, state.inRawHtml);
     state.inRawHtml = stillInRaw;
@@ -361,8 +341,7 @@ function visibleText(line: string, state: ScanState): string | null {
     return "";
   }
   const fence = state.inComment ? null : FENCE.exec(line);
-  // A backtick fence whose info string holds a backtick is not a fence, so the
-  // line is prose and the lines below it are not code.
+  // A backtick fence whose info string holds a backtick is prose, not a fence.
   if (
     fence &&
     (state.openFence !== null || opensFence(fence[1] ?? "", fence[2] ?? ""))
@@ -419,7 +398,6 @@ function closesDeepFence(marker: string, line: ContentLine): boolean {
   );
 }
 
-/** Fence state after a ``` or ~~~ line. A closer carries nothing after it. */
 /** A backtick fence's info string may not contain a backtick. */
 function opensFence(marker: string, rest: string): boolean {
   return marker[0] !== "`" || !rest.includes("`");
@@ -468,8 +446,8 @@ function contentLines(markdown: string): ContentLine[] {
     const quoted = BLOCKQUOTE.test(visible);
     const stripped = visible.replace(BLOCKQUOTE, "");
     const indent = stripped.length - stripped.trimStart().length;
-    // Only ordinary text continues a paragraph. A heading, a block or an
-    // indented code line (four spaces, outside a paragraph) ends one.
+    // Only ordinary text continues a paragraph; a heading or indented code
+    // line (four spaces, outside a paragraph) ends one.
     const startsCode = !state.afterParagraph && indent >= INDENTED_CODE_INDENT;
     state.afterParagraph = !HEADING_LINE.test(stripped) && !startsCode;
     lines.push({ text: stripped.trim(), indent, quoted });
@@ -528,8 +506,7 @@ function takeBullet(
 ): void {
   flush(collector);
   const item = toPlainText(text, labels);
-  // A quoted list is example output, not a change, so it never competes with
-  // the release's own bullets. It stays as prose for a section without any.
+  // A quoted list is example output: prose at best, never a headline bullet.
   if (!line.quoted) {
     collector.current = { text: item, indent: line.indent };
   } else if (item) {
@@ -572,12 +549,8 @@ function collectBullets(markdown: string): {
 
   const lines = contentLines(markdown);
   const labels = new Set<string>();
-  // Skips the same code the pass below skips. A definition-shaped line inside
-  // an indented code block or a deep fence is literal text, so CommonMark
-  // leaves a later `[Beta] support` unresolved with its brackets showing;
-  // recording the label anyway made toPlainText strip them in the preview.
-  // A real definition takes at most three spaces of indentation, so the indent
-  // test cannot reject one.
+  // Skips the same code the pass below skips: a definition-shaped line inside
+  // code is literal, and a real definition never indents past three spaces.
   let labelFence: string | null = null;
   for (const line of lines) {
     if (labelFence !== null) {
@@ -613,7 +586,7 @@ function collectBullets(markdown: string): {
       continue;
     }
     // A fence indented past three spaces belongs to a list item, so the line
-    // scanner did not see it. Its contents are code either way.
+    // scanner missed it. Its contents are code either way.
     if (deepFence !== null) {
       if (closesDeepFence(deepFence, line)) {
         deepFence = null;
@@ -625,9 +598,8 @@ function collectBullets(markdown: string): {
       deepFence = opener;
       continue;
     }
-    // An indented code block renders as code, so a "- cmd" line inside one is
-    // not a bullet. Indentation cannot start code inside an open bullet or
-    // paragraph, where it is just a wrapped line.
+    // An indented code block renders as code, so a "- cmd" line in one is not
+    // a bullet. Inside an open bullet or paragraph it is just a wrapped line.
     const insideBlock =
       collector.current !== null || collector.paragraph !== "";
     if (!insideBlock && line.indent >= INDENTED_CODE_INDENT) {
@@ -635,8 +607,7 @@ function collectBullets(markdown: string): {
     }
     const bullet = BULLET.exec(line.text);
     // Only an ordered list starting at 1 may interrupt a paragraph, so
-    // "2. Restart Studio" under prose is part of that prose. A list item is
-    // not a paragraph: the next item starts whatever its number.
+    // "2. Restart Studio" under prose is prose. A list item is not a paragraph.
     const interrupts = collector.current === null && collector.paragraph !== "";
     if (
       bullet &&
@@ -664,12 +635,10 @@ export function releaseNotesPreview(
     return { items: [], remaining: 0 };
   }
 
-  // The desktop updater body arrives with CRLF, and sentinels would collide
-  // with parked code spans.
+  // The updater body arrives with CRLF; sentinels would collide with parking.
   const text = markdown.replace(LINE_ENDINGS, "\n").replace(SENTINELS, "");
   const { bullets, prose } = collectBullets(text);
-  // Shallowest bullet defines top level, so a uniformly indented list still
-  // previews instead of being read as all-nested.
+  // Shallowest bullet defines top level, so a uniformly indented list previews.
   const baseIndent = bullets.reduce(
     (min, bullet) => Math.min(min, bullet.indent),
     Number.POSITIVE_INFINITY,

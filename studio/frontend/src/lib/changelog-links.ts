@@ -2,11 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Release notes are authored in CHANGELOG.md, where a relative link means
- * "somewhere in the Unsloth repository". Rendered inside Studio those links
- * would resolve against Studio's own origin, so the renderer blocks them or
- * points them at a Studio route. Rewriting them to absolute repository URLs
- * first makes them behave the way GitHub renders the same file.
+ * A relative link in CHANGELOG.md means "somewhere in the Unsloth repository",
+ * but inside Studio it would resolve against Studio's own origin. Rewriting to
+ * absolute repository URLs makes them behave the way GitHub renders the file.
  */
 
 import {
@@ -36,11 +34,9 @@ const INDENTED_CODE = /^(?: {4}|\t)/;
 // CommonMark type 1 HTML blocks show their contents verbatim.
 const RAW_HTML_OPEN = /^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)/i;
 const RAW_HTML_CLOSE = /<\/(pre|script|style|textarea)\s*>/i;
-// Type 6 and 7 blocks are literal too, and run to the next blank line rather
-// than to a closing tag, so `<details>` only holds Markdown once a blank line
-// has closed the block. Type 7 (any other complete tag alone on a line) cannot
-// interrupt a paragraph. The backend parser and the collapsed preview already
-// read these notes this way, so a link inside one is text in all three.
+// Type 6 and 7 blocks are literal too and run to the next blank line, not to a
+// closing tag, so `<details>` holds Markdown only after a blank line. Type 7
+// (any other complete tag alone on a line) cannot interrupt a paragraph.
 const HTML_BLOCK_OPEN = /^ {0,3}<\/?([a-zA-Z][a-zA-Z0-9-]*)(?=[\s/>]|$)/;
 const HTML_ATTRIBUTE =
   "(?:\\s+[a-zA-Z_:][a-zA-Z0-9_.:-]*(?:\\s*=\\s*(?:[^\\s\"'=<>`]+|'[^']*'|\"[^\"]*\"))?)";
@@ -67,10 +63,8 @@ const COMMENT_CLOSE = "-->";
 
 /**
  * `line` with its commented spans blanked, and whether a comment stays open.
- *
- * Commented content is not rendered, so nothing in it is a fence, a block or a
- * code span. Lengths are preserved so an offset in the result still points at
- * the same character of the original line.
+ * Commented content renders as nothing, so it holds no fence, block or code
+ * span. Lengths are preserved so offsets still line up with the original.
  */
 function maskComments(line: string, inComment: boolean): [string, boolean] {
   let out = "";
@@ -93,7 +87,7 @@ function maskComments(line: string, inComment: boolean): [string, boolean] {
     }
     out += line.slice(index, start);
     // `<!-->` and `<!--->` are complete comments, so the closer may overlap the
-    // opener. Searching past it would miss them and blank the rest of the file.
+    // opener; searching past it would blank the rest of the file.
     const close = line.indexOf(COMMENT_CLOSE, start + 2);
     if (close < 0) {
       return [out + " ".repeat(line.length - start), true];
@@ -132,21 +126,20 @@ function absolute(target: string, image: boolean): string {
     return target;
   }
   try {
-    // GitHub resolves a leading slash against the repository root, not the
-    // site root, so it is appended to the base rather than replacing its path.
+    // A leading slash means the repository root, not the site root, so append
+    // it to the base instead of replacing the base path.
     const resolved = new URL(
       trimmed.replace(LEADING_SLASHES, ""),
       base,
     ).toString();
-    // `../` can climb out of the repository. Leave those alone rather than
-    // inventing a target outside it.
+    // `../` can climb out of the repository: leave those alone.
     return resolved.startsWith(base) ? resolved : target;
   } catch {
     return target;
   }
 }
 
-/** True when the character at `index` is escaped by an odd run of slashes. */
+/** True when `index` is escaped by an odd run of backslashes. */
 function isEscaped(line: string, index: number): boolean {
   let slashes = 0;
   while (line[index - 1 - slashes] === "\\") {
@@ -155,7 +148,6 @@ function isEscaped(line: string, index: number): boolean {
   return slashes % 2 === 1;
 }
 
-/** The destination itself, without its angle brackets. */
 function unwrap(target: string): string {
   return target.startsWith("<") && target.endsWith(">")
     ? target.slice(1, -1)
@@ -219,8 +211,8 @@ interface Classified {
 }
 
 /**
- * Sorts lines into Markdown and code, and masks the code so a code span cannot
- * be paired across it. Offsets are preserved, so a span found in the mask is at
+ * Sorts lines into Markdown and code, masking the code so a code span cannot
+ * pair across it. Offsets are preserved, so a span found in the mask sits at
  * the same place in the document.
  */
 function classify(lines: string[]): Classified {
@@ -239,10 +231,8 @@ function classify(lines: string[]): Classified {
   lines.forEach((original, index) => {
     const start = offset;
     offset += original.length + 1;
-    // A comment cannot open a fence, and a fence hides a comment opener, so the
-    // two have to be resolved in that order. Reading the hidden delimiter as a
-    // real fence left openFence set, and every visible line below was then
-    // classified as code and its links were never resolved.
+    // A comment cannot open a fence and a fence hides a comment opener, so
+    // resolve them in that order or a hidden delimiter opens a phantom fence.
     const fenceSource = inComment ? null : FENCE.exec(original);
     if (inRawHtml) {
       inRawHtml = !RAW_HTML_CLOSE.test(original);
@@ -251,8 +241,8 @@ function classify(lines: string[]): Classified {
       return;
     }
     if (inHtmlBlock) {
-      // A blank line is the only thing that ends a type 6 or 7 block, so a
-      // fence inside one is not a fence and a link inside one is not a link.
+      // Only a blank line ends a type 6 or 7 block, so nothing inside one is
+      // a fence or a link.
       inHtmlBlock = !!original.trim();
       masked.push(" ".repeat(original.length));
       afterParagraph = false;
@@ -342,9 +332,8 @@ export function resolveChangelogLinks(markdown: string): string {
   const lines = markdown.replace(LINE_ENDINGS, "\n").split("\n");
   const { text, masked, definition, comments } = classify(lines);
   // Scanned over the whole document, so a span may cross a line break.
-  // Commented ranges join the code spans: both are places the renderer
-  // never shows, so a link written in one is not a link the reader can
-  // follow and rewriting it would only mutate hidden text.
+  // Commented ranges join them: the renderer shows neither, so a link in one
+  // is not followable and rewriting it would only mutate hidden text.
   const spans = [...codeSpans(masked), ...comments].sort(
     (a, b) => a.start - b.start,
   );
@@ -357,8 +346,8 @@ export function resolveChangelogLinks(markdown: string): string {
     cursor += line.length + 1;
   }
 
-  // Which definitions are used as images has to be known before rewriting
-  // them, because only images resolve against the raw host.
+  // Only images resolve against the raw host, so collect the image labels
+  // before rewriting any definition.
   const imageLabels = new Set<string>();
   for (const index of text) {
     const line = lines[index] ?? "";

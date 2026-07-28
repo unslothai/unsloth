@@ -21,8 +21,8 @@ export type UpdateStatus =
 export interface UpdateInfo {
   version: string;
   currentVersion: string;
-  // Backend release this desktop build pins. The app version is SemVer, while
-  // CHANGELOG.md is keyed by the backend version, so notes look up this one.
+  // Backend release this desktop build pins. The app version is SemVer, but
+  // CHANGELOG.md is keyed by this one, so notes look it up.
   pypiVersion?: string;
   body?: string;
   date?: string;
@@ -401,8 +401,7 @@ export function useTauriUpdate(isExternalServer = false) {
     updatePolicy.mode === "manual_linux_package" && info
       ? manualReleasePageUrl(updatePolicy, info.version)
       : null;
-  // Release page for the offered version, on every platform. Used for the
-  // notes link, where the generic changelog is not the right destination.
+  // Release page for the offered version, on every platform, for the notes link.
   const releasePageUrl = info ? manualReleasePageUrl(updatePolicy, info.version) : null;
 
   return {

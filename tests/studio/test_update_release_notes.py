@@ -86,8 +86,7 @@ def isolated_changelog(changelog_module, tmp_path, monkeypatch):
 
 def test_only_real_release_headings_become_sections(changelog_module):
     versions = [entry.version for entry in changelog_module.parse_changelog(SAMPLE)]
-    # "Format"/"Unreleased" are not versions, and the fenced 9999.9.9 is sample
-    # markdown inside a code block.
+    # "Format"/"Unreleased" are not versions, and 9999.9.9 is fenced sample.
     assert versions == ["2026.7.6", "2026.7.5"]
 
 
@@ -229,9 +228,7 @@ def test_commented_out_sections_are_not_releases(changelog_module, text):
 def test_repo_root_changelog_is_preferred_over_the_build_snapshot(changelog_module):
     """The build backend writes studio/CHANGELOG.md; the root file must win."""
     # Compare resolved paths, not name suffixes: the checkout is not always
-    # called "unsloth" (a worktree or a fork clone is not) and the separator is
-    # a backslash on Windows, so a string suffix match fails for two unrelated
-    # reasons that have nothing to do with the ordering under test.
+    # called "unsloth" and Windows separates with a backslash.
     paths = [Path(p).resolve() for p in changelog_module._local_changelog_candidates()]
     root = paths.index((REPO / changelog_module.CHANGELOG_FILENAME).resolve())
     packaged = paths.index((REPO / "studio" / changelog_module.CHANGELOG_FILENAME).resolve())
@@ -435,8 +432,7 @@ def test_notes_surface_is_borderless_and_lifts_in_dark_mode():
     assert "border border-border" not in src, "the notes box is a fill, not a bordered box"
     # Lighter than the card behind it, rather than a darker inset.
     assert "dark:bg-white/[0.06]" in src
-    # Streamdown's mt-6 pins the first heading to the scroller edge and clips
-    # its ascenders.
+    # Streamdown's mt-6 clips the first heading against the scroller edge.
     assert "[&>*>*:first-child]:mt-0" in src
     # Shared utility: thumb hidden until the notes are hovered.
     assert "hover-scrollbar" in src
@@ -463,8 +459,7 @@ def test_collapsed_panel_previews_the_top_bullets():
     panel = PANEL.read_text(encoding = "utf-8")
     assert "releaseNotesPreview" in panel
     assert 'data-testid="update-release-notes-summary"' in panel
-    # Notes are fetched when the popup appears, since the collapsed preview
-    # needs them too.
+    # Fetched when the popup appears: the collapsed preview needs them too.
     assert "enabled: true" in panel
 
 
@@ -498,8 +493,7 @@ def test_banners_toggle_inline_release_notes(banner):
     src = banner.read_text(encoding = "utf-8")
     assert "ReleaseNotesPanel" in src
     assert "Show release notes" in src and "Hide release notes" in src
-    # Expansion state is keyed by version, so a new offer cannot leave the
-    # previous release's notes on screen.
+    # Keyed by version, so a new offer cannot leave old notes on screen.
     assert "notesVersion" in src
 
 
@@ -515,8 +509,7 @@ def test_notes_toggle_shares_the_action_row(banner, toggle, action):
     src = banner.read_text(encoding = "utf-8")
     row = src.index("mt-4 flex")
     assert row < src.index(toggle) < src.index(action)
-    # Same type size as the actions it sits beside; nowrap stops a label
-    # breaking across lines inside the row.
+    # Same type size as the actions beside it; nowrap keeps labels on one line.
     toggle_line = next(line for line in src.splitlines() if toggle in line)
     toggle_block = src[src.index("Button", row) : src.index(toggle_line)]
     assert "text-ui-13" in toggle_block and "whitespace-nowrap" in toggle_block
@@ -757,8 +750,8 @@ def test_expanded_popup_fits_a_short_viewport(banner):
     """A window under roughly 430px high used to push the card's title and
     dismiss control above the top of the screen."""
     panel = PANEL.read_text(encoding = "utf-8")
-    # The notes region shrinks inside a card capped to the viewport, so the
-    # header and the actions stay on screen at any height.
+    # The notes region shrinks inside the capped card, so the header and the
+    # actions stay on screen at any height.
     assert "min-h-0 flex-1" in panel, "notes height must follow the viewport"
     src = banner.read_text(encoding = "utf-8")
     assert "max-h-[calc(100dvh_-_2rem)]" in src, "card is the backstop on tiny viewports"
@@ -1202,8 +1195,7 @@ def test_a_lowercase_declaration_is_not_a_raw_block(changelog_module):
     assert [
         e.version for e in changelog_module.parse_changelog("<!DOCTYPE\n## 9.9.9\n>\n\n## 1.0\n")
     ] == ["1.0"]
-    # The collapsed preview reads the same notes, so it needs the same rule or
-    # it drops bullets the expanded view shows.
+    # The collapsed preview needs the same rule or it drops visible bullets.
     assert "<![A-Z]" in PREVIEW.read_text(encoding = "utf-8")
 
 
@@ -1273,14 +1265,13 @@ def test_link_resolver_reads_comments_before_fences():
     order matters both ways, so a comment opener inside a real fence is not a
     comment either."""
     links = LINKS.read_text(encoding="utf-8")
-    # Fence state is read before comments are masked, and suppressed while one
-    # is open, which is the same order the collapsed preview uses.
+    # Fence state is read before comments are masked and suppressed while one
+    # is open, the same order the collapsed preview uses.
     assert "const fenceSource = inComment ? null : FENCE.exec(original);" in links
     # Masking happens only after the in-fence early return.
     fence_return = links.index("// Fenced content is literal")
     assert links.index("const [line, stillInComment] = maskComments(") > fence_return
-    # Commented ranges join the code spans, so a link the reader cannot see is
-    # not rewritten either.
+    # Commented ranges join the code spans, so a hidden link is left alone.
     assert "const spans = [...codeSpans(masked), ...comments].sort(" in links
 
 
@@ -1325,8 +1316,7 @@ def test_an_html_block_to_the_left_of_a_list_item_closes_it(changelog_module):
     item stayed open and the release below the block was swallowed."""
     text = "## 3.0\n\n- item\n<div>\nhidden\n</div>\n\n  ## 2.0\n\n- two\n\n## 1.0\n\n- one\n"
     assert [e.version for e in changelog_module.parse_changelog(text)] == ["3.0", "2.0", "1.0"]
-    # Without the block the heading really is nested in the item, so it stays
-    # suppressed: this is not a blanket "indented headings count" change.
+    # Without the block the heading really is nested, so it stays suppressed.
     nested = "## 3.0\n\n- item\n\n  ## 2.0\n\n- two\n\n## 1.0\n\n- one\n"
     assert [e.version for e in changelog_module.parse_changelog(nested)] == ["3.0", "1.0"]
     # Ordinary lazy continuation is untouched.
