@@ -8763,9 +8763,8 @@ async def openai_chat_completions(
             tools_to_use = await _select_request_tools(
                 payload, tools_on = _tools_on, mcp_allowed = _mcp_allowed
             )
-            # Selected tools (client + MCP-discovered schemas) are rendered into
-            # the chat template as prompt text and the nudge, so neutralize their
-            # control markers here too, matching the non-loop path (#7066).
+            # Selected tools (client + MCP schemas) render into the chat template
+            # and the nudge as prompt text, as on the non-loop path (#7066).
             from core.inference.chat_template_helpers import neutralize_tools_control_markup
 
             tools_to_use = neutralize_tools_control_markup(tools_to_use)
@@ -10127,9 +10126,8 @@ async def openai_chat_completions(
         _sf_tools_to_use = await _select_request_tools(
             payload, tools_on = _sf_tools_on, mcp_allowed = _sf_mcp_allowed
         )
-        # Selected tools (client + MCP-discovered schemas) reach local chat
-        # template rendering and the nudge, so neutralize their control markers
-        # here too, matching the non-loop path (#7066).
+        # Selected tools (client + MCP schemas) reach local template rendering
+        # and the nudge, as on the non-loop path (#7066).
         from core.inference.chat_template_helpers import neutralize_tools_control_markup
 
         _sf_tools_to_use = neutralize_tools_control_markup(_sf_tools_to_use)
@@ -10593,9 +10591,8 @@ async def openai_chat_completions(
         else:
             gen_kwargs["tools"] = payload.tools
         if gen_kwargs.get("tools"):
-            # Local chat templates render tool schemas as prompt text; neutralize
-            # control markers so a schema carrying </think> / <|im_start|> cannot
-            # bypass the #7066 protection applied to messages above.
+            # Local templates render tool schemas as prompt text, so a schema
+            # carrying </think> would bypass the #7066 message protection above.
             from core.inference.chat_template_helpers import neutralize_tools_control_markup
             gen_kwargs["tools"] = neutralize_tools_control_markup(gen_kwargs["tools"])
 
@@ -11856,10 +11853,9 @@ def _responses_marker_holdback(text: str, markers: tuple[str, ...]) -> int:
             if marker.startswith(suffix):
                 return size
             # A partial close tag may follow an opening quote (`echo "</thi`).
-            # Require a NON-EMPTY marker prefix after the quote: a bare trailing
-            # quote is not marker context, and holding it would reorder visible
-            # text vs a following tool-call delta (``marker.startswith("")`` is
-            # always True, so the empty prefix must be excluded).
+            # The prefix after the quote must be NON-EMPTY (startswith("") is
+            # always True): a bare trailing quote is not marker context, and
+            # holding it reorders visible text vs a following tool-call delta.
             if len(suffix) > 1 and suffix[0] in "\"'`" and marker.startswith(suffix[1:]):
                 return size
     return 0
@@ -12066,8 +12062,8 @@ def _is_literal_think_close(buffer: str, close_idx: int) -> bool:
     if not before or not after:
         return False
     if before == after and before in "\"'`" and _quoted_close_opens_answer(buffer, close_idx):
-        # The closing quote runs straight into a word, so it opens the ANSWER
-        # instead of closing a mention: the tag was structural.
+        # Closing quote runs into a word: it opens the ANSWER, so the tag was
+        # structural.
         return False
     if (
         before == after
@@ -12077,13 +12073,12 @@ def _is_literal_think_close(buffer: str, close_idx: int) -> bool:
         # Mismatched delimiter RUN lengths are not a quoted mention either.
         return False
     if before == after and before in "\"'`":
-        # A symmetric ESCAPED pair around the tag is a serialized quotation
-        # (``\"</think>\"``), literal on its own without an outer span (#7334).
+        # A symmetric ESCAPED pair is a serialized quotation (``\"</think>\"``),
+        # literal on its own without an outer span (#7334).
         if after_escaped and _trailing_backslash_run(buffer[: close_idx - 1]) % 2 == 1:
             return True
-        # Otherwise only literal when the leading quote OPENS a span (odd count
-        # of that quote char before the tag). An even count means the quote
-        # closed a prior span, so this close tag is structural.
+        # Otherwise literal only when the leading quote OPENS a span (odd count
+        # before the tag); an even count closed a prior span, so this is structural.
         count = _count_quote_delimiters(buffer[:close_idx], before, nxt = buffer[close_idx])
         if count % 2 == 1:
             return True
@@ -12112,10 +12107,9 @@ class _ResponsesReasoningExtractor:
     ) -> None:
         self._buffer = ""
         # Classification context for the CURRENT reasoning block. The literal
-        # </think> check only needs the parity of ``` fences and of the flanking
-        # quote char over the already-consumed text; keep O(1) parity counters
-        # instead of the whole consumed string so a long reasoning block stays
-        # linear (a growing prefix string was O(n^2) per block).
+        # </think> check only needs ``` fence and flanking-quote parity over the
+        # consumed text, so keep O(1) counters instead of the consumed string
+        # (which made a long block O(n^2)).
         self._reset_span()
         # reasoning_prefilled: the template inserts an unclosed <think>, so output begins inside
         # the block; start in reasoning until the first close tag. Existing callers pass False.
@@ -12125,35 +12119,30 @@ class _ResponsesReasoningExtractor:
 
     def _reset_span(self) -> None:
         """Clear the consumed-span parity state at a structural block boundary."""
-        # Completed non-overlapping "```" fences in the consumed span, plus the
-        # greedy carry (0-2 trailing backticks not yet forming a fence). Together
-        # they reproduce ``consumed.count("```")`` incrementally across chunks.
+        # Completed "```" fences in the consumed span plus the greedy carry (0-2
+        # trailing backticks), reproducing ``consumed.count("```")`` incrementally.
         self._fence_count = 0
         self._fence_state = 0
-        # Single-char quote counts over the consumed span (backtick doubles as a
-        # quote flank, mirroring the old ``span.count(before, ...)``).
+        # Quote counts over the consumed span (backtick doubles as a quote flank).
         self._quote_counts = {'"': 0, "'": 0, "`": 0}
-        # An apostrophe is only a delimiter when it is not inside a word, so one
-        # sitting at the very end of the consumed span waits for its right
-        # neighbour (the next chunk, or the live buffer). Holds the char to its
-        # LEFT while it waits, else None (#7334).
+        # An apostrophe is only a delimiter outside a word, so one at the very end
+        # of the span waits for its right neighbour (next chunk or live buffer).
+        # Holds the char to its LEFT while it waits, else None (#7334).
         self._pending_apostrophe_prev = None
         # Backslashes ending the consumed span: a quote opening the live buffer
         # is escaped when this run plus the buffer's own is odd (#7334).
         self._trailing_backslashes = 0
         # Whether ``_span_last_char`` is itself escaped, for a tag at buffer[0].
         self._span_last_char_escaped = False
-        # Last char of the consumed span, needed as ``before`` when a close tag
-        # sits at buffer start (index 0) so its flank is the span's last char.
+        # Last char of the consumed span: the ``before`` flank for a close tag at
+        # buffer start (index 0).
         self._span_last_char = ""
-        # Length of the run of ``_span_last_char`` ending the consumed span, so
-        # a leading delimiter run split across a delta boundary still pairs
-        # against the trailing one by length (#7334).
+        # Run length of ``_span_last_char``, so a leading delimiter run split
+        # across a delta boundary still pairs against the trailing one (#7334).
         self._span_trailing_run = 0
         # Resume points for the two look-ahead scans behind a held close tag
-        # ("does a ``` follow" / "does another close tag follow that ```").
-        # While a tag is held at buffer[0] the buffer only grows at the tail, so
-        # rescanning the whole prefix every delta is O(n^2) (#7334).
+        # ("does a ``` follow" / "does another close tag follow that ```"): the
+        # buffer only grows at the tail, so rescanning it every delta is O(n^2).
         self._fence_scan_from = 0
         self._close_scan_from = 0
 
@@ -12164,14 +12153,14 @@ class _ResponsesReasoningExtractor:
         escapes = self._trailing_backslashes
         self._quote_counts['"'] += _count_quote_delimiters(chunk, '"', prev_escapes = escapes)
         self._quote_counts["`"] += _count_quote_delimiters(chunk, "`", prev_escapes = escapes)
-        # Resolve the apostrophe held at the previous chunk's edge, now that its
-        # right neighbour has arrived, then count this chunk minus its own edge.
+        # Resolve the apostrophe held at the previous edge now its right neighbour
+        # has arrived, then count this chunk minus its own edge.
         if self._pending_apostrophe_prev is not None:
             if not (_is_word_char(self._pending_apostrophe_prev) and _is_word_char(chunk[0])):
                 self._quote_counts["'"] += 1
             self._pending_apostrophe_prev = None
-        # An escaped trailing apostrophe is no delimiter at all, so it needs no
-        # right neighbour and stays inside the counted body.
+        # An escaped trailing apostrophe is no delimiter, so it needs no right
+        # neighbour and stays inside the counted body.
         if chunk.endswith("'") and _trailing_backslash_run(chunk[:-1], escapes) % 2 == 0:
             body = chunk[:-1]
             self._pending_apostrophe_prev = body[-1] if body else self._span_last_char
@@ -12183,13 +12172,13 @@ class _ResponsesReasoningExtractor:
         )
         self._span_last_char_escaped = _trailing_backslash_run(chunk[:-1], escapes) % 2 == 1
         self._trailing_backslashes = _trailing_backslash_run(chunk, escapes)
-        # Carry the pending backticks so a fence straddling the chunk boundary is
-        # counted exactly as ``str.count("```")`` over the full concatenation.
+        # Carry pending backticks so a fence straddling the boundary counts
+        # exactly as ``str.count("```")`` over the concatenation.
         combined = "`" * self._fence_state + chunk
         self._fence_count += combined.count("```")
         self._fence_state = (len(combined) - len(combined.rstrip("`"))) % 3
-        # Trailing delimiter run, continued across the boundary when the whole
-        # chunk is that same char (#7334).
+        # Trailing delimiter run, continued across the boundary when the whole chunk
+        # is that same char (#7334).
         run = len(chunk) - len(chunk.rstrip(chunk[-1]))
         if run == len(chunk) and self._span_last_char == chunk[-1]:
             self._span_trailing_run += run
@@ -12227,8 +12216,8 @@ class _ResponsesReasoningExtractor:
         """
         if not self._fence_parity_odd(buffer[:close_idx]):
             return False
-        # Resume from the last scanned offset (never before the tag) so a held
-        # tag does not re-scan the whole growing buffer on every delta (#7334).
+        # Resume from the last scanned offset (never before the tag) so a held tag
+        # does not re-scan the growing buffer every delta (#7334).
         start = close_idx if close_idx > self._fence_scan_from else self._fence_scan_from
         fence_at = buffer.find("```", start)
         if fence_at == -1:
@@ -12237,9 +12226,8 @@ class _ResponsesReasoningExtractor:
             nxt = len(buffer) - 2
             self._fence_scan_from = nxt if nxt > close_idx else close_idx
             return True
-        # Park the fence cursor ON the marker: it must be re-found every delta
-        # while the tag stays held, and a cursor pointing at a real ``` cannot
-        # skip one, so the re-find becomes O(1) instead of O(distance).
+        # Park the cursor ON the marker: it is re-found every delta while the tag
+        # is held, and a cursor on a real ``` cannot skip one, so that is O(1).
         if fence_at > self._fence_scan_from:
             self._fence_scan_from = fence_at
         after = fence_at + 3
@@ -12262,11 +12250,9 @@ class _ResponsesReasoningExtractor:
         # Fenced-code parity: consumed fences plus any completed by the pending
         # carry meeting the live buffer, then fences fully inside the buffer.
         if self._fence_parity_odd(buffer[:close_idx]):
-            # Deferring costs a growing held buffer, and re-concatenating it on
-            # every delta is quadratic, so a model that opens a fence and never
-            # closes it stalls the whole answer instead of streaming it. Past
-            # the cap, resolve structurally: finish() would reach the same
-            # verdict for a fence that never closes, just at end of stream.
+            # Deferring grows the held buffer quadratically, so a fence that never
+            # closes stalls the whole answer. Past the cap resolve structurally,
+            # the same verdict finish() would reach, just earlier.
             return len(buffer) - close_idx <= _RESPONSES_FENCE_HOLD_LIMIT
         end = close_idx + len(_RESPONSES_THINK_CLOSE)
         before = buffer[close_idx - 1] if close_idx > 0 else self._span_last_char
@@ -12277,19 +12263,19 @@ class _ResponsesReasoningExtractor:
         if not before or not after:
             return False
         if before == after and before in "\"'`" and _quoted_close_opens_answer(buffer, close_idx):
-            # The closing quote runs straight into a word, so it opens the
-            # ANSWER instead of closing a mention: the tag was structural.
+            # Closing quote runs into a word: it opens the ANSWER, so the tag was
+            # structural.
             return False
         if before == after and before in "\"'`":
-            # Mismatched delimiter RUN lengths are not a quoted mention either
-            # (see _quoted_close_runs_differ). The leading run may have started
-            # in the consumed span, so carry its trailing run in.
+            # Mismatched RUN lengths are no quoted mention (see
+            # _quoted_close_runs_differ); the leading run may have started in the
+            # consumed span, so carry its trailing run in.
             carry = self._span_trailing_run if self._span_last_char == before else 0
             if _quoted_close_runs_differ(buffer, close_idx, before, carry):
                 return False
         if after_escaped and before == after and before in "\"'`":
-            # Symmetric escaped pair around the tag: a serialized quotation, so
-            # literal even without an outer span (see _is_literal_think_close).
+            # Symmetric escaped pair: a serialized quotation, literal even without
+            # an outer span (see _is_literal_think_close).
             before_escaped = (
                 _trailing_backslash_run(buffer[: close_idx - 1], self._trailing_backslashes) % 2
                 == 1
@@ -12299,10 +12285,8 @@ class _ResponsesReasoningExtractor:
             if before_escaped:
                 return True
         if before == after and before in "\"'`":
-            # Odd count of the flanking quote before the tag means it opens a
-            # span, so the close tag is quoted content (not a structural close).
-            # Mismatched flanks are not a quoted mention (see
-            # _is_literal_think_close), so they fall through as structural.
+            # An odd count of the flanking quote before the tag means it opens a
+            # span, so the close tag is quoted content, not a structural close.
             count = self._quote_counts[before] + _count_quote_delimiters(
                 buffer[:close_idx],
                 before,
@@ -12311,8 +12295,8 @@ class _ResponsesReasoningExtractor:
                 prev_escapes = self._trailing_backslashes,
             )
             if before == "'" and self._pending_apostrophe_prev is not None:
-                # The span's held apostrophe: the live buffer supplies the right
-                # neighbour it was waiting for.
+                # The live buffer supplies the right neighbour the span's held
+                # apostrophe was waiting for.
                 if not (_is_word_char(self._pending_apostrophe_prev) and _is_word_char(buffer[0])):
                     count += 1
             if count % 2 == 1:
@@ -12328,13 +12312,11 @@ class _ResponsesReasoningExtractor:
         visible_parts: list[str] = []
         structured_reasoning = _coerce_responses_reasoning_text(reasoning_content)
         if structured_reasoning:
-            # Structured reasoning never uses think tags as delimiters (the
-            # channel already is reasoning), so a literal marker here is data,
-            # not markup: emit it verbatim. Rewriting it bought no parsing
-            # protection and altered model output for clients that persist,
-            # compare or copy reasoning. Only the synthetic <think> transport
-            # (llama_cpp.py) still neutralizes, where the tag IS the delimiter
-            # (#7334).
+            # This channel is not delimited by think markup, so a literal marker
+            # here is data: emit it verbatim. Rewriting buys no protection and
+            # corrupts output for clients that persist or compare reasoning. Only
+            # the synthetic <think> transport (llama_cpp.py), where the tag IS the
+            # delimiter, still neutralizes (#7334).
             reasoning_parts.append(structured_reasoning)
         if text:
             self._buffer += text
@@ -12350,9 +12332,9 @@ class _ResponsesReasoningExtractor:
                     if _should_hold_quoted_think_close(
                         self._buffer, close_idx, self._span_last_char
                     ):
-                        # The opening quote may already be consumed (tag at index
-                        # 0), in which case nothing is emitted and the tag alone
-                        # is held until the next delta reveals its right flank.
+                        # With the opening quote already consumed (tag at index 0)
+                        # nothing is emitted: the tag is held until the next delta
+                        # reveals its right flank.
                         hold_start = close_idx - 1 if close_idx > 0 else 0
                         reasoning_parts.append(
                             self._buffer[:hold_start].replace(_RESPONSES_THINK_OPEN, "")
@@ -12366,20 +12348,17 @@ class _ResponsesReasoningExtractor:
                     # echo, script discussion), not the end of reasoning (#7066).
                     if self._think_close_is_literal(self._buffer, close_idx):
                         if self._fence_unresolved_at_close(self._buffer, close_idx):
-                            # The close sits in a ``` fence that has not closed in
-                            # what we have so far. Defer the decision: emit the
-                            # reasoning up to the tag and keep the tag + rest
-                            # buffered. A later fence close makes it a real literal;
-                            # otherwise finish() falls back to structural so an
-                            # unclosed fence cannot hide the answer (#7066).
+                            # The close sits in a ``` fence not yet closed, so defer:
+                            # emit reasoning up to the tag, buffer the rest. A later
+                            # fence close makes it literal; otherwise finish() falls
+                            # back to structural so it cannot hide the answer (#7066).
                             reasoning_parts.append(
                                 self._buffer[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
                             )
                             self._add_to_span(self._buffer[:close_idx])
                             self._buffer = self._buffer[close_idx:]
-                            # Re-base the look-ahead cursors onto the trimmed
-                            # buffer: the tag now sits at index 0 and everything
-                            # already scanned stays scanned (#7334).
+                            # Re-base the cursors onto the trimmed buffer: the tag
+                            # is now at index 0 and scanned text stays scanned.
                             self._rebase_scan_cursors(close_idx)
                             break
                         from core.inference.chat_template_helpers import (
@@ -12463,10 +12442,8 @@ class _ResponsesReasoningExtractor:
                 break
             literal = self._think_close_is_literal(buf, close_idx)
             if literal and self._fence_unresolved_at_close(buf, close_idx):
-                # Fence fallback: the close is inside a ``` fence that never
-                # closed, so no more bytes can resolve it. Treat it as the
-                # structural block end rather than swallowing the answer as
-                # reasoning (#7066).
+                # The fence never closed and no more bytes can resolve it, so treat
+                # the close as structural rather than swallow the answer (#7066).
                 literal = False
             if literal:
                 from core.inference.chat_template_helpers import (
@@ -12480,10 +12457,9 @@ class _ResponsesReasoningExtractor:
                 buf = buf[consumed:]
                 continue
             reasoning_parts.append(buf[:close_idx].replace(_RESPONSES_THINK_OPEN, ""))
-            # Strip the OPEN marker too. feed() consumes it by switching
-            # back into reasoning, but this tail is emitted as-is, so a
-            # `<think>` after the structural close reached the answer body
-            # raw -- the one place the extractor leaked markup (#7334).
+            # Strip the OPEN marker too: feed() consumes it by re-entering
+            # reasoning, but this tail is emitted as-is, so a `<think>` after the
+            # structural close reached the answer body raw (#7334).
             visible_parts.append(
                 buf[close_idx + len(_RESPONSES_THINK_CLOSE) :]
                 .replace(_RESPONSES_THINK_CLOSE, "")
@@ -12512,7 +12488,7 @@ class _ResponsesReasoningExtractor:
         held, self._buffer = self._buffer, ""
         if not held:
             return "", ""
-        # The buffer is gone, so look-ahead cursors into it no longer apply.
+        # The buffer is gone, so the look-ahead cursors no longer apply.
         self._rebase_scan_cursors(len(held))
         if self._in_reasoning:
             reasoning, visible, closed = self._resolve_held_reasoning(held)
@@ -13546,11 +13522,10 @@ async def _responses_stream(
                         },
                     )
                 if delta.get("tool_calls"):
-                    # Tool-call delta: flush the held think-marker prefix first
-                    # so the reasoning item keeps its output_index before the
-                    # call. A marker cannot continue across the item boundary,
-                    # so a quoted prefix such as `echo "</thi` is plain text and
-                    # belongs before the call, not after it.
+                    # Tool-call delta: flush the held think-marker prefix so the
+                    # reasoning item keeps its output_index before the call. A
+                    # marker cannot continue across an item boundary, so a quoted
+                    # prefix like `echo "</thi` is plain text and belongs first.
                     _held_tail, _held_visible = extractor.flush_pending()
                     if _held_visible:
                         visible_delta = _held_visible + visible_delta
@@ -14492,11 +14467,9 @@ async def anthropic_messages(
     # The server-side agentic loop doesn't support multimodal input -- matches
     # the `not image_b64` gate in /v1/chat/completions. requested_studio_tools and
     # the mixed-mode rejection were computed before the switch above.
-    # Client tool schemas are rendered into the llama-server chat template as
-    # prompt text, so neutralize control markers here too (mirrors the OpenAI
-    # passthrough path); otherwise an Anthropic tool description / enum carrying
-    # </think> or <|im_start|> bypasses the #7066 protection applied above to the
-    # translated messages.
+    # Tool schemas render into the llama-server template as prompt text (as on the
+    # OpenAI passthrough path), so an Anthropic tool description carrying </think>
+    # would bypass the #7066 protection applied above to the translated messages.
     from core.inference.chat_template_helpers import neutralize_tools_control_markup
 
     openai_client_tools = [
@@ -16055,9 +16028,8 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     messages = _strip_provider_synthetic_tool_history(
         _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
     )
-    # Neutralize think / ChatML markers in user/system/tool turns so a literal
-    # </think> (or <|im_start|>) in the prompt cannot close a thinking block or
-    # inject ChatML turns when echoed mid-reasoning (#7066).
+    # So a literal </think> or <|im_start|> in the prompt cannot close a thinking
+    # block or inject ChatML turns when echoed mid-reasoning (#7066).
     from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
 
     messages = neutralize_control_markup_in_messages(messages)
@@ -16205,9 +16177,8 @@ def _build_openai_passthrough_body(
     if payload.tool_choice == "none" and not _has_openai_tool_history(payload.messages):
         tools = None
     if tools:
-        # Client tool schemas are rendered into the llama-server chat template
-        # as prompt text, so neutralize control markers there too or a schema
-        # carrying </think> / <|im_start|> bypasses the #7066 protection.
+        # Tool schemas render into the llama-server template as prompt text, so a
+        # schema carrying </think> would bypass the #7066 protection.
         from core.inference.chat_template_helpers import neutralize_tools_control_markup
         tools = neutralize_tools_control_markup(tools)
     # Forward per-request reasoning fields (enable_thinking / reasoning_effort /

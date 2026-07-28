@@ -637,10 +637,9 @@ function estimateTokenCount(text: string): number | undefined {
  * Unknown part types are skipped — better to drop a stray field than
  * stringify an object into the rendered chat.
  *
- * `closeOffsets` reports where in the returned text each wrapper `</think>`
- * starts, so the caller can register them as known boundaries. They are ours,
- * not model markers: leaving them to the raw-marker heuristics kept every
- * answer delta in the drawer when a thinking part ended in an open ``` (#7334).
+ * `closeOffsets` reports where each wrapper `</think>` starts so the caller can
+ * register it as a known boundary. They are ours, not model markers: left to the
+ * raw-marker heuristics they kept answer deltas in the drawer (#7334).
  */
 function extractDeltaText(delta: unknown): {
   text: string;
@@ -684,8 +683,7 @@ function extractDeltaText(delta: unknown): {
       else if (typeof obj.content === "string") out += obj.content;
     } else if (obj.type === "thinking" || obj.type === "reasoning") {
       const thinking = extractReasoningText(obj);
-      // Neutralize literal </think> inside provider thinking parts so the
-      // synthetic wrapper cannot close early (#7066).
+      // A literal </think> here must not close the wrapper early (#7066).
       if (thinking) {
         out += `<think>${neutralizeThinkMarkup(thinking)}`;
         closeOffsets.push(out.length);
@@ -2887,27 +2885,24 @@ export function createOpenAIStreamAdapter(
       // SSE loop because the close tag fires when content arrives.
       let reasoningContentOpen = false;
       let reasoningMarkupBuffer = "";
-      // Offsets in `cumulativeText` of the `</think>` we append ourselves when
-      // closing a synthetic reasoning_content wrapper. That boundary is known,
-      // not inferred, so the parser must not re-derive it with the raw-marker
-      // fence/quote heuristics -- reasoning ending in an unfinished ``` would
-      // otherwise keep every answer delta in the drawer until the end (#7334).
+      // Offsets of the `</think>` we append when closing a synthetic wrapper.
+      // Known, not inferred, so the parser must not re-derive them with the
+      // fence/quote heuristics: an unfinished ``` in the reasoning would then
+      // keep every answer delta in the drawer until the end (#7334).
       const syntheticCloses = new Set<number>();
-      // When a close tag first appeared, for candidates whose fence decision is
-      // deferred mid-stream. Reasoning ending in an unfinished ``` resolves as
-      // structural only at end of stream, so without this the thinking timer
-      // would run until then and report the whole answer as thought time
-      // (#7334). Read back only for the index the final parse confirms.
+      // When a close tag first appeared, for candidates deferred mid-stream: an
+      // unfinished ``` resolves only at end of stream, so the thinking timer
+      // would otherwise count the whole answer as thought time (#7334). Read
+      // back only for the index the final parse confirms.
       const deferredCloseTimes = new Map<number, number>();
-      // `cumulativeText` only ever grows by appending (the one trim below cuts
-      // from the end), so the parser may resume its close-tag scan across
-      // deltas instead of re-walking the buffer every time (#7334). One cache
-      // per call site, since they scan the same span with different options.
+      // `cumulativeText` only grows by appending (the one trim below cuts from
+      // the end), so the close-tag scan can resume across deltas instead of
+      // re-walking the buffer (#7334). One cache per call site: same span,
+      // different options.
       const pollResume = createScanResumeCache();
       const buildResume = createScanResumeCache();
-      // The resume slot is keyed on these callbacks by identity, so mint them
-      // once per reasoning base: a fresh arrow per delta restarted the scan at
-      // the top of the buffer (#7334).
+      // The resume slot is keyed on these callbacks by identity, so mint one per
+      // base: a fresh arrow per delta restarted the scan (#7334).
       const knownCloseByBase = new Map<number, (index: number) => boolean>();
       const knownCloseAt = (base: number): ((index: number) => boolean) => {
         let known = knownCloseByBase.get(base);
@@ -2917,8 +2912,8 @@ export function createOpenAIStreamAdapter(
         }
         return known;
       };
-      // First report wins: the parser reports a candidate once, on the delta
-      // its scan first reaches it, which is when the tag arrived.
+      // First report wins: the parser reports a candidate on the delta its scan
+      // first reaches it, which is when the tag arrived.
       const recordDeferredClose = (index: number): void => {
         if (!deferredCloseTimes.has(index)) {
           deferredCloseTimes.set(index, Date.now());
@@ -2987,9 +2982,8 @@ export function createOpenAIStreamAdapter(
         }
         return parts;
       };
-      // `streaming` marks a mid-stream build: an unclosed ``` fence in the
-      // reasoning may still close in a later delta, so its close tags stay
-      // deferred until the final build (#7334).
+      // `streaming` marks a mid-stream build: an unclosed ``` fence may still
+      // close later, so its close tags stay deferred until the final build (#7334).
       const buildAssistantContent = (
         rawText: string,
         options?: { streaming?: boolean },
@@ -4115,8 +4109,8 @@ export function createOpenAIStreamAdapter(
               }
               const rawDelta = chunk.choices?.[0]?.delta?.content;
               // Normalize structured delta.content (mistral magistral). The
-              // wrapper closes it inserts are known boundaries; their offsets
-              // are rebased onto cumulativeText where the delta is appended.
+              // wrapper closes it inserts are known boundaries, rebased below
+              // onto cumulativeText.
               const { text: delta, closeOffsets: deltaCloseOffsets } =
                 extractDeltaText(rawDelta);
               // Latest Gemini text-part thoughtSignature for next-turn replay.
@@ -4290,16 +4284,14 @@ export function createOpenAIStreamAdapter(
               }
 
               if (reasoning) {
-                // Start the thought timer when reasoning first ARRIVES: a first
-                // delta that is only a marker prefix ("</thi") emits nothing, so
-                // waiting for the parsed reasoning part undercounted the thought
-                // and left a prefix-only stream with no duration at all (#7334).
+                // Start the timer when reasoning first ARRIVES: a first delta
+                // that is only a marker prefix ("</thi") emits nothing, so waiting
+                // for the parsed part undercounted the thought (#7334).
                 if (!reasoningStartAt) {
                   reasoningStartAt = Date.now();
                 }
-                // Neutralize literal think markers inside reasoning_content so
-                // a mid-thought "</think>" (e.g. echoing the user) cannot close
-                // the synthetic <think> wrapper early (#7066).
+                // A mid-thought "</think>" (echoing the user) must not close the
+                // synthetic <think> wrapper early (#7066).
                 reasoningMarkupBuffer += reasoning;
                 const drained = drainThinkMarkupBuffer(reasoningMarkupBuffer);
                 reasoningMarkupBuffer = drained.buffer;
@@ -4451,9 +4443,9 @@ export function createOpenAIStreamAdapter(
           finalTokPerSec,
         );
 
-        // Finalize reasoning-only streams. A close whose fence decision was
-        // deferred mid-stream ends the thought at the instant it arrived, not
-        // at end of stream, once the final parse confirms it structural (#7334).
+        // Finalize reasoning-only streams. A close deferred mid-stream ends the
+        // thought when it arrived, not at end of stream, once the final parse
+        // confirms it structural (#7334).
         if (reasoningStartAt && !reasoningDuration) {
           const confirmedClose = deferredCloseTimes.size
             ? structuralThinkCloseIndex(cumulativeText, {

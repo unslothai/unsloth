@@ -8,12 +8,9 @@ type ContentPart = NonNullable<ChatModelRunResult["content"]>[number];
 const THINK_OPEN_TAG = "<think>";
 const THINK_CLOSE_TAG = "</think>";
 /**
- * Invisible separator so literal think tags in reasoning text do not close the
- * panel (#7066). U+2060 WORD JOINER, not U+200B ZERO WIDTH SPACE: both render
- * as nothing, but U+200B has Line_Break class ZW, so it introduces a break
- * opportunity and a neutralized tag could wrap in the middle. WORD JOINER is
- * class WJ and forbids that break, which is what keeping the tag looking like
- * the original actually requires (#7334).
+ * Invisible separator so literal think tags in reasoning do not close the panel
+ * (#7066). U+2060 WORD JOINER, not U+200B ZERO WIDTH SPACE: U+200B is line-break
+ * class ZW, so a neutralized tag could wrap mid-tag; WJ forbids that break.
  */
 const THINK_NEUTRAL_ZW = "\u2060";
 
@@ -41,11 +38,8 @@ function appendReasoningPart(parts: ContentPart[], text: string): void {
   parts.push({ type: "reasoning", text });
 }
 
-/**
- * Neutralize structural `<think>` / `</think>` markers inside free text so a
- * literal close tag in reasoning (or a user quote) cannot prematurely end the
- * thinking block (#7066).
- */
+/** Neutralize `<think>` / `</think>` in free text so a literal close tag in
+ * reasoning cannot end the thinking block early (#7066). */
 export function neutralizeThinkMarkup(text: string): string {
   if (!text) return text;
   if (!text.includes(THINK_OPEN_TAG) && !text.includes(THINK_CLOSE_TAG)) {
@@ -91,10 +85,9 @@ export function drainThinkMarkupBuffer(
 const WORD_CHAR = /[\p{L}\p{N}]/u;
 
 // Indexing a JS string yields UTF-16 code units, so a non-BMP letter reads as a
-// lone surrogate, which `\p{L}` does not match. The backend indexes by CODE
-// POINT, so "𝑥'𝑥" was intra-word there and a delimiter here; that flipped the
-// quote parity and made a genuinely quoted mention read as the structural
-// close, leaking the rest of the thought into the answer (#7334).
+// lone surrogate that `\p{L}` misses. The backend indexes by CODE POINT, so
+// "𝑥'𝑥" was intra-word there and a delimiter here, flipping the quote parity
+// and leaking the rest of a quoted thought into the answer (#7334).
 
 /** The whole code point ending just before `end`, or "" at the start. */
 const codePointBefore = (text: string, end: number): string => {
@@ -132,21 +125,19 @@ export type ParseOptions = {
   /** True for a `</think>` the caller inserted itself, at that index. */
   isKnownClose?: (index: number) => boolean;
   /**
-   * Mid-stream only: a close tag whose fence decision was deferred, at that
-   * index. It may still turn out literal, so callers must not act on it until
-   * the final parse confirms it - but recording when it arrived lets the
-   * reasoning timer stop there instead of at end of stream (#7334). Reported
-   * once per index, on the delta the scan first reaches it.
+   * Mid-stream only: a close tag at that index whose fence decision was
+   * deferred. It may still be literal, so act on it only once the final parse
+   * confirms it; recording when it arrived lets the reasoning timer stop there
+   * rather than at end of stream (#7334). Reported once per index.
    */
   onDeferredClose?: (index: number) => void;
   /**
-   * Scratch space letting the scan resume where the previous delta left off,
-   * so a streaming parse costs O(new text) instead of O(buffer) (#7334).
+   * Scratch letting the scan resume where the previous delta left off, so a
+   * streaming parse costs O(new text) instead of O(buffer) (#7334).
    *
-   * Pass the same cache only while `raw` is APPEND-ONLY apart from truncation
-   * at the end; that is the one shape the scan can verify for itself. Text
-   * rewritten in place would resume from a stale boundary, so mint a fresh
-   * cache for anything else. Omitting it is always correct, just O(buffer).
+   * Reuse a cache only while `raw` is APPEND-ONLY apart from truncation at the
+   * end, the one shape the scan can verify; text rewritten in place would
+   * resume from a stale boundary. Omitting it is always correct, just O(buffer).
    */
   resume?: ScanResumeCache;
 };
@@ -156,11 +147,10 @@ const FENCE = "```";
 const FENCE_UNSCANNED = -2;
 
 /**
- * Monotone cursors summarizing the prefix a previous scan already inspected.
- *
- * The parser re-runs over the whole cumulative buffer on every SSE delta, so
- * restarting at `spanStart` each time re-walked the same fences and quotes --
- * O(n^2) over reasoning that repeatedly quotes `</think>` (#7334).
+ * Monotone cursors summarizing the prefix a previous scan inspected. The parser
+ * re-runs over the whole buffer on every SSE delta, so restarting at `spanStart`
+ * re-walked the same fences and quotes: O(n^2) over reasoning that repeatedly
+ * quotes `</think>` (#7334).
  */
 type ScanResume = {
   /** Length of the buffer this state was built from. */
@@ -193,8 +183,8 @@ export function createScanResumeCache(): ScanResumeCache {
   return { slots: [] };
 }
 
-// One slot per (call site, reasoning span): every delta is parsed, polled for
-// the close tag and rebuilt into content parts, each with its own options.
+// One slot per (call site, reasoning span): every delta is parsed, polled and
+// rebuilt into content parts, each with its own options.
 const RESUME_SLOTS = 8;
 let resumeClock = 0;
 
@@ -213,11 +203,9 @@ function resetResume(slot: ScanResume): void {
 }
 
 /**
- * Slot for this call's options, least recently used evicted. Callbacks match
- * by identity, so a caller minting a fresh arrow per delta just starts cold
- * (chat-adapter holds one reference per reasoning base). Without a cache every
- * call gets its own slot, i.e. no resume at all. Eviction and a cold start
- * only cost a rescan; neither can change a verdict.
+ * Slot for this call's options, least recently used evicted. Callbacks match by
+ * identity, so a caller minting a fresh arrow per delta just starts cold, as
+ * does a call with no cache. Eviction and a cold start only cost a rescan.
  */
 function resumeSlotFor(
   cache: ScanResumeCache | undefined,
@@ -283,30 +271,20 @@ function resumeSlotFor(
  * inside a ``` fence that actually closes, or when it is flanked by quote chars
  * whose leading quote OPENS a span (odd count of that char since `spanStart`).
  *
- * One forward pass: the fence count, the quote counts and the "is there a later
- * fence" answer carry across candidate tags, so a call costs O(raw.length) even
- * with many literal `"</think>"` mentions. Restarting the quote scan at
- * `spanStart` per candidate was O(candidates x length), and this runs on the
- * cumulative string for every SSE delta (#7334).
+ * One forward pass: the fence count, quote counts and "is there a later fence"
+ * answer carry across candidates, so a call costs O(raw.length) even with many
+ * literal `"</think>"` mentions, and across deltas the pass resumes from
+ * `ScanResume` so a delta costs O(added text). Only a verdict the inspected
+ * prefix settles may be resumed past; a tag whose trailing flank sits at the
+ * buffer edge, or whose fenced verdict reads to end of stream, is re-examined
+ * every delta. `onDeferredClose` therefore fires when the scan first reaches a
+ * candidate, which is the report callers time the thought from.
  *
- * Across deltas the pass resumes from `ScanResume` instead of `spanStart`, so
- * a delta costs O(added text) rather than O(buffer). Only a verdict the
- * inspected prefix already settles may be resumed past; a tag whose trailing
- * flank sits at the very edge of the buffer, or whose fenced verdict reads
- * ahead to the end of the stream, is re-examined every delta.
- *
- * `onDeferredClose` therefore fires when the scan first reaches a candidate
- * rather than once per delta after it. The first report is the one callers
- * time the thought from, and it lands on the same delta either way.
- *
- * `streaming` marks a mid-stream parse, where `raw` can still grow: an
- * enclosing ``` fence that has not closed yet may still close in a later
- * delta, so the unclosed-fence fallback is deferred to the final parse.
- *
+ * `streaming` marks a mid-stream parse, where an enclosing ``` fence may still
+ * close later, so the unclosed-fence fallback is deferred to the final parse.
  * `isKnownClose` reports delimiters the caller inserted itself (closing a
- * synthetic `reasoning_content` wrapper). Those positions are authoritative,
- * so the heuristics below - which only exist to interpret RAW model markers -
- * must not second-guess them.
+ * synthetic `reasoning_content` wrapper); those are authoritative, so the
+ * heuristics below, which only interpret RAW model markers, must not apply.
  */
 function findStructuralThinkClose(
   raw: string,
@@ -326,23 +304,20 @@ function findStructuralThinkClose(
     onDeferredClose,
   );
   // The cache only promises an append-only buffer, so a shorter one was
-  // truncated and nothing inspected past its end still holds. Comparing the
-  // text instead would cost O(buffer) per delta, which is the very scan this
-  // exists to avoid.
+  // truncated and nothing inspected past its end holds. Comparing the text
+  // instead would cost the O(buffer) per delta this exists to avoid.
   if (raw.length < slot.rawLen) resetResume(slot);
 
-  // Greedy non-overlapping fence scan (matches Python str.count): `fences` is
-  // the number of fence markers starting strictly before `nextFence`, looked up
-  // from `fenceFrom` on first use so a span with no candidate never pays for it.
+  // Greedy non-overlapping fence scan (matches Python str.count): `fences`
+  // counts markers starting strictly before `nextFence`, looked up from
+  // `fenceFrom` on first use so a span with no candidate never pays for it.
   let fences = slot.fences;
   let nextFence = slot.nextFence;
   let fenceFrom = slot.fenceFrom;
-  // Last fence marker in `raw`; only the odd-parity branch needs it, so it is
-  // computed at most once and reused.
+  // Last fence marker in `raw`; only the odd-parity branch needs it.
   let lastFence: number | undefined;
-  // Running quote counts over [spanStart, cursor) per quote char, advanced
-  // lazily with indexOf rather than a char-by-char loop (same answer, far less
-  // work on ordinary prose, which is mostly quote-free).
+  // Running quote counts over [spanStart, cursor) per char, advanced lazily
+  // with indexOf rather than a char loop (same answer, far less work on prose).
   let dq = slot.dq;
   let dqFrom = slot.dqFrom;
   let sq = slot.sq;
@@ -353,10 +328,9 @@ function findStructuralThinkClose(
     let n = ch === '"' ? dq : ch === "'" ? sq : bt;
     const cursor = ch === '"' ? dqFrom : ch === "'" ? sqFrom : btFrom;
     for (let at = raw.indexOf(ch, cursor); at !== -1 && at < end; ) {
-      // Two occurrences are not delimiters: an apostrophe inside a word
-      // ("It's"), and a quote escaped by an odd backslash run, which sits
-      // inside a string literal ("use \"</think>\" here"). Counting either
-      // flipped the parity of a genuinely quoted tag (#7334).
+      // Not delimiters: an apostrophe inside a word ("It's"), and a quote
+      // escaped by an odd backslash run, which sits inside a string literal.
+      // Counting either flipped the parity of a quoted tag (#7334).
       if (
         (ch !== "'" || !isIntraWordApostrophe(raw, at)) &&
         !isEscaped(raw, at)
@@ -377,10 +351,9 @@ function findStructuralThinkClose(
     }
     return n;
   };
-  // Memoized "is there a close tag at or after `at`", so the fence look-ahead
-  // below stays amortized O(raw.length) across candidates instead of one full
-  // indexOf each (#7334). `hit` is monotone: once none is found from some
-  // offset, none is found from any later one.
+  // Memoized "is there a close tag at or after `at`" so the fence look-ahead
+  // below stays amortized O(raw.length) instead of one indexOf per candidate
+  // (#7334). Monotone: none found from an offset means none from a later one.
   let seekFrom = -1;
   let seekHit = -1;
   const hasCloseTagFrom = (at: number): boolean => {
@@ -396,10 +369,10 @@ function findStructuralThinkClose(
   let searchFrom = slot.resumeFrom;
   let closeIndex = raw.indexOf(THINK_CLOSE_TAG, searchFrom);
   // Cleared once a verdict rests on text that has not arrived, so the resume
-  // point never moves past a tag a later delta could reclassify.
+  // point never passes a tag a later delta could reclassify.
   let resumable = true;
-  // First structural close found, or -1. Never cached: a tag at the very end
-  // reads as unflanked now and may read as quoted next delta.
+  // First structural close, or -1. Never cached: a tag at the very end reads as
+  // unflanked now and may read as quoted next delta.
   let structural = -1;
 
   while (closeIndex !== -1) {
@@ -417,36 +390,34 @@ function findStructuralThinkClose(
       // Our own delimiter: the boundary is already known, not inferred.
       literal = false;
     } else if (fences % 2 === 1) {
-      // The close sits inside an open ``` fence. Global parity over the rest of
-      // the span is wrong here, since a separate later unclosed fence would
-      // misflag an earlier close whose own fence already closed (#7334).
+      // The close sits inside an open ``` fence. Global parity over the span is
+      // wrong: a separate later unclosed fence would misflag an earlier close
+      // whose own fence already closed (#7334).
       if (streaming) {
-        // More deltas are coming, so "not closed yet" is not "never closes".
-        // Defer like the backend extractor's hold: calling it structural now
-        // and reversing it when the fence closes would bounce text out of the
-        // thinking drawer and back, and latch reasoningDuration on a tag that
-        // was never the real close (#7334). Report the candidate so the caller
-        // can timestamp it and use that instant only if the final parse agrees.
+        // "Not closed yet" is not "never closes", so defer like the backend
+        // extractor: calling it structural and reversing it later would bounce
+        // text out of the drawer and latch reasoningDuration on a tag that was
+        // never the close (#7334). Report it so the caller can timestamp it and
+        // use that instant only if the final parse agrees.
         onDeferredClose?.(closeIndex);
         literal = true;
       } else {
-        // The look-ahead below reads to the end of `raw`, so the inspected
-        // prefix does not settle this verdict and cannot be resumed past.
+        // The look-ahead below reads to the end of `raw`, so the prefix does
+        // not settle this verdict and cannot be resumed past.
         resumable = false;
-        // Where the enclosing fence would close. The greedy cursor answers this
-        // directly; only fall back to the O(n) scan when it is exhausted, since
+        // Where the enclosing fence would close: the greedy cursor answers
+        // directly, falling back to the O(n) scan when exhausted, since
         // overlapping runs such as "````" can hide a marker from it.
         let fenceClose = nextFence;
         if (fenceClose === -1) {
           if (lastFence === undefined) lastFence = raw.lastIndexOf(FENCE);
           if (lastFence >= closeIndex) fenceClose = lastFence;
         }
-        // No closing ``` at all: the enclosing fence never closes, so this tag
-        // is the genuine structural close -- an unclosed fence in the reasoning
-        // must not swallow the visible answer. And a ``` that does follow only
-        // proves the reasoning-side fence closed when reasoning continues past
-        // it to a further close tag; otherwise that marker opens a fenced block
-        // in the ANSWER, which used to hide the whole answer in the drawer for
+        // No closing ``` at all means the fence never closes, so this tag is
+        // the genuine close: an unclosed fence must not swallow the answer. A
+        // ``` that does follow only proves the reasoning-side fence closed when
+        // reasoning continues past it to a further close tag; otherwise that
+        // marker opens a fenced block in the ANSWER, which hid the answer for
         // "draft ```</think>Answer: ```js ... ```" (#7334). Mirrors the backend
         // extractor's _fence_unresolved_at_close.
         literal =
@@ -459,43 +430,36 @@ function findStructuralThinkClose(
       // ( \"</think>\" ) still reads as symmetrically quoted (#7334).
       const after =
         (raw[closeEnd] === "\\" ? raw[closeEnd + 1] : raw[closeEnd]) ?? "";
-      // A quoted mention is symmetric. Accepting ANY two delimiters called
-      // "`</think>\"yes\"" quoted and kept the whole visible answer in the
-      // drawer, so the flanks must be the same char (#7334).
+      // A quoted mention is symmetric: accepting ANY two delimiters called
+      // "`</think>\"yes\"" quoted and hid the whole answer in the drawer (#7334).
       if (streaming && !after && before && `"'\``.includes(before)) {
-        // Mid-stream an ABSENT trailing flank is not an empty one. Providers
-        // emit `</think>` as a single token, so `<think>echo "</think>` ends
-        // exactly on the tag and the quote that closes the mention lands in
-        // the NEXT delta. Reading the gap as "not quoted" calls the mention
-        // structural for one delta, and chat-adapter latches reasoningDuration
-        // off that instant and never lowers a nonzero value, so the reported
-        // thought time stopped at the mention (#7334). Defer exactly like the
-        // fence branch above, mirroring the backend extractor's
-        // _should_hold_quoted_think_close, and keep the scan re-readable: the
-        // next delta is what settles this tag, so nothing may resume past it.
+        // Mid-stream an ABSENT trailing flank is not an empty one: providers
+        // emit `</think>` as one token, so `<think>echo "</think>` ends on the
+        // tag and its closing quote lands in the NEXT delta. Reading the gap as
+        // "not quoted" calls the mention structural for one delta, and
+        // chat-adapter latches reasoningDuration on that instant and never
+        // lowers it (#7334). Defer like the fence branch above (backend:
+        // _should_hold_quoted_think_close); the next delta settles this tag, so
+        // nothing may resume past it.
         onDeferredClose?.(closeIndex);
         resumable = false;
         literal = true;
       } else if (!before || before !== after || !`"'\``.includes(before)) {
         literal = false;
       } else {
-        // A prose mention closes its quote and reads on as prose, so the
-        // closing quote is followed by a space or punctuation. One running
-        // straight into a word char is the ANSWER's own opening quote, i.e.
-        // the tag WAS the structural close; reading it as a mention hid the
-        // whole visible answer in the drawer for '"</think>"The answer is 42.'
-        // (#7334). Mirrors the backend's _quoted_close_opens_answer.
+        // A prose mention closes its quote and reads on as prose, so a closing
+        // quote running straight into a word char is the ANSWER's own opening
+        // quote and the tag WAS the close; reading it as a mention hid the whole
+        // answer for '"</think>"The answer is 42.' (#7334). Mirrors the
+        // backend's _quoted_close_opens_answer.
         const quoteAt = raw[closeEnd] === "\\" ? closeEnd + 1 : closeEnd;
         // A quoted mention pairs delimiter RUNS of EQUAL length: CommonMark
-        // defines a code span as a backtick string closed by "a backtick string
-        // of equal length", so "`</think>```python" pairs a 1-run against a
-        // 3-run and is not a span at all -- that ``` opens the ANSWER's fence
-        // and the tag was the structural close. Without this, plain raw-char
-        // parity called it a mention and hid the entire answer in the drawer,
-        // the very failure this file exists to fix. Raw parity alone cannot
-        // decide it either: well-formed markdown reaches an ODD backtick count
-        // via a nested-backtick span (``a ` b``) or a closing fence longer than
-        // its opener, both legal per CommonMark (#7334).
+        // closes a code span with "a backtick string of equal length", so
+        // "`</think>```python" pairs a 1-run against a 3-run and is no span at
+        // all -- that ``` opens the ANSWER's fence and the tag was the close.
+        // Raw-char parity alone cannot decide this: well-formed markdown
+        // reaches an ODD backtick count via a nested span (``a ` b``) or a
+        // closing fence longer than its opener, both legal (#7334).
         let runBefore = 0;
         for (let i = closeIndex - 1; i >= spanStart && raw[i] === before; i -= 1) {
           runBefore += 1;
@@ -504,13 +468,12 @@ function findStructuralThinkClose(
         for (let i = quoteAt; i < raw.length && raw[i] === before; i += 1) {
           runAfter += 1;
         }
-        // The deciding char sits after the WHOLE trailing run, and both the run
-        // and that char are what the next delta may still supply, so reading
-        // either as absent flips the verdict and nothing may resume past this
-        // tag until they land -- the tail update below included (#7334).
+        // The deciding char sits after the WHOLE trailing run, and the next
+        // delta may still supply either, so reading one as absent flips the
+        // verdict: nothing may resume past this tag until they land (#7334).
         if (quoteAt + runAfter >= raw.length) resumable = false;
-        // The leading quote is literal only when it OPENS a span, i.e. an odd
-        // count of that char since the reasoning start.
+        // Literal only when the leading quote OPENS a span: an odd count of
+        // that char since the reasoning start.
         literal =
           runBefore === runAfter &&
           !WORD_CHAR.test(codePointAt(raw, quoteAt + runAfter)) &&
@@ -523,16 +486,16 @@ function findStructuralThinkClose(
       break;
     }
     searchFrom = closeIndex + THINK_CLOSE_TAG.length;
-    // Settled only once the trailing flank -- the char after the tag, or after
-    // its escaping backslash -- AND the char after that flank are inside the
-    // inspected text: the latter is what separates a mention from an answer
-    // opening with a quote, so a verdict without it can still change (#7334).
+    // Settled only once the trailing flank (the char after the tag, or after
+    // its escaping backslash) AND the char after it are inside the inspected
+    // text: the latter separates a mention from an answer opening with a
+    // quote, so a verdict without it can still change (#7334).
     const flankEnd = raw[searchFrom] === "\\" ? searchFrom + 2 : searchFrom + 1;
     if (resumable && flankEnd < raw.length) {
       slot.resumeFrom = searchFrom;
       slot.fences = fences;
       // A -1 lookup only proves there is no marker before the last 2 chars,
-      // where the next delta could still complete one.
+      // where the next delta could complete one.
       slot.nextFence = nextFence === -1 ? FENCE_UNSCANNED : nextFence;
       slot.fenceFrom =
         nextFence === -1
@@ -550,9 +513,8 @@ function findStructuralThinkClose(
 
   if (structural === -1 && resumable) {
     // No tag starts in the text just searched, so the next delta re-reads only
-    // the tail one straddling the end could still start in. Leaving the fence
-    // and quote cursors behind is safe: they stay self-consistent and simply
-    // catch up on the next candidate.
+    // the tail one straddling the end could start in. Leaving the fence and
+    // quote cursors behind is safe: they catch up on the next candidate.
     const tail = raw.length - (THINK_CLOSE_TAG.length - 1);
     if (searchFrom > slot.resumeFrom) slot.resumeFrom = searchFrom;
     if (tail > slot.resumeFrom) slot.resumeFrom = tail;
@@ -611,15 +573,11 @@ export function parseAssistantContent(
 }
 
 /**
- * True once the reasoning block has *structurally* closed. Uses the same
- * quoted/fenced-literal classification as `parseAssistantContent`, so a literal
- * `</think>` inside reasoning (a quote or fenced example) does not count as the
- * end of thinking. A raw substring check would latch the reasoning-duration
- * timer on that literal tag and never correct it when the real close arrives,
- * underreporting the thought time (#7334).
- *
- * Callers polling mid-stream must pass `{ streaming: true }` for the same
- * reason: a tag inside a fence that has not closed *yet* is not a close.
+ * True once the reasoning block has *structurally* closed, using the same
+ * literal classification as `parseAssistantContent`. A raw substring check would
+ * latch the reasoning-duration timer on a literal `</think>` and never correct
+ * it when the real close arrives (#7334). Callers polling mid-stream must pass
+ * `{ streaming: true }`: a tag inside a fence not closed *yet* is not a close.
  */
 export function hasClosedThinkTag(
   raw: string,
@@ -630,10 +588,8 @@ export function hasClosedThinkTag(
 
 /**
  * Index of the structural close tag ending the first reasoning block, or -1.
- *
  * Same classification as `hasClosedThinkTag`; callers that recorded deferred
- * candidates mid-stream need the confirmed index to match one against them
- * (#7334).
+ * candidates mid-stream match the confirmed index against them (#7334).
  */
 export function structuralThinkCloseIndex(
   raw: string,

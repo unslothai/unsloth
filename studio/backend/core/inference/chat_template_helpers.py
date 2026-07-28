@@ -15,14 +15,10 @@ from typing import Optional
 
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
-# Invisible separator so neutralized markup still *looks* like the original tag
-# in the UI / model quote, but no longer matches structural parsers or
-# special-token exact strings (issue #7066: a literal </think> in user text /
-# mid-thought quotes prematurely closes the thinking block).
-# U+2060 WORD JOINER, not U+200B ZERO WIDTH SPACE: both render as nothing, but
-# U+200B has Line_Break class ZW, so it introduces a break opportunity and a
-# neutralized tag could wrap in the middle. WORD JOINER is class WJ and forbids
-# that break, which is what "still looks like the tag" actually needs (#7334).
+# Invisible separator: neutralized markup still looks like the original tag but no
+# longer matches structural parsers or special tokens (#7066). U+2060 WORD JOINER,
+# not U+200B ZERO WIDTH SPACE: U+200B is line-break class ZW, so a neutralized tag
+# could wrap mid-tag; WORD JOINER (class WJ) forbids that break (#7334).
 _THINK_NEUTRAL_ZW = "\u2060"
 _GEMMA_CHANNEL_START = "<|channel>"
 _GEMMA_THOUGHT_OPEN = "<|channel>thought"
@@ -33,23 +29,20 @@ _GEMMA_TEMPLATE_OPENERS = (
     _GEMMA_THOUGHT_OPEN + _GEMMA_THOUGHT_CLOSE,
 )
 
-# Control / think markers that must not appear as raw text in non-assistant
-# turns (user / system / tool). Escaping them keeps chat templates, think
-# extractors, and ChatML stop sequences from treating user content as markup.
+# Markers that must not reach a non-assistant turn (user / system / tool) as raw
+# text, or templates / think extractors / stop sequences read it as markup.
 _NON_ASSISTANT_CONTROL_MARKERS: tuple[tuple[str, str], ...] = (
     (_THINK_CLOSE, f"</{_THINK_NEUTRAL_ZW}think>"),
     (_THINK_OPEN, f"<{_THINK_NEUTRAL_ZW}think>"),
     ("<|im_start|>", f"<|{_THINK_NEUTRAL_ZW}im_start|>"),
     ("<|im_end|>", f"<|{_THINK_NEUTRAL_ZW}im_end|>"),
-    # Gemma-4 GGUF templates render thinking with these channel sentinels, so a
-    # non-assistant turn carrying them raw could inject a fake thought channel
-    # (#7066). Neutralizing them everywhere is a no-op for other templates.
+    # Gemma-4 GGUF thinking sentinels: raw, they inject a fake thought channel
+    # (#7066). A no-op for other templates.
     (_GEMMA_CHANNEL_START, f"<|{_THINK_NEUTRAL_ZW}channel>"),
     (_GEMMA_THOUGHT_CLOSE, f"<{_THINK_NEUTRAL_ZW}channel|>"),
-    # The same vendored templates (assets/chat_templates/gemma-4*.jinja) delimit
-    # every turn, tool block and tool result with these, and quote schema strings
-    # with <|"|>, so a non-assistant turn carrying them raw could end its own
-    # block or forge a model / tool_response one (#7066).
+    # The same templates (assets/chat_templates/gemma-4*.jinja) delimit every turn,
+    # tool block and tool result with these and quote schema strings with <|"|>:
+    # raw, they end their own block or forge a model / tool_response one (#7066).
     ("<|turn>", f"<|{_THINK_NEUTRAL_ZW}turn>"),
     ("<turn|>", f"<{_THINK_NEUTRAL_ZW}turn|>"),
     ("<|tool_call>", f"<|{_THINK_NEUTRAL_ZW}tool_call>"),
@@ -58,31 +51,27 @@ _NON_ASSISTANT_CONTROL_MARKERS: tuple[tuple[str, str], ...] = (
     ("<tool_response|>", f"<{_THINK_NEUTRAL_ZW}tool_response|>"),
     ("<|tool>", f"<|{_THINK_NEUTRAL_ZW}tool>"),
     ("<tool|>", f"<{_THINK_NEUTRAL_ZW}tool|>"),
-    # gemma-4.jinja opens the first system turn with <|think|> to turn thinking
-    # on, so a raw one in non-assistant text could switch reasoning mode.
+    # gemma-4.jinja turns thinking on with <|think|> in the first system turn, so a
+    # raw one in non-assistant text switches reasoning mode.
     ("<|think|>", f"<|{_THINK_NEUTRAL_ZW}think|>"),
     ('<|"|>', f'<|{_THINK_NEUTRAL_ZW}"|>'),
-    # Llama-3 family templates delimit every turn with these header/eot
-    # sentinels (chat_eos.py / tool_call_parser.py already treat them as turn
-    # ends). A non-assistant turn carrying them raw could close its own turn and
-    # inject a fake assistant turn (``<|eot_id|><|start_header_id|>assistant``),
-    # so neutralize them too. A no-op for templates that never emit them (#7066).
+    # Llama-3 turn delimiters (chat_eos.py / tool_call_parser.py treat them as turn
+    # ends): raw, they close their own turn and inject a fake assistant one,
+    # ``<|eot_id|><|start_header_id|>assistant`` (#7066).
     ("<|eot_id|>", f"<|{_THINK_NEUTRAL_ZW}eot_id|>"),
     ("<|start_header_id|>", f"<|{_THINK_NEUTRAL_ZW}start_header_id|>"),
     ("<|end_header_id|>", f"<|{_THINK_NEUTRAL_ZW}end_header_id|>"),
-    # The remaining canonical turn-end tokens from chat_eos (Llama tool turns,
-    # Gemma, Phi, OpenChat) plus Gemma's turn opener. Same hole as <|eot_id|>:
-    # raw in a non-assistant turn, they end that turn and can open a model one.
+    # The remaining chat_eos turn-end tokens (Llama tool turns, Gemma, Phi,
+    # OpenChat) plus Gemma's turn opener, same hole as <|eot_id|>.
     # test_neutralize_covers_every_turn_end_token pins this against chat_eos.
     ("<|eom_id|>", f"<|{_THINK_NEUTRAL_ZW}eom_id|>"),
     ("<end_of_turn>", f"<{_THINK_NEUTRAL_ZW}end_of_turn>"),
     ("<start_of_turn>", f"<{_THINK_NEUTRAL_ZW}start_of_turn>"),
     ("<|end_of_turn|>", f"<|{_THINK_NEUTRAL_ZW}end_of_turn|>"),
     ("<|end|>", f"<|{_THINK_NEUTRAL_ZW}end|>"),
-    # Zephyr and Phi-3 open turns with a bare role sentinel rather than a
-    # header pair, so in those templates these ARE the turn boundary: Zephyr
-    # renders "<|user|>\n" + content + eos_token. Left raw, user text carrying
-    # its EOS then "<|assistant|>" reaches tokenization as a forged model turn.
+    # Zephyr / Phi-3 open turns with a bare role sentinel instead of a header pair,
+    # so these ARE the turn boundary there ("<|user|>\n" + content + eos_token):
+    # raw, an EOS followed by "<|assistant|>" tokenizes as a forged model turn.
     ("<|user|>", f"<|{_THINK_NEUTRAL_ZW}user|>"),
     ("<|assistant|>", f"<|{_THINK_NEUTRAL_ZW}assistant|>"),
     ("<|system|>", f"<|{_THINK_NEUTRAL_ZW}system|>"),
@@ -146,9 +135,8 @@ def _neutralize_markers(text: str, markers) -> str:
     return out
 
 
-# Turn boundaries never belong INSIDE a turn, so they are neutralized in
-# assistant content too: replayed history is client-controlled on the API, and a
-# raw sentinel there truncates that turn or injects a new one. The assistant's
+# Neutralized in assistant content too: replayed history is client-controlled, and
+# a raw boundary there truncates that turn or injects a new one. The assistant's
 # own think / channel / tool markup is structural and stays (#7066).
 _TURN_BOUNDARY_NAMES = frozenset(
     {
@@ -164,8 +152,8 @@ _TURN_BOUNDARY_NAMES = frozenset(
         "<|end|>",
         "<|turn>",
         "<turn|>",
-        # Zephyr / Phi-3 open a turn with these alone, so they are that
-        # template's turn boundary and must not survive assistant replay.
+        # Zephyr / Phi-3 open a turn with these alone, so they are that template's
+        # turn boundary and must not survive assistant replay.
         "<|user|>",
         "<|assistant|>",
         "<|system|>",
@@ -181,31 +169,24 @@ def neutralize_turn_boundary_markup(text: str) -> str:
     return _neutralize_markers(text, _TURN_BOUNDARY_MARKERS)
 
 
-# JSON-Schema keywords whose string entries REFERENCE declared property names
-# instead of carrying prompt prose. Dict keys are already preserved, so
-# rewriting these would leave ``required`` naming a property the schema no
-# longer declares (OpenAI strict mode rejects that outright, and Gemini
-# requires every ``propertyOrdering`` entry to be a valid key) (#7066).
+# Entries REFERENCE declared property names, not prose. Keys are preserved, so
+# rewriting these would name a property the schema no longer declares (OpenAI
+# strict mode rejects it; Gemini needs every ``propertyOrdering`` entry valid) (#7066).
 _SCHEMA_NAME_LIST_KEYS = frozenset({"required", "propertyOrdering"})
-# Same, one level deeper: {"dependentRequired": {"a": ["b"]}} maps a property
-# name to the names it pulls in. The object-valued (sub-schema) form of
-# ``dependencies`` is prose-bearing, so it still goes through the walk.
+# Same, one level deeper: {"dependentRequired": {"a": ["b"]}}. The object-valued
+# (sub-schema) form of ``dependencies`` is prose-bearing, so it still gets walked.
 _SCHEMA_NAME_MAP_KEYS = frozenset({"dependentRequired", "dependencies"})
-# Pointers and the anchors they resolve against: "#/$defs/<name>" has to keep
-# matching the $defs key it names, which this pass leaves alone (#7066).
+# Pointers and their anchors: "#/$defs/<name>" must keep matching the $defs key it
+# names, which this pass leaves alone (#7066).
 _SCHEMA_REF_KEYS = frozenset({"$ref", "$dynamicRef", "$id", "$anchor", "$dynamicAnchor", "$schema"})
-# Keywords carrying a VALUE the model must reproduce byte for byte. A tool
-# schema is not only prompt text: llama.cpp compiles ``const`` / ``enum`` into
-# literal GBNF rules and ``pattern`` into a regex rule
-# (common/json-schema-to-grammar.cpp) and constrains tool-call sampling with the
-# result, so rewriting one makes the decoder emit the REWRITTEN value. Nothing
-# maps it back before the call is returned or executed, so it fails the schema
-# the client declared. Preserving them costs no protection either: a ``</think>``
-# here only reaches the prompt, and the think parser reads model OUTPUT (#7334).
+# Values the model must reproduce byte for byte: llama.cpp compiles const/enum into
+# literal GBNF rules and pattern into a regex rule (common/json-schema-to-grammar.cpp)
+# and constrains sampling with them, so a rewrite makes the decoder emit the REWRITTEN
+# value and nothing maps it back. It also buys nothing: a </think> here only reaches
+# the prompt, and the think parser reads model OUTPUT (#7334).
 _SCHEMA_VALUE_KEYS = frozenset({"const", "default", "enum", "examples", "pattern"})
-# Keywords whose value maps a CALLER-CHOSEN name to a sub-schema. Their keys are
-# names, so a property genuinely called "enum" or "pattern" must not be read as
-# the keyword one level down and skip neutralization of its own prose (#7334).
+# Maps a CALLER-CHOSEN name to a sub-schema, so a property genuinely called "enum"
+# or "pattern" must not be read as the keyword and skip neutralization (#7334).
 _SCHEMA_SUBSCHEMA_MAP_KEYS = frozenset(
     {"properties", "patternProperties", "$defs", "definitions", "dependentSchemas"}
 )
@@ -377,9 +358,8 @@ def neutralize_tool_call_arguments(tool_calls):
                     call = {**call, "id": new_id}
                     changed = True
             fn = call.get("function")
-            # The Gemma-4 templates concatenate the name straight into the
-            # <|tool_call> block, so a name like "lookup<tool_call|>" would
-            # close it and inject structure. The deep schema sanitizer already
+            # Gemma-4 concatenates the name into the <|tool_call> block, so
+            # "lookup<tool_call|>" would close it. The deep schema sanitizer
             # rewrites the same name on the tool definition side.
             if isinstance(fn, dict) and isinstance(fn.get("name"), str):
                 new_name = neutralize_non_assistant_control_markup(fn["name"])
@@ -392,11 +372,9 @@ def neutralize_tool_call_arguments(tool_calls):
                 if isinstance(args, str):
                     new_args = _neutralize_tool_arguments_json(args)
                 else:
-                    # Strict tool templates take the retry path where
-                    # _normalize_tool_call_arguments() has already parsed the
-                    # JSON string into a dict/list, so a control marker inside a
-                    # parsed value would otherwise render raw. Deep-neutralize
-                    # non-string arguments too (#7066).
+                    # On the retry path _normalize_tool_call_arguments() has
+                    # already parsed the JSON string, so a marker inside a parsed
+                    # value would render raw unless walked too (#7066).
                     new_args = neutralize_control_markup_deep(args)
                 if new_args is not args and new_args != args:
                     call = {**call, "function": {**fn, "arguments": new_args}}
@@ -423,8 +401,8 @@ def _split_marker_boundary(text: str, ahead: str, markers) -> bool:
     for src, _ in markers:
         at = joined.find(src)
         while at != -1:
-            # Counts only when the marker straddles the join, since a marker
-            # inside either side alone was already neutralized by that part.
+            # Only counts when it straddles the join; a marker inside either side
+            # alone was already neutralized by that part.
             if at < len(tail) < at + len(src):
                 return True
             at = joined.find(src, at + 1)
@@ -480,20 +458,19 @@ def neutralize_message_content_for_role(role: Optional[str], content):
             if (role or "").strip().lower() == "assistant"
             else _NON_ASSISTANT_CONTROL_MARKERS
         )
-        # Text of each part as the template will render it, so a marker cut
-        # across parts can be spotted before the parts are rewritten.
+        # Each part as the template renders it, so a marker cut across parts is
+        # spotted before the parts are rewritten.
         texts = [
             part if isinstance(part, str) else part.get("text") if isinstance(part, dict) else None
             for part in content
         ]
-        # The whole marker may straddle the seam, so that many chars of what
-        # follows are enough to recognize it.
+        # The marker may straddle the seam, so that many following chars suffice.
         lookahead = max((len(src) for src, _ in markers), default = 0)
         changed = False
         out = []
         for index, part in enumerate(content):
-            # A marker only completed by what follows is broken by a neutral
-            # char at the seam, which leaves both parts' own text intact.
+            # A neutral char at the seam breaks a marker only completed by what
+            # follows, leaving both parts' own text intact.
             seam = ""
             if isinstance(texts[index], str):
                 ahead = _rendered_lookahead(texts, index, lookahead)
@@ -516,8 +493,8 @@ def neutralize_message_content_for_role(role: Optional[str], content):
     return content
 
 
-# Message fields carrying a replayed thought: free text the template wraps in
-# its own thinking delimiters, never structural markup itself (#7066).
+# Replayed thoughts: free text the template wraps in its own thinking delimiters,
+# never structural markup itself (#7066).
 _ASSISTANT_REASONING_FIELDS = ("reasoning_content", "reasoning")
 
 
@@ -538,15 +515,12 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
         content = msg.get("content")
         new_content = neutralize_message_content_for_role(msg.get("role"), content)
         content_changed = new_content is not content and new_content != content
-        # A replayed assistant thought is free text that the template wraps in
-        # its own delimiters (gemma-4 renders it between <|channel>thought and
-        # <channel|>), so a literal marker inside it would close that channel
-        # early. Its `content` still keeps real structural tags (#7066).
-        # ``tool_call_id`` travels with the same rewrite as the ``id`` of the
-        # call it answers, so the pair still matches after neutralization.
-        # ``name`` is the tool-result fallback the Gemma-4 templates splice into
-        # their tool_response block when no call id matches, and it gets the same
-        # rewrite as ``tool_calls[].function.name`` so the two still agree.
+        # A replayed thought is free text the template wraps in its own delimiters
+        # (gemma-4: between <|channel>thought and <channel|>), so a literal marker
+        # inside it closes that channel early; `content` keeps real tags (#7066).
+        # ``tool_call_id`` and ``name`` (the tool_response fallback Gemma-4 splices
+        # in when no call id matches) get the same rewrite as the ``id`` /
+        # ``function.name`` of the call they answer, so the pairs still match.
         scalar_updates = {}
         for field in (*_ASSISTANT_REASONING_FIELDS, "tool_call_id", "name"):
             value = msg.get(field)
@@ -554,9 +528,8 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
                 new_value = neutralize_non_assistant_control_markup(value)
                 if new_value != value:
                     scalar_updates[field] = new_value
-        # Assistant tool-call arguments are user/model-derived data, not prose,
-        # so neutralize their control markers even though assistant content is
-        # preserved (#7066).
+        # Tool-call arguments are data, not prose, so they are neutralized even
+        # though assistant content is preserved (#7066).
         tool_calls = msg.get("tool_calls")
         new_tool_calls = neutralize_tool_call_arguments(tool_calls)
         tool_calls_changed = new_tool_calls is not tool_calls and new_tool_calls != tool_calls
@@ -979,12 +952,10 @@ def apply_chat_template_for_generation(
         return _render(neutralize_control_markup_in_messages(messages))
     except Exception:
         # Retry with repairs applied cumulatively. Originals render first, so
-        # working templates stay byte-identical. The tool-call repairs run on the
-        # RAW messages, not the neutralized copy, because
-        # ``_normalize_tool_call_arguments`` parses ``arguments`` as JSON and the
-        # neutralizer inserts zero-width joiners into text; neutralization is
-        # applied last, immediately before each render, exactly as on the first
-        # attempt above.
+        # working templates stay byte-identical. Repairs run on the RAW messages
+        # because ``_normalize_tool_call_arguments`` parses ``arguments`` as JSON
+        # and the neutralizer injects word joiners; neutralization is applied last,
+        # right before each render, as on the first attempt above.
         candidates: list = []
         normalized = _normalize_tool_call_arguments(messages)
         if normalized is not messages:

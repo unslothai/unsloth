@@ -49,14 +49,10 @@ import logging as _logging  # noqa: E402
 _loggers_stub = types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: _logging.getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
-# structlog is a hard studio.txt requirement, but it is only imported lazily, so a
-# bare setdefault here used to park an empty placeholder BEFORE anything imported
-# the real package -- and it then shadowed it for the rest of the session. Every
-# later file importing a studio module that calls structlog.get_logger at module
-# scope (routes.inference -> core.inference.external_provider, utils.mlx_repair)
-# blew up with AttributeError, but only when this file was collected first, so the
-# same test passed alone and failed under `pytest tests/studio`. Only stub when the
-# package is genuinely missing, and give the stub the attribute those callers use.
+# A bare setdefault parked an empty stub before anything imported the real (lazily
+# imported) structlog, shadowing it session-wide: later modules calling
+# structlog.get_logger at import time died with AttributeError, but only when this
+# file was collected first. Stub only when the package is genuinely missing.
 try:
     import structlog  # noqa: E402, F401
 except ImportError:

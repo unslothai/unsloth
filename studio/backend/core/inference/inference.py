@@ -1212,7 +1212,7 @@ class InferenceBackend:
             neutralize_non_assistant_control_markup(system_prompt) if system_prompt else None
         )
 
-        # Extract user message (after neutralization so literal control markup is safe).
+        # Extract user message (after neutralization)
         user_message = ""
         if safe_messages and safe_messages[-1]["role"] == "user":
             import re
@@ -1445,8 +1445,7 @@ class InferenceBackend:
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
-        # Literal think/ChatML markers in request text must not reach the
-        # template as control tokens (#7066), same as the VLM paths.
+        # Literal think/ChatML markers must not reach the template as control tokens (#7066)
         from core.inference.chat_template_helpers import (
             neutralize_non_assistant_control_markup,
         )

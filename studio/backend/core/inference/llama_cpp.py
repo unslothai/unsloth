@@ -10998,8 +10998,8 @@ class LlamaCppBackend:
                                         neutralize_think_markup_streaming,
                                     )
 
-                                    # Literal </think> inside reasoning_content must
-                                    # not close the synthetic <think> wrapper (#7066).
+                                    # A literal </think> here must not close the
+                                    # synthetic <think> wrapper (#7066).
                                     reasoning_markup_buffer += reasoning
                                     reasoning, reasoning_markup_buffer = (
                                         neutralize_think_markup_streaming(
@@ -11041,12 +11041,9 @@ class LlamaCppBackend:
                     if _stream_done:
                         break  # exit outer for
                 if reasoning_markup_buffer:
-                    # The stream ended without a "data: [DONE]" line: cancel and
-                    # a dropped connection both just end the iterator, and the
-                    # server-SIGKILL retry path re-enters here. Only [DONE] and a
-                    # content token finalize the holdback, so without this the
-                    # held marker prefix (up to 7 chars of real reasoning) was
-                    # dropped silently (#7334).
+                    # Stream ended without "data: [DONE]" (cancel, dropped
+                    # connection, server-SIGKILL retry). Only [DONE] and a content
+                    # token finalize, so the holdback was dropped silently (#7334).
                     from core.inference.chat_template_helpers import (
                         neutralize_think_markup_streaming,
                     )
@@ -11201,8 +11198,7 @@ class LlamaCppBackend:
         if _auto:
             for _ev in _auto["events"]:
                 yield _ev
-            # Retrieved passages can quote think/ChatML markers; neutralize
-            # before they enter the chat template (#7066).
+            # Retrieved passages can quote control markers (#7066).
             from core.inference.chat_template_helpers import (
                 neutralize_message_content_for_role,
             )
@@ -11443,8 +11439,7 @@ class LlamaCppBackend:
                 content_buffer = ""  # Raw content held during BUFFERING
                 content_accum = ""  # All content tokens (for tool parsing)
                 reasoning_accum = ""
-                # Holds partial literal think markers across chunk boundaries
-                # so echoed tags never close the wrapper (#7066).
+                # Holds partial think markers across chunks (#7066)
                 reasoning_markup_buffer = ""
                 # Time each reasoning pass so final answers can replace tool timing.
                 _reasoning_started_at = None
@@ -11563,8 +11558,8 @@ class LlamaCppBackend:
                                     # Preserve any visible preface before draining
                                     # the structured tool call.
                                     has_structured_tc = True
-                                    # Flush held reasoning before the wrapper closes
-                                    # so a split literal marker is not dropped.
+                                    # Flush before the wrapper closes, or a split
+                                    # marker is dropped.
                                     if reasoning_markup_buffer:
                                         from core.inference.chat_template_helpers import (
                                             neutralize_think_markup_streaming,
@@ -11736,8 +11731,8 @@ class LlamaCppBackend:
                                 # ── Content tokens ──
                                 token = delta.get("content", "")
                                 if token:
-                                    # First answer token ends reasoning: flush any
-                                    # held partial marker into the drawer first.
+                                    # First answer token ends reasoning: flush the
+                                    # held marker into the drawer first.
                                     if reasoning_markup_buffer:
                                         from core.inference.chat_template_helpers import (
                                             neutralize_think_markup_streaming,
@@ -12003,12 +11998,10 @@ class LlamaCppBackend:
                             break  # exit outer for
 
                 if reasoning_markup_buffer:
-                    # Stream ended without a "data: [DONE]" line (cancel, a
-                    # dropped connection, or the server-SIGKILL retry path), so
-                    # finalize the holdback the same way [DONE] does. Otherwise
-                    # the held marker prefix -- up to 7 chars of real reasoning
-                    # -- was dropped silently (#7334). Accumulate only; the
-                    # stream-end resolution below does the yielding.
+                    # Stream ended without "data: [DONE]" (cancel, dropped
+                    # connection, server-SIGKILL retry), so finalize as [DONE]
+                    # does or the holdback is dropped silently (#7334).
+                    # Accumulate only; the resolution below does the yielding.
                     from core.inference.chat_template_helpers import (
                         neutralize_think_markup_streaming,
                     )
@@ -12363,10 +12356,8 @@ class LlamaCppBackend:
                         )
                         continue
 
-                    # The model wrote this call, and it goes back to llama-server on
-                    # the next pass, where Gemma-4 renders name/arguments inside its
-                    # <|tool_call> block; neutralize before it re-enters the prompt
-                    # exactly as the tool result below is (#7066).
+                    # This call goes back to llama-server next pass, where Gemma-4
+                    # renders name/arguments inside its <|tool_call> block (#7066).
                     from core.inference.chat_template_helpers import (
                         neutralize_tool_call_arguments,
                     )
@@ -12428,8 +12419,8 @@ class LlamaCppBackend:
                             }
                             if decision.tool_call_id:
                                 denied_message["tool_call_id"] = decision.tool_call_id
-                            # Same rewrite as the executed path, so a denied
-                            # call's id and name still match its assistant call.
+                            # Same rewrite as the executed path, so the id and name
+                            # still match the assistant call.
                             from core.inference.chat_template_helpers import (
                                 neutralize_control_markup_in_messages,
                             )
@@ -12488,10 +12479,9 @@ class LlamaCppBackend:
                     # A tool ran this turn, so it counts against the caller's budget.
                     _turn_executed_real_tool = True
                     yield completion.tool_end_event()
-                    # Tool output can quote think/ChatML markers; neutralize
-                    # before it re-enters the prompt (#7066). Whole message, not
-                    # just content: tool_call_id and name need the same rewrite as
-                    # the assistant call, or the pair stops matching.
+                    # Tool output can quote control markers (#7066). Whole message,
+                    # not just content: tool_call_id and name need the same rewrite
+                    # as the assistant call, or the pair stops matching.
                     from core.inference.chat_template_helpers import (
                         neutralize_control_markup_in_messages,
                     )
@@ -12612,7 +12602,7 @@ class LlamaCppBackend:
         in_thinking = False
         has_content_tokens = False
         reasoning_text = ""
-        # Holds partial literal think markers across chunks (#7066).
+        # Holds partial think markers across chunks (#7066)
         reasoning_markup_buffer = ""
         _final_reasoning_started_at: Optional[float] = None
         _final_reasoning_summary_emitted = False
@@ -12757,10 +12747,9 @@ class LlamaCppBackend:
                     if _stream_done:
                         break  # exit outer for
                 if reasoning_markup_buffer:
-                    # Same hole the other two loops already close: this one fell
-                    # through to metadata without finalizing, so a stream ending
-                    # without "data: [DONE]" dropped the held marker prefix, and
-                    # a response consisting only of that prefix vanished (#7334).
+                    # Same hole the other two loops close: this one fell through to
+                    # metadata without finalizing, so a stream ending without
+                    # "data: [DONE]" dropped the held marker prefix (#7334).
                     from core.inference.chat_template_helpers import (
                         neutralize_think_markup_streaming,
                     )
@@ -12774,8 +12763,8 @@ class LlamaCppBackend:
                             cumulative += "<think>"
                             in_thinking = True
                         cumulative += flushed
-                        # This loop emits reasoning as the whole cumulative
-                        # under "content", not as a delta; match it.
+                        # This loop emits the whole cumulative under "content",
+                        # not a delta; match it.
                         yield {"type": "content", "text": cumulative}
                 _meta = _build_metadata_event(
                     _metadata_usage, _metadata_timings, _metadata_finish_reason

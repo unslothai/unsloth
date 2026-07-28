@@ -147,13 +147,10 @@ def test_mismatched_quote_flanks_are_a_structural_close():
     assert visible == '"yes" is the answer.'
     # The span oracle agrees, and a symmetric mention is still literal.
     assert _think_close_is_literal_in_span('with `</think>"yes"', len("with `")) is False
-    # Symmetric flanks are not enough on their own: a closing quote running
-    # straight into a word char is the ANSWER's own opening quote, so the tag
-    # was structural. Reading it as a mention hid the whole answer in the
-    # drawer, which is the same failure this test is named for (#7334).
+    # Symmetric flanks are not enough: a closing quote running into a word char
+    # is the ANSWER's own opening quote, so the tag was structural (#7334).
     assert _think_close_is_literal_in_span('with "</think>"yes', len('with "')) is False
-    # A mention that reads on as prose keeps its closing quote followed by a
-    # separator, and stays literal.
+    # A mention reading on as prose keeps a separator after its closing quote.
     assert _think_close_is_literal_in_span('with "</think>" yes', len('with "')) is True
 
 
@@ -246,7 +243,7 @@ def test_unequal_delimiter_runs_are_a_structural_close():
         )
         assert (reasoning, visible) == (want_reasoning, want_visible), text
         # The run length is part of the verdict, so a delta ending inside it
-        # must not settle the tag early: every chunking has to agree.
+        # must not settle the tag early.
         for split in range(1, len(text)):
             ex = _ResponsesReasoningExtractor(reasoning_prefilled = True)
             got = [ex.feed(text[:split]), ex.feed(text[split:]), ex.finish()]
@@ -1277,8 +1274,8 @@ def test_assistant_history_neutralizes_bare_role_sentinels():
     client-supplied assistant history still forged a role transition (#7066).
     """
     sentinels = ("<|user|>", "<|assistant|>", "<|system|>")
-    # Pin against the templates that really use them, so the two cannot drift.
-    # Read as text: importing unsloth here would drag in the whole runtime.
+    # Pinned against the shipped templates so the two cannot drift. Read as
+    # text: importing unsloth here would drag in the whole runtime.
     templates = (Path(__file__).resolve().parents[3] / "unsloth/chat_templates.py").read_text(
         encoding = "utf-8"
     )
@@ -1600,9 +1597,8 @@ def test_a_marker_split_across_adjacent_parts_is_broken():
         rendered = "".join(part["text"].strip() for part in out)
         assert forbidden not in rendered, (role, parts, rendered)
         # Only the seam is touched, so no visible character is dropped. Padding
-        # a caller left at the seam can survive as an interior space, since the
-        # neutral char now sits between it and the end, and that only happens
-        # on input that was assembling a marker in the first place.
+        # at the seam can survive as an interior space, since the neutral char
+        # now sits between it and the end.
         assert rendered.replace(_ZW, "").replace(" ", "") == "".join(
             part.strip() for part in parts
         ).replace(" ", "")

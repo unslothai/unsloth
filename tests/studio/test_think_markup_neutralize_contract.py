@@ -20,9 +20,8 @@ def test_frontend_exports_neutralize_think_markup():
     src = PARSE_TS.read_text(encoding = "utf-8")
     assert "export function neutralizeThinkMarkup" in src
     assert "export function drainThinkMarkupBuffer" in src
-    # U+2060 WORD JOINER, matching the backend's _THINK_NEUTRAL_ZW. U+200B is
-    # Line_Break class ZW, so it would let a neutralized tag wrap mid-tag; the
-    # frontend and backend sentinels must also stay the same codepoint (#7334).
+    # U+2060 WORD JOINER, matching the backend's _THINK_NEUTRAL_ZW: U+200B is
+    # line-break class ZW and would let a neutralized tag wrap mid-tag (#7334).
     assert "\\u2060" in src or "\u2060" in src
     assert "\\u200b" not in src and "\u200b" not in src
     assert "#7066" in src
@@ -416,18 +415,16 @@ def test_parse_assistant_content_literal_close_semantics(tmp_path):
     assert parsed["unclosed_fence"][-1]["text"].strip() == "the answer"
     assert closed["unclosed_fence"] is True
 
-    # Mismatched flanks are not a quoted mention: an odd backtick count before
-    # the tag and a double quote after it used to read as a quote span, which
-    # hid the entire visible answer in the thinking drawer (#7334).
+    # Mismatched flanks are no quoted mention: an odd backtick count before the
+    # tag and a double quote after it hid the whole answer in the drawer (#7334).
     assert parsed["mismatched_flanks"] == [
         {"type": "reasoning", "text": "I'll answer with `"},
         {"type": "text", "text": '"yes" is the answer'},
     ]
     assert closed["mismatched_flanks"] is True
 
-    # A contraction before a single-quoted mention must not flip the parity:
-    # counting it read the quoted tag as the block end and leaked the rest of
-    # the thought into the visible answer (#7334).
+    # A contraction before a single-quoted mention must not flip the parity, or
+    # the quoted tag reads as the block end and leaks the thought (#7334).
     assert parsed["contraction_quoted"] == [
         {"type": "reasoning", "text": "It's discussing '</think>' here"},
         {"type": "text", "text": "answer"},
@@ -449,29 +446,25 @@ def test_parse_assistant_content_literal_close_semantics(tmp_path):
     assert [part["type"] for part in parsed["literal_only"]] == ["reasoning"]
     assert closed["literal_only"] is False
 
-    # A ``` in the visible ANSWER is not proof that a reasoning-side fence
-    # closed: taking it as such made the genuine close look literal and hid the
-    # entire answer inside the thinking drawer (#7334).
+    # A ``` in the visible ANSWER does not prove a reasoning-side fence closed:
+    # taking it as such made the genuine close look literal (#7334).
     assert parsed["answer_fence"] == [
         {"type": "reasoning", "text": "draft ```"},
         {"type": "text", "text": "Answer: ```js\nconst a = 1;\n```\ndone"},
     ]
     assert closed["answer_fence"] is True
 
-    # Matching flanks are not enough: a quoted mention pairs delimiter RUNS of
-    # EQUAL length (CommonMark closes a code span with "a backtick string of
-    # equal length"), so a 1-backtick flank against the answer's 3-backtick
-    # fence is no span. Raw-character parity alone called it a mention and hid
-    # the entire visible answer in the thinking drawer (#7334).
+    # Matching flanks are not enough: a mention pairs delimiter RUNS of EQUAL
+    # length (CommonMark), so a 1-backtick flank against the answer's 3-backtick
+    # fence is no span, though raw parity called it a mention (#7334).
     assert parsed["unequal_runs"] == [
         {"type": "reasoning", "text": "Use a code fence: `"},
         {"type": "text", "text": "```python\nprint(1)\n```"},
     ]
     assert closed["unequal_runs"] is True
 
-    # Same rule, reached from well-formed markdown: ``a ` b`` is a legal
-    # nested-backtick code span whose 5 raw backticks make the parity odd, so
-    # parity on its own would have swallowed the answer here too (#7334).
+    # Same rule from well-formed markdown: ``a ` b`` is a legal nested span
+    # whose 5 backticks make parity odd, which alone swallowed the answer (#7334).
     assert parsed["nested_backtick_span"] == [
         {"type": "reasoning", "text": "Use ``a ` b``"},
         {"type": "text", "text": "```python\nprint(1)\n```"},
@@ -671,10 +664,9 @@ def test_parse_assistant_content_literal_scan_is_single_pass(tmp_path):
     perf = _run_parse_harness(tmp_path)["perf"]
     ratio = perf["many_us"] / perf["clean_us"]
     assert ratio < 500, f"many {perf['many_us']:.1f}us vs clean {perf['clean_us']:.3f}us"
-    # 200 FENCED literals sharing one open fence all take the odd-fence branch
-    # with the same "is there a later close tag" answer; memoizing it keeps the
-    # parse near linear (~7x the clean control, vs ~17x re-scanning and far
-    # worse as the trailing span grows).
+    # 200 FENCED literals share one open fence and one "is there a later close
+    # tag" answer; memoizing it keeps the parse near linear (~7x the clean
+    # control, vs ~17x re-scanning and worse as the trailing span grows).
     fenced_ratio = perf["fenced_us"] / perf["clean_us"]
     assert fenced_ratio < 60, f"fenced {perf['fenced_us']:.1f}us vs clean {perf['clean_us']:.3f}us"
 
