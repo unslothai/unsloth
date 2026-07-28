@@ -1005,8 +1005,13 @@ try:
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
         _extra_args_draft_device_pin,
+        _extra_args_n_ubatch,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
+        _kv_bytes_per_elem,
+        _kv_unified_from_args,
+        _planned_main_cache_types,
+        _swa_full_from_args_or_env,
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
@@ -1045,8 +1050,13 @@ except ImportError:
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
         _extra_args_draft_device_pin,
+        _extra_args_n_ubatch,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
+        _kv_bytes_per_elem,
+        _kv_unified_from_args,
+        _planned_main_cache_types,
+        _swa_full_from_args_or_env,
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
@@ -3322,6 +3332,10 @@ def _request_matches_loaded_settings(
             strip_offload = request.gpu_memory_mode == "manual",
         )
     )
+    if not llama_backend.is_diffusion and llama_backend.swa_full != _swa_full_from_args_or_env(
+        effective_extra
+    ):
+        return False
     if not _tensor_parallel_matches_loaded(
         effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
     ):
@@ -4452,10 +4466,12 @@ def _estimate_gguf_kv_gb(
     max_seq_length: int,
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
+    cache_type_kv: Optional[str] = None,
+    tensor_parallel: bool = False,
 ) -> float:
     """KV-cache VRAM (GB) at the larger of max_seq_length and any `--ctx-size`/`-c`
-    override, over n_parallel slots, with the default f16 cache so the estimate is
-    never below what the server allocates. 0 if metadata is unreadable."""
+    override, over n_parallel slots, using the effective cache settings and managed
+    launcher defaults. 0 if metadata is unreadable."""
     try:
         from core.inference.llama_server_args import parse_ctx_override
 
@@ -4470,7 +4486,43 @@ def _estimate_gguf_kv_gb(
         ctx = max(max_seq_length or 0, ctx_override) or (probe._context_length or 0)
         if ctx <= 0:
             return 0.0
-        kv = probe._estimate_kv_cache_bytes(ctx, n_parallel = max(1, n_parallel or 1))
+        slots = max(1, n_parallel or 1)
+        managed_kv_unified = bool(
+            slots > 1
+            and LlamaCppBackend.probe_server_capabilities().get("supports_kv_unified", False)
+        )
+        planned_cache_types = _planned_main_cache_types(
+            cache_type_kv,
+            llama_extra_args,
+        )
+        if tensor_parallel and any(
+            cache_type not in LlamaCppBackend._TENSOR_PARALLEL_KV_TYPES
+            for cache_type in planned_cache_types
+        ):
+            # Tensor mode strips quantized axes, but a layer fallback restores
+            # the original settings. Size for the larger successful outcome.
+            tensor_cache_types = _planned_main_cache_types(None, None)
+            cache_type_for_budget = max(
+                (*planned_cache_types, *tensor_cache_types, "f16"),
+                key = _kv_bytes_per_elem,
+            )
+        else:
+            cache_type_for_budget = max(
+                planned_cache_types,
+                key = _kv_bytes_per_elem,
+            )
+        kv = probe._estimate_kv_cache_bytes(
+            ctx,
+            cache_type_for_budget,
+            n_parallel = slots,
+            swa_full = _swa_full_from_args_or_env(llama_extra_args),
+            kv_unified = _kv_unified_from_args(
+                llama_extra_args,
+                default = managed_kv_unified,
+            ),
+            n_ubatch = _extra_args_n_ubatch(llama_extra_args, n_ctx = ctx),
+            flash_attn = False,
+        )
         return kv / (1024**3)
     except Exception as e:
         logger.warning(f"Could not size GGUF KV cache for training guard: {e}")
@@ -4483,6 +4535,8 @@ def _estimate_gguf_required_gb(
     max_seq_length: int = 0,
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
+    cache_type_kv: Optional[str] = None,
+    tensor_parallel: bool = False,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -4498,7 +4552,12 @@ def _estimate_gguf_required_gb(
                 total_bytes += Path(f).stat().st_size
         if total_bytes > 0:
             return total_bytes / (1024**3) + _estimate_gguf_kv_gb(
-                main, max_seq_length, llama_extra_args, n_parallel
+                main,
+                max_seq_length,
+                llama_extra_args,
+                n_parallel,
+                cache_type_kv,
+                tensor_parallel,
             )
 
         repo = getattr(config, "gguf_hf_repo", None)
@@ -4681,6 +4740,8 @@ def _guard_chat_load_against_training(
     requested_gpu_ids: Optional[List[int]],
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
+    cache_type_kv: Optional[str] = None,
+    tensor_parallel: bool = False,
     gpu_memory_mode: Literal["auto", "manual"] = "auto",
     gpu_ids_are_vulkan_ordinals: bool = False,
     diffusion_kind: Optional[bool] | object = _DIFFUSION_KIND_UNSET,
@@ -4730,6 +4791,11 @@ def _guard_chat_load_against_training(
             max_seq_length = max_seq_length,
             llama_extra_args = llama_extra_args,
             n_parallel = n_parallel,
+            cache_type_kv = cache_type_kv,
+            tensor_parallel = (
+                _effective_tensor_parallel(llama_extra_args, tensor_parallel)
+                and (is_vulkan or LlamaCppBackend._effective_gpu_count(requested_gpu_ids) >= 2)
+            ),
         )
         if is_gguf
         else None
@@ -5503,6 +5569,8 @@ async def _load_model_impl(
             requested_gpu_ids = effective_gpu_ids,
             llama_extra_args = extra_llama_args,
             n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
+            cache_type_kv = request.cache_type_kv,
+            tensor_parallel = bool(request.tensor_parallel),
             gpu_memory_mode = request.gpu_memory_mode,
             gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
             diffusion_kind = diffusion_kind,
@@ -6195,6 +6263,8 @@ async def validate_model(
                     if fastapi_request is not None
                     else 1
                 ),
+                cache_type_kv = request.cache_type_kv,
+                tensor_parallel = request.tensor_parallel,
                 gpu_memory_mode = request.gpu_memory_mode,
                 gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
                 diffusion_kind = diffusion_kind,
