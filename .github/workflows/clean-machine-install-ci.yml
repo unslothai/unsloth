@@ -404,7 +404,7 @@ jobs:
         run: |
           # WSL2 is present on windows-2022+ runner images; only a distro is missing.
           wsl --set-default-version 2
-          $url = 'https://cloud-images.ubuntu.com/wsl/releases/24.04/current/ubuntu-noble-wsl-amd64-24.04lts.rootfs.tar.gz'
+          $url = 'https://cloud-images.ubuntu.com/wsl/releases/24.04/20240423/ubuntu-noble-wsl-amd64-24.04lts.rootfs.tar.gz'
           $expected = '2a790896740b14d637dbdc583cce1ba081ac53b9e9cdb46dc09a2f73abbd9934'
           New-Item -ItemType Directory -Force -Path wsl-dist, logs | Out-Null
           Invoke-WebRequest -Uri $url -OutFile wsl-dist/rootfs.tar.gz -UseBasicParsing -TimeoutSec 900
@@ -542,6 +542,17 @@ jobs:
               -Value "@`"$($wingetCmd.Source)`" %*"
             $kept = @($shim) + $kept
           }
+          # Take the toolcache Python off disk, not just off PATH. py.exe lives in
+          # C:\Windows (which must stay) and uv does its own interpreter discovery, so
+          # both reach the toolcache no matter what PATH says -- which is how a leg
+          # printing `python ABSENT` still installed with the runner's 3.13.14.
+          foreach ($tc in @("$env:AGENT_TOOLSDIRECTORY\Python", 'C:\hostedtoolcache\windows\Python')) {
+            if ($tc -and (Test-Path $tc)) {
+              try { Rename-Item -LiteralPath $tc -NewName 'Python.masked' -ErrorAction Stop
+                    Write-Host "masked toolcache python: $tc" }
+              catch { Write-Host "::error::could not mask $tc ($($_.Exception.Message)); the leg would not be clean"; exit 1 }
+            }
+          }
           $newPath = ($kept -join ';')
           "PATH=$newPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           # install.ps1 calls Refresh-SessionPath (defined install.ps1:318-337, called at
@@ -570,9 +581,20 @@ jobs:
       - name: Verify the simulation took effect
         shell: pwsh
         run: |
-          foreach ($t in 'python','git','cmake','cl') {
+          $leaked = @()
+          # `py` too: the launcher lives in C:\Windows, which the scrub keeps, and it
+          # finds the toolcache Python the scrub just removed from PATH.
+          foreach ($t in 'python','py','git','cmake','cl') {
             $f = Get-Command $t -ErrorAction SilentlyContinue
             Write-Host ("{0,-8} {1}" -f $t, $(if ($f) { $f.Source } else { 'ABSENT' }))
+            if ($f -and $t -ne 'py') { $leaked += "$t -> $($f.Source)" }
+          }
+          # Printing alone could not fail, and the leg was green while not clean:
+          # run 30365014702 logged `python ABSENT` and then `Python 3.13 already
+          # installed` / `Using CPython ... C:\hostedtoolcache\windows\Python\...`.
+          if ($leaked) {
+            Write-Host "::error::developer tooling survived the scrub: $($leaked -join '; ')"
+            exit 1
           }
           $winget = Get-Command winget -ErrorAction SilentlyContinue
           Write-Host ("winget   {0}" -f $(if ($winget) { $winget.Source } else { 'ABSENT' }))

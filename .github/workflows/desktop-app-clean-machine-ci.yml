@@ -166,11 +166,15 @@ jobs:
           # does: --tauri, stdin closed, no tty. --tauri rejects a custom studio
           # home (install.sh:102-114), so drop the workspace-scoped override.
           env -u UNSLOTH_STUDIO_HOME \
-            bash "$APP/Contents/Resources/install.sh" --tauri --no-torch \
+            bash "$APP/Contents/Resources/install.sh" --tauri \
             < /dev/null 2>&1 | tee logs/bundled-install.log
           PY="$HOME/.unsloth/studio/unsloth_studio/bin/python"
           [ -x "$PY" ] || { echo "::error::bundled installer left no venv at $PY"; exit 1; }
           "$PY" -V
+          # install.rs passes only --tauri, so torch is part of first launch. Dropping
+          # --no-torch here and asserting torch keeps the venv check from passing over
+          # a bundle whose only failure is the torch install.
+          "$PY" -c "import torch; print('torch', torch.__version__)"
 
       - name: Launch and prove it stays up
         run: |
@@ -204,7 +208,13 @@ jobs:
             tail -60 "$f"
             # The two fields the bug report turned on.
             grep -E "disposition=|can_auto_repair=|Xcode Command Line|ModuleNotFoundError" "$f" || true
+            found=1
           done
+          # Everything above is `|| true`, so on its own this step could not fail while
+          # the header sells the tauri.log disposition as an acceptance criterion.
+          # setup_logging (src-tauri/src/main.rs:50-67) opens tauri.log unconditionally
+          # at process start, so no log at all means the binary never got that far.
+          [ "${found:-0}" = "1" ] || { echo "::error::the app wrote no tauri.log; it never reached setup_logging"; exit 1; }
 
       - name: Restore the runner
         if: always()
