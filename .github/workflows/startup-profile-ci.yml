@@ -127,11 +127,20 @@ jobs:
               print("**`import main` failed - no valid import profile**\n")
               print("```\n" + (imp.get("error") or "")[-1500:] + "\n```\n")
           lau = d.get("launch") or {}
+          runs = len(lau.get("runs") or [])
+          failed = lau.get("failed_runs") or 0
           if lau.get("healthz_median_seconds") is not None:
+              # The aggregates cover only the runs that reached healthz. Printing them
+              # bare turns "two launches never came up, one was fast" into a normal fast
+              # startup, and this summary is the only output anyone sees.
+              note = f" _({runs - failed} of {runs} launches; {failed} never became healthy)_" if failed else ""
               print(f"**time to a healthy port: {lau['healthz_median_seconds']}s median, "
-                    f"{lau['healthz_max_seconds']}s max**\n")
+                    f"{lau['healthz_max_seconds']}s max**{note}\n")
           elif lau.get("skipped"):
               print(f"_launch phase skipped: {lau['skipped']}_\n")
+          elif runs:
+              # Previously printed nothing at all when every launch failed.
+              print(f"**no launch measurement: all {runs} launches failed to become healthy**\n")
           PY
 
       - name: Upload profile
