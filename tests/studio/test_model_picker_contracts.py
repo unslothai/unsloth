@@ -912,3 +912,28 @@ def test_the_detail_card_also_gates_ollama_out_of_the_api_promise():
     assert hub.count("LOCAL_MODEL_SOURCE.OLLAMA") == 2
     assert "selectedModel.localSource !== LOCAL_MODEL_SOURCE.OLLAMA" in hub
     assert "row.source !== LOCAL_MODEL_SOURCE.OLLAMA" in hub
+
+
+def test_the_settings_page_judges_the_config_storage_actually_keeps():
+    """savePerModelConfig normalizes before deciding, and the runtime hands this
+    page Speculative Decoding "auto", which canonicalizes to null. Judging the raw
+    object called a default config non-default, so Remember reported saved while
+    the local write had dropped the entry, and the mirror sent the server an
+    "auto" override the browser did not have."""
+    src = " ".join(
+        _read("features/model-picker/components/model-config-page.tsx").split()
+    )
+    assert (
+        "const normalizedRuntimeConfig = normalizePerModelConfig( effectiveRuntimeConfig, );"
+        in src
+    )
+    assert "const defaultConfig = isDefaultConfig(normalizedRuntimeConfig);" in src
+    # The same object goes to storage and to the server, or they disagree again.
+    assert "target.ggufVariant, normalizedRuntimeConfig, evicted," in src
+    assert "remember ? normalizedRuntimeConfig : null," in src
+    assert "isDefaultConfig(effectiveRuntimeConfig)" not in src
+
+    store = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
+    assert "export function normalizePerModelConfig(" in store
+    assert "const normalized = normalize(config);" in store
+    assert "if (isDefaultConfig(normalized)) {" in store, "the rule this mirrors"

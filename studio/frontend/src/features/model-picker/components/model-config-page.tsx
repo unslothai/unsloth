@@ -53,6 +53,7 @@ import {
   floorMaxSeqLength,
   isDefaultConfig,
   normalizeMaxSeqLength,
+  normalizePerModelConfig,
   resolveInitialConfig,
   savePerModelConfig,
 } from "../model-config/per-model-config";
@@ -871,14 +872,23 @@ export function ModelConfigPage({
     const effectiveAtBaseline = perModelConfigsEqual(effectiveConfig, baseline);
     const effectivePersistenceOnly =
       isActiveModel && effectiveAtBaseline && rememberChanged;
-    const defaultConfig = isDefaultConfig(effectiveRuntimeConfig);
+    // Storage's own shape, because savePerModelConfig judges the normalized
+    // object: the runtime hands this page Speculative Decoding "auto", which
+    // canonicalizes to null, so the raw one looked non-default. Remember then
+    // reported saved while the local write had dropped the entry as default, and
+    // the mirror below sent the server a "auto" override the browser did not
+    // have, which is exactly the disagreement that mirror must not create.
+    const normalizedRuntimeConfig = normalizePerModelConfig(
+      effectiveRuntimeConfig,
+    );
+    const defaultConfig = isDefaultConfig(normalizedRuntimeConfig);
     let saveFailed = false;
     const evicted: { modelId: string; ggufVariant: string | null }[] = [];
     if (remember) {
       saveFailed = !savePerModelConfig(
         configId,
         target.ggufVariant,
-        effectiveRuntimeConfig,
+        normalizedRuntimeConfig,
         evicted,
       );
     } else {
@@ -896,7 +906,7 @@ export function ModelConfigPage({
       syncModelOverride(
         configId,
         target.ggufVariant,
-        remember ? effectiveRuntimeConfig : null,
+        remember ? normalizedRuntimeConfig : null,
       );
     }
     // Saving can push the local map over budget and drop other models, whose server

@@ -479,6 +479,18 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
   };
 }
 
+/**
+ * A config in the exact shape storage keeps it in.
+ *
+ * Callers that decide anything from a config a user is still editing have to run
+ * it through this first: the UI carries sentinels storage does not, notably
+ * Speculative Decoding "auto", which canonicalizes to null. Judging the raw
+ * object calls a default config non-default.
+ */
+export function normalizePerModelConfig(raw: unknown): PerModelConfig {
+  return normalize(raw);
+}
+
 function normalize(raw: unknown): PerModelConfig {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return normalizeV1({});
