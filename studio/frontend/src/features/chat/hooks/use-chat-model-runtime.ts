@@ -567,6 +567,9 @@ export function useChatModelRuntime() {
           applyActiveModelStatusToStore(residentStatus, {
             previousCheckpoint: selectedCheckpoint,
             previousGgufVariant,
+            // Id and variant were matched above: the model is unchanged, only
+            // the tab's checkpoint was elsewhere.
+            readoptingSameModel: true,
           });
           syncModelCapabilities(modelId, residentStatus);
           return;

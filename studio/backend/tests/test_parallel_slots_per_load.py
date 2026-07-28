@@ -437,7 +437,9 @@ def _write_swa_gguf(path: Path) -> str:
     return str(path)
 
 
-def _guard_required_gb(monkeypatch, gguf_path: str, *, n_parallel: int, diffusion) -> float:
+def _guard_required_gb(
+    monkeypatch, gguf_path: str, *, n_parallel: int, diffusion, caps = None
+) -> float:
     """Run the training guard over a local GGUF and return the size it budgeted."""
     import routes.inference as inf
 
@@ -462,11 +464,12 @@ def _guard_required_gb(monkeypatch, gguf_path: str, *, n_parallel: int, diffusio
     monkeypatch.setattr(LlamaCppBackend, "_effective_gpu_count", staticmethod(lambda *a, **k: 1))
     monkeypatch.setattr(LlamaCppBackend, "_diffusion_gpu_arg", staticmethod(lambda *a, **k: "0"))
     # Pin the --kv-unified probe so the estimate cannot depend on whether this
-    # machine happens to have a llama-server binary installed.
+    # machine happens to have a llama-server binary installed. The default is
+    # "no binary found", where load_model leaves the requested count alone.
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
-        classmethod(lambda cls, binary = None: {}),
+        classmethod(lambda cls, binary = None: dict(caps or {})),
     )
 
     inf._guard_chat_load_against_training(
@@ -497,6 +500,27 @@ def test_training_guard_still_sizes_slots_for_an_ordinary_gguf(monkeypatch, tmp_
     gguf = _write_swa_gguf(tmp_path / "chat.gguf")
     one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = False)
     many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = False)
+    assert many > one
+
+
+def test_training_guard_sizes_one_slot_when_the_binary_has_no_kv_unified(monkeypatch, tmp_path):
+    # load_model clamps a multi-slot request to 1 on such a build, and there each
+    # slot carries its own SWA stream, so sizing the asked count would 409 a load
+    # that fits.
+    gguf = _write_swa_gguf(tmp_path / "chat.gguf")
+    old = {"found": True, "supports_kv_unified": False}
+    one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = False, caps = old)
+    many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = False, caps = old)
+    assert one == many
+
+
+def test_training_guard_sizes_every_slot_when_kv_unified_exists(monkeypatch, tmp_path):
+    # The clamp above is scoped to the binaries that cannot serve the slots; a
+    # capable one really does allocate the SWA window per slot.
+    gguf = _write_swa_gguf(tmp_path / "chat.gguf")
+    new = {"found": True, "supports_kv_unified": True}
+    one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = False, caps = new)
+    many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = False, caps = new)
     assert many > one
 
 

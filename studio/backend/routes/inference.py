@@ -4759,17 +4759,30 @@ def _guard_chat_load_against_training(
             cpu_only = LlamaCppBackend._effective_gpu_count() == 0,
         )
 
+    # Size with the slot count that will actually launch, or a load that fits
+    # gets a 409. The diffusion runner never receives --parallel (load_model
+    # hands off to _start_diffusion_server before the slot plumbing), and
+    # load_model clamps a multi-slot request to 1 on an llama-server without
+    # --kv-unified, where every slot gets its own SWA stream. An unclassified
+    # GGUF keeps the requested count, which is the safe side.
+    if is_gguf and n_parallel > 1:
+        if diffusion_kind is True:
+            n_parallel = 1
+        else:
+            try:
+                caps = LlamaCppBackend.probe_server_capabilities()
+                if caps.get("found") and not caps.get("supports_kv_unified"):
+                    n_parallel = 1
+            except Exception as e:
+                logger.warning("Could not probe llama-server slots for chat-load guard: %s", e)
+
     required_override_gb = (
         _estimate_gguf_required_gb(
             config,
             hf_token = hf_token,
             max_seq_length = max_seq_length,
             llama_extra_args = llama_extra_args,
-            # The diffusion runner never receives --parallel (load_model hands off
-            # to _start_diffusion_server before the slot plumbing), so its cache is
-            # always single-slot; sizing it for more would 409 a load that fits. An
-            # unclassified GGUF keeps the requested count, which is the safe side.
-            n_parallel = 1 if diffusion_kind is True else n_parallel,
+            n_parallel = n_parallel,
             cache_type_kv = cache_type_kv,
             tensor_parallel = (
                 _effective_tensor_parallel(llama_extra_args, tensor_parallel)

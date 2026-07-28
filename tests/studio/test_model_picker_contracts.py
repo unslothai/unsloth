@@ -695,10 +695,7 @@ def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
     # reset the control like performLoad's cross-model reset does, or model A's
     # explicit count follows onto model B. Narrowly gated -- see
     # test_hydration_keeps_the_slot_control_when_readopting_the_running_model.
-    assert (
-        "...(seedLoadParams && hydratingExistingModel && "
-        "!slotsBaselineMatchesStatus && { nParallel: null })," in status
-    )
+    assert "...(seedLoadParams && slotsModelChanged && { nParallel: null })," in status
     # ... while still never adopting the RESOLVED echo into the control.
     assert "nParallel: status.requested_parallel_slots," not in status
 
@@ -763,18 +760,18 @@ def test_hydration_keeps_the_slot_control_when_readopting_the_running_model():
     into `savePerModelConfig`, so a Save the user reads as a no-op erases their
     remembered override and the next Apply reloads at the server default.
 
-    Gate the clear on this tab's own baseline having gone stale: a genuine A->B
-    swap still clears (A's count cannot match B's echo), while re-adopting the
-    running model keeps its live value."""
+    Only that branch knows the model is unchanged, so it says so explicitly.
+    Slot counts cannot stand in for the check: the echo is "the per-load
+    n_parallel, else the server-wide default", so a genuine A->B swap where B
+    loaded at the default can echo exactly A's explicit count."""
     status = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
     assert (
-        "const slotsBaselineMatchesStatus = prevState.loadedNParallel === "
-        "(status.requested_parallel_slots ?? null);" in status
+        "const slotsModelChanged = hydratingExistingModel && !options.readoptingSameModel;"
+        in status
     )
-    assert (
-        "...(seedLoadParams && hydratingExistingModel && "
-        "!slotsBaselineMatchesStatus && { nParallel: null })," in status
-    )
+    assert "...(seedLoadParams && slotsModelChanged && { nParallel: null })," in status
+    # Never a slot-count proxy for "same model".
+    assert "prevState.loadedNParallel === (status.requested_parallel_slots" not in status
     # The baseline seed itself stays ungated by the predicate, or a rollback
     # after a tab reload restores the model at the server default slots.
     assert "loadedNParallel: status.requested_parallel_slots," in status
@@ -787,6 +784,16 @@ def test_hydration_keeps_the_slot_control_when_readopting_the_running_model():
     # restores the model's own config, then hydrates against the external id.
     assert "applyPerModelConfigToRuntime(selection.previousConfig);" in resident
     assert "previousCheckpoint: selectedCheckpoint," in resident
+    # Only reachable because the branch matched the id AND the variant first.
+    assert "resolveInferenceCheckpointId(residentStatus) === modelId" in resident
+    assert "readoptingSameModel: true," in resident
+    # The refresh() hydrate must NOT claim it: there the model really can change
+    # underneath the tab, which is the case the clear exists for.
+    poll = runtime.split("setModels(listRes.models.map(toChatModelSummary));", 1)[1].split(
+        "} else if (!statusRes.active_model", 1
+    )[0]
+    assert "applyActiveModelStatusToStore(statusRes, {" in poll
+    assert "readoptingSameModel" not in poll
 
 
 def test_parallel_slots_are_never_recorded_for_a_diffusion_load():

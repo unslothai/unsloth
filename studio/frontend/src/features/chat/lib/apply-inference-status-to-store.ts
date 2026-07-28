@@ -131,6 +131,9 @@ export type ApplyInferenceStatusOptions = {
    * status -- without it a variant-only switch underneath the tab reads as
    * steady state and the hydration reseed keeps the old quant's baselines. */
   previousGgufVariant?: string | null;
+  /** The caller verified the status is the model this tab just picked, so the
+   * per-model slot control it holds belongs to that model and must survive. */
+  readoptingSameModel?: boolean;
 };
 
 /** Mirror refresh() hydration so adopted CLI models get reasoning/tools flags. */
@@ -201,16 +204,14 @@ export function applyActiveModelStatusToStore(
   // While a load is in flight, performLoad owns the load params. Seeding them
   // from a stale poll here would clobber the values the load dialog just set.
   const seedLoadParams = !prevState.modelLoading;
-  // Whether this tab's own slot baseline still describes the running server.
-  // requested_parallel_slots is "the per-load n_parallel, else the server-wide
-  // default", so the echo alone cannot vouch for the control -- only a matching
-  // baseline can. hydratingExistingModel on its own is far too broad a trigger
-  // for clearing: it also fires when the tab adopts a model it never lost (the
-  // resident-model pick below an external provider, or an id/variant spelling
-  // that differs from the status echo), where the control holds THIS model's
-  // own count and clearing it drops a live setting.
-  const slotsBaselineMatchesStatus =
-    prevState.loadedNParallel === (status.requested_parallel_slots ?? null);
+  // A model/variant change underneath this tab, as opposed to re-adopting the
+  // model the tab itself just picked (the resident-model pick below an external
+  // provider), where hydratingExistingModel fires on the stale checkpoint but
+  // the slot control holds THIS model's own count. Slot counts cannot stand in
+  // for that check: requested_parallel_slots is "the per-load n_parallel, else
+  // the server-wide default", so the new model can echo the old one's count.
+  const slotsModelChanged =
+    hydratingExistingModel && !options.readoptingSameModel;
   // A Manual + Auto-layers load sent its positive context pin as max_seq_length,
   // and status only exposes the RESOLVED context; re-seed the pin from the
   // requested value (parity with the load paths' keepCustomCtx). Baselines
@@ -355,11 +356,8 @@ export function applyActiveModelStatusToStore(
     // the control the way performLoad's cross-model reset does. Without it the
     // previous model's explicit count follows onto the new model, and saving or
     // reloading there pins it. The baseline above still carries the new model's
-    // resolved count for the rollback. Gated on the baseline having gone stale
-    // so a re-adoption of the SAME running model keeps its own count.
-    ...(seedLoadParams &&
-      hydratingExistingModel &&
-      !slotsBaselineMatchesStatus && { nParallel: null }),
+    // resolved count for the rollback.
+    ...(seedLoadParams && slotsModelChanged && { nParallel: null }),
     // Re-seed on first hydration, model/variant changes, or a same-model backend
     // placement change. gpuStatusFields preserves dirty local edits in the last
     // case while advancing their loaded baselines.
