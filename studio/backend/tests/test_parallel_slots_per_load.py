@@ -438,7 +438,12 @@ def _write_swa_gguf(path: Path) -> str:
 
 
 def _guard_required_gb(
-    monkeypatch, gguf_path: str, *, n_parallel: int, diffusion, caps = None
+    monkeypatch,
+    gguf_path: str,
+    *,
+    n_parallel: int,
+    diffusion,
+    caps = None,
 ) -> float:
     """Run the training guard over a local GGUF and return the size it budgeted."""
     import routes.inference as inf
