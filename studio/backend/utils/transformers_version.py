@@ -1767,7 +1767,7 @@ def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
             metadata = di / "METADATA"
             if not metadata.is_file():
                 continue
-            for line in metadata.read_text(encoding = "utf-8", errors = "replace").splitlines():
+            for line in metadata.read_text(errors = "replace", encoding = "utf-8").splitlines():
                 if line.startswith("Version:"):
                     installed_ver = line.split(":", 1)[1].strip()
                     if installed_ver != pkg_version:

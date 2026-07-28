@@ -36,6 +36,7 @@ def _backend(
     vocab = 248320,
     embd = 5120,
     kv_fixed_mib = 0,
+    kv_calls = None,
 ):
     """Backend with the dims the compute buffer reads; KV mocked to a fixed size so the
     only slot-dependent term is the compute buffer (485 MiB/slot f32 output x 1.15)."""
@@ -43,7 +44,17 @@ def _backend(
     b._vocab_size = vocab
     b._embedding_length = embd
     b._key_length_mla = None
-    b._estimate_kv_cache_bytes = lambda ctx, t = None, **k: kv_fixed_mib * MIB
+
+    def estimate(
+        ctx,
+        t = None,
+        **kwargs,
+    ):
+        if kv_calls is not None:
+            kv_calls.append(kwargs)
+        return kv_fixed_mib * MIB
+
+    b._estimate_kv_cache_bytes = estimate
     b._can_estimate_kv = lambda: True
     return b
 
@@ -55,6 +66,7 @@ def _run(
     gpus,
     total_by_idx,
     overhead_mib = 0,
+    swa_full = False,
 ):
     return b._slots_that_fit_on_gpu(
         n_parallel,
@@ -66,7 +78,8 @@ def _run(
         FRAC,
         int(overhead_mib * MIB),
         1,
-        512,
+        n_ubatch = 512,
+        swa_full = swa_full,
     )
 
 
@@ -113,3 +126,16 @@ class TestSlotsThatFitOnGpu:
         # base 19500 (= 22500 total at par-independent terms) the same par3 fit holds.
         gi, use_fit, slots = _run(_backend(kv_fixed_mib = 3000), 4, 19500, [(0, 24576)], {0: 24576})
         assert use_fit is False and slots == 3
+
+    def test_swa_full_is_used_for_every_candidate(self):
+        calls = []
+        _run(
+            _backend(kv_calls = calls),
+            4,
+            22500,
+            [(0, 24576)],
+            {0: 24576},
+            swa_full = True,
+        )
+        assert calls
+        assert all(call["swa_full"] is True for call in calls)

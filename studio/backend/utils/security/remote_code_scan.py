@@ -21,6 +21,8 @@ canonical scanner loads in-repo so the fallback never silently takes over.
 from __future__ import annotations
 
 import hashlib
+import io
+import tokenize
 import importlib.util
 import pathlib
 import re
@@ -392,6 +394,18 @@ def scan_remote_code_files(files: dict[str, str]) -> ScanResult:
     return result
 
 
+def _read_python_source(path) -> str:
+    """Decode a .py the way Python will execute it: a PEP 263 cookie
+    (`# coding: cp1252`) wins, so forcing utf-8 would scan something other than
+    what runs."""
+    data = path.read_bytes()
+    try:
+        encoding = tokenize.detect_encoding(io.BytesIO(data).readline)[0]
+    except (SyntaxError, ValueError):
+        encoding = "utf-8"
+    return data.decode(encoding, errors = "replace")
+
+
 def remote_code_fingerprint(files: dict[str, str]) -> str:
     """Stable sha256 over the (sorted) file contents, for pinning consent."""
     h = hashlib.sha256()
@@ -430,9 +444,7 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
             # for an RCE gate (HIGH stays approvable; only CRITICAL hard-blocks).
             for p in root.rglob("*.py"):
                 if p.is_file():
-                    files[str(p.relative_to(root))] = p.read_text(
-                        encoding = "utf-8", errors = "replace"
-                    )
+                    files[str(p.relative_to(root))] = _read_python_source(p)
             # A local config can still point auto_map at an EXTERNAL Hub repo
             # (owner/name--module.Class) that executes on load, so fetch it. Every config
             # that can declare auto_map is checked, so a custom processor's external code
@@ -521,7 +533,7 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
                 raise RemoteCodeUnscannable(
                     f"{model_name}: present file {fn} could not be fetched ({exc})"
                 ) from exc
-            files[fn] = Path(fp).read_text(encoding = "utf-8", errors = "replace")
+            files[fn] = _read_python_source(Path(fp))
         # Code referenced from another repo executes too: scan it or fail closed.
         if not _add_external_refs(files, refs, hf_token, model_name):
             raise RemoteCodeUnscannable(f"{model_name}: external auto_map code unreachable")
@@ -703,5 +715,5 @@ def _add_external_refs(files: dict, refs, hf_token, model_name: str) -> bool:
                     exc,
                 )
                 return False
-            files[f"{repo}--{fn}"] = Path(fp).read_text(encoding = "utf-8", errors = "replace")
+            files[f"{repo}--{fn}"] = _read_python_source(Path(fp))
     return True

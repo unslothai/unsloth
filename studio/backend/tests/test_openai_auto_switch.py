@@ -11,11 +11,24 @@ import asyncio
 import os
 
 import pytest
+from fastapi import HTTPException
 
 import routes.inference as inference_route
 from models.inference import LoadRequest
 from core.inference import local_model_resolver as resolver
 from utils import openai_auto_switch_settings as settings
+
+
+@pytest.fixture(autouse = True)
+def _clean_resolver_index():
+    """Drop the scan cache around every test.
+
+    The /v1 admission hook warms the index in the background, so a test exercising it
+    can publish its fixture's scan and, inside the TTL, hand it to the next test.
+    """
+    resolver.invalidate_index()
+    yield
+    resolver.invalidate_index()
 
 
 class _FakeBackend:
@@ -94,7 +107,7 @@ class _LoadRecorder:
 
 def _wire(monkeypatch, *, enabled, resolves_to, backend, recorder):
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
-    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda _m: resolves_to)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda _m, **_kw: resolves_to)
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     # Auto-switch loads via _load_model_impl (the /load route holds the lifecycle
     # gate that auto-switch already owns, so it calls the impl directly).
@@ -116,7 +129,11 @@ def test_flag_off_never_loads(monkeypatch):
         backend = backend,
         recorder = rec,
     )
-    _run_hook("unsloth/B-GGUF")
+    # Off means no load, but A must not answer as B either: say why instead.
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook("unsloth/B-GGUF")
+    assert excinfo.value.status_code == 404
+    assert "Switch model by request" in str(excinfo.value.detail)
     assert rec.calls == []
 
 
@@ -387,6 +404,45 @@ def test_resolver_nonstring_model_is_failsafe():
     assert resolver.resolve_local_gguf(None) is None
 
 
+def test_describe_local_miss_separates_missing_repo_from_missing_quant(monkeypatch):
+    # Two different misses: the repo isn't downloaded, or only that quant is absent.
+    monkeypatch.setattr(
+        resolver,
+        "_build_index",
+        lambda: {"unsloth/b-gguf": _entry("unsloth/B-GGUF", "UD-Q5_K_XL", "Q4_K_M")},
+    )
+    resolver._scan = (0.0, {})
+    assert resolver.describe_local_miss("unsloth/B-GGUF:Q8_0") == (
+        resolver.MISS_VARIANT_NOT_FOUND,
+        ("UD-Q5_K_XL", "Q4_K_M"),
+    )
+    # Split the same way resolve_local_gguf does, so the two never disagree.
+    assert resolver.describe_local_miss("unsloth/b-gguf:q8_0")[0] == (
+        resolver.MISS_VARIANT_NOT_FOUND
+    )
+    # Unknown repo, and a bare id with no ":VARIANT" to blame.
+    assert resolver.describe_local_miss("totally/unknown:Q8_0") == (
+        resolver.MISS_MODEL_NOT_FOUND,
+        (),
+    )
+    assert resolver.describe_local_miss("unsloth/B-GGUF") == (resolver.MISS_MODEL_NOT_FOUND, ())
+
+
+def test_describe_local_miss_is_failsafe(monkeypatch):
+    # Runs inside an error path, so a broken scan must degrade, not turn a 4xx into a 500.
+    def boom():
+        raise RuntimeError("scan blew up")
+
+    monkeypatch.setattr(resolver, "_build_index", boom)
+    resolver._scan = (0.0, {})
+    assert resolver.describe_local_miss("unsloth/B-GGUF:Q8_0") == (
+        resolver.MISS_MODEL_NOT_FOUND,
+        (),
+    )
+    assert resolver.describe_local_miss(123) == (resolver.MISS_MODEL_NOT_FOUND, ())
+    assert resolver.describe_local_miss("") == (resolver.MISS_MODEL_NOT_FOUND, ())
+
+
 def test_resolver_exact_id_with_colon_wins(monkeypatch):
     # A local id that itself contains a colon (e.g. a Windows path) must match
     # exactly rather than being split at the drive-letter colon.
@@ -537,7 +593,9 @@ def test_disabling_idle_unload_purges_saved_kv(monkeypatch, tmp_path):
         "dir": str(tmp_path),
         "slots": [{"id": 0, "filename": saved.name}],
     }
-    monkeypatch.setattr(settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True))
+    monkeypatch.setattr(
+        settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True, False)
+    )
     monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
 
     payload = settings_route.OpenAIAutoSwitchPayload(enabled = False)
@@ -1108,7 +1166,7 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     monkeypatch.setattr(
         models_route,
         "_scan_hf_cache",
-        lambda d: scanned.append(("hf", str(Path(d).resolve()))) or [],
+        lambda d, **_: scanned.append(("hf", str(Path(d).resolve()))) or [],
     )
     monkeypatch.setattr(
         models_route,
@@ -1337,6 +1395,56 @@ def test_hf_cache_entry_loads_from_local_snapshot_path(tmp_path):
 # ── review round 5: concurrent-swap, repo-id identity, /v1/models id, gate, 503 ──
 
 
+def _revision_pair(root, complete: bool):
+    """Two revisions of one cache repo; the newer one is optionally half-downloaded."""
+    snaps = root / "models--org--Repo" / "snapshots"
+    old, new = snaps / "rev-old", snaps / "rev-new"
+    for path in (old, new):
+        path.mkdir(parents = True)
+    (old / "model-Q8_0.gguf").write_bytes(b"GGUF stub")
+    name = "model-Q4_K_M.gguf" if complete else "model-Q4_K_M-00001-of-00003.gguf"
+    (new / name).write_bytes(b"GGUF stub")
+    return old, new
+
+
+def test_sibling_revision_resolves_to_its_own_weights(tmp_path):
+    # /v1/models advertises only the snapshot dir name, so a durable pin holds one
+    # revision hash. A newer snapshot must not strand it, and the old revision must
+    # resolve to ITS OWN directory rather than be redirected onto the newest.
+    old, new = _revision_pair(tmp_path, complete = True)
+
+    found = dict(resolver._sibling_revision_entries(str(new), "org/Repo"))
+
+    assert "rev-old" in found
+    assert found["rev-old"].load_path == str(old)
+
+
+def test_incomplete_sibling_revision_is_not_indexed(tmp_path):
+    # A half-downloaded revision cannot load, so naming it must not resolve to it.
+    old, _new = _revision_pair(tmp_path, complete = False)
+    # Point the scan at the complete one; the partial sibling is the candidate here.
+    found = dict(resolver._sibling_revision_entries(str(old), "org/Repo"))
+
+    assert "rev-new" not in found
+
+
+def test_sibling_revisions_ignore_a_scan_folder_named_snapshots(tmp_path):
+    # A user scan folder called "snapshots" holds unrelated models, not revisions of
+    # one repo; treating them as revisions would silently serve model-a as model-b.
+    snaps = tmp_path / "snapshots"
+    for name in ("model-a", "model-b"):
+        (snaps / name).mkdir(parents = True)
+        (snaps / name / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
+
+    found = dict(resolver._sibling_revision_entries(str(snaps / "model-a"), "model-a"))
+
+    assert found == {}
+
+
+def test_sibling_revisions_skip_plain_repo_ids():
+    assert dict(resolver._sibling_revision_entries("org/Repo-GGUF", "org/Repo-GGUF")) == {}
+
+
 def test_already_loaded_by_repo_id_is_not_reswapped(monkeypatch):
     # A model loaded normally has model_identifier == repo id, but the resolver
     # returns the concrete load path. A request for that repo must count as already
@@ -1498,22 +1606,28 @@ def test_load_route_holds_lifecycle_gate(monkeypatch):
 
 
 def test_model_replacements_recheck_sidecar_swap_before_either_backend_is_unloaded():
-    # Both replacement directions drain active inference, then recheck whether a
-    # sidecar install reserved the lifecycle gate during that wait. Exact-model
-    # reuse exits earlier, so an already-loaded model never waits on unrelated inference.
+    # Both replacement directions drain, then recheck whether a sidecar install reserved the
+    # gate meanwhile. That recheck is the last thing that can reject the load, so the
+    # destructive cancel must follow it. Exact-model reuse exits earlier and never waits.
     import inspect
 
     src = inspect.getsource(inference_route._load_model_impl)
+    already_loaded = src.index('status = "already_loaded"')
+    standard_branch = src.index("# ── Standard path")
+
     gguf_wait = src.index("await _wait_for_model_switch_idle", src.index("if config.is_gguf:"))
     gguf_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", gguf_wait)
+    gguf_cancel = src.index("on_reload_confirmed(cancel = True)", gguf_wait)
     unload_unsloth = src.index("unsloth_backend.unload_model", gguf_wait)
-    standard_wait = src.index("await _wait_for_model_switch_idle", gguf_wait + 1)
-    standard_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", standard_wait)
-    unload_gguf = src.index("llama_backend.unload_model()", standard_wait)
-    already_loaded = src.index('status = "already_loaded"')
 
-    assert already_loaded < gguf_wait < gguf_sidecar_check < unload_unsloth
-    assert standard_wait < standard_sidecar_check < unload_gguf
+    standard_wait = src.index("await _wait_for_model_switch_idle", standard_branch)
+    standard_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", standard_wait)
+    standard_cancel = src.index("on_reload_confirmed(cancel = True)", standard_wait)
+    unload_gguf = src.index("llama_backend.unload_model()", standard_wait)
+
+    assert already_loaded < gguf_wait < gguf_sidecar_check < gguf_cancel < unload_unsloth
+    assert standard_branch < standard_wait < standard_sidecar_check
+    assert standard_sidecar_check < standard_cancel < unload_gguf
 
 
 def test_switch_waiter_deregisters_before_swap_gate_release():
@@ -1827,7 +1941,10 @@ def test_env_idle_standalone_reloads_freed_model_with_auto_switch_off(monkeypatc
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)  # standalone env TTL
     monkeypatch.setattr(kw, "_inflight", 0)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
-    _run_hook("org/B-GGUF")
+    # A is restored, but the request named B, so it is told so rather than served A.
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook("org/B-GGUF")
+    assert excinfo.value.status_code == 404
     # Resolver skipped (auto-switch off), so only the stash reload runs: the freed A
     # is restored, not the resolves_to target B.
     assert len(rec.calls) == 1
@@ -2897,9 +3014,13 @@ def test_require_vision_ignores_reload_stash(monkeypatch):
     monkeypatch.setattr(
         inference_route, "_target_is_vision", lambda _p: False
     )  # would reject if used
-    asyncio.run(
-        inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_vision = True)
-    )
+    # 404 because the restored A is not the requested B, whose quant makes it a real reference.
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/B-GGUF:UD-Q6_K_XL", object(), "t", require_vision = True
+            )
+        )
     assert len(rec.calls) == 1
     assert rec.calls[0].model_path == "/cache/snap/A"  # restored despite require_vision
 
@@ -3240,13 +3361,19 @@ def test_no_model_loaded_detail_appends_hint_only_when_off(monkeypatch):
     assert inference_route._no_model_loaded_detail(base) == base
 
 
-def _run_responses_stream_no_model(monkeypatch, *, enabled, active_model_name):
-    # Drive _responses_stream's GGUF-not-loaded guard: llama backend unloaded,
-    # inference backend maybe holding a non-GGUF model. Returns the 400 detail.
+def _run_responses_stream_no_model(
+    monkeypatch,
+    *,
+    enabled,
+    active_model_name,
+    resolves_to = None,
+):
+    # Drive _responses_stream's GGUF-not-loaded guard. Returns (status, detail).
     from fastapi import HTTPException
     from models.inference import ResponsesRequest, ChatMessage
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda name: resolves_to)
     monkeypatch.setattr(
         inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(loaded_id = None)
     )
@@ -3259,27 +3386,228 @@ def _run_responses_stream_no_model(monkeypatch, *, enabled, active_model_name):
     messages = [ChatMessage(role = "user", content = "hi")]
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route._responses_stream(payload, messages, None))
-    assert exc.value.status_code == 400
-    return exc.value.detail
+    return exc.value.status_code, exc.value.detail
 
 
 def test_responses_stream_hint_matches_toggle_regardless_of_active_model(monkeypatch):
-    # Streaming /v1/responses shares the GGUF-only 400 with the other "no model
-    # loaded" sites, so the auto-switch hint attaches whenever the toggle is
-    # off -- including while a non-GGUF model is active, since auto-switch
-    # evicts it to load a resolved GGUF (_maybe_auto_switch_model's resolver
-    # branch has no active-model guard, unlike its reload-stash branch). Only
-    # the toggle being on suppresses it.
-    hinted = _run_responses_stream_no_model(monkeypatch, enabled = False, active_model_name = None)
+    # The hint attaches whenever the toggle is off, whatever is active. With it on the name
+    # resolved to nothing local, so 404 rather than 400.
+    off_status, hinted = _run_responses_stream_no_model(
+        monkeypatch, enabled = False, active_model_name = None
+    )
+    assert off_status == 400
     assert "Model auto-switch" in hinted
 
-    on = _run_responses_stream_no_model(monkeypatch, enabled = True, active_model_name = None)
+    on_status, on = _run_responses_stream_no_model(
+        monkeypatch, enabled = True, active_model_name = None
+    )
+    assert on_status == 404
     assert "Model auto-switch" not in on
+    assert "unsloth/Qwen3.5-4B-GGUF" in on
 
-    non_gguf_loaded = _run_responses_stream_no_model(
+    non_gguf_status, non_gguf_loaded = _run_responses_stream_no_model(
         monkeypatch, enabled = False, active_model_name = "unsloth/Llama-3.2-1B-Instruct"
     )
+    assert non_gguf_status == 400
     assert "Model auto-switch" in non_gguf_loaded
+
+
+def _wire_unloaded_chat(
+    monkeypatch,
+    *,
+    enabled,
+    catalog = ("org/A-GGUF", "org/B-GGUF"),
+):
+    # Nothing loaded, so a chat request hits "no model loaded". Pin the catalog for determinism.
+    async def _catalog():
+        return [{"id": mid} for mid in catalog]
+
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda _m, **_kw: None)
+    monkeypatch.setattr(
+        resolver, "describe_local_miss", lambda _m: (resolver.MISS_MODEL_NOT_FOUND, ())
+    )
+    monkeypatch.setattr(inference_route, "_openai_catalog_objects", _catalog)
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(loaded_id = None)
+    )
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("_B", (), {"active_model_name": None, "models": {}})(),
+    )
+
+
+def _chat_error(payload):
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    return exc.value.status_code, exc.value.detail
+
+
+def test_chat_names_undownloaded_model_404s_with_available_ids(monkeypatch):
+    # The reported bug: the model is not here, so the switch did nothing and /inference/load
+    # cannot fix it. Name it and list what can serve.
+    _wire_unloaded_chat(monkeypatch, enabled = True)
+    status, detail = _chat_error(_chat_request(model = "unsloth/gemma-4-E4B-it-GGUF:UD-Q5_K_XL"))
+    assert status == 404
+    assert "unsloth/gemma-4-E4B-it-GGUF:UD-Q5_K_XL" in detail
+    assert "org/A-GGUF, org/B-GGUF" in detail
+    assert "GET /v1/models" in detail
+    assert "POST /inference/load" not in detail
+
+
+def test_chat_undownloaded_model_with_empty_catalog(monkeypatch):
+    # Nothing downloaded: an empty list would read as a bug, so say so plainly.
+    _wire_unloaded_chat(monkeypatch, enabled = True, catalog = ())
+    status, detail = _chat_error(_chat_request(model = "org/nope-GGUF"))
+    assert status == 404
+    assert "no models are downloaded yet" in detail
+
+
+def test_chat_wrong_quant_lists_the_local_quants(monkeypatch):
+    # Repo downloaded, only the quant missing: sibling quants, not the catalog.
+    _wire_unloaded_chat(monkeypatch, enabled = True)
+    monkeypatch.setattr(
+        resolver,
+        "describe_local_miss",
+        lambda _m: (resolver.MISS_VARIANT_NOT_FOUND, ("Q4_K_M", "Q8_0")),
+    )
+    status, detail = _chat_error(_chat_request(model = "org/A-GGUF:UD-Q5_K_XL"))
+    assert status == 404
+    assert "'org/A-GGUF' is downloaded, but the quant 'UD-Q5_K_XL' is not" in detail
+    assert "Q4_K_M, Q8_0" in detail
+
+
+def test_chat_error_unchanged_when_auto_switch_off(monkeypatch):
+    # Toggle off: nothing resolved, so keep the pre-existing status and text, hint included.
+    _wire_unloaded_chat(monkeypatch, enabled = False)
+    status, detail = _chat_error(_chat_request(model = "org/nope-GGUF"))
+    assert status == 400
+    assert detail.startswith("No model loaded. Call POST /inference/load first.")
+    assert "Model auto-switch" in detail
+
+
+def test_chat_error_unchanged_when_no_model_named(monkeypatch):
+    # An omitted model means "serve whatever is loaded", so there is no name to report.
+    _wire_unloaded_chat(monkeypatch, enabled = True)
+    status, detail = _chat_error(_chat_request())
+    assert status == 400
+    assert detail == "No model loaded. Call POST /inference/load first."
+
+
+def test_chat_not_downloaded_error_survives_a_broken_catalog_scan(monkeypatch):
+    # Layered onto an already-failing path, so a broken scan must not make it a 500.
+    async def _boom():
+        raise RuntimeError("catalog scan blew up")
+
+    _wire_unloaded_chat(monkeypatch, enabled = True)
+    monkeypatch.setattr(inference_route, "_openai_catalog_objects", _boom)
+    status, detail = _chat_error(_chat_request(model = "org/nope-GGUF"))
+    assert status == 400
+    assert detail.startswith("No model loaded. Call POST /inference/load first.")
+
+
+def test_chat_available_id_list_is_capped(monkeypatch):
+    # A machine with 40 GGUFs must not print all 40 into a terminal error.
+    _wire_unloaded_chat(
+        monkeypatch, enabled = True, catalog = tuple(f"org/m{i:02d}-GGUF" for i in range(20))
+    )
+    status, detail = _chat_error(_chat_request(model = "org/nope-GGUF"))
+    assert status == 404
+    assert "and 12 more" in detail
+    assert "org/m08-GGUF" not in detail
+
+
+def test_anthropic_undownloaded_model_uses_the_anthropic_envelope(monkeypatch):
+    # Shared with /v1/messages, so the 404 must not leak an OpenAI-shaped body.
+    from fastapi import HTTPException
+
+    async def _noop_switch(*a, **k):
+        return None
+
+    _wire_unloaded_chat(monkeypatch, enabled = True)
+    monkeypatch.setattr(inference_route, "_automatic_model_load_may_run", lambda: True)
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
+
+    request = type("_R", (), {"url": type("_U", (), {"path": "/v1/messages"})()})()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.anthropic_messages(_anthropic_payload(64), request, "tester"))
+    assert exc.value.status_code == 404
+    body = exc.value.detail
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "not_found_error"
+    assert "claude-x" in body["error"]["message"]
+
+
+def test_chat_undownloaded_model_uses_the_openai_envelope(monkeypatch):
+    # The OpenAI surface carries param/code so SDK clients can branch on it.
+    from fastapi import HTTPException
+
+    _wire_unloaded_chat(monkeypatch, enabled = True)
+    request = type("_R", (), {"url": type("_U", (), {"path": "/v1/chat/completions"})()})()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.openai_chat_completions(
+                _chat_request(model = "org/nope-GGUF"), request, "tester"
+            )
+        )
+    assert exc.value.status_code == 404
+    err = exc.value.detail["error"]
+    assert err["type"] == "not_found_error"
+    assert err["code"] == "model_not_found"
+    assert err["param"] == "model"
+
+
+def test_gguf_only_paths_keep_the_generic_error_for_the_resident_non_gguf_model(monkeypatch):
+    # resolve_local_gguf misses a resident Transformers model the catalog does list, so
+    # "not downloaded" would contradict itself.
+    resident = "unsloth/Qwen3.5-4B-GGUF"  # the id _run_responses_stream_no_model asks for
+
+    async def _catalog():
+        return [{"id": resident}]
+
+    monkeypatch.setattr(inference_route, "_openai_catalog_objects", _catalog)
+    status, detail = _run_responses_stream_no_model(
+        monkeypatch, enabled = True, active_model_name = resident
+    )
+    assert status == 400
+    assert "requires a GGUF model" in detail
+    assert "not downloaded" not in detail
+
+
+def test_completions_keeps_the_generic_error_for_the_resident_non_gguf_model(monkeypatch):
+    # Same contradiction on the raw-body surface, via _auto_switch_from_request_body.
+    from fastapi import HTTPException
+
+    resident = "unsloth/Llama-3.2-1B-Instruct"
+    _wire_unloaded_chat(monkeypatch, enabled = True, catalog = (resident,))
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("_B", (), {"active_model_name": resident, "models": {}})(),
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.openai_completions(
+                _json_body_request({"model": resident, "prompt": "hi"}), "tester"
+            )
+        )
+    assert exc.value.status_code == 503
+    assert exc.value.detail.startswith("No GGUF model loaded.")
+    assert "not downloaded" not in exc.value.detail
+
+
+def test_responses_stream_keeps_generic_error_when_target_is_local(monkeypatch):
+    # Resolves locally yet nothing is loaded: the switch failed, so keep the generic 400.
+    status, detail = _run_responses_stream_no_model(
+        monkeypatch,
+        enabled = True,
+        active_model_name = None,
+        resolves_to = ("/p/A", "Q4_K_M", "unsloth/Qwen3.5-4B-GGUF"),
+    )
+    assert status == 400
+    assert "not downloaded" not in detail
 
 
 # ── idle-unload KV persistence (slot save/restore) ──────────────────
@@ -3734,10 +4062,11 @@ def test_keep_kv_only_update_leaves_env_idle_ttl_active(monkeypatch):
     monkeypatch.setenv(settings.MODEL_IDLE_TTL_ENV_VAR, "600")
 
     assert settings_route.OpenAIAutoSwitchPayload(enabled = False).auto_unload_idle_seconds is None
-    enabled, idle, keep_kv = settings.set_openai_auto_switch(False, None, False)
+    enabled, idle, keep_kv, auto_dl = settings.set_openai_auto_switch(False, None, False)
     assert settings.AUTO_UNLOAD_IDLE_SETTING_KEY not in store  # idle untouched
+    assert settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY not in store  # nor auto-download
     assert settings.get_auto_unload_idle_seconds() == 600  # env TTL still active
-    assert (enabled, idle, keep_kv) == (False, 600, False)
+    assert (enabled, idle, keep_kv, auto_dl) == (False, 600, False, False)
 
 
 def test_load_impl_notes_loaded_with_backend_off_loop():
@@ -3819,3 +4148,233 @@ def test_env_idle_below_floor_is_clamped(monkeypatch):
     assert settings.get_auto_unload_idle_seconds() == 600
     monkeypatch.delenv(settings.MODEL_IDLE_TTL_ENV_VAR)
     assert settings.get_auto_unload_idle_seconds() == 0
+
+
+def test_a_tag_that_names_no_quant_resolves_to_the_repo(monkeypatch):
+    # A downloaded but unloaded GGUF asked for as org/model:latest missed the resolver,
+    # so the switch could not load it (404ing on a quant that was never a quant with
+    # auto-download on, refusing with it off). A real quant that is not on disk must
+    # still miss, or a swap would serve the wrong weights under the right name.
+    from core.inference.local_model_resolver import _LocalGgufEntry
+
+    import time
+
+    entry = _LocalGgufEntry("org/model", "/srv/models/org--model", ("Q4_K_M",))
+    # Fresh stamp so _index serves this instead of rescanning over it.
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/model": entry}))
+    for tag in ("org/model:latest", "org/model:8b", "org/model"):
+        assert resolver.resolve_local_gguf(tag) == (
+            "/srv/models/org--model",
+            "Q4_K_M",
+            "org/model",
+        )
+    assert resolver.resolve_local_gguf("org/model:Q8_0") is None
+    assert resolver.resolve_local_gguf("org/model:Q4_K_M") == (
+        "/srv/models/org--model",
+        "Q4_K_M",
+        "org/model",
+    )
+
+
+def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
+    # Only the API auto-download watcher invalidated, so a GGUF fetched in the Hub UI
+    # stayed absent to the cache-only request path and the resident model answered.
+    # Every worker exits through here.
+    import logging
+
+    from hub.services import download_lifecycle
+
+    class _Proc:
+        stderr = None
+
+        def wait(self):
+            return 0
+
+    class _Registry:
+        def cancel_requested(self, key):
+            return False
+
+        def drop_process(self, key, proc):
+            return True
+
+        def get_job_metadata(self, key):
+            return None
+
+        def set_job(self, key, state):
+            self.state = state
+
+    resolver._scan = (1234.0, {"already-here": "entry"})
+    assert (
+        download_lifecycle.finalize_worker_exit(
+            _Registry(),
+            "org/model:Q4_K_M",
+            _Proc(),
+            hf_token = None,
+            label = "org/model",
+            log_prefix = "[test]",
+            logger = logging.getLogger(__name__),
+            repo_type = "model",
+            repo_id = "org/model",
+        )
+        == "complete"
+    )
+    stamp, entries = resolver._scan
+    assert stamp == 0.0, "a finished download left the scan looking fresh"
+    # Evidence for models already indexed has to survive, or a bare request for one
+    # of them during the rebuild is answered by whatever is resident.
+    assert entries == {"already-here": "entry"}
+
+
+def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
+    # The request path reads this cache without scanning, so emptying it leaves no
+    # evidence until the rebuild lands. Only a completed download invalidates, and
+    # that only adds, so the entries stay true.
+    import time
+
+    entry = resolver._LocalGgufEntry("org/old", "/srv/models/org--old", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/old": entry}))
+    resolver.invalidate_index()
+    assert resolver._scan[0] == 0.0
+    assert resolver.resolve_local_gguf("org/old", allow_scan = False) == (
+        "/srv/models/org--old",
+        "Q4_K_M",
+        "org/old",
+    )
+
+
+def test_a_bare_local_id_takes_the_quant_a_plain_load_would(monkeypatch, tmp_path):
+    # list_local_gguf_variants orders by descending size, so the head is the biggest
+    # quant. Resolving a bare id to that could evict a working model and then OOM on an
+    # F16 next to a fitting Q4, and /v1/models advertised the same head for pinning.
+    from core.inference.local_model_resolver import _local_gguf_entry
+
+    for name, size in (("model-F16.gguf", 900), ("model-Q4_K_M.gguf", 100)):
+        (tmp_path / name).write_bytes(b"\0" * size)
+    entry = _local_gguf_entry("org/model", type("I", (), {"path": str(tmp_path)})())
+    assert entry is not None
+    assert set(entry.variants) == {"F16", "Q4_K_M"}
+    assert entry.variants[0] == "Q4_K_M", "a bare id would have resolved to F16"
+
+
+def test_local_and_remote_agree_on_the_preferred_quant():
+    # A bare id must mean the same quant whichever side answered it.
+    from core.inference.openai_auto_download import _match_variant, preferred_quant
+
+    labels = ("F16", "Q8_0", "UD-Q4_K_XL", "Q4_K_M")
+    assert preferred_quant(labels) == _match_variant(None, dict.fromkeys(labels, 1))
+    assert preferred_quant(labels) not in ("F16",)
+
+
+def test_a_just_downloaded_model_is_evidence_before_the_scan_indexes_it(monkeypatch):
+    # The retained index covers what was known, but nothing covers the model that just
+    # landed until the next scan: a bare request for it was answered by the resident one.
+    import logging
+
+    from hub.services import download_lifecycle
+
+    class _Proc:
+        stderr = None
+
+        def wait(self):
+            return 0
+
+    class _Registry:
+        def cancel_requested(self, key):
+            return False
+
+        def drop_process(self, key, proc):
+            return True
+
+        def get_job_metadata(self, key):
+            return None
+
+        def set_job(self, key, state):
+            pass
+
+    assert not resolver.recently_downloaded("org/fresh")
+    download_lifecycle.finalize_worker_exit(
+        _Registry(),
+        "org/fresh:Q4_K_M",
+        _Proc(),
+        hf_token = None,
+        label = "org/fresh",
+        log_prefix = "[test]",
+        logger = logging.getLogger(__name__),
+        repo_type = "model",
+        repo_id = "org/fresh",
+    )
+    assert resolver.recently_downloaded("org/fresh"), "no evidence for the new model"
+    assert resolver.recently_downloaded("ORG/Fresh"), "evidence must be case-insensitive"
+    assert not resolver.recently_downloaded("org/other")
+
+    # The scan that indexes it supersedes the note.
+    monkeypatch.setattr(resolver, "_build_index", dict)
+    resolver._index()
+    assert not resolver.recently_downloaded("org/fresh")
+
+
+def test_a_finished_dataset_is_not_recorded_as_a_local_model(monkeypatch):
+    # finalize_worker_exit is shared with dataset downloads. Noting one as a local model
+    # would refuse a bare /v1 request naming that id instead of letting a foreign id
+    # fall through, and would kick off a multi-directory scan for nothing.
+    import logging
+    import time
+
+    from hub.services import download_lifecycle
+
+    class _Proc:
+        stderr = None
+
+        def wait(self):
+            return 0
+
+    class _Registry:
+        def cancel_requested(self, key):
+            return False
+
+        def drop_process(self, key, proc):
+            return True
+
+        def get_job_metadata(self, key):
+            return None
+
+        def set_job(self, key, state):
+            pass
+
+    stamp = time.monotonic()
+    monkeypatch.setattr(resolver, "_scan", (stamp, {"kept": "entry"}))
+    download_lifecycle.finalize_worker_exit(
+        _Registry(),
+        "org/corpus",
+        _Proc(),
+        hf_token = None,
+        label = "org/corpus",
+        log_prefix = "[test]",
+        logger = logging.getLogger(__name__),
+        repo_type = "dataset",
+        repo_id = "org/corpus",
+    )
+    assert not resolver.recently_downloaded("org/corpus")
+    assert resolver._scan == (stamp, {"kept": "entry"}), "a dataset invalidated the index"
+
+
+def test_two_local_paths_differing_only_in_case_are_not_the_same_model(monkeypatch):
+    # _loaded_satisfies lowercased the request and every backend identifier, so on a
+    # case-sensitive filesystem /srv/models/foo.gguf read as satisfied by a resident
+    # /srv/models/Foo.gguf. A repo alias must still stay case-insensitive.
+    import os
+
+    loaded = _FakeBackend(loaded_id = "/srv/models/Foo.gguf")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    assert inference_route._loaded_satisfies("/srv/models/Foo.gguf") is True
+    same = os.path.normcase("A") == os.path.normcase("a")
+    assert inference_route._loaded_satisfies("/srv/models/foo.gguf") is same
+
+    alias = _FakeBackend(loaded_id = "unsloth/Qwen3-4B-GGUF")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: alias)
+    assert inference_route._loaded_satisfies("unsloth/qwen3-4b-gguf") is True
