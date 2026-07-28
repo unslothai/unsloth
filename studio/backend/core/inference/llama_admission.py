@@ -62,22 +62,18 @@ def _executor_workers() -> int:
     """Threads asyncio's default executor runs to_thread work on.
 
     Mirrors ThreadPoolExecutor's own default sizing, which is what
-    ``loop.run_in_executor(None, ...)`` builds. 3.13 moved that to
-    ``process_cpu_count()``, which honours CPU affinity and cgroup quotas, so
-    reading ``cpu_count()`` would size the budget from the whole host while the
-    executor was sized from the one core the container was given.
+    ``run_in_executor(None, ...)`` builds. 3.13 sizes it from
+    ``process_cpu_count()``, which honours CPU affinity and cgroup quotas;
+    ``cpu_count()`` would budget from the whole host inside a one-core container.
     """
     cpus = getattr(os, "process_cpu_count", os.cpu_count)() or 1
     return min(32, cpus + 4)
 
 
 def _executor_reserve(workers: int) -> int:
-    """Threads kept clear of parked approvals.
-
-    For generation steps, stream teardown and unrelated to_thread work. A flat
-    count would leave a 5-worker executor (one usable CPU) with no budget at all,
-    which is the case that most wants a chat to keep moving while another sits on
-    a prompt.
+    """Threads kept clear of parked approvals, for generation steps, stream
+    teardown and unrelated to_thread work. Scaled rather than flat: a flat count
+    would leave a 5-worker executor (one usable CPU) no budget at all.
     """
     return max(2, workers // 8)
 
@@ -85,26 +81,23 @@ def _executor_reserve(workers: int) -> int:
 def _max_parked(capacity: int) -> int:
     """How many holders may sit on an approval prompt with their slot given back.
 
-    The loop blocks inside the to_thread(next, gen) call that drives it, so a
-    pending prompt parks an executor thread whether or not it parked its slot.
-    The pool already permits `capacity` of those, and every park frees a slot
-    that admits one more, so budget only what the executor has left over. Zero on
-    a backend whose --parallel alone fills it, which then behaves as it did
-    before parking existed: the prompt holds its slot.
+    A pending prompt parks an executor thread (the loop blocks inside
+    to_thread(next, gen)) whether or not it parked its slot, the pool already
+    permits `capacity` of those, and every park admits one more, so budget only
+    what the executor has left over. Zero on a backend whose --parallel alone
+    fills it: the prompt then holds its slot, as it did before parking existed.
     """
     workers = _executor_workers()
     spare = workers - _executor_reserve(workers) - max(0, capacity)
-    # A quarter of the executor, but never fewer than two while there is room for
-    # them: a quarter of five is one, and one park cannot cover two chats sitting
-    # on prompts at once, which is the case #7455 exists for. `spare` still takes
-    # it to zero on an executor the pool already fills.
+    # A quarter of the executor, floored at two while `spare` allows: a quarter of
+    # five is one, and one park cannot cover the two simultaneous prompts #7455
+    # exists for.
     return max(0, min(max(2, workers // 4), spare))
 
 
-# Counted process-wide, not per queue. There is one default executor, but a
-# per-queue budget is the same allowance again for every backend, and base_url
-# carries a fresh port on every model load, so a reload would mint a queue that
-# knows nothing about the approvals still parked on the old one.
+# Process-wide, not per queue: there is one executor, and base_url takes a fresh
+# port on every load, so a per-queue budget would hand the same allowance to each
+# backend and to every reload, blind to the approvals parked on the old queue.
 _PARK_LOCK = threading.Lock()
 _parked_total = 0
 
@@ -127,11 +120,10 @@ def _drop_park() -> None:
 def _live_capacity(current: "LlamaAdmissionQueue") -> int:
     """Slots across every backend still serving requests.
 
-    A park is budgeted against the executor and there is only one of those, so
-    one queue's capacity is the wrong denominator. A reload mints a queue on a
-    new port while the old one drains, and prompts on both park threads: sizing
-    from either alone lets them add up past the reserve. Idle queues are the ones
-    the registry is about to evict and are holding nothing.
+    One queue's capacity is the wrong denominator for a budget sized against the
+    one executor: a reload drains the old queue alongside the new one, and
+    prompts on both park threads. Idle queues hold nothing and are about to be
+    evicted.
     """
     with _QUEUES_LOCK:
         queues = list(_QUEUES.values())
@@ -322,19 +314,18 @@ class LlamaAdmissionLease:
         slot would let unanswered prompts fill the pool while llama-server idles.
         The lease itself stays valid: releasing it after a park is still correct.
 
-        False when the park budget is spent, and nothing was given back: the
+        False when the park budget is spent and nothing was given back: the
         caller keeps its slot across the prompt, as it did before parking
-        existed. Slower for whoever is queued behind it, but freeing the slot
-        admits another run that can park too, and those pile up on the same
-        executor the generators themselves run on.
+        existed. Slower for whoever is behind it, but each freed slot admits
+        another run that can park too, on the executor the generators run on.
         """
         queue = self._queue
         with self._release_lock:
             if queue is None or self._released or self._parked:
                 return False
-            # Under the lease lock so the decision and the handover cannot be
-            # split. Nothing takes the queue lock and then a lease lock, so this
-            # order is the only one in play.
+            # Under the lease lock so the decision and the handover cannot split.
+            # Nothing takes the queue lock then a lease lock, so this order is
+            # the only one in play.
             if not queue.try_park(self._slot):
                 return False
             self._parked = True
@@ -345,11 +336,10 @@ class LlamaAdmissionLease:
     def _drop_budget(self) -> None:
         """Give the executor budget back now the prompt wait is over.
 
-        Separate from the queue's parked count, which has to last until the slot
-        is back. This is about executor threads, and the thread is free the
-        moment the answer arrives, before the resume has even queued for a slot.
-        Holding it until then refuses someone else's park for a wait that already
-        finished, and that someone keeps the slot the resumer is waiting for.
+        Separate from the queue's parked count, which lasts until the slot is
+        back: the executor thread is free the moment the answer arrives. Holding
+        the budget until the resume lands would refuse someone else's park for a
+        finished wait, and that someone holds the slot the resumer wants.
         """
         with self._release_lock:
             if not self._budgeted:
@@ -388,8 +378,8 @@ class LlamaAdmissionLease:
         queue = self._queue
         if queue is None or not self._parked:
             return
-        # Before the wait: the prompt is answered, so this holder is off the
-        # executor already and must not keep anyone else off it.
+        # Before the wait, not after: the prompt is answered, so this holder is
+        # already off the executor and must not keep anyone else off it.
         self._drop_budget()
         slot = await queue.acquire_parked_slot(cancel_event = cancel_event, poll_s = poll_s)
         stranded = None
@@ -631,9 +621,8 @@ class LlamaAdmissionQueue:
         """Return a parked holder's slot to the pool. See ``LlamaAdmissionLease.park``.
 
         False leaves the slot with its holder, so a refused park costs nothing to
-        undo. The per-queue count is only what ``is_idle`` reads; the budget it
-        is checked against is process-wide, and so is the capacity it is sized
-        from.
+        undo. The per-queue count is only what ``is_idle`` reads; the budget and
+        the capacity it is sized from are both process-wide.
         """
         if not _claim_park(_max_parked(_live_capacity(self))):
             return False
@@ -811,6 +800,6 @@ def reset_llama_admission_queues() -> None:
     with _QUEUES_LOCK:
         _QUEUES.clear()
     # The budget outlives the queues it was claimed against, so dropping them
-    # without it would leak the count and shrink the budget for good.
+    # without it leaks the count and shrinks the budget for good.
     with _PARK_LOCK:
         _parked_total = 0

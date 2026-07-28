@@ -1069,12 +1069,10 @@ def test_an_immediate_arrival_cannot_take_an_approved_chats_slot():
 
 
 def test_parking_is_bounded_so_the_thread_pool_cannot_be_drained(monkeypatch):
-    # The loop blocks inside the to_thread(next, gen) call that drives it, so a
-    # pending prompt parks an executor thread whether or not it parked its slot.
-    # Parking frees a slot, which admits another run that can park too, so
-    # unbounded parking drains the pool the generators themselves run on.
-    # Pinned: the real budget follows the runner's usable CPUs, and a one-CPU
-    # container would otherwise run this against a different number.
+    # A pending prompt parks an executor thread (the loop blocks inside
+    # to_thread(next, gen)) and frees a slot that admits another run which can
+    # park too, so unbounded parking drains the pool the generators run on.
+    # Pinned because the real budget follows the runner's usable CPUs.
     monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
 
     async def scenario():
@@ -1106,8 +1104,8 @@ def test_parking_is_bounded_so_the_thread_pool_cannot_be_drained(monkeypatch):
 
 
 def test_the_park_budget_is_shared_by_every_queue(monkeypatch):
-    # One executor, so a per-queue budget is the same budget handed out again to
-    # every backend, and every reload onto a fresh ephemeral port.
+    # One executor, so a per-queue budget would be handed out again to every
+    # backend and to every reload onto a fresh ephemeral port.
     monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
 
     async def scenario():
@@ -1124,8 +1122,8 @@ def test_the_park_budget_is_shared_by_every_queue(monkeypatch):
         spare = second.reserve(capacity = 1, config = config).lease_nowait()
         assert not spare.park(), "each queue got its own budget"
 
-        # A reset drops the queues the count was claimed against, so it has to
-        # drop the count too, or a leak shrinks the budget for the whole process.
+        # A reset drops the queues the count was claimed against, so it must drop
+        # the count too or the leak shrinks the budget process-wide.
         reset_llama_admission_queues()
         revived = get_llama_admission_queue("http://llama.test:1")
         fresh = revived.reserve(capacity = 1, config = config).lease_nowait()
@@ -1136,22 +1134,19 @@ def test_the_park_budget_is_shared_by_every_queue(monkeypatch):
 
 
 def test_the_park_budget_leaves_the_executor_room_to_work(monkeypatch):
-    # The pool already permits `capacity` pending prompts, and every park frees a
-    # slot that admits one more, so the budget has to account for both. Swept
-    # across executor sizes rather than read off this host: 3.13 sizes the
-    # default executor from the usable CPUs, so a container gets a small one.
+    # The pool already permits `capacity` pending prompts and every park admits
+    # one more, so the budget must account for both. Swept across executor sizes
+    # rather than read off this host, since a container gets a small one.
     for cpus in (1, 2, 4, 8, 16, 28, 64):
         workers = min(32, cpus + 4)
         monkeypatch.setattr(llama_admission, "_executor_workers", lambda w = workers: w)
         reserve = llama_admission._executor_reserve(workers)
         assert reserve >= 2, f"{workers} workers left no reserve"
 
-        # Even the smallest executor lets two chats sit on prompts at once, which
-        # is what #7455's own two-approvals test needs.
+        # Even the smallest executor fits the two simultaneous prompts #7455 needs.
         assert llama_admission._max_parked(1) >= 2, f"no room for two on {workers} workers"
         assert llama_admission._max_parked(1) <= workers // 2
-        # A backend whose --parallel alone fills the executor gets no parks,
-        # rather than a budget that pushes it over.
+        # A backend whose --parallel alone fills the executor gets no parks.
         assert llama_admission._max_parked(workers) == 0
         for capacity in range(0, workers + 8):
             budget = llama_admission._max_parked(capacity)
@@ -1163,27 +1158,23 @@ def test_the_park_budget_leaves_the_executor_room_to_work(monkeypatch):
 
 def test_the_park_budget_follows_the_executors_own_cpu_count(monkeypatch):
     # 3.13 sizes ThreadPoolExecutor from process_cpu_count(), which honours CPU
-    # affinity and cgroup quotas. Reading cpu_count() would budget from the whole
-    # host while the executor was sized from the one core the container got, so
-    # pull the two apart: on this machine they are the same number.
+    # affinity and cgroup quotas; cpu_count() would budget from the whole host
+    # inside a one-core container. Pulled apart here, since they usually match.
     import concurrent.futures
 
     monkeypatch.setattr(os, "cpu_count", lambda: 64)
     if hasattr(os, "process_cpu_count"):
         monkeypatch.setattr(os, "process_cpu_count", lambda: 1)
-    # Against the real thing rather than the formula: asyncio's default executor
-    # is a plain ThreadPoolExecutor(), so its own default sizing is the answer,
-    # whichever interpreter this runs on.
+    # Against the real thing rather than the formula: the default executor is a
+    # plain ThreadPoolExecutor(), so its own sizing is the answer on any version.
     with concurrent.futures.ThreadPoolExecutor() as pool:
         assert llama_admission._executor_workers() == pool._max_workers
 
 
 def test_the_stream_retries_a_park_that_was_refused():
     # _park_admission short-circuits on `on == _parked`, so recording a refused
-    # park as parked would make it skip the park for every later approval in the
-    # same run, even once the budget frees up. Structural: the difference only
-    # appears on the second approval of one stream, and everything else about a
-    # refused park (it keeps its slot, unpark is a no-op) is behavioural above.
+    # park as parked would skip every later approval in the run even once the
+    # budget frees up. Structural because that only shows on a second approval.
     import ast
 
     # Read rather than import: routes.inference pulls in the whole app.
@@ -1214,10 +1205,9 @@ def test_the_stream_retries_a_park_that_was_refused():
 
 
 def test_the_park_budget_counts_every_live_backend(monkeypatch):
-    # base_url carries a fresh port on every load, so a reload mints a queue
-    # while the old one drains. Prompts on both park executor threads, and there
-    # is one executor, so sizing the budget from either backend alone lets them
-    # add up past the reserve.
+    # base_url takes a fresh port on every load, so a reload mints a queue while
+    # the old one drains. Prompts on both park threads of the one executor, so a
+    # budget sized from either backend alone lets them add up past the reserve.
     monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
 
     async def scenario():
@@ -1243,9 +1233,8 @@ def test_the_park_budget_counts_every_live_backend(monkeypatch):
 
 def test_the_park_budget_is_freed_when_the_prompt_is_answered(monkeypatch):
     # The executor thread comes back the moment the answer arrives, before the
-    # resume has queued for a slot. Holding the budget until the slot lands
-    # refuses someone else's park for a wait that already finished, and that
-    # someone keeps holding the slot the resumer is waiting for.
+    # resume queues for a slot. Holding the budget until the slot lands refuses
+    # someone else's park, and that someone holds the slot the resumer wants.
     monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
 
     async def scenario():
@@ -1279,8 +1268,8 @@ def test_the_park_budget_is_freed_when_the_prompt_is_answered(monkeypatch):
 
 def test_releasing_a_parked_holder_returns_its_budget(monkeypatch):
     # A client that disconnects on the prompt releases straight out of parked,
-    # without ever unparking. Its executor thread is gone with it, so keeping the
-    # budget would lose one for the life of the process.
+    # never unparking. Its executor thread went with it, so keeping the budget
+    # would lose one for the life of the process.
     monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
 
     async def scenario():
