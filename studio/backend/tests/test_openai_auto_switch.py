@@ -4748,6 +4748,25 @@ def test_removal_clears_the_entry_a_load_would_actually_resolve(monkeypatch):
     assert settings.get_model_override("unsloth/B-GGUF:Q4_K_M") == {}
 
 
+def test_save_updates_the_existing_case_variant_instead_of_forking_it(monkeypatch):
+    # The backfill stores normalized (lowercase) keys while a later UI save carries
+    # the catalog's casing. Writing that literally leaves two keys for one model,
+    # and with two equivalent keys present any third casing resolves ambiguously,
+    # so the model silently loses every saved setting on the API path.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("unsloth/b-gguf:q4_k_m", max_seq_length = 8192)
+    settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(
+            model_id = "unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096
+        ),
+        "tester",
+    )
+    assert list(settings.get_model_overrides()) == ["unsloth/b-gguf:q4_k_m"]
+    assert settings.get_model_override("Unsloth/B-GGUF:Q4_K_M")["max_seq_length"] == 4096
+
+
 def test_removal_of_a_path_still_only_touches_the_exact_key(monkeypatch):
     import routes.settings as settings_route
 

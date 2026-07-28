@@ -411,8 +411,14 @@ def update_openai_auto_switch_override(
             target_id = resolve_model_override_key(payload.model_id) or payload.model_id
             set_model_override(target_id, llama_extra_args = [], max_seq_length = None)
         else:
+            # Save under the key a load would resolve to, for the same reason the
+            # removal branch does. The browser normalizes casing before storing,
+            # so saving the literal id leaves a second entry for one model, and
+            # two equivalent keys make every other casing ambiguous: the lookup
+            # then matches neither and the model silently loses its settings.
+            target_id = resolve_model_override_key(payload.model_id) or payload.model_id
             set_model_override(
-                payload.model_id,
+                target_id,
                 llama_extra_args = extra_args,
                 max_seq_length = payload.max_seq_length,
                 custom_context_length = payload.custom_context_length,

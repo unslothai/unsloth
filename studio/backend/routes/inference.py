@@ -4291,10 +4291,22 @@ async def _maybe_auto_switch_model(
                         # different configs), then the bare ids. Both the advertised
                         # repo id and the concrete load path are tried: a local folder
                         # or a non-active HF cache is configured against its path.
+                        # A standalone .gguf needs no quant sub-selection, so the
+                        # resolver reports variant=None for it. The picker still
+                        # keys its config by the quant label it derives from the
+                        # filename (LocalModelInfo.format_variant), which is never
+                        # empty, so those settings live under "<path>:LABEL" and no
+                        # bare key would ever reach them.
+                        file_variant = None
+                        if not variant and target_id.lower().endswith(".gguf"):
+                            from hub.utils.gguf import extract_quant_label
+
+                            file_variant = extract_quant_label(os.path.basename(target_id))
                         override = {}
                         for override_key in (
                             f"{override_id}:{variant}" if variant else None,
                             f"{target_id}:{variant}" if variant else None,
+                            f"{target_id}:{file_variant}" if file_variant else None,
                             override_id,
                             target_id,
                         ):
