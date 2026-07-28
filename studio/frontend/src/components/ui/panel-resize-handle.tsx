@@ -86,6 +86,9 @@ export function PanelResizeHandle({
   const targetRef = React.useRef<HTMLElement | null>(null)
   const frameRef = React.useRef(0)
   const pendingRef = React.useRef(0)
+  // What the pointer asked for, before the viewport cap. Committing the capped
+  // value instead would quietly downgrade a stored preference on a narrow window.
+  const rawRef = React.useRef(0)
   const committedRef = React.useRef(width)
   React.useEffect(() => {
     committedRef.current = width
@@ -142,6 +145,7 @@ export function PanelResizeHandle({
     const start = open ? width : measure()
     dragRef.current = { startX: event.clientX, startWidth: start, moved: false }
     pendingRef.current = start
+    rawRef.current = start
     targetRef.current?.setAttribute("data-resizing", "true")
     document.documentElement.setAttribute("data-panel-resizing", "true")
     setDragging(true)
@@ -158,6 +162,7 @@ export function PanelResizeHandle({
     drag.moved = true
 
     const next = drag.startWidth + delta
+    rawRef.current = next
     if (!open) {
       // Past the minimum, dragging the collapsed edge reopens it.
       if (next >= min) {
@@ -184,8 +189,9 @@ export function PanelResizeHandle({
     }
     // A drag below the minimum leaves the stored width alone.
     if (!open) return
-    // Commit the last requested width; a frame may still be queued.
-    setWidth(pendingRef.current)
+    // Commit what was asked for, not the capped paint, so a drag on a narrow
+    // window cannot shrink a larger stored preference. setWidth clamps.
+    setWidth(rawRef.current)
   }
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
