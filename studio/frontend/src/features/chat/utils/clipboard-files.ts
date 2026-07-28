@@ -21,7 +21,13 @@ type NativeClipboardFile = {
 };
 
 function browserClipboardFiles(clipboardData: DataTransfer): File[] {
-  return Array.from(clipboardData.files).filter((file) => file.size > 0);
+  const files = Array.from(clipboardData.files).filter((file) => file.size > 0);
+  if (files.length > 0) return files;
+
+  return Array.from(clipboardData.items)
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file !== null && file.size > 0);
 }
 
 function clipboardTypes(clipboardData: DataTransfer): string[] {

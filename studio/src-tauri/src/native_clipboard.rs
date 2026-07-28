@@ -13,8 +13,9 @@ const MAX_CLIPBOARD_PNG_BYTES: usize = 20 * 1024 * 1024;
 const MAX_CLIPBOARD_SOURCE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_CLIPBOARD_TOTAL_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_CLIPBOARD_FILES: usize = 8;
-
 const MAX_CLIPBOARD_CANDIDATES: usize = 32;
+#[cfg(target_os = "linux")]
+const MAX_CLIPBOARD_URI_BYTES: usize = 64 * 1024;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -182,13 +183,54 @@ fn local_clipboard_path(uri: &str) -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
+fn local_clipboard_paths_from_bytes(data: &[u8]) -> Vec<PathBuf> {
+    if data.len() > MAX_CLIPBOARD_URI_BYTES {
+        return Vec::new();
+    }
+    let Ok(text) = std::str::from_utf8(data) else {
+        return Vec::new();
+    };
+    text.lines()
+        .map(|line| {
+            line.trim_matches(|character: char| character.is_whitespace() || character == '\0')
+        })
+        .filter_map(local_clipboard_path)
+        .take(MAX_CLIPBOARD_CANDIDATES)
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
 fn read_gtk_clipboard_paths() -> Vec<PathBuf> {
-    gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD)
+    let clipboard = gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD);
+    let mut paths: Vec<PathBuf> = clipboard
         .wait_for_uris()
         .into_iter()
         .filter_map(|uri| local_clipboard_path(uri.as_str()))
         .take(MAX_CLIPBOARD_CANDIDATES)
-        .collect()
+        .collect();
+
+    for target in clipboard.wait_for_targets().unwrap_or_default() {
+        if paths.len() >= MAX_CLIPBOARD_CANDIDATES {
+            break;
+        }
+        if !target.name().to_ascii_lowercase().contains("copied-files") {
+            continue;
+        }
+        let Some(data) = clipboard.wait_for_contents(&target) else {
+            continue;
+        };
+        let length = data.length();
+        if length <= 0 || length as usize > MAX_CLIPBOARD_URI_BYTES {
+            continue;
+        }
+        for path in local_clipboard_paths_from_bytes(&data.data()) {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    paths.truncate(MAX_CLIPBOARD_CANDIDATES);
+    paths
 }
 
 #[cfg(target_os = "linux")]
@@ -229,20 +271,26 @@ pub async fn read_native_clipboard_files(
 
 #[cfg(target_os = "linux")]
 fn read_gtk_clipboard_file_image() -> Result<gdk_pixbuf::Pixbuf, String> {
+    use std::os::fd::AsRawFd;
+
     for path in read_gtk_clipboard_paths() {
-        let Ok(metadata) = std::fs::metadata(&path) else {
+        let Some(source) = open_regular_clipboard_file(&path) else {
+            continue;
+        };
+        let Ok(metadata) = source.metadata() else {
             continue;
         };
         if !metadata.is_file() || metadata.len() > MAX_CLIPBOARD_SOURCE_BYTES {
             continue;
         }
-        let Some((_, width, height)) = gdk_pixbuf::Pixbuf::file_info(&path) else {
+        let descriptor_path = PathBuf::from(format!("/proc/self/fd/{}", source.as_raw_fd()));
+        let Some((_, width, height)) = gdk_pixbuf::Pixbuf::file_info(&descriptor_path) else {
             continue;
         };
         if validate_dimensions(width, height).is_err() {
             continue;
         }
-        let Ok(image) = gdk_pixbuf::Pixbuf::from_file(&path) else {
+        let Ok(image) = gdk_pixbuf::Pixbuf::from_file(&descriptor_path) else {
             continue;
         };
         if validate_dimensions(image.width(), image.height()).is_ok() {
@@ -354,6 +402,31 @@ mod tests {
         assert_eq!(files[0].mime_type, "text/markdown");
 
         assert_eq!(BASE64.decode(&files[0].base64).unwrap(), b"clipboard text");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clipboard_file_reads_reject_symlinks() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target.md");
+        let link = directory.path().join("link.md");
+        std::fs::write(&target, b"clipboard text").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert!(open_regular_clipboard_file(&link).is_none());
+        assert!(read_clipboard_files(vec![link]).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn copied_file_targets_parse_local_uris() {
+        let paths = local_clipboard_paths_from_bytes(
+            b"copy\nfile:///tmp/pasted%20notes.md\nhttps://example.com/ignored.md\0",
+        );
+        assert_eq!(paths, vec![PathBuf::from("/tmp/pasted notes.md")]);
+        assert!(
+            local_clipboard_paths_from_bytes(&vec![b'x'; MAX_CLIPBOARD_URI_BYTES + 1]).is_empty()
+        );
     }
 
     #[cfg(target_os = "linux")]

@@ -111,6 +111,8 @@ def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
 
     for contract in (
         "clipboardData.files",
+        "clipboardData.items",
+        "item.getAsFile()",
         "file.size > 0",
         'clipboardData.getData("text/plain")',
         "event.isTrusted",
@@ -145,11 +147,16 @@ def test_native_clipboard_bridge_is_bounded_and_registered():
 
     for contract in (
         "MAX_CLIPBOARD_FILES",
+        "MAX_CLIPBOARD_URI_BYTES",
         "MAX_CLIPBOARD_TOTAL_BYTES",
         "MAX_CLIPBOARD_SOURCE_BYTES",
         "MAX_CLIPBOARD_RGBA_BYTES",
         ".take(limit + 1)",
         ".wait_for_uris()",
+        ".wait_for_targets()",
+        'contains("copied-files")',
+        "open_regular_clipboard_file(&path)",
+        '"/proc/self/fd/{}"',
         ".wait_for_image()",
         "glib::filename_from_uri",
         "glib::MainContext::default().invoke",
