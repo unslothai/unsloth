@@ -125,7 +125,6 @@ ALLOW_BITSANDBYTES: bool = True
 # unavailable by all three, not only by the ones that import it.
 try:
     import bitsandbytes as _bnb_probe
-
     del _bnb_probe
 except Exception:
     ALLOW_PREQUANTIZED_MODELS = False
