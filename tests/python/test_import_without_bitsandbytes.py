@@ -146,8 +146,7 @@ def _bnb_guards():
         for node in ast.walk(tree)
         if isinstance(node, ast.If)
         and any(
-            isinstance(n, ast.Name) and n.id == "ALLOW_BITSANDBYTES"
-            for n in ast.walk(node.test)
+            isinstance(n, ast.Name) and n.id == "ALLOW_BITSANDBYTES" for n in ast.walk(node.test)
         )
     ]
 
@@ -160,9 +159,9 @@ def test_bitsandbytes_guard_is_not_gated_on_use_exact_model_name():
     assert len(guards) == 2, f"expected both loader guards, found {len(guards)}"
     for guard in guards:
         names = {n.id for n in ast.walk(guard.test) if isinstance(n, ast.Name)}
-        assert "use_exact_model_name" not in names, (
-            f"guard at line {guard.lineno} still gates the capability check on naming"
-        )
+        assert (
+            "use_exact_model_name" not in names
+        ), f"guard at line {guard.lineno} still gates the capability check on naming"
 
 
 def test_bitsandbytes_guard_drops_a_bnb_quantization_config():
@@ -184,9 +183,9 @@ def test_bitsandbytes_guard_drops_a_bnb_quantization_config():
                 and node.args[0].value == "quantization_config"
             )
 
-        assert any(_is_pop(n) for n in ast.walk(guard)), (
-            f"guard at line {guard.lineno} leaves the bnb config in kwargs"
-        )
+        assert any(
+            _is_pop(n) for n in ast.walk(guard)
+        ), f"guard at line {guard.lineno} leaves the bnb config in kwargs"
         # the pop must be conditional on the config actually asking for bnb
         pops = [
             node
