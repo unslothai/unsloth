@@ -389,9 +389,7 @@ _GFX_TO_AMD_INDEX_ARCH: dict[str, str] = {
 }
 
 # bitsandbytes continuous-release_main wheels with the ROCm 4-bit GEMV fix
-# (bnb PR #1887, post-0.49.2). bnb <= 0.49.2 NaNs at decode shape on every
-# AMD GPU. PyPI 0.50.0 (2026-07-24) is the first release carrying that fix, so
-# _BNB_ROCM_PYPI_FALLBACK below is a safe floor when these URLs are unreachable.
+# (bnb #1887). bnb <= 0.49.2 NaNs at 4-bit decode shape on every AMD GPU.
 _BNB_ROCM_PRERELEASE_URLS: dict[str, str] = {
     "x86_64": (
         "https://github.com/bitsandbytes-foundation/bitsandbytes/releases/"
@@ -412,7 +410,8 @@ _BNB_ROCM_PRERELEASE_URLS: dict[str, str] = {
         "bitsandbytes-1.33.7.preview-py3-none-win_amd64.whl"
     ),
 }
-# Keep in step with the install.sh fallback (and the amd extra, once it lands here).
+# First PyPI release carrying bnb #1887. Keep in step with the install.sh
+# fallback (and the amd extra, once it lands here).
 _BNB_ROCM_PYPI_FALLBACK = "bitsandbytes>=0.50.0"
 
 

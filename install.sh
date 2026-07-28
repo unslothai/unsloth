@@ -257,12 +257,9 @@ run_install_cmd_retry() {
     done
 }
 
-# Install bitsandbytes on AMD ROCm hosts. Uses the continuous-release_main
-# wheel for the ROCm 4-bit GEMV fix (bnb PR #1887, post-0.49.2); bnb <= 0.49.2
-# NaNs at decode shape on every AMD GPU. Falls back to PyPI >=0.50.0 if the
-# pre-release URL is unreachable: 0.50.0 (2026-07-24) is the first PyPI release
-# carrying that fix, and its manylinux x86_64 wheel ships the same
-# libbitsandbytes_rocm{64,70,71,714,72}.so set as the pre-release.
+# Install bitsandbytes on AMD ROCm hosts. bnb <= 0.49.2 NaNs at 4-bit decode
+# shape on every AMD GPU; the fix (bnb #1887) is in the continuous-release_main
+# wheel used below and first ships on PyPI in 0.50.0, hence the fallback floor.
 _BNB_ROCM_PYPI_FALLBACK="bitsandbytes>=0.50.0"
 _install_bnb_rocm() {
     _label="$1"
@@ -278,10 +275,8 @@ _install_bnb_rocm() {
             _bnb_whl_url=""
             ;;
     esac
-    # uv rejects the continuous-release_main bitsandbytes wheel because the
-    # filename version (1.33.7rc0) does not match the embedded metadata version
-    # (0.50.x.dev0, whatever main is at). pip accepts the mismatch, so bootstrap
-    # pip and use it.
+    # uv rejects the pre-release wheel: its filename version (1.33.7rc0) does not
+    # match its metadata version (0.50.x.dev0). pip accepts it, so bootstrap pip.
     if ! "$_venv_py" -m pip --version >/dev/null 2>&1; then
         if ! run_maybe_quiet "$_venv_py" -m ensurepip --upgrade; then
             run_maybe_quiet uv pip install --python "$_venv_py" pip || \
