@@ -1502,6 +1502,10 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
 async function autoLoadSmallestModel(): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
+  /** A specific load failure was already reported, so callers must not replace
+   *  it with their generic "no model loaded" advice. Optional so every other
+   *  return keeps its existing shape. */
+  loadFailureReported?: boolean;
 }> {
   if (await tryAdoptServerActiveModel()) {
     return { loaded: true, blockedByTrustRemoteCode: false };
@@ -2004,6 +2008,7 @@ async function autoLoadSmallestModel(): Promise<{
         loaded: false,
         blockedByTrustRemoteCode:
           blockedByTrustRemoteCode && !hadNonTrustFailure,
+        loadFailureReported: loadFailure.current !== null,
       };
     }
 
@@ -2162,19 +2167,23 @@ export function createOpenAIStreamAdapter(
           await waitForModelReady(abortSignal);
         }
         if (!useChatRuntimeStore.getState().params.checkpoint) {
-          const { loaded, blockedByTrustRemoteCode } =
+          const { loaded, blockedByTrustRemoteCode, loadFailureReported } =
             await autoLoadSmallestModel();
           if (!loaded) {
-            toast.error(
-              blockedByTrustRemoteCode
-                ? "This model needs custom code approval"
-                : "No model loaded",
-              {
-                description: blockedByTrustRemoteCode
-                  ? "Select it from the top bar to review and approve its custom code, or pick another model."
-                  : "Pick a model in the top bar, then retry.",
-              },
-            );
+            // A reported load failure already names the model and the reason,
+            // so the generic advice would only bury it.
+            if (!loadFailureReported) {
+              toast.error(
+                blockedByTrustRemoteCode
+                  ? "This model needs custom code approval"
+                  : "No model loaded",
+                {
+                  description: blockedByTrustRemoteCode
+                    ? "Select it from the top bar to review and approve its custom code, or pick another model."
+                    : "Pick a model in the top bar, then retry.",
+                },
+              );
+            }
             throw new Error("Load a model first.");
           }
         }
@@ -2429,24 +2438,29 @@ export function createOpenAIStreamAdapter(
         // Prefer a model already loaded by the CLI/API before auto-loading.
         let loaded: boolean;
         let blockedByTrustRemoteCode: boolean;
+        let loadFailureReported: boolean | undefined;
         try {
-          ({ loaded, blockedByTrustRemoteCode } =
+          ({ loaded, blockedByTrustRemoteCode, loadFailureReported } =
             await autoLoadSmallestModel());
         } catch (error) {
           clearSelectedImageEditReference();
           throw error;
         }
         if (!loaded) {
-          toast.error(
-            blockedByTrustRemoteCode
-              ? "This model needs custom code approval"
-              : "No model loaded",
-            {
-              description: blockedByTrustRemoteCode
-                ? "Select it from the top bar to review and approve its custom code, or pick another model."
-                : "Pick a model in the top bar, then retry.",
-            },
-          );
+          // A reported load failure already names the model and the reason, so
+          // the generic advice would only bury it.
+          if (!loadFailureReported) {
+            toast.error(
+              blockedByTrustRemoteCode
+                ? "This model needs custom code approval"
+                : "No model loaded",
+              {
+                description: blockedByTrustRemoteCode
+                  ? "Select it from the top bar to review and approve its custom code, or pick another model."
+                  : "Pick a model in the top bar, then retry.",
+              },
+            );
+          }
           clearSelectedImageEditReference();
           throw new Error("Load a model first.");
         }

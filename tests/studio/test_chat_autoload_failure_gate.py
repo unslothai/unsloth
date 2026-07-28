@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import textwrap
 from pathlib import Path
 
@@ -245,7 +246,7 @@ def _run(scenario_expr: str) -> dict:
         textwrap.dedent(
             """
         // @ts-nocheck
-        import { autoLoadSmallestModel, setScenario, EVENTS } from "./harness.ts";
+        import { autoLoadSmallestModel, setScenario, EVENTS } from "../harness.ts";
         """
         )
         + SCENARIO_HELPERS
@@ -257,10 +258,13 @@ def _run(scenario_expr: str) -> dict:
         """
         )
     )
-    (TEMP / "run.mts").write_text(script, encoding = "utf-8")
+    # Its own directory per invocation: a shared run.mts would let concurrent
+    # runners (pytest-xdist, or two suites at once) execute each other's script.
+    run_dir = Path(tempfile.mkdtemp(prefix = "run", dir = TEMP))
+    (run_dir / "run.mts").write_text(script, encoding = "utf-8")
     completed = subprocess.run(
         ["node", "--experimental-strip-types", "--no-warnings", "run.mts"],
-        cwd = str(TEMP),
+        cwd = str(run_dir),
         capture_output = True,
         text = True,
         timeout = 60,
@@ -384,3 +388,23 @@ def test_a_later_cached_model_can_still_load_after_an_earlier_failure():
     assert _loaded_paths(out) == ["r1", "r2"]
     assert out["result"]["loaded"] is True
     assert _toasts(out, "toast.error") == []
+
+
+def test_reported_failure_is_flagged_so_callers_drop_the_generic_advice():
+    """Both send paths show a generic "No model loaded" toast whenever the sweep
+    returns loaded: false. Without a flag that lands after the detailed toast,
+    making the retry advice the last thing the user sees."""
+    out = _run(
+        "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
+        " load: () => new Error(OOM) })"
+    )
+
+    assert out["result"]["loaded"] is False
+    assert out["result"]["loadFailureReported"] is True
+
+
+def test_empty_device_does_not_flag_a_reported_failure():
+    """Nothing was attempted, so the callers must keep their generic advice."""
+    out = _run("scenario({ ggufRepos: [], models: [] })")
+
+    assert out["result"].get("loadFailureReported") is not True

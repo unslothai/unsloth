@@ -29,9 +29,10 @@ def _build_repo(
     ref: str,
     extra_refs: dict[str, str] | None = None,
     incomplete: bool = False,
+    name: str = "models--Org--Model",
 ) -> Path:
     """A cache repo holding one snapshot at ``SNAPSHOT``, shaped like HF's."""
-    repo_dir = cache_root / "models--Org--Model"
+    repo_dir = cache_root / name
     blobs = repo_dir / "blobs"
     snapshot = repo_dir / "snapshots" / SNAPSHOT
     refs = repo_dir / "refs"
@@ -97,6 +98,26 @@ def test_only_the_dangling_ref_of_a_mixed_repo_is_pruned(tmp_path, monkeypatch):
 
     assert _scanned_repo_ids(tmp_path, monkeypatch) == ["Org/Model"]
     assert _ref_names(repo_dir) == ["main"]
+
+
+def test_an_unreadable_repo_does_not_abort_the_prune_sweep(tmp_path):
+    """is_dir() propagates a permission error instead of returning False, so an
+    unguarded probe would escape to the caller's whole-scan except and drop
+    every model in the cache. The sweep must skip that repo and carry on.
+
+    Scoped to the sweep because scan_cache_dir itself already raises on an
+    unreadable repo dir, which is upstream of this code and unchanged here.
+    """
+    dangling = _build_repo(tmp_path, ref = UPSTREAM_HEAD)
+    locked = _build_repo(tmp_path, ref = SNAPSHOT, name = "models--Org--Locked")
+    locked.chmod(0)
+    if os.access(locked / "refs", os.R_OK):
+        pytest.skip("filesystem does not enforce directory permissions")
+    try:
+        assert inventory_scan._prune_dangling_hf_cache_refs(tmp_path) == 1
+        assert _ref_names(dangling) == []
+    finally:
+        locked.chmod(stat.S_IRWXU)
 
 
 def test_unwritable_refs_dir_degrades_instead_of_raising(tmp_path, monkeypatch):

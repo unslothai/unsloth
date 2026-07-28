@@ -149,11 +149,14 @@ def _prune_dangling_hf_cache_refs(cache_root: Path) -> int:
     for repo_dir in repo_dirs:
         refs_dir = repo_dir / "refs"
         snapshots_dir = repo_dir / "snapshots"
-        if not refs_dir.is_dir():
-            continue
-        # A running download writes its ref before materialising the snapshot,
-        # so its ref is legitimately dangling for the length of the transfer.
+        # is_dir() propagates a permission error rather than returning False, so
+        # it belongs inside the guard: one unreadable repo must not abort the
+        # sweep and drop the whole scan, which is the failure this repairs.
         try:
+            if not refs_dir.is_dir():
+                continue
+            # A running download writes its ref before materialising the
+            # snapshot, so its ref is legitimately dangling while it transfers.
             if repo_cache_dir_has_incomplete_blobs(repo_dir):
                 continue
             ref_files = [entry for entry in refs_dir.rglob("*") if entry.is_file()]
