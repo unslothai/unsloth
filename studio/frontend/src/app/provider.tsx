@@ -255,7 +255,7 @@ const MAC_NATIVE_CHROME_STYLE = {
   "--studio-non-chat-content-top-inset": "34px",
   "--studio-hidden-route-top-inset": "34px",
   "--studio-chat-header-height": "44px",
-  "--studio-chat-header-padding-top": "8px",
+  "--studio-chat-header-padding-top": "7px",
   "--studio-chat-control-height": "33px",
   "--studio-chat-header-right-inset": "0px",
 } as CSSProperties;
