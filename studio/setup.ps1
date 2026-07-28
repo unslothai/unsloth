@@ -903,9 +903,24 @@ function Ensure-VCRedist {
     if (-not (Test-VCRedistInstalled)) {
         # Evergreen link for the current 2015-2022 runtime; /quiet /norestart so it
         # never blocks or reboots an unattended install.
-        $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
-        $url = "https://aka.ms/vs/17/release/vc_redist.$arch.exe"
-        $dst = Join-Path ([System.IO.Path]::GetTempPath()) "vc_redist.$arch.exe"
+        # Always the x64 package, deliberately. Microsoft ships it as an Arm64X
+        # superset: "The X64 Redistributable package contains both ARM64 and X64
+        # binaries. This package makes it easy to install required Visual C++ ARM64
+        # binaries when the X64 Redistributable is installed on an ARM64 device."
+        # (learn.microsoft.com/cpp/windows/latest-supported-vc-redist). The arm64
+        # package carries ARM64 only. Branching on PROCESSOR_ARCHITECTURE was the
+        # wrong signal twice over: it reports the architecture of THIS PowerShell
+        # process rather than the machine, and the runtime has to match the
+        # interpreter that ends up loading the DLLs, not the shell. Find-CompatiblePython
+        # (install.ps1) accepts an interpreter on version and non-Conda status alone,
+        # with no architecture predicate, so a native ARM64 shell can legitimately
+        # settle on an emulated x64 Python, whose win_amd64 torch and llama-server
+        # then need the x64 runtime. This function also runs at line 1727, long
+        # before the venv exists, so the interpreter cannot be probed here at all.
+        # The x64 package covers both outcomes, and the winget branch above already
+        # installs Microsoft.VCRedist.2015+.x64 unconditionally.
+        $url = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+        $dst = Join-Path ([System.IO.Path]::GetTempPath()) "vc_redist.x64.exe"
         substep "winget unavailable or failed; downloading the runtime directly..."
         try {
             Invoke-WebRequest -Uri $url -OutFile $dst -UseBasicParsing -TimeoutSec 300
