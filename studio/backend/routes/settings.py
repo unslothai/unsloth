@@ -356,16 +356,30 @@ def get_openai_auto_switch_overrides(
 def _bare_model_id(model_id: str) -> Optional[str]:
     """``repo`` for a ``repo:QUANT`` key, or None when there is no quant suffix."""
     from core.inference.llama_cpp import _GGUF_KNOWN_QUANT_RE
+    from hub.utils.gguf import extract_quant_label
 
     head, sep, tail = model_id.rpartition(":")
     if not sep or not head or not tail:
         return None
-    if len(tail) > _MAX_VARIANT_SUFFIX_LEN or "/" in tail or "\\" in tail:
-        return None
-    # Must actually look like a quant, not just like a short path segment.
-    if _GGUF_KNOWN_QUANT_RE.fullmatch(tail) is None:
-        return None
-    return head
+    if "/" not in tail and "\\" not in tail and len(tail) <= _MAX_VARIANT_SUFFIX_LEN:
+        # Must actually look like a quant, not just like a short path segment.
+        if _GGUF_KNOWN_QUANT_RE.fullmatch(tail) is not None:
+            return head
+    # A .gguf with no recognizable quant token is still labelled by the scanner,
+    # which falls back to the filename stem, so the UI stores keys like
+    # "/models/custom.gguf:custom". Refusing those dropped the bare entry's
+    # legacy flags on the first save, and auto-switch then prefers the qualified
+    # entry, so nothing could restore them. Requiring the suffix to be exactly
+    # the label the scanner derives for this filename is what keeps an arbitrary
+    # colon-containing POSIX path out: "/models/foo:bar.gguf" splits to a head
+    # that is not a .gguf at all.
+    # Split on both separators rather than os.path.basename: a "C:\..." key is
+    # written on Windows but may be read back by a backend that is not, and
+    # there a backslash is an ordinary filename character.
+    filename = head.replace("\\", "/").rsplit("/", 1)[-1]
+    if head.lower().endswith(".gguf") and tail == extract_quant_label(filename):
+        return head
+    return None
 
 
 @router.put("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)

@@ -4678,6 +4678,57 @@ def test_posix_colon_in_a_path_is_not_treated_as_a_quant(monkeypatch):
     assert "llama_extra_args" not in resp.overrides["/models/foo:bar.gguf"]
 
 
+def test_unknown_quant_label_on_a_gguf_still_carries_flags_over(monkeypatch):
+    # A .gguf whose filename holds no recognizable quant token is still labelled
+    # by the scanner, which falls back to the stem, so the UI saves under
+    # "/models/custom.gguf:custom". Refusing that suffix dropped the bare entry's
+    # legacy flags on the first save, and auto-switch then prefers the qualified
+    # entry, so nothing was left that could restore them.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("/models/custom.gguf", llama_extra_args = ["--flash-attn"])
+    resp = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(
+            model_id = "/models/custom.gguf:custom", max_seq_length = 4096
+        ),
+        "tester",
+    )
+    assert resp.overrides["/models/custom.gguf:custom"]["llama_extra_args"] == ["--flash-attn"]
+
+
+def test_a_suffix_the_scanner_would_not_derive_carries_nothing_over(monkeypatch):
+    # Only the exact label the scanner derives for this filename is accepted, so
+    # an unrelated colon suffix cannot reach into another model's flags.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("/models/custom.gguf", llama_extra_args = ["--flash-attn"])
+    resp = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(
+            model_id = "/models/custom.gguf:something-else", max_seq_length = 4096
+        ),
+        "tester",
+    )
+    assert "llama_extra_args" not in resp.overrides["/models/custom.gguf:something-else"]
+
+
+def test_unknown_quant_label_carries_over_for_a_windows_path(monkeypatch):
+    # The key is written on Windows but may be read back by a backend that is
+    # not, where a backslash is an ordinary filename character.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override(r"C:\models\custom.gguf", llama_extra_args = ["--flash-attn"])
+    resp = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(
+            model_id = r"C:\models\custom.gguf:custom", max_seq_length = 4096
+        ),
+        "tester",
+    )
+    assert resp.overrides[r"C:\models\custom.gguf:custom"]["llama_extra_args"] == ["--flash-attn"]
+
+
 def test_real_quant_suffix_on_a_path_still_carries_flags_over(monkeypatch):
     import routes.settings as settings_route
 
