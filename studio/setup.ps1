@@ -2661,6 +2661,8 @@ $VenvDir = Join-Path $StudioHome "unsloth_studio"
 # the canonical comparison so an override pointing at the legacy default
 # still behaves like a default install.
 $StudioOwnedMarker = ".unsloth-studio-owned"
+# Mirrors install_manifest.NO_TORCH_MARKER; keep the two in step.
+$NoTorchMarker = ".unsloth-no-torch"
 $LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
 $_studioHomeCanon = $StudioHome
 if (Test-Path -LiteralPath $_studioHomeCanon -PathType Container) {
@@ -2704,13 +2706,71 @@ function Mark-StudioOwned {
     } catch {}
 }
 
+# The mode this venv was installed with. install.ps1 exports UNSLOTH_NO_TORCH for
+# its own run only, so a later `unsloth studio update` (which exports nothing) has
+# no other way to know. Two sources, because the completion manifest is dropped
+# before every dependency pass and so cannot answer for a run killed mid-pass:
+# the manifest key first, then .unsloth-no-torch, which outlives the pass. Neither
+# present reads as "install torch" -- the pre-existing behavior.
+function Get-PersistedNoTorch {
+    param([Parameter(Mandatory = $true)][string]$VenvPath)
+    $manifestPath = Join-Path $VenvPath "unsloth_install_manifest.json"
+    if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+        $payload = $null
+        try {
+            $payload = Get-Content -LiteralPath $manifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        } catch {
+            $payload = $null
+        }
+        if ($null -ne $payload -and $null -ne $payload.no_torch) {
+            return ("$($payload.no_torch)" -match '^\s*(?i:true|1|yes|on)\s*$')
+        }
+    }
+    return (Test-Path -LiteralPath (Join-Path $VenvPath $NoTorchMarker) -PathType Leaf)
+}
+
+# Written before anything that could be interrupted, and cleared when torch is
+# wanted so migrating out of no-torch leaves nothing stale behind.
+function Set-PersistedNoTorch {
+    param(
+        [Parameter(Mandatory = $true)][string]$VenvPath,
+        [Parameter(Mandatory = $true)][bool]$NoTorch
+    )
+    if (-not (Test-Path -LiteralPath $VenvPath -PathType Container)) { return }
+    $markerPath = Join-Path $VenvPath $NoTorchMarker
+    try {
+        if ($NoTorch) {
+            [System.IO.File]::WriteAllText($markerPath, "")
+        } elseif (Test-Path -LiteralPath $markerPath -PathType Leaf) {
+            Remove-Item -LiteralPath $markerPath -Force -ErrorAction Stop
+        }
+    } catch {}
+}
+
 # Stale-venv detection: if the venv exists but its torch flavor no longer
 # matches the current machine, repair according to invocation context.
 # - install.ps1 sets UNSLOTH_INSTALL_ROLLBACK_MANAGED=1 so setup can delegate
 #   to the installer-level rollback that restores the previous environment.
 # - direct `unsloth studio update` keeps the pre-existing self-repair behavior.
 # In no-torch mode, a missing torch package is expected.
-$NoTorchMode = $env:UNSLOTH_NO_TORCH -match '^(?i:true|1|yes)$'
+$NoTorchMode = $env:UNSLOTH_NO_TORCH -match '^\s*(?i:true|1|yes|on)\s*$'
+# No env var at all means `unsloth studio update` / `studio setup` / setup.bat,
+# none of which export one. Without the manifest fallback the check below reads a
+# GGUF-only venv's missing torch as a stale venv and tries to delete the venv this
+# script is itself running out of, which fails on a locked python.exe.
+if (-not $NoTorchMode -and [string]::IsNullOrWhiteSpace($env:UNSLOTH_NO_TORCH)) {
+    $NoTorchMode = Get-PersistedNoTorch -VenvPath $VenvDir
+    if ($NoTorchMode) {
+        substep "no-torch install detected -- keeping this environment GGUF-only." "Yellow"
+    }
+}
+# Persist before the torch install and the dependency pass below, either of which
+# can be interrupted; install_python_stack.py refreshes the same marker.
+Set-PersistedNoTorch -VenvPath $VenvDir -NoTorch $NoTorchMode
+# install_python_stack.py drops the manifest before its dependency pass, so it
+# cannot repeat the lookup above; hand it the resolved answer. This also collapses
+# every accepted spelling to one value both sides parse identically.
+$env:UNSLOTH_NO_TORCH = if ($NoTorchMode) { "true" } else { "false" }
 $InstallerManagedSetup = $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -match '^(?i:true|1|yes)$'
 if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
@@ -3214,6 +3274,7 @@ $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR
 # goes through $ROCmIndexUrl; on failure the fallback uses the CPU index, not the ROCm pin.
 $TorchInstallIndexUrl = if ($ROCmIndexUrl) { "$PyTorchWhlBase/cpu" } elseif ($PinnedTorchIndexUrl) { $PinnedTorchIndexUrl } else { "$PyTorchWhlBase/$CuTag" }
 
+if (-not $NoTorchMode) {
 $ROCmCpuFallback = $false
 if ($ROCmIndexUrl) {
     substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."
@@ -3323,6 +3384,9 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     } else {
         substep "Triton for Windows installed (enables torch.compile)"
     }
+}
+} else {
+    substep "skipping direct PyTorch and Triton installation (no-torch mode)." "Yellow"
 }
 
 # No unsloth.exe rename needed. setup.ps1 runs *via* unsloth.exe, so renaming the
