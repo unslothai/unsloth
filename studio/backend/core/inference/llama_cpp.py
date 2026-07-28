@@ -8098,9 +8098,7 @@ class LlamaCppBackend:
                         # before the actual model size.  Trailing boundary after
                         # "b" prevents matching substrings like "8bit".
                         model_name = mid.replace("\\", "/").split("/")[-1]
-                        size_match = re.search(
-                            r"(?:^|[-_/.])(\d+\.?\d*)b(?:$|[-_/.])", model_name
-                        )
+                        size_match = re.search(r"(?:^|[-_/.])(\d+\.?\d*)b(?:$|[-_/.])", model_name)
                         if size_match and float(size_match.group(1)) < 9:
                             thinking_default = False
                     self._reasoning_default = thinking_default
