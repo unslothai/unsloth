@@ -49,7 +49,23 @@ import logging as _logging  # noqa: E402
 _loggers_stub = types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: _logging.getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
-sys.modules.setdefault("structlog", types.ModuleType("structlog"))
+
+# structlog is a hard studio.txt requirement, but it is only imported lazily, so a
+# bare setdefault here used to park an empty placeholder BEFORE anything imported
+# the real package -- and it then shadowed it for the rest of the session. Every
+# later file importing a studio module that calls structlog.get_logger at module
+# scope (routes.inference -> core.inference.external_provider, utils.mlx_repair)
+# blew up with AttributeError, but only when this file was collected first, so the
+# same test passed alone and failed under `pytest tests/studio`. Only stub when the
+# package is genuinely missing, and give the stub the attribute those callers use.
+try:
+    import structlog  # noqa: E402, F401
+except ImportError:
+    _structlog_stub = types.ModuleType("structlog")
+    _structlog_stub.get_logger = lambda *args, **kwargs: _logging.getLogger(
+        args[0] if args else "structlog"
+    )
+    sys.modules["structlog"] = _structlog_stub
 
 import httpx  # noqa: E402
 
