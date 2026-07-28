@@ -312,7 +312,7 @@ def _load_impl_source() -> str:
 def test_route_resolves_slots_once_before_dedupe_guard_and_load():
     load_impl = _load_impl_source()
     resolve = load_impl.index("request.n_parallel")
-    fallback = load_impl.index('getattr(fastapi_request.app.state, "llama_parallel_slots", 1)')
+    fallback = load_impl.index('getattr(_app_state, "llama_parallel_slots", 1)')
     dedupe = load_impl.index("requested_parallel_slots = _n_parallel")
     guard = load_impl.index("_guard_chat_load_against_training")
     # The GGUF launch kwargs, not the guard's own kwarg (which shares the spelling).
@@ -324,7 +324,10 @@ def test_route_resolves_slots_once_before_dedupe_guard_and_load():
     # nothing re-reads app.state after the single resolution point.
     assert load_impl.count("n_parallel = _n_parallel") == 2
     assert "n_parallel = _n_parallel" in load_impl[load_kwargs : load_kwargs + 800]
-    assert load_impl.count('getattr(fastapi_request.app.state, "llama_parallel_slots", 1)') == 1
+    assert load_impl.count('getattr(_app_state, "llama_parallel_slots", 1)') == 1
+    # Reached by getattr, so a direct caller passing a request without an app
+    # cannot raise; a bare attribute read would also be a second resolution.
+    assert "fastapi_request.app.state" not in load_impl
 
 
 def test_route_dedupe_compares_requested_slots_and_skips_diffusion():
@@ -361,7 +364,7 @@ def test_parallel_slot_echo_reports_none_for_diffusion():
 def test_validate_route_prefers_request_n_parallel():
     validate_impl = _route_source()[_route_source().index("async def validate_model") :]
     resolve = validate_impl.index("request.n_parallel")
-    fallback = validate_impl.index('getattr(fastapi_request.app.state, "llama_parallel_slots", 1)')
+    fallback = validate_impl.index('"llama_parallel_slots",')
     guard = validate_impl.index("_guard_chat_load_against_training")
     assert guard < resolve and guard < fallback, "the guard call resolves the slots inline"
 

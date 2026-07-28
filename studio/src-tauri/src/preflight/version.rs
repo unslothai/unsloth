@@ -1,7 +1,15 @@
 use std::cmp::Ordering;
 
 pub(crate) const DESKTOP_PROTOCOL_VERSION: u16 = 1;
-pub(crate) const DESKTOP_MANAGEABILITY_VERSION: u16 = 1;
+// 2: the CLI must report studio_install_ok from `studio desktop-capabilities`,
+// so an interrupted install is caught before the backend is spawned. A CLI
+// reporting 1 is Stale and gets repaired, which reinstalls what it missed.
+pub(crate) const DESKTOP_MANAGEABILITY_VERSION: u16 = 2;
+// What a RUNNING backend must report to be adopted and stopped. Not the
+// constant above: studio_install_ok is CLI-side, so gating on 2 would only
+// reject (and so never adopt, or stop) a backend the previous app version
+// spawned. Bump only for a real backend contract change, keep it <= main.py's.
+pub(crate) const DESKTOP_BACKEND_MANAGEABILITY_VERSION: u16 = 1;
 // Explicit backend package minimum, not the desktop app Cargo version: backend
 // and app releases can diverge. When bumping, verify this package exists on PyPI.
 pub(super) const MIN_DESKTOP_BACKEND_VERSION: &str = "2026.5.3";
