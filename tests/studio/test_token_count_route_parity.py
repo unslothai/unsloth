@@ -140,7 +140,13 @@ def _tools_priced_by_the_counter(**payload_fields):
         is_loaded = True
         model_identifier = "m"
 
-        def count_chat_tokens(self, messages, system = None, tools = None, strict = False):
+        def count_chat_tokens(
+            self,
+            messages,
+            system = None,
+            tools = None,
+            strict = False,
+        ):
             seen.append(tools)
             return 7
 
