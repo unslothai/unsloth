@@ -1910,7 +1910,9 @@ def test_plan_without_action_nudge_is_announced_on_the_status_channel(monkeypatc
     index = statuses.index(NUDGE_TOOL_CALLS_STATUS)
     # The blank status has to come first: the route only resets its cumulative
     # text cursor on an empty one, and the retried turn streams against it.
-    assert statuses[index - 1] == ""
+    # index > 0 is load-bearing: at index 0 a bare statuses[index - 1] wraps to the
+    # terminal clear and the ordering assertion passes without proving anything.
+    assert index > 0 and statuses[index - 1] == ""
     # The tool the retry finally calls takes the badge over, and the request ends
     # with it cleared.
     assert statuses[index + 1].startswith("Searching:")

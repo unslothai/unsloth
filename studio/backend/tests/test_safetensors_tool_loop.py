@@ -2240,7 +2240,9 @@ def test_reprompt_is_announced_on_the_status_channel():
     statuses = [e["text"] for e in events if e["type"] == "status"]
     assert NUDGE_TOOL_CALLS_STATUS in statuses
     index = statuses.index(NUDGE_TOOL_CALLS_STATUS)
-    assert statuses[index - 1] == ""
+    # index > 0 is load-bearing: at index 0 a bare statuses[index - 1] wraps to the
+    # terminal clear and the ordering assertion passes without proving anything.
+    assert index > 0 and statuses[index - 1] == ""
     assert statuses[-1] == ""
 
 
