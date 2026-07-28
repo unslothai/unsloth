@@ -38,7 +38,7 @@ on:
       release_repo:
         description: 'owner/name hosting the desktop release'
         type: string
-        default: 'unsloth-test/unsloth-test'
+        default: ''
       strip_toolchain:
         description: 'Strip developer tooling before installing'
         type: boolean
@@ -55,7 +55,11 @@ permissions:
   contents: read
 
 env:
-  REL_REPO: ${{ inputs.release_repo || 'unsloth-test/unsloth-test' }}
+  # release-desktop.yml publishes into github.repository, so a nightly aimed
+  # anywhere else goes green over a broken production bundle.
+  # unsloth-test/unsloth-test holds one frozen release, so the schedule was
+  # re-testing the same fixture forever.
+  REL_REPO: ${{ inputs.release_repo || github.repository }}
   # Empty unless dispatched: a pinned tag is an immutable fixture, so a nightly
   # against it could never catch a newly published broken bundle. Each download step
   # resolves the newest desktop-v* release when this is empty.
@@ -133,7 +137,17 @@ jobs:
           APP="$(ls -d /Applications/*Unsloth*.app | head -1)"
           BIN="$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
           file "$BIN"
-          lipo -archs "$BIN" || true
+          # `lipo -archs` prints and exits 0 for a thin x86_64 binary, and `|| true`
+          # swallowed even that, so "the right architecture" was never asserted. lipo
+          # is an xcrun shim too, absent once the strip step moved CommandLineTools
+          # aside; /usr/bin/file is base system.
+          ARCHS="$(lipo -archs "$BIN" 2>/dev/null || true)"
+          [ -n "$ARCHS" ] || ARCHS="$(file -b "$BIN")"
+          echo "architectures: $ARCHS"
+          case "$ARCHS" in
+            *arm64*|*aarch64*) ;;
+            *) echo "::error::the aarch64 .dmg carries no arm64 binary ($ARCHS)"; exit 1 ;;
+          esac
           # Report rather than gate: an unnotarised beta is expected to fail
           # assessment, but a user WILL hit this, so it must be visible.
           codesign -dv --verbose=2 "$APP" 2>&1 | head -20 || true
@@ -205,12 +219,17 @@ jobs:
             # The two fields the bug report turned on.
             grep -E "disposition=|can_auto_repair=|Xcode Command Line|ModuleNotFoundError" "$f" || true
             found=1
+            if grep -qE "desktop_preflight completed disposition=" "$f"; then disposition=1; fi
           done
           # Everything above is `|| true`, so this step could not fail while the
           # header sells the tauri.log disposition as an acceptance criterion.
           # setup_logging (src-tauri/src/main.rs:50-67) opens tauri.log unconditionally
           # at process start, so no log at all means the binary never got that far.
           [ "${found:-0}" = "1" ] || { echo "::error::the app wrote no tauri.log; it never reached setup_logging"; exit 1; }
+          # setup_logging opens tauri.log at process start, so its existence is implied
+          # by the launch step. The disposition line is the field the bug report turned
+          # on, so a process that hangs before preflight must not pass.
+          [ "${disposition:-0}" = "1" ] || { echo "::error::tauri.log records no desktop_preflight disposition; the app never completed preflight"; exit 1; }
 
       - name: Restore the runner
         if: always()
@@ -331,7 +350,6 @@ jobs:
     name: desktop windows
     runs-on: windows-latest
     timeout-minutes: 45
-    continue-on-error: true
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
