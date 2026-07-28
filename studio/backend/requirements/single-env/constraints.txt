@@ -21,3 +21,16 @@ websockets>=15.0.1
 anyio<4.14.0
 
 pandas==2.3.3
+
+# Cap av (PyAV) below 16: 16+ ships no cp313 macOS arm64 wheel, so the resolver picks
+# 18.0.0 and then tries to BUILD it. PyAV is a C extension over FFmpeg, so that build
+# needs a compiler *and* FFmpeg headers -- which the Xcode Command Line Tools do not
+# provide either, meaning it fails on a stock Mac however many developer tools are
+# installed. 15.1.0 is the newest release with a prebuilt wheel for that target.
+#
+# This was the last package on the default macOS path that required a toolchain. The
+# other sdist-only packages there (openai-whisper, argbind, randomname, and
+# antlr4-python3-runtime pinned at 4.9.3) are pure Python and build with no compiler,
+# which is why they are allowlisted in .github/scripts/clean-machine-assert.sh instead
+# of being pinned here.
+av<16
