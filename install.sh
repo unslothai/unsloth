@@ -2100,7 +2100,13 @@ _check_linux_deps() {
     # costs the features named below, but on Debian/Ubuntu we can just get them.
     if [ -n "$_optional_missing" ] && command -v apt-get >/dev/null 2>&1; then
         step "deps" "installing optional build tools: $_optional_missing" "$C_DIM"
-        _smart_apt_install $_optional_missing || true
+        # Subshell: _smart_apt_install exits rather than returns, and `|| true`
+        # does not catch an exit, so a missing optional tool aborted the install
+        # this gate exists to let continue. Code 2 is still re-raised, it is the
+        # NEED_SUDO handshake install.rs answers with an elevation prompt.
+        _sai_rc=0
+        ( _smart_apt_install $_optional_missing ) || _sai_rc=$?
+        if [ "$_sai_rc" -eq 2 ]; then exit 2; fi
         _optional_missing=""
         command -v cmake       >/dev/null 2>&1 || _optional_missing="$_optional_missing cmake"
         _has_working_git                       || _optional_missing="$_optional_missing git"
