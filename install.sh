@@ -304,8 +304,11 @@ _gfx906_bnb_prune() {
 
 # Install bitsandbytes on AMD ROCm hosts. Uses the continuous-release_main
 # wheel for the ROCm 4-bit GEMV fix (bnb PR #1887, post-0.49.2); bnb <= 0.49.2
-# NaNs at decode shape on every AMD GPU. Falls back to PyPI >=0.49.1 if the
-# pre-release URL is unreachable. Drop the pin once bnb 0.50+ ships on PyPI.
+# NaNs at decode shape on every AMD GPU. Falls back to PyPI >=0.50.0 if the
+# pre-release URL is unreachable: 0.50.0 (2026-07-24) is the first PyPI release
+# carrying that fix, and its manylinux x86_64 wheel ships the same
+# libbitsandbytes_rocm{64,70,71,714,72}.so set as the pre-release. Keep this
+# floor in step with the amd extra in pyproject.toml.
 _install_bnb_rocm() {
     _label="$1"
     _venv_py="$2"
@@ -322,7 +325,8 @@ _install_bnb_rocm() {
     esac
     # uv rejects the continuous-release_main bitsandbytes wheel because the
     # filename version (1.33.7rc0) does not match the embedded metadata version
-    # (0.50.0.dev0). pip accepts the mismatch, so bootstrap pip and use it.
+    # (0.50.x.dev0, whatever main is at). pip accepts the mismatch, so bootstrap
+    # pip and use it.
     if ! "$_venv_py" -m pip --version >/dev/null 2>&1; then
         if ! run_maybe_quiet "$_venv_py" -m ensurepip --upgrade; then
             run_maybe_quiet uv pip install --python "$_venv_py" pip || \
@@ -349,7 +353,7 @@ _install_bnb_rocm() {
         substep "[WARN] bnb pre-release install failed; falling back to PyPI (4-bit decode broken on ROCm)" "$C_WARN"
     fi
     run_install_cmd "$_label (pypi fallback)" "$_venv_py" -m pip install \
-        --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.49.1"
+        --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.50.0"
 }
 
 if [ "$_next_is_package" = true ]; then

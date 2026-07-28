@@ -818,3 +818,47 @@ class TestPipNoIndexScrubParity:
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert "'PIP_NO_INDEX'" in text
         assert "'PIP_INDEX_URL'" in text
+
+
+class TestAmdBnbFloorParity:
+    """bitsandbytes <= 0.49.2 NaNs at 4-bit decode shape on every AMD GPU; the ROCm
+    4-bit GEMV fix (bnb #1887) first ships on PyPI in 0.50.0. The `amd` extra, the
+    install.sh PyPI fallback and the Studio stack fallback are three separate ways a
+    supported AMD flow resolves bitsandbytes, so all three must carry the same floor
+    -- otherwise the pre-release wheel path being unreachable silently reinstates the
+    broken range."""
+
+    FLOOR = "0.50.0"
+    PYPROJECT = REPO_ROOT / "pyproject.toml"
+
+    def test_amd_extra_floor(self):
+        text = self.PYPROJECT.read_text(encoding = "utf-8")
+        amd = re.search(r"^amd = \[(.*?)^\]", text, re.S | re.M)
+        assert amd, "pyproject.toml must define an `amd` extra"
+        specs = re.findall(r'"(bitsandbytes[^"]*)"', amd.group(1))
+        assert specs, "the amd extra must pin bitsandbytes"
+        for spec in specs:
+            assert spec.startswith(f"bitsandbytes>={self.FLOOR}"), (
+                f"amd extra bitsandbytes floor must be >={self.FLOOR}, got {spec!r}"
+            )
+
+    def test_install_sh_pypi_fallback_floor(self):
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        assert f'"bitsandbytes>={self.FLOOR}"' in text, (
+            f"install.sh _install_bnb_rocm PyPI fallback must floor at {self.FLOOR}"
+        )
+
+    def test_stack_py_pypi_fallback_floor(self):
+        text = STACK_PY.read_text(encoding = "utf-8")
+        assert f'_BNB_ROCM_PYPI_FALLBACK = "bitsandbytes>={self.FLOOR}"' in text, (
+            f"install_python_stack.py PyPI fallback must floor at {self.FLOOR}"
+        )
+
+    def test_no_installer_still_allows_the_broken_range(self):
+        for path in (INSTALL_SH, INSTALL_PS1, SETUP_PS1, STACK_PY, self.PYPROJECT):
+            text = path.read_text(encoding = "utf-8")
+            for line in text.splitlines():
+                if "bitsandbytes>=0.49" in line and not line.lstrip().startswith(("#", "//")):
+                    raise AssertionError(
+                        f"{path.name} still floors bitsandbytes in the broken ROCm range: {line.strip()!r}"
+                    )

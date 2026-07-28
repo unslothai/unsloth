@@ -424,7 +424,8 @@ _GFX_TO_AMD_INDEX_ARCH: dict[str, str] = {
 
 # bitsandbytes continuous-release_main wheels with the ROCm 4-bit GEMV fix
 # (bnb PR #1887, post-0.49.2). bnb <= 0.49.2 NaNs at decode shape on every
-# AMD GPU. Drop the pin once bnb 0.50+ ships on PyPI.
+# AMD GPU. PyPI 0.50.0 (2026-07-24) is the first release carrying that fix, so
+# _BNB_ROCM_PYPI_FALLBACK below is a safe floor when these URLs are unreachable.
 _BNB_ROCM_PRERELEASE_URLS: dict[str, str] = {
     "x86_64": (
         "https://github.com/bitsandbytes-foundation/bitsandbytes/releases/"
@@ -445,7 +446,8 @@ _BNB_ROCM_PRERELEASE_URLS: dict[str, str] = {
         "bitsandbytes-1.33.7.preview-py3-none-win_amd64.whl"
     ),
 }
-_BNB_ROCM_PYPI_FALLBACK = "bitsandbytes>=0.49.1"
+# Keep in step with the amd extra in pyproject.toml and the install.sh fallback.
+_BNB_ROCM_PYPI_FALLBACK = "bitsandbytes>=0.50.0"
 
 
 def _bnb_rocm_prerelease_url() -> str | None:
@@ -1244,7 +1246,7 @@ def _install_bnb_windows_rocm() -> bool:
 
     The continuous-release wheel is intentionally mismatched: the filename
     encodes 1.33.7.preview (parsed as 1.33.7rc0 by PEP 440) while the wheel
-    metadata reports 0.50.0.dev0. uv rejects this filename/metadata mismatch,
+    metadata reports 0.50.x.dev0. uv rejects this filename/metadata mismatch,
     and bypassing it with UV_SKIP_WHEEL_FILENAME_CHECK still leaves uv mangling
     the bitsandbytes install. Per the AMD install guide
     (https://unsloth.ai/docs/get-started/install/amd/amd-hackathon) the wheel
