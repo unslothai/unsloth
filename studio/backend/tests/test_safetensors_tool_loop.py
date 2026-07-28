@@ -3659,6 +3659,8 @@ class TestGGUFSafetensorsHealingParity:
             "First, check the documentation.",
             "First, analyze the attached data",
             "The first step is to search the web",
+            "First, my plan is to search the web.",
+            "First, our approach is to check the docs.",
             "Here's my plan",
             "Now I need to call web_search",
             # The "let me know" exemption is scoped to "let me", not every
@@ -3684,6 +3686,7 @@ class TestGGUFSafetensorsHealingParity:
             "First, the answer is 42",
             "First, the result is 3.",
             "First, it is 42",
+            "First, my answer is 42",
             "The first line is blank.",
         ):
             assert not shared_re.search(plain), f"wrongly fired on {plain!r}"
@@ -3696,6 +3699,14 @@ class TestGGUFSafetensorsHealingParity:
         from core.inference.tool_call_parser import MAX_ACT_REPROMPTS as shared_cap
 
         assert gguf_cap == sf_cap == shared_cap
+
+    def test_reprompt_repeat_keeps_punctuation_bearing_terms(self):
+        # Stripping every non-word character collapsed "C++" and "C#" to "c", so two
+        # different search plans compared equal and the retry lost its nudge.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+
+        assert not is_reprompt_repeat("I will search for C#.", "I will search for C++.")
+        assert is_reprompt_repeat("I will search for C++!", "I will search for C++.")
 
     def test_reprompt_repeat_keeps_a_changed_query_token(self):
         # One corrected token in a long plan is a new attempt, not a repeat; at the
