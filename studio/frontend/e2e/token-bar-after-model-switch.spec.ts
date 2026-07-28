@@ -26,7 +26,9 @@ test.describe("context usage bar", () => {
   }) => {
     await gotoChat(page);
     await ensureLocalModelLoaded(page, LOCAL_MODEL_NAME);
-    await expectContextUsageBarVisible(page);
+    // minUsed, or the placeholder zeros this seeds would satisfy the assertion
+    // on their own and a recount that never landed would look like a pass.
+    await expectContextUsageBarVisible(page, { minUsed: 1, poll: true });
   });
 
   test("shows token bar after model switch without sending again", async ({

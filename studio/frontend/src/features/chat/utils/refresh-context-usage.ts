@@ -241,10 +241,16 @@ export async function refreshContextUsage(options?: {
   // Bump only once this call will do work, so a bail-out cannot cancel an in-flight recount.
   const generation = nextGeneration(capturedThreadId);
 
+  // Held by identity so the placeholder can be retracted below. Several paths decline to
+  // count (staged audio, a checkpoint that moved, a failed or absent endpoint), and leaving
+  // the seed behind renders a confident "0 / <window>" where the bar used to just hide.
+  let seededUsage: SavedContextUsage | null = null;
+  let counted = false;
   if (!threadId) {
     // Show something immediately for a chat with no persisted thread; the count below refines
     // it, since a system prompt or enabled tools are already in the request.
-    useChatRuntimeStore.getState().setContextUsage(zeroContextUsage());
+    seededUsage = zeroContextUsage();
+    useChatRuntimeStore.getState().setContextUsage(seededUsage);
   }
 
   try {
@@ -351,7 +357,15 @@ export async function refreshContextUsage(options?: {
       cachedTokens: 0,
       cacheWriteTokens: 0,
     });
+    counted = true;
   } catch {
     // Background recount should not interrupt chat; saved usage stays visible.
+  } finally {
+    // Only when the seed is still the value on screen: anything else means a later count or a
+    // completion already owns the bar, and clearing it there would roll back real usage.
+    if (seededUsage !== null && !counted) {
+      const store = useChatRuntimeStore.getState();
+      if (store.contextUsage === seededUsage) store.setContextUsage(null);
+    }
   }
 }
