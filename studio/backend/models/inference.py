@@ -2031,7 +2031,8 @@ class AnthropicMessage(BaseModel):
 
 
 class AnthropicTool(BaseModel):
-    # Client tools have input_schema; server tools may only have type/name.
+    # User-defined client tools have input_schema; Anthropic-schema client tools
+    # and server tools use type/name.
     type: Optional[str] = None
     name: Optional[str] = None
     description: Optional[str] = None

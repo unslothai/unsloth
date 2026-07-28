@@ -1786,6 +1786,7 @@ from models.inference import (
 )
 from core.inference.anthropic_compat import (
     anthropic_messages_to_openai,
+    anthropic_schema_client_tool_kind,
     anthropic_tools_to_openai,
     anthropic_tool_choice_to_openai,
     openai_finish_to_anthropic_stop,
@@ -13447,8 +13448,7 @@ def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
     requested: set[str] = set()
     for tool in tools or []:
         td = tool if isinstance(tool, dict) else tool.model_dump()
-        # Client tools always carry input_schema; server tools never do.
-        if td.get("input_schema") is not None:
+        if td.get("input_schema") is not None or anthropic_schema_client_tool_kind(td) is not None:
             continue
         # Anthropic dispatches server tools by `type`, not bare `name`; matching
         # name too would let a malformed client tool like `{"name": "python"}`
@@ -13541,18 +13541,21 @@ def _validate_anthropic_client_tools(tools) -> None:
     # Reject malformed client tools before any model load, so an invalid request
     # never evicts the loaded model. AnthropicTool relaxed name/input_schema to
     # Optional for server tools, so the converter silently drops incomplete
-    # entries; surface them as 400 here. A `type` field marks a server-tool
-    # declaration (unrecognized server tools are no-ops); anything else without
-    # input_schema or name is malformed.
+    # entries; surface them as 400 here. Recognized Anthropic-schema client
+    # tools use type/name without input_schema; other type declarations are
+    # server tools (unrecognized server tools remain no-ops).
     for tool in tools or []:
         td = tool if isinstance(tool, dict) else tool.model_dump()
         name, type_, schema = td.get("name"), td.get("type"), td.get("input_schema")
+        schema_client_kind = anthropic_schema_client_tool_kind(td)
         if schema is None and not isinstance(type_, str):
             raise HTTPException(
                 status_code = 400,
                 detail = f"Tool {name!r} is missing required field 'input_schema'.",
             )
-        if schema is not None and (not isinstance(name, str) or not name):
+        if (schema is not None or schema_client_kind is not None) and (
+            not isinstance(name, str) or not name
+        ):
             raise HTTPException(
                 status_code = 400,
                 detail = "Client tool is missing required field 'name'.",
@@ -13693,9 +13696,12 @@ async def anthropic_messages(
     requested_studio_tools = _anthropic_requested_studio_tools(payload.tools)
     _has_client_tool = any(
         (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
+        or anthropic_schema_client_tool_kind(t) is not None
         for t in payload.tools or []
     )
-    _explicit_server_tools = bool(requested_studio_tools) or payload.enable_tools is True
+    _explicit_server_tools = bool(requested_studio_tools) or (
+        payload.enable_tools is True and _effective_enable_tools(payload) is not False
+    )
     if _explicit_server_tools and _has_client_tool:
         raise HTTPException(
             status_code = 400,
