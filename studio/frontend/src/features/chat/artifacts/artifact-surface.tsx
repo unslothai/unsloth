@@ -30,7 +30,7 @@ import { Streamdown } from "streamdown";
 import { ArtifactHtmlFrame, type ArtifactViewMode } from "./html-frame";
 import { useChatArtifactsStore } from "./store";
 import type { ChatArtifact } from "./types";
-import { getArtifactFilename } from "./types";
+import { getArtifactFilename, hashArtifactCode } from "./types";
 
 const COPY_RESET_MS = 2000;
 const artifactSourceCodePlugin = createCodePlugin({
@@ -115,6 +115,13 @@ export function ArtifactSurface({
   const sourceMarkdown = useMemo(
     () => buildHtmlFence(artifact.code),
     [artifact.code],
+  );
+  // Streamdown never revises a block it has already committed, so remount the
+  // source view whenever the code changes. Tool artifact IDs are not derived
+  // from the code, so hash it rather than keying on the ID alone.
+  const sourceKey = useMemo(
+    () => `${artifact.id}:${hashArtifactCode(artifact.code)}`,
+    [artifact.id, artifact.code],
   );
   const hasArtifactCode = artifact.code.trim().length > 0;
   const isLoadingArtifact = Boolean(artifact.isStreaming);
@@ -338,6 +345,7 @@ export function ArtifactSurface({
         ) : (
           <div className="h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
             <Streamdown
+              key={sourceKey}
               mode="streaming"
               plugins={{ code: artifactSourceCodePlugin }}
               controls={{ code: false }}
