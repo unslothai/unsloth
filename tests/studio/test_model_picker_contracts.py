@@ -763,3 +763,20 @@ def test_monitor_overlay_does_not_pull_in_the_lazy_page():
     shared = _read("features/api-monitor/lifecycle.ts")
     assert "export function isLifecycleEntry(" in shared
     assert "export function lifecycleLabel(" in shared
+
+
+def test_override_writes_are_ordered_per_model():
+    """Two saves for one model, or a save racing the one-time backfill, started
+    independent requests with no sequencing, so the older response could commit
+    last and resurrect the entry the newer one meant to replace. An API load
+    then applies settings the user has already changed. Different models still
+    overlap, so a slow write for one cannot hold up another.
+    """
+    src = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
+    assert "const writesByKey = new Map<string, Promise<void>>();" in src
+    # Keyed by the same override key the server stores under.
+    assert "const key = modelOverrideKey(modelId, ggufVariant);" in src
+    # Chained on the settled tail, so one failed write cannot cancel the next.
+    assert "previous .catch(() => {}) .then(() => sendModelOverride(" in src
+    # Only the last writer clears the slot, or a queue still building loses order.
+    assert "if (writesByKey.get(key) === write) { writesByKey.delete(key); }" in src

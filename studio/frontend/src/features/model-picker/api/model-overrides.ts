@@ -123,7 +123,38 @@ function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   return payload;
 }
 
+// One in-flight write per model, so writes for the same model commit in the
+// order they were issued. Saving twice quickly, or saving while the one-time
+// backfill is still running, otherwise leaves two independent requests racing:
+// the older response can land last and resurrect the entry the newer one meant
+// to replace or remove, and an API load then applies settings the user has
+// already changed. Different models still overlap.
+const writesByKey = new Map<string, Promise<void>>();
+
 export async function putModelOverride(
+  modelId: string,
+  ggufVariant: string | null | undefined,
+  config: PerModelConfig | null,
+): Promise<void> {
+  const key = modelOverrideKey(modelId, ggufVariant);
+  // Chain on the settled tail: a failed write must not cancel the next one.
+  const previous = writesByKey.get(key) ?? Promise.resolve();
+  const write = previous
+    .catch(() => {})
+    .then(() => sendModelOverride(modelId, ggufVariant, config));
+  writesByKey.set(key, write);
+  try {
+    await write;
+  } finally {
+    // Only the last writer clears the slot, so a queue that is still building
+    // keeps its ordering.
+    if (writesByKey.get(key) === write) {
+      writesByKey.delete(key);
+    }
+  }
+}
+
+async function sendModelOverride(
   modelId: string,
   ggufVariant: string | null | undefined,
   config: PerModelConfig | null,
