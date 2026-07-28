@@ -212,10 +212,52 @@ _custom_studio_roots | while IFS= read -r _custom_root; do
     _remove_path "$_custom_root"
 done
 _remove_path "$HOME/.unsloth/studio"
+# Stop a detached CUDA llama.cpp build BEFORE deleting its tree: _pkill_studio only
+# matches Studio roots, and a live cmake/nvcc under ~/.unsloth/llama.cpp would recreate
+# build/ files between the rm and the rmdir. TERM first, then KILL after the same grace.
+if command -v pkill >/dev/null 2>&1; then
+    _llama_re=$(_pkill_escape "$HOME/.unsloth/llama.cpp")
+    # Signal the whole process GROUP of each match: the provisioner cds into the tree
+    # before `cmake --build build`, so cmake/make children carry relative argv no pattern
+    # matches, and killing only the wrapper orphans them. PID kill is the fallback when
+    # pgid is unreadable or shared. Never group-kill our own group: a lingering provisioner
+    # in a non-interactive session can share our pgid, and kill(-pgid) would TERM this
+    # script mid-cleanup; fall back to the PID plus its direct children then.
+    _self_pgid=$(ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]')
+    _kill_llama_build() {
+        _sig="$1"
+        for _pat in "run_llama_build\.sh" "provision_llama_cuda\.sh" "$_llama_re"; do
+            for _pid in $(pgrep -f "$_pat" 2>/dev/null); do
+                _pgid=$(ps -o pgid= -p "$_pid" 2>/dev/null | tr -d '[:space:]')
+                case "$_pgid" in
+                    ''|0|1|"$_self_pgid")
+                        pkill "-$_sig" -P "$_pid" 2>/dev/null || true
+                        kill -s "$_sig" "$_pid" 2>/dev/null || true ;;
+                    *) kill -s "$_sig" -- "-$_pgid" 2>/dev/null \
+                        || kill -s "$_sig" "$_pid" 2>/dev/null || true ;;
+                esac
+            done
+        done
+    }
+    _kill_llama_build TERM
+    sleep 0.5
+    _kill_llama_build KILL
+fi
 # Default-mode shared llama.cpp build + cache are siblings of studio (not removed
 # by deleting it). No-op in env/custom mode (they nest under the custom root) and
 # when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
 _remove_path "$HOME/.unsloth/llama.cpp"
+# WoA/Spark CUDA-build path artifacts (provision script fetched by setup.sh,
+# install.ps1's background-build runner + log, and the persisted shortcut-skip
+# marker). No-ops when absent.
+_remove_path "$HOME/.unsloth/provision_llama_cuda.sh"
+_remove_path "$HOME/.unsloth/run_llama_build.sh"
+_remove_path "$HOME/.unsloth/llama_cuda_build.log"
+_remove_path "$HOME/.unsloth/.skip-wsl-windows-shortcut"
+# Core-install completion stamp (written by setup.sh, checked by install.ps1's
+# WSL probes). Must go, or a later reinstall could read a stale success.
+_remove_path "$HOME/.unsloth/.install-ok"
+_remove_path "$HOME/.unsloth/unsloth-install.sh"
 _remove_path "$HOME/.unsloth/.cache"
 # Isolated Node.js runtime (install_node_prebuilt.py), a sibling of studio in
 # default mode. No-op in env/custom mode (nested under the custom root) and absent.
@@ -281,6 +323,7 @@ case "$_os" in
                 # receive trailing tokens as $args. WSL distro names are safe to
                 # embed (no quotes/$/backtick).
                 # shellcheck disable=SC2016
+                # $env:APPDATA/$distro are PowerShell-side; $_wsl_distro is shell-injected.
                 powershell.exe -NoProfile -Command '$distro = "'"$_wsl_distro"'";
                     $dirs = @(
                         [Environment]::GetFolderPath("Desktop"),
@@ -305,6 +348,29 @@ case "$_os" in
                             } catch { }
                         }
                     }
+                    # Remove the WoA WSL-fallback native shim/launcher dir
+                    # (%LOCALAPPDATA%\Unsloth) + its PATH entry, so a WSL-side bash uninstall
+                    # is complete. Only when THIS distro owns the fallback (wsl-distro.txt),
+                    # else uninstalling a different distro breaks the still-installed shim.
+                    $ud = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth" } else { $null };
+                    $owner = $null;
+                    if ($ud) { $of = Join-Path $ud "wsl-distro.txt"; if (Test-Path -LiteralPath $of) { $owner = (Get-Content -LiteralPath $of | Select-Object -First 1).Trim() } }
+                    if ($ud -and ((-not $owner) -or (-not $distro) -or ($owner -ieq $distro))) {
+                        $shim = (Join-Path $ud "bin").TrimEnd("\","/");
+                        $up = [Environment]::GetEnvironmentVariable("Path","User");
+                        if ($up) { [Environment]::SetEnvironmentVariable("Path", (($up -split ";" | Where-Object { $_ -and ($_.TrimEnd("\","/") -ine $shim) }) -join ";"), "User") }
+                        # WoA-fallback shortcuts target powershell.exe + launch-studio-wsl.ps1
+                        # (not wsl.exe), so the sweep above keeps them; remove them here
+                        # before their launcher dir is deleted or they would dangle.
+                        foreach ($d in $dirs) {
+                            if (-not $d -or -not (Test-Path -LiteralPath $d)) { continue }
+                            $l = Join-Path $d "Unsloth Studio.lnk";
+                            if (Test-Path -LiteralPath $l) {
+                                try { $sc2 = $ws.CreateShortcut($l); if ($sc2.Arguments -match "launch-studio-wsl\.ps1") { Remove-Item -LiteralPath $l -Force -ErrorAction SilentlyContinue } } catch { }
+                            }
+                        }
+                        if (Test-Path -LiteralPath $ud) { Remove-Item -LiteralPath $ud -Recurse -Force -ErrorAction SilentlyContinue }
+                    }
                     # Keep the shared icon while any Unsloth shortcut still uses it (native
                     # install or another WSL distro); drop it only with the last one.
                     $iconInUse = $false;
@@ -319,6 +385,15 @@ case "$_os" in
                         $ico = Join-Path $iconDir "unsloth.ico";
                         if ((-not $iconInUse) -and (Test-Path -LiteralPath $ico)) { Remove-Item -LiteralPath $ico -Force -ErrorAction SilentlyContinue }
                         if ((Test-Path -LiteralPath $iconDir) -and -not (Get-ChildItem -LiteralPath $iconDir -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $iconDir -Recurse -Force -ErrorAction SilentlyContinue }
+                    }
+                    # install.sh also writes the WSL shortcut icon to the Windows profile
+                    # (%USERPROFILE%\.unsloth\unsloth.ico) since the WoA icon broker cannot
+                    # read AppData\Local; clean it the same way.
+                    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+                        $pIconDir = Join-Path $env:USERPROFILE ".unsloth";
+                        $pIco = Join-Path $pIconDir "unsloth.ico";
+                        if ((-not $iconInUse) -and (Test-Path -LiteralPath $pIco)) { Remove-Item -LiteralPath $pIco -Force -ErrorAction SilentlyContinue }
+                        if ((Test-Path -LiteralPath $pIconDir) -and -not (Get-ChildItem -LiteralPath $pIconDir -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $pIconDir -Recurse -Force -ErrorAction SilentlyContinue }
                     }' >/dev/null 2>&1 || true
             fi
             # Remove $1's shared unsloth.ico only if no Unsloth shortcut (native install
@@ -342,6 +417,10 @@ case "$_os" in
                 done
                 if [ "$_icon_in_use" = "0" ]; then
                     [ -f "$_icodir/unsloth.ico" ] && rm -f "$_icodir/unsloth.ico" 2>/dev/null || true
+                    # install.sh also writes the icon to the Windows profile
+                    # (%USERPROFILE%\.unsloth) for the WoA icon broker.
+                    [ -f "$_du/.unsloth/unsloth.ico" ] && rm -f "$_du/.unsloth/unsloth.ico" 2>/dev/null || true
+                    [ -d "$_du/.unsloth" ] && rmdir "$_du/.unsloth" 2>/dev/null || true
                 fi
                 [ -d "$_icodir" ] && rmdir "$_icodir" 2>/dev/null || true
             }

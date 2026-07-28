@@ -265,10 +265,13 @@ class TestSetupShHardening:
         assert wrapped, "compute_cap probe must be wrapped in _setup_run_smi (timeout-bounded)"
 
     def test_driver_version_probe_timeout_wrapped(self, setup_src):
+        # The probe resolves nvidia-smi explicitly (root WSL shells drop /usr/lib/wsl/lib
+        # from PATH) and must still go through the timeout wrapper with the resolved path.
         start = setup_src.find("_cuda_driver_max_version()")
         end = setup_src.find("\n}", start)
         body = setup_src[start:end]
-        assert "_setup_run_smi nvidia-smi" in body
+        assert "_resolve_nvsmi" in body
+        assert '_setup_run_smi "$_cdm_smi"' in body
 
 
 # TEST: install.sh -- UNSLOTH_TORCH_BACKEND classified on the final path segment
@@ -457,7 +460,12 @@ class TestHiddenCvdNotUsable:
         out = self._run_sh_helper(
             tmp_path,
             src,
-            ["_setup_run_smi", "_setup_cvd_hides_nvidia", "_setup_has_usable_nvidia_gpu"],
+            [
+                "_resolve_nvsmi",
+                "_setup_run_smi",
+                "_setup_cvd_hides_nvidia",
+                "_setup_has_usable_nvidia_gpu",
+            ],
             cvd,
         )
         assert out == expected

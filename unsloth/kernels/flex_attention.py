@@ -25,6 +25,52 @@ torch_compile_options = {
     "triton.cudagraphs": False,
 }
 
+
+def _flex_is_dgx_spark():
+    # CUDA-free copy of _utils._is_dgx_spark_no_cuda_init() (avoids circular import).
+    # Runs at module import, before ._utils -- touching torch.cuda here would init
+    # the allocator before patch_dgx_spark_memory_config() sets PYTORCH_CUDA_ALLOC_CONF.
+    _force = os.environ.get("UNSLOTH_FORCE_DGX_SPARK")
+    if _force == "1":
+        return True
+    if _force == "0":
+        return False
+    try:
+        import platform
+
+        if platform.machine().lower() not in ("aarch64", "arm64"):
+            return False
+        import subprocess
+        import shutil
+
+        # The WoA shim execs the venv binary directly (no login shell), where
+        # /usr/lib/wsl/lib can be off PATH -- resolve WSL's nvidia-smi explicitly
+        # (mirrors _is_dgx_spark_no_cuda_init in models/_utils.py).
+        _smi = "nvidia-smi"
+        if shutil.which(_smi) is None and os.path.exists("/usr/lib/wsl/lib/nvidia-smi"):
+            _smi = "/usr/lib/wsl/lib/nvidia-smi"
+        out = subprocess.run(
+            [_smi, "--query-gpu=name", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+        )
+        names = (out.stdout or "").upper()
+        # Whole-token match so "GB10" doesn't match discrete "GB100"/"GB10X".
+        import re
+
+        return any(
+            re.search(r"(?<![A-Z0-9])" + re.escape(t) + r"(?![A-Z0-9])", names)
+            for t in ("GB10", "JMJWOA", "N1X", "DGX SPARK", "GB110")
+        )
+    except Exception:
+        return False
+
+
+# Spark's 48 SMs are under inductor's 68-SM is_big_gpu bar; max_autotune just wastes search time.
+if _flex_is_dgx_spark():
+    torch_compile_options["max_autotune"] = False
+
 # Flex Attention supported from torch 2.5 onwards only
 try:
     from torch.nn.attention.flex_attention import (
