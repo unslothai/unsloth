@@ -24,7 +24,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { isLifecycleEntry, lifecycleLabel } from "./api-monitor-page";
+import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
 import { useApiMonitorOverlayStore } from "./overlay-store";
 import { computeStats } from "./use-api-monitor";
 

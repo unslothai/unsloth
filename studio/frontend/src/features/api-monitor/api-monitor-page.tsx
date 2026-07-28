@@ -41,6 +41,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
+import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
 import {
   type MonitorStatusFilter,
   filterEntries,
@@ -84,40 +85,6 @@ function compactEndpoint(endpoint: string): string {
   return endpoint
     .replace(API_INFERENCE_PREFIX_RE, "/api")
     .replace(V1_PREFIX_RE, "/");
-}
-
-// A lifecycle row is a model load/unload/download, not an HTTP call: it carries
-// an event and reason instead of a prompt, so there is no payload to expand.
-export function isLifecycleEntry(entry: ApiMonitorEntry): boolean {
-  return entry.kind === "lifecycle";
-}
-
-export function lifecycleLabel(entry: ApiMonitorEntry): string {
-  if (entry.event === "unload") {
-    return entry.reason === "idle" ? "Model unloaded (idle)" : "Model unloaded";
-  }
-  if (entry.event === "download") {
-    if (entry.status === "running") {
-      const pct = entry.progress;
-      return typeof pct === "number"
-        ? `Downloading model (${Math.round(pct)}%)`
-        : "Downloading model";
-    }
-    if (entry.status === "completed") {
-      return "Model downloaded";
-    }
-    // A cancel is deliberate, so saying it failed misreads the user's own action.
-    return entry.status === "cancelled"
-      ? "Model download cancelled"
-      : "Model download failed";
-  }
-  if (entry.status === "running") {
-    return "Loading model";
-  }
-  if (entry.status === "completed") {
-    return "Model loaded";
-  }
-  return "Model load failed";
 }
 
 function statusDotClass(status: ApiMonitorEntry["status"]): string {

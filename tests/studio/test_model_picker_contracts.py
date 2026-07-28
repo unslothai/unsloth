@@ -746,3 +746,20 @@ def test_backfill_includes_a_standalone_gguf_with_no_variant():
     assert 'entry.modelId.toLowerCase().endsWith(".gguf")' in src
     # Still excluded for safetensors, which auto-switch does not resolve.
     assert "entry.ggufVariant != null ||" in src
+
+
+def test_monitor_overlay_does_not_pull_in_the_lazy_page():
+    """The overlay is mounted from __root.tsx, so a static import of the page
+    for two label helpers drags the whole 900-line page and its dependency
+    graph into the eagerly loaded bundle and undoes the route's
+    lazyRouteComponent. Measured: the async api-monitor chunk was 0.20 kB with
+    the page in the main bundle, and 18.83 kB after the helpers moved, with the
+    main bundle 18 kB smaller.
+    """
+    overlay = _read("features/api-monitor/api-monitor-overlay.tsx")
+    assert 'from "./lifecycle"' in overlay
+    assert "api-monitor-page" not in overlay, "the overlay must not reach the page"
+    # The helpers live in their own module, not re-exported through the page.
+    shared = _read("features/api-monitor/lifecycle.ts")
+    assert "export function isLifecycleEntry(" in shared
+    assert "export function lifecycleLabel(" in shared
