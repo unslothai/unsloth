@@ -1038,7 +1038,9 @@ class TestBashBlocklistPosition:
         # so it is not a program that was read: with a file named
         # `1e rm -f victim`, `printf 'input' | find '1e rm -f victim' -exec
         # xargs sed {} +` really runs rm.
-        assert "sed" in self._find()("printf 'input\\n' | find '1e rm -f victim' -exec xargs sed {} +")
+        assert "sed" in self._find()(
+            "printf 'input\\n' | find '1e rm -f victim' -exec xargs sed {} +"
+        )
         assert "sed" in self._find()("find . -exec sed {} +")
         # A `{}` among the FILE operands is the ordinary idiom and is untouched.
         assert self._find()("find . -exec sed -n '1,3p' {} +") == set()
