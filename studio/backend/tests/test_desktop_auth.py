@@ -368,18 +368,31 @@ def test_reset_password_removes_desktop_secret_files(tmp_path, monkeypatch):
     from unsloth_cli.commands import studio as studio_cli
 
     auth_dir = tmp_path / "auth"
-    auth_dir.mkdir()
-    (auth_dir / "auth.db").write_text("db")
-    (auth_dir / ".bootstrap_password").write_text("boot")
-    (auth_dir / ".desktop_secret").write_text("new")
     monkeypatch.setattr(studio_cli, "STUDIO_HOME", tmp_path)
+    secret = studio_cli._create_desktop_secret_in_cli()
+    studio_cli._write_auth_secret(auth_dir / studio_cli.DESKTOP_SECRET_FILE, secret)
+    (auth_dir / studio_cli.BOOTSTRAP_PASSWORD_FILE).write_text("boot")
 
     result = CliRunner().invoke(studio_cli.studio_app, ["reset-password"])
 
-    assert result.exit_code == 0
-    assert not (auth_dir / "auth.db").exists()
-    assert not (auth_dir / ".bootstrap_password").exists()
-    assert not (auth_dir / ".desktop_secret").exists()
+    assert result.exit_code == 0, result.output
+    # The DB survives on purpose: a running server keeps serving from its admin row.
+    assert (auth_dir / "auth.db").exists()
+    assert not (auth_dir / studio_cli.BOOTSTRAP_PASSWORD_FILE).exists()
+    assert not (auth_dir / studio_cli.DESKTOP_SECRET_FILE).exists()
+
+    conn = studio_cli._connect_auth_db()
+    try:
+        surviving = conn.execute(
+            "SELECT COUNT(*) FROM app_secrets WHERE key IN (?, ?)",
+            (
+                studio_cli.DESKTOP_SECRET_HASH_KEY,
+                studio_cli.DESKTOP_SECRET_CREATED_AT_KEY,
+            ),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert surviving == 0
 
 
 def test_reset_password_removes_desktop_secret_files_without_db(tmp_path, monkeypatch):

@@ -1058,8 +1058,7 @@ def _printed_password(result):
 
 
 def test_reset_password_rotates_in_place_without_deleting_the_db(monkeypatch, tmp_path):
-    # The DB file survives, so a running server keeps its admin row and serves the
-    # new password on its next request -- no restart, no window with no admin.
+    # The DB survives, so a running server keeps its admin row and the new password.
     studio_mod = _studio()
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
     _seed_auth(studio_mod)
@@ -1077,8 +1076,7 @@ def test_reset_password_rotates_in_place_without_deleting_the_db(monkeypatch, tm
 
 
 def test_reset_password_waits_out_a_concurrent_writer(monkeypatch, tmp_path):
-    # Rotating in place means the CLI now writes while the server does. SQLite's
-    # default lock wait is zero, so without a busy_timeout this fails outright.
+    # The CLI now writes while the server does; without a busy_timeout this fails.
     import threading
     import time
 
@@ -1111,8 +1109,7 @@ def test_reset_password_waits_out_a_concurrent_writer(monkeypatch, tmp_path):
 
 
 def test_reset_password_revokes_sessions_and_api_keys(monkeypatch, tmp_path):
-    # Deleting auth.db used to drop these implicitly; an in-place reset must still
-    # revoke what the old credential could have minted.
+    # Deleting auth.db used to drop these implicitly.
     studio_mod = _studio()
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
     _seed_auth(studio_mod)
@@ -1136,9 +1133,8 @@ def test_reset_password_revokes_sessions_and_api_keys(monkeypatch, tmp_path):
 
 
 def test_reset_password_leaves_the_account_ready_to_log_in(monkeypatch, tmp_path):
-    # must_change_password stays 0 on purpose: a running server injects its
-    # startup-cached bootstrap password whenever the flag is 1, which would hide the
-    # change-password form's "current password" field and strand the user.
+    # must_change_password stays 0 on purpose: at 1 a running server injects its
+    # startup-cached (now wrong) bootstrap password into the login page.
     studio_mod = _studio()
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
     _seed_auth(studio_mod)
@@ -1159,12 +1155,50 @@ def test_reset_password_seeds_the_admin_when_no_db_exists(monkeypatch, tmp_path)
     assert _password_works(studio_mod, _printed_password(result))
 
 
+def test_reset_password_reports_an_unwritable_auth_dir(monkeypatch, tmp_path):
+    # _connect_auth_db creates auth/ before it opens SQLite, so a read-only Unsloth
+    # home raises OSError, not sqlite3.Error.
+    import pathlib
+
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+
+    def _boom_mkdir(self, *a, **k):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(pathlib.Path, "mkdir", _boom_mkdir)
+
+    result = _reset_password_cli(studio_mod)
+
+    assert result.exit_code == 1, result.output
+    assert not isinstance(result.exception, OSError)
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "could not open the auth database" in combined.lower()
+
+
+def test_reset_password_reports_an_unreadable_db(monkeypatch, tmp_path):
+    # Deleting a corrupt DB here would revive the bug: a running server would be
+    # left with no admin row, rejecting the correct password until restarted.
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    auth_dir = tmp_path / "auth"
+    auth_dir.mkdir()
+    (auth_dir / "auth.db").write_text("not a database")
+
+    result = _reset_password_cli(studio_mod)
+
+    assert result.exit_code == 1, result.output
+    assert (auth_dir / "auth.db").exists()
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "could not open the auth database" in combined.lower()
+
+
 def test_cli_update_password_truncates_locked_bootstrap_after_change(monkeypatch, tmp_path):
     # After a CLI/interactive password change the seeded .bootstrap_password is
     # deleted. If it cannot be unlinked but is still writable (locked file /
     # read-only dir), it must be TRUNCATED so its stale plaintext cannot be
-    # re-seeded by generate_bootstrap_password() after a later reset-password
-    # deletes auth.db. The change is already committed, so it must NOT roll back.
+    # re-seeded by generate_bootstrap_password() if auth.db is ever recreated. The
+    # change is already committed, so it must NOT roll back.
     import pathlib
 
     studio_mod = _studio()

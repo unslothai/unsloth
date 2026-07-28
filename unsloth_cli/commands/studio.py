@@ -502,8 +502,7 @@ def _connect_auth_db() -> sqlite3.Connection:
     auth_dir = STUDIO_HOME / "auth"
     auth_dir.mkdir(parents = True, exist_ok = True)
     conn = sqlite3.connect(auth_dir / "auth.db")
-    # A live server writes this DB (refresh tokens, api-key usage) while the CLI
-    # runs, and SQLite's default lock wait is zero. Match backend get_connection.
+    # A live server writes this DB while the CLI runs; the default lock wait is zero.
     conn.execute("PRAGMA busy_timeout=5000")
     # Mirror backend storage.get_connection: this path can create auth/ and
     # auth.db (the pre-exposure gate writes here first), and sqlite3.connect
@@ -723,9 +722,8 @@ def _cli_update_password(
 
     One transaction: rehash, rotate the JWT secret, clear must_change_password,
     revoke refresh tokens (PR #6651 finding), drop the desktop secret, and (for a
-    reset) the API keys the old credential could have minted -- a separate delete
-    could commit and then leave the password unchanged. File cleanup happens after
-    commit; a failed unlink must not roll the change back.
+    reset) the API keys the old credential could have minted. File cleanup happens
+    after commit; a failed unlink must not roll the change back.
     """
     password_salt, password_hash = _hash_password(new_password)
     with conn:
@@ -2913,29 +2911,27 @@ def provision_desktop_auth():
 def reset_password():
     """Reset the Unsloth admin password.
 
-    Rotates the credential in place, so a running server authenticates with the
-    new password on its next request -- no restart, and no window in which the
-    correct password is rejected.
+    Rotates the credential in place: a running Unsloth accepts the new password on
+    its next request, so there is nothing to restart.
     """
     new_password = _generate_reset_password()
     try:
         conn = _connect_auth_db()
-    except sqlite3.Error as exc:
+    except (OSError, sqlite3.Error) as exc:
         typer.echo(
-            f"Error: could not open the auth database ({exc}). Stop Unsloth, delete "
-            f"{STUDIO_HOME / 'auth' / 'auth.db'}, and start it again to re-seed.",
+            f"Error: could not open the auth database ({exc}). Check that "
+            f"{STUDIO_HOME / 'auth'} is writable; if auth.db itself is unreadable, stop "
+            "Unsloth, delete it, and start again to re-seed.",
             err = True,
         )
         raise typer.Exit(1)
 
     try:
         _ensure_cli_default_admin(conn)
-        # Rehashes, rotates the JWT secret, revokes refresh tokens and API keys,
-        # drops the desktop secret, and clears the seeded plaintext files.
         _cli_update_password(
             conn, DEFAULT_ADMIN_USERNAME, new_password, revoke_api_keys = True
         )
-    except sqlite3.Error as exc:
+    except (OSError, sqlite3.Error) as exc:
         typer.echo(f"Error: could not reset the password ({exc}).", err = True)
         raise typer.Exit(1)
     finally:
