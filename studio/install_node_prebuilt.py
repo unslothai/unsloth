@@ -715,11 +715,11 @@ def _replace_with_retry(
 ) -> None:
     """os.replace, retried against transient Windows sharing violations.
 
-    A Windows directory rename fails with WinError 5/32 while any process holds a handle
-    inside it, and Defender or the indexer routinely does after ~50MB of fresh extraction
-    (seen in CI on a FRESH install, with no existing directory to conflict with). Handles
-    clear in a second or two, so a bounded backoff turns a failure into a pause. Other
-    errors raise immediately rather than stalling on a real problem.
+    A directory rename fails with WinError 5/32 while any process holds a handle inside
+    it, and Defender or the indexer routinely does right after extraction (seen in CI on
+    a fresh install, with no existing directory to conflict with). Handles clear in a
+    second or two, so a bounded backoff turns the failure into a pause; other errors
+    raise immediately rather than stalling on a real problem.
     """
     delay = 0.25
     for attempt in range(attempts):

@@ -57,16 +57,13 @@ function Install-UnslothStudio {
         }
     }
 
-    # The MACHINE architecture, unlike Get-TauriDiagArch above, which reports the
-    # current process. An emulated x64 PowerShell on an ARM64 box sets
-    # PROCESSOR_ARCHITECTURE=AMD64, and .NET Framework (PowerShell 5.1) reports
-    # OSArchitecture=X64 there too, so neither alone is enough. PROCESSOR_ARCHITEW6432
-    # is set to ARM64 in exactly that case, hence three signals with ARM64 winning.
+    # The MACHINE architecture; Get-TauriDiagArch above reports the current process.
+    # An emulated x64 PowerShell on an ARM64 box reports AMD64 (and PS 5.1 reports
+    # OSArchitecture=X64), but PROCESSOR_ARCHITEW6432 says ARM64 in exactly that case,
+    # so any signal reporting ARM64 settles it.
     function Get-HostMachineArch {
         $osArch = ""
         try { $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() } catch { $osArch = "" }
-        # Any signal reporting ARM64 settles it: each is authoritative when set,
-        # and none of them reports ARM64 on a machine that is not ARM64.
         $signals = @([string]$env:PROCESSOR_ARCHITEW6432, [string]$env:PROCESSOR_ARCHITECTURE, $osArch)
         foreach ($s in $signals) {
             if ($s.ToLowerInvariant() -eq "arm64") { return "arm64" }
@@ -1149,9 +1146,8 @@ exit 0
         return $false
     }
 
-    # A candidate interpreter's own architecture, asked of the interpreter rather
-    # than inferred from its path. Same probe as studio/setup.ps1. Returns
-    # "win-amd64", "win-arm64", "win32" or "" if the interpreter cannot answer.
+    # A candidate interpreter's own architecture, asked of the interpreter rather than
+    # inferred from its path. Returns "win-amd64", "win-arm64", "win32" or "".
     function Get-PythonPlatformTag {
         param([string]$Exe)
         try {
@@ -1163,13 +1159,11 @@ exit 0
     # The resolved Path is passed to `uv venv --python` to prevent uv from
     # re-resolving the version string back to a conda interpreter.
     function Find-CompatiblePython {
-        # On Windows on ARM, prefer an x64 interpreter. pyarrow (pulled in by
-        # unsloth -> datasets) and hf-transfer (a direct dependency) have never
-        # published a win_arm64 wheel, so a native ARM64 Python falls back to
-        # building both from source and dies on CMake / Rust minutes in. x64
-        # wheels run fine under the OS emulator. Preference only: an ARM64
-        # interpreter is still returned if it is all there is, and the caller
-        # then bootstraps x64 or warns.
+        # Windows on ARM: prefer an x64 interpreter. pyarrow (via datasets) and
+        # hf-transfer have never published a win_arm64 wheel, so a native ARM64 Python
+        # source-builds both and dies on CMake / Rust minutes in; x64 wheels run fine
+        # under emulation. Preference only: an ARM64 interpreter is still returned when
+        # it is all there is, and the caller then bootstraps x64 or warns.
         $preferX64 = ((Get-HostMachineArch) -eq "arm64")
         $candidates = @()
         # Try the Python Launcher first (most reliable on Windows)
@@ -1217,8 +1211,8 @@ exit 0
                 } catch {}
             }
         }
-        # ARM64 host only: rank the candidates, x64 first. Probing costs one
-        # subprocess per candidate, so non-ARM hosts returned above untouched.
+        # ARM64 host only: rank candidates x64 first. Probing costs a subprocess each,
+        # so non-ARM hosts already returned above.
         foreach ($c in $candidates) {
             $tag = Get-PythonPlatformTag $c.Path
             $c.Arch = if ($tag -eq "win-amd64") { "x86_64" } elseif ($tag -eq "win-arm64") { "arm64" } else { "unknown" }
@@ -1306,9 +1300,8 @@ exit 0
     }
 
     # ── Windows on ARM: get an x64 CPython ──
-    # winget first (--architecture x64 forces the x64 installer over the ARM64 one
-    # winget would otherwise pick), then the python.org fallback with the same
-    # override. Returns an x64 @{ Version; Path } or $null.
+    # --architecture x64 forces the x64 installer over the ARM64 one winget would
+    # otherwise pick; python.org fallback takes the same override.
     function Install-X64Python {
         if ($script:WingetAvailable) {
             $prevEAP = $ErrorActionPreference
@@ -1399,9 +1392,9 @@ exit 0
         }
     }
     # ── Windows on ARM: swap a native ARM64 interpreter for x64 ──
-    # Neither pyarrow nor hf-transfer has ever published a win_arm64 wheel, so an
-    # ARM64 Python source-builds both and fails on CMake / Rust well into the run.
-    # If x64 cannot be obtained, say so up front rather than dying minutes later.
+    # Neither pyarrow nor hf-transfer publishes a win_arm64 wheel, so an ARM64 Python
+    # source-builds both and fails on CMake / Rust well into the run. If x64 cannot be
+    # obtained, say so up front rather than dying minutes later.
     if ($DetectedPython -and (Get-HostMachineArch) -eq "arm64" -and $DetectedPython.Arch -ne "x86_64") {
         substep "windows on arm: only a native ARM64 Python $($DetectedPython.Version) was found." "Yellow"
         substep "pyarrow and hf-transfer publish no win_arm64 wheels, so installing x64 Python..." "Yellow"
@@ -2540,12 +2533,9 @@ exit 0
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
             # Windows on ARM lacks only torchaudio (whl/cpu win_arm64 wheels: torch 42,
-            # torchvision 60, torchaudio 0), so drop that one pin instead of aborting.
-            # Ask the interpreter uv resolves for, not PROCESSOR_ARCHITECTURE: an x64
-            # CPython under emulation gets working win_amd64 wheels on an ARM64 box.
-            # Not dead code under the x64 preference above: that preference can fall
-            # back to ARM64 when no x64 interpreter can be installed, and this is
-            # then still the branch that keeps torch and torchvision installable.
+            # torchvision 60, torchaudio 0), so drop that pin instead of aborting. Ask
+            # the interpreter, not PROCESSOR_ARCHITECTURE. Still reachable under the x64
+            # preference above, which falls back to ARM64 when no x64 Python exists.
             $VenvPlatform = ""
             try {
                 $VenvPlatform = (& $VenvPython -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()

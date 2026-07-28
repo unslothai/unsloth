@@ -869,12 +869,24 @@ function Ensure-BuildToolsForLlamaSourceBuild {
     }
 }
 
-# Detect the VC++ 2015-2022 Redistributable that the prebuilt llama-server and
-# PyTorch need (they link VCRUNTIME140_1.dll etc., which the Universal CRT lacks).
-# Signal is System32\vcruntime140_1.dll (VS 2019+), registry as fallback.
+# The MACHINE architecture. $env:PROCESSOR_ARCHITECTURE describes this PROCESS, and an
+# emulated x64 shell on an ARM64 box reports AMD64; PROCESSOR_ARCHITEW6432 is set to
+# ARM64 in exactly that case. Any signal saying arm64 settles it.
+function Get-HostMachineArch {
+    $osArch = ""
+    try { $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() } catch { }
+    foreach ($s in @([string]$env:PROCESSOR_ARCHITEW6432, [string]$env:PROCESSOR_ARCHITECTURE, $osArch)) {
+        if ($s.ToLowerInvariant() -eq "arm64") { return "arm64" }
+    }
+    return "other"
+}
+
+# Detect the VC++ 2015-2022 Redistributable that the prebuilt llama-server and PyTorch
+# need (they link VCRUNTIME140_1.dll, which the Universal CRT lacks). Registry first:
+# Runtimes\{x86|x64|arm64} is per architecture, so the x64 subkey is the only x64-specific
+# proof. System32\vcruntime140_1.dll is arch-blind and on ARM64 may be the pure-ARM64
+# package, unloadable by an emulated x64 process, so accept it on x64 hosts only.
 function Test-VCRedistInstalled {
-    $sys = $env:SystemRoot
-    if ($sys -and (Test-Path (Join-Path $sys 'System32\vcruntime140_1.dll'))) { return $true }
     foreach ($k in @(
         'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64',
         'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
@@ -884,13 +896,15 @@ function Test-VCRedistInstalled {
             if ($r.Installed -eq 1 -and [int]$r.Major -ge 14 -and [int]$r.Minor -ge 20) { return $true }
         } catch { }
     }
+    if ((Get-HostMachineArch) -eq "arm64") { return $false }
+    $sys = $env:SystemRoot
+    if ($sys -and (Test-Path (Join-Path $sys 'System32\vcruntime140_1.dll'))) { return $true }
     return $false
 }
 
-# Install the VC++ 2015-2022 runtime if missing (non-fatal; usually a no-op). A runtime,
-# not the MSVC compiler: torch fails to import without VCRUNTIME140.dll, so unlike CMake
-# and VS Build Tools it must really be present. winget is absent on LTSC/Server/managed
-# images, where this silently did nothing, hence the direct-download fallback.
+# Install the VC++ 2015-2022 runtime if missing (non-fatal; usually a no-op). Unlike
+# CMake and VS Build Tools this is a runtime torch cannot import without, and winget is
+# absent on LTSC/Server/managed images, hence the direct-download fallback.
 function Ensure-VCRedist {
     if (Test-VCRedistInstalled) { step "vcredist" "present"; return }
     Write-Host "Microsoft Visual C++ Redistributable (2015-2022) is missing; the prebuilt llama.cpp and PyTorch need it. Installing the runtime..." -ForegroundColor Yellow
@@ -901,24 +915,15 @@ function Ensure-VCRedist {
         } catch { substep "VCRedist install failed: $($_.Exception.Message)" "Yellow" }
     }
     if (-not (Test-VCRedistInstalled)) {
-        # Evergreen link for the current 2015-2022 runtime; /quiet /norestart so it
-        # never blocks or reboots an unattended install.
-        # Always the x64 package, deliberately. Microsoft ships it as an Arm64X
-        # superset: "The X64 Redistributable package contains both ARM64 and X64
-        # binaries. This package makes it easy to install required Visual C++ ARM64
-        # binaries when the X64 Redistributable is installed on an ARM64 device."
-        # (learn.microsoft.com/cpp/windows/latest-supported-vc-redist). The arm64
-        # package carries ARM64 only. Branching on PROCESSOR_ARCHITECTURE was the
-        # wrong signal twice over: it reports the architecture of THIS PowerShell
-        # process rather than the machine, and the runtime has to match the
-        # interpreter that ends up loading the DLLs, not the shell. Find-CompatiblePython
-        # (install.ps1) accepts an interpreter on version and non-Conda status alone,
-        # with no architecture predicate, so a native ARM64 shell can legitimately
-        # settle on an emulated x64 Python, whose win_amd64 torch and llama-server
-        # then need the x64 runtime. This function also runs at line 1727, long
-        # before the venv exists, so the interpreter cannot be probed here at all.
-        # The x64 package covers both outcomes, and the winget branch above already
-        # installs Microsoft.VCRedist.2015+.x64 unconditionally.
+        # Evergreen link; /quiet /norestart so it never blocks or reboots an unattended
+        # install. Always the x64 package, deliberately: Microsoft ships it as the Arm64X
+        # superset that "contains both ARM64 and X64 binaries" and documents it as the
+        # one to install on an ARM64 device, while the arm64 package carries ARM64 only
+        # (learn.microsoft.com/cpp/windows/latest-supported-vc-redist). Branching on
+        # PROCESSOR_ARCHITECTURE was wrong twice over: it reports this process rather
+        # than the machine, and the runtime must match the interpreter that loads the
+        # DLLs, which may be an emulated x64 Python and cannot be probed here anyway
+        # because this runs long before the venv exists.
         $url = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
         $dst = Join-Path ([System.IO.Path]::GetTempPath()) "vc_redist.x64.exe"
         substep "winget unavailable or failed; downloading the runtime directly..."
@@ -1696,17 +1701,18 @@ if ($LongPathsEnabled) {
 # and the frontend lockfile has no VCS deps. That blocked clean no-winget Windows boxes.
 $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 if (-not $HasGit) {
-    # Fatal only where git is actually used: --local, and the llama.cpp source build,
-    # which git clones in Phase 4 after the multi-GB toolchain is already installed. A
-    # local llama.cpp dir overrides those opt-ins; the automatic source fallback after a
-    # failed prebuilt download is not knowable here, so it stays non-fatal.
+    # Fatal only where git is actually used: --local, and the opt-in llama.cpp source
+    # build. A local llama.cpp dir overrides those opt-ins, and the automatic fallback
+    # after a failed prebuilt download is not knowable here, so Phase 4 handles it.
     $gitNeeded = ($env:STUDIO_LOCAL_INSTALL -eq '1')
     if (-not $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR) {
-        $_prForce = if ($env:UNSLOTH_LLAMA_PR_FORCE) { $env:UNSLOTH_LLAMA_PR_FORCE } else { $DefaultLlamaPrForce }
+        $_prForce = if ($env:UNSLOTH_LLAMA_PR_FORCE) { $env:UNSLOTH_LLAMA_PR_FORCE.Trim() } else { $DefaultLlamaPrForce }
         $_llamaSrc = $DefaultLlamaSource -replace '\.git$', ''
         if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq '1') { $gitNeeded = $true }
         if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_LLAMA_PR)) { $gitNeeded = $true }
-        if (-not [string]::IsNullOrWhiteSpace($_prForce)) { $gitNeeded = $true }
+        # Same positive-integer predicate as the PR_FORCE promotion below: 0 or a
+        # non-numeric value never forces a source build, so it must not demand git.
+        if ($_prForce -match '^\d+$' -and [int]$_prForce -gt 0) { $gitNeeded = $true }
         if ($_llamaSrc -ne "https://github.com/ggml-org/llama.cpp") { $gitNeeded = $true }
     }
     Write-Host "Git not found -- attempting install via winget..." -ForegroundColor Yellow
@@ -3292,8 +3298,7 @@ if ($ROCmIndexUrl) {
     if ($ROCmTorchSpec -ne "torch") {
         substep "  enforcing $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec (known _grouped_mm bug in older wheels)" "Cyan"
     }
-    # Every trio here is built above the verbose branch: a splat assigned inside it is
-    # unset on the other path.
+    # Built above the verbose branch: a splat assigned inside it is unset on the other.
     $_rocmTrio = @($ROCmTorchSpec, $ROCmVisionSpec, $ROCmAudioSpec)
     if ($WinArm64NoAudio) { $_rocmTrio = @($ROCmTorchSpec, $ROCmVisionSpec) }
     if ($script:UnslothVerbose) {
@@ -3371,8 +3376,8 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
         $cudaVisionSpec = "torchvision>=0.19,<0.26.0"
         $cudaAudioSpec = "torchaudio>=2.4,<2.11.0"
     }
-    # A custom pin whose leaf is not cpu (a corporate /simple mirror) lands an ARM64 host
-    # here, so this branch drops torchaudio too.
+    # A custom pin whose leaf is not cpu (a corporate /simple mirror) lands an ARM64
+    # host here, so this branch drops torchaudio too.
     $_cudaTrio = @($cudaTorchSpec, $cudaVisionSpec, $cudaAudioSpec)
     if ($WinArm64NoAudio) { $_cudaTrio = @($cudaTorchSpec, $cudaVisionSpec) }
     if ($script:UnslothVerbose) {
@@ -4066,6 +4071,7 @@ $BuildDir = Join-Path $LlamaCppDir "build"
 $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
 
 $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
+$HasGitForBuild = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 
 # Check if existing llama-server matches current GPU mode. A CUDA-built binary
 # on a now-CPU-only machine (or vice versa) needs to be rebuilt.
@@ -4094,6 +4100,19 @@ if ($WillBuildLlamaFromSource) {
     Ensure-BuildToolsForLlamaSourceBuild
     # refresh so the chain below sees a newly installed cmake
     $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
+    if (-not $HasGitForBuild) {
+        # Phase 1 keeps git optional for consumers, so only the automatic fallback after
+        # a failed prebuilt download arrives here without it. Last chance to install:
+        # Invoke-SetupCommand returns 0 for a command-not-found, so a git-less clone
+        # below would sail on and misreport as a cmake configure failure.
+        if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
+            try {
+                Invoke-SetupCommand { winget install Git.Git --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
+                Refresh-Environment
+            } catch { }
+        }
+        $HasGitForBuild = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
+    }
 }
 
 if ($LocalLlamaCppLinked) {
@@ -4122,6 +4141,15 @@ if ($LocalLlamaCppLinked) {
     step "llama.cpp" "build skipped (cmake not available)" "Yellow"
     substep "GGUF inference and export will not be available." "Yellow"
     substep "Install CMake from https://cmake.org/download/ and re-run setup." "Yellow"
+    $script:LlamaCppDegraded = $true
+} elseif (-not $HasGitForBuild) {
+    # Degrade like the cmake branch rather than abort: the opt-in source triggers
+    # already required git in Phase 1, so only the automatic fallback lands here.
+    Write-Host ""
+    step "llama.cpp" "build skipped (git not available)" "Yellow"
+    substep "The prebuilt download failed and a source build clones llama.cpp." "Yellow"
+    substep "GGUF inference and export will not be available." "Yellow"
+    substep "Install Git from https://git-scm.com/download/win and re-run setup." "Yellow"
     $script:LlamaCppDegraded = $true
 } else {
     # Finalize the VS generator (gate/fallback below) BEFORE Resolve-CudaToolkit,
