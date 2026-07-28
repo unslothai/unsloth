@@ -433,7 +433,9 @@ def _looks_like_separator(token: str) -> bool:
 
 
 def _redirection_span(
-    tokens: "list[str]", index: int, quoted: "frozenset[int]" = frozenset()
+    tokens: "list[str]",
+    index: int,
+    quoted: "frozenset[int]" = frozenset(),
 ) -> "tuple[int, ...]":
     """The token indexes one shell redirection starting at ``index`` occupies,
     or ``()`` when no redirection starts there.
@@ -1276,8 +1278,7 @@ def _exec_scan_layout(
             at_command = True
             continue
         if in_action and (
-            token in _FIND_EXEC_SEMICOLONS
-            or (token == "+" and here and tokens[here - 1] == "{}")
+            token in _FIND_EXEC_SEMICOLONS or (token == "+" and here and tokens[here - 1] == "{}")
         ):
             # find ends the batched form at `{} +` only: a `+` anywhere else is
             # an ordinary argument it hands the child, so
