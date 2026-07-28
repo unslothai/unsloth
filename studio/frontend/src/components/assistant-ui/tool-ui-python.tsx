@@ -87,15 +87,18 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   const isWriting = isWritingCode && !awaitingApproval;
 
   return (
-    // Script, status and output all collapse behind the one chevron.
+    // Status, output and images collapse from history; the executed script
+    // renders outside ToolFallbackContent so it stays visible on reopen
+    // (#7165). Terminal keeps its command inside the collapsible -- a one-line
+    // command is not the artifact a user comes back for, a script is.
     <ToolFallbackRoot defaultOpen={isRunning}>
       <ToolFallbackTrigger
         toolName={firstLine ? `Python: ${firstLine}` : "Python"}
         status={status}
         icon={CodeIcon}
       />
-      <ToolFallbackContent>
-        {code && (
+      {code && (
+        <div className="mt-1 pl-5">
           <ToolCodeCell
             label="script"
             code={code}
@@ -103,7 +106,9 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
             downloadName="script.py"
             streaming={isWriting}
           />
-        )}
+        </div>
+      )}
+      <ToolFallbackContent>
         <div className="border-l-2 border-muted-foreground/20 pl-2">
           {/* Output */}
           {isRunning ? (
