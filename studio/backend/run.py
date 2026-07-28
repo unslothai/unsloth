@@ -10,7 +10,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 
 def _fix_torch_cuda_ld_path():
@@ -827,22 +827,25 @@ def _read_pid_record(path: Path) -> "tuple[int, float | None] | None":
     return int(lines[0].strip()), created
 
 
-def _pid_is_studio_backend(pid: int, created: "float | None" = None) -> bool:
+def _pid_is_studio_backend(pid: int, created_times: "Sequence[float | None]" = ()) -> bool:
     """Guard against PID reuse.
 
-    Start time is the reliable signal; the cmdline check only covers legacy
-    records that predate it, and must not match `unsloth train` or a stray run.py.
+    Start time is the reliable signal; any recorded time matching is enough, since
+    a stale record must not veto a live server that reused the PID. The cmdline
+    check only covers legacy records that predate the recorded time -- and the
+    in-venv path runs run_server() in-process, so its argv is `unsloth studio ...`.
     """
-    if created is not None:
+    known = [c for c in created_times if c is not None]
+    if known:
         actual = _process_create_time(pid)
         # Unknowable without psutil: trust the record rather than guess.
-        return actual is None or abs(actual - created) < 1.0
+        return actual is None or any(abs(actual - c) < 1.0 for c in known)
     try:
         import psutil
         cmdline = " ".join(psutil.Process(pid).cmdline()).lower()
     except Exception:
         return True
-    return "run.py" in cmdline and "studio" in cmdline
+    return "studio" in cmdline and ("run.py" in cmdline or "unsloth" in cmdline)
 
 
 def _blocker_is_own_studio(blockers: "list[tuple[int, str]]") -> "int | None":
@@ -854,9 +857,12 @@ def _blocker_is_own_studio(blockers: "list[tuple[int, str]]") -> "int | None":
     return None
 
 
-def _recorded_studio_records() -> "dict[int, float | None]":
-    """Live {pid: create_time} recorded under this STUDIO_HOME; prunes dead records."""
-    records: "dict[int, float | None]" = {}
+def _recorded_studio_records() -> "dict[int, list[float | None]]":
+    """Live {pid: [create_time, ...]} under this STUDIO_HOME; prunes dead records.
+
+    Every recorded time is kept: a stale file and a live server can share a PID.
+    """
+    records: "dict[int, list[float | None]]" = {}
     try:
         paths = list(_studio_root().glob(PID_FILE_GLOB)) + [_PID_FILE]
     except OSError:
@@ -867,7 +873,7 @@ def _recorded_studio_records() -> "dict[int, float | None]":
             continue
         pid, created = record
         if _pid_alive(pid):
-            records.setdefault(pid, created)
+            records.setdefault(pid, []).append(created)
         elif path != _PID_FILE:
             path.unlink(missing_ok = True)
     return records

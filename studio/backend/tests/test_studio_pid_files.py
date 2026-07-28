@@ -31,7 +31,7 @@ def isolated_root(tmp_path, monkeypatch):
     monkeypatch.setattr(run, "_PID_FILE", tmp_path / "studio.pid")
     monkeypatch.setattr(run, "_OWN_PID_FILE", None)
     monkeypatch.setattr(run, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(run, "_pid_is_studio_backend", lambda pid, created = None: True)
+    monkeypatch.setattr(run, "_pid_is_studio_backend", lambda pid, created_times = (): True)
     yield
 
 
@@ -110,7 +110,7 @@ def test_recorded_records_read_per_port_and_legacy_files(tmp_path):
     (tmp_path / "studio-8902-8600.pid").write_text("8600", encoding = "utf-8")
     (tmp_path / "studio.pid").write_text("4242", encoding = "utf-8")
 
-    assert run._recorded_studio_records() == {8550: 111.5, 8600: None, 4242: None}
+    assert run._recorded_studio_records() == {8550: [111.5], 8600: [None], 4242: [None]}
 
 
 def test_recorded_records_ignore_corrupt_files(tmp_path):
@@ -151,7 +151,7 @@ def test_our_studio_is_found_behind_a_foreign_listener(tmp_path):
 
 def test_a_reused_pid_is_not_treated_as_our_studio(tmp_path, monkeypatch):
     # Stale record + the OS handing that PID to something else must not abort.
-    monkeypatch.setattr(run, "_pid_is_studio_backend", lambda pid, created = None: False)
+    monkeypatch.setattr(run, "_pid_is_studio_backend", lambda pid, created_times = (): False)
     (tmp_path / "studio-8901-8550.pid").write_text("8550", encoding = "utf-8")
 
     assert run._blocker_is_own_studio([(8550, "postgres")]) is None
@@ -161,8 +161,42 @@ def test_start_time_mismatch_rejects_a_reused_pid(monkeypatch):
     monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
     monkeypatch.setattr(run, "_process_create_time", lambda pid: 999.0)
 
-    assert run._pid_is_studio_backend(8550, created = 111.5) is False
-    assert run._pid_is_studio_backend(8550, created = 999.0) is True
+    assert run._pid_is_studio_backend(8550, [111.5]) is False
+    assert run._pid_is_studio_backend(8550, [999.0]) is True
+
+
+def test_a_stale_record_does_not_veto_a_live_server_sharing_the_pid(monkeypatch):
+    # Crash leaves studio-8888-1234.pid, the OS reuses 1234 for a new server on
+    # another port. Keeping only the first timestamp would reject the live one.
+    monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
+    monkeypatch.setattr(run, "_process_create_time", lambda pid: 999.0)
+
+    assert run._pid_is_studio_backend(1234, [111.5, 999.0]) is True
+    assert run._pid_is_studio_backend(1234, [111.5, 222.5]) is False
+
+
+def test_recorded_records_keep_every_timestamp_for_a_pid(tmp_path):
+    (tmp_path / "studio-8888-1234.pid").write_text("1234\n111.5", encoding = "utf-8")
+    (tmp_path / "studio-9000-1234.pid").write_text("1234\n999.0", encoding = "utf-8")
+
+    assert run._recorded_studio_records() == {1234: [111.5, 999.0]}
+
+
+def test_legacy_records_match_an_in_process_studio(monkeypatch):
+    # The in-venv path calls run_server() in-process, so argv is `unsloth studio`
+    # with no run.py. Rejecting it would strand a running server.
+    monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
+
+    class _FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def cmdline(self):
+            return ["/root/.unsloth/studio/unsloth_studio/bin/unsloth", "studio", "-p", "8901"]
+
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process = _FakeProcess))
+
+    assert run._pid_is_studio_backend(8550) is True
 
 
 def test_legacy_records_do_not_match_a_training_run(monkeypatch):

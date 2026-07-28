@@ -48,7 +48,7 @@ def _install(
     killed = killed if killed is not None else []
 
     monkeypatch.setattr(studio_mod, "_pid_alive", lambda pid: pid in live)
-    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created = None: True)
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created_times = (): True)
 
     def fake_kill(pid, _sig):
         killed.append(pid)
@@ -104,7 +104,7 @@ def test_stop_signals_each_server_once(monkeypatch, tmp_path):
     monkeypatch.setattr(studio_mod, "_PID_FILE", tmp_path / "studio.pid")
     monkeypatch.setattr(studio_mod.time, "sleep", lambda _s: None)
     monkeypatch.setattr(studio_mod, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created = None: True)
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created_times = (): True)
     killed = []
     monkeypatch.setattr(studio_mod.os, "kill", lambda pid, _sig: killed.append(pid))
     monkeypatch.setattr(sys, "platform", "linux")
@@ -134,7 +134,7 @@ def test_stop_does_not_signal_a_reused_pid(monkeypatch, tmp_path):
     # Crash leaves a per-port file behind, the OS hands that PID to something
     # else: stop must drop the record, not SIGTERM an unrelated process.
     studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550})
-    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created = None: False)
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created_times = (): False)
     _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
 
     result = _run_stop(studio_mod)
@@ -142,6 +142,46 @@ def test_stop_does_not_signal_a_reused_pid(monkeypatch, tmp_path):
     assert result.exit_code == 0, result.output
     assert killed == []
     assert not (tmp_path / "studio-8901-8550.pid").exists()
+
+
+def test_stop_signals_a_live_server_whose_pid_has_a_stale_record(monkeypatch, tmp_path):
+    # Crash leaves studio-8888-8550.pid, the OS reuses 8550 for a new server on
+    # another port. The stale timestamp must not veto the live one.
+    studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550})
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", _REAL_IS_STUDIO_SERVER)
+
+    class _FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def create_time(self):
+            return 999.0
+
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process = _FakeProcess))
+    (tmp_path / "studio-8888-8550.pid").write_text("8550\n111.5", encoding = "utf-8")
+    (tmp_path / "studio-9000-8550.pid").write_text("8550\n999.0", encoding = "utf-8")
+
+    result = _run_stop(studio_mod)
+
+    assert result.exit_code == 0, result.output
+    assert killed == [8550]
+    assert not list(tmp_path.glob("studio-*.pid"))
+
+
+def test_pid_identity_check_accepts_an_in_process_studio(monkeypatch):
+    # The in-venv path calls run_server() in-process: argv has no run.py.
+    studio_mod = _studio()
+
+    class _FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def cmdline(self):
+            return ["/root/.unsloth/studio/unsloth_studio/bin/unsloth", "studio", "-p", "8901"]
+
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process = _FakeProcess))
+
+    assert studio_mod._pid_is_studio_server(8550) is True
 
 
 def test_pid_identity_check_trusts_the_record_without_psutil(monkeypatch):
@@ -187,8 +227,8 @@ def test_pid_identity_check_uses_the_recorded_start_time(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process = _FakeProcess))
 
-    assert studio_mod._pid_is_studio_server(8550, created = 111.5) is True
-    assert studio_mod._pid_is_studio_server(8550, created = 999.0) is False
+    assert studio_mod._pid_is_studio_server(8550, [111.5]) is True
+    assert studio_mod._pid_is_studio_server(8550, [999.0]) is False
 
 
 def test_stop_drops_a_record_whose_start_time_no_longer_matches(monkeypatch, tmp_path):
@@ -254,7 +294,7 @@ def test_stop_does_not_claim_a_stop_while_a_server_is_still_alive(monkeypatch, t
     monkeypatch.setattr(studio_mod, "_PID_FILE", tmp_path / "studio.pid")
     monkeypatch.setattr(studio_mod.time, "sleep", lambda _s: None)
     monkeypatch.setattr(studio_mod, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created = None: True)
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created_times = (): True)
     monkeypatch.setattr(studio_mod.os, "kill", lambda pid, sig: None)
     monkeypatch.setattr(sys, "platform", "linux")
     _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
@@ -274,7 +314,7 @@ def test_stop_continues_after_one_server_fails_to_stop(monkeypatch, tmp_path):
     monkeypatch.setattr(studio_mod.time, "sleep", lambda _s: None)
     live = {8550, 8600}
     monkeypatch.setattr(studio_mod, "_pid_alive", lambda pid: pid in live)
-    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created = None: True)
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created_times = (): True)
 
     def fake_kill(pid, _sig):
         if pid == 8550:

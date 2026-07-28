@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Sequence
 import typer
 
 from unsloth_cli import _studio_deps
@@ -2441,14 +2441,15 @@ def _read_pid_record(path: Path) -> "tuple[int, float | None] | None":
     return int(lines[0].strip()), created
 
 
-def _pid_file_entries() -> "list[tuple[int, float | None, list[Path]]]":
-    """(pid, create_time, files) per recorded server, including the legacy studio.pid.
+def _pid_file_entries() -> "list[tuple[int, list[float | None], list[Path]]]":
+    """(pid, create_times, files) per recorded server, including the legacy studio.pid.
 
     Grouped by PID: a server writes both its per-port file and studio.pid, and
     signalling twice would hit the SIG_DFL the first SIGTERM installs, hard-killing
-    it mid-shutdown.
+    it mid-shutdown. Every recorded time is kept -- a stale file and a live server
+    can share a PID, and the stale one must not veto the live one.
     """
-    by_pid: "dict[int, tuple[float | None, list[Path]]]" = {}
+    by_pid: "dict[int, tuple[list[float | None], list[Path]]]" = {}
     try:
         paths = sorted(STUDIO_HOME.glob(PID_FILE_GLOB)) + [_PID_FILE]
     except OSError:
@@ -2464,28 +2465,30 @@ def _pid_file_entries() -> "list[tuple[int, float | None, list[Path]]]":
             path.unlink(missing_ok = True)
             continue
         pid, created = record
-        known_created, files = by_pid.setdefault(pid, (created, []))
+        created_times, files = by_pid.setdefault(pid, ([], []))
+        created_times.append(created)
         files.append(path)
-        if known_created is None and created is not None:
-            by_pid[pid] = (created, files)
-    return [(pid, created, files) for pid, (created, files) in by_pid.items()]
+    return [(pid, times, files) for pid, (times, files) in by_pid.items()]
 
 
-def _pid_is_studio_server(pid: int, created: "float | None" = None) -> bool:
+def _pid_is_studio_server(pid: int, created_times: "Sequence[float | None]" = ()) -> bool:
     """Guard against PID reuse: a stale record must not get an unrelated process
-    killed. Start time pins it exactly; the cmdline check only covers legacy
-    records, and must not match `unsloth train` or a stray run.py."""
+    killed. Any recorded start time matching is enough. The cmdline check only
+    covers legacy records -- and the in-venv path runs run_server() in-process, so
+    its argv is `unsloth studio ...` with no run.py."""
+    known = [c for c in created_times if c is not None]
     try:
         import psutil
 
         proc = psutil.Process(pid)
-        if created is not None:
-            return abs(proc.create_time() - created) < 1.0
+        if known:
+            actual = proc.create_time()
+            return any(abs(actual - c) < 1.0 for c in known)
         cmdline = " ".join(proc.cmdline()).lower()
     except Exception:
         # Unknowable without psutil: trust the record rather than never stopping.
         return True
-    return "run.py" in cmdline and "studio" in cmdline
+    return "studio" in cmdline and ("run.py" in cmdline or "unsloth" in cmdline)
 
 
 def _signal_stop(pid: int) -> "str | None":
@@ -2517,8 +2520,8 @@ def stop():
         raise typer.Exit(0)
 
     signalled, failed = [], []
-    for pid, created, paths in entries:
-        if not _pid_alive(pid) or not _pid_is_studio_server(pid, created):
+    for pid, created_times, paths in entries:
+        if not _pid_alive(pid) or not _pid_is_studio_server(pid, created_times):
             for path in paths:
                 path.unlink(missing_ok = True)
             continue
