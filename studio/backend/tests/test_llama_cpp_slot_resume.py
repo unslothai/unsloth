@@ -469,6 +469,7 @@ def test_save_estimate_uses_total_context_and_active_cache_settings(monkeypatch,
     backend = _resume_backend(tmp_path, n_slots = 4)
     backend._effective_context_length = 8192
     backend._kv_cache_context_total = 32768
+    backend._sliding_window = 4096
     backend._swa_full = True
     backend._flash_attn_enabled = False
     calls = []
@@ -502,20 +503,20 @@ def test_save_estimate_uses_total_context_and_active_cache_settings(monkeypatch,
     ]
 
 
-def test_compact_swa_slots_are_still_saved(monkeypatch, tmp_path):
-    # Do not restore the abandoned blanket SWA guard: compact SWA slot saves can
-    # still be useful, and failures already fall back safely to prompt prefill.
+def test_compact_swa_slot_save_is_skipped(monkeypatch, tmp_path):
     backend = _resume_backend(tmp_path)
     backend._sliding_window = 4096
     backend._swa_full = False
-    _fake_disk(monkeypatch)
+    backend._estimate_kv_cache_bytes = lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError
+    )
     monkeypatch.setattr(
         llama_cpp.httpx,
         "post",
-        lambda *a, **k: _Resp(200, {"n_saved": 1, "n_written": 1}),
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError),
         raising = False,
     )
-    assert backend.save_slots_for_resume() is not None
+    assert backend.save_slots_for_resume() is None
 
 
 def test_save_skipped_when_model_file_changed_since_load(monkeypatch, tmp_path):

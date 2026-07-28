@@ -10299,6 +10299,11 @@ class LlamaCppBackend:
             or self._prompt_cache_off()
         ):
             return None
+        if (self._sliding_window or 0) > 0 and not self._swa_full:
+            logger.debug(
+                "Skipping slot save: compact SWA cache cannot be reused after restart"
+            )
+            return None
         save_dir = Path(self._slot_save_dir)
         gguf_stat = self._gguf_file_identity(self._gguf_path)
         if gguf_stat is None:
