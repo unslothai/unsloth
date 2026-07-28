@@ -1068,11 +1068,15 @@ def test_an_immediate_arrival_cannot_take_an_approved_chats_slot():
     asyncio.run(scenario())
 
 
-def test_parking_is_bounded_so_the_thread_pool_cannot_be_drained():
+def test_parking_is_bounded_so_the_thread_pool_cannot_be_drained(monkeypatch):
     # The loop blocks inside the to_thread(next, gen) call that drives it, so a
     # pending prompt parks an executor thread whether or not it parked its slot.
     # Parking frees a slot, which admits another run that can park too, so
     # unbounded parking drains the pool the generators themselves run on.
+    # Pinned: the real budget follows the runner's usable CPUs, and a one-CPU
+    # container would otherwise run this against a different number.
+    monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
+
     async def scenario():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
@@ -1101,9 +1105,11 @@ def test_parking_is_bounded_so_the_thread_pool_cannot_be_drained():
     asyncio.run(scenario())
 
 
-def test_the_park_budget_is_shared_by_every_queue():
+def test_the_park_budget_is_shared_by_every_queue(monkeypatch):
     # One executor, so a per-queue budget is the same budget handed out again to
     # every backend, and every reload onto a fresh ephemeral port.
+    monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
+
     async def scenario():
         config = LlamaAdmissionConfig()
         first = get_llama_admission_queue("http://llama.test:1")
@@ -1129,21 +1135,47 @@ def test_the_park_budget_is_shared_by_every_queue():
     asyncio.run(scenario())
 
 
-def test_the_park_budget_leaves_the_executor_room_to_work():
+def test_the_park_budget_leaves_the_executor_room_to_work(monkeypatch):
     # The pool already permits `capacity` pending prompts, and every park frees a
-    # slot that admits one more, so the budget has to account for both.
-    workers = llama_admission._executor_workers()
-    reserve = llama_admission._EXECUTOR_RESERVE
-    assert 1 <= llama_admission._max_parked(1) <= workers // 2
-    # A backend whose --parallel alone fills the executor gets no parks at all,
-    # rather than a budget that pushes it over.
-    assert llama_admission._max_parked(workers) == 0
-    for capacity in range(0, workers + 8):
-        budget = llama_admission._max_parked(capacity)
-        assert budget >= 0, f"negative budget at capacity {capacity}"
-        assert (
-            budget == 0 or capacity + budget <= workers - reserve
-        ), f"capacity {capacity} plus {budget} parks leaves the executor short"
+    # slot that admits one more, so the budget has to account for both. Swept
+    # across executor sizes rather than read off this host: 3.13 sizes the
+    # default executor from the usable CPUs, so a container gets a small one.
+    for cpus in (1, 2, 4, 8, 16, 28, 64):
+        workers = min(32, cpus + 4)
+        monkeypatch.setattr(llama_admission, "_executor_workers", lambda w = workers: w)
+        reserve = llama_admission._executor_reserve(workers)
+        assert reserve >= 2, f"{workers} workers left no reserve"
+
+        # Even the smallest executor lets two chats sit on prompts at once, which
+        # is what #7455's own two-approvals test needs.
+        assert llama_admission._max_parked(1) >= 2, f"no room for two on {workers} workers"
+        assert llama_admission._max_parked(1) <= workers // 2
+        # A backend whose --parallel alone fills the executor gets no parks,
+        # rather than a budget that pushes it over.
+        assert llama_admission._max_parked(workers) == 0
+        for capacity in range(0, workers + 8):
+            budget = llama_admission._max_parked(capacity)
+            assert budget >= 0, f"negative budget at capacity {capacity}"
+            assert (
+                budget == 0 or capacity + budget <= workers - reserve
+            ), f"{workers} workers: capacity {capacity} plus {budget} parks leaves no room"
+
+
+def test_the_park_budget_follows_the_executors_own_cpu_count(monkeypatch):
+    # 3.13 sizes ThreadPoolExecutor from process_cpu_count(), which honours CPU
+    # affinity and cgroup quotas. Reading cpu_count() would budget from the whole
+    # host while the executor was sized from the one core the container got, so
+    # pull the two apart: on this machine they are the same number.
+    import concurrent.futures
+
+    monkeypatch.setattr(os, "cpu_count", lambda: 64)
+    if hasattr(os, "process_cpu_count"):
+        monkeypatch.setattr(os, "process_cpu_count", lambda: 1)
+    # Against the real thing rather than the formula: asyncio's default executor
+    # is a plain ThreadPoolExecutor(), so its own default sizing is the answer,
+    # whichever interpreter this runs on.
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        assert llama_admission._executor_workers() == pool._max_workers
 
 
 def test_the_stream_retries_a_park_that_was_refused():

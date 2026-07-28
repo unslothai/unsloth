@@ -56,14 +56,28 @@ DEFAULT_ADMISSION_QUEUE_PER_SLOT = 16
 # load downshifted to fit VRAM) keeps the depth it had before scaling existed
 # rather than dropping to 16 and rejecting callers that used to queue.
 DEFAULT_ADMISSION_MIN_QUEUE = 64
-# Executor threads kept clear of parked approvals, so generation steps, stream
-# teardown and unrelated to_thread work still run while prompts sit unanswered.
-_EXECUTOR_RESERVE = 4
-
-
 def _executor_workers() -> int:
-    """Threads asyncio's default executor runs to_thread work on."""
-    return min(32, (os.cpu_count() or 1) + 4)
+    """Threads asyncio's default executor runs to_thread work on.
+
+    Mirrors ThreadPoolExecutor's own default sizing, which is what
+    ``loop.run_in_executor(None, ...)`` builds. 3.13 moved that to
+    ``process_cpu_count()``, which honours CPU affinity and cgroup quotas, so
+    reading ``cpu_count()`` would size the budget from the whole host while the
+    executor was sized from the one core the container was given.
+    """
+    cpus = getattr(os, "process_cpu_count", os.cpu_count)() or 1
+    return min(32, cpus + 4)
+
+
+def _executor_reserve(workers: int) -> int:
+    """Threads kept clear of parked approvals.
+
+    For generation steps, stream teardown and unrelated to_thread work. A flat
+    count would leave a 5-worker executor (one usable CPU) with no budget at all,
+    which is the case that most wants a chat to keep moving while another sits on
+    a prompt.
+    """
+    return max(2, workers // 8)
 
 
 def _max_parked(capacity: int) -> int:
@@ -77,7 +91,12 @@ def _max_parked(capacity: int) -> int:
     before parking existed: the prompt holds its slot.
     """
     workers = _executor_workers()
-    return max(0, min(workers // 4, workers - _EXECUTOR_RESERVE - max(0, capacity)))
+    spare = workers - _executor_reserve(workers) - max(0, capacity)
+    # A quarter of the executor, but never fewer than two while there is room for
+    # them: a quarter of five is one, and one park cannot cover two chats sitting
+    # on prompts at once, which is the case #7455 exists for. `spare` still takes
+    # it to zero on an executor the pool already fills.
+    return max(0, min(max(2, workers // 4), spare))
 
 
 # Counted process-wide, not per queue. There is one default executor, but a
