@@ -127,6 +127,31 @@ jobs:
           cd /tmp
           /tmp/v/bin/python -c "from studio.backend.main import app; print('Unsloth backend OK:', app.title)"
 
+      - name: CLI without the Studio stack guides instead of tracebacking
+        # The smoke above installs studio.txt first, so it cannot catch a wheel
+        # that ships studio/ without declaring what it imports (#4701, #5260,
+        # #7147). Drop only structlog to reuse that venv without a re-download.
+        run: |
+          set -eu
+          /tmp/v/bin/pip uninstall -y structlog >/dev/null
+          cd /tmp
+          status=0
+          for args in "export ./nope ./out" "list-checkpoints"; do
+            echo "--- unsloth $args"
+            out=$(/tmp/v/bin/unsloth $args 2>&1 || true)
+            printf '%s\n' "$out"
+            case "$out" in
+              *Traceback*)
+                echo "FAIL: raw traceback instead of guidance"; status=1 ;;
+            esac
+            case "$out" in
+              *'unsloth studio update'*) ;;
+              *) echo "FAIL: no remediation in the message"; status=1 ;;
+            esac
+          done
+          /tmp/v/bin/pip install -q structlog >/dev/null
+          exit "$status"
+
       - name: Upload wheel on failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1

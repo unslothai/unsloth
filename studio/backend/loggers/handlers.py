@@ -8,12 +8,19 @@ filter_sensitive_data (structlog processor for sanitization), and
 get_logger (factory for structured loggers).
 """
 
+from __future__ import annotations
+
 import os
 import re
 import time
+from typing import TYPE_CHECKING
 
 import structlog
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+# Annotations only: a runtime import makes the ASGI stack a hard dependency of
+# every CLI command.
+if TYPE_CHECKING:
+    from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from utils.native_path_leases import redact_native_paths
 
