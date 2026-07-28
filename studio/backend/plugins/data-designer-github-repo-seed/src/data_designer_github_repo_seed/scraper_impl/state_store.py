@@ -65,12 +65,9 @@ def _read_line(raw: bytes, codepage: str) -> _Reading:
     a JSON backslash, so the record fails to parse and its id is forgotten.
     """
     as_utf8 = _parse(raw, "utf-8")
-    # A record that reads as UTF-8 needs no second reading: both callers take
-    # that one and never look at the other. Parsing it again cost 2.8x on a
-    # 76 MB shard here, on a file the docstring above expects to reach
-    # gigabytes, and every resume pays it. Only a record, since the key lookup
-    # falls through to the codepage reading when UTF-8 yields something that is
-    # not one.
+    # A record that reads as UTF-8 needs no second reading: both callers take that
+    # one. Re-parsing cost 2.8x on a 76 MB shard, and these reach gigabytes. Only a
+    # record, since key lookup falls through to the codepage when UTF-8 yields none.
     if isinstance(as_utf8, dict):
         return _Reading(as_utf8, None)
     for encoding in (codepage, "latin-1", *_DOUBLE_BYTE_ENCODINGS):
@@ -86,7 +83,7 @@ class _Scan(NamedTuple):
     """What a pass over an existing shard established about it."""
 
     legacy: bool  # enough evidence to trust the codepage reading's keys
-    readable: bool  # the file could be read at all
+    readable: bool
     saw_non_ascii: bool  # some line's meaning depends on the encoding
     utf8_keys: set  # keys from lines UTF-8 could read
     legacy_keys: set  # keys only the codepage reading yields
@@ -157,10 +154,9 @@ class JsonlWriter:
             if scan.legacy:
                 self._count_seen_keys |= scan.legacy_keys
             if scan.saw_non_ascii or not scan.readable:
-                # Encoding-dependent bytes, or we could not look. Never convert:
-                # the writing encoding is unrecoverable and guessing mojibakes the
-                # records. Pure ASCII appends store identically under every
-                # codepage, and json.loads turns the \uXXXX escapes back.
+                # Never convert: the writing encoding is unrecoverable and guessing
+                # mojibakes the records. Pure ASCII appends store identically under
+                # every codepage, and json.loads turns the \uXXXX escapes back.
                 encoding = "ascii"
                 self._ensure_ascii = True
         self._fh = self.path.open("a", buffering = 1, encoding = encoding, errors = "strict")
@@ -200,8 +196,7 @@ class JsonlWriter:
                 for raw in handle:
                     line = raw.strip()
                     reading = _read_line(line, self._codepage)
-                    # ASCII reads the same everywhere, so it neither votes nor
-                    # constrains what may be appended.
+                    # ASCII reads the same everywhere: no vote, no constraint.
                     if not line.isascii():
                         saw_non_ascii = True
                         if reading.as_utf8 is None and reading.as_legacy is not None:
