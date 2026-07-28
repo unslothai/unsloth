@@ -340,10 +340,12 @@ _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
 # loop). Structured delta.tool_calls are grammar-bounded by llama-server; text
 # parsed from content is not, so one runaway turn could fan out unbounded.
 _MAX_TOOL_CALLS_PER_TURN = 8
-# Obligation phrasing INTENT_SIGNAL leaves alone ("I need to call ..."), paired
-# with an action verb: the bare topic words this replaced ate real answers.
+# Obligation phrasing INTENT_SIGNAL leaves alone ("I need to call ...", "I should
+# call ..."), paired with an action verb: the bare topic words this replaced ate
+# real answers. "should" is its own alternative -- folding it into the
+# need|have|ought group would demand "I should to call".
 _FORCED_PLAN_INTENT = re.compile(
-    r"(?:\bi\s+(?:need|have|ought)\s+to|^need\s+to|^going\s+to)"
+    r"(?:\bi\s+(?:(?:need|have|ought)\s+to|should)|^need\s+to|^going\s+to)"
     r"\s+(?:\w+\s+){0,2}?(?:call|use|run|search|fetch|render|invoke|query)\b",
     re.I,
 )
@@ -12273,6 +12275,11 @@ class LlamaCppBackend:
                             _kb_search_count += 1
                     completion = tool_controller.record_result(decision, result)
                     resolved_provisional_tool_call_ids.add(decision.tool_call_id)
+                    # A real execution opens the post-tool phase. The pre-tool stall
+                    # text must not carry over, or "I will search the web now." said
+                    # before and after the search reads as a repeat and swallows the
+                    # one post-tool nudge.
+                    _last_reprompt_text = ""
                     # A tool ran this turn, so it counts against the caller's budget.
                     _turn_executed_real_tool = True
                     yield completion.tool_end_event()

@@ -1621,6 +1621,73 @@ def test_post_tool_reprompt_budget_is_one(monkeypatch):
     assert len(payloads) == 3
 
 
+def test_repeat_guard_resets_after_a_tool_runs(monkeypatch):
+    """A tool execution opens a new phase, so the same intent text is nudged again.
+
+    Without the reset the pre-tool stall text still sits in the repeat tracker and
+    the identical post-tool stall is surrendered as the visible final answer.
+    """
+
+    stall = "I will search the web now."
+    streams = [
+        [_sse({"content": stall}), _done()],
+        [
+            _sse(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_first",
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": json.dumps({"query": "red square"}),
+                            },
+                        }
+                    ]
+                }
+            ),
+            _done(),
+        ],
+        [_sse({"content": stall}), _done()],
+        [_sse({"content": "Final answer: the square is red."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda *_a, **_k: "Search results: red is #f00.",
+    )
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        }
+    ]
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Make a red square."}],
+            tools = tools,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert len(payloads) == 4
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert content_texts[-1] == "Final answer: the square is red."
+
+
 def test_forced_turn_suppression_covers_obligation_phrasing():
     from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
     for stall in (
@@ -1628,6 +1695,8 @@ def test_forced_turn_suppression_covers_obligation_phrasing():
         "Need to call web_search",
         "I will summarize the results now",
         "I have to run the search first",
+        "I should call web_search now",
+        "I should use render_html now",
     ):
         assert suppress(stall), f"leaked {stall!r}"
 
@@ -1636,6 +1705,8 @@ def test_forced_turn_suppression_covers_obligation_phrasing():
         "The square is red.",
         "Here is the summary of what I found.",
         "Run `pip install unsloth` to get started.",
+        "I should mention that the square is red.",
+        "You should call your bank about the charge.",
     ):
         assert not suppress(answer), f"dropped {answer!r}"
 
