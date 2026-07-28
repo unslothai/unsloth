@@ -165,9 +165,7 @@ def test_tauri_registers_only_the_unsloth_scheme() -> None:
     config = json.loads((TAURI / "tauri.conf.json").read_text(encoding = "utf-8"))
     assert config["plugins"]["deep-link"]["desktop"]["schemes"] == ["unsloth"]
 
-    capabilities = json.loads(
-        (TAURI / "capabilities/default.json").read_text(encoding = "utf-8")
-    )
+    capabilities = json.loads((TAURI / "capabilities/default.json").read_text(encoding = "utf-8"))
     assert "deep-link:default" in capabilities["permissions"]
     assert "core:window:allow-unminimize" in capabilities["permissions"]
 
@@ -180,8 +178,5 @@ def test_tauri_registers_only_the_unsloth_scheme() -> None:
     assert 'warn!("Failed to register deep-link handlers: {error}")' in main
     assert 'target_os = "linux"' in main
     desktop_template = TAURI / "linux/unsloth.desktop"
-    assert (
-        config["bundle"]["linux"]["deb"]["desktopTemplate"]
-        == "./linux/unsloth.desktop"
-    )
+    assert config["bundle"]["linux"]["deb"]["desktopTemplate"] == "./linux/unsloth.desktop"
     assert "Exec={{exec}} %u" in desktop_template.read_text(encoding = "utf-8")
