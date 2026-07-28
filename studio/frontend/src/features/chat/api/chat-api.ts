@@ -164,6 +164,8 @@ export async function validateModel(
       // /load. Default placement is sized against the selected GPUs.
       max_seq_length: payload.max_seq_length,
       load_in_4bit: payload.load_in_4bit,
+      cache_type_kv: payload.cache_type_kv ?? null,
+      tensor_parallel: payload.tensor_parallel ?? false,
       gpu_ids: payload.gpu_ids,
       // Manual placement is an explicit override: Auto layers use llama.cpp
       // --fit, while a pinned layer count is owned by the user. Tell validate

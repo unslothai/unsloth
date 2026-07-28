@@ -242,6 +242,13 @@ def test_fingerprint_tracks_flash_attention_mode(tmp_path):
     assert backend._slot_launch_fingerprint() != before
 
 
+def test_fingerprint_tracks_effective_cache_types(tmp_path):
+    backend = _resume_backend(tmp_path)
+    before = backend._slot_launch_fingerprint()
+    backend._effective_cache_types = ("f32", "f16")
+    assert backend._slot_launch_fingerprint() != before
+
+
 def test_gguf_file_identity_covers_split_shards(tmp_path):
     backend = _resume_backend(tmp_path)
     first = tmp_path / "m-00001-of-00002.gguf"
@@ -472,6 +479,7 @@ def test_save_estimate_uses_total_context_and_active_cache_settings(monkeypatch,
     backend._sliding_window = 4096
     backend._swa_full = True
     backend._flash_attn_enabled = False
+    backend._effective_cache_types = ("f32", "f16")
     calls = []
 
     def estimate(ctx, cache_type, **kwargs):
@@ -491,7 +499,7 @@ def test_save_estimate_uses_total_context_and_active_cache_settings(monkeypatch,
     assert calls == [
         (
             32768,
-            None,
+            "f32",
             {
                 "n_parallel": 4,
                 "swa_full": True,
@@ -507,9 +515,7 @@ def test_compact_swa_slot_save_is_skipped(monkeypatch, tmp_path):
     backend = _resume_backend(tmp_path)
     backend._sliding_window = 4096
     backend._swa_full = False
-    backend._estimate_kv_cache_bytes = lambda *a, **k: (_ for _ in ()).throw(
-        AssertionError
-    )
+    backend._estimate_kv_cache_bytes = lambda *a, **k: (_ for _ in ()).throw(AssertionError)
     monkeypatch.setattr(
         llama_cpp.httpx,
         "post",

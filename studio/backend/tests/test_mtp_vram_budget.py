@@ -76,6 +76,7 @@ from core.inference.llama_cpp import (  # noqa: E402
     _extra_args_spec_draft_n_max,
     _effective_tensor_parallel,
     _env_main_cache_type_for_budget,
+    _effective_main_cache_types,
     _extra_args_main_cache_type_for_budget,
     _flash_attn_enabled_from_args,
     _kv_bytes_per_elem,
@@ -799,14 +800,32 @@ class TestExtraArgsMtpDetection:
         [
             (None, True),
             (["--flash-attn", "off"], False),
+            (["--flash-attn", "disabled"], False),
+            (["--flash-attn", "false"], False),
+            (["--flash-attn", "0"], False),
             (["--flash-attn=off"], False),
+            (["--flash-attn=disabled"], False),
+            (["--flash-attn=false"], False),
+            (["--flash-attn=0"], False),
             (["--flash_attn", "off"], False),
             (["-fa", "off", "--flash-attn", "auto"], True),
+            (["-fa", "off", "--flash-attn", "-1"], True),
+            (["-fa", "off", "--flash-attn", "enabled"], True),
+            (["-fa", "off", "--flash-attn=true"], True),
+            (["-fa", "off", "--flash-attn=1"], True),
             (["--flash-attn", "off", "-fa"], True),
         ],
     )
     def test_flash_attn_last_value_wins(self, args, expected):
         assert _flash_attn_enabled_from_args(args) is expected
+
+    def test_effective_main_cache_types_follow_env_then_cli(self):
+        env = {
+            "LLAMA_ARG_CACHE_TYPE_K": "f32",
+            "LLAMA_ARG_CACHE_TYPE_V": "q4_0",
+        }
+        assert _effective_main_cache_types([], env) == ("f32", "q4_0")
+        assert _effective_main_cache_types(["--cache-type-v", "f16"], env) == ("f32", "f16")
 
     def test_n_ubatch_env_fallback(self):
         # Environment values apply first, then each command-line option overrides

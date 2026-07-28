@@ -240,6 +240,8 @@ class ValidateModelRequest(BaseModel):
     # /load; defaults preserve old behavior for callers that omit them.
     max_seq_length: int = Field(0, ge = 0, le = 1048576)
     load_in_4bit: bool = Field(True)
+    cache_type_kv: Optional[str] = Field(None)
+    tensor_parallel: bool = Field(False)
     gpu_ids: Optional[List[int]] = Field(None)
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",

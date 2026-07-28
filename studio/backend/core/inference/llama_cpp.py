@@ -1556,6 +1556,39 @@ def _extra_args_main_cache_type_for_budget(extra_args: Optional[Iterable[str]]) 
     return max(candidates, key = _kv_bytes_per_elem)
 
 
+def _effective_main_cache_types(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> tuple[str, str]:
+    """Effective main K/V cache types after environment and CLI precedence."""
+    source_env = os.environ if env is None else env
+    env_k = (source_env.get("LLAMA_ARG_CACHE_TYPE_K") or "f16").strip().lower()
+    env_v = (source_env.get("LLAMA_ARG_CACHE_TYPE_V") or "f16").strip().lower()
+    arg_k, arg_v = parse_cache_override_per_axis(args)
+    return (
+        (arg_k or env_k).strip().lower(),
+        (arg_v or env_v).strip().lower(),
+    )
+
+
+def _planned_main_cache_types(
+    cache_type_kv: Optional[str],
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+) -> tuple[str, str]:
+    """Main K/V types the loader's managed flags and user extras will produce."""
+    args = list(extra_args or ())
+    emitted_type = _extra_args_main_cache_type_for_budget(args) or cache_type_kv
+    if emitted_type:
+        args = [
+            "--cache-type-k",
+            emitted_type,
+            "--cache-type-v",
+            emitted_type,
+            *args,
+        ]
+    return _effective_main_cache_types(args, env)
+
+
 def _auto_mode_drops_mtp(
     req_mode: Optional[str],
     size_b: Optional[float],
@@ -1602,6 +1635,11 @@ _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
 # common_params defaults in the bundled llama.cpp runtime.
 _DEFAULT_LLAMA_N_BATCH = 2048
 _DEFAULT_LLAMA_N_UBATCH = 512
+_LLAMA_ARG_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})
+_LLAMA_ARG_FALSE_VALUES = frozenset({"off", "disabled", "false", "0"})
+_LLAMA_ARG_AUTO_VALUES = frozenset({"auto", "-1"})
+_LLAMA_ARG_TRUE_OR_AUTO_VALUES = _LLAMA_ARG_TRUE_VALUES | _LLAMA_ARG_AUTO_VALUES
+_LLAMA_ARG_TRUE_FALSE_AUTO_VALUES = _LLAMA_ARG_TRUE_OR_AUTO_VALUES | _LLAMA_ARG_FALSE_VALUES
 
 
 def _extra_args_set_any_flag(extra_args: Optional[Iterable[str]], flags: Collection[str]) -> bool:
@@ -1621,7 +1659,7 @@ def _swa_full_from_args_or_env(
     if _extra_args_set_any_flag(extra_args, {"--swa-full"}):
         return True
     value = (os.environ if env is None else env).get("LLAMA_ARG_SWA_FULL")
-    return value in {"on", "enabled", "true", "1"}
+    return value in _LLAMA_ARG_TRUE_VALUES
 
 
 def _kv_unified_from_args(
@@ -1632,9 +1670,9 @@ def _kv_unified_from_args(
     """Resolve llama.cpp's environment and last-wins unified KV flags."""
     enabled = False
     value = (os.environ if env is None else env).get("LLAMA_ARG_KV_UNIFIED")
-    if value in {"on", "enabled", "true", "1"}:
+    if value in _LLAMA_ARG_TRUE_VALUES:
         enabled = True
-    elif value in {"off", "disabled", "false", "0"}:
+    elif value in _LLAMA_ARG_FALSE_VALUES:
         enabled = False
     if default:
         # Studio's managed --kv-unified flag is appended after environment
@@ -1658,11 +1696,11 @@ def _flash_attn_enabled_from_args(args: Optional[Iterable[str]], default: bool =
             continue
         _, eq, inline = raw.partition("=")
         value = inline if eq else "on"
-        if not eq and i + 1 < len(values) and values[i + 1] in {"on", "off", "auto"}:
+        if not eq and i + 1 < len(values) and values[i + 1] in _LLAMA_ARG_TRUE_FALSE_AUTO_VALUES:
             value = values[i + 1]
-        if value == "off":
+        if value in _LLAMA_ARG_FALSE_VALUES:
             enabled = False
-        elif value in {"on", "auto"}:
+        elif value in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
             enabled = True
     return enabled
 
@@ -2252,6 +2290,7 @@ class LlamaCppBackend:
         self._kv_cache_unified: bool = False
         self._n_ubatch: int = self._DEFAULT_N_UBATCH
         self._flash_attn_enabled: bool = True
+        self._effective_cache_types: tuple[str, str] = ("f16", "f16")
         # Total KV allocation context across all slots. _effective_context_length
         # becomes the per-slot request limit after /props reconciliation.
         self._kv_cache_context_total: Optional[int] = None
@@ -5426,6 +5465,7 @@ class LlamaCppBackend:
         self._kv_cache_unified = False
         self._n_ubatch = self._DEFAULT_N_UBATCH
         self._flash_attn_enabled = True
+        self._effective_cache_types = ("f16", "f16")
         self._kv_cache_context_total = None
         self._gpu_offload_active = True
         # Diffusion doesn't use the llama.cpp GPU-memory knobs; reset them to
@@ -6457,7 +6497,7 @@ class LlamaCppBackend:
 
         def explicit(i):
             nxt = out[i + 1] if i + 1 < len(out) else None
-            return nxt if nxt in ("on", "auto", "off") else None
+            return nxt if nxt in _LLAMA_ARG_TRUE_FALSE_AUTO_VALUES else None
 
         effective = None
         for i, tok in enumerate(out):
@@ -6466,16 +6506,16 @@ class LlamaCppBackend:
                 effective = tok.partition("=")[2]
             elif name in ("--flash-attn", "-fa"):
                 effective = explicit(i) or "on"
-        if effective not in ("on", "auto"):
+        if effective not in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
             return None
         for i, tok in enumerate(out):
             name = _flag_name(tok)
             if name in ("--flash-attn", "-fa") and "=" in tok:
                 flag, _, value = tok.partition("=")
-                if value in ("on", "auto"):
+                if value in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
                     out[i] = f"{flag}=off"
             elif name in ("--flash-attn", "-fa"):
-                if explicit(i) in ("on", "auto"):
+                if explicit(i) in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
                     out[i + 1] = "off"
                 elif explicit(i) is None:  # bare flag (reads as on) -> explicit off
                     out[i] = f"{tok}=off"
@@ -8966,6 +9006,10 @@ class LlamaCppBackend:
                 self._flash_attn_enabled = (
                     _flash_attn_enabled_from_args(_last_spawn_cmd) and self._architecture != "grok"
                 )
+                self._effective_cache_types = _effective_main_cache_types(
+                    _last_spawn_cmd,
+                    env,
+                )
                 self._kv_cache_context_total = effective_ctx if effective_ctx > 0 else None
 
                 # Server is up: adopt the real per-request context it allocated
@@ -9666,6 +9710,7 @@ class LlamaCppBackend:
             self._kv_cache_unified = False
             self._n_ubatch = self._DEFAULT_N_UBATCH
             self._flash_attn_enabled = True
+            self._effective_cache_types = ("f16", "f16")
             self._kv_cache_context_total = None
             self._chat_template = None
             self._chat_template_override = None
@@ -10210,7 +10255,7 @@ class LlamaCppBackend:
             tuple(sidecars),
             self._requested_n_ctx,
             self._effective_context_length,
-            getattr(self, "_cache_type_kv", None),
+            self._effective_cache_types,
             self.effective_parallel_slots,
             self._swa_full,
             self._kv_cache_unified,
@@ -10287,7 +10332,7 @@ class LlamaCppBackend:
         if os.environ.get("LLAMA_ARG_NO_CACHE_PROMPT") is not None:
             return True
         env = (os.environ.get("LLAMA_ARG_CACHE_PROMPT") or "").strip().lower()
-        return env in {"off", "disabled", "false", "0"}
+        return env in _LLAMA_ARG_FALSE_VALUES
 
     def save_slots_for_resume(
         self, should_abort: Optional[Callable[[], bool]] = None
@@ -10300,9 +10345,7 @@ class LlamaCppBackend:
         ):
             return None
         if (self._sliding_window or 0) > 0 and not self._swa_full:
-            logger.debug(
-                "Skipping slot save: compact SWA cache cannot be reused after restart"
-            )
+            logger.debug("Skipping slot save: compact SWA cache cannot be reused after restart")
             return None
         save_dir = Path(self._slot_save_dir)
         gguf_stat = self._gguf_file_identity(self._gguf_path)
@@ -10324,7 +10367,7 @@ class LlamaCppBackend:
                 or self._effective_context_length
                 or self._context_length
                 or 0,
-                self._cache_type_kv,
+                max(self._effective_cache_types, key = _kv_bytes_per_elem),
                 n_parallel = self.effective_parallel_slots,
                 swa_full = self._swa_full,
                 kv_unified = self._kv_cache_unified,

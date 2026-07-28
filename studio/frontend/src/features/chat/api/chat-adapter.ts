@@ -1536,6 +1536,8 @@ async function autoLoadSmallestModel(): Promise<{
     // The safetensors fallback omits both fields and uses HF auto-placement.
     gpu_ids?: number[];
     gpu_memory_mode?: "auto" | "manual";
+    cache_type_kv?: string | null;
+    tensor_parallel?: boolean | null;
   }): Promise<boolean> {
     const validation = await validateModel({
       ...payload,
@@ -1624,6 +1626,8 @@ async function autoLoadSmallestModel(): Promise<{
         max_seq_length: fitMaxSeqLength,
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
+        cache_type_kv: config.kvCacheDtype,
+        tensor_parallel: config.tensorParallel,
         // The same remembered-derived GPU pick the load below sends.
         ...(candidate.kind === "gguf"
           ? {

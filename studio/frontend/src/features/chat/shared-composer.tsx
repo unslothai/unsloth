@@ -1097,6 +1097,8 @@ export function SharedComposer({
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
+          cache_type_kv: ownConfig.kvCacheDtype ?? null,
+          tensor_parallel: effectiveTensorParallel,
           // Scope the validate to the picked GPUs. GGUF-only, like the load
           // below: a non-GGUF target must not inherit a hidden GGUF GPU pick.
           ...(targetIsGguf

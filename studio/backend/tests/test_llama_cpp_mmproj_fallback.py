@@ -221,6 +221,18 @@ class TestFlashAttnOff:
         assert _flash_off(["llama-server", "-fa", "auto"]) == ["llama-server", "-fa", "off"]
         assert _flash_off(["llama-server", "-fa=on"]) == ["llama-server", "-fa=off"]
 
+    @pytest.mark.parametrize("value", ["on", "enabled", "true", "1", "auto", "-1"])
+    def test_flips_every_enabled_value(self, value):
+        assert _flash_off(["llama-server", "--flash-attn", value]) == [
+            "llama-server",
+            "--flash-attn",
+            "off",
+        ]
+
+    @pytest.mark.parametrize("value", ["off", "disabled", "false", "0"])
+    def test_none_for_every_disabled_value(self, value):
+        assert _flash_off(["llama-server", "--flash-attn", value]) is None
+
     def test_flips_every_occurrence_last_wins(self):
         # extra_args can re-enable FA after Unsloth's flag; llama.cpp is last-wins,
         # so one leftover 'on' would re-crash the retry. Every enable must flip.
