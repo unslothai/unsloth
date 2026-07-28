@@ -747,9 +747,13 @@ class TestExtraArgsMtpDetection:
         "args,expected",
         [
             (["--ubatch-size", "1024"], 1024),
-            (["-ub", "4096"], 4096),
+            (["-ub", "4096"], 2048),
             (["--ubatch-size=512"], 512),
             (["--ubatch_size=512"], 512),
+            (["--batch-size", "256"], 256),
+            (["--batch_size=256"], 256),
+            (["-b", "256", "-ub", "1024"], 256),
+            (["-b", "4096"], 512),
             (["--ubatch", "2048"], None),  # not a real llama-server flag; ignore it
             (["-c", "4096"], None),
             (None, None),
@@ -759,11 +763,33 @@ class TestExtraArgsMtpDetection:
         assert _extra_args_n_ubatch(args, env = {}) == expected
 
     def test_n_ubatch_env_fallback(self):
-        # The child honors LLAMA_ARG_UBATCH; it must reach the compute-buffer reserve.
-        assert _extra_args_n_ubatch([], env = {"LLAMA_ARG_UBATCH": "4096"}) == 4096
+        # Environment values apply first, then each command-line option overrides
+        # its own axis before llama.cpp caps ubatch at batch size.
+        assert _extra_args_n_ubatch([], env = {"LLAMA_ARG_UBATCH": "4096"}) == 2048
+        assert _extra_args_n_ubatch([], env = {"LLAMA_ARG_BATCH": "256"}) == 256
+        assert (
+            _extra_args_n_ubatch(
+                [],
+                env = {
+                    "LLAMA_ARG_BATCH": "1024",
+                    "LLAMA_ARG_UBATCH": "4096",
+                },
+            )
+            == 1024
+        )
         assert (
             _extra_args_n_ubatch(["-ub", "1024"], env = {"LLAMA_ARG_UBATCH": "4096"}) == 1024
         )  # CLI wins
+        assert (
+            _extra_args_n_ubatch(
+                ["-b", "1024"],
+                env = {
+                    "LLAMA_ARG_BATCH": "256",
+                    "LLAMA_ARG_UBATCH": "4096",
+                },
+            )
+            == 1024
+        )
         assert _extra_args_n_ubatch([], env = {"LLAMA_ARG_UBATCH": "notint"}) is None
 
     def test_env_main_cache_type_for_budget(self):

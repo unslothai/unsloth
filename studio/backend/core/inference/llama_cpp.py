@@ -1584,6 +1584,9 @@ def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
 # set keeps detection and stripping from drifting.
 _GPU_OFFLOAD_OVERRIDE_FLAGS = _LAYER_OFFLOAD_FLAGS
 _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
+# common_params defaults in the bundled llama.cpp runtime.
+_DEFAULT_LLAMA_N_BATCH = 2048
+_DEFAULT_LLAMA_N_UBATCH = 512
 
 
 def _extra_args_set_any_flag(extra_args: Optional[Iterable[str]], flags: Collection[str]) -> bool:
@@ -1802,30 +1805,45 @@ def _extra_args_draft_offloaded_to_cpu(
 def _extra_args_n_ubatch(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[int]:
-    """Physical micro-batch from extras (--ubatch-size/-ub) else the LLAMA_ARG_UBATCH
-    env, else None. It sizes the compute-graph buffer, so an override must reach
-    the VRAM reserve."""
+    """Effective ubatch after llama.cpp caps it at batch, or None at defaults."""
+    values = {
+        "batch": _DEFAULT_LLAMA_N_BATCH,
+        "ubatch": _DEFAULT_LLAMA_N_UBATCH,
+    }
+    source_env = os.environ if env is None else env
+    overridden = False
+    for key, env_name in (
+        ("batch", "LLAMA_ARG_BATCH"),
+        ("ubatch", "LLAMA_ARG_UBATCH"),
+    ):
+        raw = source_env.get(env_name)
+        if raw:
+            try:
+                values[key] = int(raw)
+                overridden = True
+            except (TypeError, ValueError):
+                pass
+
     args = [str(a) for a in extra_args] if extra_args else []
-    found: Optional[int] = None
+    flags = {
+        "-b": "batch",
+        "--batch-size": "batch",
+        "-ub": "ubatch",
+        "--ubatch-size": "ubatch",
+    }
     for i, raw in enumerate(args):
         flag = _flag_name(raw)
         _, eq, inline = raw.partition("=")
-        if flag not in ("--ubatch-size", "-ub"):
+        key = flags.get(flag)
+        if key is None:
             continue
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
         try:
-            found = int(value)
+            values[key] = int(value)
+            overridden = True
         except (TypeError, ValueError):
             continue
-    if found is not None:
-        return found
-    raw = (os.environ if env is None else env).get("LLAMA_ARG_UBATCH")
-    if raw:
-        try:
-            return int(raw)
-        except (TypeError, ValueError):
-            pass
-    return None
+    return min(values.values()) if overridden else None
 
 
 def _build_ngram_mod_flags(
@@ -4409,7 +4427,7 @@ class LlamaCppBackend:
             return total if total > 0 else None
         return draft_kv + weights + target_ctx_copy
 
-    _DEFAULT_N_UBATCH = 512  # llama.cpp --ubatch default; Unsloth does not override it
+    _DEFAULT_N_UBATCH = _DEFAULT_LLAMA_N_UBATCH
     _COMPUTE_BUFFER_SAFETY = 1.15  # upper-bound margin on the compute-buffer estimate
     # Soft VRAM the modeled terms omit; charged to the fit budget on tight tiers (#6682).
     _CUDA_CONTEXT_RESERVE_BYTES = 320 * 1024 * 1024  # CUDA ctx + cuBLAS workspace (~330 MiB)
