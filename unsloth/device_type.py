@@ -24,6 +24,7 @@ __all__ = [
 ]
 
 import functools
+import importlib.util
 import inspect
 import os
 from unsloth_zoo.utils import Version
@@ -117,6 +118,12 @@ DEVICE_COUNT: int = get_device_count()
 ALLOW_PREQUANTIZED_MODELS: bool = True
 # HSA_STATUS_ERROR_EXCEPTION checks - sometimes AMD fails for BnB
 ALLOW_BITSANDBYTES: bool = True
+# No bitsandbytes at all: 4bit is unavailable on every backend, not just hip, so
+# clear the flags the loader reads before it selects a 4bit checkpoint. find_spec
+# rather than import, so a working install pays nothing here.
+if importlib.util.find_spec("bitsandbytes") is None:
+    ALLOW_PREQUANTIZED_MODELS = False
+    ALLOW_BITSANDBYTES = False
 # gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this
 # legacy GCN arch (ROCm dropped it after 6.3) - compiled graphs crash or miscompile
 # while the eager path trains fine. Default compile off; setdefault so a user

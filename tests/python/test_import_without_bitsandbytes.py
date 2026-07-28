@@ -11,6 +11,9 @@ peft's 4bit LoRA layer is exported only when bnb is importable, so
 here too.
 """
 
+# Path | None below is a PEP 604 union; the project still supports Python 3.9.
+from __future__ import annotations
+
 import ast
 from pathlib import Path
 
