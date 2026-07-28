@@ -99,9 +99,13 @@ def main(argv: list[str]) -> int:
     (out / "cli-h.log").write_text(merged(r), encoding = "utf-8", errors = "replace")
     say("cli_h_ok", r[0] == 0)
 
-    caps_rc, caps_out, caps_err = run([binp, "studio", "desktop-capabilities", "--json"], timeout = 180)
+    caps_rc, caps_out, caps_err = run(
+        [binp, "studio", "desktop-capabilities", "--json"], timeout = 180
+    )
     (out / "desktop-capabilities.json").write_text(caps_out, encoding = "utf-8", errors = "replace")
-    (out / "desktop-capabilities.stderr.log").write_text(caps_err, encoding = "utf-8", errors = "replace")
+    (out / "desktop-capabilities.stderr.log").write_text(
+        caps_err, encoding = "utf-8", errors = "replace"
+    )
     say("capabilities_ok", caps_rc == 0)
 
     # Parse EXACTLY as the desktop does: managed.rs:414 hands the whole stdout buffer
@@ -217,6 +221,7 @@ def main(argv: list[str]) -> int:
             return
         if os.name == "posix":
             import signal
+
             # start_new_session made this child its own group leader, so pgid == pid.
             # Read it BEFORE the reap: once the leader is waited on, os.getpgid()
             # raises and the escalation would target nothing.
@@ -282,10 +287,7 @@ def main(argv: list[str]) -> int:
     # exercised the fast path that is supposed to clear an incomplete install.
     if backend_ok and caps_ready is not False:
         verdict = "HEALTHY"
-    elif (
-        caps_ready is False
-        or not facts.get("cli_h_ok")
-    ):
+    elif caps_ready is False or not facts.get("cli_h_ok"):
         verdict = "REPAIRABLE"
     else:
         verdict = "FALSE_READY"
