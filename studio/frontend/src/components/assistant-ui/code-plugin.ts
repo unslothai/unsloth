@@ -48,22 +48,19 @@ const normalizeLanguage = (language: string): BundledLanguage => {
 };
 
 // A streaming fence re-enters highlight() every frame with the whole block, so
-// Shiki re-tokenizes it from scratch ~60x/sec: O(length) per frame. Past
-// MIN_INCREMENTAL_CHARS, reuse the cached tokens and append the new tail
-// unstyled, re-tokenizing in full at most every REFRESH_MS.
+// Shiki re-tokenizes it in full ~60x/sec. Past MIN_INCREMENTAL_CHARS, reuse the
+// cached tokens with an unstyled tail, re-tokenizing at most every REFRESH_MS.
 const MIN_INCREMENTAL_CHARS = 2000;
 const REFRESH_MS = 250;
-// Date.now() is wall clock: a backward step (an NTP correction, or resuming
-// from sleep) makes `elapsed` negative, which pins the reuse branch on and
-// schedules the trailing refresh by the size of the step. The throttle only
-// needs elapsed time, which the monotonic clock provides.
+// Wall-clock Date.now() can step backwards (NTP, sleep resume) and make
+// `elapsed` negative; the throttle only needs elapsed time, so stay monotonic.
 const monotonicNow = (): number =>
   typeof performance !== "undefined" && typeof performance.now === "function"
     ? performance.now()
     : Date.now();
 
-// One slot per fence in flight. A message can hold several large fences, and
-// Streamdown revisits all of them on every render.
+// One slot per fence: a message can hold several large fences, and Streamdown
+// revisits all of them on every render.
 const MAX_SLOTS_PER_KEY = 8;
 
 type TokenLine = HighlightResult["tokens"][number];
@@ -83,8 +80,8 @@ type Slot = {
   pending: Dispatch | null;
 };
 
-// Unstyled line: no colour fields, so it renders in the default foreground
-// rather than inheriting a neighbouring token's colour.
+// No colour fields, so it renders in the default foreground instead of
+// inheriting a neighbouring token's colour.
 const plainLine = (text: string): TokenLine =>
   [{ content: text, offset: 0 }] as unknown as TokenLine;
 
@@ -101,8 +98,7 @@ export function createCodePlugin(
   };
 
   const adopt = (slot: Slot, code: string, result: HighlightResult) => {
-    // Move code and result together so a reuse can never slice one against the
-    // other.
+    // Write code and result together so a reuse cannot slice one against the other.
     slot.code = code;
     slot.result = result;
     slot.inFlight = null;
@@ -112,15 +108,13 @@ export function createCodePlugin(
     slot.inFlight = d.opts.code;
     slot.lastDispatchAt = monotonicNow();
     const immediate = inner.highlight({ ...d.opts, language: d.language }, (result) => {
-      // Adopt only the dispatch still in flight.
       if (slot.inFlight === d.opts.code) {
         adopt(slot, d.opts.code, result);
       }
       d.callback?.(result);
     });
-    // @streamdown/code answers out of its own cache synchronously and then
-    // never invokes the callback, so adopt that result here as well; otherwise
-    // the slot keeps pointing at the older tokens.
+    // @streamdown/code answers out of its own cache synchronously and never
+    // invokes the callback, so adopt here too or the slot keeps older tokens.
     if (immediate) {
       adopt(slot, d.opts.code, immediate);
     }
@@ -147,8 +141,7 @@ export function createCodePlugin(
         slotsByKey.set(key, slots);
       }
 
-      // Match this fence to its own slot by longest prefix, so sibling fences
-      // do not evict each other.
+      // Longest-prefix match, so sibling fences do not evict each other.
       let slot: Slot | null = null;
       let bestLength = -1;
       for (const candidate of slots) {
@@ -175,8 +168,7 @@ export function createCodePlugin(
         return dispatch(slot, { opts, language, callback });
       }
 
-      // Always close out a reused run, so the fence cannot be left showing an
-      // unstyled tail if this turns out to be its final render.
+      // Close out a reused run, so a final render is never left unstyled.
       slot.pending = { opts, language, callback };
       if (slot.trailing === null) {
         const target = slot;
@@ -186,9 +178,8 @@ export function createCodePlugin(
           target.pending = null;
           if (!next) return;
           const immediate = dispatch(target, next);
-          // Nothing consumes dispatch()'s return value on this path, so a
-          // synchronous inner cache hit has to be handed over by hand or the
-          // fence keeps its unstyled tail for good.
+          // Nothing consumes this return value, so hand a synchronous cache
+          // hit to the callback or the fence keeps its unstyled tail.
           if (immediate) next.callback?.(immediate);
         }, Math.max(0, REFRESH_MS - elapsed));
       }
