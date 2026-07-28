@@ -57,13 +57,28 @@ on:
       - 'studio/setup.sh'
       - 'studio/setup.ps1'
       - 'studio/install_python_stack.py'
+      # The overlay exists so a constraints or requirements change is actually
+      # exercised here (see the header). Without these paths the one workflow that
+      # resolves them on a machine with no compiler and no wheels cached never runs
+      # for the PR that changes them, and the update-smoke jobs cannot stand in:
+      # they start from a preinstalled Python and full developer tooling.
+      - 'studio/backend/requirements/**'
       - '.github/scripts/clean-machine-*.sh'
       - '.github/workflows/clean-machine-install-ci.yml'
   push:
     branches: [main]
+    # Same list as the PR filter. A direct push to main that changed setup.sh,
+    # setup.ps1, install_python_stack.py, a requirements file or a clean-machine
+    # helper skipped this workflow entirely, so the post-merge run that is supposed
+    # to be the backstop for exactly those files never happened.
     paths:
       - 'install.sh'
       - 'install.ps1'
+      - 'studio/setup.sh'
+      - 'studio/setup.ps1'
+      - 'studio/install_python_stack.py'
+      - 'studio/backend/requirements/**'
+      - '.github/scripts/clean-machine-*.sh'
       - '.github/workflows/clean-machine-install-ci.yml'
   workflow_dispatch:
     inputs:
@@ -579,11 +594,25 @@ jobs:
           # Only ca-certificates + curl: the advertised one-liner cannot start without
           # a transport. Everything else must come from the installer.
           wsl -d unsloth-ci -u root -- sh -c 'apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl' 2>&1 | Tee-Object -FilePath logs/wsl-bootstrap.log
-          # Copy the script in rather than reaching across /mnt/c: a DrvFs path brings
-          # Windows permissions and CRLF risk, neither of which a real WSL user has.
-          $wslPath = (wsl -d unsloth-ci -- wslpath -a "$($env:GITHUB_WORKSPACE -replace '\\','/')/install.sh").Trim()
-          Write-Host "installer source in WSL: $wslPath"
-          wsl -d unsloth-ci -u root -- cp "$wslPath" /root/install.sh
+          # A dispatch that selects `published` is asking whether the script on
+          # unsloth.ai works; running the checked-out one here and reporting the leg
+          # green answered a different question under the same name. Empty on
+          # pull_request/push, so automatic runs stay on this ref.
+          if ('${{ inputs.installer_source }}' -eq 'published') {
+            Write-Host 'installer: published (unsloth.ai)'
+            wsl -d unsloth-ci -u root -- sh -c 'curl -fsSL https://unsloth.ai/install.sh -o /root/install.sh'
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host '::error::could not fetch the published installer inside WSL'
+              exit 1
+            }
+          } else {
+            # Copy the script in rather than reaching across /mnt/c: a DrvFs path
+            # brings Windows permissions and CRLF risk, neither of which a real WSL
+            # user has.
+            $wslPath = (wsl -d unsloth-ci -- wslpath -a "$($env:GITHUB_WORKSPACE -replace '\\','/')/install.sh").Trim()
+            Write-Host "installer source in WSL: $wslPath"
+            wsl -d unsloth-ci -u root -- cp "$wslPath" /root/install.sh
+          }
           # Piped, same shape as `curl ... | sh`, so an early exit still exposes the
           # broken pipe, but the script under test is this ref not production's.
           wsl -d unsloth-ci -u root -- sh -c 'cd /root && cat install.sh | sh' 2>&1 | Tee-Object -FilePath logs/wsl-install.log
@@ -854,11 +883,24 @@ jobs:
           UNSLOTH_CI_SOURCE_OVERLAY: ${{ matrix.overlay && inputs.installer_source != 'published' && github.workspace || '' }}
         run: |
           $ErrorActionPreference = 'Continue'
+          # Windows ships its own published script (install.ps1:3), so `published`
+          # has a meaning here too. Running the checked-out one regardless made a
+          # dispatch that asked about unsloth.ai report on this ref instead. Empty on
+          # pull_request/push, so automatic runs stay on this ref.
+          $script = './install.ps1'
+          if ('${{ inputs.installer_source }}' -eq 'published') {
+            Invoke-WebRequest -Uri https://unsloth.ai/install.ps1 `
+              -OutFile published-install.ps1 -UseBasicParsing -TimeoutSec 300
+            $script = './published-install.ps1'
+            Write-Host 'installer: published (unsloth.ai)'
+          } else {
+            Write-Host "installer: this ref ($env:GITHUB_SHA)"
+          }
           # No -SkipTorch: install.ps1 has no param block and its parser matches
           # `--no-torch` only (112-142), so the token was silently dropped and every
           # Windows leg installed torch anyway. The assert below needs torch, so ask
           # for it explicitly rather than by accident.
-          & ./install.ps1 *>&1 | Tee-Object -FilePath logs/install.log
+          & $script *>&1 | Tee-Object -FilePath logs/install.log
           $rc = $LASTEXITCODE
           Write-Host "installer exit code: $rc"
           exit $rc

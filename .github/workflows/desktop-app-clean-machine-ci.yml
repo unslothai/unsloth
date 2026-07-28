@@ -390,7 +390,9 @@ jobs:
   windows:
     name: desktop windows
     runs-on: windows-latest
-    timeout-minutes: 45
+    # 60, not 45: this job now runs the bundled installer, and a full torch install
+    # on a Windows runner is the slowest of the three platforms.
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -447,6 +449,51 @@ jobs:
           if (-not $found) { Write-Host '::error::no installed executable found'; exit 1 }
           Write-Host "installed: $($found.FullName)"
           "APP_EXE=$($found.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Run the bundled installer, the path first launch takes
+        shell: pwsh
+        run: |
+          # The launch step below only proves the process stayed alive. On a fresh
+          # profile preflight reports not_installed and the app waits for the user to
+          # click Install (use-tauri-backend.ts:252-254, startup-screen.tsx:388-389),
+          # so this job passed on a bundle whose embedded install.ps1 was missing or
+          # broken -- the packaged-app failure the workflow exists to catch, and the
+          # one thing the macOS and Linux rows now check and Windows did not.
+          # tauri.conf.json:56-59 ships install.ps1 as a bundle resource, so find it
+          # where NSIS put it and invoke it as install.rs:326-341 does.
+          $root = Split-Path -Parent $env:APP_EXE
+          $ps1 = Get-ChildItem -Path $root -Recurse -Filter 'install.ps1' -ErrorAction SilentlyContinue |
+                 Select-Object -First 1
+          if (-not $ps1) {
+            Write-Host '::error::the bundle ships no install.ps1 resource'
+            exit 1
+          }
+          Write-Host "bundled installer: $($ps1.FullName)"
+          # --tauri rejects a custom studio home (install.ps1:189-215), so drop the
+          # workspace-scoped override the same way install.rs scrubs it (354-357).
+          Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+              -File $ps1.FullName --tauri *>&1 | Tee-Object -FilePath logs/bundled-install.log
+          $rc = $LASTEXITCODE
+          Write-Host "bundled installer exit: $rc"
+          if ($rc -ne 0) {
+            Write-Host "::error::bundled installer exited $rc"
+            exit $rc
+          }
+          # The exit code alone is not enough: it is the venv the app then boots from.
+          $py = Join-Path $env:USERPROFILE '.unsloth\studio\unsloth_studio\Scripts\python.exe'
+          if (-not (Test-Path $py)) {
+            Write-Host "::error::bundled installer left no venv at $py"
+            exit 1
+          }
+          & $py -V
+          # install.rs passes only --tauri, so torch is part of first launch, and a
+          # venv that cannot import it is the unbootable environment from the report.
+          & $py -c "import torch; print('torch', torch.__version__)"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host '::error::the bundled install produced a venv with no working torch'
+            exit 1
+          }
 
       - name: Launch and prove it stays up
         shell: pwsh
