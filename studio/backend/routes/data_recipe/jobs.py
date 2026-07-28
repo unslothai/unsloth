@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from auth.authentication import get_current_credential
+from auth.storage import CredentialRotated
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
@@ -418,6 +419,10 @@ def create_job(
 
     try:
         internal_api_key_id = _inject_local_providers(recipe, request, credential[1])
+    except CredentialRotated as exc:
+        # A reset-password landed after this request authenticated; the workflow key
+        # is refused, so answer like any other revoked credential rather than 500.
+        raise HTTPException(status_code = 401, detail = "Invalid or expired token") from exc
     except ValueError as exc:
         raise log_and_http_error(
             exc,

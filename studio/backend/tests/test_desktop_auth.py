@@ -336,6 +336,28 @@ def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_mod
     assert asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
 
 
+def test_rotated_credential_job_start_is_401_not_500(loaded_local_model):
+    # A reset-password landing mid-request makes the workflow-key mint refuse.
+    # That must reach the client as a revoked credential, not an unhandled error.
+    from fastapi import HTTPException
+
+    seed_user()
+    jobs_route = data_recipe_jobs_module()
+    stale_gen = storage.credential_generation(secrets.token_urlsafe(64))
+
+    with pytest.raises(storage.CredentialRotated):
+        jobs_route._inject_local_providers(local_recipe(), local_recipe_request("t"), stale_gen)
+
+    def _boom(*_a, **_k):
+        raise storage.CredentialRotated("revoked")
+
+    jobs_route._inject_local_providers = _boom
+    payload = SimpleNamespace(recipe = local_recipe(), run = {})
+    with pytest.raises(HTTPException) as excinfo:
+        jobs_route.create_job(payload, local_recipe_request("t"), ("unsloth", stale_gen))
+    assert excinfo.value.status_code == 401
+
+
 def test_desktop_login_rejects_invalid_secret():
     seed_user(must_change_password = False)
     client = auth_client()
