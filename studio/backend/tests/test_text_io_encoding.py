@@ -15,6 +15,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -129,11 +130,39 @@ def _text_mode_subprocess(node: ast.Call) -> bool:
     return False
 
 
+def _text_mode_kwargs_dict(node: ast.Dict) -> bool:
+    """A `{"text": True, ...}` literal with no "encoding" key.
+
+    Kwargs are built up in a dict and splatted (`run(cmd, **run_kwargs)`) where a
+    branch has to add a timeout or an env, and the call itself is often through a
+    helper, so neither the callee nor the keywords are visible at the call site.
+    The dict is, and text mode without an encoding means the ANSI codepage
+    wherever it lands.
+    """
+    keys = [k.value for k in node.keys if isinstance(k, ast.Constant)]
+    if "encoding" in keys:
+        return False
+    for key, value in zip(node.keys, node.values):
+        if not isinstance(key, ast.Constant) or key.value not in (
+            "text",
+            "universal_newlines",
+        ):
+            continue
+        if isinstance(value, ast.Constant) and value.value is True:
+            return True
+    return False
+
+
 def _offenders(path: Path) -> list[str]:
     source = path.read_text(encoding = "utf-8")
     tree = ast.parse(source, filename = str(path))
     subprocess_names = _subprocess_names(tree)
     found: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict) and _text_mode_kwargs_dict(node):
+            found.append(
+                f"{path.name}:{node.lineno}: subprocess kwargs with text = True and no encoding"
+            )
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -424,3 +453,54 @@ def test_an_undecodable_transport_marker_reads_as_unknown(tmp_path: Path) -> Non
     # this is restoring rather than a new one.
     marker.write_text("something-else\n", encoding = "utf-8")
     assert registry._read_marker_value(marker) is None
+
+
+def test_a_torn_cache_ref_reads_as_not_cached(tmp_path: Path, monkeypatch) -> None:
+    """hf_cache_snapshot_dir answers "is this model already on disk", and the
+    offline embedding checks turn a raise into a 500. A refs/main holding a byte
+    the codepage used to decode into a nonsense commit simply missed the snapshot
+    dir before the pin; it has to keep missing it."""
+    import sys
+
+    backend = str(Path(__file__).resolve().parent.parent)
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    from utils import utils as backend_utils
+
+    good_root = tmp_path / "good"
+    torn_root = tmp_path / "torn"
+    for root, ref_bytes in ((torn_root, b"\x80\xff\n"), (good_root, b"abc123\n")):
+        repo = root / "models--Org--Model"
+        (repo / "refs").mkdir(parents = True)
+        (repo / "refs" / "main").write_bytes(ref_bytes)
+    (good_root / "models--Org--Model" / "snapshots" / "abc123").mkdir(parents = True)
+
+    monkeypatch.setattr(backend_utils, "_hf_cache_roots", lambda: [torn_root])
+    assert backend_utils.hf_cache_snapshot_dir("Org/Model") is None
+    # The torn root must be skipped, not abort the search: a second cache root
+    # holding a healthy copy still answers.
+    monkeypatch.setattr(backend_utils, "_hf_cache_roots", lambda: [torn_root, good_root])
+    found = backend_utils.hf_cache_snapshot_dir("Org/Model")
+    assert found is not None and found.name == "abc123"
+
+
+def test_a_corrupt_pid_file_does_not_abort_shutdown(tmp_path: Path, monkeypatch) -> None:
+    """_remove_pid_file runs first in _graceful_shutdown, so a raise there leaves
+    the inference, export, training and tunnel children alive."""
+    import sys
+
+    backend = str(Path(__file__).resolve().parent.parent)
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    import run as studio_run
+
+    pid_file = tmp_path / "studio.pid"
+    pid_file.write_bytes(b"\x80\xff")
+    monkeypatch.setattr(studio_run, "_PID_FILE", pid_file)
+    studio_run._remove_pid_file()
+    # Not this process's PID, so the file stays; the point is that it returned.
+    assert pid_file.exists()
+
+    pid_file.write_text(str(os.getpid()), encoding = "utf-8")
+    studio_run._remove_pid_file()
+    assert not pid_file.exists()

@@ -766,7 +766,11 @@ def _remove_pid_file():
             stored = _PID_FILE.read_text(encoding = "utf-8").strip()
             if stored == str(os.getpid()):
                 _PID_FILE.unlink(missing_ok = True)
-    except OSError:
+    # Best-effort, and it runs first in _graceful_shutdown: a corrupt PID file
+    # raising UnicodeDecodeError here (a ValueError, so no OSError catches it)
+    # would abandon the inference, export, training and tunnel children the
+    # rest of that function exists to kill.
+    except (OSError, UnicodeDecodeError):
         pass
 
 
