@@ -925,13 +925,13 @@ class TestAmdBnbFloorParity:
         sh = INSTALL_SH.read_text(encoding = "utf-8")
         assert "_bnb_rocm_arch_has_binary()" in sh
         assert "_warn_bnb_no_rocm_binary()" in sh
-        assert sh.count("_warn_bnb_no_rocm_binary\n") >= 2, (
-            "install.sh must warn on aarch64 after both the pre-release and the fallback install"
-        )
+        assert (
+            sh.count("_warn_bnb_no_rocm_binary\n") >= 2
+        ), "install.sh must warn on aarch64 after both the pre-release and the fallback install"
         py = STACK_PY.read_text(encoding = "utf-8")
         assert "def _bnb_rocm_arch_has_binary(" in py
         assert "_bnb_rocm_arch_has_binary()" in py
         for text, name in ((sh, "install.sh"), (py, "install_python_stack.py")):
-            assert "4-bit QLoRA needs a source build" in text, (
-                f"{name} must tell aarch64 users 4-bit needs a source build"
-            )
+            assert (
+                "4-bit QLoRA needs a source build" in text
+            ), f"{name} must tell aarch64 users 4-bit needs a source build"
