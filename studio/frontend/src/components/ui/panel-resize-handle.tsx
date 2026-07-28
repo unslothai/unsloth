@@ -1,0 +1,273 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"use client"
+
+import * as React from "react"
+
+import { cn } from "@/lib/utils"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import { getClientPlatform } from "@/components/tauri/window-titlebar"
+
+/** Pointer travel (px) below which a drag counts as a plain click. */
+const DRAG_SLOP = 4
+/** Arrow-key resize step for keyboard users. */
+const RESIZE_STEP = 16
+
+type DragState = {
+  startX: number
+  startWidth: number
+  moved: boolean
+}
+
+export type PanelResizeHandleProps = {
+  /** Which edge of the panel the handle sits on. */
+  edge: "left" | "right"
+  open: boolean
+  width: number
+  min: number
+  max: number
+  clamp: (px: number) => number
+  setWidth: (px: number) => void
+  resetWidth: () => void
+  onToggle: () => void
+  /** Element to paint the live width onto, and the property to paint. */
+  target: () => HTMLElement | null
+  cssVar: string
+  /** Measured to start a drag from the rendered size when collapsed. */
+  measure: () => number
+  label: string
+  toggleLabel: string
+  /** Shown in the tooltip when the panel has a toggle shortcut. */
+  shortcut?: string
+  dataSlot?: string
+  className?: string
+  /** Mirrors the live width onto :root for chrome outside the panel. */
+  rootVar?: string
+}
+
+/**
+ * A draggable panel edge: drag to resize, click to collapse or expand. Arrow
+ * keys resize, Home restores the default. The width is painted straight to the
+ * target while dragging and only persisted on release.
+ */
+export function PanelResizeHandle({
+  edge,
+  open,
+  width,
+  min,
+  max,
+  clamp,
+  setWidth,
+  resetWidth,
+  onToggle,
+  target,
+  cssVar,
+  measure,
+  label,
+  toggleLabel,
+  shortcut,
+  dataSlot = "panel-resize-handle",
+  className,
+  rootVar,
+}: PanelResizeHandleProps) {
+  const ref = React.useRef<HTMLButtonElement>(null)
+  const dragRef = React.useRef<DragState | null>(null)
+  const [dragging, setDragging] = React.useState(false)
+  const [hovered, setHovered] = React.useState(false)
+  const [isMacPlatform] = React.useState(() => getClientPlatform().includes("mac"))
+  const hint = shortcut ? shortcut.replace("Mod", isMacPlatform ? "⌘" : "Ctrl+") : null
+
+  // Cached on pointer down so no DOM walk per move.
+  const targetRef = React.useRef<HTMLElement | null>(null)
+  const frameRef = React.useRef(0)
+  const pendingRef = React.useRef(0)
+  const committedRef = React.useRef(width)
+  React.useEffect(() => {
+    committedRef.current = width
+  }, [width])
+
+  const paint = React.useCallback(
+    (value: string) => {
+      targetRef.current?.style.setProperty(cssVar, value)
+      if (rootVar) {
+        document.documentElement.style.setProperty(rootVar, value)
+      }
+    },
+    [cssVar, rootVar],
+  )
+
+  // Resizing relayouts the whole shell, and pointermove fires faster than the
+  // display refreshes, so coalesce to one paint per frame.
+  const paintWidth = React.useCallback(
+    (px: number) => {
+      pendingRef.current = px
+      if (frameRef.current) return
+      frameRef.current = requestAnimationFrame(() => {
+        frameRef.current = 0
+        paint(`${pendingRef.current}px`)
+      })
+    },
+    [paint],
+  )
+
+  const endDrag = React.useCallback(() => {
+    dragRef.current = null
+    if (frameRef.current) {
+      cancelAnimationFrame(frameRef.current)
+      frameRef.current = 0
+    }
+    // Hand the property back to the committed value. A commit re-renders with
+    // the new width; a cancel or a no-commit drag keeps DOM and store in step.
+    paint(`${committedRef.current}px`)
+    if (rootVar) document.documentElement.style.removeProperty(rootVar)
+    targetRef.current?.removeAttribute("data-resizing")
+    document.documentElement.removeAttribute("data-panel-resizing")
+    targetRef.current = null
+    setDragging(false)
+    document.body.style.removeProperty("cursor")
+    document.body.style.removeProperty("user-select")
+  }, [paint, rootVar])
+
+  const handlePointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    targetRef.current = target()
+    // Collapsed: grow from the rendered size so the edge tracks the pointer.
+    const start = open ? width : measure()
+    dragRef.current = { startX: event.clientX, startWidth: start, moved: false }
+    pendingRef.current = start
+    targetRef.current?.setAttribute("data-resizing", "true")
+    document.documentElement.setAttribute("data-panel-resizing", "true")
+    setDragging(true)
+    document.body.style.setProperty("cursor", "col-resize")
+    document.body.style.setProperty("user-select", "none")
+  }
+
+  const handlePointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = dragRef.current
+    if (!drag) return
+    // A panel whose handle is on its left edge grows as the pointer moves left.
+    const delta = (edge === "left" ? -1 : 1) * (event.clientX - drag.startX)
+    if (!drag.moved && Math.abs(delta) < DRAG_SLOP) return
+    drag.moved = true
+
+    const next = drag.startWidth + delta
+    if (!open) {
+      // Past the minimum, dragging the collapsed edge reopens it.
+      if (next >= min) {
+        paintWidth(clamp(next))
+        onToggle()
+      }
+      return
+    }
+    // Dragging inward stops at the minimum. Collapsing is click or the shortcut.
+    paintWidth(clamp(next))
+  }
+
+  const handlePointerUp = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = dragRef.current
+    if (!drag) return
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    endDrag()
+
+    if (!drag.moved) {
+      onToggle()
+      return
+    }
+    // A drag below the minimum leaves the stored width alone.
+    if (!open) return
+    // Commit the last requested width; a frame may still be queued.
+    setWidth(pendingRef.current)
+  }
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    // The collapse/expand the label advertises, for keyboard users. Pointer-up
+    // handles it for the mouse; a synthesized click never reaches it.
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault()
+      onToggle()
+      return
+    }
+    const outward = edge === "left" ? "ArrowLeft" : "ArrowRight"
+    const inward = edge === "left" ? "ArrowRight" : "ArrowLeft"
+    if (event.key === outward || event.key === inward) {
+      event.preventDefault()
+      if (!open) {
+        // Collapsed there is nothing to resize, so the outward arrow reopens.
+        if (event.key === outward) onToggle()
+        return
+      }
+      setWidth(width + (event.key === outward ? RESIZE_STEP : -RESIZE_STEP))
+      return
+    }
+    if (event.key === "Home") {
+      event.preventDefault()
+      resetWidth()
+    }
+  }
+
+  // Clear a stuck cursor override if we unmount mid-drag.
+  React.useEffect(() => endDrag, [endDrag])
+
+  return (
+    <Tooltip open={hovered && !dragging}>
+      <TooltipTrigger asChild>
+        <button
+          ref={ref}
+          type="button"
+          data-slot={dataSlot}
+          data-dragging={dragging || undefined}
+          aria-label={open ? label : toggleLabel}
+          aria-orientation="vertical"
+          aria-valuenow={open ? width : min}
+          aria-valuemin={min}
+          aria-valuemax={max}
+          role="separator"
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={endDrag}
+          onKeyDown={handleKeyDown}
+          onPointerEnter={() => setHovered(true)}
+          onPointerLeave={() => setHovered(false)}
+          className={cn(
+            "absolute inset-y-0 z-30 hidden w-2 touch-none select-none sm:block",
+            edge === "left" ? "-left-1" : "-right-1",
+            // `!` overrides the app-wide hand cursor on buttons.
+            open
+              ? "cursor-col-resize!"
+              : edge === "left"
+                ? "cursor-w-resize!"
+                : "cursor-e-resize!",
+            // Sits exactly on the panel border so hover recolours one line.
+            "after:absolute after:inset-y-0 after:w-px after:bg-transparent after:transition-colors after:duration-150",
+            edge === "left" ? "after:left-1" : "after:right-1",
+            "hover:after:bg-sidebar-ring/25 data-dragging:after:bg-sidebar-ring/25",
+            className,
+          )}
+        />
+      </TooltipTrigger>
+      <TooltipContent
+        side={edge === "left" ? "left" : "right"}
+        align="center"
+        className="tooltip-compact"
+      >
+        <span className="flex flex-col gap-px">
+          <span>
+            {open ? "Click to collapse" : "Click to expand"}
+            {hint ? ` ${hint}` : ""}
+          </span>
+          <span className="opacity-70">Drag to resize</span>
+        </span>
+      </TooltipContent>
+    </Tooltip>
+  )
+}

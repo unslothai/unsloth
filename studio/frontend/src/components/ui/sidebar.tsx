@@ -24,11 +24,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { getClientPlatform } from "@/components/tauri/window-titlebar"
+import { PanelResizeHandle } from "@/components/ui/panel-resize-handle"
 import { useIsMobile } from "@/hooks/use-mobile"
 import {
   SIDEBAR_WIDTH_DEFAULT,
-  SIDEBAR_WIDTH_MAX,
   SIDEBAR_WIDTH_MIN,
   clampSidebarWidth,
   useSidebarWidth,
@@ -55,6 +54,7 @@ type SidebarContextProps = {
   setPinned: (value: boolean) => void
   togglePinned: () => void
   width: number
+  maxWidth: number
   setWidth: (value: number) => void
   resetWidth: () => void
 }
@@ -91,7 +91,7 @@ function SidebarProvider({
 }) {
   const isMobile = useIsMobile()
   const [openMobile, setOpenMobile] = React.useState(false)
-  const { width, setWidth, resetWidth } = useSidebarWidth()
+  const { width, max: maxWidth, setWidth, resetWidth } = useSidebarWidth()
 
   const prevIsMobileRef = React.useRef(isMobile)
   React.useEffect(() => {
@@ -176,10 +176,11 @@ function SidebarProvider({
       setPinned,
       togglePinned,
       width,
+      maxWidth,
       setWidth,
       resetWidth,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, width, setWidth, resetWidth]
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, width, maxWidth, setWidth, resetWidth]
   )
 
   return (
@@ -333,21 +334,8 @@ function Sidebar({
   )
 }
 
-/** Pointer travel (px) below which a drag counts as a plain click. */
-const SIDEBAR_DRAG_SLOP = 4
-/** Arrow-key resize step for keyboard users. */
-const SIDEBAR_RESIZE_STEP = 16
-
-type SidebarDragState = {
-  startX: number
-  startWidth: number
-  moved: boolean
-}
-
 /**
- * Sidebar edge: drag to resize, click to collapse or expand. Arrow keys
- * resize, Home restores the default. The width is painted straight to the
- * wrapper while dragging and only persisted on release.
+ * The sidebar's draggable edge, over the shared panel handle.
  */
 function SidebarResizeHandle({
   className,
@@ -356,185 +344,39 @@ function SidebarResizeHandle({
   className?: string
   side?: "left" | "right"
 }) {
-  const { open, toggleSidebar, width, setWidth, resetWidth } = useSidebar()
-  const ref = React.useRef<HTMLButtonElement>(null)
-  const dragRef = React.useRef<SidebarDragState | null>(null)
-  const [dragging, setDragging] = React.useState(false)
-  const [hovered, setHovered] = React.useState(false)
-  const [isMacPlatform] = React.useState(() => getClientPlatform().includes("mac"))
-
-  // Cached on pointer down so no DOM walk per move.
-  const wrapperRef = React.useRef<HTMLElement | null>(null)
-  const frameRef = React.useRef(0)
-  const pendingRef = React.useRef(0)
-  const committedRef = React.useRef(width)
-  React.useEffect(() => {
-    committedRef.current = width
-  }, [width])
-
-  // Resizing relayouts the whole shell, and pointermove fires faster than the
-  // display refreshes, so coalesce to one paint per frame.
-  const paintWidth = React.useCallback((px: number) => {
-    pendingRef.current = px
-    if (frameRef.current) return
-    frameRef.current = requestAnimationFrame(() => {
-      frameRef.current = 0
-      wrapperRef.current?.style.setProperty(
-        "--sidebar-width",
-        `${pendingRef.current}px`,
-      )
-    })
-  }, [])
-
-  const endDrag = React.useCallback(() => {
-    dragRef.current = null
-    if (frameRef.current) {
-      cancelAnimationFrame(frameRef.current)
-      frameRef.current = 0
-    }
-    // Hand the property back to the committed value. A commit re-renders with
-    // the new width; a cancel or a no-commit drag keeps DOM and store in step.
-    wrapperRef.current?.style.setProperty(
-      "--sidebar-width",
-      `${committedRef.current}px`,
-    )
-    wrapperRef.current?.removeAttribute("data-resizing")
-    wrapperRef.current = null
-    setDragging(false)
-    document.body.style.removeProperty("cursor")
-    document.body.style.removeProperty("user-select")
-  }, [])
-
-  const handlePointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
-    if (event.button !== 0) return
-    event.preventDefault()
-    event.currentTarget.setPointerCapture(event.pointerId)
-    wrapperRef.current =
-      ref.current?.closest<HTMLElement>('[data-slot="sidebar-wrapper"]') ?? null
-    // Collapsed: grow from the rendered rail so the edge tracks the pointer.
-    const railWidth =
-      ref.current
-        ?.closest<HTMLElement>('[data-slot="sidebar-container"]')
-        ?.getBoundingClientRect().width ?? SIDEBAR_WIDTH_MIN
-    dragRef.current = {
-      startX: event.clientX,
-      startWidth: open ? width : railWidth,
-      moved: false,
-    }
-    pendingRef.current = open ? width : railWidth
-    wrapperRef.current?.setAttribute("data-resizing", "true")
-    setDragging(true)
-    document.body.style.setProperty("cursor", "col-resize")
-    document.body.style.setProperty("user-select", "none")
-  }
-
-  const handlePointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
-    const drag = dragRef.current
-    if (!drag) return
-    // A right sidebar grows as the pointer moves left.
-    const delta =
-      (side === "right" ? -1 : 1) * (event.clientX - drag.startX)
-    if (!drag.moved && Math.abs(delta) < SIDEBAR_DRAG_SLOP) return
-    drag.moved = true
-
-    const next = drag.startWidth + delta
-    if (!open) {
-      // Past the minimum, dragging the collapsed rail reopens it.
-      if (next >= SIDEBAR_WIDTH_MIN) {
-        paintWidth(clampSidebarWidth(next))
-        toggleSidebar()
-      }
-      return
-    }
-    // Dragging inward stops at the minimum. Collapsing is click or Cmd+B only.
-    paintWidth(clampSidebarWidth(next))
-  }
-
-  const handlePointerUp = (event: React.PointerEvent<HTMLButtonElement>) => {
-    const drag = dragRef.current
-    if (!drag) return
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId)
-    }
-    endDrag()
-
-    if (!drag.moved) {
-      toggleSidebar()
-      return
-    }
-    // Rail drag that never hit the minimum: leave the stored width alone.
-    if (!open) return
-    // Commit the last requested width; a frame may still be queued.
-    setWidth(pendingRef.current)
-  }
-
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
-    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-      if (!open) return
-      event.preventDefault()
-      const step = event.key === "ArrowLeft" ? -SIDEBAR_RESIZE_STEP : SIDEBAR_RESIZE_STEP
-      setWidth(width + step)
-      return
-    }
-    if (event.key === "Home") {
-      event.preventDefault()
-      resetWidth()
-    }
-  }
-
-  // Clear a stuck cursor override if we unmount mid-drag.
-  React.useEffect(() => endDrag, [endDrag])
+  const { open, toggleSidebar, width, maxWidth, setWidth, resetWidth } = useSidebar()
+  const ref = React.useRef<HTMLDivElement>(null)
 
   return (
-    <Tooltip open={hovered && !dragging}>
-      <TooltipTrigger asChild>
-        <button
-          ref={ref}
-          type="button"
-          data-slot="sidebar-resize-handle"
-          data-sidebar="resize-handle"
-          data-dragging={dragging || undefined}
-          aria-label={open ? "Resize or collapse sidebar" : "Expand sidebar"}
-          aria-orientation="vertical"
-          aria-valuenow={open ? width : SIDEBAR_WIDTH_MIN}
-          aria-valuemin={SIDEBAR_WIDTH_MIN}
-          aria-valuemax={SIDEBAR_WIDTH_MAX}
-          role="separator"
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerCancel={endDrag}
-          onKeyDown={handleKeyDown}
-          onPointerEnter={() => setHovered(true)}
-          onPointerLeave={() => setHovered(false)}
-          className={cn(
-            "absolute inset-y-0 z-30 hidden w-2 touch-none select-none sm:block",
-            side === "right" ? "-left-1" : "-right-1",
-            // `!` overrides the app-wide hand cursor on buttons.
-            open
-              ? "cursor-col-resize!"
-              : side === "right"
-                ? "cursor-w-resize!"
-                : "cursor-e-resize!",
-            // Sits exactly on the sidebar border so hover recolours one line.
-            "after:absolute after:inset-y-0 after:w-px after:bg-transparent after:transition-colors after:duration-150",
-            side === "right" ? "after:left-1" : "after:right-1",
-            "hover:after:bg-sidebar-ring/25 data-dragging:after:bg-sidebar-ring/25",
-            className
-          )}
-        />
-      </TooltipTrigger>
-      <TooltipContent
-        side={side === "right" ? "left" : "right"}
-        align="center"
-        className="tooltip-compact"
-      >
-        <span className="flex flex-col gap-px">
-          <span>{open ? "Click to collapse" : "Click to expand"} {isMacPlatform ? "⌘B" : "Ctrl+B"}</span>
-          <span className="opacity-70">Drag to resize</span>
-        </span>
-      </TooltipContent>
-    </Tooltip>
+    <div ref={ref} className="contents">
+      <PanelResizeHandle
+        edge={side === "right" ? "left" : "right"}
+        open={open}
+        width={width}
+        min={SIDEBAR_WIDTH_MIN}
+        max={maxWidth}
+        clamp={clampSidebarWidth}
+        setWidth={setWidth}
+        resetWidth={resetWidth}
+        onToggle={toggleSidebar}
+        target={() =>
+          ref.current?.closest<HTMLElement>('[data-slot="sidebar-wrapper"]') ?? null
+        }
+        cssVar="--sidebar-width"
+        // The custom titlebar renders outside the wrapper and cannot inherit it.
+        rootVar="--studio-sidebar-live-width"
+        measure={() =>
+          ref.current
+            ?.closest<HTMLElement>('[data-slot="sidebar-container"]')
+            ?.getBoundingClientRect().width ?? SIDEBAR_WIDTH_MIN
+        }
+        label="Resize or collapse sidebar"
+        toggleLabel="Expand sidebar"
+        shortcut="ModB"
+        dataSlot="sidebar-resize-handle"
+        className={className}
+      />
+    </div>
   )
 }
 

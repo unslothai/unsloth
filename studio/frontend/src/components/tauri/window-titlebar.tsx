@@ -116,7 +116,8 @@ export function WindowTitlebar({
   const { width } = useSidebarWidth();
   const sidebarWidth = showSidebarSurface
     ? pinned
-      ? `${width}px`
+      ? // The live value only exists mid-drag; otherwise the committed width.
+        `var(--studio-sidebar-live-width, ${width}px)`
       : "var(--studio-sidebar-collapsed-width,3rem)"
     : "0px";
   const contentBorderLeft = pinned ? `calc(${sidebarWidth} + 12px)` : "0px";
