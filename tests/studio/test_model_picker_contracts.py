@@ -675,6 +675,20 @@ def test_compare_classifies_gguf_before_reconciling_gpu_ids():
     assert "onRun(effectiveLoadConfig, classifiedIsDiffusion)" in page
 
 
+def test_model_config_prepares_hf_token_before_gguf_metadata_preflight():
+    """Settings classification must use the same stale-token recovery as load."""
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert 'import { prepareHfTokenForUse } from "@/features/hf-auth";' in page
+    effect = page.split("// Fetch GGUF header dims", 1)[1]
+    effect = effect.split("const stagedDims =", 1)[0]
+    prepare = effect.index("prepareHfTokenForUse(hfToken || null)")
+    metadata = effect.index("fetchGgufStagedMetadata({", prepare)
+    assert prepare < metadata
+    assert "if (cancelled || !preparedToken.proceed)" in effect
+    assert "hf_token: preparedToken.token" in effect
+    assert "hf_token: hfToken" not in effect
+
+
 def test_chat_load_prepares_hf_token_before_gguf_metadata_preflight():
     """The single-model load path classifies a GGUF via fetchGgufStagedMetadata
     before validateModel/loadModel run. The Hub rejects an invalid Authorization

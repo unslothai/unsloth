@@ -19,6 +19,7 @@ import {
   readPersistedSpeculativeType,
   useChatRuntimeStore,
 } from "@/features/chat";
+import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   type GpuIndexKind,
   type SystemGpuDevice,
@@ -766,28 +767,31 @@ export function ModelConfigPage({
       return;
     }
     let cancelled = false;
-    void fetchGgufStagedMetadata({
-      model_path: target.id,
-      gguf_variant: target.ggufVariant ?? null,
-      hf_token: hfToken || null,
-      nativePathToken,
-    })
-      .then((dims) => {
-        if (!cancelled) {
-          setFetchedStagedDims({ key: contextFetchKey, ...dims });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setFetchedStagedDims({
-            key: contextFetchKey,
-            contextLength: null,
-            layerCount: null,
-            moeLayerCount: null,
-            isDiffusion: undefined,
-          });
-        }
+    void (async () => {
+      const preparedToken = await prepareHfTokenForUse(hfToken || null);
+      if (cancelled || !preparedToken.proceed) {
+        return;
+      }
+      const dims = await fetchGgufStagedMetadata({
+        model_path: target.id,
+        gguf_variant: target.ggufVariant ?? null,
+        hf_token: preparedToken.token,
+        nativePathToken,
       });
+      if (!cancelled) {
+        setFetchedStagedDims({ key: contextFetchKey, ...dims });
+      }
+    })().catch(() => {
+      if (!cancelled) {
+        setFetchedStagedDims({
+          key: contextFetchKey,
+          contextLength: null,
+          layerCount: null,
+          moeLayerCount: null,
+          isDiffusion: undefined,
+        });
+      }
+    });
     return () => {
       cancelled = true;
     };
