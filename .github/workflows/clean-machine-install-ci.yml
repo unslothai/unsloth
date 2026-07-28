@@ -54,6 +54,10 @@ env:
   UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
   # No wildcard bind -> no ifconfig.me / check-host.net calls on the startup path.
   UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK: '1'
+  # Without this, run_install_cmd (install.sh:193-243) sends every `uv pip install`
+  # to a temp file and DELETES it on success, so logs/install.log holds no uv output
+  # and the `nobuild` assertion can only ever report "built: none".
+  UNSLOTH_VERBOSE: '1'
 
 jobs:
   # ── macOS: the reported failure ────────────────────────────────────────────
@@ -208,7 +212,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: clean-mac-${{ matrix.os }}-${{ matrix.mode }}-${{ matrix.delivery }}
+          # The rows at lines 74 and 82 differ only in `flags`, so the flags have to
+          # be in the name: artifacts are immutable per run and the second upload 409s.
+          name: clean-mac-${{ matrix.os }}-${{ matrix.mode }}-${{ matrix.delivery }}${{ matrix.flags && format('-{0}', matrix.flags) || '' }}
           path: |
             logs/
             runner-baseline.txt
@@ -299,10 +305,18 @@ jobs:
         if: matrix.label == 'ubuntu2404-nonroot'
         run: |
           useradd -m tester
+          # Switching user without a login shell keeps the caller's environment, so the
+          # workflow-wide UNSLOTH_STUDIO_HOME follows tester in -- and install.sh both
+          # resolves AND validates that override in _resolve_studio_destinations
+          # (install.sh:503-559), which runs long before the elevation gate at
+          # install.sh:840-861. Without a writable target this leg dies on
+          # "cannot be created" instead of on "cannot elevate".
+          mkdir -p "$UNSLOTH_STUDIO_HOME"
           # No sudo installed and not root -> exercises the "cannot elevate" branch.
-          chown -R tester logs install.sh
+          chown -R tester logs install.sh "$UNSLOTH_STUDIO_HOME"
 
       - name: Install (root)
+        id: install_root
         if: matrix.label != 'ubuntu2404-nonroot'
         run: |
           set -o pipefail
@@ -325,6 +339,23 @@ jobs:
           # bare broken-pipe error standing in for a real diagnosis.
           if [ "$rc" != "0" ] && ! grep -qiE "sudo is not available|apt-get install|missing:|permission" logs/install.log; then
             echo "::error::unprivileged install failed with no actionable message"
+            exit 1
+          fi
+
+      # The nonroot leg checks that its expected failure is the expected one. This leg
+      # is continue-on-error too, so without the same check a bootstrap outage or an
+      # unrelated early exit is tolerated exactly like the intentional diagnostic.
+      - name: Assert the Fedora failure is the unsupported-package-manager one
+        if: always() && matrix.label == 'fedora41'
+        run: |
+          if [ "${{ steps.install_root.outcome }}" = "success" ]; then
+            echo "::warning::fedora install succeeded -- non-apt support may now exist; retire this leg"
+            exit 0
+          fi
+          [ -f logs/install.log ] || { echo "::error::fedora leg produced no install log"; exit 1; }
+          tail -40 logs/install.log
+          if ! grep -qiE "Automatic system package installation is supported on apt-based|Fedora/RHEL: sudo dnf install" logs/install.log; then
+            echo "::error::fedora leg failed for a reason other than the unsupported package manager"
             exit 1
           fi
 
@@ -413,8 +444,16 @@ jobs:
           # The platform line proves the wsl branch was taken rather than plain linux.
           Select-String -Path logs/wsl-install.log -Pattern 'platform|\[TAURI:DIAG\]|wsl' -ErrorAction SilentlyContinue |
             Select-Object -First 10
-          wsl -d unsloth-ci -u root -- sh -c 'test -x "$HOME/.unsloth/studio/unsloth_studio/bin/unsloth" && "$HOME/.unsloth/studio/unsloth_studio/bin/unsloth" --version || echo "no CLI installed"' 2>&1 |
-            Tee-Object -FilePath logs/wsl-verify.log
+          # No `|| echo`: substituting a message for the missing CLI made the inner
+          # shell -- and so this step, and so the job -- succeed even when the install
+          # produced nothing usable, which is the half of the question this step asks.
+          $verify = wsl -d unsloth-ci -u root -- sh -c 'set -e; test -x "$HOME/.unsloth/studio/unsloth_studio/bin/unsloth"; "$HOME/.unsloth/studio/unsloth_studio/bin/unsloth" --version' 2>&1
+          $verifyRc = $LASTEXITCODE
+          $verify | Tee-Object -FilePath logs/wsl-verify.log
+          if ($verifyRc -ne 0) {
+            Write-Host '::error::WSL install left no usable unsloth CLI'
+            exit 1
+          }
 
       - name: Tear the distro down
         if: always()
@@ -472,14 +511,57 @@ jobs:
           $drop = @('hostedtoolcache\windows\Python', 'WindowsApps', '\Git\',
                     'CMake', 'Microsoft Visual Studio', 'BuildTools', 'LLVM',
                     'MSYS', 'mingw', 'Strawberry')
-          $kept = ($env:PATH -split ';') | Where-Object {
-            $p = $_; $p -and -not ($drop | Where-Object { $p -like "*$_*" })
+          # winget ships as an app-execution alias inside ...\Local\Microsoft\WindowsApps,
+          # which the blanket drop above removes on EVERY leg -- so winget=visible was
+          # silently running the same no-winget fallback as winget=masked. Resolve it
+          # before the scrub and hand it back through a shim, so the visible leg gets
+          # winget without also getting the Store's python.exe alias back.
+          # windows-11-arm has no winget at all on the hosted image
+          # (actions/runner-images#14083), so only windows-latest can carry it.
+          $wantWinget = ('${{ matrix.winget }}' -ne 'masked') -and ('${{ matrix.os }}' -eq 'windows-latest')
+          $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
+          $scrub = {
+            param($entries)
+            $out = $entries | Where-Object {
+              $p = $_; $p -and -not ($drop | Where-Object { $p -like "*$_*" })
+            }
+            if ('${{ matrix.winget }}' -eq 'masked') {
+              $out = $out | Where-Object { $_ -notlike '*WinGet*' -and $_ -notlike '*Microsoft\WindowsApps*' }
+            }
+            ,@($out)
           }
-          if ('${{ matrix.winget }}' -eq 'masked') {
-            $kept = $kept | Where-Object { $_ -notlike '*WinGet*' -and $_ -notlike '*Microsoft\WindowsApps*' }
+          $kept = & $scrub ($env:PATH -split ';')
+          if ($wantWinget) {
+            if (-not $wingetCmd) {
+              Write-Host '::error::winget was not on PATH before scrubbing; this leg cannot test the winget path'
+              exit 1
+            }
+            $shim = Join-Path $env:RUNNER_TEMP 'winget-shim'
+            New-Item -ItemType Directory -Force -Path $shim | Out-Null
+            Set-Content -LiteralPath (Join-Path $shim 'winget.cmd') -Encoding ascii `
+              -Value "@`"$($wingetCmd.Source)`" %*"
+            $kept = @($shim) + $kept
           }
           $newPath = ($kept -join ';')
           "PATH=$newPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # install.ps1 calls Refresh-SessionPath (defined install.ps1:318-337, called at
+          # 1246/1278/1295/1360/1369/2797), which rebuilds $env:Path from the Machine and
+          # User registry values. Scrubbing only the process PATH therefore lasts until
+          # the first bootstrap refresh, after which Git/CMake/VS/LLVM are back and the
+          # rest of the install is no longer running on a simulated clean machine.
+          # The runner is ephemeral, so rewrite the registry copies too. Expand first:
+          # SetEnvironmentVariable rewrites REG_EXPAND_SZ as REG_SZ (dotnet/runtime#1442).
+          foreach ($scope in 'Machine','User') {
+            $raw = [System.Environment]::GetEnvironmentVariable('Path', $scope)
+            if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+            $expanded = [System.Environment]::ExpandEnvironmentVariables($raw) -split ';'
+            try {
+              [System.Environment]::SetEnvironmentVariable('Path', ((& $scrub $expanded) -join ';'), $scope)
+            } catch {
+              Write-Host "::error::could not scrub the $scope PATH ($($_.Exception.Message)); the simulation would not survive Refresh-SessionPath"
+              exit 1
+            }
+          }
           foreach ($v in 'VSINSTALLDIR','VCINSTALLDIR','WindowsSdkDir','INCLUDE','LIB','LIBPATH') {
             "$v=" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           }
@@ -492,9 +574,21 @@ jobs:
             $f = Get-Command $t -ErrorAction SilentlyContinue
             Write-Host ("{0,-8} {1}" -f $t, $(if ($f) { $f.Source } else { 'ABSENT' }))
           }
-          if ('${{ matrix.winget }}' -eq 'masked' -and (Get-Command winget -ErrorAction SilentlyContinue)) {
-            Write-Host '::error::winget still resolvable; masking failed'
+          $winget = Get-Command winget -ErrorAction SilentlyContinue
+          Write-Host ("winget   {0}" -f $(if ($winget) { $winget.Source } else { 'ABSENT' }))
+          if ('${{ matrix.winget }}' -eq 'masked') {
+            if ($winget) {
+              Write-Host '::error::winget still resolvable; masking failed'
+              exit 1
+            }
+          } elseif ('${{ matrix.os }}' -eq 'windows-latest' -and -not $winget) {
+            # Without this the visible leg quietly degrades into a second masked leg and
+            # the normal winget bootstrap is never exercised by any job in this workflow.
+            Write-Host '::error::winget is not resolvable on the visible leg; the winget bootstrap is not under test'
             exit 1
+          }
+          foreach ($scope in 'Machine','User') {
+            Write-Host ("{0} PATH after scrub: {1}" -f $scope, [System.Environment]::GetEnvironmentVariable('Path', $scope))
           }
 
       - name: Install
@@ -502,24 +596,42 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          & ./install.ps1 -SkipTorch *>&1 | Tee-Object -FilePath logs/install.log
+          # No -SkipTorch: install.ps1 has no param block and its parser matches
+          # `--no-torch` only (install.ps1:112-142), so the token was silently dropped
+          # and every Windows leg installed torch anyway. Torch is exactly what the
+          # assert below needs, so ask for it explicitly rather than by accident.
+          & ./install.ps1 *>&1 | Tee-Object -FilePath logs/install.log
           $rc = $LASTEXITCODE
           Write-Host "installer exit code: $rc"
           exit $rc
 
-      - name: Assert torch loads (the VCRedist contract)
+      - name: Assert torch loads, and record what that does and does not prove
         if: steps.install.outcome == 'success'
         shell: pwsh
         run: |
-          # The prebuilt llama-server and PyTorch both link the VC++ runtime.
-          # Ensure-VCRedist only runs when winget exists, so on the masked leg this
-          # is the assertion that catches a silently broken install.
+          # HONESTY NOTE: the hosted image ships the VC++ 2015-2022 runtime in System32
+          # and it cannot be removed without breaking the runner, so a successful
+          # `import torch` here does NOT prove that a genuinely clean no-winget machine
+          # would have the runtime -- Test-VCRedistInstalled (studio/setup.ps1:875)
+          # finds the preinstalled DLL and Ensure-VCRedist (setup.ps1:891) short-circuits
+          # before it ever needs winget. Record that, then assert what CAN fail here:
+          # torch imports, and the masked leg really did take the no-winget path.
+          $sys32 = Join-Path $env:WINDIR 'System32\vcruntime140_1.dll'
+          Write-Host "preinstalled System32 vcruntime140_1.dll: $(Test-Path $sys32)"
           $py = Join-Path $env:UNSLOTH_STUDIO_HOME 'unsloth_studio\Scripts\python.exe'
           if (-not (Test-Path $py)) { $py = (Get-Command python -ErrorAction SilentlyContinue).Source }
           if (-not $py) { Write-Host '::error::no python from the install'; exit 1 }
           & $py -c "import ctypes.util, sys; print('VCRUNTIME140:', ctypes.util.find_library('vcruntime140'))"
           & $py -c "import torch; print('torch', torch.__version__)"
           if ($LASTEXITCODE -ne 0) { Write-Host '::error::torch failed to import (VC++ runtime missing?)'; exit 1 }
+          if ('${{ matrix.winget }}' -eq 'masked') {
+            # install.ps1:1098, the no-winget branch of the winget check.
+            $noWinget = 'will require Python + uv to be already installed'
+            if (-not (Select-String -Path logs/install.log -Pattern $noWinget -SimpleMatch -Quiet)) {
+              Write-Host '::error::masked leg never reported winget as unavailable; it did not take the no-winget path'
+              exit 1
+            }
+          }
 
       - name: Upload logs
         if: always()

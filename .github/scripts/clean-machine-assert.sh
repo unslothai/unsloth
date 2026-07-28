@@ -9,7 +9,10 @@
 #            the installer quietly installed Xcode CLT behind our back.
 #   notools  The trace recorded no compiler/git/brew invocation (trace mode).
 #   nobuild  The install log shows no source build (no sdist, no cmake, no
-#            "Building wheel"). This is the wheels-only contract.
+#            "Building wheel" from pip and no "Building <pkg>==<ver>" from uv).
+#            This is the wheels-only contract. It needs UNSLOTH_VERBOSE=1 on the
+#            installer, otherwise run_install_cmd (install.sh:193-243) throws the
+#            uv output away on success and there is nothing here to read.
 #
 # Usage: bash .github/scripts/clean-machine-assert.sh absent notools nobuild
 set -uo pipefail
@@ -107,8 +110,19 @@ for check in "$@"; do
       if [ ! -f "$LOG" ]; then
         fail "nobuild requested but $LOG is missing"
       else
-        _built="$(grep -oiE "building wheel for [a-z0-9._-]+" "$LOG" 2>/dev/null \
-                  | sed -E 's/.* for //' | tr 'A-Z' 'a-z' | sort -u || true)"
+        # The installer runs `uv pip install`, and uv does NOT use pip's phrasing.
+        # It prints `   Building <name>==<version>` and `      Built <name>==<version>`
+        # to stderr, as plain lines once stderr is not a TTY (astral-sh/uv#11165), so
+        # the pip-only pattern left _built empty on every uv source build. Match both
+        # spellings. Requiring `==` or ` @ ` after the name keeps this off the
+        # installer's own lowercase "building frontend..." progress text. Strip ANSI
+        # first so a coloured run (FORCE_COLOR) still parses.
+        _esc=$(printf '\033')
+        _built="$(sed -E "s/${_esc}\[[0-9;]*[A-Za-z]//g" "$LOG" 2>/dev/null \
+                  | grep -oiE "building wheel for [a-z0-9._-]+|building [a-z0-9._-]+(==| @ )" \
+                  | tr 'A-Z' 'a-z' \
+                  | sed -E -e 's/^building wheel for //' -e 's/^building //' -e 's/(==| @ )$//' \
+                  | sort -u || true)"
         _bad=""
         for pkg in $_built; do
           case " $_allow " in *" $pkg "*) continue ;; esac

@@ -59,7 +59,10 @@ permissions:
 
 env:
   REL_REPO: ${{ inputs.release_repo || 'unsloth-test/unsloth-test' }}
-  REL_TAG: ${{ inputs.release_tag || 'desktop-v0.1.50-beta' }}
+  # Empty unless dispatched. A pinned tag is an immutable fixture, so a nightly
+  # against it can never catch a newly published broken bundle; each download step
+  # resolves the newest desktop-v* release when this is empty.
+  REL_TAG: ${{ inputs.release_tag || '' }}
   UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
   UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK: '1'
 
@@ -88,12 +91,28 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
+          # Desktop releases are prereleases (release-desktop.yml keeps them off
+          # repo-wide "latest"), so resolve the newest desktop-v* tag explicitly.
+          if [ -z "$REL_TAG" ]; then
+            REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 --exclude-drafts \
+              --json tagName,createdAt \
+              --jq '[.[] | select(.tagName | startswith("desktop-v"))]
+                    | sort_by(.createdAt) | reverse | .[0].tagName // empty')"
+            [ -n "$REL_TAG" ] || { echo "::error::no desktop-v* release in $REL_REPO"; exit 1; }
+            echo "resolved release tag: $REL_TAG"
+            echo "REL_TAG=$REL_TAG" >> "$GITHUB_ENV"
+          fi
           gh release download "$REL_TAG" --repo "$REL_REPO" \
             --pattern '*aarch64.dmg' --dir dl
           ls -la dl
 
       - name: Strip the developer toolchain
-        if: ${{ inputs.strip_toolchain != false }}
+        # `inputs` exists only for workflow_dispatch, so on pull_request and
+        # schedule `inputs.strip_toolchain` is the empty string -- and loose
+        # equality coerces both '' and false to 0, making `!= false` FALSE. The
+        # automatic runs would keep the hosted toolchain, which is the one thing
+        # this workflow exists to remove. Gate on the event instead.
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
         run: |
           bash .github/scripts/clean-machine-env.sh mask --remove
           set -a; . ./clean-machine.env; set +a
@@ -124,10 +143,34 @@ jobs:
           codesign -dv --verbose=2 "$APP" 2>&1 | head -20 || true
           spctl -a -vvv -t install "$APP" 2>&1 | head -5 || \
             echo "::warning::Gatekeeper assessment failed -- users see 'cannot be opened' unless notarised"
-          # The bundled installer is what actually failed for users.
-          test -f "$APP/Contents/Resources/install.sh" \
-            && echo "bundled install.sh present" \
-            || echo "::error::no bundled install.sh in the app"
+          # The bundled installer is what actually failed for users. `::error::` is
+          # only an annotation and `echo` exits 0, so the old `|| echo` form let a
+          # bundle with no installer pass this step.
+          if [ -f "$APP/Contents/Resources/install.sh" ]; then
+            echo "bundled install.sh present"
+          else
+            echo "::error::no bundled install.sh in the app"
+            exit 1
+          fi
+
+      - name: Run the bundled installer, the path first launch takes
+        run: |
+          set -a; [ -f ./clean-machine.env ] && . ./clean-machine.env; set +a
+          set -o pipefail
+          APP="$(ls -d /Applications/*Unsloth*.app | head -1)"
+          # A headless runner never clicks Install: preflight sets `not_installed`
+          # and returns (studio/frontend/src/hooks/use-tauri-backend.ts:252-254) and
+          # startup-screen.tsx:388-389 waits for the button. Launching alone would
+          # therefore sit on that screen for 90s and pass without ever running the
+          # bundled installer. Invoke it the way studio/src-tauri/src/install.rs
+          # does: --tauri, stdin closed, no tty. --tauri rejects a custom studio
+          # home (install.sh:102-114), so drop the workspace-scoped override.
+          env -u UNSLOTH_STUDIO_HOME \
+            bash "$APP/Contents/Resources/install.sh" --tauri --no-torch \
+            < /dev/null 2>&1 | tee logs/bundled-install.log
+          PY="$HOME/.unsloth/studio/unsloth_studio/bin/python"
+          [ -x "$PY" ] || { echo "::error::bundled installer left no venv at $PY"; exit 1; }
+          "$PY" -V
 
       - name: Launch and prove it stays up
         run: |
@@ -199,6 +242,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
+          # Desktop releases are prereleases (release-desktop.yml keeps them off
+          # repo-wide "latest"), so resolve the newest desktop-v* tag explicitly.
+          if [ -z "$REL_TAG" ]; then
+            REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 --exclude-drafts \
+              --json tagName,createdAt \
+              --jq '[.[] | select(.tagName | startswith("desktop-v"))]
+                    | sort_by(.createdAt) | reverse | .[0].tagName // empty')"
+            [ -n "$REL_TAG" ] || { echo "::error::no desktop-v* release in $REL_REPO"; exit 1; }
+            echo "resolved release tag: $REL_TAG"
+            echo "REL_TAG=$REL_TAG" >> "$GITHUB_ENV"
+          fi
           pat='*.deb'; [ "${{ matrix.kind }}" = "appimage" ] && pat='*.AppImage'
           gh release download "$REL_TAG" --repo "$REL_REPO" --pattern "$pat" --dir dl
           ls -la dl
@@ -284,11 +338,27 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
+          # Desktop releases are prereleases (release-desktop.yml keeps them off
+          # repo-wide "latest"), so resolve the newest desktop-v* tag explicitly.
+          if [ -z "$REL_TAG" ]; then
+            REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 --exclude-drafts \
+              --json tagName,createdAt \
+              --jq '[.[] | select(.tagName | startswith("desktop-v"))]
+                    | sort_by(.createdAt) | reverse | .[0].tagName // empty')"
+            [ -n "$REL_TAG" ] || { echo "::error::no desktop-v* release in $REL_REPO"; exit 1; }
+            echo "resolved release tag: $REL_TAG"
+            echo "REL_TAG=$REL_TAG" >> "$GITHUB_ENV"
+          fi
           gh release download "$REL_TAG" --repo "$REL_REPO" --pattern '*setup.exe' --dir dl
           ls -la dl
 
       - name: Strip developer tooling from PATH
-        if: ${{ inputs.strip_toolchain != false }}
+        # `inputs` exists only for workflow_dispatch, so on pull_request and
+        # schedule `inputs.strip_toolchain` is the empty string -- and loose
+        # equality coerces both '' and false to 0, making `!= false` FALSE. The
+        # automatic runs would keep the hosted toolchain, which is the one thing
+        # this workflow exists to remove. Gate on the event instead.
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
         shell: pwsh
         run: |
           $drop = @('hostedtoolcache\windows\Python', 'WindowsApps', '\Git\', 'CMake',
