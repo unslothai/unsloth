@@ -12111,9 +12111,6 @@ class _ResponsesReasoningExtractor:
         reasoning_prefilled: bool = False,
     ) -> None:
         self._buffer = ""
-        # Cross-delta holdback for structured reasoning_content so split
-        # literal markers cannot reassemble downstream (#7066).
-        self._structured_buffer = ""
         # Classification context for the CURRENT reasoning block. The literal
         # </think> check only needs the parity of ``` fences and of the flanking
         # quote char over the already-consumed text; keep O(1) parity counters
@@ -12332,29 +12329,13 @@ class _ResponsesReasoningExtractor:
         structured_reasoning = _coerce_responses_reasoning_text(reasoning_content)
         if structured_reasoning:
             # Structured reasoning never uses think tags as delimiters (the
-            # channel already is reasoning). Neutralize literal markers with a
-            # cross-delta holdback so split tags cannot reassemble (#7066).
-            from core.inference.chat_template_helpers import (
-                neutralize_think_markup_streaming,
-            )
-
-            self._structured_buffer += structured_reasoning
-            _emitted, self._structured_buffer = neutralize_think_markup_streaming(
-                self._structured_buffer
-            )
-            if _emitted:
-                reasoning_parts.append(_emitted)
-        if text and self._structured_buffer:
-            # The stream switched to visible content: flush the held reasoning
-            # tail now so output order is preserved (reasoning before message).
-            from core.inference.chat_template_helpers import (
-                neutralize_think_markup_streaming,
-            )
-            _tail, self._structured_buffer = neutralize_think_markup_streaming(
-                self._structured_buffer, finalize = True
-            )
-            if _tail:
-                reasoning_parts.append(_tail)
+            # channel already is reasoning), so a literal marker here is data,
+            # not markup: emit it verbatim. Rewriting it bought no parsing
+            # protection and altered model output for clients that persist,
+            # compare or copy reasoning. Only the synthetic <think> transport
+            # (llama_cpp.py) still neutralizes, where the tag IS the delimiter
+            # (#7334).
+            reasoning_parts.append(structured_reasoning)
         if text:
             self._buffer += text
         if not self._parse_think_markers:
@@ -12460,19 +12441,6 @@ class _ResponsesReasoningExtractor:
 
         return "".join(reasoning_parts), "".join(visible_parts)
 
-    def flush_structured(self) -> str:
-        """Finalize the structured-reasoning holdback (stream switched away)."""
-        if not self._structured_buffer:
-            return ""
-        from core.inference.chat_template_helpers import (
-            neutralize_think_markup_streaming,
-        )
-
-        tail, self._structured_buffer = neutralize_think_markup_streaming(
-            self._structured_buffer, finalize = True
-        )
-        return tail
-
     def _resolve_held_reasoning(self, remaining: str) -> tuple[str, str, bool]:
         """Resolve held close tags when no further bytes can classify them.
 
@@ -12555,27 +12523,21 @@ class _ResponsesReasoningExtractor:
         return "", held
 
     def finish(self) -> tuple[str, str]:
-        structured_tail = ""
-        if self._structured_buffer:
-            from core.inference.chat_template_helpers import (
-                neutralize_think_markup_streaming,
-            )
-            structured_tail, self._structured_buffer = neutralize_think_markup_streaming(
-                self._structured_buffer, finalize = True
-            )
+        # Structured reasoning is emitted verbatim as it arrives, so only the
+        # think-marker holdback on the text channel can still be pending.
         if not self._buffer:
-            return structured_tail, ""
+            return "", ""
         remaining = self._buffer
         self._buffer = ""
         if not self._parse_think_markers:
-            return structured_tail, remaining
+            return "", remaining
         if self._in_reasoning:
             # No more bytes are coming: resolve any held close tags now.
             reasoning, visible, _closed = self._resolve_held_reasoning(remaining)
             self._in_reasoning = False
             self._reset_span()
-            return structured_tail + reasoning, visible
-        return structured_tail, remaining.replace(_RESPONSES_THINK_CLOSE, "")
+            return reasoning, visible
+        return "", remaining.replace(_RESPONSES_THINK_CLOSE, "")
 
 
 def _extract_responses_reasoning(
@@ -13584,14 +13546,12 @@ async def _responses_stream(
                         },
                     )
                 if delta.get("tool_calls"):
-                    # Tool-call delta: flush held reasoning first so the
-                    # reasoning item keeps its output_index before the call.
-                    _held_tail = extractor.flush_structured()
-                    # The raw holdback too: a marker cannot continue across the
-                    # item boundary, so a quoted prefix such as `echo "</thi`
-                    # is plain text and belongs before the call, not after it.
-                    _held_reasoning, _held_visible = extractor.flush_pending()
-                    _held_tail += _held_reasoning
+                    # Tool-call delta: flush the held think-marker prefix first
+                    # so the reasoning item keeps its output_index before the
+                    # call. A marker cannot continue across the item boundary,
+                    # so a quoted prefix such as `echo "</thi` is plain text and
+                    # belongs before the call, not after it.
+                    _held_tail, _held_visible = extractor.flush_pending()
                     if _held_visible:
                         visible_delta = _held_visible + visible_delta
                     if _held_tail:

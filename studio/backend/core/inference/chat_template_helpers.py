@@ -186,13 +186,6 @@ def neutralize_turn_boundary_markup(text: str) -> str:
 # rewriting these would leave ``required`` naming a property the schema no
 # longer declares (OpenAI strict mode rejects that outright, and Gemini
 # requires every ``propertyOrdering`` entry to be a valid key) (#7066).
-#
-# Deliberately NOT extended to ``enum`` / ``const`` / ``default`` / ``pattern``:
-# those carry VALUES the model is asked to emit, not names of declared
-# properties, so a control marker inside them is exactly the injection this pass
-# exists to neutralize. Rewriting them cannot desynchronize the schema the way
-# rewriting ``required`` would, so the asymmetry is intended - please do not
-# "fix" it by moving those keywords in here (#7334).
 _SCHEMA_NAME_LIST_KEYS = frozenset({"required", "propertyOrdering"})
 # Same, one level deeper: {"dependentRequired": {"a": ["b"]}} maps a property
 # name to the names it pulls in. The object-valued (sub-schema) form of
@@ -201,6 +194,21 @@ _SCHEMA_NAME_MAP_KEYS = frozenset({"dependentRequired", "dependencies"})
 # Pointers and the anchors they resolve against: "#/$defs/<name>" has to keep
 # matching the $defs key it names, which this pass leaves alone (#7066).
 _SCHEMA_REF_KEYS = frozenset({"$ref", "$dynamicRef", "$id", "$anchor", "$dynamicAnchor", "$schema"})
+# Keywords carrying a VALUE the model must reproduce byte for byte. A tool
+# schema is not only prompt text: llama.cpp compiles ``const`` / ``enum`` into
+# literal GBNF rules and ``pattern`` into a regex rule
+# (common/json-schema-to-grammar.cpp) and constrains tool-call sampling with the
+# result, so rewriting one makes the decoder emit the REWRITTEN value. Nothing
+# maps it back before the call is returned or executed, so it fails the schema
+# the client declared. Preserving them costs no protection either: a ``</think>``
+# here only reaches the prompt, and the think parser reads model OUTPUT (#7334).
+_SCHEMA_VALUE_KEYS = frozenset({"const", "default", "enum", "examples", "pattern"})
+# Keywords whose value maps a CALLER-CHOSEN name to a sub-schema. Their keys are
+# names, so a property genuinely called "enum" or "pattern" must not be read as
+# the keyword one level down and skip neutralization of its own prose (#7334).
+_SCHEMA_SUBSCHEMA_MAP_KEYS = frozenset(
+    {"properties", "patternProperties", "$defs", "definitions", "dependentSchemas"}
+)
 
 
 def _is_schema_name_list(item) -> bool:
@@ -214,6 +222,11 @@ def _is_schema_name_reference(key, item) -> bool:
     if key in _SCHEMA_REF_KEYS:
         return isinstance(item, str)
     return key in _SCHEMA_NAME_LIST_KEYS and _is_schema_name_list(item)
+
+
+def _is_schema_constrained_value(key) -> bool:
+    """True when ``key`` holds a value the model must emit exactly, not prose."""
+    return isinstance(key, str) and key in _SCHEMA_VALUE_KEYS
 
 
 def _is_schema_dependency_map(key, item) -> bool:
@@ -240,7 +253,7 @@ def _neutralize_schema_dependency_map(value):
     return out if changed else value
 
 
-def neutralize_control_markup_deep(value, *, schema: bool = False):
+def neutralize_control_markup_deep(value, *, schema: bool = False, named_keys: bool = False):
     """Recursively neutralize control markers in every string *value* of a
     nested dict/list structure (tool schemas / tool-call argument JSON).
 
@@ -248,24 +261,34 @@ def neutralize_control_markup_deep(value, *, schema: bool = False):
     identifiers, not prompt prose: renaming a schema property would hand the
     model an argument name the client never declared, and nothing maps it back
     on the generated tool call. With ``schema = True`` the name lists mirroring
-    those keys (``required`` and friends) are preserved for the same reason;
-    tool-call arguments carry no such references, so their data is always
-    rewritten. Returns the same object when nothing changed so callers keep
-    byte-identical payloads on the common path (#7066).
+    those keys (``required`` and friends) are preserved for the same reason, and
+    so are the constrained values (``enum`` and friends) the schema compiles
+    into the decoder's grammar; tool-call arguments carry neither, so their data
+    is always rewritten. ``named_keys`` marks a mapping whose own keys are
+    caller-chosen names (``properties`` and friends), so they are not read as
+    schema keywords. Returns the same object when nothing changed so callers
+    keep byte-identical payloads on the common path (#7066).
     """
     if isinstance(value, str):
         return neutralize_non_assistant_control_markup(value)
     if isinstance(value, dict):
         changed = False
         out = {}
+        keywords = schema and not named_keys
         for key, item in value.items():
-            if schema and _is_schema_name_reference(key, item):
+            if keywords and (
+                _is_schema_name_reference(key, item) or _is_schema_constrained_value(key)
+            ):
                 out[key] = item
                 continue
-            if schema and _is_schema_dependency_map(key, item):
+            if keywords and _is_schema_dependency_map(key, item):
                 new_item = _neutralize_schema_dependency_map(item)
             else:
-                new_item = neutralize_control_markup_deep(item, schema = schema)
+                new_item = neutralize_control_markup_deep(
+                    item,
+                    schema = schema,
+                    named_keys = keywords and key in _SCHEMA_SUBSCHEMA_MAP_KEYS,
+                )
             if new_item is not item and new_item != item:
                 changed = True
             out[key] = new_item
@@ -285,12 +308,20 @@ def neutralize_control_markup_deep(value, *, schema: bool = False):
 def neutralize_tools_control_markup(tools):
     """Neutralize think / ChatML control markers in client tool schemas (#7066).
 
-    Tool function descriptions, parameter text, and enum values are rendered
-    into the chat template as prompt text, so a schema containing ``</think>``
-    or ``<|im_start|>`` would otherwise bypass message-level neutralization.
-    ``required`` / ``propertyOrdering`` name the declared properties, whose keys
-    this pass leaves alone, so they are preserved too: rewriting one would point
-    the schema at a property it no longer declares.
+    Tool function descriptions and parameter prose are rendered into the chat
+    template as prompt text, so a schema containing ``</think>`` or
+    ``<|im_start|>`` would otherwise bypass message-level neutralization.
+
+    Two categories are preserved verbatim instead. ``required`` /
+    ``propertyOrdering`` name the declared properties, whose keys this pass
+    leaves alone, so rewriting one would point the schema at a property it no
+    longer declares. ``enum`` / ``const`` / ``default`` / ``examples`` /
+    ``pattern`` carry values, and a schema is not only prompt text: llama-server
+    compiles it into the GBNF grammar that constrains tool-call sampling, so
+    rewriting one makes the decoder emit the rewritten value and nothing maps it
+    back before the call reaches the client. Prose keeps its rewrite because a
+    ``</think>`` in the PROMPT is harmless anyway - the think parser reads model
+    OUTPUT - while a turn sentinel there is not (#7334).
     """
     if not tools:
         return tools

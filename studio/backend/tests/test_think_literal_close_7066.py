@@ -410,15 +410,41 @@ def test_mismatched_quote_flanks_structural_across_deltas():
     assert visible == '"yes"'
 
 
-def test_structured_reasoning_content_is_neutralized():
+def test_structured_reasoning_content_is_emitted_verbatim():
+    """A typed reasoning_content field is data, not markup (#7334).
+
+    The channel already IS reasoning, so nothing parses think tags out of it.
+    Rewriting a literal ``</think>`` there bought no protection and changed the
+    model output clients persist, compare or copy, with no reverse mapping.
+    """
     ex = _ResponsesReasoningExtractor(parse_think_markers = True)
     reasoning, visible = ex.feed(
         text = "",
         reasoning_content = 'echo "</think>" then continue',
     )
     assert visible == ""
-    assert "</think>" not in reasoning
-    assert "echo" in reasoning
+    assert reasoning == 'echo "</think>" then continue'
+    # A marker split across deltas is no longer held back either: each delta is
+    # forwarded as it arrives, so the concatenation stays byte-exact.
+    ex2 = _ResponsesReasoningExtractor(parse_think_markers = True)
+    first, _ = ex2.feed(text = "", reasoning_content = "tail </thi")
+    second, _ = ex2.feed(text = "", reasoning_content = "nk> done")
+    assert first + second == "tail </think> done"
+    assert ex2.finish() == ("", "")
+
+
+def test_structured_reasoning_still_precedes_visible_text():
+    """Dropping the holdback must not reorder reasoning after the message.
+
+    ``feed`` returns ``(reasoning, visible)`` and the caller emits the reasoning
+    delta first, so a chunk carrying both keeps reasoning ahead of content, and
+    nothing is left pending for a later tool-call boundary to release (#7334).
+    """
+    ex = _ResponsesReasoningExtractor(parse_think_markers = True)
+    reasoning, visible = ex.feed(text = "Answer.", reasoning_content = "thought </thi")
+    assert reasoning == "thought </thi"
+    assert visible == "Answer."
+    assert ex.flush_pending() == ("", "")
 
 
 def test_quoted_close_tag_split_across_feeds_stays_in_reasoning():
@@ -860,10 +886,13 @@ def test_neutralize_tools_control_markup_deep():
         }
     ]
     out = neutralize_tools_control_markup(tools)
-    dumped = json.dumps(out)
-    assert "</think>" not in dumped
-    assert "<|im_start|>" not in dumped
-    assert "<|im_end|>" not in dumped
+    mode = out[0]["function"]["parameters"]["properties"]["mode"]
+    # Prose is rewritten...
+    assert "</think>" not in out[0]["function"]["description"]
+    assert "<|im_start|>" not in out[0]["function"]["description"]
+    assert "</think>" not in mode["description"]
+    # ...but the enum is a decoder constraint and stays byte-exact (#7334).
+    assert mode["enum"] == ["<|im_end|>", "plain"]
     # Field names and structure preserved.
     assert out[0]["function"]["name"] == "run"
     assert out[0]["function"]["parameters"]["properties"]["mode"]["type"] == "string"
@@ -1000,6 +1029,93 @@ def test_neutralize_tools_control_markup_keeps_schema_pointers():
     assert "</think>" not in params["$defs"]["q</think>"]["description"]
 
 
+def test_neutralize_tools_control_markup_keeps_constrained_values_exact():
+    """Value-bearing keywords are decoder constraints, not prompt prose (#7334).
+
+    llama-server compiles ``enum`` / ``const`` into literal GBNF rules and
+    ``pattern`` into a regex rule, then constrains tool-call sampling with the
+    result. Rewriting one makes the model emit the rewritten value, and nothing
+    maps it back, so the generated call fails the schema the client declared.
+    """
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "strip_thinking",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "close_tag": {
+                            "type": "string",
+                            "description": "the </think> tag to strip",
+                            "enum": ["</think>", "</reasoning>"],
+                            "default": "</think>",
+                            "pattern": "^</think>$",
+                            "examples": ["</think>"],
+                        },
+                        "mode": {"type": "string", "const": "</think>"},
+                    },
+                    "required": ["close_tag"],
+                },
+            },
+        }
+    ]
+    props = neutralize_tools_control_markup(tools)[0]["function"]["parameters"]["properties"]
+    tag = props["close_tag"]
+    assert tag["enum"] == ["</think>", "</reasoning>"]
+    assert tag["default"] == "</think>"
+    assert tag["pattern"] == "^</think>$"
+    assert tag["examples"] == ["</think>"]
+    assert props["mode"]["const"] == "</think>"
+    # The description beside them is prose and is still rewritten.
+    assert "</think>" not in tag["description"]
+    # A schema whose only markers sit in constrained values is now unchanged,
+    # so the caller keeps the exact object it passed in.
+    only_values = [
+        {
+            "type": "function",
+            "function": {
+                "name": "pick",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"m": {"type": "string", "enum": ["<|im_start|>"]}},
+                },
+            },
+        }
+    ]
+    assert neutralize_tools_control_markup(only_values) is only_values
+
+
+def test_a_property_named_like_a_schema_keyword_is_still_neutralized():
+    """``properties`` keys are caller-chosen names, not JSON-Schema keywords.
+
+    A tool with a parameter genuinely called ``pattern`` or ``enum`` must not
+    have its sub-schema mistaken for the keyword and skipped, or its prose
+    reaches the prompt raw (#7334).
+    """
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "grep",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string", "description": "regex </think> here"},
+                        "enum": {"type": "string", "description": "pick <|im_start|> one"},
+                        "const": {"type": "string", "description": "fixed </think> value"},
+                    },
+                },
+            },
+        }
+    ]
+    props = neutralize_tools_control_markup(tools)[0]["function"]["parameters"]["properties"]
+    assert list(props) == ["pattern", "enum", "const"]
+    assert "</think>" not in props["pattern"]["description"]
+    assert "<|im_start|>" not in props["enum"]["description"]
+    assert "</think>" not in props["const"]["description"]
+
+
 def test_tool_call_arguments_still_neutralize_a_required_key():
     """The name-reference carve-out is schema-only; argument data is rewritten."""
     out = neutralize_tool_call_arguments(
@@ -1060,12 +1176,16 @@ def test_anthropic_client_tools_are_neutralized():
         }
     ]
     neutralized = neutralize_tools_control_markup(anthropic_tools_to_openai(anthropic_tools))
-    dumped = json.dumps(neutralized)
+    mode = neutralized[0]["function"]["parameters"]["properties"]["mode"]
+    dumped = json.dumps(
+        {"fn": neutralized[0]["function"]["description"], "arg": mode["description"]}
+    )
     assert "</think>" not in dumped
     assert "<|im_start|>" not in dumped
-    assert "<|im_end|>" not in dumped
     # Human-readable neutralized form is retained and structure is preserved.
     assert "im_start" in dumped
+    # The enum is a decoder constraint, so it survives this path too (#7334).
+    assert mode["enum"] == ["<|im_end|>", "plain"]
     assert neutralized[0]["function"]["name"] == "search"
     assert neutralized[0]["function"]["parameters"]["properties"]["mode"]["type"] == "string"
 
@@ -1685,11 +1805,15 @@ def test_a_held_quoted_close_is_not_flushed_raw_into_the_reasoning_item():
     assert extractor.feed("All done.", None) == ("", "All done.")
 
 
-def test_the_tool_call_branch_releases_both_holdbacks():
-    """Flushing only the structured buffer leaves the raw one to reorder."""
+def test_the_tool_call_branch_releases_the_marker_holdback():
+    """The think-marker holdback must be released before the call item.
+
+    Structured reasoning is forwarded verbatim as it arrives (#7334), so the
+    only pending text at a tool-call boundary is the raw marker prefix; leaving
+    it buffered reorders it after the call.
+    """
     src = (Path(__file__).resolve().parents[1] / "routes/inference.py").read_text(encoding = "utf-8")
-    branch = src.split("# Tool-call delta: flush held reasoning first", 1)[1][:900]
-    assert "extractor.flush_structured()" in branch
+    branch = src.split("# Tool-call delta: flush the held think-marker prefix", 1)[1][:900]
     assert "extractor.flush_pending()" in branch
 
 
