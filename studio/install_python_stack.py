@@ -2850,10 +2850,15 @@ def _has_working_git() -> bool:
     if exe is None:
         return False
     try:
-        return subprocess.run(
-            [exe, "--version"], stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL,
-            timeout = 30,
-        ).returncode == 0
+        return (
+            subprocess.run(
+                [exe, "--version"],
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+                timeout = 30,
+            ).returncode
+            == 0
+        )
     except (OSError, subprocess.SubprocessError):
         return False
 
