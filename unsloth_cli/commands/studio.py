@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import List, Literal, Optional
 import typer
 
+from unsloth_cli import _studio_deps
 from unsloth_cli.commands import _password_prompt
 
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
@@ -227,6 +228,15 @@ def _find_run_py() -> Optional[Path]:
         for match in (STUDIO_HOME / "unsloth_studio").glob(pattern):
             return match
     return None
+
+
+def _install_state() -> dict:
+    """verify_install() result for this install root.
+
+    STUDIO_HOME is an extra search root so a CLI installed outside the managed
+    venv still inspects the venv the desktop app launches.
+    """
+    return _studio_deps.install_state(extra_roots = (STUDIO_HOME / "unsloth_studio",))
 
 
 _RUN_MODULE = None
@@ -1555,7 +1565,8 @@ def studio_default(
             typer.echo("Unsloth Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
 
-    run_mod = _load_run_module()
+    with _studio_deps.studio_backend_imports("unsloth studio"):
+        run_mod = _load_run_module()
     run_server = run_mod.run_server
 
     if not silent:
@@ -2201,7 +2212,8 @@ def run(
             os.environ.pop(_START_API_KEY_MARKER_ENV, None)
 
     # ── 2. Start server (always suppress built-in banner) ─────────────
-    run_mod = _load_run_module()
+    with _studio_deps.studio_backend_imports("unsloth studio"):
+        run_mod = _load_run_module()
     run_server = run_mod.run_server
 
     # Match the route handlers' import path: run.py adds studio/backend/ to
@@ -2804,12 +2816,18 @@ def desktop_capabilities(
         help = "Emit machine-readable JSON.",
     ),
 ):
+    state = _install_state()
     payload = {
         "desktop_protocol_version": 1,
-        "desktop_manageability_version": 1,
+        # 2 adds studio_install_ok; the desktop treats < 2 as stale rather than
+        # guess at an absent field.
+        "desktop_manageability_version": 2,
         "supports_provision_desktop_auth": True,
         "supports_api_only": True,
         "supports_desktop_backend_ownership": True,
+        # Did the install finish and are the backend's boot deps still there.
+        "studio_install_ok": bool(state["ok"]),
+        "studio_install_reason": state["reason"],
         "version": "unknown",
     }
     try:
@@ -2824,6 +2842,36 @@ def desktop_capabilities(
 
     for key, value in payload.items():
         typer.echo(f"{key}: {value}")
+
+
+@studio_app.command("verify-install")
+def verify_install(
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help = "Emit machine-readable JSON.",
+    ),
+):
+    """Check that the Unsloth Studio dependency install completed.
+
+    Exits 0 when complete, 1 otherwise. setup.sh / setup.ps1 use the exit code
+    to decide whether the "already up to date" fast path may be taken.
+    """
+    state = _install_state()
+
+    if json_output:
+        typer.echo(json.dumps(state, sort_keys = True))
+        raise typer.Exit(0 if state["ok"] else 1)
+
+    if state["ok"]:
+        typer.echo("Unsloth Studio install is complete.")
+        raise typer.Exit(0)
+
+    typer.echo(f"Unsloth Studio install is incomplete ({state['reason']}).")
+    if state["missing"]:
+        typer.echo(f"  missing packages: {', '.join(state['missing'])}")
+    typer.echo("  repair with: unsloth studio update")
+    raise typer.Exit(1)
 
 
 @studio_app.command("provision-desktop-auth", hidden = True)
