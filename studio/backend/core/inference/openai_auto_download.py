@@ -778,7 +778,11 @@ async def _dispatch(
 
     monitor_id = api_monitor.record_lifecycle(
         # Only an API request reaches auto-download, hence reason "api".
-        event = "download", model = label, reason = "api", running = True, via_api_key = True
+        event = "download",
+        model = label,
+        reason = "api",
+        running = True,
+        via_api_key = True,
     )
     with _lock:
         if _active is active:
