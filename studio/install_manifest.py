@@ -152,8 +152,8 @@ def read_manifest(root: Optional[Path] = None) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
-def _parse_requirement_line(line: str) -> Optional[Tuple[str, str]]:
-    """(distribution name, marker) for a requirements line, or None.
+def _parse_requirement_line(line: str) -> Optional[Tuple[str, str, str]]:
+    """(distribution name, marker, specifier) for a requirement, or None.
 
     Covers what studio.txt uses: names, specifiers, inline comments, markers.
     pip flags are skipped.
@@ -161,6 +161,16 @@ def _parse_requirement_line(line: str) -> Optional[Tuple[str, str]]:
     text = line.split("#", 1)[0].strip()
     if not text or text.startswith("-"):
         return None
+    try:
+        from packaging.requirements import Requirement
+        requirement = Requirement(text)
+        return (
+            requirement.name,
+            str(requirement.marker or ""),
+            str(requirement.specifier),
+        )
+    except Exception:
+        pass
     marker = ""
     if ";" in text:
         text, marker = text.split(";", 1)
@@ -171,7 +181,7 @@ def _parse_requirement_line(line: str) -> Optional[Tuple[str, str]]:
         if idx > 0:
             name = name[:idx]
     name = name.strip()
-    return (name, marker) if name else None
+    return (name, marker, "") if name else None
 
 
 def _marker_applies(marker: str) -> bool:
@@ -189,15 +199,23 @@ def _marker_applies(marker: str) -> bool:
         return True
 
 
+def _version_satisfies(version: str, specifier: str) -> bool:
+    if not specifier:
+        return True
+    try:
+        from packaging.specifiers import SpecifierSet
+        return SpecifierSet(specifier).contains(version)
+    except Exception:
+        return False
+
+
 def missing_requirements(
     req_file: Optional[Path] = None, installed: Optional[Dict[str, str]] = None
 ) -> List[str]:
-    """Distribution names from a requirements file that are not installed.
+    """Distribution names that are missing or outside their required versions.
 
-    Presence only, never specifiers: later steps deliberately move some pins, so
-    a mismatch is normal. Checked via importlib.metadata, not import names,
-    because studio.txt lists PyJWT / python-docx / pymupdf whose import names
-    (jwt, docx, fitz) differ.
+    Checked via importlib.metadata, not import names, because studio.txt lists
+    PyJWT / python-docx / pymupdf whose import names (jwt, docx, fitz) differ.
 
     `installed` (canonical distribution name -> version) checks a venv other
     than the one running this code, which importlib.metadata cannot see.
@@ -215,19 +233,23 @@ def missing_requirements(
         parsed = _parse_requirement_line(line)
         if parsed is None:
             continue
-        name, marker = parsed
+        name, marker, specifier = parsed
         if not _marker_applies(marker):
             continue
         if installed is not None:
-            if _canonical(name) not in installed:
+            version = installed.get(_canonical(name))
+            if version is None or not _version_satisfies(version, specifier):
                 missing.append(name)
             continue
         try:
-            distribution(name)
+            dist = distribution(name)
         except PackageNotFoundError:
             missing.append(name)
         except Exception:
-            continue
+            missing.append(name)
+        else:
+            if not _version_satisfies(dist.version, specifier):
+                missing.append(name)
     return missing
 
 

@@ -51,16 +51,34 @@ def install_root(tmp_path: pathlib.Path) -> pathlib.Path:
 
 
 def test_parse_requirement_line_handles_the_shapes_studio_txt_uses():
-    assert im._parse_requirement_line("structlog>=24.1.0") == ("structlog", "")
-    assert im._parse_requirement_line("matplotlib==3.10.9") == ("matplotlib", "")
-    assert im._parse_requirement_line("boto3>=1.34.0  # optional: S3") == ("boto3", "")
-    assert im._parse_requirement_line("uvicorn[standard]") == ("uvicorn", "")
+    assert im._parse_requirement_line("structlog>=24.1.0") == ("structlog", "", ">=24.1.0")
+    assert im._parse_requirement_line("matplotlib==3.10.9") == ("matplotlib", "", "==3.10.9")
+    assert im._parse_requirement_line("boto3>=1.34.0  # optional: S3") == (
+        "boto3",
+        "",
+        ">=1.34.0",
+    )
+    assert im._parse_requirement_line("uvicorn[standard]") == ("uvicorn", "", "")
     assert im._parse_requirement_line("# just a comment") is None
     assert im._parse_requirement_line("") is None
     assert im._parse_requirement_line("--index-url https://example.invalid") is None
-    name, marker = im._parse_requirement_line("pywin32 ; sys_platform == 'win32'")
+    name, marker, specifier = im._parse_requirement_line("pywin32 ; sys_platform == 'win32'")
     assert name == "pywin32"
-    assert marker == "sys_platform == 'win32'"
+    assert "sys_platform" in marker
+    assert specifier == ""
+
+
+def test_missing_requirements_rejects_an_incompatible_installed_version(tmp_path):
+    req = tmp_path / "studio.txt"
+    req.write_text(
+        "matplotlib==3.10.9\nstructlog>=24.1.0\n",
+        encoding = "utf-8",
+    )
+    installed = {
+        "matplotlib": "3.9.0",
+        "structlog": "24.1.0",
+    }
+    assert im.missing_requirements(req, installed = installed) == ["matplotlib"]
 
 
 def test_platform_gated_lines_are_skipped_when_the_marker_does_not_apply(tmp_path):

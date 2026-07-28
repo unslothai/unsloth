@@ -440,7 +440,7 @@ def load_chat_backend(
     """
     from unsloth_cli._studio_deps import studio_backend_imports
 
-    with studio_backend_imports("unsloth inference"), quiet_if_nonzero_mlx_rank():
+    with studio_backend_imports("unsloth inference", studio_only = True), quiet_if_nonzero_mlx_rank():
         is_mlx_distributed, rank, _world_size = mlx_distributed_info()
         if model_config is None:
             model_config = resolve_model_config(model, hf_token = hf_token)

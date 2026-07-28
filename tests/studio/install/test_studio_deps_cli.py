@@ -47,7 +47,25 @@ _MANIFEST = _load(MANIFEST_PATH, "install_manifest_for_deps_test")
 def _studio_distributions() -> list:
     lines = (REQUIREMENTS / "studio.txt").read_text(encoding = "utf-8").splitlines()
     parsed = [_MANIFEST._parse_requirement_line(line) for line in lines]
-    return [name for name, _ in (p for p in parsed if p is not None)]
+    return [name for name, _, _ in (p for p in parsed if p is not None)]
+
+
+def _studio_distribution_versions() -> dict:
+    versions = {}
+    lines = (REQUIREMENTS / "studio.txt").read_text(encoding = "utf-8").splitlines()
+    for parsed in (_MANIFEST._parse_requirement_line(line) for line in lines):
+        if parsed is None:
+            continue
+        name, _marker, specifier = parsed
+        version = "1.0.0"
+        for part in specifier.split(","):
+            if part.startswith("=="):
+                version = part[2:]
+                break
+            if part.startswith(">="):
+                version = part[2:]
+        versions[name] = version
+    return versions
 
 
 def _make_venv(
@@ -68,8 +86,9 @@ def _make_venv(
             studio_txt.read_text(encoding = "utf-8") + extra_requirement, encoding = "utf-8"
         )
     (root / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding = "utf-8")
+    studio_versions = _studio_distribution_versions()
     for name in [*distributions, "unsloth"]:
-        version = unsloth_version if name == "unsloth" else "1.0.0"
+        version = unsloth_version if name == "unsloth" else studio_versions.get(name, "1.0.0")
         dist_info = site_packages / f"{name.replace('-', '_')}-{version}.dist-info"
         dist_info.mkdir()
         (dist_info / "METADATA").write_text(
@@ -216,6 +235,13 @@ def test_a_non_studio_dependency_keeps_its_own_install_line(deps):
     output = _remediation(deps, "torch", ["pyjwt"])
     assert "pip install torch" in output
     assert "also missing: pyjwt" in output
+
+
+def test_studio_only_guard_preserves_non_studio_failures(deps):
+    deps._missing_studio_packages = lambda: ["pyjwt"]
+    with pytest.raises(ModuleNotFoundError):
+        with deps.studio_backend_imports("unsloth inference", studio_only = True):
+            raise ModuleNotFoundError("No module named 'mlx'", name = "mlx")
 
 
 def test_the_import_map_only_names_studio_distributions():

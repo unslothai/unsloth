@@ -217,7 +217,7 @@ _IMPORT_TO_DISTRIBUTION = {
 
 
 @contextlib.contextmanager
-def studio_backend_imports(feature: str = "This command"):
+def studio_backend_imports(feature: str = "This command", *, studio_only: bool = False):
     """Report a missing dependency as a message instead of a traceback.
 
     Only ModuleNotFoundError is intercepted; any other ImportError from the
@@ -237,6 +237,8 @@ def studio_backend_imports(feature: str = "This command"):
         needed = _IMPORT_TO_DISTRIBUTION.get(top, top)
         wanted = _canonical(needed)
         from_studio = not trigger or any(_canonical(name) == wanted for name in studio_missing)
+        if studio_only and not from_studio:
+            raise
         typer.echo(
             f"Error: {feature} needs {needed or 'a dependency'}, which is not installed.",
             err = True,
