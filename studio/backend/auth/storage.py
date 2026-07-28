@@ -713,6 +713,10 @@ def consume_refresh_token(token: str) -> Optional[Tuple[str, bool, str]]:
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
+        # One transaction with the delete: an unstamped legacy row has no
+        # generation to compare, so reading the credential after committing would
+        # hand a reset's new secret to a token issued before it.
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             "DELETE FROM refresh_tokens WHERE expires_at < ?",
             (now,),
@@ -726,10 +730,11 @@ def consume_refresh_token(token: str) -> Optional[Tuple[str, bool, str]]:
             (token_hash, now),
         )
         row = cur.fetchone()
-        conn.commit()
         if row is None:
+            conn.commit()
             return None
         secret = _current_secret(conn, row["username"])
+        conn.commit()
         if secret is None:
             return None
         if row["secret_gen"] is not None and row["secret_gen"] != credential_generation(secret):
@@ -993,15 +998,25 @@ def revoke_internal_api_key(key_id: int) -> bool:
 
 
 def validate_api_key(raw_key: str) -> Optional[str]:
-    """Validate *raw_key* and return the owning username, or ``None``.
+    """Validate *raw_key* and return the owning username, or ``None``."""
+    verified = validate_api_key_with_credential(raw_key)
+    return verified[0] if verified else None
 
-    Also updates ``last_used_at`` on success.
+
+def validate_api_key_with_credential(raw_key: str) -> Optional[Tuple[str, str]]:
+    """Validate *raw_key* and return ``(username, jwt_secret)``, or ``None``.
+
+    Also updates ``last_used_at`` on success. The key check and the credential
+    read share one write transaction, so the returned version is the one the key
+    was actually valid under: a reset committing right after cannot have its new
+    generation handed to a request the key it revoked authenticated.
     """
     cache_id = _api_key_cache_id(raw_key)
     cached_hash = _api_key_hash_cache.get(cache_id)
     key_hash = cached_hash if cached_hash is not None else _pbkdf2_api_key(raw_key)
     conn = get_connection()
     try:
+        conn.execute("BEGIN IMMEDIATE")
         cur = conn.execute(
             "SELECT id, username, is_active, expires_at FROM api_keys WHERE key_hash = ?",
             (key_hash,),
@@ -1021,11 +1036,15 @@ def validate_api_key(raw_key: str) -> Optional[str]:
             expires = datetime.fromisoformat(row["expires_at"])
             if datetime.now(timezone.utc) > expires:
                 return None
+        secret = _current_secret(conn, row["username"])
+        if secret is None:
+            return None
         conn.execute(
             "UPDATE api_keys SET last_used_at = ? WHERE id = ?",
             (datetime.now(timezone.utc).isoformat(), row["id"]),
         )
         conn.commit()
-        return row["username"]
+        return row["username"], secret
     finally:
+        conn.rollback()
         conn.close()

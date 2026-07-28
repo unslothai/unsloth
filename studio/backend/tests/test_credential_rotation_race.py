@@ -195,6 +195,51 @@ def test_internal_api_key_minting_honours_the_request_generation(admin):
         )
 
 
+def test_api_key_auth_reports_the_version_the_key_was_valid_under(admin):
+    # The generation must come from the same transaction as the key check, or a
+    # revoked key could hand a route the post-reset generation and mint again.
+    raw, _row = storage.create_api_key(username = admin, name = "agent")
+    verified = storage.validate_api_key_with_credential(raw)
+    assert verified is not None
+    _user, secret = verified
+    generation = storage.credential_generation(secret)
+
+    storage.update_password(admin, "new-password-456", revoke_refresh_tokens = True)
+    conn = storage.get_connection()
+    try:
+        conn.execute("DELETE FROM api_keys")
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert storage.validate_api_key(raw) is None
+    with pytest.raises(storage.CredentialRotated):
+        storage.create_api_key(username = admin, name = "after", expect_gen = generation)
+
+
+def test_consuming_a_legacy_token_reports_the_pre_reset_credential(admin):
+    # An unstamped row has no generation to compare, so consume must read the
+    # credential inside the delete transaction rather than after committing it.
+    token = secrets.token_urlsafe(48)
+    expires_at = (datetime.now(timezone.utc) + timedelta(days = 7)).isoformat()
+    storage.save_refresh_token(token, admin, expires_at, secret_gen = None)
+    conn = storage.get_connection()
+    try:
+        conn.execute("UPDATE refresh_tokens SET secret_gen = NULL")
+        conn.commit()
+    finally:
+        conn.close()
+
+    consumed = storage.consume_refresh_token(token)
+    assert consumed is not None
+    _username, _is_desktop, consumed_secret = consumed
+
+    storage.update_password(admin, "new-password-456", revoke_refresh_tokens = True)
+    access = create_access_token(subject = admin, secret = consumed_secret)
+    with pytest.raises(jwt.InvalidTokenError):
+        jwt.decode(access, storage.get_jwt_secret(admin), algorithms = [ALGORITHM])
+
+
 def test_unstamped_legacy_tokens_still_verify(admin):
     # Rows written before the secret_gen column existed must not log users out.
     token = secrets.token_urlsafe(48)

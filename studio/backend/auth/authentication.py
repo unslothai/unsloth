@@ -17,6 +17,7 @@ from .storage import (
     load_jwt_secret,
     save_refresh_token,
     validate_api_key,
+    validate_api_key_with_credential,
     verify_refresh_token,
 )
 
@@ -225,14 +226,14 @@ async def _get_current_credential(
 
     # --- API key path (sk-unsloth-...) ---
     if token.startswith(API_KEY_PREFIX):
-        username = validate_api_key(token)
-        if username is None:
+        verified = validate_api_key_with_credential(token)
+        if verified is None:
             raise HTTPException(
                 status_code = status.HTTP_401_UNAUTHORIZED,
                 detail = _invalid_api_key_detail(token),
             )
-        secret = get_jwt_secret(username)
-        return username, credential_generation(secret) if secret is not None else None
+        username, secret = verified
+        return username, credential_generation(secret)
 
     # --- JWT path ---
     subject = _decode_subject_without_verification(token)
