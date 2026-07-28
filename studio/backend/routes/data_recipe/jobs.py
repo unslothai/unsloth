@@ -260,7 +260,9 @@ def _inject_local_structured_response_format(
 
 
 def _inject_local_providers(
-    recipe: dict[str, Any], request: Request, expect_gen: Optional[str] = None
+    recipe: dict[str, Any],
+    request: Request,
+    expect_gen: Optional[str] = None,
 ) -> Optional[int]:
     """Mutate recipe in-place: point is_local providers at this server and mint
     a short-lived internal sk-unsloth-* key for workflow auth.

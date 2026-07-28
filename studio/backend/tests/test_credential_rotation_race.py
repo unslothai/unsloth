@@ -166,7 +166,9 @@ def test_change_password_tokens_are_bound_to_its_own_write(admin):
     # secret that write produced, not whatever a later reset put in the DB.
     _salt, verified_hash, _secret, _must = storage.get_user_and_secret(admin)
     new_secret = storage.update_password(
-        admin, "chosen-by-the-user", revoke_refresh_tokens = True,
+        admin,
+        "chosen-by-the-user",
+        revoke_refresh_tokens = True,
         expect_password_hash = verified_hash,
     )
     assert new_secret is not None
@@ -186,8 +188,10 @@ def test_internal_api_key_minting_honours_the_request_generation(admin):
 
     with pytest.raises(storage.CredentialRotated):
         storage.create_api_key(
-            username = admin, name = "data-recipe workflow",
-            internal = True, expect_gen = generation,
+            username = admin,
+            name = "data-recipe workflow",
+            internal = True,
+            expect_gen = generation,
         )
 
 
