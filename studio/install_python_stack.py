@@ -1254,26 +1254,46 @@ _rocm_windows_torch_installed: bool = False
 
 
 def _install_bnb_windows_rocm() -> bool:
-    """Install the AMD Windows BNB prerelease wheel. Returns True on success.
+    """Install AMD Windows BNB, pre-release wheel first. Returns True on success.
 
     The wheel's filename version (1.33.7.preview, PEP 440 1.33.7rc0) does not
     match its metadata (0.50.x.dev0). uv rejects the mismatch and still mangles
     the install under UV_SKIP_WHEEL_FILENAME_CHECK, so force plain pip, which
     performs no such check. Per the AMD install guide
     (https://unsloth.ai/docs/get-started/install/amd/amd-hackathon).
+
+    When that URL is blocked, fall back to PyPI. Its win_amd64 wheel ships
+    libbitsandbytes_rocm{714,72}.dll from 0.50.0 on, so the fallback is a real
+    ROCm build; before 0.50.0 it was CUDA-only, which is why there was none.
     """
     _bnb_win_url = _BNB_ROCM_PRERELEASE_URLS.get("win_amd64")
-    if _bnb_win_url is None:
-        return False
-    _ok = pip_install_try(
-        "bitsandbytes (AMD Windows, pre-release main)",
-        "--force-reinstall",
-        "--no-cache-dir",
-        "--no-deps",
-        _bnb_win_url,
-        constrain = False,
-        force_pip = True,
-    )
+    _ok = False
+    if _bnb_win_url is not None:
+        _ok = pip_install_try(
+            "bitsandbytes (AMD Windows, pre-release main)",
+            "--force-reinstall",
+            "--no-cache-dir",
+            "--no-deps",
+            _bnb_win_url,
+            constrain = False,
+            force_pip = True,
+        )
+        if not _ok:
+            print(
+                _red(
+                    "   bnb pre-release install failed; falling back to PyPI "
+                    f"{_BNB_ROCM_PYPI_FALLBACK}, which carries the ROCm 4-bit fix"
+                )
+            )
+    if not _ok:
+        _ok = pip_install_try(
+            "bitsandbytes (AMD Windows)",
+            "--force-reinstall",
+            "--no-cache-dir",
+            "--no-deps",
+            _BNB_ROCM_PYPI_FALLBACK,
+            constrain = False,
+        )
     if not _ok:
         return False
     # Detect the actual ROCm DLL suffix in the wheel and set BNB_ROCM_VERSION so bnb
@@ -1763,8 +1783,8 @@ def _ensure_rocm_torch() -> None:
             pass
         if _torch_ok:
             _rocm_windows_torch_installed = True
-            # ROCm torch is already installed, but the AMD Windows BNB wheel is still
-            # needed (the PyPI bitsandbytes ships only CUDA DLLs, fails on ROCm).
+            # ROCm torch is already installed, but bnb still needs the ROCm build
+            # (pre-release wheel, else PyPI >=0.50.0).
             _install_bnb_windows_rocm()
             return
         # torch was wiped between runs; fall through to the full install path
@@ -1842,12 +1862,12 @@ def _ensure_rocm_torch() -> None:
         # separate dependency -- a BNB install failure must NOT roll back the
         # torch ROCm install.
         _rocm_windows_torch_installed = True
-        # Always install AMD Windows bitsandbytes -- the PyPI wheel ships only
-        # CUDA DLLs and fails on ROCm. Install even when torch was already a
-        # ROCm build so `studio update` repairs a broken bnb.
+        # Always install AMD Windows bitsandbytes, even when torch was already a
+        # ROCm build, so `studio update` repairs a broken bnb.
         if not _install_bnb_windows_rocm():
             print(
-                "   Warning: AMD Windows bitsandbytes install failed; "
+                "   Warning: AMD Windows bitsandbytes install failed "
+                "(pre-release and PyPI); "
                 "ROCm torch is installed but bitsandbytes may need manual install"
             )
         return
