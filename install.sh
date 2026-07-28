@@ -778,8 +778,16 @@ _smart_apt_install() {
         return 0
     fi
 
-    # In Tauri mode, report needed packages and exit — Rust handles elevation
     if [ "$TAURI_MODE" = true ]; then
+        # Optional callers never elevate. The desktop turns NEED_SUDO into a mandatory
+        # "Permission needed" dialog whose Cancel drops the user back to not-installed,
+        # so prompting for cmake, gcc or the libcurl headers would re-impose through a
+        # permission prompt the very build-tool requirement this gate removes. Nothing
+        # in that set is needed to run: the caller falls through to prebuilt llama.cpp.
+        if [ "${_SMART_APT_OPTIONAL:-false}" = true ]; then
+            return 2
+        fi
+        # Otherwise report needed packages and exit — Rust handles elevation.
         tauri_log "NEED_SUDO" "$_STILL_MISSING"
         exit 2
     fi
@@ -2100,13 +2108,12 @@ _check_linux_deps() {
     # costs the features named below, but on Debian/Ubuntu we can just get them.
     if [ -n "$_optional_missing" ] && command -v apt-get >/dev/null 2>&1; then
         step "deps" "installing optional build tools: $_optional_missing" "$C_DIM"
-        # Subshell: _smart_apt_install exits rather than returns, and `|| true`
-        # does not catch an exit, so a missing optional tool aborted the install
-        # this gate exists to let continue. Code 2 is still re-raised, it is the
-        # NEED_SUDO handshake install.rs answers with an elevation prompt.
-        _sai_rc=0
-        ( _smart_apt_install $_optional_missing ) || _sai_rc=$?
-        if [ "$_sai_rc" -eq 2 ]; then exit 2; fi
+        # Subshell: _smart_apt_install exits rather than returns, so `|| true` alone
+        # would not catch it and a missing optional tool aborted the very install this
+        # gate exists to let continue. _SMART_APT_OPTIONAL also suppresses the
+        # NEED_SUDO handshake: no install may hinge on a permission prompt for tools
+        # nothing here needs.
+        ( _SMART_APT_OPTIONAL=true; _smart_apt_install $_optional_missing ) || true
         _optional_missing=""
         command -v cmake       >/dev/null 2>&1 || _optional_missing="$_optional_missing cmake"
         _has_working_git                       || _optional_missing="$_optional_missing git"

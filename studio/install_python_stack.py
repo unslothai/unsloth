@@ -3169,6 +3169,7 @@ def install_python_stack() -> int:
     #    a boot requirement, so warn and continue rather than fail the install.
     if not IS_WINDOWS and not IS_MACOS:
         if not _has_working_git():
+            _progress("triton kernels (skipped, no git)")
             _safe_print("   no working git -- skipping triton kernels (training speedup only)")
         else:
             _progress("triton kernels")
