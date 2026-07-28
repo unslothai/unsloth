@@ -414,7 +414,11 @@ def update_openai_auto_switch_override(
                 bare_id = _bare_model_id(payload.model_id)
                 if bare_id:
                     requested_extra_args = get_model_override(bare_id).get("llama_extra_args")
-        extra_args = validate_extra_args(requested_extra_args)
+        # Not validated on an explicit remove: nothing is stored, so the only
+        # effect would be a 400 that leaves the override in place, which is the
+        # opposite of what remove means. A stale form still carrying a rejected
+        # flag must not be able to block forgetting a model.
+        extra_args = [] if payload.remove is True else validate_extra_args(requested_extra_args)
         if payload.remove is True:
             # An explicit remove wins over anything else in the payload: a stale
             # form field must not turn "forget this model" into an update that

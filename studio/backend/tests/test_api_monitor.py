@@ -468,3 +468,54 @@ def test_request_rows_report_kind_request():
     monitor = ApiMonitor(max_entries = 2)
     monitor.start(endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = "hi")
     assert monitor.snapshot()[0]["kind"] == "request"
+
+
+def test_clear_hides_shared_lifecycle_rows_for_that_caller_only():
+    """A lifecycle row is shared, so it is visible to every caller but owned by
+    none. A subject-scoped clear dropped only that subject's own rows, so the
+    shared ones survived and the reload straight after "Clear log" brought them
+    back: the button visibly did nothing to them. Dropping them outright is not
+    an option either, since that erases another caller's history.
+    """
+    monitor = ApiMonitor(max_entries = 10)
+    mine = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "org/A",
+        prompt = "user: hi",
+        subject = "alice",
+    )
+    monitor.finish(mine)
+    shared = monitor.record_lifecycle(event = "unload", model = "org/A")
+
+    assert {e["id"] for e in monitor.snapshot(subject = "alice")} == {mine, shared}
+    assert {e["id"] for e in monitor.snapshot(subject = "bob")} == {shared}
+
+    monitor.clear(subject = "alice")
+
+    assert monitor.snapshot(subject = "alice") == []
+    # Bob's view is untouched: the row is hidden for alice, not deleted.
+    assert {e["id"] for e in monitor.snapshot(subject = "bob")} == {shared}
+    assert monitor.get(shared, subject = "alice") is None
+    assert monitor.get(shared, subject = "bob") is not None
+
+
+def test_clear_leaves_a_running_shared_row_visible():
+    """A load still in progress is live state, not history, so clearing the log
+    must not hide the row that shows it."""
+    monitor = ApiMonitor(max_entries = 10)
+    running = monitor.record_lifecycle(event = "load", model = "org/A", running = True)
+    monitor.clear(subject = "alice")
+    assert {e["id"] for e in monitor.snapshot(subject = "alice")} == {running}
+
+
+def test_hidden_shared_ids_do_not_outlive_their_entries():
+    """The hidden set names rows that exist, so it stays bounded by the ring
+    buffer instead of growing for the life of the process."""
+    monitor = ApiMonitor(max_entries = 2)
+    monitor.record_lifecycle(event = "unload", model = "org/A")
+    monitor.clear(subject = "alice")
+    assert monitor._hidden_shared.get("alice")
+    for i in range(5):
+        monitor.record_lifecycle(event = "unload", model = f"org/M{i}")
+    assert not monitor._hidden_shared.get("alice")

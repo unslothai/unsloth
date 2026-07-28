@@ -125,6 +125,12 @@ class ApiMonitor:
         enabled: bool = True,
     ):
         self._entries: deque[ApiMonitorEntry] = deque()
+        # Shared rows one subject has cleared. A shared row belongs to everyone,
+        # so dropping it would erase another caller's history, but leaving it
+        # means "Clear log" visibly does nothing to it: the frontend reloads
+        # straight after and the row comes back. Hiding it per subject is the
+        # only thing that is both true for that caller and safe for the others.
+        self._hidden_shared: dict[str, set[str]] = {}
         self._max_entries = max(0, max_entries)
         self._lock = threading.Lock()
         self._enabled = enabled
@@ -403,12 +409,25 @@ class ApiMonitor:
         with self._lock:
             if subject is None:
                 self._entries.clear()
+                self._hidden_shared.clear()
                 return
+            # A shared row that is still running is a load in progress, not
+            # history, so it stays visible; clearing the log is about what has
+            # already happened.
+            hidden = self._hidden_shared.setdefault(subject, set())
+            for entry in self._entries:
+                if entry.shared and entry.subject != subject and entry.status != "running":
+                    hidden.add(entry.id)
             self._entries = deque(entry for entry in self._entries if entry.subject != subject)
 
-    @staticmethod
-    def _visible(entry: ApiMonitorEntry, subject: Optional[str]) -> bool:
-        return subject is None or entry.subject == subject or entry.shared
+    def _visible(self, entry: ApiMonitorEntry, subject: Optional[str]) -> bool:
+        if subject is None:
+            return True
+        if entry.subject == subject:
+            return True
+        if not entry.shared:
+            return False
+        return entry.id not in self._hidden_shared.get(subject, ())
 
     def _find_locked(self, entry_id: str) -> Optional[ApiMonitorEntry]:
         for entry in self._entries:
@@ -427,6 +446,13 @@ class ApiMonitor:
                 kept.append(entry)
                 terminal_seen += 1
         self._entries = kept
+        # The hidden sets only ever name rows that exist, so they stay bounded
+        # by the ring buffer rather than growing for the life of the process.
+        live = {entry.id for entry in kept}
+        for subject, hidden in list(self._hidden_shared.items()):
+            hidden &= live
+            if not hidden:
+                del self._hidden_shared[subject]
 
 
 api_monitor = ApiMonitor(enabled = not _api_monitor_disabled())

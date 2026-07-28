@@ -4648,6 +4648,24 @@ def test_case_fallback_still_covers_repo_ids(monkeypatch):
     assert settings.get_model_override("unsloth/Qwen3-8B-GGUF:Q4_K_M")["max_seq_length"] == 8192
 
 
+def test_explicit_remove_is_not_blocked_by_stale_invalid_flags(monkeypatch):
+    # remove is the operation discriminator, so a form still carrying a rejected
+    # launch flag must not turn "forget this model" into a 400 that leaves the
+    # override in place. Nothing is stored on this path, so there is nothing to
+    # validate.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("unsloth/B-GGUF", max_seq_length = 4096)
+    resp = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(
+            model_id = "unsloth/B-GGUF", remove = True, llama_extra_args = ["--port", "1234"]
+        ),
+        "tester",
+    )
+    assert "unsloth/B-GGUF" not in resp.overrides
+
+
 def test_explicit_remove_wins_over_config_fields_in_the_same_payload(monkeypatch):
     # remove is the operation discriminator, so a stale form field alongside it
     # must not quietly turn "forget this model" into an update.
