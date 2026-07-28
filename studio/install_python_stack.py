@@ -1249,7 +1249,8 @@ def _install_bnb_windows_rocm() -> bool:
     The wheel's filename version (1.33.7.preview, PEP 440 1.33.7rc0) does not
     match its metadata (0.50.x.dev0). uv rejects the mismatch and still mangles
     the install under UV_SKIP_WHEEL_FILENAME_CHECK, so force plain pip, which
-    performs no such check.
+    performs no such check. Per the AMD install guide
+    (https://unsloth.ai/docs/get-started/install/amd/amd-hackathon).
     """
     _bnb_win_url = _BNB_ROCM_PRERELEASE_URLS.get("win_amd64")
     if _bnb_win_url is None:
