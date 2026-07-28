@@ -257,9 +257,7 @@ def test_unequal_delimiter_runs_are_a_structural_close():
 
     # Equal runs still read as a mention when the leading one OPENS a span, so
     # a genuine double-backtick quotation keeps the tag inside the drawer.
-    assert (
-        _think_close_is_literal_in_span("` and ``</think>`` after", len("` and ``")) is True
-    )
+    assert _think_close_is_literal_in_span("` and ``</think>`` after", len("` and ``")) is True
 
 
 def test_intra_word_apostrophe_does_not_flip_quote_parity():

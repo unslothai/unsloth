@@ -11958,7 +11958,12 @@ def _count_quote_delimiters(
     return count
 
 
-def _delim_run_before(text: str, idx: int, ch: str, carry: int = 0) -> int:
+def _delim_run_before(
+    text: str,
+    idx: int,
+    ch: str,
+    carry: int = 0,
+) -> int:
     """Length of the run of ``ch`` ending at ``text[idx - 1]``.
 
     ``carry`` continues a run that started in already-consumed text, so the
@@ -11994,7 +11999,10 @@ def _quoted_close_run(buffer: str, close_idx: int) -> tuple[int, int]:
 
 
 def _quoted_close_runs_differ(
-    buffer: str, close_idx: int, before: str, lead_carry: int = 0
+    buffer: str,
+    close_idx: int,
+    before: str,
+    lead_carry: int = 0,
 ) -> bool:
     """True when the delimiter runs flanking ``</think>`` are not a matched pair.
 
