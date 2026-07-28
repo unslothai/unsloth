@@ -587,7 +587,9 @@ def test_write_codex_config_profile(tmp_path, monkeypatch):
     assert catalog["models"][0]["supports_reasoning_summary_parameter"] is False
     assert catalog["models"][0]["supports_parallel_tool_calls"] is False
 
-    assert catalog["models"][0]["base_instructions"] == start._CODEX_FALLBACK_PROMPT.read_text()
+    assert catalog["models"][0]["base_instructions"] == start._CODEX_FALLBACK_PROMPT.read_text(
+        encoding = "utf-8"
+    )
     config = _parse_toml((tmp_path / "config.toml").read_text())
     assert config["model_providers"]["unsloth_api"]["env_key"] == "UNSLOTH_STUDIO_AUTH_TOKEN"
 
@@ -631,7 +633,7 @@ def test_write_codex_subagent_bridge_keeps_parent_credentials_out(tmp_path, monk
         tmp_path,
         yolo = False,
     )
-    assert json.loads(path.read_text()) == {
+    assert json.loads(path.read_text(encoding = "utf-8")) == {
         "api_key": "private-token",
         "codex_home": str(tmp_path / "child"),
         "bypass_permissions": False,
@@ -1991,6 +1993,7 @@ def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch
     start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
     cmd, env = captured["command"], captured["kwargs"]["env"]
     assert "--disable-tools" in cmd and "--enable-tools" not in cmd
+    assert "--gpu-memory-mode" not in cmd
     assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
 
@@ -2202,6 +2205,59 @@ def test_connect_load_knobs_reach_server_even_when_id_loaded(fake_studio):
     assert loads == [
         ("POST", f"{BASE}/api/inference/load", {"model_path": MODEL["id"], "gguf_variant": "Q8_0"})
     ]
+
+
+@pytest.mark.parametrize(
+    "command_name", ["claude", "codex", "openclaw", "opencode", "hermes", "pi"]
+)
+def test_start_agents_expose_gpu_memory_mode_option(command_name):
+    import inspect
+
+    command = getattr(start, command_name)
+    opt = inspect.signature(command).parameters["gpu_memory_mode"].default
+    assert set(getattr(opt, "param_decls", None) or []) == {"--gpu-memory-mode"}
+    assert getattr(opt, "default", None) is None
+    assert getattr(opt, "rich_help_panel", None) == start._PANEL_MODEL
+
+
+@pytest.mark.parametrize(
+    "mode,expected",
+    [
+        ("auto", {"model_path": MODEL["id"], "gpu_memory_mode": "auto"}),
+        (
+            "manual",
+            {
+                "model_path": MODEL["id"],
+                "gpu_memory_mode": "manual",
+                "gpu_layers": -1,
+            },
+        ),
+    ],
+)
+def test_start_gpu_memory_mode_reaches_running_server(fake_studio, mode, expected):
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "claude",
+            "--no-launch",
+            "--model",
+            MODEL["id"],
+            "--gpu-memory-mode",
+            mode,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    loads = [call for call in fake_studio if call[1].endswith("/api/inference/load")]
+    assert loads == [("POST", f"{BASE}/api/inference/load", expected)]
+
+
+def test_start_rejects_invalid_gpu_memory_mode(fake_studio):
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--no-launch", "--gpu-memory-mode", "invalid"],
+    )
+    assert result.exit_code != 0
+    assert "Invalid value for '--gpu-memory-mode'" in result.output
 
 
 def test_connect_model_variant_suffix_loads_split_repo(fake_studio):
@@ -2615,7 +2671,11 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
         "http://127.0.0.1:8888",
         "unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL",
         start.LoadOptions(
-            gguf_variant = "UD-Q4_K_XL", max_seq_length = 8192, load_in_4bit = True, tensor_parallel = True
+            gguf_variant = "UD-Q4_K_XL",
+            max_seq_length = 8192,
+            load_in_4bit = True,
+            tensor_parallel = True,
+            gpu_memory_mode = "manual",
         ),
     )
     cmd = captured["command"]
@@ -2625,6 +2685,7 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     assert cmd[cmd.index("--gguf-variant") + 1] == "UD-Q4_K_XL"
     assert cmd[cmd.index("--context-length") + 1] == "8192"
     assert "--tensor-parallel" in cmd
+    assert cmd[cmd.index("--gpu-memory-mode") + 1] == "manual"
     assert "--start-api-key-marker" not in cmd
     assert captured["kwargs"]["env"][start._START_API_KEY_MARKER_ENV] == "1"
     assert start.os.environ[start._START_API_KEY_MARKER_ENV] == "parent"

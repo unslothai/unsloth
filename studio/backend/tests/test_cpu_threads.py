@@ -120,7 +120,7 @@ def _ast_line_of_platform_compat_import(source: str) -> int:
 # run.py and main.py. Robust to formatting / line shifts.
 @pytest.mark.parametrize("entry_point", [_RUN_PY, _MAIN_PY])
 def test_cpu_thread_configuration_runs_before_backend_imports(entry_point):
-    source = entry_point.read_text()
+    source = entry_point.read_text(encoding = "utf-8")
     call_line = _ast_line_of_configure_call(source)
     compat_line = _ast_line_of_platform_compat_import(source)
     assert call_line < compat_line, (

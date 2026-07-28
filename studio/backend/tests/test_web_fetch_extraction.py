@@ -761,15 +761,33 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(monkeypatch, disable_dns_pinnin
     monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", resolve)
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _FakeOpener())
 
-    err, body, _content_type = tools_mod._fetch_url_raw(
-        "https://user:secret@example.com:8443/page?q=1"
-    )
+    # No embedded credentials: the web access policy rejects those outright
+    # (see test_fetch_url_raw_rejects_embedded_credentials).
+    err, body, _content_type = tools_mod._fetch_url_raw("https://example.com:8443/page?q=1")
 
     assert err is None
     assert body == "ok"
     assert resolved == [("example.com", 8443)]
     assert [req.full_url for req in requested] == [expected_url]
     assert requested[0].get_header("Host") == "example.com:8443"
+
+
+def test_fetch_url_raw_rejects_embedded_credentials(monkeypatch):
+    # Credentials in the URL are blocked rather than stripped, so they can never
+    # leak to a redirect target or into logs.
+    import core.inference.tools as tools_mod
+
+    def resolve(host, port):
+        raise AssertionError("must be rejected before DNS resolution")
+
+    monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", resolve)
+
+    err, body, _content_type = tools_mod._fetch_url_raw(
+        "https://user:secret@example.com:8443/page?q=1"
+    )
+
+    assert err is not None and "credentials" in err
+    assert body == ""
 
 
 def test_fetch_page_text_missing_content_type_html_sniffed(monkeypatch):
