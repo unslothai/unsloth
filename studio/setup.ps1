@@ -2710,7 +2710,7 @@ function Mark-StudioOwned {
 #   to the installer-level rollback that restores the previous environment.
 # - direct `unsloth studio update` keeps the pre-existing self-repair behavior.
 # In no-torch mode, a missing torch package is expected.
-$NoTorchMode = $env:UNSLOTH_NO_TORCH -match '^(?i:true|1|yes)$'
+$NoTorchMode = $env:UNSLOTH_NO_TORCH -match '^(?i:true|1|yes|on)$'
 $env:UNSLOTH_NO_TORCH = if ($NoTorchMode) { "true" } else { "false" }
 $InstallerManagedSetup = $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -match '^(?i:true|1|yes)$'
 if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode) {
