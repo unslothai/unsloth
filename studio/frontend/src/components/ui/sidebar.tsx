@@ -24,13 +24,21 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { getClientPlatform } from "@/components/tauri/window-titlebar"
 import { useIsMobile } from "@/hooks/use-mobile"
+import {
+  SIDEBAR_WIDTH_DEFAULT,
+  SIDEBAR_WIDTH_MAX,
+  SIDEBAR_WIDTH_MIN,
+  clampSidebarWidth,
+  useSidebarWidth,
+} from "@/hooks/use-sidebar-width"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons"
 
 const noop = () => {}
 
-const SIDEBAR_WIDTH = "17.5rem"
+const SIDEBAR_WIDTH = `${SIDEBAR_WIDTH_DEFAULT}px`
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
@@ -46,6 +54,9 @@ type SidebarContextProps = {
   pinned: boolean
   setPinned: (value: boolean) => void
   togglePinned: () => void
+  width: number
+  setWidth: (value: number) => void
+  resetWidth: () => void
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -80,6 +91,7 @@ function SidebarProvider({
 }) {
   const isMobile = useIsMobile()
   const [openMobile, setOpenMobile] = React.useState(false)
+  const { width, setWidth, resetWidth } = useSidebarWidth()
 
   const prevIsMobileRef = React.useRef(isMobile)
   React.useEffect(() => {
@@ -163,8 +175,11 @@ function SidebarProvider({
       pinned,
       setPinned,
       togglePinned,
+      width,
+      setWidth,
+      resetWidth,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned]
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, width, setWidth, resetWidth]
   )
 
   return (
@@ -173,7 +188,8 @@ function SidebarProvider({
         data-slot="sidebar-wrapper"
         style={
           {
-            "--sidebar-width": SIDEBAR_WIDTH,
+            // The drag handle writes this same property live while resizing.
+            "--sidebar-width": `${width}px`,
             "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
             ...style,
           } as React.CSSProperties
@@ -311,8 +327,194 @@ function Sidebar({
         >
           {children}
         </div>
+        <SidebarResizeHandle />
       </div>
     </div>
+  )
+}
+
+/** Pointer travel (px) below which a drag counts as a plain click. */
+const SIDEBAR_DRAG_SLOP = 4
+/** Arrow-key resize step for keyboard users. */
+const SIDEBAR_RESIZE_STEP = 16
+
+type SidebarDragState = {
+  startX: number
+  startWidth: number
+  moved: boolean
+}
+
+/**
+ * Sidebar edge: drag to resize, click to collapse or expand. Arrow keys
+ * resize, Home restores the default. The width is painted straight to the
+ * wrapper while dragging and only persisted on release.
+ */
+function SidebarResizeHandle({ className }: { className?: string }) {
+  const { open, toggleSidebar, width, setWidth, resetWidth } = useSidebar()
+  const ref = React.useRef<HTMLButtonElement>(null)
+  const dragRef = React.useRef<SidebarDragState | null>(null)
+  const [dragging, setDragging] = React.useState(false)
+  const [hovered, setHovered] = React.useState(false)
+  const [isMacPlatform] = React.useState(() => getClientPlatform().includes("mac"))
+
+  // Cached on pointer down so no DOM walk per move.
+  const wrapperRef = React.useRef<HTMLElement | null>(null)
+  const frameRef = React.useRef(0)
+  const pendingRef = React.useRef(0)
+
+  const wrapper = () =>
+    wrapperRef.current ??
+    ref.current?.closest<HTMLElement>('[data-slot="sidebar-wrapper"]') ??
+    null
+
+  // Resizing relayouts the whole shell, and pointermove fires faster than the
+  // display refreshes, so coalesce to one paint per frame.
+  const paintWidth = React.useCallback((px: number) => {
+    pendingRef.current = px
+    if (frameRef.current) return
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = 0
+      wrapperRef.current?.style.setProperty(
+        "--sidebar-width",
+        `${pendingRef.current}px`,
+      )
+    })
+  }, [])
+
+  const endDrag = React.useCallback(() => {
+    dragRef.current = null
+    if (frameRef.current) {
+      cancelAnimationFrame(frameRef.current)
+      frameRef.current = 0
+      // Flush the queued frame instead of dropping it.
+      wrapperRef.current?.style.setProperty(
+        "--sidebar-width",
+        `${pendingRef.current}px`,
+      )
+    }
+    wrapperRef.current?.removeAttribute("data-resizing")
+    wrapperRef.current = null
+    setDragging(false)
+    document.body.style.removeProperty("cursor")
+    document.body.style.removeProperty("user-select")
+  }, [])
+
+  const handlePointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    wrapperRef.current =
+      ref.current?.closest<HTMLElement>('[data-slot="sidebar-wrapper"]') ?? null
+    // Collapsed: grow from the measured rail so the edge tracks the pointer.
+    const wrapperLeft = wrapper()?.getBoundingClientRect().left ?? 0
+    const railWidth = (ref.current?.getBoundingClientRect().left ?? wrapperLeft) - wrapperLeft
+    dragRef.current = {
+      startX: event.clientX,
+      startWidth: open ? width : railWidth,
+      moved: false,
+    }
+    pendingRef.current = open ? width : railWidth
+    wrapperRef.current?.setAttribute("data-resizing", "true")
+    setDragging(true)
+    document.body.style.setProperty("cursor", "col-resize")
+    document.body.style.setProperty("user-select", "none")
+  }
+
+  const handlePointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = dragRef.current
+    if (!drag) return
+    const delta = event.clientX - drag.startX
+    if (!drag.moved && Math.abs(delta) < SIDEBAR_DRAG_SLOP) return
+    drag.moved = true
+
+    const next = drag.startWidth + delta
+    if (!open) {
+      // Past the minimum, dragging the collapsed rail reopens it.
+      if (next >= SIDEBAR_WIDTH_MIN) {
+        paintWidth(clampSidebarWidth(next))
+        toggleSidebar()
+      }
+      return
+    }
+    // Dragging inward stops at the minimum. Collapsing is click or Cmd+B only.
+    paintWidth(clampSidebarWidth(next))
+  }
+
+  const handlePointerUp = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = dragRef.current
+    if (!drag) return
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    endDrag()
+
+    if (!drag.moved) {
+      toggleSidebar()
+      return
+    }
+    // Rail drag that never hit the minimum: leave the stored width alone.
+    if (!open) return
+    // Commit the last requested width; a frame may still be queued.
+    setWidth(pendingRef.current)
+  }
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      if (!open) return
+      event.preventDefault()
+      const step = event.key === "ArrowLeft" ? -SIDEBAR_RESIZE_STEP : SIDEBAR_RESIZE_STEP
+      setWidth(width + step)
+      return
+    }
+    if (event.key === "Home") {
+      event.preventDefault()
+      resetWidth()
+    }
+  }
+
+  // Clear a stuck cursor override if we unmount mid-drag.
+  React.useEffect(() => endDrag, [endDrag])
+
+  return (
+    <Tooltip open={hovered && !dragging}>
+      <TooltipTrigger asChild>
+        <button
+          ref={ref}
+          type="button"
+          data-slot="sidebar-resize-handle"
+          data-sidebar="resize-handle"
+          data-dragging={dragging || undefined}
+          aria-label={open ? "Resize or collapse sidebar" : "Expand sidebar"}
+          aria-orientation="vertical"
+          aria-valuenow={open ? width : SIDEBAR_WIDTH_MIN}
+          aria-valuemin={SIDEBAR_WIDTH_MIN}
+          aria-valuemax={SIDEBAR_WIDTH_MAX}
+          role="separator"
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={endDrag}
+          onKeyDown={handleKeyDown}
+          onPointerEnter={() => setHovered(true)}
+          onPointerLeave={() => setHovered(false)}
+          className={cn(
+            "absolute inset-y-0 -right-1 z-30 hidden w-2 touch-none select-none sm:block",
+            // `!` overrides the app-wide hand cursor on buttons.
+            open ? "cursor-col-resize!" : "cursor-e-resize!",
+            // Sits exactly on the sidebar border so hover recolours one line.
+            "after:absolute after:inset-y-0 after:right-1 after:w-px after:bg-transparent after:transition-colors after:duration-150",
+            "hover:after:bg-sidebar-ring/25 data-dragging:after:bg-sidebar-ring/25",
+            className
+          )}
+        />
+      </TooltipTrigger>
+      <TooltipContent side="right" align="center" className="tooltip-compact">
+        <span className="flex flex-col gap-px">
+          <span>{open ? "Click to collapse" : "Click to expand"} {isMacPlatform ? "⌘B" : "Ctrl+B"}</span>
+          <span className="opacity-70">Drag to resize</span>
+        </span>
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -777,6 +979,7 @@ export {
   SidebarMenuSubItem,
   SidebarProvider,
   SidebarRail,
+  SidebarResizeHandle,
   SidebarSeparator,
   SidebarTrigger,
   useSidebar,
