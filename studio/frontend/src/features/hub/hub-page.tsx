@@ -6,6 +6,7 @@ import {
   getInferenceStatus,
   isExternalModelId,
   listGgufVariants,
+  resolveInferenceCheckpointId,
   useChatModelRuntime,
   useChatRuntimeStore,
 } from "@/features/chat";
@@ -384,16 +385,23 @@ export function ModelsPage() {
     void getInferenceStatus()
       .then((status) => {
         if (cancelled || !status.active_model) return;
+        // The loadable identifier, as every other status reader records it: a GGUF
+        // from a non-active HF cache or straight off disk loads by path, while
+        // active_model is the clean public id (an HF snapshot's repo id, any other
+        // file's filename stem). Two files that share a stem collapse onto one id,
+        // so storing that would make the catalog row for one of them look loaded.
+        const checkpointId = resolveInferenceCheckpointId(status);
+        if (!checkpointId) return;
         const store = useChatRuntimeStore.getState();
         if (
           !isExternalModelId(store.params.checkpoint) &&
-          (!modelIdsMatch(store.params.checkpoint, status.active_model) ||
+          (!modelIdsMatch(store.params.checkpoint, checkpointId) ||
             !ggufVariantsMatch(
               store.activeGgufVariant,
               status.gguf_variant ?? null,
             ))
         ) {
-          store.setCheckpoint(status.active_model, status.gguf_variant ?? null);
+          store.setCheckpoint(checkpointId, status.gguf_variant ?? null);
         }
       })
       .catch(() => undefined);

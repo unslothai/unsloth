@@ -706,14 +706,18 @@ def _mock_override_store(monkeypatch):
         entry_key,
         entry_value,
         *,
-        only_if_absent = False,
+        fill_absent_fields = False,
     ):
         current = dict(store.get(key) or {})
-        if only_if_absent:
-            # Create only: an entry already there wins and nothing is deleted.
-            if not entry_value or entry_key in current:
+        if fill_absent_fields:
+            # Fill only: every stored value wins and nothing is deleted.
+            if not entry_value:
                 return current
-            current[entry_key] = entry_value
+            stored = current.get(entry_key)
+            if isinstance(stored, dict):
+                current[entry_key] = {**entry_value, **stored}
+            else:
+                current[entry_key] = entry_value
         elif entry_value:
             current[entry_key] = entry_value
         else:
@@ -4343,9 +4347,11 @@ def test_override_found_under_a_concrete_path_with_variant(monkeypatch):
     assert rec.calls[0].max_seq_length == 8192
 
 
-def test_repo_qualified_override_beats_path_qualified(monkeypatch):
-    # Most specific first, and the public repo id is what the picker configured
-    # against.
+def test_path_qualified_override_beats_repo_qualified(monkeypatch):
+    # Most specific first: the settings page keys a local row (a folder, an LM Studio
+    # dir, a loose file) by the path being loaded, while the repo id is the advertised
+    # alias that a second copy of the same repo, or a hand-written overrides PUT, is
+    # configured under. The row the user actually edited wins.
     backend = _FakeBackend(None)
     rec = _LoadRecorder(backend)
     _wire(
@@ -4362,7 +4368,7 @@ def test_repo_qualified_override_beats_path_qualified(monkeypatch):
     monkeypatch.setattr(settings, "get_model_override", lambda mid: stored.get(mid, {}))
 
     _run_hook("unsloth/B-GGUF")
-    assert rec.calls[0].max_seq_length == 8192
+    assert rec.calls[0].max_seq_length == 1024
 
 
 def test_first_quant_save_keeps_legacy_bare_repo_launch_flags(monkeypatch):
@@ -5192,11 +5198,11 @@ def test_abs_path_ids_are_recognised_in_either_platform_spelling():
         assert resolver._is_abs_path_id(repo_id) is False, repo_id
 
 
-def test_only_if_absent_put_never_replaces_a_newer_server_entry(monkeypatch):
+def test_fill_absent_fields_put_never_replaces_a_newer_server_value(monkeypatch):
     """The one-time localStorage backfill reads the override map once and then
     writes each model in turn, so a save by another tab during that pass was
-    overwritten by this browser's older copy. only_if_absent makes the write a
-    create, so the entry already on the server wins."""
+    overwritten by this browser's older copy. fill_absent_fields writes only what
+    the entry lacks, so every value already on the server wins."""
     import routes.settings as settings_route
 
     _mock_override_store(monkeypatch)
@@ -5207,22 +5213,72 @@ def test_only_if_absent_put_never_replaces_a_newer_server_entry(monkeypatch):
 
     # The backfill's write, carrying this browser's older localStorage value.
     backfill = settings_route.ModelOverridePayload(
-        model_id = "unsloth/B-GGUF", max_seq_length = 2048, only_if_absent = True
+        model_id = "unsloth/B-GGUF", max_seq_length = 2048, fill_absent_fields = True
     )
     resp = settings_route.update_openai_auto_switch_override(backfill, "tester")
     assert resp.overrides["unsloth/B-GGUF"]["max_seq_length"] == 8192
 
     # With nothing stored it still creates, or the migration would never run.
     fresh = settings_route.ModelOverridePayload(
-        model_id = "unsloth/C-GGUF", max_seq_length = 2048, only_if_absent = True
+        model_id = "unsloth/C-GGUF", max_seq_length = 2048, fill_absent_fields = True
     )
     resp2 = settings_route.update_openai_auto_switch_override(fresh, "tester")
     assert resp2.overrides["unsloth/C-GGUF"]["max_seq_length"] == 2048
 
 
-def test_only_if_absent_matches_a_legacy_casing_and_never_deletes(monkeypatch):
+def test_fill_absent_fields_carries_the_browser_only_settings_into_a_legacy_entry(monkeypatch):
+    """Codex P1: the override map shipped before the browser mirror did, storing only
+    llama_extra_args and max_seq_length. An upgraded install holds such an entry while
+    localStorage holds the context, KV cache, speculative and GPU settings, and an
+    entry-level skip would strand exactly what the migration exists to carry."""
+    import routes.settings as settings_route
+
+    store = _mock_override_store(monkeypatch)
+
+    legacy = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF:Q4_K_M",
+        llama_extra_args = ["--flash-attn"],
+        max_seq_length = 8192,
+    )
+    settings_route.update_openai_auto_switch_override(legacy, "tester")
+
+    backfill = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF:Q4_K_M",
+        # The browser's own copy of a field the server already has, plus the ones
+        # only it holds.
+        max_seq_length = 2048,
+        custom_context_length = 32768,
+        kv_cache_dtype = "q8_0",
+        speculative_type = "ngram",
+        gpu_ids = [0, 1],
+        fill_absent_fields = True,
+    )
+    resp = settings_route.update_openai_auto_switch_override(backfill, "tester")
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    # The server's own values survive untouched.
+    assert entry["max_seq_length"] == 8192
+    assert entry["llama_extra_args"] == ["--flash-attn"]
+    # The browser-only settings are now there, so an API load applies them.
+    assert entry["custom_context_length"] == 32768
+    assert entry["kv_cache_dtype"] == "q8_0"
+    assert entry["speculative_type"] == "ngram"
+    assert entry["gpu_ids"] == [0, 1]
+    # One entry, not two: the fill resolves onto the key a load reads.
+    assert list(store[settings.MODEL_OVERRIDES_SETTING_KEY]) == ["unsloth/B-GGUF:Q4_K_M"]
+
+    # An ordinary save is still a replacement, or a settings edit could never
+    # clear a field.
+    edit = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096
+    )
+    resp2 = settings_route.update_openai_auto_switch_override(edit, "tester")
+    assert resp2.overrides["unsloth/B-GGUF:Q4_K_M"]["max_seq_length"] == 4096
+    assert "kv_cache_dtype" not in resp2.overrides["unsloth/B-GGUF:Q4_K_M"]
+
+
+def test_fill_absent_fields_matches_a_legacy_casing_and_never_deletes(monkeypatch):
     """The stored key can carry the casing an older install typed, and it must not
-    be duplicated or emptied by a create for the folded spelling."""
+    be duplicated or emptied by a fill for the folded spelling."""
     import routes.settings as settings_route
 
     _mock_override_store(monkeypatch)
@@ -5233,32 +5289,32 @@ def test_only_if_absent_matches_a_legacy_casing_and_never_deletes(monkeypatch):
     settings_route.update_openai_auto_switch_override(stored, "tester")
 
     folded = settings_route.ModelOverridePayload(
-        model_id = "unsloth/b-gguf:q4_k_m", max_seq_length = 2048, only_if_absent = True
+        model_id = "unsloth/b-gguf:q4_k_m", max_seq_length = 2048, fill_absent_fields = True
     )
     resp = settings_route.update_openai_auto_switch_override(folded, "tester")
     assert list(resp.overrides) == ["Unsloth/B-GGUF:Q4_K_M"]
     assert resp.overrides["Unsloth/B-GGUF:Q4_K_M"]["max_seq_length"] == 8192
 
-    # An all-default create is a no-op, not the "empty payload means forget" path.
+    # An all-default fill is a no-op, not the "empty payload means forget" path.
     empty = settings_route.ModelOverridePayload(
-        model_id = "Unsloth/B-GGUF:Q4_K_M", only_if_absent = True
+        model_id = "Unsloth/B-GGUF:Q4_K_M", fill_absent_fields = True
     )
     resp2 = settings_route.update_openai_auto_switch_override(empty, "tester")
     assert resp2.overrides["Unsloth/B-GGUF:Q4_K_M"]["max_seq_length"] == 8192
 
-    # A create that is also a delete has no meaning.
+    # A fill that is also a delete has no meaning.
     with pytest.raises(HTTPException) as excinfo:
         settings_route.update_openai_auto_switch_override(
             settings_route.ModelOverridePayload(
-                model_id = "Unsloth/B-GGUF:Q4_K_M", remove = True, only_if_absent = True
+                model_id = "Unsloth/B-GGUF:Q4_K_M", remove = True, fill_absent_fields = True
             ),
             "tester",
         )
     assert excinfo.value.status_code == 400
 
 
-def test_only_if_absent_does_not_break_the_empty_payload_removal(monkeypatch):
-    """only_if_absent is a write mode, not a saved field: leaving it in the dumped
+def test_fill_absent_fields_does_not_break_the_empty_payload_removal(monkeypatch):
+    """fill_absent_fields is a write mode, not a saved field: leaving it in the dumped
     payload would make every request look non-empty and silently retire the legacy
     "a payload carrying only model_id forgets this model" contract."""
     import routes.settings as settings_route
@@ -5272,9 +5328,9 @@ def test_only_if_absent_does_not_break_the_empty_payload_removal(monkeypatch):
     assert "unsloth/B-GGUF" not in resp.overrides
 
 
-def test_map_entry_create_tests_and_writes_in_one_transaction(tmp_path, monkeypatch):
-    """The real store, not the in-memory stand-in: the existence test has to share
-    the write's transaction, or a concurrent writer still slips between them."""
+def test_map_entry_fill_reads_and_writes_in_one_transaction(tmp_path, monkeypatch):
+    """The real store, not the in-memory stand-in: the read has to share the write's
+    transaction, or a concurrent writer still slips between them."""
     import storage.studio_db as db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
@@ -5282,19 +5338,23 @@ def test_map_entry_create_tests_and_writes_in_one_transaction(tmp_path, monkeypa
 
     key = "test_map_entry_create"
     assert db.upsert_app_setting_map_entry(key, "a", {"v": 1}) == {"a": {"v": 1}}
-    # Present: left exactly as it is.
-    assert db.upsert_app_setting_map_entry(key, "a", {"v": 2}, only_if_absent = True) == {
+    # Present: the stored value stays, and a field it lacks is added.
+    assert db.upsert_app_setting_map_entry(key, "a", {"v": 2}, fill_absent_fields = True) == {
         "a": {"v": 1}
     }
     assert db.get_app_setting(key) == {"a": {"v": 1}}
+    assert db.upsert_app_setting_map_entry(
+        key, "a", {"v": 2, "w": 7}, fill_absent_fields = True
+    ) == {"a": {"v": 1, "w": 7}}
+    assert db.get_app_setting(key) == {"a": {"v": 1, "w": 7}}
     # Absent: created.
-    assert db.upsert_app_setting_map_entry(key, "b", {"v": 3}, only_if_absent = True) == {
-        "a": {"v": 1},
+    assert db.upsert_app_setting_map_entry(key, "b", {"v": 3}, fill_absent_fields = True) == {
+        "a": {"v": 1, "w": 7},
         "b": {"v": 3},
     }
-    # A create never deletes, even with nothing to store.
-    assert db.upsert_app_setting_map_entry(key, "a", None, only_if_absent = True) == {
-        "a": {"v": 1},
+    # A fill never deletes, even with nothing to store.
+    assert db.upsert_app_setting_map_entry(key, "a", None, fill_absent_fields = True) == {
+        "a": {"v": 1, "w": 7},
         "b": {"v": 3},
     }
     # The ordinary write still replaces and still removes.
@@ -5346,3 +5406,148 @@ def test_gpu_ids_payload_is_bounded():
         )
     # The ordinary case is untouched.
     assert settings_route.ModelOverridePayload(model_id = "x", gpu_ids = [0, 1]).gpu_ids == [0, 1]
+
+
+# ── codex round: the concrete key beats the advertised alias ──────────
+
+
+def _switch_with_overrides(monkeypatch, resolves_to, stored, requested):
+    """Run the auto-switch hook against a real override map and return the load."""
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = resolves_to, backend = backend, recorder = rec)
+    _mock_override_store(monkeypatch)
+    for key, max_seq_length in stored.items():
+        settings.set_model_override(key, max_seq_length = max_seq_length)
+    _run_hook(requested)
+    assert len(rec.calls) == 1
+    return rec.calls[0]
+
+
+def test_a_loose_gguf_prefers_its_path_keyed_settings_over_the_alias(monkeypatch):
+    """Codex: the settings UI keys a standalone .gguf by its bare path, while
+    override_id is the filename stem /v1/models advertises and an overrides PUT can
+    be written against. Reading the alias first let it shadow the saved settings for
+    good, so an API load kept applying the old flags."""
+    path = "/srv/models/Qwen3-8B-Q4_K_M.gguf"
+    alias = "Qwen3-8B-Q4_K_M"
+    req = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (path, None, alias),
+        stored = {alias: 2048, path: 32768},
+        requested = alias,
+    )
+    assert req.max_seq_length == 32768
+
+    # The alias is still read when it is the only key, so an entry written against
+    # the advertised id keeps working.
+    req2 = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (path, None, alias),
+        stored = {alias: 2048},
+        requested = alias,
+    )
+    assert req2.max_seq_length == 2048
+
+
+def test_the_filename_label_key_no_longer_shadows_the_bare_path(monkeypatch):
+    """An early build of this feature keyed a standalone .gguf by the quant label
+    derived from its filename. Those entries stay readable, but the bare path the
+    picker writes today comes first."""
+    path = "/srv/models/Qwen3-8B-Q4_K_M.gguf"
+    alias = "Qwen3-8B-Q4_K_M"
+    req = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (path, None, alias),
+        stored = {f"{path}:Q4_K_M": 2048, path: 32768},
+        requested = alias,
+    )
+    assert req.max_seq_length == 32768
+
+    req2 = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (path, None, alias),
+        stored = {f"{path}:Q4_K_M": 2048},
+        requested = alias,
+    )
+    assert req2.max_seq_length == 2048
+
+
+def test_a_variant_qualified_path_key_beats_the_same_quant_under_the_alias(monkeypatch):
+    """An LM Studio dir or a non-active HF cache is configured against its path, so
+    a same-quant entry under the repo id (another copy of the same repo, or a
+    hand-written PUT) must not win over the row the user actually edited."""
+    path = "/srv/lmstudio/publisher/Qwen3-8B-GGUF"
+    repo = "publisher/Qwen3-8B-GGUF"
+    req = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (path, "Q4_K_M", repo),
+        stored = {f"{repo}:Q4_K_M": 2048, f"{path}:Q4_K_M": 32768},
+        requested = f"{repo}:Q4_K_M",
+    )
+    assert req.max_seq_length == 32768
+
+
+def test_a_cached_repo_still_resolves_by_its_repo_id(monkeypatch):
+    """The Hub keys a cached repo row by its repo id, which is the advertised id,
+    and no path entry exists for it, so it still resolves on the second try."""
+    snapshot = "/mnt/old-cache/models--unsloth--Qwen3-8B-GGUF/snapshots/abc123"
+    repo = "unsloth/Qwen3-8B-GGUF"
+    req = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (snapshot, "Q4_K_M", repo),
+        stored = {f"{repo}:Q4_K_M": 32768},
+        requested = f"{repo}:Q4_K_M",
+    )
+    assert req.max_seq_length == 32768
+
+    # A bare entry under the repo id keeps working too.
+    req2 = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (snapshot, "Q4_K_M", repo),
+        stored = {repo: 16384},
+        requested = f"{repo}:Q4_K_M",
+    )
+    assert req2.max_seq_length == 16384
+
+
+def test_a_fill_does_not_replay_a_stored_flag_through_validation(monkeypatch):
+    """The migration now writes for entries it used to skip, and an omitted
+    llama_extra_args is normally carried over from the stored entry. Replaying a
+    flag that has been denylisted since it was saved would 400 the one-time
+    migration, which then retries on every start. A fill keeps the stored flags
+    without sending them back."""
+    import routes.settings as settings_route
+    from core.inference import llama_server_args
+
+    store = _mock_override_store(monkeypatch)
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", llama_extra_args = ["--flash-attn"])
+
+    # The flag is refused from now on, as a later release's denylist would.
+    real_validate = llama_server_args.validate_extra_args
+
+    def _reject_flash_attn(args):
+        if args and "--flash-attn" in args:
+            raise ValueError("--flash-attn is managed by the server.")
+        return real_validate(args)
+
+    monkeypatch.setattr(llama_server_args, "validate_extra_args", _reject_flash_attn)
+
+    fill = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF:Q4_K_M", custom_context_length = 32768, fill_absent_fields = True
+    )
+    resp = settings_route.update_openai_auto_switch_override(fill, "tester")
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["llama_extra_args"] == ["--flash-attn"]
+    assert entry["custom_context_length"] == 32768
+    assert list(store[settings.MODEL_OVERRIDES_SETTING_KEY]) == ["unsloth/B-GGUF:Q4_K_M"]
+
+    # An ordinary save still validates what it is handed.
+    with pytest.raises(HTTPException) as excinfo:
+        settings_route.update_openai_auto_switch_override(
+            settings_route.ModelOverridePayload(
+                model_id = "unsloth/C-GGUF", llama_extra_args = ["--flash-attn"]
+            ),
+            "tester",
+        )
+    assert excinfo.value.status_code == 400

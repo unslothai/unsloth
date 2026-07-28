@@ -122,11 +122,19 @@ export function publicModelId(identifier: string): string {
 /**
  * Whether the model the backend reports as loaded is one of *candidates*.
  *
- * A GGUF loaded from an inactive HF cache or straight off disk is loaded by path,
- * but `/status` reports the clean public id, so an exact comparison against the
- * catalog row's path says "not loaded" and the caller falls back to saved or
- * default values instead of the live launch config. Candidates are compared
- * literally first, then by the public id the backend would report for them.
+ * A GGUF loaded from an inactive HF cache is loaded by path, but a caller holding
+ * only the public id would read an exact comparison against the catalog row's path
+ * as "not loaded" and fall back to saved or default values instead of the live
+ * launch config. Candidates are compared literally first, then by the public id.
+ *
+ * That second pass only accepts an identity that can name one model: an HF cache
+ * snapshot collapses onto its repo id, which is globally unique, while every other
+ * path collapses onto a filename or directory stem that two models can share
+ * (`/models/alpha/model.gguf` and `/models/beta/model.gguf` are both "model").
+ * Accepting a stem would mark the wrong row resident, seeding its editor with
+ * another model's live config and saving it under this model's key. Callers with
+ * the loadable identifier (`/status`'s `model_identifier`) pass it as the active
+ * id, and the literal pass answers exactly.
  */
 export function residentModelIdMatches(
   activeModelId: string | null | undefined,
@@ -142,7 +150,12 @@ export function residentModelIdMatches(
   }
   return candidates.some((candidate) => {
     const trimmed = candidate?.trim();
-    return trimmed ? modelIdsMatch(active, publicModelId(trimmed)) : false;
+    if (!trimmed) {
+      return false;
+    }
+    const publicId = publicModelId(trimmed);
+    // Unambiguous only when the collapse produced a namespaced repo id.
+    return publicId.includes("/") && modelIdsMatch(active, publicId);
   });
 }
 

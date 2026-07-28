@@ -35,6 +35,7 @@ export type {
   GgufVariantDetail,
   InferenceStatusResponse,
 } from "./types/api";
+export { resolveInferenceCheckpointId } from "./lib/apply-inference-status-to-store";
 export {
   ChatSettingsPanel,
   ParamSlider,

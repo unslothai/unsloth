@@ -182,11 +182,14 @@ class ModelOverridePayload(BaseModel):
     # Explicit intent: an all-default save carries no fields, which is shape
     # identical to "forget this model". None keeps the legacy contract.
     remove: Optional[bool] = None
-    # Create, don't replace: the one-time localStorage backfill reads the map once
+    # Fill in, don't replace: the one-time localStorage backfill reads the map once
     # and then writes each model in turn, so another tab saving during that pass
-    # would be overwritten by this browser's older copy. The server tests and
-    # writes under one transaction, which costs no extra round trip.
-    only_if_absent: bool = False
+    # would be overwritten by this browser's older copy. The server reads and writes
+    # under one transaction, which costs no extra round trip. Field level, because an
+    # install upgraded from a release that stored only llama_extra_args and
+    # max_seq_length holds an entry the browser has the rest of, and skipping the
+    # whole entry would strand exactly the settings this migration exists to carry.
+    fill_absent_fields: bool = False
 
     @field_validator("chat_template_override")
     @classmethod
@@ -376,17 +379,18 @@ def update_openai_auto_switch_override(
     from utils.openai_auto_switch_settings import get_model_override
 
     try:
-        if payload.only_if_absent and payload.remove is True:
-            # A create that is also a delete has no meaning, and silently picking one
+        if payload.fill_absent_fields and payload.remove is True:
+            # A fill that is also a delete has no meaning, and silently picking one
             # would either lose settings or resurrect them.
-            raise ValueError("only_if_absent cannot be combined with remove.")
+            raise ValueError("fill_absent_fields cannot be combined with remove.")
         # Only model_id is the documented "remove". Otherwise omitted launch flags
         # carry over from the stored entry, since the settings UI cannot express them.
         requested_extra_args = payload.llama_extra_args
-        # only_if_absent is a write mode, not a saved field: leaving it in would make
-        # every payload look non-empty and break the legacy "no fields means remove".
+        # fill_absent_fields is a write mode, not a saved field: leaving it in would
+        # make every payload look non-empty and break the legacy "no fields means
+        # remove".
         saved_fields = payload.model_dump(
-            exclude = {"model_id", "llama_extra_args", "remove", "only_if_absent"},
+            exclude = {"model_id", "llama_extra_args", "remove", "fill_absent_fields"},
             exclude_none = True,
         )
         if payload.remove is not None:
@@ -396,13 +400,19 @@ def update_openai_auto_switch_override(
                 key: value for key, value in saved_fields.items() if key != "tensor_parallel"
             }
         if requested_extra_args is None and not is_removal:
-            requested_extra_args = get_model_override(payload.model_id).get("llama_extra_args")
-            if requested_extra_args is None:
-                # First per-quant save for flags stored under the bare repo id.
-                # Auto-switch prefers the qualified entry, so carry them over.
-                bare_id = _bare_model_id(payload.model_id)
-                if bare_id:
-                    requested_extra_args = get_model_override(bare_id).get("llama_extra_args")
+            stored = get_model_override(payload.model_id)
+            # A fill leaves every stored value alone, so an entry that is already
+            # there keeps its flags without this echoing them back through
+            # validation: one accepted when it was saved but denylisted since would
+            # 400 the one-time migration, which then retries on every start.
+            if not (payload.fill_absent_fields and stored):
+                requested_extra_args = stored.get("llama_extra_args")
+                if requested_extra_args is None:
+                    # First per-quant save for flags stored under the bare repo id.
+                    # Auto-switch prefers the qualified entry, so carry them over.
+                    bare_id = _bare_model_id(payload.model_id)
+                    if bare_id:
+                        requested_extra_args = get_model_override(bare_id).get("llama_extra_args")
         # Not validated on an explicit remove: nothing is stored, so a 400 would only
         # leave the override in place. A stale flag must not block forgetting.
         extra_args = [] if payload.remove is True else validate_extra_args(requested_extra_args)
@@ -431,7 +441,7 @@ def update_openai_auto_switch_override(
                 gpu_layers = payload.gpu_layers,
                 n_cpu_moe = payload.n_cpu_moe,
                 gpu_ids = payload.gpu_ids,
-                only_if_absent = payload.only_if_absent,
+                fill_absent_fields = payload.fill_absent_fields,
             )
     except ValueError as exc:
         raise log_and_http_error(

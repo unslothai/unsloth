@@ -17,10 +17,12 @@ import {
   isDefaultConfig,
   listPerModelConfigs,
 } from "../model-config/per-model-config";
+import type { ApiModelOverride } from "./model-overrides";
 import {
   fetchModelOverrides,
   modelOverrideKey,
   putModelOverride,
+  toApiOverride,
 } from "./model-overrides";
 
 const DONE_FLAG = "unsloth_model_overrides_backfilled_v1";
@@ -62,9 +64,32 @@ function normalizedOverrideKey(key: string): string {
 }
 
 /**
- * Push local configs the server has never seen. Never deletes and never overwrites:
- * an entry already there is the newer authority, and losing a setting would be
- * worse than leaving one unmigrated.
+ * The fields *config* would contribute that the stored entry does not hold.
+ *
+ * A malformed entry (nothing constrains what an older install wrote into
+ * app_settings) counts as holding nothing, so the migration still runs.
+ */
+function absentFields(
+  stored: ApiModelOverride,
+  config: Parameters<typeof toApiOverride>[0],
+): string[] {
+  const fields = Object.keys(toApiOverride(config));
+  if (typeof stored !== "object" || stored === null) {
+    return fields;
+  }
+  return fields.filter((field) => !(field in stored));
+}
+
+/**
+ * Push local settings the server does not hold. Never deletes and never overwrites:
+ * a value already there is the newer authority, and losing a setting would be worse
+ * than leaving one unmigrated.
+ *
+ * Field by field, not entry by entry. The override map shipped before this browser
+ * mirror did, storing only llama_extra_args and max_seq_length, so an upgraded
+ * install can hold an entry for a model whose context, KV cache, speculative and GPU
+ * settings live only here. Treating the key as done would skip exactly the settings
+ * this migration exists to carry and then mark it complete.
  */
 export async function backfillModelOverrides(): Promise<void> {
   if (alreadyRan()) {
@@ -97,7 +122,10 @@ export async function backfillModelOverrides(): Promise<void> {
     return;
   }
 
-  const known = new Set(Object.keys(existing).map(normalizedOverrideKey));
+  const known = new Map<string, ApiModelOverride>();
+  for (const [storedKey, storedEntry] of Object.entries(existing)) {
+    known.set(normalizedOverrideKey(storedKey), storedEntry);
+  }
 
   let failed = false;
   for (const entry of local) {
@@ -106,9 +134,6 @@ export async function backfillModelOverrides(): Promise<void> {
     const key = normalizedOverrideKey(
       modelOverrideKey(entry.modelId, entry.ggufVariant),
     );
-    if (known.has(key)) {
-      continue;
-    }
     // Re-read rather than trusting the snapshot from before the fetch: this write
     // is queued behind the interactive one and commits last, so a save or forget
     // during the round trip would be undone by it.
@@ -121,15 +146,20 @@ export async function backfillModelOverrides(): Promise<void> {
     if (!current || isDefaultConfig(current.config)) {
       continue;
     }
+    const stored = known.get(key);
+    // Nothing this browser could add, so skip the round trip entirely.
+    if (stored && absentFields(stored, current.config).length === 0) {
+      continue;
+    }
     try {
-      // Create only. `known` is a snapshot from before this loop started, so a save
-      // by another tab during the pass is invisible here; the server does the test
-      // and the write together rather than this re-fetching once per model.
+      // Fills the gaps only. `known` is a snapshot from before this loop started, so
+      // a save by another tab during the pass is invisible here; the server reads and
+      // writes together rather than this re-fetching once per model.
       await putModelOverride(
         current.modelId,
         current.ggufVariant,
         current.config,
-        { onlyIfAbsent: true },
+        { fillAbsentFields: true },
       );
     } catch {
       failed = true;

@@ -78,8 +78,11 @@ export async function fetchModelOverrides(): Promise<ApiModelOverrides> {
  * Only fields the user set are sent: the backend reads an absent field as "app
  * default", so nulls would pin defaults and stop the model following later global
  * changes. A `null` config means "no saved settings", which clears the entry.
+ *
+ * Exported so the one-time backfill can ask what this config would contribute and
+ * compare it against the entry already on the server, field by field.
  */
-function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
+export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (!config) {
     return {};
   }
@@ -130,14 +133,16 @@ const writesByKey = new Map<string, Promise<void>>();
 
 export interface PutModelOverrideOptions {
   /**
-   * Create only: leave an entry already on the server exactly as it is.
+   * Fill in only what is missing: every value already on the server stays as it is.
    *
-   * The one-time backfill reads the map once and then writes each model in turn,
-   * so another tab saving during that pass would be overwritten by this browser's
-   * older localStorage copy. The server tests and writes under one transaction,
-   * which closes the window without a round trip per model.
+   * The one-time backfill reads the map once and then writes each model in turn, so
+   * another tab saving during that pass would be overwritten by this browser's older
+   * localStorage copy. The server reads and writes under one transaction, which
+   * closes the window without a round trip per model. Field level, so an entry an
+   * older release stored with only its two fields still gains the browser-only ones
+   * without the server losing anything it holds.
    */
-  onlyIfAbsent?: boolean;
+  fillAbsentFields?: boolean;
 }
 
 export async function putModelOverride(
@@ -183,9 +188,9 @@ async function sendModelOverride(
       model_id: modelOverrideKey(modelId, ggufVariant),
       // Only sent when set, so an older backend that does not know the field is
       // not handed an unexpected key by every ordinary save.
-      ...(options?.onlyIfAbsent
+      ...(options?.fillAbsentFields
         ? // biome-ignore lint/style/useNamingConvention: API schema
-          { only_if_absent: true }
+          { fill_absent_fields: true }
         : {}),
       // Say which operation this is: an all-default save carries no fields, which is
       // shape-identical to "forget this model", and guessing wrong wipes launch flags

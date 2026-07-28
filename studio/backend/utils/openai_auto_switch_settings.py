@@ -621,7 +621,7 @@ def set_model_override(
     llama_extra_args: Optional[list[str]] = None,
     max_seq_length: Optional[int] = None,
     *,
-    only_if_absent: bool = False,
+    fill_absent_fields: bool = False,
     **config: Any,
 ) -> dict:
     """Upsert one model's launch config; a config with no usable fields removes it.
@@ -629,9 +629,9 @@ def set_model_override(
     The two legacy parameters stay positional for existing callers; every other
     per-model field is passed by keyword and normalized together.
 
-    ``only_if_absent`` turns the upsert into a create, leaving an entry already
-    stored untouched. Returns the normalized entry either way; read the map back
-    to see what is actually stored.
+    ``fill_absent_fields`` writes only what is missing: an entry already stored
+    keeps every field it holds and gains only the ones it lacks. Returns the
+    normalized entry either way; read the map back to see what is actually stored.
     """
     if not model_id or not model_id.strip():
         raise ValueError("model_id is required.")
@@ -650,7 +650,7 @@ def set_model_override(
         MODEL_OVERRIDES_SETTING_KEY,
         model_id.strip(),
         entry or None,
-        only_if_absent = only_if_absent,
+        fill_absent_fields = fill_absent_fields,
     )
     _invalidate(MODEL_OVERRIDES_SETTING_KEY)
     return entry

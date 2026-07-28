@@ -4357,22 +4357,30 @@ async def _maybe_auto_switch_model(
                         # Apply this model's saved launch config so an API swap loads
                         # it exactly as the picker would. Try variant-qualified keys
                         # first (two quants of one repo can differ), then bare ids, and
-                        # both the repo id and the load path (a local folder or a
-                        # non-active HF cache is configured against its path).
-                        # A standalone .gguf resolves with variant=None, but the picker
-                        # keys it by the quant label derived from the filename, so its
-                        # settings live under "<path>:LABEL" and no bare key reaches them.
+                        # within each pair the concrete load path before the advertised
+                        # id. The settings UI keys every local row (a folder, an LM
+                        # Studio dir, a non-active HF cache, a loose .gguf) by that path,
+                        # while override_id is a derived alias -- the /v1/models name a
+                        # hand-written overrides PUT uses, and for a loose file only its
+                        # filename stem. Reading the alias first let an older entry under
+                        # it shadow the settings the user just saved, for good. A cached
+                        # repo is keyed by its repo id, which is override_id, and no path
+                        # entry exists for it, so it still resolves on the second try.
+                        # A standalone .gguf resolves with variant=None; an early build
+                        # of this feature keyed it by the quant label derived from the
+                        # filename, so read "<path>:LABEL" too, after the bare path the
+                        # picker writes today.
                         file_variant = None
                         if not variant and target_id.lower().endswith(".gguf"):
                             from hub.utils.gguf import extract_quant_label
                             file_variant = extract_quant_label(os.path.basename(target_id))
                         override = {}
                         for override_key in (
-                            f"{override_id}:{variant}" if variant else None,
                             f"{target_id}:{variant}" if variant else None,
+                            f"{override_id}:{variant}" if variant else None,
+                            target_id,
                             f"{target_id}:{file_variant}" if file_variant else None,
                             override_id,
-                            target_id,
                         ):
                             if not override_key:
                                 continue

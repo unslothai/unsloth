@@ -2963,17 +2963,20 @@ def upsert_app_setting_map_entry(
     entry_key: str,
     entry_value: dict[str, Any] | None,
     *,
-    only_if_absent: bool = False,
+    fill_absent_fields: bool = False,
 ) -> dict[str, Any]:
     """Set (or delete, when entry_value is falsy) one sub-entry of a dict-valued
     app setting, atomically under BEGIN IMMEDIATE so concurrent writers to other
     sub-entries cannot drop each other's updates.
 
-    ``only_if_absent`` makes the write a create: an entry already there is left
-    exactly as it is, and nothing is ever deleted. The test and the write share
-    this transaction, so a caller that read the map earlier cannot replace a value
-    written since. Used by the one-time localStorage backfill, whose contract is
-    that the server copy is the newer authority.
+    ``fill_absent_fields`` writes only what is missing: the entry is created when
+    it is not there, and otherwise gains the fields it does not already hold while
+    every stored value is left exactly as it is. Nothing is ever deleted. The read
+    and the write share this transaction, so a caller that read the map earlier
+    cannot replace a value written since. Used by the one-time localStorage
+    backfill, whose contract is that the server copy is the newer authority: an
+    upgraded install can hold an entry with only the fields an older release knew,
+    while this browser holds the rest, and entry-level skipping would strand them.
     """
     conn = get_connection()
     try:
@@ -2982,11 +2985,20 @@ def upsert_app_setting_map_entry(
         current = _json_loads(row["value_json"], {}) if row else {}
         if not isinstance(current, dict):
             current = {}
-        if only_if_absent:
-            if not entry_value or entry_key in current:
+        if fill_absent_fields:
+            if not entry_value:
                 conn.rollback()
                 return current
-            current[entry_key] = entry_value
+            stored = current.get(entry_key)
+            if isinstance(stored, dict):
+                # Stored values win field by field, so this only ever adds.
+                merged = {**entry_value, **stored}
+                if merged == stored:
+                    conn.rollback()
+                    return current
+                current[entry_key] = merged
+            else:
+                current[entry_key] = entry_value
         elif entry_value:
             current[entry_key] = entry_value
         else:

@@ -39,14 +39,15 @@ test("publicModelId mirrors what /status reports for a path-loaded model", () =>
 });
 
 test("a resident path-loaded model is matched by the id /status reports", () => {
-  // A loose .gguf: the catalog row is keyed by the path, /status by the stem.
+  // A loose .gguf: the catalog row is keyed by the path, and the Hub page records
+  // the loadable identifier (status.model_identifier), so the literal pass answers.
   assert.equal(
     modelIdsMatch("Qwen3-8B-Q4_K_M", "/srv/models/Qwen3-8B-Q4_K_M.gguf"),
     false,
   );
   assert.equal(
     residentModelIdMatches(
-      "Qwen3-8B-Q4_K_M",
+      "/srv/models/Qwen3-8B-Q4_K_M.gguf",
       "/srv/models/Qwen3-8B-Q4_K_M.gguf",
       "/srv/models/Qwen3-8B-Q4_K_M.gguf",
     ),
@@ -90,6 +91,37 @@ test("a resident path-loaded model is matched by the id /status reports", () => 
   );
   assert.equal(residentModelIdMatches(null, "/srv/models/x.gguf"), false);
   assert.equal(residentModelIdMatches("Qwen3-8B-Q4_K_M"), false);
+});
+
+test("a shared filename or folder name never marks a row resident", () => {
+  // Two loose GGUFs with the same filename in different folders collapse onto one
+  // public id, so a stem can only say "one of these", never which.
+  const loaded = "/srv/models/alpha/model.gguf";
+  const other = "/srv/models/beta/model.gguf";
+  assert.equal(publicModelId(loaded), publicModelId(other));
+  assert.equal(residentModelIdMatches(publicModelId(loaded), other, other), false);
+  // The loadable identifier names exactly one of them.
+  assert.equal(residentModelIdMatches(loaded, loaded, loaded), true);
+  assert.equal(residentModelIdMatches(loaded, other, other), false);
+
+  // Same collapse one level up: two model directories sharing a basename.
+  const loadedDir = "/srv/lmstudio/publisher-a/Llama-3-8B-GGUF";
+  const otherDir = "/srv/models/publisher-b/Llama-3-8B-GGUF";
+  assert.equal(publicModelId(loadedDir), publicModelId(otherDir));
+  assert.equal(
+    residentModelIdMatches(publicModelId(loadedDir), otherDir, otherDir),
+    false,
+  );
+
+  // A cache snapshot still collapses onto its repo id, which names one model.
+  assert.equal(
+    residentModelIdMatches(
+      "unsloth/Qwen3-8B-GGUF",
+      "/mnt/old-cache/models--unsloth--Qwen3-8B-GGUF/snapshots/abc123",
+      null,
+    ),
+    true,
+  );
 });
 
 test("Ollama link paths are recognised the way the resolver excludes them", () => {

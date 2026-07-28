@@ -695,8 +695,8 @@ def test_backfill_compares_server_keys_by_normalized_identity():
     src = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
     assert "function normalizedOverrideKey(" in src
     # Folded on both sides: the older `id::variant` local keys are not.
-    assert "const known = new Set(Object.keys(existing).map(normalizedOverrideKey));" in src
-    assert "if (known.has(key)) { continue; }" in src
+    assert "known.set(normalizedOverrideKey(storedKey), storedEntry);" in src
+    assert "const stored = known.get(key);" in src
     # A quant-aware split, so a Windows drive letter is not read as a separator.
     assert "const split = splitQuantSuffix(key);" in src
     # Repo ids fold and POSIX paths do not, which is what these do.
@@ -957,27 +957,42 @@ def test_the_chat_picker_marks_ollama_targets_unloadable_by_the_api():
     assert 'seg in (".studio_links", "ollama_links")' in resolver, "the rule this mirrors"
 
 
-def test_the_backfill_writes_are_creates_not_replacements():
+def test_the_backfill_fills_in_fields_rather_than_skipping_known_keys():
     """The backfill reads the override map once and then writes each model in turn,
     so a save by another tab during that pass was overwritten by this browser's
-    older localStorage copy. The server tests and writes under one transaction
-    rather than this re-fetching per model."""
+    older localStorage copy. The server reads and writes under one transaction
+    rather than this re-fetching per model, and it does so field by field: the
+    override map shipped before this browser mirror did, holding only
+    llama_extra_args and max_seq_length, so an entry-level skip would strand the
+    context, KV cache, speculative and GPU settings this migration exists to carry."""
     backfill = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
-    assert "{ onlyIfAbsent: true }," in backfill
+    assert "{ fillAbsentFields: true }," in backfill
+    # Key presence alone is not "done": what the server lacks decides.
+    assert "const stored = known.get(key);" in backfill
+    assert "if (stored && absentFields(stored, current.config).length === 0) { continue; }" in backfill
+    assert "const fields = Object.keys(toApiOverride(config));" in backfill
+    assert "return fields.filter((field) => !(field in stored));" in backfill
+
     api = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
-    assert "onlyIfAbsent?: boolean;" in api
-    assert "options?.onlyIfAbsent ? { only_if_absent: true } : {}" in api.replace(
+    assert "fillAbsentFields?: boolean;" in api
+    assert "options?.fillAbsentFields ? { fill_absent_fields: true } : {}" in api.replace(
         "// biome-ignore lint/style/useNamingConvention: API schema ", ""
     )
     # Ordinary saves must stay unconditional, or a settings edit would never land.
-    assert "syncModelOverride" in api and "only_if_absent: true" in api
+    assert "syncModelOverride" in api and "fill_absent_fields: true" in api
 
     route = (WORKDIR / "studio" / "backend" / "routes" / "settings.py").read_text(encoding = "utf-8")
-    assert "only_if_absent: bool = False" in route, "the rule this mirrors"
-    assert "only_if_absent = payload.only_if_absent," in route
+    assert "fill_absent_fields: bool = False" in route, "the rule this mirrors"
+    assert "fill_absent_fields = payload.fill_absent_fields," in route
     # A write mode must not leak into the saved fields, or "only model_id means
     # forget this model" stops working.
-    assert '"remove", "only_if_absent"' in route
+    assert '"remove", "fill_absent_fields"' in route
+
+    # The merge is the server's, under the write's own transaction: a client-side
+    # read-modify-write would reopen the race the conditional write closed.
+    db = (WORKDIR / "studio" / "backend" / "storage" / "studio_db.py").read_text(encoding = "utf-8")
+    assert "merged = {**entry_value, **stored}" in db
+    assert "BEGIN IMMEDIATE" in db
 
 
 def test_the_hub_settings_page_matches_a_resident_path_loaded_model():
@@ -992,10 +1007,21 @@ def test_the_hub_settings_page_matches_a_resident_path_loaded_model():
     )
     assert "loadedConfig={settingsTargetIsResident ? activeModelConfig : null}" in hub
     assert "settingsTargetIsResident ? activeGgufContextLength : null" in hub
+    # The loadable identifier, as every other status reader records it. active_model
+    # is the clean public id, and two files sharing a filename collapse onto one, so
+    # storing it would let the wrong catalog row look loaded.
+    assert "const checkpointId = resolveInferenceCheckpointId(status);" in hub
+    assert "store.setCheckpoint(checkpointId, status.gguf_variant ?? null);" in hub
+    assert "setCheckpoint(status.active_model" not in hub
+    chat = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
+    assert "return status.model_identifier ?? status.active_model;" in chat, "the rule this mirrors"
     # The alias is the backend's own public id rule, not a private heuristic.
     identity = _read("features/hub/lib/model-identity.ts")
     assert "export function publicModelId(" in identity
     assert "models--" in identity and "snapshots" in identity
+    # Only a namespaced repo id names one model; a filename or directory stem does
+    # not, so it must never stand in for the loaded model's identity.
+    assert 'return publicId.includes("/") && modelIdsMatch(active, publicId);' in identity
     backend = (WORKDIR / "studio" / "backend" / "core" / "inference" / "model_ids.py").read_text(
         encoding = "utf-8"
     )
