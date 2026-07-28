@@ -26,7 +26,13 @@ def _studio():
     return _studio_mod
 
 
-def _install(monkeypatch, tmp_path, *, alive, killed = None):
+def _install(
+    monkeypatch,
+    tmp_path,
+    *,
+    alive,
+    killed = None,
+):
     """Point the CLI at tmp_path and fake process liveness."""
     studio_mod = _studio()
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
