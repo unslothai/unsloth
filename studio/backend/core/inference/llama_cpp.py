@@ -2098,6 +2098,57 @@ def _llama_lib_dir(binary: str) -> Path:
     return resolved.parent
 
 
+_OLLAMA_CUDA_ROOT = Path("/usr/local/lib/ollama")
+
+
+def _linux_ollama_cuda_runtime_dirs(
+    binary_dir: Union[str, Path],
+    ollama_root: Optional[Union[str, Path]] = None,
+) -> list[str]:
+    """Return Ollama's private CUDA runtime matching the installed prebuilt.
+
+    The prebuilt installer considers ``/usr/local/lib/ollama/cuda_v*`` when it
+    selects a CUDA runtime line. Those directories are private to Ollama and
+    are not normally visible to the dynamic linker, so the same directory must
+    be propagated to llama-server. Use the install marker to avoid placing an
+    unrelated CUDA major ahead of the host runtime.
+    """
+    marker = Path(binary_dir).parent.parent / "UNSLOTH_PREBUILT_INFO.json"
+    try:
+        metadata = json.loads(marker.read_text(encoding = "utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return []
+
+    runtime_line = metadata.get("runtime_line")
+    match = re.fullmatch(r"cuda(\d+)", runtime_line if isinstance(runtime_line, str) else "")
+    if match is None:
+        return []
+
+    major = match.group(1)
+    root = Path(ollama_root) if ollama_root is not None else _OLLAMA_CUDA_ROOT
+    try:
+        candidates = sorted(root.glob(f"cuda_v{major}*"))
+    except OSError:
+        return []
+
+    runtime_dirs: list[str] = []
+    name_pattern = re.compile(rf"cuda_v{re.escape(major)}(?:[._-].*)?")
+    for directory in candidates:
+        try:
+            if not directory.is_dir() or name_pattern.fullmatch(directory.name) is None:
+                continue
+            has_cudart = any(directory.glob(f"libcudart.so.{major}*"))
+            has_cublas = any(directory.glob(f"libcublas.so.{major}*"))
+        except OSError:
+            continue
+        if has_cudart and has_cublas:
+            try:
+                runtime_dirs.append(str(directory.resolve()))
+            except OSError:
+                continue
+    return runtime_dirs
+
+
 def _is_external_link(path: Path) -> bool:
     """True when ``path`` is a --with-llama-cpp-dir local link: a POSIX symlink
     or a Windows directory junction / reparse point. Such a link resolves into
@@ -4067,6 +4118,11 @@ class LlamaCppBackend:
             # which can be incompatible with the host amdkfd driver.
             lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
             lib_dirs.append(binary_dir)
+            # The installer also detects CUDA runtimes shipped privately by
+            # Ollama. Mirror that selected runtime here so the CUDA backend does
+            # not silently fall back to CPU after an otherwise successful install.
+            if sys.platform.startswith("linux"):
+                lib_dirs.extend(_linux_ollama_cuda_runtime_dirs(binary_dir))
             _arch = platform.machine()  # x86_64, aarch64, etc.
 
             # Pip-installed nvidia CUDA runtime libs. The prebuilt binary links
