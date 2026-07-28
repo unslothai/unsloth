@@ -531,7 +531,8 @@ def _connect_auth_db() -> sqlite3.Connection:
             token_hash TEXT NOT NULL,
             username TEXT NOT NULL,
             expires_at TEXT NOT NULL,
-            is_desktop INTEGER NOT NULL DEFAULT 0
+            is_desktop INTEGER NOT NULL DEFAULT 0,
+            secret_gen TEXT
         );
         """
     )
@@ -566,6 +567,8 @@ def _connect_auth_db() -> sqlite3.Connection:
     refresh_columns = {row[1] for row in conn.execute("PRAGMA table_info(refresh_tokens)")}
     if "is_desktop" not in refresh_columns:
         conn.execute("ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0")
+    if "secret_gen" not in refresh_columns:
+        conn.execute("ALTER TABLE refresh_tokens ADD COLUMN secret_gen TEXT")
     conn.commit()
     return conn
 

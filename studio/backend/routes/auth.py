@@ -399,7 +399,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
             detail = f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}",
         )
 
-    salt, pwd_hash, _jwt_secret, must_change_password = record
+    salt, pwd_hash, jwt_secret, must_change_password = record
     if not hashing.verify_password(payload.password, salt, pwd_hash):
         _record_login_failure(key)
         raise HTTPException(
@@ -409,8 +409,10 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
     _clear_login_bucket(key)
     _clear_login_bucket(unknown_key)
-    access_token = create_access_token(subject = payload.username)
-    refresh_token = create_refresh_token(subject = payload.username)
+    # Issue against the credential version just verified, not whatever is in the DB
+    # now: a concurrent reset-password must not hand this login a post-reset session.
+    access_token = create_access_token(subject = payload.username, secret = jwt_secret)
+    refresh_token = create_refresh_token(subject = payload.username, secret = jwt_secret)
     return Token(
         access_token = access_token,
         refresh_token = refresh_token,

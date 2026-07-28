@@ -132,6 +132,22 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def credential_generation(jwt_secret: str) -> str:
+    """Marker for the credential version a refresh token was issued under.
+
+    Every password change rotates ``jwt_secret``, so a token stamped with the
+    previous one is rejected even if it was inserted after the revoking DELETE.
+    """
+    return hashlib.sha256(jwt_secret.encode("utf-8")).hexdigest()
+
+
+def _current_generation(conn: sqlite3.Connection, username: str) -> Optional[str]:
+    row = conn.execute(
+        "SELECT jwt_secret FROM auth_user WHERE username = ?", (username,)
+    ).fetchone()
+    return credential_generation(row["jwt_secret"]) if row else None
+
+
 def get_connection() -> sqlite3.Connection:
     """Get a connection to the auth database, creating tables if needed."""
     ensure_dir(DB_PATH.parent)
@@ -175,7 +191,8 @@ def get_connection() -> sqlite3.Connection:
             token_hash TEXT NOT NULL,
             username TEXT NOT NULL,
             expires_at TEXT NOT NULL,
-            is_desktop INTEGER NOT NULL DEFAULT 0
+            is_desktop INTEGER NOT NULL DEFAULT 0,
+            secret_gen TEXT
         );
         """
     )
@@ -214,6 +231,8 @@ def get_connection() -> sqlite3.Connection:
     refresh_columns = {row["name"] for row in conn.execute("PRAGMA table_info(refresh_tokens)")}
     if "is_desktop" not in refresh_columns:
         conn.execute("ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0")
+    if "secret_gen" not in refresh_columns:
+        conn.execute("ALTER TABLE refresh_tokens ADD COLUMN secret_gen TEXT")
     conn.commit()
     return conn
 
@@ -625,19 +644,26 @@ def save_refresh_token(
     expires_at: str,
     *,
     is_desktop: bool = False,
+    secret_gen: Optional[str] = None,
 ) -> None:
     """
     Store a hashed refresh token with its associated username and expiry.
+
+    ``secret_gen`` binds the token to a credential version; it defaults to the
+    current one, and callers that already verified a credential must pass the
+    version they verified rather than let this re-read a rotated one.
     """
     token_hash = _hash_token(token)
     conn = get_connection()
     try:
+        if secret_gen is None:
+            secret_gen = _current_generation(conn, username)
         conn.execute(
             """
-            INSERT INTO refresh_tokens (token_hash, username, expires_at, is_desktop)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO refresh_tokens (token_hash, username, expires_at, is_desktop, secret_gen)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (token_hash, username, expires_at, int(is_desktop)),
+            (token_hash, username, expires_at, int(is_desktop), secret_gen),
         )
         conn.commit()
     finally:
@@ -662,13 +688,17 @@ def consume_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
             """
             DELETE FROM refresh_tokens
             WHERE token_hash = ? AND expires_at >= ?
-            RETURNING username, is_desktop
+            RETURNING username, is_desktop, secret_gen
             """,
             (token_hash, now),
         )
         row = cur.fetchone()
         conn.commit()
         if row is None:
+            return None
+        if row["secret_gen"] is not None and row["secret_gen"] != _current_generation(
+            conn, row["username"]
+        ):
             return None
         return row["username"], bool(row["is_desktop"])
     finally:
@@ -694,13 +724,20 @@ def verify_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
 
         cur = conn.execute(
             """
-            SELECT id, username, expires_at, is_desktop FROM refresh_tokens
+            SELECT id, username, expires_at, is_desktop, secret_gen FROM refresh_tokens
             WHERE token_hash = ?
             """,
             (token_hash,),
         )
         row = cur.fetchone()
         if row is None:
+            return None
+
+        if row["secret_gen"] is not None and row["secret_gen"] != _current_generation(
+            conn, row["username"]
+        ):
+            conn.execute("DELETE FROM refresh_tokens WHERE id = ?", (row["id"],))
+            conn.commit()
             return None
 
         # Check expiry

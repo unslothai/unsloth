@@ -11,6 +11,7 @@ import jwt
 
 from .storage import (
     API_KEY_PREFIX,
+    credential_generation,
     get_jwt_secret,
     get_user_and_secret,
     load_jwt_secret,
@@ -54,11 +55,14 @@ def create_access_token(
     expires_delta: Optional[timedelta] = None,
     *,
     desktop: bool = False,
+    secret: Optional[str] = None,
 ) -> str:
     """
     Create a signed JWT for the given subject (e.g. username).
 
-    Valid across restarts: the signing secret is stored in SQLite.
+    Valid across restarts: the signing secret is stored in SQLite. Callers that
+    already verified a credential pass ``secret`` so a rotation landing mid-request
+    cannot sign the token with the credential that just replaced it.
     """
     to_encode = {"sub": subject}
     if desktop:
@@ -69,7 +73,7 @@ def create_access_token(
     to_encode.update({"exp": expire})
     return jwt.encode(
         to_encode,
-        _get_secret_for_subject(subject),
+        secret if secret is not None else _get_secret_for_subject(subject),
         algorithm = ALGORITHM,
     )
 
@@ -96,15 +100,28 @@ def is_desktop_access_token(token: str) -> bool:
     return payload.get("sub") == subject and payload.get("desktop") is True
 
 
-def create_refresh_token(subject: str, *, desktop: bool = False) -> str:
+def create_refresh_token(
+    subject: str,
+    *,
+    desktop: bool = False,
+    secret: Optional[str] = None,
+) -> str:
     """
     Create a random refresh token, store its hash in SQLite, and return it.
 
     Refresh tokens are opaque (not JWTs); expire after REFRESH_TOKEN_EXPIRE_DAYS.
+    ``secret`` stamps the token with the credential version the caller verified,
+    so a rotation cannot leave a token minted from the replaced credential valid.
     """
     token = secrets.token_urlsafe(48)
     expires_at = datetime.now(timezone.utc) + timedelta(days = REFRESH_TOKEN_EXPIRE_DAYS)
-    save_refresh_token(token, subject, expires_at.isoformat(), is_desktop = desktop)
+    save_refresh_token(
+        token,
+        subject,
+        expires_at.isoformat(),
+        is_desktop = desktop,
+        secret_gen = credential_generation(secret) if secret is not None else None,
+    )
     return token
 
 
